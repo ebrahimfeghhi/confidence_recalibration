@@ -21,7 +21,6 @@ OUTPUTS
 
 FUNCTIONS
     load_pool():           pool csv -> {interface: [(seed, sample, dockq_gt, pair_iptm), ...]}
-    dockq_by_pose():       the same, keyed for lookup -> {interface: {(seed, sample): dockq_gt}}
     load_chain_maps():     chain-map csv -> {(pdb, seed, sample): {reference_chain: pose_chain}}
     load_roles():          roles csv -> {"<pdb>_<c1><c2>": (antibody chain, antigen chain)}
     items_for_interface(): an interface and its poses -> [(pose path, antibody chain, antigen chain)]
@@ -69,15 +68,6 @@ def load_pool(pool_csv=None, extra=None):
         pool[f"{r['pdb']}_{r['chain1']}{r['chain2']}"].append(
             (r["seed"], int(r["sample"]), dq, float(r["pair_iptm"])))
     return pool
-
-
-def dockq_by_pose(pool_csv=None, extra=None):
-    """in: same as load_pool.  out: {interface: {(seed, sample): dockq_gt}} for lookup."""
-    out = collections.defaultdict(dict)
-    for iface, rows in load_pool(pool_csv, extra).items():
-        for s, x, dq, _ in rows:
-            out[iface][(s, x)] = dq
-    return out
 
 
 def load_chain_maps(path=None):
