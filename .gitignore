@@ -81,6 +81,16 @@ poses/
 # vendored third-party source
 external/
 
-# the example tree in v2 shows the expected layout; the real data stays ignored
+# v2 carries an EMPTY skeleton of experimental_data so the layout is visible. Only the directory
+# markers are tracked -- never data. Anything with content is re-ignored below.
 !diffusion_commit_clean_v2/experimental_data/
-!diffusion_commit_clean_v2/experimental_data/**
+!diffusion_commit_clean_v2/experimental_data/**/
+!diffusion_commit_clean_v2/experimental_data/**/.gitkeep
+diffusion_commit_clean_v2/experimental_data/**/*.cif
+diffusion_commit_clean_v2/experimental_data/**/*.csv
+diffusion_commit_clean_v2/experimental_data/**/*.npz
+diffusion_commit_clean_v2/experimental_data/**/*.json
+diffusion_commit_clean_v2/experimental_data/**/*.tsv
+
+# matrices and other large binaries never belong in the repo
+*.npz

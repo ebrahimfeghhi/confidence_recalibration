@@ -85,9 +85,9 @@ EVAL_DIR = _path("EVAL_DIR", REPO_ROOT / "eval")
 # dockq_torch lives here; the GPU pose-to-pose DockQ imports it
 CLUSTERING_DIR = _path("CLUSTERING_DIR", REPO_ROOT / "diffusion_commit" / "clustering")
 # pose-to-pose DockQ matrices, one directory per frame
-XTAL_MATRICES = _path("XTAL_MATRICES", REPO_ROOT / "diffusion_commit_clean" / "matrices")
-ANCHOR_MATRICES = _path("ANCHOR_MATRICES", REPO_ROOT / "diffusion_commit_clean" / "matrices_anchor_all")
-SPUR_MATRICES = _path("SPUR_MATRICES", REPO_ROOT / "diffusion_commit_clean" / "matrices_spur")
+XTAL_MATRICES = _path("XTAL_MATRICES", DATA_DIR / "matrices")
+ANCHOR_MATRICES = _path("ANCHOR_MATRICES", DATA_DIR / "matrices_anchor_all")
+SPUR_MATRICES = _path("SPUR_MATRICES", DATA_DIR / "matrices_spur")
 # The pxm scorer is a built environment, not code we edit, and every DockQ score shells out to it --
 # so it lives outside the archived repo.
 PXMETER_BIN = _path("PXMETER_BIN", REPO_ROOT / "envs" / "pxmeter" / "bin" / "pxm")
@@ -126,9 +126,9 @@ EVAL_DIR = _path("EVAL_DIR", REPO_ROOT / "eval")
 # dockq_torch lives here; the GPU pose-to-pose DockQ imports it
 CLUSTERING_DIR = _path("CLUSTERING_DIR", REPO_ROOT / "diffusion_commit" / "clustering")
 # pose-to-pose DockQ matrices, one directory per frame
-XTAL_MATRICES = _path("XTAL_MATRICES", REPO_ROOT / "diffusion_commit_clean" / "matrices")
-ANCHOR_MATRICES = _path("ANCHOR_MATRICES", REPO_ROOT / "diffusion_commit_clean" / "matrices_anchor_all")
-SPUR_MATRICES = _path("SPUR_MATRICES", REPO_ROOT / "diffusion_commit_clean" / "matrices_spur")
+XTAL_MATRICES = _path("XTAL_MATRICES", DATA_DIR / "matrices")
+ANCHOR_MATRICES = _path("ANCHOR_MATRICES", DATA_DIR / "matrices_anchor_all")
+SPUR_MATRICES = _path("SPUR_MATRICES", DATA_DIR / "matrices_spur")
 PROTENIX_SRC = _path("PROTENIX_SRC", Path.home() / "Protenix")
 SELFTMPL_DIR = _path("SELFTMPL_DIR", DATA_DIR / "self_template")
 # The template namespace write_templates.py builds: an input to self-templated folds.
