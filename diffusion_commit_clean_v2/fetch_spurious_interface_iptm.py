@@ -1,23 +1,44 @@
 #!/usr/bin/env python
-"""Pool rows and roles for the interfaces the PREDICTIONS declare but the reference does not contain.
+"""Get pair_iptm for the interfaces the predictions declare but the reference does not contain.
 
-WHY THIS IS NEEDED. pose_interfaces.py defines an interface as a chain pair in contact within 5.0 A in
-at least one pose. That recovers all 292 reference interfaces and declares 53 more. The 53 have no rows
-in the pool CSV -- that file is keyed by reference interface -- so build_matrices cannot see them, yet
-selection must treat them as interfaces or the whole point of a reference-free interface list is lost.
+SUMMARY
+    Runs after pose_interfaces.py. That step declares an interface for any chain pair in contact within
+    5.0 A in at least one pose, which recovers all 292 reference interfaces and adds 53 more. Those 53
+    have no rows in the pool csv -- it is keyed by reference interface -- so the next step cannot see
+    them, and selection has to treat them as interfaces or the reference-free interface list is pointless.
 
-WHERE pair_iptm COMES FROM. The per-pose summary_confidence json carries a FULL chain_pair_iptm matrix,
-one entry per ordered chain pair, whether or not the pair touches. Its indices are not labelled, so the
-mapping to chain names is the cif's own chain order. That assumption was verified, not assumed: for 800
-reference interfaces the json value at the cif index equals the pool CSV's pair_iptm to within 1e-3,
-800/800. The pool CSV is produced by a different code path, so agreement cannot come from a shared bug.
+    Where the ipTM comes from: each pose's summary_confidence json carries a full chain_pair_iptm matrix,
+    one entry per ordered chain pair, whether or not the pair touches. Its rows are not labelled, so the
+    mapping to chain names is the cif's own chain order. That was verified rather than assumed -- for 800
+    reference interfaces the json value at the cif index matched the pool csv's pair_iptm to within 1e-3,
+    800 of 800, and the pool csv comes from a different code path so agreement cannot be a shared bug.
 
-dockq_gt IS LEFT EMPTY, deliberately. These pairs have no counterpart in the reference, so no ground
-truth exists. Writing 0.0 would be a lie that silently reads as "a very bad interface" in every average
-and every acceptable-rate denominator. Empty becomes NaN downstream, which compares false against the
-0.23 threshold and is excluded from means.
+    dockq is written EMPTY. These pairs have no counterpart in the reference, so no ground truth exists.
+    Writing 0.0 would read as "a very bad interface" in every mean and every acceptable-rate denominator
+    rather than "not evaluable". Empty becomes NaN downstream, which compares false against 0.23.
 
-    spurious_pool.py --ifaces anchor_merged/pose_interfaces.csv --out anchor_merged [--jobs 8]
+INPUTS
+    --ifaces: pose_interfaces.csv from pose_interfaces.py. Required. Rows with have_gt=0 are the ones
+              handled here.
+    --out:    where the two csvs go. Required.
+    --jobs:   worker processes reading confidence jsons in parallel. Default 8. CPU only.
+
+    Files read:
+    anchor maps: chain_maps_anchor.csv, to translate an anchor-frame pair into each pose's own chains
+    pool csv:    which poses exist for each complex
+    per-pose confidence jsons and cifs: the ipTM matrix, and the chain order it is indexed by
+
+OUTPUTS
+    <out>/spurious_pool.csv:  pool-shaped rows the next step can read alongside the real pool --
+                              pdb, chain1, chain2, seed, sample, dockq (empty), pair_iptm
+    <out>/spurious_roles.csv: which chains are antibody and antigen for each of those pairs
+
+EXAMPLE
+    fetch_spurious_interface_iptm.py --ifaces $ANCHOR_DIR/pose_interfaces.csv --out $ANCHOR_DIR --jobs 8
+
+FUNCTIONS
+    pair_iptm_rows(): one complex -> (pdb, ab, ag, seed, sample, pair_iptm) for every requested pair
+    main():           collect the predicted-only pairs, read their ipTM in parallel, write both csvs
 """
 import argparse
 import collections
@@ -26,20 +47,24 @@ import json
 import os
 import sys
 
-sys.path.insert(0, "/home/ebrahim/tts_abag")
-sys.path.insert(0, "/home/ebrahim/tts_abag/diffusion_commit_clean/metrics")
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# the repo root is this file's parent, so nothing here carries an absolute path; paths.py owns
+# every location from that point on
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gemmi  # noqa: E402
-import metrics  # noqa: E402
 import paths  # noqa: E402
 from fmt import table  # noqa: E402
+
+sys.path.insert(0, str(paths.METRICS_DIR))
+import metrics  # noqa: E402
 
 ANCHOR_DIR = str(paths.ANCHOR_DIR)
 
 
-def one(task):
-    """pair_iptm for each requested anchor-frame pair, for every pose of one complex."""
+def pair_iptm_rows(task):
+    """in: (pdb, [(seed, sample, pose path, chain map)], pairs).
+    out: (pdb, ab, ag, seed, sample, pair_iptm) per pose per pair
+    """
     pdb, items, pairs = task
     out = []
     for seed, samp, pose, amap in items:
@@ -55,7 +80,7 @@ def one(task):
         except Exception:
             continue
         if len(M) != len(idx):
-            continue                     # cannot trust positional order if the counts disagree
+            continue        # chain counts disagree, so the positional order cannot be trusted
         for a, g in pairs:
             ma, mg = amap.get(a), amap.get(g)
             if ma in idx and mg in idx:
@@ -98,12 +123,12 @@ def main():
     import multiprocessing as mp
     rows = []
     with mp.Pool(A.jobs) as p:
-        for i, out in enumerate(p.imap_unordered(one, tasks), 1):
+        for i, out in enumerate(p.imap_unordered(pair_iptm_rows, tasks), 1):
             rows += out
             if i % 5 == 0 or i == len(tasks):
                 print(f"  {i}/{len(tasks)}  rows {len(rows)}", flush=True)
 
-    # pool rows in the same schema load_pool reads, with dockq left EMPTY (-> NaN)
+    os.makedirs(A.out, exist_ok=True)
     with open(f"{A.out}/spurious_pool.csv", "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["pdb", "chain1", "chain2", "seed", "sample", "dockq", "pair_iptm"])
