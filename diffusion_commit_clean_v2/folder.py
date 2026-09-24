@@ -53,8 +53,10 @@ INPUTS
     --verify:     cross-check the csv against the poses on disk and exit.
 
 OUTPUTS
-    <out>/<pdb>/<seed>-<run_id>/predictions/   the poses. run_id is random because folds do not
-                                               reproduce -- two folds of one seed are different data.
+    <out>/<pdb>/<seed>-<run_id>/predictions/   the poses, as <pdb>_sample_N.cif with their confidence
+                                               jsons. One layout for every run, free or templated, and
+                                               the same shape as the original pool. run_id is random
+                                               because folds do not reproduce.
     <out>/<pdb>/<seed>-<run_id>/run.json       per-fold provenance
     <out>/index.tsv                            one line per fold, greppable, with the template md5
     <csv>                                      one row per scored pose:
@@ -578,6 +580,33 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
     return got, err
 
 
+def normalise_poses(rdir, name, pdb):
+    """in: a finished fold's directory, its job name, the complex.
+    out: poses moved to <rdir>/predictions/<pdb>_sample_N.cif; returns how many moved
+
+    Protenix nests its output as <rdir>/<jobname>/seed_<seed>/predictions/<jobname>_sample_N.cif, which
+    is deeper than the pool's <rdir>/predictions/<pdb>_sample_N.cif and carries the job name in the
+    filename. Two layouts meant every reader needed to know which run wrote a pose; flattening to the
+    pool's shape here means one layout everywhere, free and templated alike.
+    """
+    dest = f"{rdir}/predictions"
+    os.makedirs(dest, exist_ok=True)
+    moved = 0
+    for src in sorted(glob.glob(f"{rdir}/{name}/**/*_sample_*.cif", recursive=True)):
+        n = os.path.basename(src).split("_sample_")[1]
+        os.replace(src, f"{dest}/{pdb}_sample_{n}")
+        moved += 1
+    for src in sorted(glob.glob(f"{rdir}/{name}/**/*summary_confidence_sample_*.json",
+                                recursive=True)):
+        n = os.path.basename(src).split("_sample_")[1]
+        os.replace(src, f"{dest}/{pdb}_summary_confidence_sample_{n}")
+    # the scorer's own json output lives in the job directory too, and is NOT a pose; move it rather
+    # than losing it when the job directory goes
+    for sub in sorted(glob.glob(f"{rdir}/{name}/*_json")):
+        os.replace(sub, f"{rdir}/{os.path.basename(sub)}")
+    return moved
+
+
 def run_unit(ctx, unit):
     """in: one (kind, pdb, target, tag, seed, poses).  out: "ran", "skipped" or "failed".
 
@@ -653,6 +682,8 @@ def run_unit(ctx, unit):
                  tmpl_md5)
 
     got, err = score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses)
+    # scoring reads the driver's own layout, so normalise only after it has run
+    normalise_poses(rdir, name, pdb)
     result = "ran"
     if got or all((i, str(seed), tag) in ctx.rows_done for i in want):
         # print pdb too: target is "*" for a free fold
@@ -664,8 +695,9 @@ def run_unit(ctx, unit):
             print(f"      {line}", flush=True)
         release()
         result = "failed"
+    shutil.rmtree(f"{rdir}/{name}", ignore_errors=True)      # now empty of poses
     if not A.keep_cifs:
-        shutil.rmtree(f"{rdir}/{name}", ignore_errors=True)
+        shutil.rmtree(f"{rdir}/predictions", ignore_errors=True)
     return result
 
 
