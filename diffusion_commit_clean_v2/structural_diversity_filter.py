@@ -1,25 +1,64 @@
 #!/usr/bin/env python
-"""Anchor-frame donor queue, reusing every fold the crystal-frame sweep already produced.
+"""Choose which poses to self-template on: most confident first, keeping only what is structurally new.
 
-WHAT CHANGES FROM build_complex_queue.py. Only the frame. Selection is the same algorithm -- per
-interface, order by pair_iptm, keep a pose whose pose-pose DockQ to everything kept is below 0.23,
-round-robin the per-interface lists into one per-complex set, cap 50. What differs is that the pose-pose
-DockQ and the chain pinning come from matrices built against the complex's highest-mean-ipTM POSE
-instead of against the crystal, so nothing in the selection path consults the native structure.
+SUMMARY
+    The algorithm, per complex:
 
-REUSE IS KEYED ON (donor pose, seed, pinned chains), NOT ON THE TAG. A fold's output is determined by
-the pose it templated, the seed, and which chains of that pose were pinned. The tag is just a name, and
-naming was already load-bearing once by accident: sibling interfaces sharing tag K00 silently swapped
-donors. Measured here: 728 anchor donors are poses the crystal frame ALSO chose but pinned to a
-different antigen copy. Those are different templates and must be refolded; reusing them on pose+seed
-alone would substitute one fold for another that never ran.
+      1. for each interface, order its poses by pair_iptm, highest first
+      2. walk down that list and keep a pose only if its pose-to-pose DockQ to everything already kept
+         is below 0.23, stopping at the cap
+      3. round-robin the per-interface lists into one set for the complex -- each interface's 1st pick,
+         then each 2nd, and so on -- until the cap is reached
 
-CARRIED ROWS ARE REWRITTEN, NOT COPIED. The old csv recorded donor_pose="-1", so a carried row would
-arrive with no provenance and the reuse rule could not be applied to it a second time. Each carried row
-is re-emitted under its NEW tag with the pose and chains filled in, and a claim directory is created so
-a worker treats it as already done instead of refolding it.
+    Step 2 is the point: templating on 50 versions of the same wrong answer buys nothing, so the budget
+    goes on 50 different guesses. 0.23 is the CAPRI acceptable threshold, the same number used to decide
+    whether a pose is correct.
 
-    build_anchor_queue.py --out DIR [--cap 50] [--seed 430000] [--old-exp .../top_50_complex]
+    Step 3 is per COMPLEX because a template is a whole complex and a fold scores every interface of it,
+    so "donors for interface A-B" is not something a fold can deliver separately. Round-robin rather than
+    a majority vote: capping by "poses the most interfaces asked for" starves the interface with unusual
+    poses, which on one complex retained 14% of its own picks against 36% under round-robin.
+
+    NOTHING HERE READS GROUND TRUTH. The order comes from pair_iptm, the filter from pose-to-pose DockQ,
+    and the chain pinning from the anchor frame.
+
+    REUSE is keyed on (donor pose, seed, pinned chains). A fold's output is fixed by those three, so a
+    fold already done elsewhere can be carried over instead of repeated. The tag is only a name, and
+    naming was load-bearing once by accident: two interfaces of one complex sharing tag K00 silently
+    swapped donors. Carried rows are re-emitted with the pose and chains filled in, and a claim directory
+    is created so a worker treats them as done.
+
+INPUTS
+    --out:       experiment directory to write into. Required.
+    --cap:       donors per complex. Default 50.
+    --seed:      the seed every templated fold uses. Default 430000.
+    --old-exp:   an earlier experiment whose folds can be reused. Default the crystal-frame sweep.
+    --no-reuse:  refold everything, ignoring --old-exp.
+    --pose-interfaces: also select on the interfaces the predictions declare by contact, which have no
+                 reference counterpart. Default off.
+
+    Files read:
+    matrices:    the .npz files from pose_to_pose_dockq.py -- anchor frame where it exists, crystal frame
+                 for the single-interface complexes where the two are identical by construction
+    anchor csvs: chain maps and roles, to pin each donor's chains
+    old experiment: its queue, results csv and template namespace, to decide what can be reused
+
+OUTPUTS
+    <out>/queue.tsv:     one line per fold still to run -- kind, pdb, interface, tag, seed, donor pose
+    <out>/results.csv:   rows carried over from the reused folds, with provenance filled in
+    <out>/claims/:       a claim per reused donor, so a worker skips it
+    <out>/frame_maps.csv, <out>/frame_roles.csv: the exact frame this queue was selected in, so the
+                         template builder pins the same chains the selection ranked
+
+EXAMPLE
+    structural_diversity_filter.py --out experimental_data/reffree_50 --pose-interfaces \
+                                   --old-exp experimental_data/anchor_50
+
+FUNCTIONS
+    leaders():      one interface -> its ipTM-ordered, diversity-filtered pose list
+    round_robin():  per-interface lists -> one donor set per complex
+    old_folds():    an earlier experiment -> what it folded, by (pdb, pose, seed)
+    main():         select per complex, carry over what is already folded, write the queue
 """
 import argparse
 import collections
@@ -30,34 +69,56 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, "/home/ebrahim/tts_abag")
-sys.path.insert(0, "/home/ebrahim/tts_abag/diffusion_commit_clean/metrics")
+# the repo root is this file's parent, so nothing here carries an absolute path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import metrics  # noqa: E402
 import paths  # noqa: E402
-from build_complex_queue import T, round_robin  # noqa: E402
+import poses as metrics  # noqa: E402  same lookups, now local
 
-ANCHOR_MATRICES = "/home/ebrahim/tts_abag/diffusion_commit_clean/matrices_anchor_all"
-# Interfaces the PREDICTIONS declare by contact but the reference does not contain. They live in their
-# own directory because a matrix filename cannot distinguish them: the anchor-frame pair 8w5i_AD and the
-# real crystal-frame interface 8w5i_AD produce the same string. Measured: adding them does NOT dilute --
-# the 50-donor cap rarely binds, so extra lists contribute extra poses (33.6 -> 35.4 per multi-interface
-# complex) at identical coverage and MORE good donors per interface.
-SPUR_MATRICES = "/home/ebrahim/tts_abag/diffusion_commit_clean/matrices_spur"
-XTAL_MATRICES = "/home/ebrahim/tts_abag/diffusion_commit_clean/matrices"
+DOCKQ_THRESHOLD = 0.23      # CAPRI "acceptable": two poses closer than this are the same answer
+
+
+def round_robin(per, cap):
+    """in: {interface: ordered pose list}, the cap.
+    out: [(pose, the interface that picked it)] -- each interface's 1st pick, then each 2nd, ...
+
+    The interface is carried because the template builder needs it to pin the donor's chains. It does
+    not restrict scoring: every fold is scored against every interface of its complex.
+    """
+    out, seen, r = [], set(), 0
+    while len(out) < cap and any(r < len(v) for v in per.values()):
+        for i in sorted(per):
+            if r < len(per[i]):
+                p = per[i][r]
+                if p not in seen:
+                    seen.add(p)
+                    out.append((p, i))
+                if len(out) >= cap:
+                    break
+        r += 1
+    return out
+
+ANCHOR_MATRICES = str(paths.ANCHOR_MATRICES)
+# predicted-only interfaces live in their own directory: a filename cannot distinguish them, since the
+# anchor-frame pair 8w5i_AD and the real crystal-frame interface 8w5i_AD produce the same string
+SPUR_MATRICES = str(paths.SPUR_MATRICES)
+XTAL_MATRICES = str(paths.XTAL_MATRICES)
 ANCHOR_DIR = str(paths.ANCHOR_DIR)
 NEW_HEADER = "iface,seed,arm,donor_pose,tmpl_chains,sample,dockq,iptm\n"
 
 
 def leaders(mdir, iface, cap):
+    """in: a matrices directory, an interface, the cap.
+    out: (seed, sample) of the poses kept -- ipTM order, each new one unlike everything before it
+    """
     z = np.load(f"{mdir}/{iface}.npz")
     M, ip = z["dockq"].astype(float), z["pair_iptm"].astype(float)
     keys = [(str(s), int(x)) for s, x in zip(z["seed"], z["sample"])]
     L = []
     for p in np.argsort(-ip):
         p = int(p)
-        if all(M[p, j] < T for j in L):
+        if all(M[p, j] < DOCKQ_THRESHOLD for j in L):
             L.append(p)
             if len(L) >= cap:
                 break
@@ -130,7 +191,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--cap", type=int, default=50)
     ap.add_argument("--seed", type=int, default=430000)
-    ap.add_argument("--old-exp", default="/home/ebrahim/tts_abag/experimental_data/top_50_complex")
+    ap.add_argument("--old-exp", default=f"{paths.DATA_DIR}/top_50_complex")
     ap.add_argument("--no-reuse", action="store_true")
     ap.add_argument("--pose-interfaces", action="store_true",
                     help="also select on interfaces the predictions declare by contact (no reference)")
