@@ -141,15 +141,31 @@ LEGACY_RUN = "legacy-no-provenance"
 
 
 def pool_pose(pdb, seed, sample):
-    """Path to one pose of the original pool. A FUNCTION, not a format string: legacy folds and
-    modern ones nest predictions differently, and two scripts had hand-built this path identically,
-    which is how a layout change breaks them both silently.
+    """Path to one pose of the free pool, whatever run id its fold was written under.
 
-    It then broke ANYWAY: the run-id migration flattened <seed>/<run_id>/ to <seed>-<run_id>/ and
-    this function kept returning the old nested form, so it pointed at nothing for months. Nobody
-    noticed because both callers glob or guard. Centralising a path is necessary but not sufficient:
-    nothing here fails loudly when the layout moves, so a layout change needs this checked by hand."""
-    return (f"{FREE_DIR}/{pdb}/{seed}-{LEGACY_RUN}/predictions/{pdb}_sample_{sample}.cif")
+    The legacy path is tried FIRST and returned if it exists, so every pose that resolved before this
+    function learned to glob still resolves to exactly the same file. Only seeds outside the legacy
+    naming reach the glob -- before, they were unreachable, which is why 4,000 folds sat on disk
+    invisible to selection.
+
+    Raises on a seed with two fold directories holding poses. Folds do not reproduce, so those are
+    different data and picking one would be a silent choice; there are none today.
+    """
+    legacy = f"{FREE_DIR}/{pdb}/{seed}-{LEGACY_RUN}/predictions/{pdb}_sample_{sample}.cif"
+    if os.path.exists(legacy):
+        return legacy
+    # search the whole fold directory: the legacy layout is <seed>-<rid>/predictions/<pdb>_sample_N.cif
+    # while the current driver writes <seed>-<rid>/<jobname>/seed_<seed>/predictions/<jobname>_sample_N.cif
+    # -- deeper, and the filename carries the job name, so both the depth and the prefix differ
+    import glob as _glob
+    hits = sorted(_glob.glob(f"{FREE_DIR}/{pdb}/{seed}-*/**/{pdb}*_sample_{sample}.cif",
+                             recursive=True))
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        raise RuntimeError(f"{pdb} seed {seed} sample {sample}: {len(hits)} fold directories hold "
+                           f"this pose, so which one is meant is ambiguous: {hits}")
+    return legacy          # nothing found: return the legacy path, as before, for callers that guard
 
 
 def _sh():
