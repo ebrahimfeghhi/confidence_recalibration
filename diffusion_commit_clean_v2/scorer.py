@@ -44,9 +44,14 @@ import glob
 import os
 import sys
 
-sys.path.insert(0, "/home/ebrahim/tts_abag/eval")
-import ost_dockq
-import pxm_dockq
+# the repo root is this file's parent, so nothing here carries an absolute path; paths.py owns
+# every location from that point on
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import paths  # noqa: E402
+
+sys.path.insert(0, str(paths.EVAL_DIR))
+import ost_dockq  # noqa: E402
+import pxm_dockq  # noqa: E402
 
 ap = argparse.ArgumentParser()
 for a in ("--dir", "--iface", "--seed", "--arm", "--donor", "--ref"):

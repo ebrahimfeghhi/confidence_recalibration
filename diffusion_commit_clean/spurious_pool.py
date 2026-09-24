@@ -35,7 +35,7 @@ import metrics  # noqa: E402
 import paths  # noqa: E402
 from fmt import table  # noqa: E402
 
-ANCHOR_DIR = "/home/ebrahim/tts_abag/diffusion_commit_clean/anchor_merged"
+ANCHOR_DIR = str(paths.ANCHOR_DIR)
 
 
 def one(task):

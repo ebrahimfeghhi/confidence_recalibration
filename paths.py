@@ -110,6 +110,14 @@ DATASET_NAMES = ("pxm2025", "foldbench")
 # --- run trees ---------------------------------------------------------------
 # Every fold we generate lands in one of these two, as <pdb>/<seed>/<run_id>/.
 FREE_DIR = _path("FREE_DIR", DATA_DIR / "free")
+# anchor_relabel.py writes the chain maps, roles and manifest here; pose_interfaces.py and the queue
+# builders read them. Points at the existing data rather than a new location so nothing has to move.
+ANCHOR_DIR = _path("ANCHOR_DIR", DATA_DIR / "anchor_frame")
+# code locations, so scripts do not carry literals for each other's directories
+METRICS_DIR = _path("METRICS_DIR", REPO_ROOT / "diffusion_commit_clean" / "metrics")
+CLEAN_CODE_DIR = _path("CLEAN_CODE_DIR", REPO_ROOT / "diffusion_commit_clean")
+EVAL_DIR = _path("EVAL_DIR", REPO_ROOT / "eval")
+PROTENIX_SRC = _path("PROTENIX_SRC", Path.home() / "Protenix")
 SELFTMPL_DIR = _path("SELFTMPL_DIR", DATA_DIR / "self_template")
 # The template namespace write_templates.py builds: an input to self-templated folds.
 TEMPLATES_DIR = _path("TEMPLATES_DIR", SELFTMPL_DIR / "templates")

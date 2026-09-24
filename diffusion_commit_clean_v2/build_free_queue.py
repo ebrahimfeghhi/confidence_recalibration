@@ -44,7 +44,9 @@ import glob
 import os
 import sys
 
-sys.path.insert(0, "/home/ebrahim/tts_abag")
+# the repo root is this file's parent, so nothing here carries an absolute path; paths.py owns
+# every location from that point on
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paths  # noqa: E402
 

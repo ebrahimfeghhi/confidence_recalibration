@@ -29,7 +29,10 @@ SUMMARY
     putting one physical interface into two candidate lists.
 
 INPUTS
-    --out-dir: where to write the two csvs. Required.
+    --out-dir: where to write the csvs and the manifest. Default paths.ANCHOR_DIR.
+    --pool:    pool csv listing the poses and their pair_iptm. Default paths.PXM2025_POOL_CSV. This is
+               what identifies the dataset: there is no separate foldbench pool index today, so the
+               pool file is the only honest record of what was run.
     --pdbs:    comma-separated subset of complexes. Default: every complex in the pool csv.
     --jobs:    how many worker processes map poses in parallel. Default 8. CPU only; each process reads
                one pose cif at a time, so this is bounded by disk and cores, not by GPU.
@@ -43,8 +46,12 @@ INPUTS
 OUTPUTS
     <out-dir>/chain_maps_anchor.csv:  per pose, {anchor_chain: pose_chain}
     <out-dir>/chain_roles_anchor.csv: per interface, which ANCHOR chains are the antibody and antigen
+    <out-dir>/anchor_manifest.json:   what this run covered -- the pool csv, the complexes, the anchor
+                                      pose chosen for each, and how many poses were mapped or failed.
+                                      Without it, a later step reading these csvs cannot tell which
+                                      complexes they describe.
 
-    Both are drop-in for build_matrices.py --maps/--roles.
+    The two csvs are drop-in for build_matrices.py --maps/--roles.
 
 EXAMPLE
     anchor_relabel.py --out-dir anchor_merged --jobs 8
@@ -60,17 +67,21 @@ FUNCTIONS
 import argparse
 import collections
 import csv
+import datetime
 import json
 import logging
 import os
 import sys
 import time
 
-sys.path.insert(0, "/home/ebrahim/tts_abag")
-sys.path.insert(0, "/home/ebrahim/tts_abag/diffusion_commit_clean/metrics")
+# the repo root is this file's parent, so nothing here carries an absolute path; paths.py owns
+# every location from that point on
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import metrics  # noqa: E402
 import paths  # noqa: E402
+
+sys.path.insert(0, str(paths.METRICS_DIR))
+import metrics  # noqa: E402
 
 logging.disable(logging.WARNING)   # pxmeter logs a warning per unmapped ligand, thousands of poses
 
@@ -78,10 +89,12 @@ MAP_FIELDS = ["pdb", "seed", "sample", "chain_mapping", "anchor_seed", "anchor_s
 ROLE_FIELDS = ["pdb", "chain_1", "chain_2", "ab_chain", "ag_chain"]
 
 
-def pool_rows(pdbs=None):
-    """in: optional subset of complexes.  out: {pdb: {(seed, sample): {interface: pair_iptm}}}"""
+def pool_rows(pool_csv, pdbs=None):
+    """in: pool csv, optional subset of complexes.
+    out: {pdb: {(seed, sample): {interface: pair_iptm}}}
+    """
     out = collections.defaultdict(lambda: collections.defaultdict(dict))
-    with open(str(paths.PXM2025_POOL_CSV)) as fh:
+    with open(pool_csv) as fh:
         for r in csv.DictReader(fh):
             if pdbs and r["pdb"] not in pdbs:
                 continue
@@ -142,20 +155,22 @@ def anchor_roles(pdb, interfaces, anchor_xtal_map, xtal_roles):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--out-dir", default=str(paths.ANCHOR_DIR))
+    ap.add_argument("--pool", default=str(paths.PXM2025_POOL_CSV))
     ap.add_argument("--pdbs", default=None, help="comma-separated subset; default is every complex")
     ap.add_argument("--jobs", type=int, default=8)
     A = ap.parse_args()
 
-    pool = pool_rows(set(A.pdbs.split(",")) if A.pdbs else None)
+    pool = pool_rows(A.pool, set(A.pdbs.split(",")) if A.pdbs else None)
     os.makedirs(A.out_dir, exist_ok=True)
     fmap = f"{A.out_dir}/chain_maps_anchor.csv"
     frole = f"{A.out_dir}/chain_roles_anchor.csv"
     xtal_roles, xtal_maps = metrics.load_roles(), metrics.load_chain_maps()
 
-    tasks, roles, skipped = [], [], []
+    tasks, roles, skipped, anchors = [], [], [], {}
     for pdb, poses in sorted(pool.items()):
         aseed, asamp = pick_anchor(poses)
+        anchors[pdb] = {"seed": aseed, "sample": asamp}
         apath = paths.pool_pose(pdb, aseed, asamp)
         anchor_xtal_map = xtal_maps.get((pdb, aseed, asamp))
         if not os.path.exists(apath) or not anchor_xtal_map:
@@ -191,6 +206,20 @@ def main():
                     print(f"  {i}/{len(tasks)}  {el/i:.3f}s/pose  "
                           f"eta {(len(tasks)-i)*el/i/60:.0f}m  failed {nfail}", flush=True)
     print(f"  wrote {fmap}  ({len(tasks)} poses, {nfail} failed, {time.time()-t0:.0f}s)")
+
+    manifest = {
+        "pool_csv": A.pool,
+        "complexes": sorted(anchors),
+        "n_complexes": len(anchors),
+        "anchors": anchors,
+        "poses_mapped": len(tasks),
+        "poses_failed": nfail,
+        "skipped_complexes": skipped,
+        "written": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    fman = f"{A.out_dir}/anchor_manifest.json"
+    json.dump(manifest, open(fman, "w"), indent=1)
+    print(f"  wrote {fman}  ({len(anchors)} complexes)")
     return 0
 
 

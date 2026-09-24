@@ -26,12 +26,16 @@ SUMMARY
     poses supply which names are interfaces.
 
 INPUTS
-    --out:    where pose_interfaces.csv goes. Required.
-    --jobs:   worker processes computing contacts in parallel. Default 8. CPU only, one pose cif at a
-              time per process.
-    --poses:  how many poses per complex to inspect. Default 0, meaning all of them. Fewer poses finds
-              fewer contacts: at 10 poses the same measurement missed 2 reference interfaces and
-              declared 37 extras, against 0 and 53 using every pose.
+    --out:         where pose_interfaces.csv goes. Required.
+    --anchor-dir:  where anchor_relabel.py wrote its csvs and manifest. Default paths.ANCHOR_DIR. This
+                   used to be a literal in this file, so pointing anchor_relabel at a new directory left
+                   this step silently reading the old maps.
+    --pool:        pool csv listing the poses. Default paths.PXM2025_POOL_CSV.
+    --jobs:        worker processes computing contacts in parallel. Default 8. CPU only, one pose cif
+                   at a time per process.
+    --poses:       how many poses per complex to inspect. Default 0, meaning all of them. Fewer poses
+                   finds fewer contacts: at 10 poses the same measurement missed 2 reference interfaces
+                   and declared 37 extras, against 0 and 53 using every pose.
 
     Files read:
     anchor csvs: chain_maps_anchor.csv and chain_roles_anchor.csv from anchor_relabel.py
@@ -63,18 +67,19 @@ FUNCTIONS
 import argparse
 import collections
 import csv
+import json
 import os
 import sys
 
-sys.path.insert(0, "/home/ebrahim/tts_abag")
-sys.path.insert(0, "/home/ebrahim/tts_abag/diffusion_commit_clean/metrics")
+# the repo root is this file's parent, so nothing here carries an absolute path; paths.py owns
+# every location from that point on
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import metrics  # noqa: E402
 import paths  # noqa: E402
 from fmt import table  # noqa: E402
 
-ANCHOR_DIR = "/home/ebrahim/tts_abag/diffusion_commit_clean/anchor_merged"
-
+sys.path.insert(0, str(paths.METRICS_DIR))
+import metrics  # noqa: E402
 
 def candidate_pairs(anchor_roles, xtal_roles):
     """in: anchor-frame roles and crystal roles.
@@ -120,17 +125,26 @@ def contacting_pairs(task):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
+    ap.add_argument("--anchor-dir", default=str(paths.ANCHOR_DIR))
+    ap.add_argument("--pool", default=str(paths.PXM2025_POOL_CSV))
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--poses", type=int, default=0, help="0 = every pose")
     A = ap.parse_args()
 
-    anchor_maps = metrics.load_chain_maps(f"{ANCHOR_DIR}/chain_maps_anchor.csv")
-    anchor_roles = metrics.load_roles(f"{ANCHOR_DIR}/chain_roles_anchor.csv")
+    anchor_maps = metrics.load_chain_maps(f"{A.anchor_dir}/chain_maps_anchor.csv")
+    anchor_roles = metrics.load_roles(f"{A.anchor_dir}/chain_roles_anchor.csv")
+    fman = f"{A.anchor_dir}/anchor_manifest.json"
+    if os.path.exists(fman):
+        man = json.load(open(fman))
+        print(f"  anchor data: {man['n_complexes']} complexes from {man['pool_csv']}, "
+              f"written {man['written']}")
+    else:
+        print(f"  NOTE no {fman}: cannot tell which complexes these maps cover")
     xtal_maps, xtal_roles = metrics.load_chain_maps(), metrics.load_roles()
     ab, ag, ref = candidate_pairs(anchor_roles, xtal_roles)
 
     poses = collections.defaultdict(list)
-    with open(str(paths.PXM2025_POOL_CSV)) as fh:
+    with open(A.pool) as fh:
         for r in csv.DictReader(fh):
             poses[r["pdb"]].append((r["seed"], int(r["sample"])))
 

@@ -46,7 +46,7 @@ ANCHOR_MATRICES = "/home/ebrahim/tts_abag/diffusion_commit_clean/matrices_anchor
 # complex) at identical coverage and MORE good donors per interface.
 SPUR_MATRICES = "/home/ebrahim/tts_abag/diffusion_commit_clean/matrices_spur"
 XTAL_MATRICES = "/home/ebrahim/tts_abag/diffusion_commit_clean/matrices"
-ANCHOR_DIR = "/home/ebrahim/tts_abag/diffusion_commit_clean/anchor_merged"
+ANCHOR_DIR = str(paths.ANCHOR_DIR)
 NEW_HEADER = "iface,seed,arm,donor_pose,tmpl_chains,sample,dockq,iptm\n"
 
 

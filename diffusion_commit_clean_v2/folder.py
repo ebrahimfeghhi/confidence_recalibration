@@ -111,15 +111,18 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, "/home/ebrahim/Protenix")
-sys.path.insert(0, "/home/ebrahim/tts_abag/diffusion_commit")
-sys.path.insert(0, "/home/ebrahim/tts_abag")
+# the repo root is this file's parent, so nothing here carries an absolute path; paths.py owns
+# every location from that point on
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paths     # noqa: E402  every location comes from here, never a literal
+
+sys.path.insert(0, str(paths.PROTENIX_SRC))
+sys.path.insert(0, str(paths.CODE_DIR))
 import runmeta   # noqa: E402
 
 DC = os.path.dirname(os.path.realpath(__file__))   # scorer.py must be the copy beside this file
-CLEAN_CODE = "/home/ebrahim/tts_abag/diffusion_commit_clean"   # template builder still lives there
+CLEAN_CODE = str(paths.CLEAN_CODE_DIR)   # the template builder still lives there
 PY = str(paths.PROTENIX_PYTHON)
 
 # mandatory: without it the model emits NaN coordinates silently
