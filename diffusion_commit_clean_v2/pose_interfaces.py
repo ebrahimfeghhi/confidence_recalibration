@@ -73,13 +73,13 @@ import sys
 
 # the repo root is this file's parent, so nothing here carries an absolute path; paths.py owns
 # every location from that point on
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paths  # noqa: E402
+import contacts  # noqa: E402
+import pool_index  # noqa: E402
 from fmt import table  # noqa: E402
-
-sys.path.insert(0, str(paths.METRICS_DIR))
-import metrics  # noqa: E402
 
 def candidate_pairs(anchor_roles, xtal_roles):
     """in: anchor-frame roles and crystal roles.
@@ -113,11 +113,10 @@ def contacting_pairs(task):
             if a_ab not in chain_map or a_ag not in chain_map:
                 continue
             try:
-                n = len(metrics.epitope_set(pose, chain_map[a_ab], chain_map[a_ag],
-                                            cutoff=metrics.CONTACT_CUTOFF))
+                touching = contacts.has_contact(pose, chain_map[a_ab], chain_map[a_ag])
             except Exception:
                 continue
-            if n > 0:
+            if touching:
                 seen[(a_ab, a_ag)] += 1
     return pdb, seen
 
@@ -131,8 +130,8 @@ def main():
     ap.add_argument("--poses", type=int, default=0, help="0 = every pose")
     A = ap.parse_args()
 
-    anchor_maps = metrics.load_chain_maps(f"{A.anchor_dir}/chain_maps_anchor.csv")
-    anchor_roles = metrics.load_roles(f"{A.anchor_dir}/chain_roles_anchor.csv")
+    anchor_maps = pool_index.load_chain_maps(f"{A.anchor_dir}/chain_maps_anchor.csv")
+    anchor_roles = pool_index.load_roles(f"{A.anchor_dir}/chain_roles_anchor.csv")
     fman = f"{A.anchor_dir}/anchor_manifest.json"
     if os.path.exists(fman):
         man = json.load(open(fman))
@@ -140,7 +139,7 @@ def main():
               f"written {man['written']}")
     else:
         print(f"  NOTE no {fman}: cannot tell which complexes these maps cover")
-    xtal_maps, xtal_roles = metrics.load_chain_maps(), metrics.load_roles()
+    xtal_maps, xtal_roles = pool_index.load_chain_maps(), pool_index.load_roles()
     ab, ag, ref = candidate_pairs(anchor_roles, xtal_roles)
 
     poses = collections.defaultdict(list)

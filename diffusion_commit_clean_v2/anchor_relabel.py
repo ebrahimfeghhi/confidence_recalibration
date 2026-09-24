@@ -76,12 +76,12 @@ import time
 
 # the repo root is this file's parent, so nothing here carries an absolute path; paths.py owns
 # every location from that point on
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paths  # noqa: E402
 
-sys.path.insert(0, str(paths.METRICS_DIR))
-import metrics  # noqa: E402
+import pool_index  # noqa: E402
 
 logging.disable(logging.WARNING)   # pxmeter logs a warning per unmapped ligand, thousands of poses
 
@@ -165,7 +165,7 @@ def main():
     os.makedirs(A.out_dir, exist_ok=True)
     fmap = f"{A.out_dir}/chain_maps_anchor.csv"
     frole = f"{A.out_dir}/chain_roles_anchor.csv"
-    xtal_roles, xtal_maps = metrics.load_roles(), metrics.load_chain_maps()
+    xtal_roles, xtal_maps = pool_index.load_roles(), pool_index.load_chain_maps()
 
     tasks, roles, skipped, anchors = [], [], [], {}
     for pdb, poses in sorted(pool.items()):

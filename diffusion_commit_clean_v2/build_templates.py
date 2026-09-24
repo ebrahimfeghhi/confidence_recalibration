@@ -73,7 +73,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gemmi  # noqa: E402
 import paths  # noqa: E402
-import poses as P  # noqa: E402
+import contacts  # noqa: E402
+import pool_index  # noqa: E402
 from Bio.PDB.MMCIF2Dict import MMCIF2Dict  # noqa: E402
 
 B36 = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -121,7 +122,7 @@ def pick_chains(cif, ent_seqs, require=()):
     def contacts(a, b):
         """atoms of `a` with at least one atom of `b` within the cutoff"""
         d = np.linalg.norm(pos[a][:, None, :] - pos[b][None, :, :], axis=-1)
-        return int((d.min(axis=1) < P.CONTACT_CUTOFF).sum())
+        return int((d.min(axis=1) < contacts.CONTACT_CUTOFF).sum())
 
     best, best_n, cache = None, -1, {}
     for combo in itertools.product(*cands):
@@ -291,7 +292,7 @@ def main():
         if len(f) >= 6:
             uniq.setdefault(f"{f[2]}_{f[3]}", (f[1], f[2], f[5].split()))
 
-    maps, roles = P.load_chain_maps(A.maps), P.load_roles(A.roles)
+    maps, roles = pool_index.load_chain_maps(A.maps), pool_index.load_roles(A.roles)
     jobs_dir, _, _ = paths.dataset(A.dataset)
     os.makedirs(f"{A.ns}/mmcif", exist_ok=True)
 

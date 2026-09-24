@@ -53,7 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gemmi  # noqa: E402
-import poses as metrics  # noqa: E402  the shared lookups
+import pool_index  # noqa: E402
 from build_templates import pose_key  # noqa: E402
 from fmt import table  # noqa: E402
 
@@ -67,7 +67,7 @@ def main():
     ap.add_argument("--roles", default=None)
     A = ap.parse_args()
 
-    maps, roles = metrics.load_chain_maps(A.maps), metrics.load_roles(A.roles)
+    maps, roles = pool_index.load_chain_maps(A.maps), pool_index.load_roles(A.roles)
     rd = json.load(open(f"{A.ns}/release_dates.json")) if os.path.exists(
         f"{A.ns}/release_dates.json") else {}
     cifs = {os.path.basename(p)[:-4] for p in glob.glob(f"{A.ns}/mmcif/*.cif")}

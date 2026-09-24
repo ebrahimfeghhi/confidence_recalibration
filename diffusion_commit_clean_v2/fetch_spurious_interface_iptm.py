@@ -49,14 +49,14 @@ import sys
 
 # the repo root is this file's parent, so nothing here carries an absolute path; paths.py owns
 # every location from that point on
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import gemmi  # noqa: E402
 import paths  # noqa: E402
 from fmt import table  # noqa: E402
 
-sys.path.insert(0, str(paths.METRICS_DIR))
-import metrics  # noqa: E402
+import pool_index  # noqa: E402
 
 ANCHOR_DIR = str(paths.ANCHOR_DIR)
 
@@ -99,8 +99,8 @@ def main():
     for r in csv.DictReader(open(A.ifaces)):
         if r["have_gt"] == "0":
             spur[r["pdb"]].append((r["ab_chain"], r["ag_chain"]))
-    amaps = metrics.load_chain_maps(f"{ANCHOR_DIR}/chain_maps_anchor.csv")
-    xmaps = metrics.load_chain_maps()
+    amaps = pool_index.load_chain_maps(f"{ANCHOR_DIR}/chain_maps_anchor.csv")
+    xmaps = pool_index.load_chain_maps()
 
     poses = collections.defaultdict(set)
     with open(str(paths.PXM2025_POOL_CSV)) as fh:

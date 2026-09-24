@@ -1,20 +1,18 @@
 #!/usr/bin/env python
-"""Shared lookups: which poses exist, which chains to compare, and the contacts between them.
+"""Read the index files: which poses exist, and which chains of a pose play which role.
 
 SUMMARY
-    Imported by the other steps rather than run. Four things they all need:
+    Three csvs the pipeline keeps re-reading, in one place so they are parsed the same way everywhere.
+    There used to be two different load_pool definitions that had drifted apart.
 
-      the pool index    what poses exist and what each scored
-      the chain mapping which chains of a pose play which role, per pose
-      the roles         which chain is the antibody and which the antigen, per interface
-      contacts          which antigen residues the antibody touches in one pose
-
-    Every function takes ONE CHAIN PAIR PER POSE, never a fixed pair for a whole set. On a complex with
-    several copies of an entity, different poses bind different copies, so a fixed pair silently
-    compares different molecules.
+    items_for_interface() is the one that does more than read: it turns an interface plus a list of
+    poses into the (pose, antibody chain, antigen chain) triples the rest of the code works on. Every
+    step takes ONE CHAIN PAIR PER POSE, never a fixed pair for a whole set -- on a complex with several
+    copies of an entity, different poses bind different copies, so a fixed pair compares different
+    molecules without failing.
 
 INPUTS
-    none -- functions take their paths as arguments, defaulting to the locations in paths.py
+    none -- functions take paths as arguments, defaulting to the locations in paths.py
 
 OUTPUTS
     none -- a library
@@ -24,8 +22,6 @@ FUNCTIONS
     load_chain_maps():     chain-map csv -> {(pdb, seed, sample): {reference_chain: pose_chain}}
     load_roles():          roles csv -> {"<pdb>_<c1><c2>": (antibody chain, antigen chain)}
     items_for_interface(): an interface and its poses -> [(pose path, antibody chain, antigen chain)]
-    pose_chains():         one pose cif -> {chain: (coordinates, residue index)}
-    epitope_set():         one pose and one chain pair -> the antigen residues in contact
 """
 import collections
 import csv
@@ -33,19 +29,9 @@ import json
 import os
 import sys
 
-import gemmi
-import numpy as np
-from scipy.spatial import cKDTree
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paths  # noqa: E402
-
-
-# DockQ's own heavy-atom contact distance. Used for "does this pose have an interface at all", so it
-# must match the scorer: at 4.5 A this dropped ~1,110 poses DockQ scores as real interfaces, 162 of
-# them above 0.80, because a ring assembly's second interface is a ~4.7 A glance.
-CONTACT_CUTOFF = 5.0
 
 
 def _pool_rows(pool_csv, extra=None):
@@ -114,37 +100,3 @@ def items_for_interface(iface, seeds_samples, maps, roles):
             continue
         items.append((paths.pool_pose(pdb, seed, sample), m[ab_ref], m[ag_ref]))
     return items, dropped
-
-
-def pose_chains(path):
-    """in: a pose cif.  out: {label_asym_id: (coordinates, residue index)} for polymer atoms
-
-    Reads label_asym_id explicitly rather than trusting gemmi's chain naming: the two disagree on
-    several complexes, and a lookup built on the wrong one compares the wrong chains without failing.
-    """
-    block = gemmi.cif.read(path).sole_block()
-    cols = [list(block.find_values("_atom_site." + c)) for c in
-            ("label_asym_id", "label_seq_id", "Cartn_x", "Cartn_y", "Cartn_z", "group_PDB")]
-    D = collections.defaultdict(lambda: ([], []))
-    for a, s, x, y, z, g in zip(*cols):
-        if g != "ATOM":
-            continue
-        D[a][0].append([float(x), float(y), float(z)])
-        D[a][1].append(s)
-    if not D:
-        raise ValueError(f"{path}: no polymer atoms parsed")
-    return {k: (np.array(v[0]), np.array(v[1])) for k, v in D.items()}
-
-
-def epitope_set(path, ab, ag, cutoff=CONTACT_CUTOFF):
-    """in: a pose, its antibody chain, its antigen chain.
-    out: the antigen residues with a heavy atom within cutoff of the antibody
-    """
-    D = pose_chains(path)
-    for c in (ab, ag):
-        if c not in D:
-            raise KeyError(f"{path}: chain {c} absent (have {sorted(D)})")
-    XA, _ = D[ab]
-    XB, IB = D[ag]
-    hit = {j for js in cKDTree(XA).query_ball_tree(cKDTree(XB), r=cutoff) for j in js}
-    return {IB[j] for j in hit}

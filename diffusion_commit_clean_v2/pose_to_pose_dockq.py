@@ -76,20 +76,21 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paths  # noqa: E402
-import poses as P  # noqa: E402
+import contacts  # noqa: E402
+import pool_index  # noqa: E402
 
 
 def dockq_matrix_for(iface, rows, maps, roles, device, min_poses):
     """in: an interface, its pool rows, a chain map, roles, device, minimum poses.
     out: (arrays dict or None, poses with no mapping, poses with no contacts)
     """
-    items, nomap = P.items_for_interface(iface, [(s, x) for s, x, _, _ in rows], maps, roles)
+    items, nomap = pool_index.items_for_interface(iface, [(s, x) for s, x, _, _ in rows], maps, roles)
     # re-pair the labels to what survived rather than assuming the two lists still line up
     by_key = {(s, x): (d, i) for s, x, d, i in rows}
     dropped = set(nomap)
     keys = [(s, x) for s, x, _, _ in rows if (s, x) not in dropped]
     keep = [(it, k) for it, k in zip(items, keys)
-            if len(P.epitope_set(it[0], it[1], it[2], cutoff=P.CONTACT_CUTOFF)) > 0]
+            if contacts.has_contact(it[0], it[1], it[2])]
     nocontact = len(items) - len(keep)
     if len(keep) < min_poses:
         return None, len(nomap), nocontact
@@ -126,8 +127,8 @@ def main():
     si, sn = (int(v) for v in A.shard.split("/"))
 
     os.makedirs(A.out, exist_ok=True)
-    pool = P.load_pool(A.pool, A.extra_pool)
-    maps, roles = P.load_chain_maps(A.maps), P.load_roles(A.roles)
+    pool = pool_index.load_pool(A.pool, A.extra_pool)
+    maps, roles = pool_index.load_chain_maps(A.maps), pool_index.load_roles(A.roles)
     want = set(A.ifaces.split(",")) if A.ifaces else None
     todo = sorted(k for k in pool if (not want or k in want) and k in roles)
     todo = [k for k in todo if not os.path.exists(f"{A.out}/{k}.npz")][si::sn]

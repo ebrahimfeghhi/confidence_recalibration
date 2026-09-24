@@ -74,7 +74,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paths  # noqa: E402
-import poses as metrics  # noqa: E402  same lookups, now local
+import pool_index  # noqa: E402
 
 DOCKQ_THRESHOLD = 0.23      # CAPRI "acceptable": two poses closer than this are the same answer
 
@@ -197,12 +197,12 @@ def main():
                     help="also select on interfaces the predictions declare by contact (no reference)")
     A = ap.parse_args()
 
-    amaps = metrics.load_chain_maps(f"{ANCHOR_DIR}/chain_maps_anchor.csv")
-    aroles = metrics.load_roles(f"{ANCHOR_DIR}/chain_roles_anchor.csv")
+    amaps = pool_index.load_chain_maps(f"{ANCHOR_DIR}/chain_maps_anchor.csv")
+    aroles = pool_index.load_roles(f"{ANCHOR_DIR}/chain_roles_anchor.csv")
     # chain_roles_all adds the predicted-only pairs; both frames are keyed the same way
     ALL_ROLES = dict(aroles)
     if os.path.exists(f"{ANCHOR_DIR}/chain_roles_all.csv"):
-        ALL_ROLES.update(metrics.load_roles(f"{ANCHOR_DIR}/chain_roles_all.csv"))
+        ALL_ROLES.update(pool_index.load_roles(f"{ANCHOR_DIR}/chain_roles_all.csv"))
 
     # every interface we can select on: anchor frame where it exists, crystal frame for the
     # single-interface complexes, where the two are identical by construction (one chain pair)
@@ -240,8 +240,8 @@ def main():
             spur = iface.startswith("SPUR:")
             iface = iface.split("SPUR:")[-1]
             use_a = spur or ifs.get(iface, ifs.get("SPUR:" + iface)) == ANCHOR_MATRICES
-            m = (amaps if use_a else metrics.load_chain_maps()).get((pdb, key[0], key[1]))
-            rl = (ALL_ROLES if use_a else metrics.load_roles()).get(iface)
+            m = (amaps if use_a else pool_index.load_chain_maps()).get((pdb, key[0], key[1]))
+            rl = (ALL_ROLES if use_a else pool_index.load_roles()).get(iface)
             need = None
             if m and rl and rl[0] in m and rl[1] in m:
                 need = {m[rl[0]], m[rl[1]]}
