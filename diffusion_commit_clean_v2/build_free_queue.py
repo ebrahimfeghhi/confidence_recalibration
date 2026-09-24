@@ -11,7 +11,10 @@ INPUTS
     --dataset:     pxm2025 or foldbench. Default pxm2025. Picks which job jsons and scorer are used.
     --complexes:   comma-separated subset. Default: every complex the dataset has a job json for, 131
                    for pxm2025. Anything named here and not found is reported, not skipped silently.
-    --seeds:       folds per complex. Default 50.
+    --seeds:       folds per complex. Default 50. Ignored when --per-complex is given.
+    --per-complex: csv of pdb,n_seeds giving a DIFFERENT count per complex, for a compute-matched
+                   baseline where each complex gets exactly as many extra free folds as it used donors.
+                   Any column named n_seeds is read; other columns are ignored.
     --start-seed:  first seed. Default 300000, so seeds run 300000..300049.
     --force:       queue folds that already exist on disk. Default off, and it refuses instead.
 
@@ -35,11 +38,14 @@ EXAMPLE
 FUNCTIONS
     complexes():           which complexes the dataset has a job json for
     queue_lines():         one queue line per (complex, seed)
+    read_per_complex():    a csv of pdb,n_seeds -> {pdb: n_seeds}
+    seeds_in_use():        the pool and a results csv -> every seed already folded, per complex
     existing_seeds():      which of those already have a fold on disk
     unreadable_warning():  whether later steps will be able to FIND what this writes
     main():                write the queue, or refuse if the folds already exist
 """
 import argparse
+import collections
 import glob
 import os
 import sys
@@ -63,10 +69,46 @@ def complexes(dataset, want=None):
     return sorted(found if not want else (found & want)), sorted((want or set()) - found)
 
 
-def queue_lines(pdbs, seeds, start_seed):
-    """in: complexes, how many seeds, first seed.  out: one queue line per (complex, seed)."""
-    return [f"free\t{pdb}\t*\tfree\t{start_seed + i}"
-            for pdb in pdbs for i in range(seeds)]
+def queue_lines(pdbs, seeds, start_seed, per_complex=None, taken=None):
+    """in: complexes, seeds each, first seed, optionally {pdb: n_seeds} and {pdb: seeds to avoid}.
+    out: one queue line per (complex, seed)
+
+    Seeds are allocated PER COMPLEX, skipping any already in `taken`. A single global range is not
+    safe: one complex's earlier folds reached 300129 while the range started at 300100, so its new
+    seed collided with a seed that already had a score and would have been counted twice.
+    """
+    out = []
+    for pdb in pdbs:
+        n = per_complex.get(pdb, 0) if per_complex is not None else seeds
+        used = set(taken.get(pdb, ())) if taken else set()
+        s = start_seed
+        for _ in range(n):
+            while str(s) in used:
+                s += 1
+            out.append(f"free\t{pdb}\t*\tfree\t{s}")
+            used.add(str(s))
+            s += 1
+    return out
+
+
+def seeds_in_use(pool_csv, free_csv):
+    """in: the pool csv and a run's results csv.  out: {pdb: every seed already folded or scored}"""
+    import csv as _csv
+    used = collections.defaultdict(set)
+    for src, key in ((pool_csv, "pdb"), (free_csv, None)):
+        if not src or not os.path.exists(src):
+            continue
+        for r in _csv.DictReader(open(src)):
+            pdb = r["pdb"] if key else r["iface"].split("_")[0]
+            used[pdb].add(r["seed"])
+    return used
+
+
+def read_per_complex(path):
+    """in: a csv with pdb and n_seeds columns.  out: {pdb: n_seeds}"""
+    import csv as _csv
+    with open(path) as fh:
+        return {r["pdb"]: int(r["n_seeds"]) for r in _csv.DictReader(fh)}
 
 
 def existing_seeds(out, pdbs, seeds, start_seed):
@@ -98,6 +140,8 @@ def main():
     ap.add_argument("--seeds", type=int, default=50)
     ap.add_argument("--start-seed", type=int, default=300000)
     ap.add_argument("--out", default=None, help=f"default {paths.FREE_DIR}")
+    ap.add_argument("--per-complex", default=None,
+                    help="csv of pdb,n_seeds -- a different count per complex")
     ap.add_argument("--force", action="store_true", help="queue folds that already exist on disk")
     A = ap.parse_args()
 
@@ -109,7 +153,11 @@ def main():
         raise SystemExit("no complexes matched")
 
     out = A.out or str(paths.FREE_DIR)
-    lines = queue_lines(pdbs, A.seeds, A.start_seed)
+    per = read_per_complex(A.per_complex) if A.per_complex else None
+    if per:
+        pdbs = [p for p in pdbs if per.get(p, 0) > 0]
+    taken = seeds_in_use(str(paths.PXM2025_POOL_CSV), f"{paths.FREE_DIR}/results.csv")
+    lines = queue_lines(pdbs, A.seeds, A.start_seed, per, taken)
     os.makedirs(out, exist_ok=True)
     qpath = f"{out}/queue_free.tsv"
     open(qpath, "w").write("\n".join(lines) + "\n")
