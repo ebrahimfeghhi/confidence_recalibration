@@ -18,9 +18,6 @@ SUMMARY
       process, so an id registered mid-run is rejected and every template is dropped while the fold
       still completes and scores normally.
 
-      Protenix's template parser sees ONE chain in the cifs we write (verified 2026-09-24, unresolved).
-      The rescues we measure are real; the cross-chain mechanism we attribute them to is not confirmed.
-
 INPUTS
     --queue:   one fold per line, tab separated. Required.
 
