@@ -97,6 +97,11 @@ def filtered_pool(out, log):
     """
     dst = f"{out}/pool_50.csv"
     kept = dropped_seed = dropped_run = 0
+    seeds = collections.defaultdict(set)
+    poses = collections.defaultdict(set)
+    log(f"  [pool] filtering {paths.PXM2025_POOL_CSV}")
+    log(f"         rule: seeds {min(POOL_SEEDS)}-{max(POOL_SEEDS)} ({len(POOL_SEEDS)} ids), "
+        f"run dir {RUN_DIR}")
     with open(str(paths.PXM2025_POOL_CSV)) as fh, open(dst, "w", newline="") as o:
         r = csv.DictReader(fh)
         w = csv.DictWriter(o, fieldnames=r.fieldnames)
@@ -112,8 +117,28 @@ def filtered_pool(out, log):
                 continue
             w.writerow(row)
             kept += 1
-    log(f"  pool_50.csv: kept {kept} rows, dropped {dropped_seed} out-of-range seeds and "
-        f"{dropped_run} with no legacy pose")
+            seeds[row["pdb"]].add(row["seed"])
+            poses[row["pdb"]].add((row["seed"], row["sample"]))
+    log(f"         wrote {dst}")
+    log(f"         kept {kept} rows; dropped {dropped_seed} out-of-range seeds, "
+        f"{dropped_run} with no {RUN_DIR} pose")
+
+    # the verification. every complex must carry all 50 seeds, or the rule is silently sampling less
+    # than it claims and every downstream count inherits that
+    bad = {p: sorted(v, key=int) for p, v in seeds.items() if len(v) != len(POOL_SEEDS)}
+    nsamp = collections.Counter(len(v) for v in poses.values())
+    log(f"  [pool] verification")
+    log(f"         complexes: {len(seeds)}")
+    log(f"         seeds per complex: all exactly {len(POOL_SEEDS)}" if not bad
+        else f"         seeds per complex: {len(bad)} COMPLEXES OFF")
+    log(f"         poses per complex: " + ", ".join(f"{k} poses x{v}" for k, v in
+                                                    sorted(nsamp.items(), reverse=True)))
+    log(f"         total poses: {sum(len(v) for v in poses.values())}")
+    if bad:
+        for p, v in sorted(bad.items())[:10]:
+            miss = sorted(POOL_SEEDS - set(v), key=int)
+            log(f"         ! {p}: {len(v)} seeds, missing {miss[:6]}")
+        raise SystemExit(f"[pool] {len(bad)} complexes do not carry all {len(POOL_SEEDS)} seeds")
     return dst
 
 
@@ -129,7 +154,9 @@ def run(cmd, outputs, force, log, name):
     if not force and outputs and all(there(p) for p in outputs):
         log(f"  [{name}] present, skipping")
         return False
-    log(f"  [{name}] {' '.join(str(c) for c in cmd)}")
+    log(f"  [{name}] running {os.path.basename(str(cmd[1]))}")
+    for p in outputs:
+        log(f"         -> {p}")
     p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
     for line in (p.stdout or "").splitlines():
         log(f"    {line}")
