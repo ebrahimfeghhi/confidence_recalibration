@@ -93,6 +93,9 @@ def main():
     ap.add_argument("--ifaces", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--pool", default=None,
+                    help="pool csv naming which poses exist. Default the full pxm2025 pool; pass a "
+                         "filtered one to restrict which seeds are read")
     A = ap.parse_args()
 
     spur = collections.defaultdict(list)
@@ -103,7 +106,7 @@ def main():
     xmaps = pool_index.load_chain_maps()
 
     poses = collections.defaultdict(set)
-    with open(str(paths.PXM2025_POOL_CSV)) as fh:
+    with open(A.pool or str(paths.PXM2025_POOL_CSV)) as fh:
         for r in csv.DictReader(fh):
             if r["pdb"] in spur:
                 poses[r["pdb"]].add((r["seed"], int(r["sample"])))

@@ -195,7 +195,21 @@ def main():
     ap.add_argument("--no-reuse", action="store_true")
     ap.add_argument("--pose-interfaces", action="store_true",
                     help="also select on interfaces the predictions declare by contact (no reference)")
+    ap.add_argument("--anchor-dir", default=None,
+                    help="chain maps and roles to select in. Default paths.ANCHOR_DIR")
+    ap.add_argument("--xtal-matrices", default=None)
+    ap.add_argument("--anchor-matrices", default=None,
+                    help="matrix directories. The npz files carry the pose list, so restricting which "
+                         "seeds may be selected means pointing these at matrices built from a "
+                         "restricted pool -- there is no pool csv on this code path")
+    ap.add_argument("--spur-matrices", default=None)
     A = ap.parse_args()
+
+    global ANCHOR_DIR, XTAL_MATRICES, ANCHOR_MATRICES, SPUR_MATRICES
+    ANCHOR_DIR = A.anchor_dir or ANCHOR_DIR
+    XTAL_MATRICES = A.xtal_matrices or XTAL_MATRICES
+    ANCHOR_MATRICES = A.anchor_matrices or ANCHOR_MATRICES
+    SPUR_MATRICES = A.spur_matrices or SPUR_MATRICES
 
     amaps = pool_index.load_chain_maps(f"{ANCHOR_DIR}/chain_maps_anchor.csv")
     aroles = pool_index.load_roles(f"{ANCHOR_DIR}/chain_roles_anchor.csv")
