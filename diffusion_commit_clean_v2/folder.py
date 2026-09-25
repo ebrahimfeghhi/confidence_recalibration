@@ -107,6 +107,7 @@ import os
 import re
 import shutil
 import subprocess
+import socket
 import sys
 import time
 
@@ -325,6 +326,40 @@ def append_index(out, pdb, seed, run_dir, kind, precision, ncycle, templated, tm
                  f"{tmpl_md5}\n")
 
 
+def _pid_alive(pid):
+    """in: a pid.  out: whether a process with that pid exists"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True          # exists, owned by someone else
+    return True
+
+
+def claim_is_live(path):
+    """in: a claim directory.  out: whether a running worker still holds it
+
+    An owner file names the host and pid that took the claim. Same host and the pid alive means the
+    fold is in progress and must not be handed to another worker. A claim from a DIFFERENT host cannot
+    be checked, so it is left alone rather than stolen. No owner file means the claim predates this
+    bookkeeping: treat it as live for an hour, then releasable.
+    """
+    f = f"{path}/owner"
+    if not os.path.exists(f):
+        try:
+            return (time.time() - os.path.getmtime(path)) < 3600
+        except OSError:
+            return False
+    try:
+        host, pid = open(f).read().split()
+        if host != socket.gethostname():
+            return True
+        return _pid_alive(int(pid))
+    except (ValueError, OSError):
+        return True          # unreadable owner: do not steal on a guess
+
+
 def reconcile_claims(claim_dir, csv_path, pool_ifaces):
     """in:  claim dir, the results csv, {pdb: interfaces} to know what "finished" means
     out: removes claim dirs whose unit was never scored; returns nothing
@@ -332,6 +367,12 @@ def reconcile_claims(claim_dir, csv_path, pool_ifaces):
     Runs at every startup. A claim is taken before a fold and released only on failure, so a worker
     killed mid-fold leaves one behind -- and a claimed-but-unscored unit is then skipped forever,
     silently shrinking the sweep.
+
+    A LIVE worker's in-flight claim looks exactly like an abandoned one: unscored either way. Releasing
+    those meant every new worker stole a fold from a running one and folded it a second time -- two
+    processes, same unit, same output directory. So each claim now records its owner, and a claim is
+    released only when that owner is gone. Claims written before this existed carry no owner, and are
+    given the benefit of the doubt for an hour so a restart cannot steal a fold already in progress.
     """
     if not claim_dir or not os.path.isdir(claim_dir):
         return 0
@@ -344,8 +385,10 @@ def reconcile_claims(claim_dir, csv_path, pool_ifaces):
         pdb, seed = parts[0], parts[-1]
         want = pool_ifaces.get(pdb)
         if want and not want <= scored.get((pdb, seed), set()):
+            if claim_is_live(f"{claim_dir}/{c}"):
+                continue
             try:
-                os.rmdir(f"{claim_dir}/{c}")
+                shutil.rmtree(f"{claim_dir}/{c}")
                 released += 1
             except OSError:
                 pass
@@ -651,13 +694,17 @@ def run_unit(ctx, unit):
     if claim:
         try:
             os.mkdir(claim)
+            # name the owner so another worker's reconcile_claims can tell an in-flight fold from an
+            # abandoned one, instead of releasing both and folding this unit twice
+            with open(f"{claim}/owner", "w") as fh:
+                fh.write(f"{socket.gethostname()} {os.getpid()}")
         except FileExistsError:
             return "skipped"            # another worker has it
 
     def release():
         if claim:
             try:
-                os.rmdir(claim)
+                shutil.rmtree(claim)      # the claim holds an owner file, so rmdir would fail
             except OSError:
                 pass
 
