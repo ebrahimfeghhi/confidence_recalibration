@@ -1,4 +1,0 @@
-pdb	seed	run_dir	kind	precision	n_cycle	templated
-9kur	300500	300500-28kobn39ni	free	bf16	10	False
-9kur	400000	400000-oiepaf44tm	free	bf16	10	False
-9kur	400001	400001-y26j113x0q	free	bf16	10	False

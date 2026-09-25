@@ -1,3 +1,0 @@
-pdb	seed	run_dir	kind	precision	n_cycle	templated
-8rwb	400000	400000-zqxsju6r2g	all5	bf16	10	True
-8uzp	400000	400000-isgslg2c67	all5	bf16	10	True

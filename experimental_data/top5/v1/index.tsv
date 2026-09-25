@@ -1,2 +1,0 @@
-pdb	seed	run_dir	kind	precision	n_cycle	templated
-9kur	400000	400000-8h39mh28pn	all5	bf16	10	True
