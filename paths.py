@@ -48,6 +48,8 @@ ESM_REPO = _path("ESM_REPO", HOME / "esm")
 PROTENIX_REPO = _path("PROTENIX_REPO", HOME / "Protenix")
 ESM_PYTHON = _path("ESM_PYTHON", ESM_REPO / ".venv" / "bin" / "python")
 PROTENIX_PYTHON = _path("PROTENIX_PYTHON", PROTENIX_REPO / ".venv" / "bin" / "python")
+# pxmeter's chain permutation lives in its own venv: it is the only dependency the Protenix venv lacks
+PXMETER_PYTHON = _path("PXMETER_PYTHON", REPO_ROOT / "envs" / "pxmeter" / "bin" / "python")
 PROTENIX_CKPT = _path("PROTENIX_CKPT", HOME / "checkpoint")
 
 # --- OST (lives in the `foldbench` conda env) ------------------------------

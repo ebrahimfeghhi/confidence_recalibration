@@ -97,7 +97,8 @@ def dockq_matrix_for(iface, rows, maps, roles, device, min_poses):
     items = [it for it, _ in keep]
     keys = [k for _, k in keep]
 
-    sys.path.insert(0, str(paths.CLUSTERING_DIR))
+    # dockq_torch sits beside this file, so line 75's insert already reaches it -- the import stays
+    # local so the GPU DockQ travels with this directory
     from dockq_torch import dockq_matrix
     M = np.asarray(dockq_matrix(items, device=device, verbose=False), dtype=np.float32)
     out = dict(

@@ -67,8 +67,10 @@ FUNCTIONS
 """
 import argparse
 import collections
+import itertools
 import csv
 import os
+import re
 import subprocess
 import sys
 
@@ -79,7 +81,15 @@ import paths  # noqa: E402
 from fmt import table  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PY = sys.executable
+# Two interpreters, because no single environment holds every dependency: anchor_relabel.py needs
+# pxmeter's chain permutation, which only the pxmeter venv has, and everything else needs gemmi and
+# torch, which only the Protenix venv has. Launching every step with sys.executable is what made
+# step 2 die with ModuleNotFoundError. Steps name their interpreter rather than inheriting one.
+PXM_PY = str(paths.PXMETER_PYTHON)
+PY = str(paths.PROTENIX_PYTHON)
+# Step 5's DockQ is exact all-pairs DockQ on GPU, not a CPU fallback, so it needs a device. Kept off
+# the GPUs the folding baseline is using; override when those change.
+DOCKQ_GPU = os.environ.get("DOCKQ_GPU", "0")
 
 # the rule. seeds 300000-300049 and the legacy fold directory, nothing else.
 POOL_SEEDS = {str(300000 + i) for i in range(50)}
@@ -142,22 +152,35 @@ def filtered_pool(out, log):
     return dst
 
 
-def run(cmd, outputs, force, log, name):
-    """in: the command, the paths it produces, whether to force, a logger, the step name.
+def run(cmd, outputs, force, log, name, env=None):
+    """in: the command, the paths it produces, whether to force, a logger, the step name, env extras.
     out: whether it ran
     """
-    # a directory counts as present only if it has something in it -- a step that created its output
-    # directory and then died would otherwise be skipped forever
+    # A step that created its output and then died must not count as done. Two ways that happens: an
+    # empty output DIRECTORY, and -- the one that actually bit -- a csv holding only its header row,
+    # which anchor_relabel.py writes before the work starts. Treating that as present skipped step 2
+    # and fed an empty chain map to every step after it, with no error anywhere.
     def there(p):
-        return os.path.isdir(p) and bool(os.listdir(p)) if os.path.isdir(p) else os.path.exists(p)
+        if os.path.isdir(p):
+            return bool(os.listdir(p))
+        if not os.path.exists(p):
+            return False
+        if str(p).endswith(".csv"):
+            with open(p) as fh:
+                return sum(1 for _ in itertools.islice(fh, 2)) > 1
+        return True
 
     if not force and outputs and all(there(p) for p in outputs):
         log(f"  [{name}] present, skipping")
         return False
     log(f"  [{name}] running {os.path.basename(str(cmd[1]))}")
+    log(f"         python {cmd[0]}")
+    if env:
+        log(f"         env {' '.join(f'{k}={v}' for k, v in sorted(env.items()))}")
     for p in outputs:
         log(f"         -> {p}")
-    p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
+    p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True,
+                       env={**os.environ, **(env or {})})
     for line in (p.stdout or "").splitlines():
         log(f"    {line}")
     if p.returncode != 0:
@@ -179,6 +202,108 @@ def norm_chains(chains):
     if isinstance(chains, str):
         chains = [c for c in chains.replace("+", " ").split() if c]
     return "+".join(sorted(str(c) for c in chains))
+
+
+def validate(name, out, anchor, spur, mats, ns, log):
+    """in: the step just finished and the experiment's directories.  out: nothing, raises on a problem
+
+    The presence check in run() only asks whether an output is non-trivial. This asks whether it is
+    RIGHT, which is a different question and the one that was missing: the previous run produced a
+    selection drawing 302 donors from seeds outside the rule, and every step reported success. Each
+    check below is a property the step's output must have if the 50-seed rule actually held. A failure
+    stops the pipeline here rather than letting the next step inherit bad input.
+    """
+    def fail(msg):
+        log(f"         ! FAIL {msg}")
+        raise SystemExit(f"[{name}] validation failed: {msg}")
+
+    def rows(path):
+        with open(path) as fh:
+            return list(csv.DictReader(fh))
+
+    log(f"  [{name}] validating")
+    if name == "anchor":
+        m, r = rows(f"{anchor}/chain_maps_anchor.csv"), rows(f"{anchor}/chain_roles_anchor.csv")
+        pool = rows(f"{out}/pool_50.csv")
+        want = {(x["pdb"], x["seed"], x["sample"]) for x in pool}
+        got = {(x["pdb"], x["seed"], x["sample"]) for x in m}
+        bad = {x["seed"] for x in m} - POOL_SEEDS
+        if bad:
+            fail(f"chain maps carry {len(bad)} seeds outside the rule: {sorted(bad)[:5]}")
+        if not got >= want:
+            fail(f"chain maps cover {len(got)} of {len(want)} pool poses "
+                 f"({len(want - got)} missing, e.g. {sorted(want - got)[:3]})")
+        log(f"         {len(m)} pose maps covering all {len(want)} pool poses, "
+            f"{len(r)} role rows, 0 seeds outside the rule")
+
+    elif name == "interfaces":
+        r = rows(f"{out}/pose_interfaces.csv")
+        pool = {x["pdb"] for x in rows(f"{out}/pool_50.csv")}
+        miss = pool - {x["pdb"] for x in r}
+        if miss:
+            fail(f"{len(miss)} complexes have no interface declared: {sorted(miss)[:5]}")
+        gt = sum(1 for x in r if x["have_gt"] == "1")
+        log(f"         {len(r)} interfaces over {len(pool)} complexes: "
+            f"{gt} with ground truth, {len(r) - gt} predicted-only")
+
+    elif name == "spurious":
+        r = rows(f"{spur}/spurious_pool.csv")
+        bad = {x["seed"] for x in r} - POOL_SEEDS
+        if bad:
+            fail(f"spurious pool carries seeds outside the rule: {sorted(bad)[:5]}")
+        if any(x["dockq"] for x in r):
+            fail("spurious rows carry a dockq value; they have no reference and must be empty")
+        log(f"         {len(r)} pose rows, all seeds in range, dockq empty as required")
+
+    elif name == "dockq":
+        import numpy as np
+        files = sorted(f for f in os.listdir(mats) if f.endswith(".npz"))
+        if not files:
+            fail(f"no npz written to {mats}")
+        over, seedn = [], []
+        for f in files:
+            d = np.load(f"{mats}/{f}", allow_pickle=True)
+            s = {str(x) for x in d["seed"]}
+            seedn.append(len(s))
+            if s - POOL_SEEDS:
+                over.append(f)
+            if d["dockq"].shape[0] != d["seed"].shape[0]:
+                fail(f"{f}: matrix is {d['dockq'].shape} but carries {d['seed'].shape[0]} poses")
+        if over:
+            fail(f"{len(over)} matrices hold seeds outside the rule: {over[:5]}")
+        log(f"         {len(files)} interface matrices, seeds per matrix "
+            f"{min(seedn)}-{max(seedn)} (cap {len(POOL_SEEDS)}), 0 outside the rule")
+
+    elif name == "filter":
+        q = [l.rstrip("\n").split("\t") for l in open(f"{out}/queue.tsv") if l.strip()]
+        if not q:
+            fail("queue.tsv is empty; nothing was selected")
+        seeds = {m.group(1) for m in (re.search(r"/free/[^/]+/(\d+)-", f[5]) for f in q if len(f) > 5)
+                 if m}
+        bad = seeds - POOL_SEEDS
+        if bad:
+            fail(f"queue draws donors from {len(bad)} seeds outside the rule: {sorted(bad)[:5]}")
+        missing = [f[5] for f in q if len(f) > 5 and not os.path.exists(f[5])]
+        if missing:
+            fail(f"{len(missing)} donor poses do not exist on disk, e.g. {missing[:2]}")
+        runs = {m.group(1) for m in (re.search(r"/free/[^/]+/\d+-([^/]+)/", f[5]) for f in q
+                                    if len(f) > 5) if m}
+        if runs != {RUN_DIR}:
+            fail(f"donors come from fold directories other than {RUN_DIR}: {sorted(runs)}")
+        per = collections.Counter(f[1] for f in q)
+        log(f"         {len(q)} folds over {len(per)} complexes, {max(per.values())} max per complex "
+            f"(cap {len(POOL_SEEDS)})")
+        log(f"         all donors: {len(seeds)} seeds in range, run dir {RUN_DIR} only, all on disk")
+
+    elif name == "templates":
+        q = [l for l in open(f"{out}/queue.tsv") if l.strip()]
+        made = set(os.listdir(ns)) if os.path.isdir(ns) else set()
+        if not made:
+            fail(f"no templates written to {ns}")
+        log(f"         {len(made)} template entries in {ns} for {len(q)} queued folds")
+
+    else:
+        log(f"         (no check defined)")
 
 
 def fold_id(donor, seed, chains):
@@ -264,15 +389,17 @@ def main():
     if stop == 0:
         return 0
 
-    run([PY, f"{HERE}/anchor_relabel.py", "--pool", pool, "--out-dir", anchor, "--jobs", A.jobs],
+    run([PXM_PY, f"{HERE}/anchor_relabel.py", "--pool", pool, "--out-dir", anchor, "--jobs", A.jobs],
         [f"{anchor}/chain_maps_anchor.csv", f"{anchor}/chain_roles_anchor.csv"],
         forced["anchor"], log, "anchor")
+    validate("anchor", out, anchor, spur, mats, ns, log)
     if stop == 1:
         return 0
 
     run([PY, f"{HERE}/pose_interfaces.py", "--pool", pool, "--anchor-dir", anchor,
          "--out", f"{out}/pose_interfaces.csv", "--jobs", A.jobs],
         [f"{out}/pose_interfaces.csv"], forced["interfaces"], log, "interfaces")
+    validate("interfaces", out, anchor, spur, mats, ns, log)
     if stop == 2:
         return 0
 
@@ -280,13 +407,17 @@ def main():
          "--pool", pool, "--out", spur, "--jobs", A.jobs],
         [f"{spur}/spurious_pool.csv", f"{spur}/spurious_roles.csv"],
         forced["spurious"], log, "spurious")
+    validate("spurious", out, anchor, spur, mats, ns, log)
     if stop == 3:
         return 0
 
     run([PY, f"{HERE}/pose_to_pose_dockq.py", "--pool", pool, "--extra-pool",
          f"{spur}/spurious_pool.csv", "--maps", f"{anchor}/chain_maps_anchor.csv",
-         "--roles", f"{anchor}/chain_roles_anchor.csv", "--out", mats],
-        [mats], forced["dockq"], log, "dockq")
+         "--roles", f"{anchor}/chain_roles_anchor.csv", "--out", mats,
+         "--device", "cuda"],
+        [mats], forced["dockq"], log, "dockq",
+        env={"CUDA_VISIBLE_DEVICES": DOCKQ_GPU})
+    validate("dockq", out, anchor, spur, mats, ns, log)
     if stop == 4:
         return 0
 
@@ -294,12 +425,14 @@ def main():
          "--seed", A.seed, "--no-reuse", "--pose-interfaces", "--anchor-dir", anchor,
          "--anchor-matrices", mats, "--xtal-matrices", mats, "--spur-matrices", mats],
         [f"{out}/queue.tsv"], forced["filter"], log, "filter")
+    validate("filter", out, anchor, spur, mats, ns, log)
     if stop == 5:
         return 0
 
     run([PY, f"{HERE}/build_templates.py", "--queue", f"{out}/queue.tsv", "--ns", ns,
          "--maps", f"{out}/frame_maps.csv", "--roles", f"{out}/frame_roles.csv", "--jobs", A.jobs],
         [f"{ns}/release_dates.json"], forced["templates"], log, "templates")
+    validate("templates", out, anchor, spur, mats, ns, log)
     if stop == 6:
         return 0
 
