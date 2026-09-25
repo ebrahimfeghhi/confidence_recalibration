@@ -471,6 +471,18 @@ def diff(out, old, ns):
             ["to fold (newly selected, never run)", len(tofold)],
             ["omit (exists, no longer selected)", len(omit)],
             ["   of those, donor seed out of range", outrange]]
+
+    # The queue to actually SPEND GPU on. Claim names embed the tag, and the two selections assign
+    # different tags to the same fold, so a carried fold cannot be pre-claimed to make workers skip it
+    # -- it would need a claim under a name that never existed. Folding a reduced queue instead keeps
+    # the two sources of score separate and honest: 757 folded here, 2,585 read from the earlier run.
+    with open(f"{out}/queue_tofold.tsv", "w") as fh:
+        for k in sorted(tofold):
+            fh.write("\t".join(new[k]) + "\n")
+    with open(f"{out}/carry_over_folds.tsv", "w") as fh:
+        fh.write("donor_pose\tseed\ttmpl_chains\n")
+        for d, sd, ch in sorted(carry):
+            fh.write(f"{d}\t{sd}\t{ch}\n")
     return rows, (carry, tofold, omit)
 
 

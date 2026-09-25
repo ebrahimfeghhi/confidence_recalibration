@@ -26,7 +26,7 @@ SUMMARY
     never silently folded in.
 
 INPUTS
-    --exp:        the templated experiment. Default experimental_data/reffree_50.
+    --exp:        the templated experiment. Default experimental_data/self_template_fixed_50_seed.
     --extra-csv:  results csvs holding extra free folds, colon-separated. Default the free pool and
                   the compute-matched baseline.
     --classes:    which classes to report. Default decoy,solved,nocov.
@@ -187,9 +187,9 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, expected, qtags, fol
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp", default=f"{paths.DATA_DIR}/reffree_50")
+    ap.add_argument("--exp", default=f"{paths.DATA_DIR}/self_template_fixed_50_seed")
     ap.add_argument("--extra-csv",
-                    default=f"{paths.FREE_DIR}/results.csv:{paths.DATA_DIR}/free_matched/results.csv")
+                    default=f"{paths.FREE_DIR}/results.csv:{paths.DATA_DIR}/free_compute_matched/results.csv")
     ap.add_argument("--classes", default="decoy,solved,nocov")
     ap.add_argument("--pool-seeds", type=int, default=50)
     ap.add_argument("--no-require-match", action="store_true",

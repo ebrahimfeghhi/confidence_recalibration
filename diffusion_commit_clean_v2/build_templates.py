@@ -254,7 +254,11 @@ def build_one(task):
                           f"length:{Lq}  selftmpl", hit]
             a3m = f"{out}/a3m/q{pi}.a3m"
             open(a3m, "w").write("\n".join(lines) + "\n")
-            e["proteinChain"]["templatesPath"] = a3m
+            # ABSOLUTE. Protenix opens this path itself, and folder.py runs with its own cwd, so a
+            # relative path here resolves against the wrong directory and every fold dies in
+            # featurisation with FileNotFoundError -- 603 folds failed this way, none succeeded.
+            # An absolute path also survives the experiment directory being renamed.
+            e["proteinChain"]["templatesPath"] = os.path.abspath(a3m)
         json.dump([obj], open(f"{out}/job.json", "w"))
         json.dump(chosen, open(f"{out}/chosen.json", "w"), indent=1)
         return key, "ok", ""

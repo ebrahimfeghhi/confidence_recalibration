@@ -8,7 +8,7 @@ set -u
 cd /home/ebrahim/tts_abag
 PY=/home/ebrahim/Protenix/.venv/bin/python
 GPUS=1,5,6
-BASE=experimental_data/free_matched
+BASE=experimental_data/free_compute_matched
 EXP=experimental_data/seedvar
 LOG=$EXP/launch_after_baseline.log
 
