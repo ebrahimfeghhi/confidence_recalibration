@@ -58,7 +58,6 @@ confident_decoy_experiments/vendor/**/*.pyc
 # Renamed 2026-09-18: artifacts/ became experimental_data/ at the repo root when the
 # confident_decoy_experiments era was archived. The OLD patterns are kept below because the
 # archived tree still contains those directories.
-experimental_data/
 confident_decoy_experiments/artifacts/
 confident_decoy_experiments/predictions/
 archive/confident_decoy_experiments/artifacts/
@@ -94,3 +93,29 @@ diffusion_commit_clean_v2/experimental_data/**/*.tsv
 
 # matrices and other large binaries never belong in the repo
 *.npz
+
+# --- experimental_data: keep the light files, exclude the bulk ------------------------------------
+# 264 GB total: 150 GB of poses, 79 GB of matrices, 12 GB of MSAs, 12 GB of per-pose confidence json.
+# Blacklisting the heavy types rather than whitelisting the light ones, because a blanket
+# `experimental_data/**` also matches the DIRECTORIES -- git then never descends and no later
+# negation can rescue anything inside. What stays in git: queues, selections, scores, roles, diffs.
+experimental_data/**/*.cif
+experimental_data/**/*.npz
+experimental_data/**/*.json
+experimental_data/**/*.a3m
+experimental_data/**/*.log
+experimental_data/**/*.pt
+experimental_data/**/*.pdb
+experimental_data/**/*.png
+experimental_data/**/*.m8
+experimental_data/**/*.txt
+experimental_data/**/*.lock
+experimental_data/**/*.gz
+# third-party reference data, not our results: 225 MB of PDB sequence dumps
+experimental_data/archive/**
+# fold output trees, claim markers and template namespaces: bookkeeping, not results
+experimental_data/**/out/**
+experimental_data/**/claims/**
+experimental_data/**/ns/**
+experimental_data/**/ns_stale*/**
+experimental_data/**/build_log*.csv
