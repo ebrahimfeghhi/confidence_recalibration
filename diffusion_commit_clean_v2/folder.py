@@ -602,8 +602,25 @@ def normalise_poses(rdir, name, pdb):
         os.replace(src, f"{dest}/{pdb}_summary_confidence_sample_{n}")
     # the scorer's own json output lives in the job directory too, and is NOT a pose; move it rather
     # than losing it when the job directory goes
+    # A unit scores every interface of its complex, and each job writes its own *_json directory, so the
+    # second one to be lifted collides with the first. os.replace cannot overwrite a NON-EMPTY directory
+    # (Errno 39), which killed the worker outright rather than failing one fold. Merge file-by-file
+    # instead, keeping the job name so two interfaces' scorer output stay distinguishable.
     for sub in sorted(glob.glob(f"{rdir}/{name}/*_json")):
-        os.replace(sub, f"{rdir}/{os.path.basename(sub)}")
+        dst = f"{rdir}/{os.path.basename(sub)}"
+        if not os.path.exists(dst):
+            os.replace(sub, dst)
+            continue
+        os.makedirs(dst, exist_ok=True)
+        for f in sorted(os.listdir(sub)):
+            tgt = f"{dst}/{f}"
+            if os.path.exists(tgt):
+                tgt = f"{dst}/{name}_{f}"
+            os.replace(f"{sub}/{f}", tgt)
+        try:
+            os.rmdir(sub)
+        except OSError:
+            pass
     return moved
 
 
