@@ -72,6 +72,7 @@ import csv
 import os
 import re
 import subprocess
+import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -89,7 +90,9 @@ PXM_PY = str(paths.PXMETER_PYTHON)
 PY = str(paths.PROTENIX_PYTHON)
 # Step 5's DockQ is exact all-pairs DockQ on GPU, not a CPU fallback, so it needs a device. Kept off
 # the GPUs the folding baseline is using; override when those change.
-DOCKQ_GPU = os.environ.get("DOCKQ_GPU", "0")
+DOCKQ_GPUS = [g for g in os.environ.get("DOCKQ_GPUS", "0,2,3").split(",") if g]
+# The extra GPUs are borrowed above the standing 4-card budget, so they are time-limited.
+DOCKQ_DEADLINE_S = int(os.environ.get("DOCKQ_DEADLINE_S", "1800"))
 
 # the rule. seeds 300000-300049 and the legacy fold directory, nothing else.
 POOL_SEEDS = {str(300000 + i) for i in range(50)}
@@ -204,6 +207,98 @@ def norm_chains(chains):
     return "+".join(sorted(str(c) for c in chains))
 
 
+def merge_roles(anchor, spur, out, log, dst_name="roles_merged.csv"):
+    """in: the anchor and spurious role csvs and the experiment dir.  out: the merged csv path
+
+    WHY THIS EXISTS. pose_to_pose_dockq.py builds a matrix only for an interface it can find roles for
+    (`k in roles`), and roles are written by two different steps: anchor_relabel.py covers the 292
+    interfaces the reference contains, fetch_spurious_interface_iptm.py covers the 53 the predictions
+    invent. Passing only the first silently dropped every predicted-only interface -- 53 of 345, and
+    the ones the confident-decoy question is actually about. The step reported success because nothing
+    compared its 292 matrices against the 345 interfaces upstream had declared.
+    """
+    dst = f"{out}/{dst_name}"
+    seen, rows, hdr = set(), [], None
+    for src in (anchor, spur):
+        if not os.path.exists(src):
+            log(f"  [roles] MISSING {src}")
+            continue
+        with open(src) as fh:
+            r = csv.DictReader(fh)
+            hdr = hdr or r.fieldnames
+            n = 0
+            for row in r:
+                k = (row["pdb"], row["chain_1"], row["chain_2"])
+                if k in seen:          # an interface named by both files keeps the anchor's roles
+                    continue
+                seen.add(k)
+                rows.append(row)
+                n += 1
+        log(f"  [roles] {n} rows from {os.path.basename(src)}")
+    with open(dst, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=hdr)
+        w.writeheader()
+        w.writerows(rows)
+    log(f"         wrote {dst}  ({len(rows)} interfaces with roles)")
+    return dst
+
+
+def run_sharded(cmd, gpus, outputs, force, log, name, deadline_s):
+    """in: the base command, GPUs to shard over, outputs, force, logger, step name, seconds allowed.
+    out: whether it ran
+
+    One process per GPU with --shard i/n. Safe to split because each shard writes its own npz files
+    and its own build log, and every shard skips an interface whose npz already exists -- so a shard
+    that is killed loses only the interface it was mid-way through.
+
+    THE DEADLINE is a promise about borrowed hardware, not an optimisation: the extra GPUs are over
+    the standing 4-card budget, so after deadline_s the extra shards are stopped and the remainder is
+    finished on the FIRST gpu alone, which is back inside budget. Resuming costs nothing for the same
+    reason a killed shard is cheap.
+    """
+    def there(p):
+        return os.path.isdir(p) and bool(os.listdir(p))
+
+    if not force and outputs and all(there(p) for p in outputs):
+        log(f"  [{name}] present, skipping")
+        return False
+    n = len(gpus)
+    log(f"  [{name}] running {os.path.basename(str(cmd[1]))} as {n} shards on GPUs {','.join(gpus)}")
+    log(f"         deadline {deadline_s}s on the extra GPUs, then GPU {gpus[0]} finishes alone")
+    for p in outputs:
+        log(f"         -> {p}")
+    procs = []
+    for i, g in enumerate(gpus):
+        c = [str(x) for x in cmd] + ["--shard", f"{i}/{n}"]
+        procs.append((g, subprocess.Popen(c, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                          text=True, env={**os.environ,
+                                                          "CUDA_VISIBLE_DEVICES": g})))
+    t0 = time.time()
+    late = False
+    while any(p.poll() is None for _, p in procs):
+        if time.time() - t0 > deadline_s:
+            late = True
+            for g, p in procs:
+                if p.poll() is None:
+                    log(f"         ! deadline reached, stopping shard on GPU {g}")
+                    p.terminate()
+            break
+        time.sleep(5)
+    for g, p in procs:
+        txt = (p.communicate()[0] or "") if p.stdout else ""
+        tail = [l for l in txt.splitlines() if l.strip()][-3:]
+        log(f"         GPU {g} exit {p.returncode}" + (f"   {tail[-1].strip()}" if tail else ""))
+        if p.returncode not in (0, None) and not late:
+            for l in txt.splitlines()[-15:]:
+                log(f"    ! {l}")
+            raise SystemExit(f"[{name}] shard on GPU {g} failed with exit {p.returncode}")
+    if late:
+        log(f"         finishing the remainder on GPU {gpus[0]} alone (within the 4-GPU budget)")
+        run([str(x) for x in cmd], outputs, True, log, f"{name}-finish",
+            env={"CUDA_VISIBLE_DEVICES": gpus[0]})
+    return True
+
+
 def validate(name, out, anchor, spur, mats, ns, log):
     """in: the step just finished and the experiment's directories.  out: nothing, raises on a problem
 
@@ -271,8 +366,20 @@ def validate(name, out, anchor, spur, mats, ns, log):
                 fail(f"{f}: matrix is {d['dockq'].shape} but carries {d['seed'].shape[0]} poses")
         if over:
             fail(f"{len(over)} matrices hold seeds outside the rule: {over[:5]}")
+        # The check that was missing: 292 matrices looked fine on their own, but 345 interfaces had
+        # been declared upstream. A matrix count is only meaningful against what the previous steps
+        # produced, never against itself.
+        have = {(r["pdb"], r["chain_1"], r["chain_2"])
+                for r in rows(f"{out}/roles_merged.csv")}
+        built = {f[:-4] for f in files}
+        want = {f'{p}_{a}{b}' for p, a, b in have}
+        miss = want - built
         log(f"         {len(files)} interface matrices, seeds per matrix "
             f"{min(seedn)}-{max(seedn)} (cap {len(POOL_SEEDS)}), 0 outside the rule")
+        log(f"         roles cover {len(want)} interfaces; {len(miss)} have no matrix")
+        if len(miss) > len(want) * 0.15:
+            fail(f"{len(miss)} of {len(want)} interfaces have no matrix, e.g. {sorted(miss)[:5]} -- "
+                 f"a whole class of interface is probably being dropped")
 
     elif name == "filter":
         q = [l.rstrip("\n").split("\t") for l in open(f"{out}/queue.tsv") if l.strip()]
@@ -297,10 +404,23 @@ def validate(name, out, anchor, spur, mats, ns, log):
 
     elif name == "templates":
         q = [l for l in open(f"{out}/queue.tsv") if l.strip()]
-        made = set(os.listdir(ns)) if os.path.isdir(ns) else set()
+        # listdir(ns) counts jobs/ mmcif/ release_dates.json -- always 3, so the old check passed
+        # no matter what. The namespaces are one level down, one per queued fold.
+        made = set(os.listdir(f"{ns}/jobs")) if os.path.isdir(f"{ns}/jobs") else set()
         if not made:
-            fail(f"no templates written to {ns}")
-        log(f"         {len(made)} template entries in {ns} for {len(q)} queued folds")
+            fail(f"no template namespaces written to {ns}/jobs")
+        # COVERAGE, not equality. A re-selection leaves the previous run's namespaces behind, so the
+        # directory legitimately holds more than the queue needs -- the union of two selections. What
+        # would actually break folding is a QUEUED fold with no namespace, so that is what is checked;
+        # leftovers are reported because they are clutter worth seeing, not a failure.
+        want = {f"{f[2]}_{f[3]}" for f in (l.rstrip("\n").split("\t") for l in q) if len(f) > 3}
+        missing = want - made
+        if missing:
+            fail(f"{len(missing)} queued folds have no template namespace, "
+                 f"e.g. {sorted(missing)[:5]}")
+        log(f"         all {len(want)} queued folds have a namespace in {ns}/jobs")
+        if made - want:
+            log(f"         note: {len(made - want)} stale namespaces from an earlier selection")
 
     else:
         log(f"         (no check defined)")
@@ -396,8 +516,10 @@ def main():
     if stop == 1:
         return 0
 
+    # pose_interfaces.py's --out is a DIRECTORY it writes pose_interfaces.csv into, not a file path.
+    # Passing the file path made it create a directory of that name with the csv nested inside.
     run([PY, f"{HERE}/pose_interfaces.py", "--pool", pool, "--anchor-dir", anchor,
-         "--out", f"{out}/pose_interfaces.csv", "--jobs", A.jobs],
+         "--out", out, "--jobs", A.jobs],
         [f"{out}/pose_interfaces.csv"], forced["interfaces"], log, "interfaces")
     validate("interfaces", out, anchor, spur, mats, ns, log)
     if stop == 2:
@@ -411,12 +533,12 @@ def main():
     if stop == 3:
         return 0
 
-    run([PY, f"{HERE}/pose_to_pose_dockq.py", "--pool", pool, "--extra-pool",
+    roles = merge_roles(f"{anchor}/chain_roles_anchor.csv", f"{spur}/spurious_roles.csv", out, log)
+    run_sharded([PY, f"{HERE}/pose_to_pose_dockq.py", "--pool", pool, "--extra-pool",
          f"{spur}/spurious_pool.csv", "--maps", f"{anchor}/chain_maps_anchor.csv",
-         "--roles", f"{anchor}/chain_roles_anchor.csv", "--out", mats,
+         "--roles", roles, "--out", mats,
          "--device", "cuda"],
-        [mats], forced["dockq"], log, "dockq",
-        env={"CUDA_VISIBLE_DEVICES": DOCKQ_GPU})
+        DOCKQ_GPUS, [mats], forced["dockq"], log, "dockq", DOCKQ_DEADLINE_S)
     validate("dockq", out, anchor, spur, mats, ns, log)
     if stop == 4:
         return 0
@@ -426,18 +548,33 @@ def main():
          "--anchor-matrices", mats, "--xtal-matrices", mats, "--spur-matrices", mats],
         [f"{out}/queue.tsv"], forced["filter"], log, "filter")
     validate("filter", out, anchor, spur, mats, ns, log)
+    # The frame roles the filter writes cover only the reference interfaces, exactly like the anchor
+    # roles did -- so steps 6 and 7 need the same merge, or build_templates.py dies on the first
+    # predicted-only interface it is asked to build (KeyError: '8w5d_DC').
+    frame_roles = merge_roles(f"{out}/frame_roles.csv", f"{spur}/spurious_roles.csv", out, log,
+                              dst_name="frame_roles_merged.csv")
+    # the guard that makes this class of bug impossible to ship: every interface in the queue must
+    # have roles, checked before any GPU time is spent rather than discovered by a crash
+    have = {f'{r["pdb"]}_{r["chain_1"]}{r["chain_2"]}'
+            for r in csv.DictReader(open(frame_roles))}
+    want = {l.split("\t")[2] for l in open(f"{out}/queue.tsv") if l.strip()}
+    if want - have:
+        log(f"         ! FAIL {len(want - have)} queued interfaces have no roles: "
+            f"{sorted(want - have)[:5]}")
+        raise SystemExit("[roles] queued interfaces without roles")
+    log(f"         all {len(want)} queued interfaces have roles")
     if stop == 5:
         return 0
 
     run([PY, f"{HERE}/build_templates.py", "--queue", f"{out}/queue.tsv", "--ns", ns,
-         "--maps", f"{out}/frame_maps.csv", "--roles", f"{out}/frame_roles.csv", "--jobs", A.jobs],
+         "--maps", f"{out}/frame_maps.csv", "--roles", frame_roles, "--jobs", A.jobs],
         [f"{ns}/release_dates.json"], forced["templates"], log, "templates")
     validate("templates", out, anchor, spur, mats, ns, log)
     if stop == 6:
         return 0
 
     run([PY, f"{HERE}/preflight.py", "--ns", ns, "--queue", f"{out}/queue.tsv",
-         "--maps", f"{out}/frame_maps.csv", "--roles", f"{out}/frame_roles.csv"],
+         "--maps", f"{out}/frame_maps.csv", "--roles", frame_roles],
         [], True, log, "preflight")
 
     if A.diff_against and os.path.isdir(A.diff_against):
