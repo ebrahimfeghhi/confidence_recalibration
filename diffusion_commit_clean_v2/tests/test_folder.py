@@ -1,16 +1,32 @@
-"""folder.py regressions. CPU only: the fold and the scorer are stubbed.
+#!/usr/bin/env python
+"""Regression tests for folder.py -- each fails on the code before its fix.
 
+SUMMARY
+    CPU only: the fold and the scorer are stubbed, so these run in seconds and never touch a GPU.
+
+      1. run_id() stays unique when the global `random` is re-seeded before every call, as Protenix
+         does before every fold -- the bug that put 173 fixed-arm folds in 27 directories.
+      2. Moving a pose onto an existing file raises instead of overwriting.
+      3. Two folds forced onto the SAME run directory: the second fails before folding, and the first
+         fold's poses are untouched.
+      4. A dead worker's claim is released when ITS fold is unscored, even though every templated fold
+         of the complex shares its seed -- keyed on (complex, seed) it was kept and the fold skipped
+         forever.
+
+INPUTS
+    none
+
+OUTPUTS
+    stdout: one "ok" line per test, then ALL PASSED; an AssertionError names the first failure
+
+EXAMPLE
     $PROTENIX_PYTHON diffusion_commit_clean_v2/tests/test_folder.py
 
-Each test fails on the code before its fix.
-
-1. run_id() stays unique when the global `random` is re-seeded before every call, as Protenix does
-   before every fold -- the bug that put 173 fixed-arm folds in 27 directories.
-2. Moving a pose onto an existing file raises instead of overwriting.
-3. Two folds forced onto the SAME run directory: the second fails before folding and the first
-   fold's poses are untouched.
-4. A dead worker's claim is released when ITS fold is unscored, even though every templated fold of
-   the complex shares its seed -- keyed on (complex, seed) it was kept, and the fold skipped forever.
+FUNCTIONS
+    test_run_id_survives_reseeding():                1
+    test_move_refuses_overwrite():                   2
+    test_shared_run_dir_fails_and_keeps_first():     3, with fake_fold() standing in for Protenix
+    test_dead_claim_released_despite_shared_seed():  4
 """
 import os
 import random
@@ -27,6 +43,7 @@ DEAD_PID = 2 ** 22 + 12345          # above the default pid_max, so never a live
 
 
 def test_run_id_survives_reseeding():
+    """in: nothing.  out: passes, or AssertionError if re-seeding makes run ids repeat"""
     ids = set()
     for _ in range(500):
         random.seed(430000)            # what seed_everything does before every fold
@@ -36,6 +53,7 @@ def test_run_id_survives_reseeding():
 
 
 def test_move_refuses_overwrite():
+    """in: nothing.  out: passes, or AssertionError if an existing pose file is overwritten"""
     with tempfile.TemporaryDirectory() as tmp:
         a, b = f"{tmp}/a", f"{tmp}/b"
         open(a, "w").write("new")
@@ -50,7 +68,7 @@ def test_move_refuses_overwrite():
 
 
 def fake_fold(runner, configs, job, seed, name, n_cycle, n_sample, expect, dump_base, env):
-    """Writes n_sample poses whose content names the fold, where Protenix would put them."""
+    """in: fold() arguments.  out: (seconds, template counts); writes n_sample poses naming the fold"""
     d = f"{dump_base}/{name}/seed_{seed}/predictions"
     os.makedirs(d, exist_ok=True)
     for i in range(n_sample):
@@ -60,6 +78,7 @@ def fake_fold(runner, configs, job, seed, name, n_cycle, n_sample, expect, dump_
 
 
 def test_shared_run_dir_fails_and_keeps_first():
+    """in: nothing.  out: passes, or AssertionError if a second fold into a used directory runs"""
     stubs = {"fold": fake_fold, "score_fold": lambda *a, **k: (1, ""),
              "append_index": lambda *a, **k: None}
     saved = {k: getattr(folder, k) for k in stubs}
@@ -98,7 +117,9 @@ def test_shared_run_dir_fails_and_keeps_first():
 
 
 def test_dead_claim_released_despite_shared_seed():
+    """in: nothing.  out: passes, or AssertionError if the dead claim of the unscored fold is kept"""
     def claim(d, name):
+        """in: a claim dir and a claim name.  out: the claim, owned by a pid that cannot be alive"""
         os.makedirs(f"{d}/{name}")
         with open(f"{d}/{name}/owner", "w") as fh:
             fh.write(f"{folder.socket.gethostname()} {DEAD_PID}")

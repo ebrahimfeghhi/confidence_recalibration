@@ -20,6 +20,13 @@ INPUTS
 OUTPUTS
     none -- a library
 
+EXAMPLE
+    import pool_index
+    maps = pool_index.load_chain_maps("exp/chain_frame/chain_maps_anchor.csv")
+    roles = pool_index.load_roles("exp/interfaces.csv")
+    items, dropped = pool_index.items_for_interface("8ror_BA", keys, maps, roles)
+    pool_index.pair_iptm_at(pose, "B", "A")
+
 FUNCTIONS
     load_pool():           the crystal-scored pool csv -> {interface: [(seed, sample, dockq, pair_iptm)]}
                            -- EVALUATION ONLY

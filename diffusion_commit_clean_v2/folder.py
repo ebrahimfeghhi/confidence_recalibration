@@ -92,6 +92,7 @@ FUNCTIONS
     normalise_poses():  flatten Protenix's nested output to <run dir>/predictions/, never overwriting
     _move_new():        os.replace that refuses an existing destination
     reconcile_claims(): at startup, free claims whose unit was never scored (a killed worker's work)
+    claim_is_live():    whether a claim's owning worker is still running (_pid_alive() checks the pid)
     append_index():     one line per fold in index.tsv
     runmeta_md5()       checksum a pose, so run.json pins the exact file templated on
     report():           print what has been scored, per (interface, seed, arm)
@@ -484,7 +485,8 @@ class Ctx:
 
 
 def parse_args():
-    """out: parsed arguments. Defaults point at the free pool, the one run with a canonical home."""
+    """in: the command line.  out: parsed arguments; defaults point at the free pool, the one run
+    with a canonical home"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--queue")
     ap.add_argument("--out", default=str(paths.FREE_DIR))

@@ -1,30 +1,50 @@
-"""dockq_torch.py — exact DockQ, vectorised, all-pairs, on GPU.
+#!/usr/bin/env python
+"""Exact DockQ between every pair of poses of one interface, vectorised on the GPU.
 
-Computes the FULL N x N DockQ matrix for one interface, where every pose is the same complex
-(same sequence, same residues) so residue correspondence is exact and no alignment is needed.
-That is what makes it batchable; the general DockQ implementation cannot assume it.
+SUMMARY
+    Computes the full N x N DockQ matrix for one interface, where every pose is the same complex (same
+    sequence, same residues), so residue correspondence is exact and no alignment is needed. That is
+    what makes it batchable; the general DockQ implementation cannot assume it.
 
-This is NOT an approximation. It reproduces DockQ 2.1.3 exactly:
-    FNAT_THRESHOLD      = 5.0 A   (residue-residue contact: MIN distance over all atom pairs)
-    INTERFACE_THRESHOLD = 10.0 A  (which residues count as interface, taken from the REFERENCE)
-    BACKBONE_ATOMS      = CA, C, N, O
-    fnat  = |contacts(ref) & contacts(model)| / |contacts(ref)|
-    iRMSD = RMSD after superposing model interface backbone onto ref interface backbone
-    LRMSD = superpose on RECEPTOR (the chain with MORE residues) backbone, then RMSD of the
-            LIGAND backbone -- no second superposition
-    DockQ = ( fnat + 1/(1+(iRMS/1.5)^2) + 1/(1+(LRMS/8.5)^2) ) / 3
+    NOT AN APPROXIMATION. It reproduces DockQ 2.1.3:
 
-Why each term batches:
-  fnat   contact masks are per-pose booleans -> all-pairs intersection is ONE matmul
-  LRMSD  receptor/ligand atom subsets are FIXED across poses -> one batched Kabsch over all pairs
-  iRMSD  the interface subset depends on the REFERENCE pose -> loop over references, batch targets
+        contact     residue pair within 5.0 A, the MIN over all their atom pairs
+        interface   residues within 10.0 A of the partner, taken from the REFERENCE pose
+        backbone    CA, C, N, O
+        fnat        |contacts(ref) & contacts(model)| / |contacts(ref)|
+        iRMSD       RMSD after superposing the model's interface backbone onto the reference's
+        LRMSD       superpose on the RECEPTOR (the chain with more residues), then RMSD of the ligand
+                    backbone -- no second superposition
+        DockQ       (fnat + 1/(1+(iRMSD/1.5)^2) + 1/(1+(LRMSD/8.5)^2)) / 3
 
-The reference DockQ package takes 13.8 ms per pair. At N=5125 that is 26M pairs ~ 100 core-hours.
-This does the same work in minutes.
+    Why each term batches: fnat's contact masks are per-pose booleans, so all-pairs intersection is one
+    matmul; LRMSD's receptor and ligand atoms are the same in every pose, so one batched Kabsch covers
+    all pairs; iRMSD's interface depends on the reference, so references loop and models batch. The
+    reference package takes 13.8 ms per pair (~100 core-hours at N=5125); this takes minutes.
 
-Validated against OST's DockQ (an independent implementation) when it was written: the ESM-era
-driver, validate_against_ground_truth() and build(), live in git history before 2026-09-25 and were
-removed from this copy, which pose_to_pose_dockq.py uses only through dockq_matrix().
+    A pose with no interface contacts is undefined as a REFERENCE (DockQ returns None there); its row
+    is set to 0, matching the reference pipeline.
+
+    Validated against OST's DockQ, an independent implementation, when written. The ESM-era driver and
+    that validation (build(), validate_against_ground_truth()) are in git history before 2026-09-25;
+    this copy keeps only what pose_to_pose_dockq.py uses.
+
+INPUTS
+    none -- a library; dockq_matrix() takes [(pose path, chain 1, chain 2)], ONE chain pair per pose
+
+OUTPUTS
+    none -- dockq_matrix() returns the matrix
+
+EXAMPLE
+    from dockq_torch import dockq_matrix
+    M = dockq_matrix([(p, ab, ag) for p, ab, ag in items], device="cuda")   # M[i, j]: ref i, model j
+
+FUNCTIONS
+    load_poses():     N poses -> all-atom and backbone coordinate tensors, one chain pair per pose
+    residue_sqdist(): coordinates -> squared min distance between every residue pair, per pose
+    kabsch_rms():     batched superposition -> RMSD
+    kabsch_rt():      batched superposition -> rotation and translation
+    dockq_matrix():   N poses -> the N x N DockQ matrix
 """
 import time
 from pathlib import Path
@@ -38,8 +58,10 @@ IFACE_T2 = 10.0 ** 2
 
 # ---------------------------------------------------------------- loading
 def load_poses(items, device):
-    """Load N poses of the SAME complex. items = [(path, chain1, chain2), ...] -- ONE CHAIN PAIR
-    PER POSE, because the model chain letters are NOT fixed.
+    """in: [(pose path, chain 1, chain 2)] of ONE complex, a device.
+    out: (all1, all2, bb1, bb2, seg1, seg2) tensors, described below
+
+    ONE CHAIN PAIR PER POSE, because the model chain letters are NOT fixed.
 
     The scoring CSV names chains by their NATIVE letters; the model files use different letters,
     and the `chain_mapping` column (ref -> model) translates. On multi-copy assemblies the model
@@ -99,8 +121,11 @@ def load_poses(items, device):
 
 # ---------------------------------------------------------------- residue distances
 def residue_sqdist(all1, all2, seg1, seg2, n1, n2, chunk=64):
-    """[N, n1, n2] SQUARED min distance between every residue pair, per pose.
-    DockQ's residue_distances(): min over all atom-atom pairs of the two residues."""
+    """in: all-atom coordinates and residue indices of both chains, residue counts, a chunk size.
+    out: [N, n1, n2] SQUARED min distance between every residue pair, per pose
+
+    DockQ's residue_distances(): min over all atom-atom pairs of the two residues.
+    """
     N = all1.shape[0]
     out = torch.empty((N, n1, n2), dtype=torch.float32, device=all1.device)
     for s in range(0, N, chunk):
@@ -120,7 +145,7 @@ def residue_sqdist(all1, all2, seg1, seg2, n1, n2, chunk=64):
 
 # ---------------------------------------------------------------- Kabsch
 def kabsch_rms(P, Q):
-    """Batched: superpose P onto Q, return RMSD. P,Q = [B, m, 3]. (Biopython SVDSuperimposer.)"""
+    """in: P, Q = [B, m, 3].  out: [B] RMSD after superposing P onto Q (Biopython's SVDSuperimposer)"""
     Pc = P - P.mean(1, keepdim=True)
     Qc = Q - Q.mean(1, keepdim=True)
     H = Pc.transpose(1, 2) @ Qc
@@ -134,7 +159,7 @@ def kabsch_rms(P, Q):
 
 
 def kabsch_rt(P, Q):
-    """Batched: rotation+translation mapping P onto Q. Returns (R, t) with P@R.T + t ~ Q."""
+    """in: P, Q = [B, m, 3].  out: (R, t) with P @ R.T + t ~ Q, per batch member"""
     pm = P.mean(1, keepdim=True); qm = Q.mean(1, keepdim=True)
     H = (P - pm).transpose(1, 2) @ (Q - qm)
     U, S, Vt = torch.linalg.svd(H)
@@ -148,9 +173,11 @@ def kabsch_rt(P, Q):
 
 # ---------------------------------------------------------------- the matrix
 def dockq_matrix(items, device="cuda", verbose=True, timings=None):
-    """Full [N, N] DockQ. Entry [i, j] = DockQ(reference = pose i, model = pose j).
-    items = [(path, chain1, chain2), ...] -- one chain pair PER POSE (see load_poses).
-    Pass timings={} to have load/compute seconds written into it."""
+    """in: [(pose path, chain 1, chain 2)], a device, verbosity, an optional dict for timings.
+    out: the [N, N] DockQ matrix as numpy; entry [i, j] = DockQ(reference = pose i, model = pose j)
+
+    One chain pair PER POSE (see load_poses). Pass timings={} to get load and compute seconds back.
+    """
     t0 = time.time()
     all1, all2, bb1, bb2, seg1, seg2 = load_poses(items, device)
     t_load = time.time() - t0

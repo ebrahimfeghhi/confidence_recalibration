@@ -15,6 +15,11 @@ INPUTS
 OUTPUTS
     none -- a library
 
+EXAMPLE
+    import contacts
+    contacts.has_contact(pose, "A", "C")                      # True / False
+    contacts.contacting(pose, [("A", "C"), ("A", "D")])       # the pairs in contact
+
 FUNCTIONS
     pose_chains():  one pose cif -> {chain: (coordinates, residue index)}
     has_contact():  one pose and two chains -> whether any heavy atoms are within the cutoff

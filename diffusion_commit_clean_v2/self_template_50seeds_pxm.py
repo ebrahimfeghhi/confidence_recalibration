@@ -66,11 +66,17 @@ OUTPUTS
     <varseed-out>/queue.tsv          with --varseed-out
     <out>/build.log                  every step's stdout
 
+EXAMPLE
+    DOCKQ_GPUS=0,1,2,5 self_template_50seeds_pxm.py --out experimental_data/self_template_fixed_50_seed \
+        --diff-against experimental_data/self_template_fixed_50_seed_old_crystal_iptm \
+        --varseed-out experimental_data/self_template_variable_50_seed --jobs 48
+
 FUNCTIONS
     pool_poses():     write poses.csv from disk under the pool rule, and verify it is complete
     run():            one step as a subprocess, logged, skipped when its output exists
     run_sharded():    the DockQ step, one process per GPU
     validate():       check a finished step against the ones before it
+    norm_chains():    chains as a list or "A+B+C" -> one canonical sorted string
     fold_id():        (donor pose, seed, pinned chains) -- what decides whether a fold can be reused
     diff():           new selection vs an earlier experiment; writes the carried rows and the to-fold queue
     varseed_queue():  this queue with one seed per donor, for the variable-seed arm

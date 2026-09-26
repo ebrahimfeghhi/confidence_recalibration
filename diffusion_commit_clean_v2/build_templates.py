@@ -51,6 +51,7 @@ FUNCTIONS
     pick_chains():     a pose, the entity sequences, the forced pair -> one chain per entity
     template_cif():    a pose cif -> a cif the template parser can read, under a given id
     required_chains(): the queue's interface and poses -> the chain pair each donor must be pinned to
+    pose_key():        a pool pose path -> (pdb, seed, sample)
     tid():             an index -> a 4-character base-36 id
     build_one():       one namespace: chains, template cifs, a3m hits, job json, chosen.json
     write_release_dates(): every id in the namespace -> release_dates.json

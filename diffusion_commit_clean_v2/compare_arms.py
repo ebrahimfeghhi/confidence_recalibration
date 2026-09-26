@@ -43,6 +43,8 @@ EXAMPLE
 FUNCTIONS
     donors_used():    the experiment -> {complex: {donor pose}} and which came from the first N seeds
     extra_free():     extra free folds -> {interface: {seed: [(iptm, dockq)]}}
+    tmpl_by_donor():  the experiment's scored rows -> {interface: [(iptm, dockq, donor)]}
+    top():            rows -> the DockQ of the highest-ipTM one
     arms():           assemble the four arms per interface
     main():           read, compare, print, optionally write markdown
 """
