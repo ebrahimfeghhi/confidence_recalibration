@@ -14,7 +14,7 @@ acceptable at DockQ >= 0.23), compared per class by `compare_arms.py`:
 | free 50 | `experimental_data/free/` | seeds 300000-300049; also the donor pool. **Never rename** (absolute paths everywhere) |
 | free + matched | `experimental_data/free_compute_matched/` | extra free seeds, per complex >= the method's donor folds |
 | fixed seed | `experimental_data/self_template_fixed_50_seed/` | every donor templated, all on seed 430000 |
-| variable seed | `experimental_data/self_template_variable_50_seed/` | the same donors and templates, one seed each from 300100-300149 |
+| variable seed | `experimental_data/self_template_variable_50_seed/` | the same donors and templates, each on one of the exact free seeds free + matched counts for its complex (`build_varseed_queue.py`) |
 
 Superseded, kept for provenance: `self_template_fixed_50_seed_old_crystal_iptm/` (its still-valid
 folds were carried into the new arm) and `self_template_variable_50_seed_old_crystal_iptm/` (never

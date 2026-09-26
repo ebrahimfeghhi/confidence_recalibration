@@ -150,6 +150,15 @@ and a scoring exception is a FAILED unit with its claim released. Tested in `tes
 (overlap happens, scorings never overlap each other, failure releases the claim). Opt-in: the stager
 passes it to the variable-seed arm only; the fixed arm runs the sequential path it was verified on.
 
+## Variable-seed seeds = the compute-matched free seeds
+
+The variable-seed queue drew a random subset of 300100-300149 per complex, while free + matched counts
+the lowest-numbered extra free seeds (including the deeper pool, 300050-300099): identical seed sets
+for only 16 / 123 complexes. Now `build_varseed_queue.py` gives each complex's donors exactly the seeds
+`compare_arms.matched_seeds()` counts -- one function for both -- so the two arms spend the same folds;
+123 / 123 match. The rule also counts a free seed only if it is scored on every interface of its
+complex (9hvk's 300083 had rows for 1 of 4 interfaces). The orchestrator's `--varseed-out` is removed.
+
 ## Analysis added
 
 `analysis/crystal_frame_selection.py` → `analysis/crystal_frame_selection.md` (`e245acd`): donor counts

@@ -44,7 +44,6 @@ SUMMARY
 INPUTS
     --out:           experiment directory to build. Required.
     --diff-against:  an earlier experiment whose scored folds may be reused. Optional.
-    --varseed-out:   also write the variable-seed arm's queue into this directory. Optional.
     --cap:           donors per complex. Default 50.
     --seed:          the seed every templated fold uses. Default 430000.
     --jobs:          worker processes for the CPU steps. Default 16.
@@ -63,13 +62,12 @@ OUTPUTS
     <out>/queue.tsv                  every selected fold
     <out>/templates/                 the template namespace
     <out>/queue_tofold.tsv, carry_over_folds.tsv, results.csv, diff_vs_<name>.md   with --diff-against
-    <varseed-out>/queue.tsv          with --varseed-out
     <out>/build.log                  every step's stdout
 
 EXAMPLE
     DOCKQ_GPUS=0,1,2,5 self_template_50seeds_pxm.py --out experimental_data/self_template_fixed_50_seed \
         --diff-against experimental_data/self_template_fixed_50_seed_old_crystal_iptm \
-        --varseed-out experimental_data/self_template_variable_50_seed --jobs 48
+        --jobs 48
 
 FUNCTIONS
     pool_poses():     write poses.csv from disk under the pool rule, and verify it is complete
@@ -79,7 +77,6 @@ FUNCTIONS
     norm_chains():    chains as a list or "A+B+C" -> one canonical sorted string
     fold_id():        (donor pose, seed, pinned chains) -- what decides whether a fold can be reused
     diff():           new selection vs an earlier experiment; writes the carried rows and the to-fold queue
-    varseed_queue():  this queue with one seed per donor, for the variable-seed arm
     main():           the steps in order, then the diff
 """
 import argparse
@@ -88,7 +85,6 @@ import csv
 import itertools
 import json
 import os
-import random
 import re
 import subprocess
 import sys
@@ -364,38 +360,10 @@ def diff(out, old):
             ["rows carried into results.csv", n]]
 
 
-def varseed_queue(queue, dst):
-    """in: this experiment's queue.tsv, the destination queue path.  out: lines written
-
-    The variable-seed arm folds the SAME donors with the SAME templates, but each donor on its own seed
-    instead of all on one. Seeds are 300100-300149 -- the 50 the compute-matched free arm used, so the
-    extra folds are the same seeds spent differently. Per complex: sort by (pdb, interface, tag),
-    shuffle the 50 seeds with random.Random(f"varseed-{pdb}"), assign in order. Reproduces the
-    2026-09-24 hand-built queue byte for byte from that build's fixed queue.
-    """
-    lines = [l.rstrip("\n").split("\t") for l in open(queue) if l.strip()]
-    per = collections.Counter(f[1] for f in lines)
-    if max(per.values()) > 50:
-        raise SystemExit(f"a complex has {max(per.values())} donors; only 50 seeds to assign")
-    out, seeds, n = [], {}, collections.Counter()
-    for f in sorted(lines, key=lambda f: (f[1], f[2], f[3])):
-        if f[1] not in seeds:
-            s = list(range(300100, 300150))
-            random.Random(f"varseed-{f[1]}").shuffle(s)
-            seeds[f[1]] = s
-        out.append(f[:4] + [str(seeds[f[1]][n[f[1]]])] + f[5:])
-        n[f[1]] += 1
-    os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
-    with open(dst, "w") as fh:
-        fh.writelines("\t".join(f) + "\n" for f in out)
-    return len(out)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--diff-against", default=None)
-    ap.add_argument("--varseed-out", default=None)
     ap.add_argument("--cap", type=int, default=50)
     ap.add_argument("--seed", type=int, default=430000)
     ap.add_argument("--jobs", type=int, default=16)
@@ -466,9 +434,6 @@ def main():
         open(f"{out}/diff_vs_{name}.md", "w").write(
             f"# {os.path.basename(out)} vs {name}\n\nFold identity is (donor pose, seed, pinned "
             f"chains).\n\n{t}\n")
-    if A.varseed_out:
-        n = varseed_queue(f"{out}/queue.tsv", f"{A.varseed_out}/queue.tsv")
-        log(f"  wrote {A.varseed_out}/queue.tsv ({n} folds, one seed per donor)")
     return 0
 
 

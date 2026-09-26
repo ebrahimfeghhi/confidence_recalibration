@@ -21,9 +21,9 @@ SUMMARY
     seeds decide what counts as a decoy before any method runs. Measured effect: 2 of 292 labels move,
     both nocov -> decoy, so this is a small correction -- but it is the correct basis.
 
-    COMPUTE MATCHING is per complex: a complex is matched once it has at least as many extra scored
-    free seeds as the method spent donor folds on it. Unmatched complexes are counted and excluded,
-    never silently folded in.
+    COMPUTE MATCHING is per complex: a complex is matched once it has at least as many extra free seeds
+    -- scored on every one of its interfaces, see matched_seeds() -- as the method spent donor folds on
+    it. Unmatched complexes are counted and excluded, never silently folded in.
 
 INPUTS
     --exp:        the templated experiment. Default experimental_data/self_template_fixed_50_seed.
@@ -44,6 +44,7 @@ EXAMPLE
 FUNCTIONS
     donors_used():    the experiment -> {complex: {donor pose}} and which came from the first N seeds
     extra_free():     extra free folds -> {interface: {seed: [(iptm, dockq)]}}
+    matched_seeds():  one complex -> the free seeds that count as its compute match
     tmpl_by_donor():  the experiment's scored rows -> {interface: [(iptm, dockq, donor)]}
     top():            rows -> the DockQ of the highest-ipTM one
     arms():           assemble the four arms per interface
@@ -107,6 +108,19 @@ def extra_free(csvs, first):
     return out
 
 
+def matched_seeds(extra, ifaces, n, pending=()):
+    """in: extra free folds, one complex's interfaces, how many seeds, seeds queued but not yet scored.
+    out: the n free seeds that count as this complex's compute match, lowest-numbered first
+
+    A seed counts only if it is scored on EVERY interface of the complex: a free fold scores them all,
+    and one missing an interface (9hvk's 300083 has rows for 1 of 4) would otherwise give each
+    interface a different seed set. The variable-seed arm takes exactly these seeds, so the two arms
+    spend the same folds (build_varseed_queue.py). Fewer than n means not yet matched.
+    """
+    common = set.intersection(*(set(extra.get(i, {})) for i in ifaces)) if ifaces else set()
+    return sorted(common | set(pending), key=int)[:n]
+
+
 def tmpl_by_donor(exp):
     """in: the experiment.  out: {interface: [(iptm, dockq, donor)]}"""
     out = collections.defaultdict(list)
@@ -127,6 +141,9 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
     """in: everything loaded.  out: (rows, n unmatched complexes, n partial interfaces)"""
     acc = collections.defaultdict(lambda: collections.defaultdict(list))
     unmatched, partial = set(), 0
+    by_pdb = collections.defaultdict(list)
+    for i in pool:
+        by_pdb[i.split("_")[0]].append(i)
     for iface, rows in sorted(pool.items()):
         pdb = iface.split("_")[0]
         if cls.get(iface) not in classes or iface not in made:
@@ -135,7 +152,7 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
             partial += 1
             continue
         n_donor = len(per.get(pdb, ()))
-        avail = sorted(extra.get(iface, {}), key=int)
+        avail = matched_seeds(extra, by_pdb[pdb], n_donor)
         if len(avail) < n_donor:
             unmatched.add(pdb)
             if require_match:

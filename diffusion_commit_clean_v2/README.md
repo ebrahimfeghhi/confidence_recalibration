@@ -28,8 +28,9 @@ before folding and validates each against the one before it.
 | 9 | `preflight.py` | nothing — refuses a bad namespace before any GPU time | |
 
 With `--diff-against`, folds already scored with the same donor, seed and template chains are carried
-into `results.csv`, and only the rest go into `queue_tofold.tsv`. `--varseed-out` writes the
-variable-seed arm's queue (same donors, one seed each).
+into `results.csv`, and only the rest go into `queue_tofold.tsv`. `build_varseed_queue.py` then writes
+the variable-seed arm's queue: the same donors, each on one of the exact free seeds `compare_arms.py`
+counts as that complex's compute match, so both arms spend the same folds.
 
 ## Folding, scoring, reporting
 
@@ -39,6 +40,7 @@ variable-seed arm's queue (same donors, one seed each).
 | `folder.py` | load the model once, fold a queue, one directory per fold, poses kept |
 | `scorer.py` | DockQ against the crystal and ipTM, per pose, one csv row each |
 | `build_free_queue.py` | queue untemplated folds (the free pool and compute-matched top-ups) |
+| `build_varseed_queue.py` | the variable-seed queue: fixed-arm donors on the compute-matched free seeds |
 | `score_experiment.py` | did templating help, given the pool — rescued / broken per class |
 | `compare_arms.py` | free 50 vs free + compute-matched vs the method, per class |
 | `stage_arms.sh` | per GPU: fixed-seed arm → free top-up → variable-seed arm |
