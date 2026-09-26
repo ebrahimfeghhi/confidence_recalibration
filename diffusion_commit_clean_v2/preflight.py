@@ -7,7 +7,11 @@ SUMMARY
     in a shared 4-character space. Each surfaced hours later, or worse, did not surface at all --
     Protenix logs "Found 5 templates" and folds happily on a template for the wrong chains.
 
-    Three checks, cheapest first:
+    Five checks, cheapest first:
+
+      donor    every template was built from the pose the QUEUE names. A namespace built for an
+               earlier selection can otherwise be reused for a different donor.
+      paths    every job's templatesPath is absolute and exists (a relative one failed 603 folds).
 
       ids      every donor's id is unique across the namespace, has a cif, and has a release-date
                entry. Ids are 4 characters because Protenix reads them as pdb codes, so a collision
@@ -61,7 +65,7 @@ from fmt import table  # noqa: E402
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ns", required=True)
-    ap.add_argument("--queue", default="queue_top5.tsv")
+    ap.add_argument("--queue", required=True)
     ap.add_argument("--show", type=int, default=6)
     ap.add_argument("--maps", default=None)
     ap.add_argument("--roles", default=None)
@@ -93,9 +97,21 @@ def main():
         if len(chosen) != len(poses):
             fail["donor count wrong"] += 1
             ex["donor count wrong"].append(f"{key}: {len(chosen)}/{len(poses)}")
+        # every alignment path must exist and be absolute: Protenix opens it from its own cwd, and a
+        # relative one failed 603 folds with none succeeding
+        for e in json.load(open(f"{jd}/job.json"))[0]["sequences"]:
+            tp = e.get("proteinChain", {}).get("templatesPath")
+            if tp is not None and not (os.path.isabs(tp) and os.path.exists(tp)):
+                fail["templatesPath not absolute or missing"] += 1
+                ex["templatesPath not absolute or missing"].append(f"{key}: {tp}")
         ab_ref, ag_ref = roles[iface]
         for d in chosen:
             t = d["tid"]
+            # the template must be built from the donor the QUEUE names, not a cached earlier one
+            if d["idx"] >= len(poses) or d["cif"] != poses[d["idx"]]:
+                fail["WRONG DONOR (template is not the queued pose)"] += 1
+                ex["WRONG DONOR (template is not the queued pose)"].append(
+                    f"{key}: built from {os.path.basename(os.path.dirname(os.path.dirname(d['cif'])))}")
             if len(t) != 4:
                 fail["tid not 4 chars"] += 1
             if t in seen_tids and seen_tids[t] != key:
