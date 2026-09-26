@@ -1,102 +1,156 @@
-# Audit — self-template, fixed-seed arm
+# Audit of the self-templating pipeline — 2026-09-25
 
-Started 2026-09-25. Scope: `experimental_data/self_template_fixed_50_seed/` — templates, folding,
-bookkeeping, and the folds carried over from earlier runs.
+Every change made, why, how it was checked, and its commit. Findings that changed results come first.
 
-## Findings
+## Summary
 
-| # | finding | status |
-|:---|:---|:---|
-| 1 | Templates are correct: the model receives the donor pose itself | verified, 1 job |
-| 2 | Folds were overwriting each other's poses; scores unaffected | fixed `2fd17b8` |
-| 3 | 2,585 carried-over folds match their source exactly | verified, one gap open |
-| 4 | Two leftover `watch.sh` auto-restarters from 2026-09-24 still running | stopped 2026-09-25 |
-| 5 | Step 3 read chain maps from an older anchor run, not this build's own | fixed; no effect on this arm |
+| # | finding | effect | status |
+|:---|:---|:---|:---|
+| 1 | Selection read the crystal in five places | donors chosen partly by the crystal | fixed — rebuilt crystal-free (`d69dfd3`, `d971b9d`) |
+| 2 | Ranking ipTM was read at different chains than the ones compared and templated | ~25% of poses ranked on the wrong copy | fixed (`c120983`, then subsumed by 1) |
+| 3 | Folds shared run directories and overwrote each other's poses | 154 / 181 fixed-arm folds lost poses; scores intact | fixed (`2fd17b8`) |
+| 4 | Dead claims were never released in templated arms | a fold killed mid-run was skipped forever (4 stranded) | fixed (`378f1c4`) |
+| 5 | Six "predicted-only" interfaces shared names with crystal interfaces | their matrices mixed two pools; one pair never ranked | gone — one naming scheme (`d69dfd3`) |
+| 6 | The two reporters used different baselines, classes and completeness rules | reports could disagree | fixed (`63ca94c`) |
+| 7 | Template cache and preflight could not catch a wrong donor or a dangling path | latent wrong template | fixed (`4cbe6ca`, `f3d8e05`) |
 
-### 1. Templates
+The old fixed-seed arm is kept as `experimental_data/self_template_fixed_50_seed_old_crystal_iptm/`.
+Of its folds, 2,144 are still selected with the same template and are carried over (25,060 rows,
+values identical); 650 are no longer selected and are excluded; 1,380 new folds are being run.
 
-For `8ror_AB_A00`, the template features Protenix builds (CPU, no model) were compared against the
-donor cif read independently with gemmi:
+## 1. The crystal on the selection path
+
+**Rule.** Two facts may come from the crystal, as a biologist would know them before folding: which
+complexes form the benchmark, and which chains are antibody and which antigen. Nothing about binding
+— which chains interface, which copy, the ranking, the similarity, the donors — may.
+
+**Where the old pipeline broke it.**
+
+| where | what it read |
+|:---|:---|
+| `anchor_relabel.py` | the anchor was the pose with the highest mean pool-csv ipTM, measured at crystal-matched chains over crystal interfaces |
+| `anchor_relabel.py` | interface names and roles came through the anchor's crystal map; complexes without one were skipped |
+| `pose_interfaces.py` | candidate pairs from crystal roles; single-interface complexes fell back to crystal maps |
+| `fetch_spurious_interface_iptm.py` | fell back to crystal maps, and read an older anchor run (fixed `0ffaa19` before the redesign) |
+| `structural_diversity_filter.py` | pinned single-interface complexes in the crystal frame (latent) |
+| `pose_to_pose_dockq.py` | ranking ipTM copied from the crystal-scored pool csv (finding 2) |
+
+**Now** (`d69dfd3`, `d971b9d`, `8f54e26`):
+
+1. Antibody/antigen labels come from the benchmark's role file through each pose's crystal chain map,
+   and **every copy of a molecule takes the same label** (identical residues). The benchmark often
+   annotates one copy and the crystal map lands it on whichever copy superposes best; labelling only
+   that chain would say which copy binds. Chains the benchmark does not annotate (33 entities in 22
+   complexes) get no label and join no interface.
+2. The anchor is the pose with the highest mean `chain_pair_iptm`, from its own confidence json, over
+   the antibody–antigen pairs in contact in that pose.
+3. Interfaces are anchor antibody × antigen pairs in contact (5 Å) in at least one pose: 432.
+4. Ranking ipTM is read from each pose's json at the chains it is compared on and templated on.
+5. `fetch_spurious_interface_iptm.py`, the "spurious" branch, the filter's crystal-frame and reuse
+   branches, and the crystal defaults for maps and roles are deleted.
+
+**Checks.** A 6-complex end-to-end test (8ror, 8w5e, 8w5v, 9ban, 9h39, 9hi4 — duplicate copies,
+modified residues, name collisions): 1,500 poses, 0 failures, every copy labelled alike. The full
+build: 123 anchors, 30,750 poses mapped, 0 failures; 414 matrices (18 interfaces below the
+5-contacting-pose minimum, logged); 3,524 donors; preflight clean. 8ror (single copy) selects the same
+50 donors, tags and template chains as before.
+
+**Tried and dropped.** Labelling from ANARCI on the input sequence (misses 9kqc's shark VNAR), and
+matching pose chains to input entities by sequence (breaks on modified residues; 9hi4 has two
+identical entities told apart only by a phosphoserine). Both were more machinery than the rule needs.
+
+**Open.** The 33 unannotated entities are unannotated because the benchmark's scored crystal
+interfaces did not include them (e.g. 8uzp's light chain), so which chains may form interfaces is still
+slightly shaped by the crystal. To close it: label every chain from 1-D metadata (entity
+descriptions), checked by hand, and measure how the donors in those 22 complexes change.
+
+## 2. Ranking at the wrong chains
+
+`pose_to_pose_dockq.py` stored each pose's `pair_iptm` from the pool csv, read at crystal-matched
+chains, while the matrix compared — and the template pinned — the anchor-frame chains. On
+duplicate-copy complexes these differed for 16,854 of 69,936 poses.
+
+- Measured on 9h4r_AC: the stored value equalled the ipTM at the crystal-matched chains for 238 / 238
+  poses, and at the compared chains for 51 / 238.
+- An independent re-selection with corrected ipTM changed donors in 43 complexes, all duplicate-copy;
+  the pipeline's corrected selection matched it exactly, 123 / 123 complexes.
+- Fix `c120983`: `pool_index.pair_iptm_at()` reads `chain_pair_iptm` from the pose's json at the
+  compared chains; identical to the independent re-implementation, DockQ unchanged.
+
+## 3. Overwritten poses
+
+`runmeta.run_id()` drew from the global `random`, which Protenix re-seeds with the fold seed before
+every fold. Every templated fold uses seed 430000, so directory names repeated: 173 folds in 27
+directories. Scores were intact (each fold is scored from its own subdirectory before its poses move);
+154 folds lost their poses (listed in the old arm's `poses_overwritten_2026-09-25.tsv`).
+
+Fix `2fd17b8`: `run_id()` uses `SystemRandom`; the run directory is created exclusively and pose moves
+refuse to overwrite. `tests/test_folder.py` passes on the fix and fails on the old code. Every new fold
+since has its own directory and keeps its five poses.
+
+## 4. Claims
+
+`folder.reconcile_claims` decided whether a claimed fold was scored by `(complex, seed)`. Every
+templated fold shares seed 430000, so one scored fold made every dead claim in its complex look scored,
+and a fold killed mid-run was never retried (4 stranded). Fix `378f1c4`: keyed by
+`(complex, tag, seed)`; test in `tests/test_folder.py`.
+
+## 5. Name collisions ("spurious" interfaces)
+
+Crystal interfaces were named in crystal letters and predicted-only ones in anchor letters, so six
+names meant two different chain pairs: `merge_roles` kept the crystal one, every pose appeared twice in
+their matrices, and the predicted-only pair was never ranked. With one naming scheme (finding 1) the
+distinction and the collisions no longer exist.
+
+## 6. Reporters
+
+`score_experiment.py` took its baseline from the selection matrices (mixing chain choices after finding
+2), labelled classes on the 95-seed pool, and read global matrix directories; `compare_arms.py` used
+the first-50-seed pool csv. Both counted an interface finished once the folds *motivated by it* were
+scored, though every fold scores every interface. Fix `63ca94c`: one `pool_by_seed`, `classes_at` and
+`load_scored`, shared; finished = every queued fold of the complex has rows. On the old arm the two
+reporters now agree exactly.
+
+## 7. Guards that were missing
+
+- `build_templates.py` reused any cached namespace; ids are re-assigned on every build, so a
+  re-selection could pair a job with another donor's cif. Now reused only if donors and ids match
+  (`4cbe6ca`, tested).
+- `preflight.py` now checks that every template is the queued donor and every `templatesPath` is
+  absolute and exists (`f3d8e05`).
+- The orchestrator's DockQ step counted a non-empty directory as done; an interrupted build skipped 315
+  of 339 interfaces until its validator caught it. It now always runs and resumes per interface
+  (`6b05044`).
+- `build_free_queue.py` wrote the queue before refusing, checked the wrong seeds, and did not avoid the
+  seeds of the run it was extending (`5b3cea3`, `a5d0bd9`).
+
+## Checks behind the current results
 
 | check | result |
 |:---|:---|
-| template residue types = query sequence | 1,897 / 1,897 tokens |
-| template atoms on donor atoms | worst offset 0.0000 Å |
-| template distogram = donor Cβ distances | 100% of 3.6 M pairs, incl. 1.38 M cross-chain |
+| template features equal the donor pose (8ror + 20 jobs) | residues 1,897 / 1,897, atoms 0.0000 Å, distogram 100% incl. cross-chain |
+| carried rows vs the old arm | 25,060 / 25,060 identical; no duplicates; carried ∩ to-fold = ∅ |
+| selection rule | all 3,524 donors in seeds 300000–300049, legacy directory, none repeated |
+| first new folds | own directory, 1 template = queued donor, 5 poses kept, rows match queue and template |
 
-Cross-chain template geometry reaches the model (`PROTENIX_MULTICHAIN_MASK=0`) — **intended**
-(confirmed by the user). The a3m hit line carries two deliberate point mutations per hit
-(`build_templates.py:246`); the features come from the cif, so they do not reach the model.
+## Compute matching
 
-Script: `archive/audits/audit_template_features.py`.
+Arm A spends 3,524 donor folds. Five complexes had fewer extra scored free seeds than donors (checked
+per interface, as `compare_arms.py` does): 8w5v 1, 9e7n 1, 9g4f 1, 9myl 2, 9nn9 7. A 12-fold free top-up
+(`free_compute_matched/queue_free_topup_arm_a.tsv`, seeds that run had not used) runs on each GPU after
+its fixed-arm worker, before the variable-seed arm (`a5d0bd9`).
 
-### 2. Overwritten poses
+## Analysis added
 
-`runmeta.run_id()` drew from the global `random`, which Protenix re-seeds with the fold seed before
-every fold. Every templated fold uses seed 430000, so directory names repeated.
+`analysis/crystal_frame_selection.py` → `analysis/crystal_frame_selection.md` (`e245acd`): donor counts
+and donor quality for the old arm, A (crystal-free) and B (the crystal's 292 interfaces and chain maps,
+everything else A's).
 
-| run | folds | distinct run dirs |
-|:---|---:|---:|
-| free | 11,028 | 11,028 |
-| free_compute_matched | 1,432 | 1,432 |
-| self_template_fixed_50_seed | 181 | 27 |
-| reffree_50 | 79 | 9 |
+## Tidy-ups
 
-- Scores are intact: each fold is scored from its own job-named subdirectory before its poses move.
-  7,341 (interface, seed, tag) groups, each with exactly samples 0–4; donor matches the queue on
-  every row; no DockQ/ipTM outside [0, 1].
-- 154 / 181 fixed-arm folds lost their poses — listed in
-  `experimental_data/self_template_fixed_50_seed/poses_overwritten_2026-09-25.tsv`. Not refolded
-  (poses not needed).
-- Fix: `run_id()` uses `SystemRandom`; the run directory is created exclusively and pose moves refuse
-  to overwrite, so any future collision fails loudly. `tests/test_no_overwrite.py` passes on the fix
-  and fails all three checks on the old code.
-- Both fixed-arm workers restarted on the fix at 18:07 / 18:09; folds since then each get their own
-  directory.
-
-### 3. Carried-over folds
-
-| source | folds | how verified |
-|:---|---:|:---|
-| folded by `reffree_50` | 856 | rows identical; its logs survive ("Found 1 templates") |
-| inherited by `reffree_50` from `anchor_50` | 1,729 | rows identical; run records deleted |
-
-- 33,290 carried rows identical to `reffree_50` (DockQ, ipTM per interface and sample); 0 duplicates;
-  no fold both carried and refolded; every arm tag matches the queue.
-- Chain set of every carried fold equals what today's `build_templates.py` picks: 2,585 / 2,585.
-- Template flags and hit construction unchanged in git since at least 2026-09-18.
-- **Open:** `anchor_50` was deleted 2026-09-25 with its logs and `run.json`, so for its 1,729 folds
-  only the code in git — not a record of the run — shows the settings. A direct check (refold a
-  sample and compare) is hard because folds do not reproduce exactly in reduced precision; revisit
-  later.
-
-### 4. Leftover watchers
-
-`watch.sh --exp reffree_50 --gpus 1,5,6` (PID 1429227) and `watch.sh --exp free_matched --gpus 1,5,6`
-(PID 1476361). Neither can launch now — `reffree_50` has no unclaimed folds, `free_matched/` no longer
-exists — but both were auto-restarters on our GPUs. Stopped by PID on 2026-09-25.
-
-### 5. Step 3 read the wrong chain maps
-
-`fetch_spurious_interface_iptm.py` read `paths.ANCHOR_DIR` (`experimental_data/anchor_frame/`, an older
-anchor run) instead of the build's own maps (`chain_frame/`); the orchestrator could not point it
-elsewhere. The two agree for 5,497 of 5,500 poses. The 3 that differ are 8w5v poses whose two antigen
-copies the runs label oppositely, so their 8w5v_BD ipTM was read from chains B–C.
-
-- Rerunning step 3 with the build's own maps changes exactly those 3 values (e.g. 0.161 → 0.212).
-- Rerunning selection for 8w5v: the stored values reproduce the queue exactly (29 donors); the
-  corrected ones select the **same 29 donors** and relabel one (`300021` sample 2: AD → BD). Its
-  template chains are A+B+C either way. **No effect on any fold.**
-- Fix: step 3 takes `--anchor-dir`, and the orchestrator passes its own anchor output.
-
-## Tidy-ups (`2e8c961`)
-
-- `run.json` `git_sha` now records the code the worker loaded, not HEAD when the fold finished.
-- `folder.py`: removed the `SELFTMPL_*` env vars (read by nothing) and the unused `CLEAN_CODE`.
-- `paths.SELFTMPL_DIR` / `TEMPLATES_DIR` removed (pointed at the deleted `self_template/`).
-
-## Not yet checked
-
-- Template features on ~20 more jobs, including complexes with more chains.
-- Selection rule: every donor seed in 300000–300049, legacy fold directory, no duplicate donors.
-- The arm comparison recomputed independently of `compare_arms.py`.
+Stager and watcher moved into v2, stager capped at our four GPUs (`7ca54cf`, `cc487fa`); two leftover
+`watch.sh` auto-restarters stopped and `watch.sh` removed (`8c85264`); `run.json` records the code the
+worker loaded (`2e8c961`); orchestrator output names made descriptive (`25e04ea`); `folder.py
+--force`, which could not refold anything, removed (`b5dd74e`); `paths.py` duplicates and
+`dockq_torch.py` dead code removed (`dedc709`); tests in one file (`ab41c70`); one-off audit scripts
+removed (`d3187da`).
