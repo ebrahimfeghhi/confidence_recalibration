@@ -28,11 +28,9 @@ SUMMARY
 
 INPUTS
     --ns:     the namespace to check. Required.
-    --queue:  the queue it was built from. Default queue_top5.tsv.
-    --maps:   chain-map csv naming the pair each donor should be pinned to. Must be the frame the queue
-              was SELECTED in -- checking anchor-frame templates against the crystal mapping reports
-              every deliberate difference as a failure.
-    --roles:  roles csv, same frame as --maps.
+    --queue:  the queue it was built from. Required.
+    --maps:   anchor_relabel.py's chain maps, the frame the queue was selected in. Required.
+    --roles:  pose_interfaces.py's interfaces csv, same frame. Required.
     --show:   how many examples to print per failing check. Default 6.
 
 OUTPUTS
@@ -40,7 +38,7 @@ OUTPUTS
     exit code: non-zero if any check failed, so this works as a gate before launching
 
 EXAMPLE
-    preflight.py --ns exp/templates --queue exp/queue.tsv --maps exp/frame_maps.csv --roles exp/frame_roles.csv
+    preflight.py --ns exp/templates --queue exp/queue.tsv --maps exp/chain_frame/chain_maps_anchor.csv --roles exp/interfaces.csv
 
 FUNCTIONS
     main(): walk every namespace the queue asks for and run the three checks
@@ -67,8 +65,8 @@ def main():
     ap.add_argument("--ns", required=True)
     ap.add_argument("--queue", required=True)
     ap.add_argument("--show", type=int, default=6)
-    ap.add_argument("--maps", default=None)
-    ap.add_argument("--roles", default=None)
+    ap.add_argument("--maps", required=True)
+    ap.add_argument("--roles", required=True)
     A = ap.parse_args()
 
     maps, roles = pool_index.load_chain_maps(A.maps), pool_index.load_roles(A.roles)

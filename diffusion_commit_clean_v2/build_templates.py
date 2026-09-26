@@ -30,9 +30,8 @@ INPUTS
     --queue:  the queue from structural_diversity_filter.py. Required. One namespace per
               (interface, tag); the queue repeats that pair once per seed.
     --ns:     namespace directory to build. Required.
-    --maps:   chain-map csv deciding which chains a donor gets pinned to. Default the crystal frame;
-              pass the anchor-frame map to build with no reference to the native structure.
-    --roles:  roles csv, in the same frame as --maps. The two must move together.
+    --maps:   anchor_relabel.py's chain maps: which pose chains a donor's interface pair is. Required.
+    --roles:  pose_interfaces.py's interfaces csv, in the same (anchor) frame. Required.
     --jobs:   worker processes. Default 8. CPU only.
 
 OUTPUTS
@@ -45,7 +44,7 @@ OUTPUTS
 
 EXAMPLE
     build_templates.py --queue exp/queue.tsv --ns exp/templates \\
-                       --maps exp/frame_maps.csv --roles exp/frame_roles.csv --jobs 16
+                       --maps exp/chain_frame/chain_maps_anchor.csv --roles exp/interfaces.csv --jobs 16
 
 FUNCTIONS
     seqof():           a chain -> its one-letter sequence
@@ -291,8 +290,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--queue", required=True)
     ap.add_argument("--ns", required=True)
-    ap.add_argument("--maps", default=None)
-    ap.add_argument("--roles", default=None)
+    ap.add_argument("--maps", required=True)
+    ap.add_argument("--roles", required=True)
     ap.add_argument("--dataset", choices=sorted(paths.DATASET_NAMES), default="pxm2025")
     ap.add_argument("--jobs", type=int, default=8)
     A = ap.parse_args()

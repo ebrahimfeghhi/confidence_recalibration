@@ -2,8 +2,7 @@
 """Read the index files: which poses exist, and which chains of a pose play which role.
 
 SUMMARY
-    Three csvs the pipeline keeps re-reading, in one place so they are parsed the same way everywhere.
-    There used to be two different load_pool definitions that had drifted apart.
+    The csvs the pipeline keeps re-reading, in one place so they are parsed the same way everywhere.
 
     items_for_interface() is the one that does more than read: it turns an interface plus a list of
     poses into the (pose, antibody chain, antigen chain) triples the rest of the code works on. Every
@@ -11,16 +10,21 @@ SUMMARY
     copies of an entity, different poses bind different copies, so a fixed pair compares different
     molecules without failing.
 
+    NO DEFAULT PATHS for maps and roles. They used to default to the CRYSTAL files, and a caller that
+    forgot to pass the anchor frame silently selected in the crystal's. Selection passes the anchor
+    frame explicitly; only evaluation reads the crystal-scored pool (load_pool).
+
 INPUTS
-    none -- functions take paths as arguments, defaulting to the locations in paths.py
+    none -- functions take paths as arguments
 
 OUTPUTS
     none -- a library
 
 FUNCTIONS
-    load_pool():           pool csv -> {interface: [(seed, sample, dockq_gt, pair_iptm), ...]}
-    load_chain_maps():     chain-map csv -> {(pdb, seed, sample): {reference_chain: pose_chain}}
-    load_roles():          roles csv -> {"<pdb>_<c1><c2>": (antibody chain, antigen chain)}
+    load_pool():           the crystal-scored pool csv -> {interface: [(seed, sample, dockq, pair_iptm)]}
+                           -- EVALUATION ONLY
+    load_chain_maps():     chain-map csv -> {(pdb, seed, sample): {anchor chain: pose chain}}
+    load_roles():          interfaces csv -> {"<pdb>_<c1><c2>": (antibody chain, antigen chain)}
     items_for_interface(): an interface and its poses -> [(pose path, antibody chain, antigen chain)]
     pair_iptm_at():        a pose and two of its chains -> the model's chain_pair_iptm for that pair
 """
@@ -35,50 +39,37 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths  # noqa: E402
 
 
-def _pool_rows(pool_csv, extra=None):
-    for src in [pool_csv] + ([extra] if extra else []):
-        with open(src) as fh:
-            yield from csv.DictReader(fh)
+def load_pool(pool_csv=None):
+    """in: the crystal-scored pool csv.  out: {interface: [(seed, sample, dockq, pair_iptm), ...]}
 
-
-def load_pool(pool_csv=None, extra=None):
-    """in: pool csv, and optionally a second csv of predicted-only interfaces.
-    out: {interface: [(seed, sample, dockq_gt, pair_iptm), ...]}
-
-    dockq is NaN where the column is empty, which is how a predicted-only interface is recorded: it has
-    no reference counterpart, so writing 0.0 would read as a very bad interface rather than an
-    unscoreable one.
+    EVALUATION ONLY: dockq is against the crystal, and pair_iptm was read at crystal-matched chains, so
+    each (confidence, correctness) pair is about one reference interface.
     """
     pool = collections.defaultdict(list)
-    for r in _pool_rows(pool_csv or str(paths.PXM2025_POOL_CSV), extra):
-        dq = float(r["dockq"]) if r["dockq"] not in ("", None) else float("nan")
-        pool[f"{r['pdb']}_{r['chain1']}{r['chain2']}"].append(
-            (r["seed"], int(r["sample"]), dq, float(r["pair_iptm"])))
+    with open(pool_csv or str(paths.PXM2025_POOL_CSV)) as fh:
+        for r in csv.DictReader(fh):
+            pool[f"{r['pdb']}_{r['chain1']}{r['chain2']}"].append(
+                (r["seed"], int(r["sample"]), float(r["dockq"]), float(r["pair_iptm"])))
     return pool
 
 
-def load_chain_maps(path=None):
-    """in: a chain-map csv.  out: {(pdb, seed, sample): {reference_chain: pose_chain}}
+def load_chain_maps(path):
+    """in: a chain-map csv.  out: {(pdb, seed, sample): {anchor chain: pose chain}}
 
-    Default is the crystal-frame map. Pass anchor_relabel.py's output to work in the anchor frame.
     A blank mapping means it failed for that pose, and the pose is left out.
     """
     out = {}
-    with open(path or f"{paths.PXM2025_DIR}/chain_maps.csv") as fh:
+    with open(path) as fh:
         for r in csv.DictReader(fh):
             if r["chain_mapping"]:
                 out[(r["pdb"], r["seed"], int(r["sample"]))] = json.loads(r["chain_mapping"])
     return out
 
 
-def load_roles(path=None):
-    """in: a roles csv.  out: {"<pdb>_<c1><c2>": (antibody chain, antigen chain)}
-
-    Keyed on chain_1/chain_2 to match the pool csv's interface key, not on the `interface` column,
-    which already contains the pdb -- using it yields "8w5d_8w5d_A_B" and every lookup misses.
-    """
+def load_roles(path):
+    """in: an interfaces csv.  out: {"<pdb>_<c1><c2>": (antibody chain, antigen chain)}"""
     out = {}
-    with open(path or str(paths.PXM2025_CHAIN_ROLES)) as fh:
+    with open(path) as fh:
         for r in csv.DictReader(fh):
             out[f"{r['pdb']}_{r['chain_1']}{r['chain_2']}"] = (r["ab_chain"], r["ag_chain"])
     return out
@@ -88,8 +79,8 @@ def items_for_interface(iface, seeds_samples, maps, roles):
     """in: an interface, its (seed, sample) list, a chain map and roles.
     out: ([(pose path, antibody chain, antigen chain)], poses dropped for a missing mapping)
 
-    A pose whose mapping is missing, or does not cover both chains, is dropped and reported rather than
-    falling back to the reference letters -- that fallback is the bug this plumbing exists to prevent.
+    Input order is kept. A pose whose mapping is missing, or does not cover both chains, is dropped and
+    reported rather than falling back to the anchor letters.
     """
     pdb = iface.split("_")[0]
     ab_ref, ag_ref = roles[iface]
@@ -106,10 +97,8 @@ def items_for_interface(iface, seeds_samples, maps, roles):
 def pair_iptm_at(pose, ab, ag):
     """in: a pose cif path and two of ITS chain names.  out: chain_pair_iptm[ab][ag] from its json
 
-    The json's matrix rows are unlabelled and follow the cif's chain order (verified 800/800 against
-    an independent code path, see fetch_spurious_interface_iptm.py). Read at the chains actually being
-    compared: the pool csv's pair_iptm was read at the chains a CRYSTAL mapping chose, which on
-    duplicate-copy complexes is a different copy for ~25% of poses.
+    The json's matrix rows are unlabelled and follow the cif's chain order (verified 800/800 against an
+    independent code path). Read at the chains actually being compared.
     """
     import gemmi
     d, base = os.path.split(pose)

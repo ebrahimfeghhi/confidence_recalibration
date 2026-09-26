@@ -50,6 +50,9 @@ ESM_PYTHON = _path("ESM_PYTHON", ESM_REPO / ".venv" / "bin" / "python")
 PROTENIX_PYTHON = _path("PROTENIX_PYTHON", PROTENIX_REPO / ".venv" / "bin" / "python")
 # pxmeter's chain permutation lives in its own venv: it is the only dependency the Protenix venv lacks
 PXMETER_PYTHON = _path("PXMETER_PYTHON", REPO_ROOT / "envs" / "pxmeter" / "bin" / "python")
+# ANARCI, for chain_roles.py. Its own venv: in the Protenix venv a newer Biopython breaks ANARCI's
+# result parsing and every sequence silently comes back unnumbered.
+ANARCI_PYTHON = _path("ANARCI_PYTHON", HOME / "anarci_env" / "bin" / "python")
 PROTENIX_CKPT = _path("PROTENIX_CKPT", HOME / "checkpoint")
 
 # --- OST (lives in the `foldbench` conda env) ------------------------------

@@ -6,8 +6,8 @@ SUMMARY
     here as it does to the scorer. At 4.5 A this dropped ~1,110 poses DockQ scores as real interfaces,
     162 of them above 0.80, because a ring assembly's second interface is a ~4.7 A glance.
 
-    Two callers, both asking only whether an interface exists: one drops poses with no contacts before
-    building a similarity matrix, the other decides whether a chain pair counts as an interface at all.
+    Callers ask only whether an interface exists: the anchor step lists each pose's antibody-antigen
+    pairs in contact, and the DockQ step drops poses with no contact before building a matrix.
 
 INPUTS
     none -- functions take a pose path and two chain names
@@ -18,6 +18,7 @@ OUTPUTS
 FUNCTIONS
     pose_chains():  one pose cif -> {chain: (coordinates, residue index)}
     has_contact():  one pose and two chains -> whether any heavy atoms are within the cutoff
+    contacting():   one pose and many chain pairs -> the pairs in contact, parsing the pose once
 """
 import collections
 import sys
@@ -65,3 +66,21 @@ def has_contact(path, ab, ag, cutoff=CONTACT_CUTOFF):
     XA, _ = D[ab]
     XB, _ = D[ag]
     return bool(cKDTree(XA).query_ball_point(XB, r=cutoff, return_length=True).any())
+
+
+def contacting(path, pairs, cutoff=CONTACT_CUTOFF):
+    """in: a pose and [(chain, chain)].  out: the pairs with any heavy atoms within cutoff
+
+    One parse and one tree per chain for all pairs; has_contact() re-reads the cif on every call.
+    """
+    D = pose_chains(path)
+    trees = {}
+    out = []
+    for a, b in pairs:
+        if a not in D or b not in D:
+            raise KeyError(f"{path}: chain {a if a not in D else b} absent (have {sorted(D)})")
+        if a not in trees:
+            trees[a] = cKDTree(D[a][0])
+        if trees[a].query_ball_point(D[b][0], r=cutoff, return_length=True).any():
+            out.append((a, b))
+    return out
