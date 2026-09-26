@@ -87,9 +87,10 @@ EVAL_DIR = _path("EVAL_DIR", REPO_ROOT / "eval")
 # dockq_torch lives here; the GPU pose-to-pose DockQ imports it
 CLUSTERING_DIR = _path("CLUSTERING_DIR", REPO_ROOT / "diffusion_commit" / "clustering")
 # pose-to-pose DockQ matrices, one directory per frame
-XTAL_MATRICES = _path("XTAL_MATRICES", DATA_DIR / "matrices")
-ANCHOR_MATRICES = _path("ANCHOR_MATRICES", DATA_DIR / "matrices_anchor_all")
-SPUR_MATRICES = _path("SPUR_MATRICES", DATA_DIR / "matrices_spur")
+# the crystal-framed pipeline's outputs, superseded 2026-09-25 and archived; read only by old code
+XTAL_MATRICES = _path("XTAL_MATRICES", DATA_DIR / "archive" / "superseded_2026-09-25" / "matrices")
+ANCHOR_MATRICES = _path("ANCHOR_MATRICES", DATA_DIR / "archive" / "superseded_2026-09-25" / "matrices_anchor_all")
+SPUR_MATRICES = _path("SPUR_MATRICES", DATA_DIR / "archive" / "superseded_2026-09-25" / "matrices_spur")
 # The pxm scorer is a built environment, not code we edit, and every DockQ score shells out to it --
 # so it lives outside the archived repo.
 PXMETER_BIN = _path("PXMETER_BIN", REPO_ROOT / "envs" / "pxmeter" / "bin" / "pxm")
@@ -120,7 +121,7 @@ DATASET_NAMES = ("pxm2025", "foldbench")
 FREE_DIR = _path("FREE_DIR", DATA_DIR / "free")
 # anchor_relabel.py writes the chain maps, roles and manifest here; pose_interfaces.py and the queue
 # builders read them. Points at the existing data rather than a new location so nothing has to move.
-ANCHOR_DIR = _path("ANCHOR_DIR", DATA_DIR / "anchor_frame")
+ANCHOR_DIR = _path("ANCHOR_DIR", DATA_DIR / "archive" / "superseded_2026-09-25" / "anchor_frame")
 # code locations, so scripts do not carry literals for each other's directories
 METRICS_DIR = _path("METRICS_DIR", REPO_ROOT / "diffusion_commit_clean" / "metrics")
 CLEAN_CODE_DIR = _path("CLEAN_CODE_DIR", REPO_ROOT / "diffusion_commit_clean")

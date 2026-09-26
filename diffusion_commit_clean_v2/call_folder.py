@@ -16,7 +16,7 @@ INPUTS
     --queue:      the work list, free or templated. Required.
     --out:        where folds land. Default paths.FREE_DIR.
     --templates:  template namespace. Required if the queue has any tmpl lines.
-    --gpus:       explicit device ids, e.g. 1,5,6. Required by --run; never guessed.
+    --gpus:       explicit device ids, e.g. 0,1,2,5. Required by --run; never guessed.
     --allow-many: permit more than four GPUs. Default off.
     --run:        launch. Default off, in which case the plan is printed and nothing starts.
     --drop-cifs:  delete poses after scoring. Default OFF -- a pose whose coordinates are gone cannot
@@ -33,14 +33,11 @@ OUTPUTS
 
 EXAMPLE
     call_folder.py --queue experimental_data/free/queue_free.tsv --out experimental_data/free \
-                   --gpus 1,5,6 --run
+                   --gpus 0,1,2,5 --run
 
-    call_folder.py --queue experimental_data/reffree_50/queue.tsv \
-                   --out experimental_data/reffree_50/out \
-                   --csv experimental_data/reffree_50/results.csv \
-                   --claim-dir experimental_data/reffree_50/claims \
-                   --log-dir experimental_data/reffree_50 \
-                   --templates experimental_data/reffree_50/ns --gpus 1,5,6 --run
+    E=experimental_data/self_template_fixed_50_seed
+    call_folder.py --queue $E/queue_tofold.tsv --out $E/poses --csv $E/results.csv \
+                   --claim-dir $E/claims --log-dir $E --templates $E/templates --gpus 0 --run
 
 FUNCTIONS
     check():   refuse a queue that cannot run: missing, templated with no namespace, or a templated
@@ -105,7 +102,7 @@ def main():
     ap.add_argument("--log-dir", default=None, help="default <out>; worker logs are w<gpu>.log")
     ap.add_argument("--dataset", choices=sorted(paths.DATASET_NAMES), default="pxm2025")
     ap.add_argument("--nsample", type=int, default=5)
-    ap.add_argument("--gpus", default=None, help="explicit device ids, e.g. 1,5,6")
+    ap.add_argument("--gpus", default=None, help="explicit device ids, e.g. 0,1,2,5")
     ap.add_argument("--allow-many", action="store_true",
                     help=f"permit more than {MAX_GPUS} GPUs on this shared machine")
     ap.add_argument("--drop-cifs", action="store_true",
