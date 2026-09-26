@@ -124,13 +124,6 @@ ANCHOR_DIR = _path("ANCHOR_DIR", DATA_DIR / "anchor_frame")
 # code locations, so scripts do not carry literals for each other's directories
 METRICS_DIR = _path("METRICS_DIR", REPO_ROOT / "diffusion_commit_clean" / "metrics")
 CLEAN_CODE_DIR = _path("CLEAN_CODE_DIR", REPO_ROOT / "diffusion_commit_clean")
-EVAL_DIR = _path("EVAL_DIR", REPO_ROOT / "eval")
-# dockq_torch lives here; the GPU pose-to-pose DockQ imports it
-CLUSTERING_DIR = _path("CLUSTERING_DIR", REPO_ROOT / "diffusion_commit" / "clustering")
-# pose-to-pose DockQ matrices, one directory per frame
-XTAL_MATRICES = _path("XTAL_MATRICES", DATA_DIR / "matrices")
-ANCHOR_MATRICES = _path("ANCHOR_MATRICES", DATA_DIR / "matrices_anchor_all")
-SPUR_MATRICES = _path("SPUR_MATRICES", DATA_DIR / "matrices_spur")
 PROTENIX_SRC = _path("PROTENIX_SRC", Path.home() / "Protenix")
 
 # The pool's original 50-75 seeds per complex predate run provenance -- no run id, no run.json, and

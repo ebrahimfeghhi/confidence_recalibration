@@ -22,10 +22,11 @@ Why each term batches:
 The reference DockQ package takes 13.8 ms per pair. At N=5125 that is 26M pairs ~ 100 core-hours.
 This does the same work in minutes.
 
-Usage:  python scripts/dockq_torch.py --validate 8ts0 A C
-        (checks against the saved reference matrix; must agree to ~1e-4)
+Validated against OST's DockQ (an independent implementation) when it was written: the ESM-era
+driver, validate_against_ground_truth() and build(), live in git history before 2026-09-25 and were
+removed from this copy, which pose_to_pose_dockq.py uses only through dockq_matrix().
 """
-import argparse, json, sys, time
+import time
 from pathlib import Path
 import numpy as np
 import torch
@@ -213,136 +214,3 @@ def dockq_matrix(items, device="cuda", verbose=True, timings=None):
         timings["n_no_iface"] = int(no_iface.sum())
     if verbose: print(f"  DONE {N}x{N} in {time.time()-t0:.0f}s", flush=True)
     return dq.cpu().numpy()
-
-
-# ---------------------------------------------------------------- pose list (with chain map)
-def pose_list(cx, c1, c2):
-    """Every diffusion sample of every seed, each with ITS OWN model chain pair.
-
-    c1/c2 are NATIVE (reference) chain letters. The model file uses different letters; the
-    scoring CSV's `chain_mapping` column (ref -> model) translates. On multi-copy assemblies the
-    mapping CHANGES PER POSE, because OST maps the native onto whichever model copy fits best.
-    Using c1/c2 directly on the model file scores the WRONG PAIR OF MOLECULES.
-
-    Returns [(path, model_chain1, model_chain2, iptm, dockq_gt, seed, sample), ...],
-    sorted by ipTM descending.
-    """
-    import csv as _csv
-    DEEP = Path.home() / "esm/foldbench_predictions/esmfold2fast_tts"
-    rows = []
-    for r in _csv.DictReader(open("results/csv_files/dockq_ost_esmfold2fast_tts_deep.csv")):
-        if (r['assembly_id'][:4], r['chain1'], r['chain2']) != (cx, c1, c2):
-            continue
-        try:
-            cm = json.loads(r['chain_mapping'])
-            m1, m2 = cm[c1], cm[c2]                     # ref -> model, PER POSE
-            s, k = r['seed'], int(r['sample'])
-            ip, gt = float(r['pair_iptm']), float(r['dockq'])
-        except Exception:
-            continue                                    # no usable mapping -> pose unusable
-        sub = "baseline_seed" if s == "baseline_seed" else f"seed_{s}"
-        p = DEEP / cx / sub / "predictions" / f"{cx}_sample_{k}.cif"
-        if p.exists():
-            rows.append((p, m1, m2, ip, gt, s, k))
-    rows.sort(key=lambda r: -r[3])
-    return rows
-
-
-# ---------------------------------------------------------------- validation
-def validate_against_ground_truth(tag, device="cuda"):
-    """INDEPENDENT check, against OST's ground truth -- NOT against our own earlier code.
-
-    The previous validation compared this implementation to matrix_iptm.py, which shared the same
-    chain-mapping bug. Two wrong implementations agreed perfectly and the check passed. Never
-    again: validate against a source produced by a DIFFERENT pipeline.
-
-    The test: take the pose closest to the crystal structure (highest dockq_gt). Any pose that is
-    structurally similar TO IT must also be close to the crystal. So our pose-pose DockQ from that
-    pose, D[best], must correlate strongly with dockq_gt across the pool. If we are scoring the
-    wrong chain pair, that correlation collapses to ~0.
-    """
-    M = np.load(f"results/dockq_full/dockq_{tag}.npy").astype(np.float64)
-    import csv as _csv
-    idx = list(_csv.DictReader(open(f"results/dockq_full/dockq_{tag}_index.csv")))
-    gt = np.array([float(r['dockq_gt']) for r in idx])
-    best = int(np.argmax(gt))
-    sim = M[best]                                       # similarity of every pose to the best one
-    ok = sim.sum() > 0
-    rho = float(np.corrcoef(sim, gt)[0, 1]) if ok else float("nan")
-    # rank correlation too -- robust to the DockQ nonlinearity
-    rs = float(np.corrcoef(np.argsort(np.argsort(sim)), np.argsort(np.argsort(gt)))[0, 1]) \
-        if ok else float("nan")
-    no_if = int((M.sum(axis=1) == 0).sum())
-    return dict(tag=tag, n=len(gt), best_gt=float(gt[best]), pearson=rho, spearman=rs,
-                no_interface=no_if, frac_no_interface=no_if / len(gt))
-
-
-# ---------------------------------------------------------------- build (Option B)
-def build(cx, c1, c2, outdir="results/dockq_full", device="cuda"):
-    """Full Option-B DockQ matrix: EVERY diffusion sample of every seed (N ~ 5125).
-
-    No best-ipTM-per-seed pre-filter -- that filter picks each seed's representative by argmax
-    ipTM, the exact operation we have shown is untrustworthy, and on interfaces where only 1-4
-    good poses exist in 5125 it very likely discards the answer outright.
-    """
-    import csv as _csv
-    tag = f"{cx}_{c1}{c2}"
-    out = Path(outdir); out.mkdir(parents=True, exist_ok=True)
-    npy = out / f"dockq_{tag}.npy"
-    if npy.exists():
-        print(f"[{tag}] exists, skipping", flush=True); return
-
-    rows = pose_list(cx, c1, c2)
-    if len(rows) < 500:
-        print(f"[{tag}] only {len(rows)} usable poses — SKIP", flush=True); return
-    N = len(rows)
-    pairs_used = sorted({(r[1], r[2]) for r in rows})
-    print(f"[{tag}] {N} poses -> {N*N:,} pairs | model chain pairs used: {pairs_used}", flush=True)
-    if device == "cuda":
-        torch.cuda.reset_peak_memory_stats()
-
-    tm = {}
-    M = dockq_matrix([(r[0], r[1], r[2]) for r in rows], device=device, verbose=False, timings=tm)
-    t_load, t_compute, t_total = tm["load_s"], tm["compute_s"], tm["total_s"]
-
-    np.save(npy, M.astype(np.float32))
-    with open(out / f"dockq_{tag}_index.csv", "w", newline="") as f:
-        w = _csv.writer(f)
-        w.writerow(["row", "seed", "sample", "model_chain1", "model_chain2", "iptm", "dockq_gt"])
-        for i, (_, m1, m2, ip, gt, s, k) in enumerate(rows):
-            w.writerow([i, s, k, m1, m2, f"{ip:.4f}", f"{gt:.4f}"])
-
-    peak = torch.cuda.max_memory_allocated() / 1e9 if device == "cuda" else 0.0
-    gpu = torch.cuda.get_device_name(0) if device == "cuda" else "cpu"
-    tf = out / "timings.csv"
-    new = not tf.exists()
-    with open(tf, "a", newline="") as f:
-        w = _csv.writer(f)
-        if new:
-            w.writerow(["interface", "n_poses", "n_pairs", "load_s", "compute_s", "total_s",
-                        "pairs_per_s", "peak_vram_gb", "n_poses_no_interface",
-                        "n_model_chain_pairs", "ref_dockq_core_hours", "speedup_vs_ref", "gpu"])
-        ref_h = N * N * 0.0138 / 3600                   # 13.8 ms/pair, measured for DockQ 2.1.3
-        w.writerow([tag, N, N * N, f"{t_load:.1f}", f"{t_compute:.1f}", f"{t_total:.1f}",
-                    f"{N*N/t_total:.0f}", f"{peak:.2f}", tm.get("n_no_iface", 0),
-                    len(pairs_used), f"{ref_h:.1f}", f"{ref_h*3600/t_total:.0f}", gpu])
-    print(f"[{tag}] DONE {t_total:.0f}s (load {t_load:.0f}s + compute {t_compute:.0f}s) | "
-          f"peak VRAM {peak:.1f} GB | {tm.get('n_no_iface', 0)} no-interface poses | "
-          f"saved {npy} ({M.nbytes/1e6:.0f} MB)", flush=True)
-
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--build", nargs="+", metavar="TAG")
-    ap.add_argument("--check", nargs="+", metavar="TAG",
-                    help="validate saved matrices against OST ground truth")
-    ap.add_argument("--device", default="cuda")
-    a = ap.parse_args()
-    if a.build:
-        for t in a.build:
-            cx, ch = t.split("_")
-            build(cx, ch[0], ch[1], device=a.device)
-        print("ALL DONE", flush=True)
-    if a.check:
-        for t in a.check:
-            print(validate_against_ground_truth(t, device=a.device))
