@@ -6,9 +6,9 @@ SUMMARY
     the next. Later steps sort poses per interface, so they need one consistent naming across the pool.
     This picks one pose per complex as the anchor and expresses every other pose in its terms.
 
-    NOTHING HERE READS THE CRYSTAL. Which chains are antibodies comes from chain_roles.py (the input
-    sequences), which pairs touch from the pose's own coordinates, and the confidence from the pose's
-    own summary json.
+    NOTHING HERE READS THE CRYSTAL. Which chains are antibody and antigen is known input
+    (chain_roles.py); which pairs touch comes from the pose's own coordinates, and the confidence from
+    the pose's own summary json. A chain the benchmark leaves unannotated takes part in no pair.
 
     WHEN IT DOES ANYTHING -- only when a complex has more than one copy of an entity. With one antibody
     and one antigen there is a single possible assignment, so every mapping is the identity.
@@ -29,7 +29,7 @@ SUMMARY
 
 INPUTS
     --poses:   csv of pdb, seed, sample -- the pool. Required.
-    --roles:   chain_roles.py's csv: antibody or antigen per entity. Required.
+    --roles:   chain_roles.py's csv: antibody, antigen or none per entity. Required.
     --out-dir: where the csvs and the manifest go. Required.
     --jobs:    worker processes. Default 8. CPU only.
 
@@ -68,7 +68,7 @@ import paths  # noqa: E402
 logging.disable(logging.WARNING)   # pxmeter logs a warning per unmapped ligand, thousands of poses
 
 MAP_FIELDS = ["pdb", "seed", "sample", "chain_mapping", "anchor_seed", "anchor_sample", "seconds"]
-ANTIBODY = "antibody"
+ANTIBODY, ANTIGEN = "antibody", "antigen"
 
 
 def chain_entities(path, seqs):
@@ -99,7 +99,7 @@ def pose_pairs(task):
         if set(ent.values()) != set(range(len(seqs))):
             return pdb, seed, sample, [], "pose chains do not match the job's entities"
         ab = sorted(c for c, e in ent.items() if roles[e] == ANTIBODY)
-        ag = sorted(c for c, e in ent.items() if roles[e] != ANTIBODY)
+        ag = sorted(c for c, e in ent.items() if roles[e] == ANTIGEN)
         touching = contacts.contacting(path, [(a, g) for a in ab for g in ag])
         import pool_index
         return (pdb, seed, sample,
