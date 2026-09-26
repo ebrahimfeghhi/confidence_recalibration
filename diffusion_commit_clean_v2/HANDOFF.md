@@ -28,11 +28,11 @@ folded).
   first 20 folds: 135 s per fold on 8uzp; per-fold cost varies 20 s - 20 min by complex, so no ETA
   from that alone.
 - `tmux stagearms` — `diffusion_commit_clean_v2/stage_arms.sh`, per GPU: fixed arm -> the 12-fold free
-  top-up (`free_compute_matched/queue_free_topup_arm_a.tsv`) -> **hold the card**. The variable-seed
-  arm waits for the fixed-seed table to be reviewed. To launch it: first rerun
-  `build_varseed_queue.py` WITHOUT `--pending` (the top-up must be scored; the queue must come out
-  identical), then restart the stager with `LAUNCH_VARSEED=1` (it passes `--overlap-scoring`). Log
-  `experimental_data/stage_arms.log`.
+  top-up (`free_compute_matched/queue_free_topup_arm_a.tsv`) -> variable-seed arm, **started
+  automatically** but only once the top-up is fully scored and the variable-seed queue rebuilt from
+  scored seeds is identical to the queued one (else the card is held and REMEDIATE logged). Failed
+  top-up folds are retried up to 3 times. Variable-seed workers use `--overlap-scoring`.
+  `LAUNCH_VARSEED=0` holds every card after the top-up instead. Log `experimental_data/stage_arms.log`.
 - `tmux watcharms` — `diffusion_commit_clean_v2/watch_arms.sh`, every 30 min, claims and scored rows
   checked separately. Log `experimental_data/watch_arms.log`.
 - Our GPUs are 0, 1, 2, 5. GPU 4 is another user's. **Never more than 4 without asking.** An idle card
