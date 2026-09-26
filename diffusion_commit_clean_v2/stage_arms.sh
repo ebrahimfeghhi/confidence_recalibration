@@ -3,7 +3,8 @@
 # variable-seed arm. A GPU moves on the moment its current worker exits.
 #
 # The variable-seed arm starts only once varseed_ready(): the top-up is fully folded and scored on
-# every GPU, and the variable-seed queue rebuilt WITHOUT pending seeds is identical to the one queued --
+# every GPU, and the variable-seed queue rebuilt WITHOUT pending seeds is identical to the one queued
+# (both built with --order-by-class: complexes with a confident decoy first, then solved, then nocov) --
 # i.e. every seed it uses is now a scored free seed. If the rebuild differs the card is held and a
 # REMEDIATE line logged instead. LAUNCH_VARSEED=0 holds every card after the top-up regardless.
 #
@@ -55,7 +56,7 @@ varseed_ready() {   # 0 once the top-up is scored and the variable-seed queue ch
     tmux ls 2>/dev/null | grep -q '^free_compute_matchedw' && return 1
     [ "$(unclaimed "$TOPUP" "$FREE/claims")" -eq 0 ] || return 1
     local tmp; tmp=$(mktemp)
-    $PY diffusion_commit_clean_v2/build_varseed_queue.py --fixed "$FIX" --out "$tmp" >> "$LOG" 2>&1
+    $PY diffusion_commit_clean_v2/build_varseed_queue.py --fixed "$FIX" --order-by-class --out "$tmp" >> "$LOG" 2>&1
     if cmp -s "$tmp" "$VAR/queue.tsv"; then rm -f "$tmp"; return 0; fi
     say "REMEDIATE variable-seed queue rebuilt from scored seeds differs from the queued one ($tmp)"
     return 2
