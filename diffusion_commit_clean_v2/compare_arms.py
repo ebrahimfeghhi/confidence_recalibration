@@ -41,8 +41,6 @@ EXAMPLE
     compare_arms.py --out experimental_results/arms_compare.md
 
 FUNCTIONS
-    pool_by_seed():   the pool index -> per-interface rows plus each complex's first-N seed set
-    classes_at():     classify each interface using only the first-N seeds
     donors_used():    the experiment -> {complex: {donor pose}} and which came from the first N seeds
     extra_free():     extra free folds -> {interface: {seed: [(iptm, dockq)]}}
     arms():           assemble the four arms per interface
@@ -61,32 +59,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths  # noqa: E402
 import pool_index  # noqa: E402
 from fmt import table  # noqa: E402
-from score_experiment import ACCEPTABLE, load_scored  # noqa: E402
+from score_experiment import ACCEPTABLE, classes_at, load_scored, pool_by_seed  # noqa: E402
 
 DONOR_SEED = re.compile(r"/free/([0-9a-z]{4})/(\d+)-")
-
-
-def pool_by_seed(n_seeds):
-    """in: how many seeds define the pool.  out: (pool rows, {complex: first-n seed ids})"""
-    pool = pool_index.load_pool()
-    seen = collections.defaultdict(set)
-    for iface, rows in pool.items():
-        for s, _, _, _ in rows:
-            seen[iface.split("_")[0]].add(s)
-    return pool, {p: set(sorted(v, key=int)[:n_seeds]) for p, v in seen.items()}
-
-
-def classes_at(pool, first):
-    """in: pool rows and the first-n seed sets.  out: {interface: solved | decoy | nocov}"""
-    out = {}
-    for iface, rows in pool.items():
-        keep = [r for r in rows if r[0] in first[iface.split("_")[0]]]
-        if not keep:
-            continue
-        best = max(keep, key=lambda r: r[3])
-        out[iface] = ("solved" if best[2] >= ACCEPTABLE
-                      else "decoy" if any(r[2] >= ACCEPTABLE for r in keep) else "nocov")
-    return out
 
 
 def donors_used(exp, first):
@@ -144,7 +119,7 @@ def top(rows):
     return max(rows, key=lambda r: r[0])[1] if rows else None
 
 
-def arms(pool, first, cls, per, shallow, extra, tmpl, made, expected, qtags, folds, classes,
+def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
          require_match=True):
     """in: everything loaded.  out: (rows, n unmatched complexes, n partial interfaces)"""
     acc = collections.defaultdict(lambda: collections.defaultdict(list))
@@ -153,7 +128,7 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, expected, qtags, fol
         pdb = iface.split("_")[0]
         if cls.get(iface) not in classes or iface not in made:
             continue
-        if len(folds[iface] & qtags.get(iface, set())) < expected.get(iface, 0):
+        if iface in unfinished:
             partial += 1
             continue
         n_donor = len(per.get(pdb, ()))
@@ -202,9 +177,9 @@ def main():
     per, shallow = donors_used(A.exp, first)
     extra = extra_free(A.extra_csv, first)
     tmpl = tmpl_by_donor(A.exp)
-    made, expected, qtags, folds = load_scored(A.exp)
+    made, unfinished = load_scored(A.exp)
     rows, unmatched, partial = arms(pool, first, cls, per, shallow, extra, tmpl,
-                                    made, expected, qtags, folds, A.classes.split(","),
+                                    made, unfinished, A.classes.split(","),
                                     require_match=not A.no_require_match)
     head = ["class", "interfaces (n)", f"free {A.pool_seeds}", "free + matched",
             f"method ({A.pool_seeds}-seed donors)", "method (all donors)"]
