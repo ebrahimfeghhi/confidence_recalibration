@@ -10,7 +10,7 @@ SUMMARY
     so one long-lived process works through many units rather than one process per fold. Several
     processes can share a queue: each claims a unit by creating a directory before folding it.
 
-    THREE THINGS THAT WILL BITE YOU
+    TWO THINGS THAT WILL BITE YOU
       LAYERNORM_TYPE=openfold is mandatory. Without it the model emits NaN coordinates silently -- no
       error, five plausible-looking cifs, and the failure only surfaces when the scorer dies.
 
@@ -48,7 +48,6 @@ INPUTS
     --skip-by-template: skip a unit already folded with the same (complex, seed, template). Off by
                   default, because a csv that records the required pair rather than the full chain set
                   will not match and would refold everything.
-    --force:      refold even if that unit was already folded. The new fold gets its own directory.
     --report:     print what has been scored and exit.
     --verify:     cross-check the csv against the poses on disk and exit.
 
@@ -69,9 +68,9 @@ OUTPUTS
 
 EXAMPLE
     folder.py --queue q.tsv --out experimental_data/free
-    folder.py --queue exp/queue.tsv --out exp/out --csv exp/results.csv \
-              --templates exp/templates --claim-dir exp/claims --drop-cifs
-    folder.py --verify --csv exp/results.csv --out exp/out
+    folder.py --queue exp/queue.tsv --out exp/poses --csv exp/results.csv \
+              --templates exp/templates --claim-dir exp/claims
+    folder.py --verify --csv exp/results.csv --out exp/poses
 
 FUNCTIONS
     parse_args():       the command line; defaults point at the free pool
@@ -84,11 +83,14 @@ FUNCTIONS
     unit_already_folded(): has this (complex, seed, template) been folded before
     build_runner():     load the checkpoint once; every unit reuses the returned runner
     Ctx                 the handles every unit shares: args, model, interfaces, done-sets, namespace
+    Ctx.point_templates_at(): per unit, the self-template namespace or Protenix's own PDB templates
     run_unit():         claim one unit, fold it, score it, release the claim if anything fails
     named_job():        copy a unit's job json under a unique name, which is what fixes its output dir
     fold():             run one fold; assert it produced poses and the expected template count
     provenance():       the unit -> (donor_pose, tmpl_chains), the two fields that identify a fold
     score_fold():       run scorer.py per interface and append its rows to the csv
+    normalise_poses():  flatten Protenix's nested output to <run dir>/predictions/, never overwriting
+    _move_new():        os.replace that refuses an existing destination
     reconcile_claims(): at startup, free claims whose unit was never scored (a killed worker's work)
     append_index():     one line per fold in index.tsv
     runmeta_md5()       checksum a pose, so run.json pins the exact file templated on
@@ -508,9 +510,6 @@ def parse_args():
                     help="skip a unit already folded with the same (complex, seed, template). Needs a "
                          "csv whose tmpl_chains holds the FULL chain set; older runs recorded the "
                          "required pair and would refold")
-    ap.add_argument("--force", action="store_true",
-                    help="refold a unit already folded with the same complex, seed and template; "
-                         "the new fold gets its own directory, nothing is overwritten")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--verify", action="store_true",
                     help="cross-check --csv against --out and exit; nothing is folded")
@@ -692,8 +691,7 @@ def run_unit(ctx, unit):
     chain_set = frozenset(c for grp in chains.split() for c in grp.split("+") if c)
     # identity is (complex, seed, template), not the tag; opt-in because a csv that records the
     # required pair instead of the full chain set will not match and would refold
-    if A.skip_by_template and not A.force \
-            and unit_already_folded(ctx.units_done, pdb, seed, donor, chain_set):
+    if A.skip_by_template and unit_already_folded(ctx.units_done, pdb, seed, donor, chain_set):
         return "skipped"
     if all((i, str(seed), tag) in ctx.rows_done for i in want):
         return "skipped"
