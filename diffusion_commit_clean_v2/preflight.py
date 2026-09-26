@@ -7,7 +7,7 @@ SUMMARY
     in a shared 4-character space. Each surfaced hours later, or worse, did not surface at all --
     Protenix logs "Found 5 templates" and folds happily on a template for the wrong chains.
 
-    Five checks, cheapest first:
+    Six checks, cheapest first:
 
       donor    every template was built from the pose the QUEUE names. A namespace built for an
                earlier selection can otherwise be reused for a different donor.
@@ -18,6 +18,10 @@ SUMMARY
                means one fold silently overwrites a template another is using.
       chains   the chains the builder chose CONTAIN the pair this interface ranked the pose on. The
                pose was selected on one pair; templating another measures something else.
+      slots    each chosen chain fills its OWN entity's slot. Protenix names chains in input order,
+               one letter per copy, so the job json says which entity a donor chain is; the builder
+               matches entities by sequence similarity, which cannot tell identical entities apart
+               (9hi4 has two, differing only by a declared phosphoserine).
       hits     every a3m hit names a chain that exists in its cif with residues, and the hits are
                mutually distinct -- identical hit strings get deduped away and a 5-template arm
                quietly becomes a 1-template arm.
@@ -41,7 +45,8 @@ EXAMPLE
     preflight.py --ns exp/templates --queue exp/queue.tsv --maps exp/chain_frame/chain_maps_anchor.csv --roles exp/interfaces.csv
 
 FUNCTIONS
-    main(): walk every namespace the queue asks for and run the three checks
+    chain_entities(): a job json -> {chain letter: protein entity index}, by input order
+    main():           walk every namespace the queue asks for and run the checks
 """
 import argparse
 import collections
@@ -58,6 +63,28 @@ import gemmi  # noqa: E402
 import pool_index  # noqa: E402
 from build_templates import pose_key  # noqa: E402
 from fmt import table  # noqa: E402
+
+
+def chain_entities(job_json):
+    """in: a job json.  out: {chain letter: index among its protein entities}
+
+    Protenix gives each entity the next letters in input order, one per copy, ligands included --
+    checked on all 123 complexes of the 50-seed pool.
+    """
+    import string
+    obj = json.load(open(job_json))
+    obj = obj[0] if isinstance(obj, list) else obj
+    names = list(string.ascii_uppercase) + [a + b for a in string.ascii_uppercase
+                                            for b in string.ascii_uppercase]
+    out, n, k = {}, 0, 0
+    for e in obj["sequences"]:
+        kind = next(iter(e))
+        for _ in range(int(e[kind].get("count", 1))):
+            if kind == "proteinChain":
+                out[names[n]] = k
+            n += 1
+        k += kind == "proteinChain"
+    return out
 
 
 def main():
@@ -127,6 +154,10 @@ def main():
                 fail["pose unmapped"] += 1
                 continue
             need = {m[ab_ref], m[ag_ref]}
+            slot = chain_entities(f"{jd}/job.json")
+            if any(slot.get(c) != k for k, c in enumerate(d["chains"])):
+                fail["chain in another entity's slot"] += 1
+                ex["chain in another entity's slot"].append(f"{key}: {d['chains']}")
             if not need <= set(d["chains"]):
                 fail["WRONG CHAINS"] += 1
                 ex["WRONG CHAINS"].append(
