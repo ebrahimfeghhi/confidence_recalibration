@@ -10,7 +10,7 @@ bookkeeping, and the folds carried over from earlier runs.
 | 1 | Templates are correct: the model receives the donor pose itself | verified, 1 job |
 | 2 | Folds were overwriting each other's poses; scores unaffected | fixed `2fd17b8` |
 | 3 | 2,585 carried-over folds match their source exactly | verified, one gap open |
-| 4 | Two leftover `watch.sh` auto-restarters from 2026-09-24 still running | harmless; awaiting stop |
+| 4 | Two leftover `watch.sh` auto-restarters from 2026-09-24 still running | stopped 2026-09-25 |
 
 ### 1. Templates
 
@@ -73,8 +73,7 @@ every fold. Every templated fold uses seed 430000, so directory names repeated.
 
 `watch.sh --exp reffree_50 --gpus 1,5,6` (PID 1429227) and `watch.sh --exp free_matched --gpus 1,5,6`
 (PID 1476361). Neither can launch now — `reffree_50` has no unclaimed folds, `free_matched/` no longer
-exists — but both are auto-restarters on our GPUs. Stopping them was blocked by the permission
-system; to stop: `kill 1429227 1476361 3314649 3321606`.
+exists — but both were auto-restarters on our GPUs. Stopped by PID on 2026-09-25.
 
 ## Tidy-ups (`2e8c961`)
 
