@@ -70,6 +70,12 @@ def git_sha() -> str:
         return "unknown"
 
 
+# Captured ONCE, at import: the code this process is running. Reading HEAD at write time recorded
+# whatever was committed since the worker started -- folds run on old code were stamped with a
+# commit made hours later.
+LOADED_SHA = git_sha()
+
+
 def write_run_json(rdir: str, **fields) -> str:
     """Record everything needed to tell this fold apart from another run of the same seed.
 
@@ -84,7 +90,7 @@ def write_run_json(rdir: str, **fields) -> str:
         "host": socket.gethostname(),
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "layernorm_type": os.environ.get("LAYERNORM_TYPE"),
-        "git_sha": git_sha(),
+        "git_sha": LOADED_SHA,
         "argv": " ".join(sys.argv[1:]),
         **fields,
     }

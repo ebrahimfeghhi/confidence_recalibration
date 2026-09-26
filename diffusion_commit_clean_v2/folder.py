@@ -122,7 +122,6 @@ sys.path.insert(0, str(paths.CODE_DIR))
 import runmeta   # noqa: E402
 
 DC = os.path.dirname(os.path.realpath(__file__))   # scorer.py must be the copy beside this file
-CLEAN_CODE = str(paths.CLEAN_CODE_DIR)   # the template builder still lives there
 PY = str(paths.PROTENIX_PYTHON)
 
 # mandatory: without it the model emits NaN coordinates silently
@@ -476,11 +475,6 @@ class Ctx:
         m, r = (self.mm, self.rd) if use_ns else (self.stock_mm, self.stock_rd)
         self.configs.data.template.prot_template_mmcif_dir = m
         self.configs.data.template.release_dates_path = r
-        for k, v in (("SELFTMPL_MMCIF_DIR", m), ("SELFTMPL_RELEASE_DATES", r)):
-            if v is None or not use_ns:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
 
 
 def parse_args():
@@ -489,7 +483,7 @@ def parse_args():
     ap.add_argument("--queue")
     ap.add_argument("--out", default=str(paths.FREE_DIR))
     ap.add_argument("--csv", default=f"{paths.FREE_DIR}/results.csv")
-    ap.add_argument("--templates", help="namespace built by write_templates.py; required for "
+    ap.add_argument("--templates", help="namespace built by build_templates.py; required for "
                                         "templated units, never written to here")
     ap.add_argument("--pool", default=str(paths.PXM2025_POOL_CSV),
                     help="csv whose interfaces define what `target=*` scores")
@@ -529,7 +523,7 @@ def check_queue(A, units):
     templated = [u for u in units if u[0] != "free"]
     if templated and not A.templates:
         raise SystemExit(f"{len(templated)} templated units need --templates "
-                         "(run write_templates.py first)")
+                         "(run build_templates.py first)")
     if templated and A.out == str(paths.FREE_DIR):
         raise SystemExit("refusing to write a templated queue into the free pool; pass --out")
     if not A.templates:
@@ -537,7 +531,7 @@ def check_queue(A, units):
     mm, rd = f"{A.templates}/mmcif", f"{A.templates}/release_dates.json"
     for p in (mm, rd):
         if not os.path.exists(p):
-            raise SystemExit(f"namespace incomplete: {p} missing -- run write_templates.py")
+            raise SystemExit(f"namespace incomplete: {p} missing -- run build_templates.py")
     return mm, rd
 
 

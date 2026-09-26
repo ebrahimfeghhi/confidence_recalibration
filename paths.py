@@ -132,9 +132,6 @@ XTAL_MATRICES = _path("XTAL_MATRICES", DATA_DIR / "matrices")
 ANCHOR_MATRICES = _path("ANCHOR_MATRICES", DATA_DIR / "matrices_anchor_all")
 SPUR_MATRICES = _path("SPUR_MATRICES", DATA_DIR / "matrices_spur")
 PROTENIX_SRC = _path("PROTENIX_SRC", Path.home() / "Protenix")
-SELFTMPL_DIR = _path("SELFTMPL_DIR", DATA_DIR / "self_template")
-# The template namespace write_templates.py builds: an input to self-templated folds.
-TEMPLATES_DIR = _path("TEMPLATES_DIR", SELFTMPL_DIR / "templates")
 
 # The pool's original 50-75 seeds per complex predate run provenance -- no run id, no run.json, and
 # their configuration is known only from what the defaults were at the time (bf16, N_cycle 10). They
@@ -182,7 +179,7 @@ def _sh():
         "ESM_PREDICTIONS", "PROTENIX_PREDICTIONS", "RESULTS_DIR", "CSV_DIR",
         "STEER_DATA", "CODE_DIR", "DATA_DIR", "EVAL_DIR", "PXMETER_BIN",
         "PXM2025_DIR", "PXM2025_JOBS", "PXM2025_CIF", "PXM2025_POOL_CSV",
-        "FREE_DIR", "SELFTMPL_DIR", "TEMPLATES_DIR",
+        "FREE_DIR",
     ):
         print(f'export {name}="{globals()[name]}"')
 
