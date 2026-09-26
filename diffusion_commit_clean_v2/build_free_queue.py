@@ -111,14 +111,14 @@ def read_per_complex(path):
         return {r["pdb"]: int(r["n_seeds"]) for r in _csv.DictReader(fh)}
 
 
-def existing_seeds(out, pdbs, seeds, start_seed):
-    """in: output dir and the folds about to be queued.  out: those that already exist on disk.
+def existing_seeds(out, lines):
+    """in: output dir and the queue lines about to be written.  out: (pdb, seed) already on disk
 
-    Reported because the driver's skip is keyed on (complex, seed, template) from the csv, so folds
-    written under a different tag or into a different csv do not count as done and would be redone.
+    Checks the seeds actually queued. With --per-complex or skipped seeds those are not
+    start_seed..start_seed+seeds, which the previous version checked instead.
     """
-    return [(pdb, start_seed + i) for pdb in pdbs for i in range(seeds)
-            if glob.glob(f"{out}/{pdb}/{start_seed + i}-*")]
+    folds = [(f.split("\t")[1], f.split("\t")[4]) for f in lines]
+    return [(pdb, seed) for pdb, seed in folds if glob.glob(f"{out}/{pdb}/{seed}-*")]
 
 
 def unreadable_warning(out):
@@ -158,21 +158,23 @@ def main():
         pdbs = [p for p in pdbs if per.get(p, 0) > 0]
     taken = seeds_in_use(str(paths.PXM2025_POOL_CSV), f"{paths.FREE_DIR}/results.csv")
     lines = queue_lines(pdbs, A.seeds, A.start_seed, per, taken)
-    os.makedirs(out, exist_ok=True)
     qpath = f"{out}/queue_free.tsv"
-    open(qpath, "w").write("\n".join(lines) + "\n")
-
-    print(f"  dataset {A.dataset}   complexes {len(pdbs)}   seeds {A.seeds} from {A.start_seed}")
-    print(f"  folds {len(lines)}   queue -> {qpath}")
-    print(f"\n  {unreadable_warning(out)}")
-
-    seen = existing_seeds(out, pdbs, A.seeds, A.start_seed)
+    text = "\n".join(lines) + "\n"
+    # REFUSE BEFORE WRITING: both checks used to run after the queue was already written
+    seen = existing_seeds(out, lines)
     if seen and not A.force:
         hit = sorted({p for p, _ in seen})
         print(f"  {len(seen)} of {len(lines)} folds already exist under {out} "
               f"({len(hit)} complexes, e.g. {', '.join(hit[:4])}).")
         raise SystemExit("  refusing. --out <new dir> for a fresh pool, or --force to queue anyway.")
+    if os.path.exists(qpath) and open(qpath).read() != text and not A.force:
+        raise SystemExit(f"  refusing to overwrite a different {qpath}; --force to replace it.")
+    os.makedirs(out, exist_ok=True)
+    open(qpath, "w").write(text)
 
+    print(f"  dataset {A.dataset}   complexes {len(pdbs)}   seeds {A.seeds} from {A.start_seed}")
+    print(f"  folds {len(lines)}   queue -> {qpath}")
+    print(f"\n  {unreadable_warning(out)}")
     print(f"\n  next: call_folder.py --queue {qpath} --out {out} --gpus <ids> --run")
     return 0
 
