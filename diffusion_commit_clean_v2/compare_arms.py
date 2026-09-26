@@ -34,7 +34,8 @@ INPUTS
     --out:        write the table as markdown here. Optional.
 
 OUTPUTS
-    stdout: one row per class -- n, then acceptable-at-0.23 under each of the four arms
+    stdout: one row per class -- n, then under each of the four arms "acceptable/n (mean DockQ)": how
+            many selected poses reach 0.23, and the mean DockQ of the selected pose
     --out:  the same table as markdown
 
 EXAMPLE
@@ -157,7 +158,8 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
         if not d:
             continue
         n = len(d["free50"])
-        hit = lambda v: f"{sum(1 for x in v if x >= ACCEPTABLE)}/{n}"  # noqa: E731
+        # acceptable count, then the mean DockQ of the selected pose over the same interfaces
+        hit = lambda v: f"{sum(1 for x in v if x >= ACCEPTABLE)}/{n} ({sum(v) / n:.3f})"  # noqa: E731
         rows.append([k, n, hit(d["free50"]), hit(d["matched"]), hit(d["m50"]), hit(d["mall"])])
     return rows, len(unmatched), partial
 
