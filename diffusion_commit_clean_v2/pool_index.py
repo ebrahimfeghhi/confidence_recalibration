@@ -22,6 +22,7 @@ FUNCTIONS
     load_chain_maps():     chain-map csv -> {(pdb, seed, sample): {reference_chain: pose_chain}}
     load_roles():          roles csv -> {"<pdb>_<c1><c2>": (antibody chain, antigen chain)}
     items_for_interface(): an interface and its poses -> [(pose path, antibody chain, antigen chain)]
+    pair_iptm_at():        a pose and two of its chains -> the model's chain_pair_iptm for that pair
 """
 import collections
 import csv
@@ -100,3 +101,21 @@ def items_for_interface(iface, seeds_samples, maps, roles):
             continue
         items.append((paths.pool_pose(pdb, seed, sample), m[ab_ref], m[ag_ref]))
     return items, dropped
+
+
+def pair_iptm_at(pose, ab, ag):
+    """in: a pose cif path and two of ITS chain names.  out: chain_pair_iptm[ab][ag] from its json
+
+    The json's matrix rows are unlabelled and follow the cif's chain order (verified 800/800 against
+    an independent code path, see fetch_spurious_interface_iptm.py). Read at the chains actually being
+    compared: the pool csv's pair_iptm was read at the chains a CRYSTAL mapping chose, which on
+    duplicate-copy complexes is a different copy for ~25% of poses.
+    """
+    import gemmi
+    d, base = os.path.split(pose)
+    js = os.path.join(d, base.replace("_sample_", "_summary_confidence_sample_").replace(".cif", ".json"))
+    idx = {c.name: n for n, c in enumerate(gemmi.read_structure(pose)[0])}
+    M = json.load(open(js))["chain_pair_iptm"]
+    if len(M) != len(idx):
+        raise ValueError(f"{pose}: {len(M)} ipTM rows but {len(idx)} chains; order cannot be trusted")
+    return float(M[idx[ab]][idx[ag]])

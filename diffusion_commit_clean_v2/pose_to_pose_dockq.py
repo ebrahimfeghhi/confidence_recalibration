@@ -16,6 +16,15 @@ SUMMARY
     is not diversity, it is the absence of an interface. The drop count is recorded per interface rather
     than left to be inferred from a row count.
 
+    THE SORT KEY IS READ AT THE COMPARED CHAINS. pair_iptm is taken from each pose's own confidence
+    json at (model_ab, model_ag) -- the anchor-frame chains this matrix compares and the template will
+    pin. It used to be copied from the pool csv, whose chains a crystal mapping chose; on duplicate-
+    copy complexes that is a different copy for ~25% of poses, so poses were ranked on one interface
+    and templated on another (found 2026-09-25; 43 complexes' selections changed).
+
+    DUPLICATE POSES ARE DROPPED. A predicted-only interface whose name equals a reference interface's
+    arrives in both pool files, so every pose appeared twice.
+
     The matrix is stored WITH its labels -- which pose each row is, which chains were compared, the
     pose's ipTM and its ground-truth DockQ. A matrix whose row order has drifted from its labels is a
     silent and unfalsifiable bug, and row order here is nothing more than a list index.
@@ -46,7 +55,8 @@ OUTPUTS
         sample     (N,)   which diffusion sample each row is
         model_ab   (N,)   the antibody chain compared, per pose
         model_ag   (N,)   the antigen chain compared, per pose
-        pair_iptm  (N,)   the model's own confidence, what the next step sorts by
+        pair_iptm  (N,)   the model's own confidence AT (model_ab, model_ag), what the next step
+                          sorts by
         dockq_gt   (N,)   ground truth against the reference, for evaluation only
 
     <out>/build_log[_<shard>].csv: per interface, poses in the pool, rows kept, poses dropped for a
@@ -84,6 +94,14 @@ def dockq_matrix_for(iface, rows, maps, roles, device, min_poses):
     """in: an interface, its pool rows, a chain map, roles, device, minimum poses.
     out: (arrays dict or None, poses with no mapping, poses with no contacts)
     """
+    seen, uniq = set(), []
+    for r in rows:
+        if (r[0], r[1]) not in seen:
+            seen.add((r[0], r[1]))
+            uniq.append(r)
+    if len(uniq) != len(rows):
+        print(f"  {iface}: {len(rows) - len(uniq)} duplicate pose rows dropped", flush=True)
+    rows = uniq
     items, nomap = pool_index.items_for_interface(iface, [(s, x) for s, x, _, _ in rows], maps, roles)
     # re-pair the labels to what survived rather than assuming the two lists still line up
     by_key = {(s, x): (d, i) for s, x, d, i in rows}
@@ -108,7 +126,7 @@ def dockq_matrix_for(iface, rows, maps, roles, device, min_poses):
         model_ab=np.array([it[1] for it in items]),
         model_ag=np.array([it[2] for it in items]),
         dockq_gt=np.array([by_key[k][0] for k in keys], dtype=np.float32),
-        pair_iptm=np.array([by_key[k][1] for k in keys], dtype=np.float32),
+        pair_iptm=np.array([pool_index.pair_iptm_at(*it) for it in items], dtype=np.float32),
     )
     return out, len(nomap), nocontact
 

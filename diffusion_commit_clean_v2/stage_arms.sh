@@ -14,11 +14,13 @@ PY=/home/ebrahim/Protenix/.venv/bin/python
 D=/home/ebrahim/tts_abag/experimental_data
 FIX=$D/self_template_fixed_50_seed
 VAR=$D/self_template_variable_50_seed
-TMPL=$FIX/templates
+TMPL=$FIX/ns                      # the orchestrator's template namespace
 LOG=$D/stage_arms.log
 GPUS="0 1 2 5"
 say() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 alive() { tmux ls 2>/dev/null | grep -q "^$1:"; }
+# a paused card is held by hold_gpus.py in session hold<gpu>; release it only at the moment of launch
+release_hold() { tmux kill-session -t "hold$1" 2>/dev/null && say "GPU $1: released hold"; }
 
 launch() {   # launch <queue> <out> <csv> <claims> <logdir> <gpu>
     $PY diffusion_commit_clean_v2/call_folder.py --queue "$1" --out "$2" --csv "$3" \
@@ -32,6 +34,7 @@ chain() {   # chain <gpu>
     if ! alive "self_template_fixed_50_seedw$g"; then
         local c=$(ls "$FIX/claims" | wc -l) n=$(wc -l < "$FIX/queue_tofold.tsv")
         if [ "$c" -lt "$n" ]; then
+            release_hold "$g"
             launch "$FIX/queue_tofold.tsv" "$FIX/poses" "$FIX/results.csv" "$FIX/claims" "$FIX" "$g"
             say "GPU $g: launched fixed-seed worker ($c/$n claimed)"
         else
@@ -39,6 +42,7 @@ chain() {   # chain <gpu>
         fi
     fi
     while alive "self_template_fixed_50_seedw$g"; do sleep 120; done
+    release_hold "$g"
     launch "$VAR/queue.tsv" "$VAR/poses" "$VAR/results.csv" "$VAR/claims" "$VAR" "$g"
     say "GPU $g: launched variable-seed worker"
 }

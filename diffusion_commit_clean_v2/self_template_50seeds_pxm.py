@@ -46,6 +46,7 @@ INPUTS
     --force:         recompute from this step onward: pool, anchor, interfaces, spurious, dockq,
                      filter, templates, preflight. Default off, i.e. resume.
     --stop-after:    run no further than this step. Optional, for inspecting an intermediate.
+    --varseed-out:   also write the variable-seed arm's queue into this directory. Optional.
 
 OUTPUTS
     <out>/pool_50.csv          the filtered pool -- the rule, made explicit as a file
@@ -57,18 +58,21 @@ OUTPUTS
     <out>/ns/                  the template namespace
     <out>/diff_vs_<name>.md    carry over / omit / to fold, as a table
     <out>/build.log            every step's stdout
+    <varseed-out>/queue.tsv    with --varseed-out: the variable-seed arm's queue (see varseed_queue)
 
 FUNCTIONS
     filtered_pool():  write pool_50.csv, keeping only the hardcoded seeds and run directory
     run():            one step as a subprocess, logged, skipped when its output exists
     fold_id():        (donor pose, seed, pinned chains) -- what decides whether a fold can be reused
     diff():           new selection vs an earlier experiment, by fold identity
+    varseed_queue():  this queue with one seed per donor, for the variable-seed arm
     main():           the seven steps in order, then the diff
 """
 import argparse
 import collections
 import itertools
 import csv
+import random
 import os
 import re
 import subprocess
@@ -483,7 +487,54 @@ def diff(out, old, ns):
         fh.write("donor_pose\tseed\ttmpl_chains\n")
         for d, sd, ch in sorted(carry):
             fh.write(f"{d}\t{sd}\t{ch}\n")
+
+    # THE CARRIED SCORES, retagged. A carried fold keeps its rows but takes THIS selection's tag, so
+    # results.csv starts holding exactly the selected folds that are already scored; omitted folds'
+    # rows are never copied, so they cannot leak into this arm's results. Written here, in code --
+    # the previous arm's carried rows were written by hand and nothing recorded how.
+    dst = f"{out}/results.csv"
+    # the filter writes a header-only results.csv under --no-reuse; anything beyond it is scored data
+    if os.path.exists(dst) and sum(1 for _ in itertools.islice(open(dst), 2)) > 1:
+        raise SystemExit(f"{dst} already holds scored rows; refusing to overwrite")
+    n = 0
+    with open(dst, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["iface", "seed", "arm", "donor_pose", "tmpl_chains", "sample", "dockq", "iptm"])
+        for r in csv.DictReader(open(src)):
+            k = fold_id(r.get("donor_pose", ""), r["seed"], r.get("tmpl_chains", ""))
+            if k in carry:
+                w.writerow([r["iface"], r["seed"], new[k][3], r["donor_pose"], k[2],
+                            r["sample"], r["dockq"], r["iptm"]])
+                n += 1
+    rows.append(["   rows carried into results.csv", n])
     return rows, (carry, tofold, omit)
+
+
+def varseed_queue(queue, dst):
+    """in: this experiment's queue.tsv, the destination queue path.  out: lines written
+
+    The variable-seed arm folds the SAME donors with the SAME templates, but each donor on its own seed
+    instead of all on one. Seeds are 300100-300149 -- the 50 the compute-matched free arm used, so the
+    extra folds are the same seeds spent differently. Per complex: sort by (pdb, interface, tag),
+    shuffle the 50 seeds with random.Random(f"varseed-{pdb}"), assign in order. Reproduces the
+    2026-09-24 hand-built queue byte for byte; it is here so it is never hand-built again.
+    """
+    lines = [l.rstrip("\n").split("\t") for l in open(queue) if l.strip()]
+    per = collections.Counter(f[1] for f in lines)
+    if max(per.values()) > 50:
+        raise SystemExit(f"a complex has {max(per.values())} donors; only 50 seeds to assign")
+    out, seeds, n = [], {}, collections.Counter()
+    for f in sorted(lines, key=lambda f: (f[1], f[2], f[3])):
+        if f[1] not in seeds:
+            s = list(range(300100, 300150))
+            random.Random(f"varseed-{f[1]}").shuffle(s)
+            seeds[f[1]] = s
+        out.append(f[:4] + [str(seeds[f[1]][n[f[1]]])] + f[5:])
+        n[f[1]] += 1
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    with open(dst, "w") as fh:
+        fh.writelines("\t".join(f) + "\n" for f in out)
+    return len(out)
 
 
 def main():
@@ -495,6 +546,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=16)
     ap.add_argument("--force", choices=STEPS, default=None)
     ap.add_argument("--stop-after", choices=STEPS, default=None)
+    ap.add_argument("--varseed-out", default=None)
     A = ap.parse_args()
 
     out = A.out
@@ -598,6 +650,9 @@ def main():
             f"# {os.path.basename(out)} vs {name}\n\n"
             f"Fold identity is (donor pose, seed, pinned chains).\n\n{t}\n")
         log(f"  wrote {out}/diff_vs_{name}.md")
+    if A.varseed_out:
+        n = varseed_queue(f"{out}/queue.tsv", f"{A.varseed_out}/queue.tsv")
+        log(f"  wrote {A.varseed_out}/queue.tsv ({n} folds, one seed per donor)")
     return 0
 
 
