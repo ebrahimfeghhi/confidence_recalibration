@@ -44,8 +44,8 @@ EXAMPLE
     anchor_relabel.py --poses exp/poses.csv --out-dir exp/chain_frame
 
 FUNCTIONS
-    pose_roles():     every pose -> {pose chain: antibody | antigen}, every copy of a molecule alike
-    pose_residues():  one pose -> each chain's residue names
+    pose_roles():     every pose -> {annotated pose chain: antibody | antigen}
+    every_copy():     one pose's annotated roles -> the same role on every copy of each molecule
     pose_pairs():     one pose -> its antibody-antigen pairs in contact, with their ipTM
     map_to_anchor():  one pose -> its chain mapping onto the anchor, as a csv row
     main():           contacts for every pose, pick the anchors, map every pose
@@ -92,47 +92,52 @@ def pose_roles(poses):
         if not m or not (ab[p] | ag[p]) <= set(m):
             bad.append((p, s, x))
             continue
-        role = {**{m[c]: ANTIBODY for c in ab[p]}, **{m[c]: ANTIGEN for c in ag[p]}}
-        # A ROLE BELONGS TO THE MOLECULE, NOT THE COPY. The benchmark often annotates one copy, and
-        # the crystal map lands it on whichever copy of a pose superposes best -- so labelling only
-        # that chain would smuggle in which copy binds. Every chain carrying identical residues (a copy
-        # of the same input entity) takes the role.
-        res = pose_residues(paths.pool_pose(p, s, x))
-        for c, r in list(role.items()):
-            for d, seq in res.items():
-                if seq == res[c]:
-                    if role.get(d, r) != r:
-                        raise SystemExit(f"{p} {s} {x}: copies {c} and {d} annotated as both roles")
-                    role[d] = r
-        out[(p, s, x)] = role
+        # the annotated chains only; every_copy() extends each role to its molecule's other copies
+        out[(p, s, x)] = {**{m[c]: ANTIBODY for c in ab[p]}, **{m[c]: ANTIGEN for c in ag[p]}}
     if bad:
         raise SystemExit(f"{len(bad)} poses have no crystal chain map covering their role chains, "
                          f"e.g. {bad[:3]}")
     return out
 
 
-def pose_residues(path):
-    """in: a pose cif.  out: {chain: tuple of residue names} -- identical for copies of one entity"""
+def every_copy(path, role):
+    """in: a pose cif and its annotated chains' roles.  out: the roles on every copy of each molecule
+
+    A ROLE BELONGS TO THE MOLECULE, NOT THE COPY. The benchmark often annotates one copy, and the
+    crystal map lands it on whichever copy of a pose superposes best -- labelling only that chain would
+    smuggle in which copy binds. Every chain with identical residues (a copy of the same input entity)
+    takes the role.
+    """
     import gemmi
-    return {ch.name: tuple(r.name for r in ch) for ch in gemmi.read_structure(path)[0]}
+    res = {ch.name: tuple(r.name for r in ch) for ch in gemmi.read_structure(path)[0]}
+    out = dict(role)
+    for c, r in role.items():
+        for d, seq in res.items():
+            if seq == res[c]:
+                if out.get(d, r) != r:
+                    raise ValueError(f"copies {c} and {d} annotated as both roles")
+                out[d] = r
+    return out
 
 
 def pose_pairs(task):
-    """in: (pdb, seed, sample, {pose chain: role}).
-    out: (pdb, seed, sample, [(ab chain, ag chain, chain_pair_iptm)] in contact, error or "")
+    """in: (pdb, seed, sample, {annotated pose chain: role}).
+    out: (pdb, seed, sample, [(ab chain, ag chain, chain_pair_iptm)] in contact, roles on every
+          copy, error or "")
     """
     import contacts
     import pool_index
     pdb, seed, sample, role = task
     path = paths.pool_pose(pdb, seed, sample)
     try:
+        role = every_copy(path, role)
         ab = sorted(c for c, r in role.items() if r == ANTIBODY)
         ag = sorted(c for c, r in role.items() if r == ANTIGEN)
         touching = contacts.contacting(path, [(a, g) for a in ab for g in ag])
         return (pdb, seed, sample,
-                [(a, g, pool_index.pair_iptm_at(path, a, g)) for a, g in touching], "")
+                [(a, g, pool_index.pair_iptm_at(path, a, g)) for a, g in touching], role, "")
     except Exception as e:
-        return pdb, seed, sample, [], f"{type(e).__name__}: {e}"
+        return pdb, seed, sample, [], {}, f"{type(e).__name__}: {e}"
 
 
 def map_to_anchor(task):
@@ -178,11 +183,12 @@ def main():
         w = csv.writer(fh)
         w.writerow(["pdb", "seed", "sample", "ab_chain", "ag_chain", "pair_iptm"])
         tasks = [(p, s, x, roles[(p, s, x)]) for p, s, x in poses]
-        for i, (p, s, x, got, err) in enumerate(pool.imap_unordered(pose_pairs, tasks, 8), 1):
+        for i, (p, s, x, got, role, err) in enumerate(pool.imap_unordered(pose_pairs, tasks, 8), 1):
             if err:
                 failed.append(f"{p} {s} {x}: {err}")
                 continue
             pairs[(p, s, x)] = got
+            roles[(p, s, x)] = role
             w.writerows([p, s, x, a, g, f"{v:.6f}"] for a, g, v in got)
             if i % 2000 == 0 or i == len(tasks):
                 print(f"  contacts {i}/{len(tasks)}  {time.time() - t0:.0f}s  failed {len(failed)}",
