@@ -2,21 +2,18 @@
 
 WHY THIS EXISTS. Folds are not reproducible run-to-run (bf16 reductions reorder; the same seed has
 landed at DockQ 0.03 and 0.59 on the same card), so a repeat fold of a seed is DATA, not a duplicate
--- it must not overwrite the first. Every fold therefore gets its own directory keyed by a hash of
-the inputs that define it, plus a run.json recording enough to tell two runs of the same seed apart
-after the fact: precision, recycle count, which poses were used as templates and their checksums.
+-- it must not overwrite the first. Every fold therefore gets its own directory named by a random id,
+plus a run.json recording enough to tell two runs of the same seed apart after the fact: precision,
+recycle count, which poses were used as templates and their checksums.
 
 The pxm2025 pool was written without any of this, and its exact configuration is now unrecoverable --
 we cannot tell from disk whether it was bf16 or fp32, or what templates it saw. That is the failure
 this module is meant to prevent repeating.
-
-The id deliberately mixes a timestamp, the pid and a content hash: the hash makes an identical
-re-request collapse onto one directory, while the timestamp and pid keep two concurrent workers on
-the same arm from colliding.
 """
 import hashlib
 import json
 import os
+import random
 import socket
 import subprocess
 import sys
@@ -24,6 +21,7 @@ import time
 
 
 ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+_RNG = random.SystemRandom()   # immune to random.seed(); see run_id()
 
 
 def run_id(defining: dict = None, n: int = 10) -> str:
@@ -34,10 +32,14 @@ def run_id(defining: dict = None, n: int = 10) -> str:
     second would overwrite the first. 36^10 is large enough that collisions are not a consideration;
     the previous scheme hashed into 36^3 for TEMPLATE ids and 720 of ~3300 collided.
 
+    OS entropy, NOT the global `random` module. Protenix calls random.seed(<fold seed>) before every
+    fold, so an id drawn from the global generator depends only on the previous fold's seed. Every
+    fold of the self-template arms uses seed 430000, and 173 of its folds landed in 27 directories,
+    each overwriting the last one's poses and run.json (found 2026-09-25).
+
     `defining` is accepted and ignored so old callers keep working.
     """
-    import random
-    return "".join(random.choice(ALPHABET) for _ in range(n))
+    return "".join(_RNG.choice(ALPHABET) for _ in range(n))
 
 
 def run_dir(out: str, pdb: str, seed, rid: str) -> str:

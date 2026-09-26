@@ -623,6 +623,16 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
     return got, err
 
 
+def _move_new(src, dst):
+    """in: source and destination paths.  out: src moved to dst; raises if dst already exists.
+
+    os.replace overwrites silently, which is how one fold's poses replaced another's unnoticed.
+    """
+    if os.path.exists(dst):
+        raise FileExistsError(f"refusing to overwrite an existing pose file: {dst}")
+    os.replace(src, dst)
+
+
 def normalise_poses(rdir, name, pdb):
     """in: a finished fold's directory, its job name, the complex.
     out: poses moved to <rdir>/predictions/<pdb>_sample_N.cif; returns how many moved
@@ -637,12 +647,12 @@ def normalise_poses(rdir, name, pdb):
     moved = 0
     for src in sorted(glob.glob(f"{rdir}/{name}/**/*_sample_*.cif", recursive=True)):
         n = os.path.basename(src).split("_sample_")[1]
-        os.replace(src, f"{dest}/{pdb}_sample_{n}")
+        _move_new(src, f"{dest}/{pdb}_sample_{n}")
         moved += 1
     for src in sorted(glob.glob(f"{rdir}/{name}/**/*summary_confidence_sample_*.json",
                                 recursive=True)):
         n = os.path.basename(src).split("_sample_")[1]
-        os.replace(src, f"{dest}/{pdb}_summary_confidence_sample_{n}")
+        _move_new(src, f"{dest}/{pdb}_summary_confidence_sample_{n}")
     # the scorer's own json output lives in the job directory too, and is NOT a pose; move it rather
     # than losing it when the job directory goes
     # A unit scores every interface of its complex, and each job writes its own *_json directory, so the
@@ -722,6 +732,16 @@ def run_unit(ctx, unit):
 
     rdir = runmeta.run_dir(A.out, pdb, seed, runmeta.run_id())
     name = f"{target.replace('*', pdb)}_{tag}"
+    # one directory per fold, created EXCLUSIVELY. A reused directory is how 173 fixed-arm folds
+    # overwrote each other's poses in 27 directories while every check passed; fail before the GPU runs
+    try:
+        os.makedirs(os.path.dirname(rdir), exist_ok=True)
+        os.mkdir(rdir)
+    except FileExistsError:
+        print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- run directory already exists: {rdir}",
+              flush=True)
+        release()
+        return "failed"
     try:
         dt, tcounts = fold(ctx.runner, ctx.configs, named_job(job_src, name, f"{rdir}/jobs"),
                            int(seed), name, A.ncycle, A.nsample, expect, rdir, env)
@@ -747,7 +767,12 @@ def run_unit(ctx, unit):
 
     got, err = score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses)
     # scoring reads the driver's own layout, so normalise only after it has run
-    normalise_poses(rdir, name, pdb)
+    try:
+        normalise_poses(rdir, name, pdb)
+    except FileExistsError as e:
+        # the scores are already in the csv; keep the claim so the unit is not refolded, but say so
+        print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- {e}", flush=True)
+        return "failed"
     result = "ran"
     if got or all((i, str(seed), tag) in ctx.rows_done for i in want):
         # print pdb too: target is "*" for a free fold
