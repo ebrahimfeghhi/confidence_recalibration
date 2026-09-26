@@ -375,15 +375,19 @@ def reconcile_claims(claim_dir, csv_path, pool_ifaces):
     """
     if not claim_dir or not os.path.isdir(claim_dir):
         return 0
+    # KEYED BY TAG as well as seed. Claims are "<pdb>_<target>_<tag>_<seed>" and the csv's arm column is
+    # the tag. Keying on (pdb, seed) alone works for free folds, whose seeds are unique, but every
+    # templated fold shares one seed -- so one scored fold made every dead claim of its complex look
+    # scored, and a fold killed mid-run was skipped forever (4 stranded in the 2026-09-25 arm).
     scored = collections.defaultdict(set)
     for r in csv.DictReader(open(csv_path)):
-        scored[(r["iface"].split("_")[0], r["seed"])].add(r["iface"])
+        scored[(r["iface"].split("_")[0], r["arm"], r["seed"])].add(r["iface"])
     released = 0
     for c in os.listdir(claim_dir):
         parts = c.split("_")
-        pdb, seed = parts[0], parts[-1]
+        pdb, tag, seed = parts[0], parts[-2], parts[-1]
         want = pool_ifaces.get(pdb)
-        if want and not want <= scored.get((pdb, seed), set()):
+        if want and not want <= scored.get((pdb, tag, seed), set()):
             if claim_is_live(f"{claim_dir}/{c}"):
                 continue
             try:
