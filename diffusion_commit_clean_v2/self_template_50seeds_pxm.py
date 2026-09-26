@@ -259,13 +259,12 @@ def run_sharded(cmd, gpus, outputs, force, log, name, deadline_s):
     the standing 4-card budget, so after deadline_s the extra shards are stopped and the remainder is
     finished on the FIRST gpu alone, which is back inside budget. Resuming costs nothing for the same
     reason a killed shard is cheap.
-    """
-    def there(p):
-        return os.path.isdir(p) and bool(os.listdir(p))
 
-    if not force and outputs and all(there(p) for p in outputs):
-        log(f"  [{name}] present, skipping")
-        return False
+    ALWAYS RUNS. There is no "output present, skip" test here: a non-empty matrix directory is exactly
+    what an interrupted run leaves, and treating it as done skipped 315 of 339 interfaces on
+    2026-09-25 (the dockq validator caught it). The script skips each interface whose npz exists, so
+    re-running a finished step costs only the listing. `force` is accepted for symmetry with run().
+    """
     n = len(gpus)
     log(f"  [{name}] running {os.path.basename(str(cmd[1]))} as {n} shards on GPUs {','.join(gpus)}")
     log(f"         deadline {deadline_s}s on the extra GPUs, then GPU {gpus[0]} finishes alone")
