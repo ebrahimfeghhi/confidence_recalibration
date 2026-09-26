@@ -49,9 +49,10 @@ folded).
 - **The 33 unannotated chains** (22 complexes): the benchmark labels only the chains in its scored
   crystal interfaces, so which chains may form interfaces is still slightly shaped by the crystal.
   Close it by labelling every chain from 1-D metadata, checked by hand, and measuring the change.
-- **Anchor sensitivity:** the anchor only names chains, but for duplicate copies the naming can split or
-  merge binding modes across interface lists. Test: rerun selection with a different anchor and compare
-  donors. `analysis/crystal_frame_selection.md` is partial evidence (B names chains by the crystal).
+- **The anchor:** it only names chains, and the question is whether the top-ipTM anchor does well, not
+  whether a worse one would hurt (decided 2026-09-26). Evidence so far: A (top-ipTM anchor) and B
+  (crystal naming) give the same donor quality (`analysis/crystal_frame_selection.md`); the arm
+  outcome is the real test.
 - **Template replacement:** `point_templates_at()` replaces Protenix's 3-4 PDB templates with the one
   self-template rather than adding it, so a rescue could come from the self-template or from removing
   the PDB templates. Separating them needs a third condition.
