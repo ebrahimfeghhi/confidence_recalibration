@@ -17,13 +17,14 @@ INPUTS
                    Any column named n_seeds is read; other columns are ignored.
     --start-seed:  first seed. Default 300000, so seeds run 300000..300049.
     --force:       queue folds that already exist on disk. Default off, and it refuses instead.
+    --queue-name:  the queue's file name under --out. Default queue_free.tsv.
 
     Files read:
     job jsons: one per complex, matched as `*-final-updated.json` (the MSA-attached input). A complex
                whose json is named otherwise is absent from the queue rather than an error.
 
 OUTPUTS
-    <out>/queue_free.tsv: one line per fold, tab separated:
+    <out>/<queue-name>: one line per fold, tab separated:
 
         kind   pdb    target   tag    seed
         free   8ror   *        free   300000
@@ -39,7 +40,7 @@ FUNCTIONS
     complexes():           which complexes the dataset has a job json for
     queue_lines():         one queue line per (complex, seed)
     read_per_complex():    a csv of pdb,n_seeds -> {pdb: n_seeds}
-    seeds_in_use():        the pool and a results csv -> every seed already folded, per complex
+    seeds_in_use():        the pool, results csvs and run dirs -> every seed already used, per complex
     existing_seeds():      which of those already have a fold on disk
     unreadable_warning():  whether later steps will be able to FIND what this writes
     main():                write the queue, or refuse if the folds already exist
@@ -91,16 +92,24 @@ def queue_lines(pdbs, seeds, start_seed, per_complex=None, taken=None):
     return out
 
 
-def seeds_in_use(pool_csv, free_csv):
-    """in: the pool csv and a run's results csv.  out: {pdb: every seed already folded or scored}"""
+def seeds_in_use(pool_csv, results_csvs, run_dirs):
+    """in: the pool csv, results csvs, run directories.  out: {pdb: every seed already folded or scored}
+
+    Includes the run being extended (its results.csv and its <pdb>/<seed>-* directories), so a
+    top-up never reuses a seed that run already folded -- the free pool alone does not know them.
+    """
     import csv as _csv
     used = collections.defaultdict(set)
-    for src, key in ((pool_csv, "pdb"), (free_csv, None)):
-        if not src or not os.path.exists(src):
-            continue
-        for r in _csv.DictReader(open(src)):
-            pdb = r["pdb"] if key else r["iface"].split("_")[0]
-            used[pdb].add(r["seed"])
+    if os.path.exists(pool_csv):
+        for r in _csv.DictReader(open(pool_csv)):
+            used[r["pdb"]].add(r["seed"])
+    for src in results_csvs:
+        if os.path.exists(src):
+            for r in _csv.DictReader(open(src)):
+                used[r["iface"].split("_")[0]].add(r["seed"])
+    for d in run_dirs:
+        for f in glob.glob(f"{d}/*/*-*"):
+            used[os.path.basename(os.path.dirname(f))].add(os.path.basename(f).split("-")[0])
     return used
 
 
@@ -143,6 +152,8 @@ def main():
     ap.add_argument("--per-complex", default=None,
                     help="csv of pdb,n_seeds -- a different count per complex")
     ap.add_argument("--force", action="store_true", help="queue folds that already exist on disk")
+    ap.add_argument("--queue-name", default="queue_free.tsv",
+                    help="file name under --out, so a top-up does not replace the run's first queue")
     A = ap.parse_args()
 
     want = set(A.complexes.split(",")) if A.complexes else None
@@ -156,9 +167,11 @@ def main():
     per = read_per_complex(A.per_complex) if A.per_complex else None
     if per:
         pdbs = [p for p in pdbs if per.get(p, 0) > 0]
-    taken = seeds_in_use(str(paths.PXM2025_POOL_CSV), f"{paths.FREE_DIR}/results.csv")
+    taken = seeds_in_use(str(paths.PXM2025_POOL_CSV),
+                         [f"{paths.FREE_DIR}/results.csv", f"{out}/results.csv"],
+                         [str(paths.FREE_DIR), out])
     lines = queue_lines(pdbs, A.seeds, A.start_seed, per, taken)
-    qpath = f"{out}/queue_free.tsv"
+    qpath = f"{out}/{A.queue_name}"
     text = "\n".join(lines) + "\n"
     # REFUSE BEFORE WRITING: both checks used to run after the queue was already written
     seen = existing_seeds(out, lines)
