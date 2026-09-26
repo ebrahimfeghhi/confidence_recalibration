@@ -10,7 +10,7 @@ receive (TMPL_DUMP_INFER). Then compares them against the donor cif read indepen
     coverage        fraction of query tokens the template covers
 
 Usage (repo root):
-    CUDA_VISIBLE_DEVICES= $PROTENIX_PYTHON diffusion_commit_clean_v2/audit_template_features.py \
+    CUDA_VISIBLE_DEVICES= $PROTENIX_PYTHON archive/audits/audit_template_features.py \
         --ns experimental_data/self_template_fixed_50_seed/templates --job 8ror_AB_A00 --out <dir>
 """
 import argparse
@@ -18,7 +18,8 @@ import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # repo root
+sys.path.insert(0, ROOT)
 import paths  # noqa: E402
 
 sys.path.insert(0, str(paths.PROTENIX_SRC))
@@ -36,7 +37,7 @@ def dump_features(ns, job, out):
     from protenix.data.inference.infer_dataloader import InferenceDataset
     from runner.inference import model_configs
 
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, os.path.join(ROOT, "diffusion_commit_clean_v2"))
     from folder import TMPL_ENV
 
     chosen = json.load(open(f"{ns}/jobs/{job}/chosen.json"))
