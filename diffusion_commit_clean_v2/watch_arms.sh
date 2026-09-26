@@ -43,6 +43,13 @@ while true; do
         fi
         echo "$arm $c $r" >> "$STATE"
     done
+    # disk: the arms keep every pose (~3.5 MB per fold); warn well before the 1024G quota
+    used=$(quota -s 2>/dev/null | tail -1 | awk '{print $2}')
+    usedg=${used%G}
+    say "disk: $used of 1024G"
+    if [ "${usedg%%.*}" -ge 950 ] 2>/dev/null; then
+        say "  REMEDIATE disk at $used -- free space before the quota stops the arms"
+    fi
     say "---"
     sleep 1800
 done
