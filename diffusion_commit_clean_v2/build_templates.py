@@ -210,8 +210,14 @@ def build_one(task):
     """
     key, pdb, donor_poses, tids, ns, req, jobs_dir = task
     out = f"{ns}/jobs/{key}"
-    if os.path.exists(f"{out}/job.json"):
-        return key, "cached", ""
+    # REUSE ONLY WHAT IS PROVABLY THE SAME: same donors under the same ids. Ids are re-assigned in
+    # queue order on every build, so after a re-selection a cached job can point at an id whose cif
+    # this build is about to overwrite with a different donor -- a wrong template, silently.
+    if os.path.exists(f"{out}/job.json") and os.path.exists(f"{out}/chosen.json"):
+        old = json.load(open(f"{out}/chosen.json"))
+        if [(c["cif"], c["tid"]) for c in old] == [(donor_poses[c["idx"]], tids[c["idx"]])
+                                                   for c in old if c["idx"] < len(donor_poses)]:
+            return key, "cached", ""
     try:
         os.makedirs(f"{out}/a3m", exist_ok=True)
         os.makedirs(f"{ns}/mmcif", exist_ok=True)
