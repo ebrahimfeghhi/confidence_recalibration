@@ -50,12 +50,12 @@ INPUTS
 
 OUTPUTS
     <out>/pool_50.csv          the filtered pool -- the rule, made explicit as a file
-    <out>/anchor/              chain maps and roles in the anchor frame
+    <out>/chain_frame/         chain maps and roles in the anchor frame
     <out>/pose_interfaces.csv  the interfaces the poses declare
-    <out>/spurious/            pair_iptm for the predicted-only interfaces
-    <out>/matrices/            per-interface npz, built from the filtered pool only
+    <out>/predicted_only_interfaces/  pair_iptm for the interfaces only the predictions declare
+    <out>/pose_dockq_matrices/ per-interface npz, built from the filtered pool only
     <out>/queue.tsv            the folds to run
-    <out>/ns/                  the template namespace
+    <out>/templates/           the template namespace
     <out>/diff_vs_<name>.md    carry over / omit / to fold, as a table
     <out>/build.log            every step's stdout
     <varseed-out>/queue.tsv    with --varseed-out: the variable-seed arm's queue (see varseed_queue)
@@ -563,8 +563,11 @@ def main():
     forced = {s: STEPS.index(s) >= start for s in STEPS}
     log(f"\n=== self_template_50seeds_pxm -> {out}   seeds 300000-300049, {RUN_DIR} only ===")
 
-    anchor, spur = f"{out}/anchor", f"{out}/spurious"
-    mats, ns = f"{out}/matrices", f"{out}/ns"
+    # descriptive names, matching what the 2026-09-25 arm was renamed to by hand. The template
+    # namespace's name is baked into every job json as an absolute path, so it can never be renamed
+    # after step 6 -- choose it here.
+    anchor, spur = f"{out}/chain_frame", f"{out}/predicted_only_interfaces"
+    mats, ns = f"{out}/pose_dockq_matrices", f"{out}/templates"
     pool = f"{out}/pool_50.csv"
     if forced["pool"] or not os.path.exists(pool):
         filtered_pool(out, log)

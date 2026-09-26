@@ -36,7 +36,7 @@ OUTPUTS
     exit code: non-zero if any check failed, so this works as a gate before launching
 
 EXAMPLE
-    preflight.py --ns exp/ns --queue exp/queue.tsv --maps exp/frame_maps.csv --roles exp/frame_roles.csv
+    preflight.py --ns exp/templates --queue exp/queue.tsv --maps exp/frame_maps.csv --roles exp/frame_roles.csv
 
 FUNCTIONS
     main(): walk every namespace the queue asks for and run the three checks

@@ -140,7 +140,8 @@ def old_folds(exp):
                 pose_of[(f[1], f[3])] = f[5]
                 iface_of[(f[1], f[3])] = f[2]
     pinned = collections.defaultdict(set)
-    jd = f"{exp}/ns/jobs"
+    jd = next((f"{exp}/{d}/jobs" for d in ("templates", "ns") if os.path.isdir(f"{exp}/{d}/jobs")),
+              f"{exp}/templates/jobs")      # older experiments named the namespace ns/
     if os.path.isdir(jd):
         for d in os.listdir(jd):
             p = f"{jd}/{d}/chosen.json"

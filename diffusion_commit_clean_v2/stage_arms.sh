@@ -14,7 +14,7 @@ PY=/home/ebrahim/Protenix/.venv/bin/python
 D=/home/ebrahim/tts_abag/experimental_data
 FIX=$D/self_template_fixed_50_seed
 VAR=$D/self_template_variable_50_seed
-TMPL=$FIX/ns                      # the orchestrator's template namespace
+TMPL=$FIX/templates               # the orchestrator's template namespace
 LOG=$D/stage_arms.log
 GPUS="0 1 2 5"
 say() { echo "$(date '+%F %T') $*" >> "$LOG"; }

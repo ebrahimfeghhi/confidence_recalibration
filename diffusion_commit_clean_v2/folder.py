@@ -70,7 +70,7 @@ OUTPUTS
 EXAMPLE
     folder.py --queue q.tsv --out experimental_data/free
     folder.py --queue exp/queue.tsv --out exp/out --csv exp/results.csv \
-              --templates exp/ns --claim-dir exp/claims --drop-cifs
+              --templates exp/templates --claim-dir exp/claims --drop-cifs
     folder.py --verify --csv exp/results.csv --out exp/out
 
 FUNCTIONS

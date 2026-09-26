@@ -44,7 +44,7 @@ OUTPUTS
     <ns>/release_dates.json:     every id in the namespace, dated 2000-01-01 so nothing filters it out
 
 EXAMPLE
-    build_templates.py --queue exp/queue.tsv --ns exp/ns \\
+    build_templates.py --queue exp/queue.tsv --ns exp/templates \\
                        --maps exp/frame_maps.csv --roles exp/frame_roles.csv --jobs 16
 
 FUNCTIONS
