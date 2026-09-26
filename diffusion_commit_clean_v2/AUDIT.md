@@ -11,6 +11,7 @@ bookkeeping, and the folds carried over from earlier runs.
 | 2 | Folds were overwriting each other's poses; scores unaffected | fixed `2fd17b8` |
 | 3 | 2,585 carried-over folds match their source exactly | verified, one gap open |
 | 4 | Two leftover `watch.sh` auto-restarters from 2026-09-24 still running | stopped 2026-09-25 |
+| 5 | Step 3 read chain maps from an older anchor run, not this build's own | fixed; no effect on this arm |
 
 ### 1. Templates
 
@@ -74,6 +75,19 @@ every fold. Every templated fold uses seed 430000, so directory names repeated.
 `watch.sh --exp reffree_50 --gpus 1,5,6` (PID 1429227) and `watch.sh --exp free_matched --gpus 1,5,6`
 (PID 1476361). Neither can launch now — `reffree_50` has no unclaimed folds, `free_matched/` no longer
 exists — but both were auto-restarters on our GPUs. Stopped by PID on 2026-09-25.
+
+### 5. Step 3 read the wrong chain maps
+
+`fetch_spurious_interface_iptm.py` read `paths.ANCHOR_DIR` (`experimental_data/anchor_frame/`, an older
+anchor run) instead of the build's own maps (`chain_frame/`); the orchestrator could not point it
+elsewhere. The two agree for 5,497 of 5,500 poses. The 3 that differ are 8w5v poses whose two antigen
+copies the runs label oppositely, so their 8w5v_BD ipTM was read from chains B–C.
+
+- Rerunning step 3 with the build's own maps changes exactly those 3 values (e.g. 0.161 → 0.212).
+- Rerunning selection for 8w5v: the stored values reproduce the queue exactly (29 donors); the
+  corrected ones select the **same 29 donors** and relabel one (`300021` sample 2: AD → BD). Its
+  template chains are A+B+C either way. **No effect on any fold.**
+- Fix: step 3 takes `--anchor-dir`, and the orchestrator passes its own anchor output.
 
 ## Tidy-ups (`2e8c961`)
 

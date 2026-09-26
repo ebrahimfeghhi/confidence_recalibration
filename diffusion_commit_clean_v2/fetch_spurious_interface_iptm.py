@@ -22,6 +22,10 @@ INPUTS
               handled here.
     --out:    where the two csvs go. Required.
     --jobs:   worker processes reading confidence jsons in parallel. Default 8. CPU only.
+    --anchor-dir: where anchor_relabel.py wrote chain_maps_anchor.csv. Default paths.ANCHOR_DIR. Must
+              be the SAME run that named the interfaces: this used to be a literal, so the 50-seed build
+              read maps from an older anchor run, and 3 poses of 8w5v (whose two antigen copies the two
+              runs labelled oppositely) had their 8w5v_BD ipTM read from chains B-C.
 
     Files read:
     anchor maps: chain_maps_anchor.csv, to translate an anchor-frame pair into each pose's own chains
@@ -58,9 +62,6 @@ from fmt import table  # noqa: E402
 
 import pool_index  # noqa: E402
 
-ANCHOR_DIR = str(paths.ANCHOR_DIR)
-
-
 def pair_iptm_rows(task):
     """in: (pdb, [(seed, sample, pose path, chain map)], pairs).
     out: (pdb, ab, ag, seed, sample, pair_iptm) per pose per pair
@@ -93,6 +94,7 @@ def main():
     ap.add_argument("--ifaces", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--anchor-dir", default=str(paths.ANCHOR_DIR))
     ap.add_argument("--pool", default=None,
                     help="pool csv naming which poses exist. Default the full pxm2025 pool; pass a "
                          "filtered one to restrict which seeds are read")
@@ -102,7 +104,7 @@ def main():
     for r in csv.DictReader(open(A.ifaces)):
         if r["have_gt"] == "0":
             spur[r["pdb"]].append((r["ab_chain"], r["ag_chain"]))
-    amaps = pool_index.load_chain_maps(f"{ANCHOR_DIR}/chain_maps_anchor.csv")
+    amaps = pool_index.load_chain_maps(f"{A.anchor_dir}/chain_maps_anchor.csv")
     xmaps = pool_index.load_chain_maps()
 
     poses = collections.defaultdict(set)

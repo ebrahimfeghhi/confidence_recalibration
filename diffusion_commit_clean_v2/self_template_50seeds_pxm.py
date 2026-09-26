@@ -538,7 +538,7 @@ def main():
         return 0
 
     run([PY, f"{HERE}/fetch_spurious_interface_iptm.py", "--ifaces", f"{out}/pose_interfaces.csv",
-         "--pool", pool, "--out", spur, "--jobs", A.jobs],
+         "--pool", pool, "--anchor-dir", anchor, "--out", spur, "--jobs", A.jobs],
         [f"{spur}/spurious_pool.csv", f"{spur}/spurious_roles.csv"],
         forced["spurious"], log, "spurious")
     validate("spurious", out, anchor, spur, mats, ns, log)
