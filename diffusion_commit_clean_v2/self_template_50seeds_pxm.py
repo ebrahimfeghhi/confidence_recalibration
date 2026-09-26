@@ -5,9 +5,10 @@ SUMMARY
     One command for every step before folding, so the only thing it spends is CPU and, for the DockQ
     matrices, a GPU for under an hour.
 
-    NOTHING ON THE SELECTION PATH READS THE CRYSTAL beyond two facts taken as KNOWN INPUT: which
-    complexes form the benchmark (the ids of the crystal-scored pool, the same 123 the free arms use)
-    and which chains are antibody and which antigen (the benchmark's annotation). Interfaces come from
+    NOTHING ON THE SELECTION PATH READS THE CRYSTAL beyond two facts taken as KNOWN: which complexes
+    form the benchmark (the ids of the crystal-scored pool, the same 123 the free arms use) and which
+    chains are antibody and which antigen (the benchmark's role file, via each pose's crystal chain
+    map -- the role only, never which chains bind). Interfaces come from
     contacts in the poses, the ranking from each pose's own confidence json, the similarity from
     pose-to-pose DockQ. The crystal is otherwise read only to score folds (scorer.py) and to report
     arms (score_experiment.py, compare_arms.py).
@@ -22,7 +23,6 @@ SUMMARY
     WHAT IT RUNS, in order. Each step reads the previous step's output from <out>:
 
       pool        poses.csv: every pose the rule admits, found on disk
-      roles       chain_roles.py         antibody, antigen or none per input entity (known input)
       anchor      anchor_relabel.py      each pose's contacting antibody-antigen pairs and their ipTM;
                                          the anchor per complex; every pose's chains named after it
       interfaces  pose_interfaces.py     antibody-antigen anchor pairs in contact in >= 1 pose
@@ -56,7 +56,6 @@ INPUTS
 
 OUTPUTS
     <out>/poses.csv                  the pool: pdb, seed, sample
-    <out>/chain_roles.csv            antibody or antigen per entity
     <out>/chain_frame/               pose_contacts.csv, chain_maps_anchor.csv, anchor_chains.csv,
                                      anchor_manifest.json
     <out>/interfaces.csv             the interfaces, in anchor letters
@@ -108,7 +107,7 @@ POOL_SEEDS = [str(300000 + i) for i in range(50)]
 SAMPLES = range(5)
 RUN_DIR = paths.LEGACY_RUN
 
-STEPS = ["pool", "roles", "anchor", "interfaces", "dockq", "filter", "templates", "preflight"]
+STEPS = ["pool", "anchor", "interfaces", "dockq", "filter", "templates", "preflight"]
 
 
 def pool_poses(dst, log):
@@ -230,16 +229,7 @@ def validate(name, out, log):
 
     poses = rows(f"{out}/poses.csv")
     pdbs = {r["pdb"] for r in poses}
-    if name == "roles":
-        r = rows(f"{out}/chain_roles.csv")
-        got = {x["pdb"] for x in r}
-        if got != pdbs:
-            fail(f"roles cover {len(got)} of {len(pdbs)} complexes")
-        n = collections.Counter(x["role"] for x in r)
-        log(f"         {len(r)} entities over {len(got)} complexes: {n['antibody']} antibody, "
-            f"{n['antigen']} antigen, {n['none']} unannotated")
-
-    elif name == "anchor":
+    if name == "anchor":
         m = rows(f"{out}/chain_frame/chain_maps_anchor.csv")
         want = {(x["pdb"], x["seed"], x["sample"]) for x in poses}
         got = {(x["pdb"], x["seed"], x["sample"]) for x in m if x["chain_mapping"]}
@@ -420,7 +410,7 @@ def main():
     last = STEPS.index(A.stop_after) if A.stop_after else len(STEPS) - 1
     # the template namespace's path is baked into every job json, so it is named here, once
     frame, mats, ns = f"{out}/chain_frame", f"{out}/pose_dockq_matrices", f"{out}/templates"
-    poses, roles, ifaces = f"{out}/poses.csv", f"{out}/chain_roles.csv", f"{out}/interfaces.csv"
+    poses, ifaces = f"{out}/poses.csv", f"{out}/interfaces.csv"
     maps = f"{frame}/chain_maps_anchor.csv"
     log(f"\n=== self_template_50seeds_pxm -> {out}   seeds 300000-300049, {RUN_DIR} only ===")
 
@@ -431,11 +421,8 @@ def main():
             else:
                 log("  [pool] present, skipping")
             continue
-        if step == "roles":
-            run([PY, f"{HERE}/chain_roles.py", "--pdbs", poses, "--out", roles], [roles],
-                forced[step], log, step)
-        elif step == "anchor":
-            run([PXM_PY, f"{HERE}/anchor_relabel.py", "--poses", poses, "--roles", roles,
+        if step == "anchor":
+            run([PXM_PY, f"{HERE}/anchor_relabel.py", "--poses", poses,
                  "--out-dir", frame, "--jobs", A.jobs],
                 [maps, f"{frame}/anchor_chains.csv", f"{frame}/pose_contacts.csv"], forced[step], log,
                 step)

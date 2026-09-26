@@ -10,10 +10,10 @@ SUMMARY
         5.0 A in AT LEAST ONE pose
 
     The cutoff is the heavy-atom contact distance DockQ uses. There is deliberately no "must appear in
-    k poses" rule, which would be a knob. Antibody and antigen come from the input sequences
-    (chain_roles.py); contacts from the poses (anchor_relabel.py computed them, in each pose's own
-    letters, and this translates them through the anchor mapping). NOTHING HERE READS THE CRYSTAL:
-    every interface is named in anchor letters, "<pdb>_<antibody chain><antigen chain>".
+    k poses" rule, which would be a knob. Which chains are antibody and antigen is known input
+    (anchor_relabel.py); contacts come from the poses, computed by anchor_relabel.py in each pose's own
+    letters and translated here through the anchor mapping. Every interface is named in anchor
+    letters, "<pdb>_<antibody chain><antigen chain>".
 
 INPUTS
     --anchor-dir: anchor_relabel.py's output directory. Required.

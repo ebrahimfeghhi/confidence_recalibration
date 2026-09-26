@@ -6,9 +6,9 @@ SUMMARY
     the next. Later steps sort poses per interface, so they need one consistent naming across the pool.
     This picks one pose per complex as the anchor and expresses every other pose in its terms.
 
-    NOTHING HERE READS THE CRYSTAL. Which chains are antibody and antigen is known input
-    (chain_roles.py); which pairs touch comes from the pose's own coordinates, and the confidence from
-    the pose's own summary json. A chain the benchmark leaves unannotated takes part in no pair.
+    WHICH CHAINS ARE ANTIBODY AND ANTIGEN is taken as known (see pose_roles). Nothing else here reads
+    the crystal: which pairs touch comes from the pose's own coordinates, the confidence from the
+    pose's own summary json. A chain the benchmark leaves unannotated takes part in no pair.
 
     WHEN IT DOES ANYTHING -- only when a complex has more than one copy of an entity. With one antibody
     and one antigen there is a single possible assignment, so every mapping is the identity.
@@ -29,7 +29,6 @@ SUMMARY
 
 INPUTS
     --poses:   csv of pdb, seed, sample -- the pool. Required.
-    --roles:   chain_roles.py's csv: antibody, antigen or none per entity. Required.
     --out-dir: where the csvs and the manifest go. Required.
     --jobs:    worker processes. Default 8. CPU only.
 
@@ -38,14 +37,15 @@ OUTPUTS
                                      POSE's letters, with its chain_pair_iptm -- read by
                                      pose_interfaces.py, so no pose is parsed twice
     <out-dir>/chain_maps_anchor.csv: per pose, {anchor_chain: pose_chain}
-    <out-dir>/anchor_chains.csv:     per complex, each anchor chain's entity and role
+    <out-dir>/anchor_chains.csv:     per complex, each anchor chain's role
     <out-dir>/anchor_manifest.json:  the anchor chosen per complex, and what was mapped or failed
 
 EXAMPLE
-    anchor_relabel.py --poses exp/poses.csv --roles exp/chain_roles.csv --out-dir exp/chain_frame
+    anchor_relabel.py --poses exp/poses.csv --out-dir exp/chain_frame
 
 FUNCTIONS
-    chain_entities(): one pose -> {chain: entity}, by exact sequence
+    pose_roles():     every pose -> {pose chain: antibody | antigen}, every copy of a molecule alike
+    pose_residues():  one pose -> each chain's residue names
     pose_pairs():     one pose -> its antibody-antigen pairs in contact, with their ipTM
     map_to_anchor():  one pose -> its chain mapping onto the anchor, as a csv row
     main():           contacts for every pose, pick the anchors, map every pose
@@ -71,37 +71,64 @@ MAP_FIELDS = ["pdb", "seed", "sample", "chain_mapping", "anchor_seed", "anchor_s
 ANTIBODY, ANTIGEN = "antibody", "antigen"
 
 
-def chain_entities(path, seqs):
-    """in: a pose cif and its complex's entity sequences.  out: {chain: entity index}
+def pose_roles(poses):
+    """in: [(pdb, seed, sample)].  out: {(pdb, seed, sample): {pose chain: "antibody" | "antigen"}}
 
-    By EXACT sequence: a prediction carries its input sequence verbatim, so anything else means the
-    pose and the job disagree and must not be guessed at.
+    Which chains are antibody and antigen is taken as KNOWN, and read the way the benchmark records it:
+    its role file names the crystal's antibody and antigen chains, and each pose's crystal chain map
+    says which pose chain each of those is. Only the role is used -- any copy of an antibody is an
+    antibody -- never which chains bind. A chain the benchmark does not annotate gets no role. Raises
+    if a pose has no map covering its role chains: a role must never be guessed.
     """
-    import gemmi
-    st = gemmi.read_structure(path)
-    out = {}
-    for ch in st[0]:
-        s = gemmi.one_letter_code([r.name for r in ch])
-        if s in seqs:
-            out[ch.name] = seqs.index(s)
+    import pool_index
+    xmaps = pool_index.load_chain_maps(f"{paths.PXM2025_DIR}/chain_maps.csv")
+    ab, ag = collections.defaultdict(set), collections.defaultdict(set)
+    for iface, (a, g) in pool_index.load_roles(str(paths.PXM2025_CHAIN_ROLES)).items():
+        ab[iface.split("_")[0]].add(a)
+        ag[iface.split("_")[0]].add(g)
+    out, bad = {}, []
+    for p, s, x in poses:
+        m = xmaps.get((p, s, x))
+        if not m or not (ab[p] | ag[p]) <= set(m):
+            bad.append((p, s, x))
+            continue
+        role = {**{m[c]: ANTIBODY for c in ab[p]}, **{m[c]: ANTIGEN for c in ag[p]}}
+        # A ROLE BELONGS TO THE MOLECULE, NOT THE COPY. The benchmark often annotates one copy, and
+        # the crystal map lands it on whichever copy of a pose superposes best -- so labelling only
+        # that chain would smuggle in which copy binds. Every chain carrying identical residues (a copy
+        # of the same input entity) takes the role.
+        res = pose_residues(paths.pool_pose(p, s, x))
+        for c, r in list(role.items()):
+            for d, seq in res.items():
+                if seq == res[c]:
+                    if role.get(d, r) != r:
+                        raise SystemExit(f"{p} {s} {x}: copies {c} and {d} annotated as both roles")
+                    role[d] = r
+        out[(p, s, x)] = role
+    if bad:
+        raise SystemExit(f"{len(bad)} poses have no crystal chain map covering their role chains, "
+                         f"e.g. {bad[:3]}")
     return out
 
 
+def pose_residues(path):
+    """in: a pose cif.  out: {chain: tuple of residue names} -- identical for copies of one entity"""
+    import gemmi
+    return {ch.name: tuple(r.name for r in ch) for ch in gemmi.read_structure(path)[0]}
+
+
 def pose_pairs(task):
-    """in: (pdb, seed, sample, entity sequences, entity roles).
+    """in: (pdb, seed, sample, {pose chain: role}).
     out: (pdb, seed, sample, [(ab chain, ag chain, chain_pair_iptm)] in contact, error or "")
     """
     import contacts
-    pdb, seed, sample, seqs, roles = task
+    import pool_index
+    pdb, seed, sample, role = task
     path = paths.pool_pose(pdb, seed, sample)
     try:
-        ent = chain_entities(path, seqs)
-        if set(ent.values()) != set(range(len(seqs))):
-            return pdb, seed, sample, [], "pose chains do not match the job's entities"
-        ab = sorted(c for c, e in ent.items() if roles[e] == ANTIBODY)
-        ag = sorted(c for c, e in ent.items() if roles[e] == ANTIGEN)
+        ab = sorted(c for c, r in role.items() if r == ANTIBODY)
+        ag = sorted(c for c, r in role.items() if r == ANTIGEN)
         touching = contacts.contacting(path, [(a, g) for a in ab for g in ag])
-        import pool_index
         return (pdb, seed, sample,
                 [(a, g, pool_index.pair_iptm_at(path, a, g)) for a, g in touching], "")
     except Exception as e:
@@ -134,18 +161,13 @@ def map_to_anchor(task):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--poses", required=True)
-    ap.add_argument("--roles", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--jobs", type=int, default=8)
     A = ap.parse_args()
     os.makedirs(A.out_dir, exist_ok=True)
 
-    seqs, roles = collections.defaultdict(list), collections.defaultdict(list)
-    for r in csv.DictReader(open(A.roles)):
-        assert int(r["entity"]) == len(seqs[r["pdb"]]), f"{A.roles}: entities out of order"
-        seqs[r["pdb"]].append(r["sequence"])
-        roles[r["pdb"]].append(r["role"])
     poses = sorted({(r["pdb"], r["seed"], int(r["sample"])) for r in csv.DictReader(open(A.poses))})
+    roles = pose_roles(poses)
     import multiprocessing as mp
 
     # 1. every pose's antibody-antigen pairs in contact, with their confidence
@@ -155,7 +177,7 @@ def main():
     with open(fcon, "w", newline="") as fh, mp.Pool(A.jobs) as pool:
         w = csv.writer(fh)
         w.writerow(["pdb", "seed", "sample", "ab_chain", "ag_chain", "pair_iptm"])
-        tasks = [(p, s, x, seqs[p], roles[p]) for p, s, x in poses]
+        tasks = [(p, s, x, roles[(p, s, x)]) for p, s, x in poses]
         for i, (p, s, x, got, err) in enumerate(pool.imap_unordered(pose_pairs, tasks, 8), 1):
             if err:
                 failed.append(f"{p} {s} {x}: {err}")
@@ -198,12 +220,11 @@ def main():
     fch = f"{A.out_dir}/anchor_chains.csv"
     with open(fch, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["pdb", "chain", "entity", "role"])
+        w.writerow(["pdb", "chain", "role"])
         for p, (s, x, _) in sorted(anchors.items()):
-            for c, e in sorted(chain_entities(paths.pool_pose(p, s, x), seqs[p]).items()):
-                w.writerow([p, c, e, roles[p][e]])
+            w.writerows([p, c, r] for c, r in sorted(roles[(p, s, x)].items()))
 
-    json.dump({"poses": A.poses, "roles": A.roles, "n_complexes": len(anchors),
+    json.dump({"poses": A.poses, "n_complexes": len(anchors),
                "anchors": {p: {"seed": s, "sample": x, "mean_pair_iptm": round(v, 6)}
                            for p, (s, x, v) in sorted(anchors.items())},
                "poses_without_contact": dict(no_contact), "poses_mapped": len(tasks),
