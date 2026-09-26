@@ -1,6 +1,8 @@
 #!/bin/bash
-# Staged GPU handoff, per GPU: fixed-seed arm -> free top-up (compute matching for arm A) ->
-# variable-seed arm. A GPU moves on the moment its current worker exits.
+# Staged GPU handoff, per GPU: fixed-seed arm -> free top-up (compute matching for arm A) -> HOLD.
+# A GPU moves on the moment its current worker exits. The variable-seed arm is NOT launched here: the
+# user reviews the fixed-seed table first (2026-09-26); set LAUNCH_VARSEED=1 to launch it after the
+# top-up instead of holding the card.
 #
 # The run is capped at the four GPUs it holds now: 0, 1, 2, 5. Each GPU runs its own chain, so a GPU
 # moves to the next arm the moment its current worker exits -- workers exit when their queue has nothing
@@ -18,6 +20,9 @@ TOPUP=$FREE/queue_free_topup_arm_a.tsv     # the free folds arm A's extra donors
 TMPL=$FIX/templates               # the orchestrator's template namespace
 LOG=$D/stage_arms.log
 GPUS="0 1 2 5"
+LAUNCH_VARSEED=${LAUNCH_VARSEED:-0}
+hold() { tmux has-session -t "hold$1" 2>/dev/null || tmux new-session -d -s "hold$1" \
+    "CUDA_VISIBLE_DEVICES=$1 $PY /home/ebrahim/tts_abag/diffusion_commit_clean_v2/hold_gpus.py --gpus $1 --gb 1"; }
 say() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 alive() { tmux ls 2>/dev/null | grep -q "^$1:"; }
 # a paused card is held by hold_gpus.py in session hold<gpu>; release it only at the moment of launch
@@ -63,6 +68,11 @@ chain() {   # chain <gpu>
         launch_free "$TOPUP" "$g"
         say "GPU $g: launched free top-up worker"
         while alive "free_compute_matchedw$g"; do sleep 60; done
+    fi
+    if [ "$LAUNCH_VARSEED" != 1 ]; then
+        hold "$g"
+        say "GPU $g: fixed arm and top-up done -- holding the card for the variable-seed arm"
+        return
     fi
     release_hold "$g"
     # the variable-seed arm scores each fold in the background while the next folds (~13% faster);
