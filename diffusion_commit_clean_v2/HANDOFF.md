@@ -28,7 +28,8 @@ folded).
   first 20 folds: 135 s per fold on 8uzp; per-fold cost varies 20 s - 20 min by complex, so no ETA
   from that alone.
 - `tmux stagearms` — `diffusion_commit_clean_v2/stage_arms.sh`, per GPU: fixed arm -> the 12-fold free
-  top-up (`free_compute_matched/queue_free_topup_arm_a.tsv`) -> variable-seed arm (3,524 folds). Log
+  top-up (`free_compute_matched/queue_free_topup_arm_a.tsv`) -> variable-seed arm (3,524 folds, with
+  `--overlap-scoring`: scoring runs in the background while the next fold runs, ~13% faster). Log
   `experimental_data/stage_arms.log`.
 - `tmux watcharms` — `diffusion_commit_clean_v2/watch_arms.sh`, every 30 min, claims and scored rows
   checked separately. Log `experimental_data/watch_arms.log`.

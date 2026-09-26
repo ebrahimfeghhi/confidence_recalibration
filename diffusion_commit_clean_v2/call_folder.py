@@ -26,6 +26,8 @@ INPUTS
     --log-dir:    where w<gpu>.log go, and what the tmux sessions are named after. Default <out>.
     --dataset:    pxm2025 or foldbench. Default pxm2025.
     --nsample:    poses per fold. Default 5.
+    --overlap-scoring: workers score each fold on a background thread while the next one folds
+                  (folder.py --overlap-scoring). Default off.
 
 OUTPUTS
     tmux sessions: one per GPU, named <basename of log dir>w<gpu>, each running folder.py on the queue
@@ -75,7 +77,7 @@ def check(queue, out, templates):
 
 
 def launch(gpus, queue, out, templates, dataset, nsample, prefix, csv_path, claim_dir,
-           log_dir, drop_cifs=False):
+           log_dir, drop_cifs=False, overlap_scoring=False):
     """in: devices and the run's paths.  out: the tmux session names started, one per GPU."""
     names = []
     for g in gpus:
@@ -85,7 +87,9 @@ def launch(gpus, queue, out, templates, dataset, nsample, prefix, csv_path, clai
                f"--claim-dir {shlex.quote(claim_dir)} --dataset {dataset} "
                f"--nsample {nsample} "
                + (f"--templates {shlex.quote(templates)} " if templates else "")
-               + f"{'--drop-cifs ' if drop_cifs else ''}2>&1 | tee -a {shlex.quote(log_dir)}/w{g}.log")
+               + f"{'--drop-cifs ' if drop_cifs else ''}"
+               + f"{'--overlap-scoring ' if overlap_scoring else ''}"
+               + f"2>&1 | tee -a {shlex.quote(log_dir)}/w{g}.log")
         s = f"{prefix}{g}"
         subprocess.run(["tmux", "new-session", "-d", "-s", s, cmd], check=True)
         names.append(s)
@@ -109,6 +113,8 @@ def main():
                     help="delete poses after scoring. OFF by default: a scored pose whose coordinates "
                          "are gone cannot be templated on, re-examined, or used as a baseline, and "
                          "folds do not reproduce so it cannot be recovered")
+    ap.add_argument("--overlap-scoring", action="store_true",
+                    help="workers score each fold in the background while the next one folds")
     ap.add_argument("--run", action="store_true", help="launch; otherwise only report the plan")
     A = ap.parse_args()
 
@@ -130,7 +136,7 @@ def main():
     log_dir = A.log_dir or out
     prefix = f"{os.path.basename(os.path.normpath(log_dir))}w"
     names = launch(gpus, A.queue, out, A.templates, A.dataset, A.nsample,
-                   prefix, csv_path, claim_dir, log_dir, A.drop_cifs)
+                   prefix, csv_path, claim_dir, log_dir, A.drop_cifs, A.overlap_scoring)
     print(f"\n  launched {len(names)} workers: {', '.join(names)}")
     print(f"  watch: tmux attach -t {names[0]}   |   tail -f {out}/w{gpus[0]}.log")
     return 0

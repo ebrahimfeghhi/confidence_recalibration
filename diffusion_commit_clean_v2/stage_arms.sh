@@ -23,9 +23,9 @@ alive() { tmux ls 2>/dev/null | grep -q "^$1:"; }
 # a paused card is held by hold_gpus.py in session hold<gpu>; release it only at the moment of launch
 release_hold() { tmux kill-session -t "hold$1" 2>/dev/null && say "GPU $1: released hold"; }
 
-launch() {   # launch <queue> <out> <csv> <claims> <logdir> <gpu>
+launch() {   # launch <queue> <out> <csv> <claims> <logdir> <gpu> [extra call_folder flags]
     $PY diffusion_commit_clean_v2/call_folder.py --queue "$1" --out "$2" --csv "$3" \
-        --claim-dir "$4" --log-dir "$5" --templates "$TMPL" --gpus "$6" --run >> "$LOG" 2>&1
+        --claim-dir "$4" --log-dir "$5" --templates "$TMPL" --gpus "$6" "${@:7}" --run >> "$LOG" 2>&1
 }
 
 launch_free() {   # launch_free <queue> <gpu> -- untemplated folds into the compute-matched run
@@ -65,8 +65,10 @@ chain() {   # chain <gpu>
         while alive "free_compute_matchedw$g"; do sleep 60; done
     fi
     release_hold "$g"
-    launch "$VAR/queue.tsv" "$VAR/poses" "$VAR/results.csv" "$VAR/claims" "$VAR" "$g"
-    say "GPU $g: launched variable-seed worker"
+    # the variable-seed arm scores each fold in the background while the next folds (~13% faster);
+    # the fixed arm keeps the sequential path it was verified on
+    launch "$VAR/queue.tsv" "$VAR/poses" "$VAR/results.csv" "$VAR/claims" "$VAR" "$g" --overlap-scoring
+    say "GPU $g: launched variable-seed worker (overlapped scoring)"
 }
 
 say "=== stage_arms (per-GPU) starting, GPUs $GPUS ==="

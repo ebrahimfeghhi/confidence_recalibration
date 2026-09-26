@@ -48,6 +48,9 @@ INPUTS
     --skip-by-template: skip a unit already folded with the same (complex, seed, template). Off by
                   default, because a csv that records the required pair rather than the full chain set
                   will not match and would refold everything.
+    --overlap-scoring: score each unit on one background thread while the next folds, instead of
+                  between folds (~13% of wall time on 2026-09-25). At most one unit is being scored
+                  at a time and its claim is held until scoring ends. Off by default.
     --report:     print what has been scored and exit.
     --verify:     cross-check the csv against the poses on disk and exit.
 
@@ -84,7 +87,9 @@ FUNCTIONS
     build_runner():     load the checkpoint once; every unit reuses the returned runner
     Ctx                 the handles every unit shares: args, model, interfaces, done-sets, namespace
     Ctx.point_templates_at(): per unit, the self-template namespace or Protenix's own PDB templates
-    run_unit():         claim one unit, fold it, score it, release the claim if anything fails
+    run_unit():         claim one unit and fold it; score it now, or hand finish_unit() to main()
+    finish_unit():      score a folded unit, move its poses, release the claim if scoring fails
+    run_queue():        every unit in order, scoring in the background with --overlap-scoring
     named_job():        copy a unit's job json under a unique name, which is what fixes its output dir
     fold():             run one fold; assert it produced poses and the expected template count
     provenance():       the unit -> (donor_pose, tmpl_chains), the two fields that identify a fold
@@ -101,7 +106,9 @@ FUNCTIONS
 """
 import argparse
 import collections
+import concurrent.futures
 import csv
+import functools
 import glob
 import hashlib
 import json
@@ -512,6 +519,8 @@ def parse_args():
                     help="skip a unit already folded with the same (complex, seed, template). Needs a "
                          "csv whose tmpl_chains holds the FULL chain set; older runs recorded the "
                          "required pair and would refold")
+    ap.add_argument("--overlap-scoring", action="store_true",
+                    help="score each unit on a background thread while the next one folds")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--verify", action="store_true",
                     help="cross-check --csv against --out and exit; nothing is folded")
@@ -677,7 +686,8 @@ def normalise_poses(rdir, name, pdb):
 
 
 def run_unit(ctx, unit):
-    """in: one (kind, pdb, target, tag, seed, poses).  out: "ran", "skipped" or "failed".
+    """in: one (kind, pdb, target, tag, seed, poses).  out: "ran", "skipped" or "failed" -- or, with
+    --overlap-scoring, the finish_unit() call for main() to run in the background
 
     Claims the unit, folds it, scores EVERY interface of its complex -- the fold produces the whole
     complex whatever it was aimed at -- and releases the claim if anything fails, since a claimed but
@@ -763,29 +773,74 @@ def run_unit(ctx, unit):
     append_index(A.out, pdb, seed, os.path.basename(rdir), kind, A.dtype, A.ncycle, bool(poses),
                  tmpl_md5)
 
-    got, err = score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses)
-    # scoring reads the driver's own layout, so normalise only after it has run
+    args = (ctx, kind, pdb, target, tag, seed, rdir, name, want, poses, dt, release)
+    if ctx.A.overlap_scoring:
+        return functools.partial(finish_unit, *args)     # main() scores it while the next unit folds
+    return finish_unit(*args)
+
+
+def finish_unit(ctx, kind, pdb, target, tag, seed, rdir, name, want, poses, dt, release):
+    """in: a folded unit and its claim's release().  out: "ran" or "failed"
+
+    Scores every interface, then moves the poses into <run dir>/predictions/. With --overlap-scoring
+    this runs on the background thread while the NEXT unit folds on the GPU; the claim is held until it
+    returns, so no other worker can take a unit that is folded but not yet scored. Any exception is a
+    FAILED line and a released claim, never a silent loss.
+    """
     try:
-        normalise_poses(rdir, name, pdb)
-    except FileExistsError as e:
-        # the scores are already in the csv; keep the claim so the unit is not refolded, but say so
-        print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- {e}", flush=True)
-        return "failed"
-    result = "ran"
-    if got or all((i, str(seed), tag) in ctx.rows_done for i in want):
-        # print pdb too: target is "*" for a free fold
-        print(f"  {kind} {pdb} {target} {tag} seed {seed}: {got}/{len(want)} interfaces "
-              f"in {dt:.0f}s", flush=True)
-    else:
-        print(f"  {pdb} {target} {tag} seed {seed}: SCORING produced no rows", flush=True)
-        for line in (err or "").strip().splitlines()[-3:]:
-            print(f"      {line}", flush=True)
+        got, err = score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses)
+        # scoring reads the driver's own layout, so normalise only after it has run
+        try:
+            normalise_poses(rdir, name, pdb)
+        except FileExistsError as e:
+            # the scores are already in the csv; keep the claim so the unit is not refolded, but say so
+            print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- {e}", flush=True)
+            return "failed"
+        result = "ran"
+        if got or all((i, str(seed), tag) in ctx.rows_done for i in want):
+            # print pdb too: target is "*" for a free fold
+            print(f"  {kind} {pdb} {target} {tag} seed {seed}: {got}/{len(want)} interfaces "
+                  f"in {dt:.0f}s", flush=True)
+        else:
+            print(f"  {pdb} {target} {tag} seed {seed}: SCORING produced no rows", flush=True)
+            for line in (err or "").strip().splitlines()[-3:]:
+                print(f"      {line}", flush=True)
+            release()
+            result = "failed"
+        shutil.rmtree(f"{rdir}/{name}", ignore_errors=True)      # now empty of poses
+        if not ctx.A.keep_cifs:
+            shutil.rmtree(f"{rdir}/predictions", ignore_errors=True)
+        return result
+    except Exception as e:
+        print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- scoring: {type(e).__name__}: "
+              f"{str(e)[:120]}", flush=True)
         release()
-        result = "failed"
-    shutil.rmtree(f"{rdir}/{name}", ignore_errors=True)      # now empty of poses
-    if not A.keep_cifs:
-        shutil.rmtree(f"{rdir}/predictions", ignore_errors=True)
-    return result
+        return "failed"
+
+def run_queue(ctx, units):
+    """in: the shared handles and every unit.  out: Counter of "ran" / "skipped" / "failed"
+
+    Sequential by default. With --overlap-scoring, ONE background thread scores and at most ONE unit is
+    being scored: before handing over unit k+1, wait for unit k -- scoring overlaps the next fold but
+    never piles up, and only that thread writes the csv. The last unit's scoring is awaited.
+    """
+    tally = collections.Counter()
+    if not ctx.A.overlap_scoring:
+        tally.update(run_unit(ctx, u) for u in units)
+        return tally
+    pending = None
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as scorer_thread:
+        for u in units:
+            r = run_unit(ctx, u)
+            if not callable(r):
+                tally[r] += 1
+                continue
+            if pending is not None:
+                tally[pending.result()] += 1
+            pending = scorer_thread.submit(r)
+        if pending is not None:
+            tally[pending.result()] += 1
+    return tally
 
 
 def main():
@@ -822,7 +877,7 @@ def main():
     print(f"  model loaded in {time.time()-t_load:.0f}s | dtype={A.dtype} | {len(units)} units "
           f"| templates={A.templates}", flush=True)
 
-    tally = collections.Counter(run_unit(ctx, u) for u in units)
+    tally = run_queue(ctx, units)
     print(f"queue complete: {tally['ran']} folds run, {tally['skipped']} already scored, "
           f"{tally['failed']} failed", flush=True)
     return 0

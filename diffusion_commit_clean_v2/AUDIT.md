@@ -140,6 +140,16 @@ per interface, as `compare_arms.py` does): 8w5v 1, 9e7n 1, 9g4f 1, 9myl 2, 9nn9 
 (`free_compute_matched/queue_free_topup_arm_a.tsv`, seeds that run had not used) runs on each GPU after
 its fixed-arm worker, before the variable-seed arm (`a5d0bd9`).
 
+## Throughput: overlapped scoring
+
+Measured on the first 558 fixed-arm folds: the GPU was idle ~13% of wall time between folds while the
+CPU scored the previous one (13-22 s per fold); feature building inside a fold is ~3%.
+`folder.py --overlap-scoring` scores each unit on one background thread while the next folds -- at
+most one unit is being scored, only that thread writes the csv, the claim is held until scoring ends,
+and a scoring exception is a FAILED unit with its claim released. Tested in `tests/test_folder.py`
+(overlap happens, scorings never overlap each other, failure releases the claim). Opt-in: the stager
+passes it to the variable-seed arm only; the fixed arm runs the sequential path it was verified on.
+
 ## Analysis added
 
 `analysis/crystal_frame_selection.py` → `analysis/crystal_frame_selection.md` (`e245acd`): donor counts
