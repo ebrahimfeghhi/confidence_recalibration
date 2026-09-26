@@ -111,6 +111,13 @@ Lesson worth keeping: a check that only inspects a step's own output cannot catc
 
 ## Open items
 
+- **Overwritten poses (fixed 2fd17b8).** `runmeta.run_id()` drew from the global `random`, which Protenix
+  re-seeds per fold, so every seed-430000 fold reused a few directory names. As of 2026-09-25 18:10,
+  154 of 181 fixed-arm folds have their poses overwritten; every one still has its scores in
+  `results.csv` (scored from its own subdirectory before the move). Per-fold list:
+  `experimental_data/self_template_fixed_50_seed/poses_overwritten_2026-09-25.tsv`. Workers started
+  before 2fd17b8 (GPUs 0 and 2) keep the old code until restarted. Poses are not needed; not refolded.
+
 - **Run data in git.** `results.csv` and `index.tsv` stay tracked (a few MB each; provenance for every
   number). Commit them at milestones -- an arm finishing -- not while workers are writing them.
   `.watch_state` is gitignored.
