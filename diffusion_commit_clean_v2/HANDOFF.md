@@ -45,9 +45,10 @@ way the 17:00 estimate was made: median measured seconds per complex x folds sti
 
 ## What is running
 
-- `tmux stagearms` — `experimental_data/stage_arms.sh`. Waits for every `free_compute_matchedw*` session
-  to exit, then gives GPUs 1,5,6 to the fixed arm, then hands each GPU to the varseed arm as the fixed
-  arm's worker on it exits. Log `experimental_data/stage_arms.log`.
+- `tmux stagearms` — `diffusion_commit_clean_v2/stage_arms.sh` (replaced 2026-09-25 17:23). Runs one chain per
+  GPU on 0, 1, 2, 5 only: free top-up -> fixed arm -> varseed arm, each GPU moving on as soon as its own
+  worker exits. Never holds more than 4 GPUs. Log `experimental_data/stage_arms.log`. The old
+  `experimental_data/stage_arms.sh` hardcoded GPUs 1,5,6 and would have put the fixed arm on 5 GPUs.
 - `tmux watcharms` — `experimental_data/watch_arms.sh`, every 30 min. Checks claims AND scored rows
   **separately**, because they fail separately: a worker alive with claims growing and `results.csv`
   flat is the state that hid 603 failed folds. Log `experimental_data/watch_arms.log`.
