@@ -49,7 +49,7 @@ way the 17:00 estimate was made: median measured seconds per complex x folds sti
   GPU on 0, 1, 2, 5 only: free top-up -> fixed arm -> varseed arm, each GPU moving on as soon as its own
   worker exits. Never holds more than 4 GPUs. Log `experimental_data/stage_arms.log`. The old
   `experimental_data/stage_arms.sh` hardcoded GPUs 1,5,6 and would have put the fixed arm on 5 GPUs.
-- `tmux watcharms` — `experimental_data/watch_arms.sh`, every 30 min. Checks claims AND scored rows
+- `tmux watcharms` — `diffusion_commit_clean_v2/watch_arms.sh`, every 30 min. Checks claims AND scored rows
   **separately**, because they fail separately: a worker alive with claims growing and `results.csv`
   flat is the state that hid 603 failed folds. Log `experimental_data/watch_arms.log`.
 - Four folding workers, sessions `<arm-dir-basename>w<gpu>`.
@@ -110,6 +110,10 @@ Every one of these was invisible from the outside: workers alive, claims growing
 Lesson worth keeping: a check that only inspects a step's own output cannot catch a step that lost data.
 
 ## Open items
+
+- **Run data in git.** `results.csv` and `index.tsv` stay tracked (a few MB each; provenance for every
+  number). Commit them at milestones -- an arm finishing -- not while workers are writing them.
+  `.watch_state` is gitignored.
 
 - **Renaming a directory under running workers kills them.** That is how the baseline died: three
   workers held absolute paths to `free_matched/`. Their logs moved with the directory, so the

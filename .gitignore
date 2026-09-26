@@ -119,3 +119,6 @@ experimental_data/**/claims/**
 experimental_data/**/ns/**
 experimental_data/**/ns_stale*/**
 experimental_data/**/build_log*.csv
+
+# watcher runtime state (last claims/rows per arm) -- rewritten every 30 min
+experimental_data/.watch_state
