@@ -16,7 +16,8 @@ SUMMARY
     matching and selected poses), so every count here equals its table.
 
 INPUTS
-    --exp:        the templated experiment. Default experimental_data/self_template_fixed_50_seed.
+    --dataset:    pxm2025 or foldbench. Default pxm2025. Sets the pool csv and the defaults below.
+    --exp:        the templated experiment. Default the dataset's self_template_fixed_50_seed.
     --extra-csv:  free results csvs, colon-separated. Default as compare_arms.py.
     --boot:       bootstrap resamples. Default 10000.
     --seed:       bootstrap RNG seed. Default 0.
@@ -52,16 +53,17 @@ sys.path.insert(0, os.path.dirname(V2))
 import paths  # noqa: E402
 import compare_arms as C  # noqa: E402
 from fmt import table  # noqa: E402
-from score_experiment import ACCEPTABLE, classes_at, load_scored, pool_by_seed  # noqa: E402
+from score_experiment import ACCEPTABLE, arm_defaults, classes_at, load_scored, pool_by_seed  # noqa: E402
 
 CLASSES = ("decoy", "solved", "nocov")
 
 
-def selected(exp, extra_csv):
-    """in: the experiment, free results csvs.  out: ({interface: (class, matched DockQ, method DockQ)},
+def selected(exp, extra_csv, pool_csv=None):
+    """in: the experiment, free results csvs, the pool csv (default pxm2025's).
+    out: ({interface: (class, matched DockQ, method DockQ)},
     interfaces excluded as unfinished, complexes not compute-matched) -- compare_arms.arms' own rules
     """
-    pool, first = pool_by_seed(50)
+    pool, first = pool_by_seed(50, pool_csv)
     cls = classes_at(pool, first)
     per, _ = C.donors_used(exp, first)
     extra = C.extra_free(extra_csv, first)
@@ -128,18 +130,20 @@ def bootstrap(pc, boot, rng):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp", default=f"{paths.DATA_DIR}/self_template_fixed_50_seed")
-    ap.add_argument("--extra-csv",
-                    default=f"{paths.FREE_DIR}/results.csv:{paths.DATA_DIR}/free_compute_matched/results.csv")
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
+    ap.add_argument("--exp", default=None)
+    ap.add_argument("--extra-csv", default=None)
     ap.add_argument("--boot", type=int, default=10000)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=None)
     A = ap.parse_args()
+    ds, exp, extra_csv = arm_defaults(A.dataset)
+    A.exp, A.extra_csv = A.exp or exp, A.extra_csv or extra_csv
 
-    sel, partial, unmatched = selected(A.exp, A.extra_csv)
+    sel, partial, unmatched = selected(A.exp, A.extra_csv, str(ds.pool_csv))
     rng = random.Random(A.seed)
     lines = [f"# Self-templating vs free + compute-matched", "",
-             f"experiment `{os.path.basename(A.exp)}` -- {len(sel)} interfaces counted; "
+             f"dataset `{A.dataset}`, experiment `{os.path.basename(A.exp)}` -- {len(sel)} interfaces counted; "
              f"{partial} excluded as unfinished; {unmatched} complexes not yet compute-matched. "
              f"Acceptable = DockQ >= {ACCEPTABLE} for the selected (top-ipTM) pose.", ""]
 

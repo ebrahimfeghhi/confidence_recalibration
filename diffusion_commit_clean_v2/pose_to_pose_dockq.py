@@ -34,6 +34,7 @@ INPUTS
                  similarity matrix says nothing.
     --device:    cuda or cpu. Default cuda.
     --shard:     "i/n" to split the work across processes, taking every n'th interface.
+    --dataset:   pxm2025 or foldbench. Default pxm2025. Which free pool the poses are read from.
 
 OUTPUTS
     <out>/<interface>.npz, one per interface:
@@ -68,14 +69,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import contacts  # noqa: E402
+import paths  # noqa: E402
 import pool_index  # noqa: E402
 
 
-def dockq_matrix_for(iface, keys, maps, roles, device, min_poses):
-    """in: an interface, its complex's (seed, sample) list, the anchor maps and interface roles.
-    out: (arrays dict or None, poses with no mapping, poses with no contacts)
+def dockq_matrix_for(iface, keys, maps, roles, device, min_poses, free_dir):
+    """in: an interface, its complex's (seed, sample) list, the anchor maps and interface roles, the
+    free pool.  out: (arrays dict or None, poses with no mapping, poses with no contacts)
     """
-    items, nomap = pool_index.items_for_interface(iface, keys, maps, roles)
+    items, nomap = pool_index.items_for_interface(iface, keys, maps, roles, free_dir)
     dropped = set(nomap)
     keys = [k for k in keys if k not in dropped]           # items_for_interface keeps input order
     keep = [(it, k) for it, k in zip(items, keys) if contacts.has_contact(*it)]
@@ -109,7 +111,9 @@ def main():
     ap.add_argument("--min-poses", type=int, default=5)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--shard", default="0/1", help="i/n -- take every n'th interface, offset i")
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     A = ap.parse_args()
+    free = str(paths.DATASETS[A.dataset].free)
     si, sn = (int(v) for v in A.shard.split("/"))
 
     os.makedirs(A.out, exist_ok=True)
@@ -132,7 +136,8 @@ def main():
         t = time.time()
         pdb_keys = sorted(keys[iface.split("_")[0]])
         try:
-            out, nomap, nocon = dockq_matrix_for(iface, pdb_keys, maps, roles, A.device, A.min_poses)
+            out, nomap, nocon = dockq_matrix_for(iface, pdb_keys, maps, roles, A.device, A.min_poses,
+                                                 free)
         except Exception as e:
             print(f"  {iface}: FAILED {type(e).__name__}: {e}", flush=True)
             w.writerow([iface, len(pdb_keys), 0, "", "", round(time.time() - t, 1)])

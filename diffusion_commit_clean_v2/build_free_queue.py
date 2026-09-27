@@ -6,16 +6,16 @@ SUMMARY
     and runs the templated queues too, so both kinds of run take the identical launch path.
 
 INPUTS
-    --out:         where the queue goes, and where the folds will land. Default paths.FREE_DIR
-                   (experimental_data/free).
-    --dataset:     pxm2025 or foldbench. Default pxm2025. Picks which job jsons and scorer are used.
+    --out:         where the queue goes, and where the folds will land. Default the dataset's free pool.
+    --dataset:     pxm2025 or foldbench. Default pxm2025. Picks the job jsons, the pool csv and the free
+                   pool whose seeds count as taken.
     --complexes:   comma-separated subset. Default: every complex the dataset has a job json for, 131
                    for pxm2025. Anything named here and not found is reported, not skipped silently.
     --seeds:       folds per complex. Default 50. Ignored when --per-complex is given.
     --per-complex: csv of pdb,n_seeds giving a DIFFERENT count per complex, for a compute-matched
                    baseline where each complex gets exactly as many extra free folds as it used donors.
                    Any column named n_seeds is read; other columns are ignored.
-    --start-seed:  first seed. Default 300000, so seeds run 300000..300049.
+    --start-seed:  first seed. Default the dataset's first pool seed (pxm2025 300000, foldbench 101).
     --force:       queue folds that already exist on disk. Default off, and it refuses instead.
     --queue-name:  the queue's file name under --out. Default queue_free.tsv.
 
@@ -64,7 +64,7 @@ def complexes(dataset, want=None):
     Matches `*-final-updated.json`, the MSA-attached input. An input named anything else is absent
     from the queue rather than an error, so the caller reports what it asked for and did not get.
     """
-    jobs, _, _ = paths.dataset(dataset)
+    jobs = str(paths.DATASETS[dataset].jobs)
     found = {os.path.basename(p).split("-")[0]
              for p in glob.glob(f"{jobs}/*-final-updated.json")}
     return sorted(found if not want else (found & want)), sorted((want or set()) - found)
@@ -144,11 +144,11 @@ def unreadable_warning(out):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset", choices=sorted(paths.DATASET_NAMES), default="pxm2025")
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     ap.add_argument("--complexes", default=None, help="comma-separated; default is every complex")
     ap.add_argument("--seeds", type=int, default=50)
-    ap.add_argument("--start-seed", type=int, default=300000)
-    ap.add_argument("--out", default=None, help=f"default {paths.FREE_DIR}")
+    ap.add_argument("--start-seed", type=int, default=None)
+    ap.add_argument("--out", default=None, help="default the dataset's free pool")
     ap.add_argument("--per-complex", default=None,
                     help="csv of pdb,n_seeds -- a different count per complex")
     ap.add_argument("--force", action="store_true", help="queue folds that already exist on disk")
@@ -163,13 +163,14 @@ def main():
     if not pdbs:
         raise SystemExit("no complexes matched")
 
-    out = A.out or str(paths.FREE_DIR)
+    ds = paths.DATASETS[A.dataset]
+    A.start_seed = A.start_seed if A.start_seed is not None else int(ds.pool_seeds[0])
+    out = A.out or str(ds.free)
     per = read_per_complex(A.per_complex) if A.per_complex else None
     if per:
         pdbs = [p for p in pdbs if per.get(p, 0) > 0]
-    taken = seeds_in_use(str(paths.PXM2025_POOL_CSV),
-                         [f"{paths.FREE_DIR}/results.csv", f"{out}/results.csv"],
-                         [str(paths.FREE_DIR), out])
+    taken = seeds_in_use(str(ds.pool_csv), [f"{ds.free}/results.csv", f"{out}/results.csv"],
+                         [str(ds.free), out])
     lines = queue_lines(pdbs, A.seeds, A.start_seed, per, taken)
     qpath = f"{out}/{A.queue_name}"
     text = "\n".join(lines) + "\n"

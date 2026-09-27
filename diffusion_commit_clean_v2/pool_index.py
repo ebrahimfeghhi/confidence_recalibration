@@ -82,8 +82,8 @@ def load_roles(path):
     return out
 
 
-def items_for_interface(iface, seeds_samples, maps, roles):
-    """in: an interface, its (seed, sample) list, a chain map and roles.
+def items_for_interface(iface, seeds_samples, maps, roles, free_dir=None):
+    """in: an interface, its (seed, sample) list, a chain map, roles, the free pool (default pxm2025's).
     out: ([(pose path, antibody chain, antigen chain)], poses dropped for a missing mapping)
 
     Input order is kept. A pose whose mapping is missing, or does not cover both chains, is dropped and
@@ -97,7 +97,7 @@ def items_for_interface(iface, seeds_samples, maps, roles):
         if not m or ab_ref not in m or ag_ref not in m:
             dropped.append((seed, sample))
             continue
-        items.append((paths.pool_pose(pdb, seed, sample), m[ab_ref], m[ag_ref]))
+        items.append((paths.pool_pose(pdb, seed, sample, free_dir), m[ab_ref], m[ag_ref]))
     return items, dropped
 
 

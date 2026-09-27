@@ -25,7 +25,8 @@ INPUTS
     --fixed:    the fixed-seed arm's directory; its queue.tsv gives the donors. Required.
     --out:      the queue to write. Required.
     --pending:  free queues whose seeds count though not yet scored, colon-separated. Optional.
-    --extra-csv: free results csvs, colon-separated. Default the free pool and the compute-matched run.
+    --extra-csv: free results csvs, colon-separated. Default the dataset's free pool and compute-matched run.
+    --dataset:  pxm2025 or foldbench. Default pxm2025. Sets the pool csv and the --extra-csv default.
     --order-by-class: queue complexes decoy first, then solved, then nocov. Default sorted by pdb.
 
 OUTPUTS
@@ -51,7 +52,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import paths  # noqa: E402
 from compare_arms import extra_free, matched_seeds  # noqa: E402
-from score_experiment import classes_at, pool_by_seed  # noqa: E402
+from score_experiment import arm_defaults, classes_at, pool_by_seed  # noqa: E402
 
 RANK = {"decoy": 0, "solved": 1, "nocov": 2}
 
@@ -67,12 +68,14 @@ def main():
     ap.add_argument("--fixed", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--pending", default="")
-    ap.add_argument("--extra-csv",
-                    default=f"{paths.FREE_DIR}/results.csv:{paths.DATA_DIR}/free_compute_matched/results.csv")
+    ap.add_argument("--extra-csv", default=None)
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     ap.add_argument("--order-by-class", action="store_true")
     A = ap.parse_args()
+    ds, _, extra_csv = arm_defaults(A.dataset)
+    A.extra_csv = A.extra_csv or extra_csv
 
-    pool, first = pool_by_seed(50)
+    pool, first = pool_by_seed(50, str(ds.pool_csv))
     extra = extra_free(A.extra_csv, first)
     ifaces = collections.defaultdict(list)
     for i in pool:

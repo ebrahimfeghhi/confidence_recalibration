@@ -27,7 +27,8 @@ SUMMARY
 INPUTS
     --exp:       the experiment directory: queue.tsv and results.csv. Required.
     --pool-seeds: how many seeds per complex define the free baseline and the classes. Default 50.
-    --pool:      the pool csv. Default paths.PXM2025_POOL_CSV.
+    --dataset:   pxm2025 or foldbench. Default pxm2025.
+    --pool:      the pool csv. Default the dataset's (paths.DATASETS).
 
     THE BASELINE COMES FROM THE POOL CSV, not the selection matrices. The matrices' pair_iptm is read
     at the anchor-frame chains (what selection needs) while their dockq_gt is at the reference-matched
@@ -46,6 +47,7 @@ EXAMPLE
         --out experimental_results/reffree_50.md
 
 FUNCTIONS
+    arm_defaults():   a dataset -> its fixed-seed arm and free results csvs, the reporters' defaults
     pool_by_seed():   the pool csv -> its rows and each complex's first-n seeds
     classes_at():     the first-n pool -> {interface: solved | decoy | nocov}
     load_scored():    an experiment -> the templated (ipTM, DockQ) per interface, and which are unfinished
@@ -68,6 +70,17 @@ import pool_index  # noqa: E402
 from fmt import table  # noqa: E402
 
 ACCEPTABLE = 0.23          # CAPRI "acceptable"
+
+
+def arm_defaults(dataset):
+    """in: a dataset name.  out: (paths.Dataset, its fixed-seed arm, its free results csvs joined by ":")
+
+    What every reporter defaults to, so --dataset alone switches benchmark. A csv that does not exist is
+    skipped by the readers: FoldBench's free pool has no results.csv of its own.
+    """
+    ds = paths.DATASETS[dataset]
+    return (ds, f"{ds.data}/self_template_fixed_50_seed",
+            f"{ds.free}/results.csv:{ds.data}/free_compute_matched/results.csv")
 
 
 def pool_by_seed(n_seeds, pool_csv=None):
@@ -168,10 +181,11 @@ def main():
     ap.add_argument("--pool-seeds", type=int, default=50)
     ap.add_argument("--classes", default="decoy,solved,nocov")
     ap.add_argument("--pool", default=None)
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     ap.add_argument("--out", default=None)
     A = ap.parse_args()
 
-    pool, first = pool_by_seed(A.pool_seeds, A.pool)
+    pool, first = pool_by_seed(A.pool_seeds, A.pool or str(paths.DATASETS[A.dataset].pool_csv))
     cls = classes_at(pool, first)
     made, unfinished = load_scored(A.exp)
     rows, partial = score(pool, first, made, unfinished, A.classes.split(","), cls)

@@ -35,12 +35,13 @@ INPUTS
       poses    absolute paths, tmpl only.
 
     --templates:  namespace built by the template builder. Required for tmpl units.
-    --out:        where folds land. Default paths.FREE_DIR.
+    --out:        where folds land. Default the dataset's free pool.
     --csv:        results csv, and the to-do list: an (iface, seed, arm) already present is skipped.
-                  Default <FREE_DIR>/results.csv.
-    --claim-dir:  atomic mkdir claims so several workers share one queue. Default <FREE_DIR>/claims.
-    --pool:       csv whose interfaces define what `target=*` scores. Default paths.PXM2025_POOL_CSV.
-    --dataset:    pxm2025 or foldbench. Default pxm2025.
+                  Default <out>/results.csv.
+    --claim-dir:  atomic mkdir claims so several workers share one queue. Default <out>/claims.
+    --pool:       csv whose interfaces define what every fold is scored on. Default the dataset's.
+    --dataset:    pxm2025 or foldbench (paths.DATASETS). Default pxm2025. Picks the job jsons, the
+                  reference cifs, the scorer, the pool csv and the free pool.
     --ncycle:     recycles per fold. Default 10.
     --nsample:    poses per fold. Default 5.
     --dtype:      bf16, fp32 or fp16. Default bf16.
@@ -499,22 +500,22 @@ class Ctx:
 
 
 def parse_args():
-    """in: the command line.  out: parsed arguments; defaults point at the free pool, the one run
-    with a canonical home"""
+    """in: the command line.  out: parsed arguments; defaults point at the dataset's free pool, the one
+    run with a canonical home"""
     ap = argparse.ArgumentParser()
     ap.add_argument("--queue")
-    ap.add_argument("--out", default=str(paths.FREE_DIR))
-    ap.add_argument("--csv", default=f"{paths.FREE_DIR}/results.csv")
+    ap.add_argument("--out", default=None)
+    ap.add_argument("--csv", default=None)
     ap.add_argument("--templates", help="namespace built by build_templates.py; required for "
                                         "templated units, never written to here")
-    ap.add_argument("--pool", default=str(paths.PXM2025_POOL_CSV),
-                    help="csv whose interfaces define what `target=*` scores")
-    ap.add_argument("--claim-dir", default=f"{paths.FREE_DIR}/claims",
+    ap.add_argument("--pool", default=None,
+                    help="csv whose interfaces define what every fold is scored on")
+    ap.add_argument("--claim-dir", default=None,
                     help="atomic mkdir claims so workers share one queue")
     ap.add_argument("--dtype", choices=("bf16", "fp32", "fp16"), default="bf16")
     ap.add_argument("--ncycle", type=int, default=10)
     ap.add_argument("--nsample", type=int, default=5)
-    ap.add_argument("--dataset", choices=sorted(paths.DATASET_NAMES), default="pxm2025")
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     ap.add_argument("--ckpt-dir", default=str(paths.PROTENIX_CKPT))
     ap.add_argument("--model-name", default="protenix-v2")
     ap.add_argument("--keep-cifs", action="store_true", default=True,
@@ -531,7 +532,13 @@ def parse_args():
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--verify", action="store_true",
                     help="cross-check --csv against --out and exit; nothing is folded")
-    return ap.parse_args()
+    A = ap.parse_args()
+    ds = paths.DATASETS[A.dataset]
+    A.out = A.out or str(ds.free)
+    A.csv = A.csv or f"{A.out}/results.csv"
+    A.claim_dir = A.claim_dir or f"{A.out}/claims"
+    A.pool = A.pool or str(ds.pool_csv)
+    return A
 
 
 def check_queue(A, units):
@@ -545,7 +552,7 @@ def check_queue(A, units):
     if templated and not A.templates:
         raise SystemExit(f"{len(templated)} templated units need --templates "
                          "(run build_templates.py first)")
-    if templated and A.out == str(paths.FREE_DIR):
+    if templated and A.out == str(paths.DATASETS[A.dataset].free):
         raise SystemExit("refusing to write a templated queue into the free pool; pass --out")
     if not A.templates:
         return None, None
@@ -876,7 +883,8 @@ def main():
             raise SystemExit(f"--{req} is required")
 
     units = read_queue(A.queue)
-    jobs, ref, scorer = paths.dataset(A.dataset)
+    ds = paths.DATASETS[A.dataset]
+    jobs, ref, scorer = str(ds.jobs), ds.ref, ds.scorer
     mm, rd = check_queue(A, units)
     ifaces = interfaces_by_pdb(A.pool)
 

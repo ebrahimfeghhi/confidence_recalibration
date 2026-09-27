@@ -26,9 +26,10 @@ SUMMARY
     it. Unmatched complexes are counted and excluded, never silently folded in.
 
 INPUTS
-    --exp:        the templated experiment. Default experimental_data/self_template_fixed_50_seed.
-    --extra-csv:  results csvs holding extra free folds, colon-separated. Default the free pool and
-                  the compute-matched baseline.
+    --dataset:    pxm2025 or foldbench. Default pxm2025. Sets the pool csv and the defaults below.
+    --exp:        the templated experiment. Default the dataset's self_template_fixed_50_seed.
+    --extra-csv:  results csvs holding extra free folds, colon-separated. Default the dataset's free pool
+                  and compute-matched baseline.
     --classes:    which classes to report. Default decoy,solved,nocov.
     --pool-seeds: how many seeds define the baseline pool. Default 50.
     --out:        write the table as markdown here. Optional.
@@ -63,7 +64,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths  # noqa: E402
 import pool_index  # noqa: E402
 from fmt import table  # noqa: E402
-from score_experiment import ACCEPTABLE, classes_at, load_scored, pool_by_seed  # noqa: E402
+from score_experiment import ACCEPTABLE, arm_defaults, classes_at, load_scored, pool_by_seed  # noqa: E402
 
 DONOR_SEED = re.compile(r"/free/([0-9a-z]{4})/(\d+)-")
 
@@ -183,17 +184,19 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp", default=f"{paths.DATA_DIR}/self_template_fixed_50_seed")
-    ap.add_argument("--extra-csv",
-                    default=f"{paths.FREE_DIR}/results.csv:{paths.DATA_DIR}/free_compute_matched/results.csv")
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
+    ap.add_argument("--exp", default=None)
+    ap.add_argument("--extra-csv", default=None)
     ap.add_argument("--classes", default="decoy,solved,nocov")
     ap.add_argument("--pool-seeds", type=int, default=50)
     ap.add_argument("--no-require-match", action="store_true",
                     help="report the method arms over every finished interface, matched or not; the free+matched column is then not comparable")
     ap.add_argument("--out", default=None)
     A = ap.parse_args()
+    ds, exp, extra_csv = arm_defaults(A.dataset)
+    A.exp, A.extra_csv = A.exp or exp, A.extra_csv or extra_csv
 
-    pool, first = pool_by_seed(A.pool_seeds)
+    pool, first = pool_by_seed(A.pool_seeds, str(ds.pool_csv))
     cls = classes_at(pool, first)
     per, shallow = donors_used(A.exp, first)
     extra = extra_free(A.extra_csv, first)
@@ -205,7 +208,7 @@ def main():
     head = ["class", "interfaces (n)", f"free {A.pool_seeds}", "free + matched",
             f"method ({A.pool_seeds}-seed donors)", "method (all donors)"]
     out = table(head, rows, align="l r r r r r")
-    tail = (f"\n  experiment: {A.exp}\n"
+    tail = (f"\n  dataset: {A.dataset}   experiment: {A.exp}\n"
             f"  classes computed on the first {A.pool_seeds} seeds per complex\n"
             f"  complexes excluded as not yet compute-matched: {unmatched}\n"
             f"  interfaces excluded as unfinished: {partial}")

@@ -14,7 +14,7 @@ SUMMARY
 
 INPUTS
     --queue:      the work list, free or templated. Required.
-    --out:        where folds land. Default paths.FREE_DIR.
+    --out:        where folds land. Default the dataset's free pool.
     --templates:  template namespace. Required if the queue has any tmpl lines.
     --gpus:       explicit device ids, e.g. 0,1,2,5. Required by --run; never guessed.
     --allow-many: permit more than four GPUs. Default off.
@@ -24,7 +24,7 @@ INPUTS
     --csv:        results csv. Default <out>/results.csv.
     --claim-dir:  claim directory. Default <out>/claims.
     --log-dir:    where w<gpu>.log go, and what the tmux sessions are named after. Default <out>.
-    --dataset:    pxm2025 or foldbench. Default pxm2025.
+    --dataset:    pxm2025 or foldbench. Default pxm2025. Passed to every worker.
     --nsample:    poses per fold. Default 5.
     --overlap-scoring: workers score each fold on a background thread while the next one folds
                   (folder.py --overlap-scoring). Default off.
@@ -63,15 +63,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MAX_GPUS = 4
 
 
-def check(queue, out, templates):
-    """in: queue path, output dir, namespace or None.  out: (n folds, n templated); raises on refusal."""
+def check(queue, out, templates, free):
+    """in: queue path, output dir, namespace or None, the dataset's free pool.
+    out: (n folds, n templated); raises on refusal."""
     if not os.path.exists(queue):
         raise SystemExit(f"no queue at {queue}")
     kinds = [l.split("\t")[0] for l in open(queue) if l.strip()]
     n_tmpl = sum(1 for k in kinds if k != "free")
     if n_tmpl and not templates:
         raise SystemExit(f"{n_tmpl} templated folds need --templates (run the template builder first)")
-    if n_tmpl and out == str(paths.FREE_DIR):
+    if n_tmpl and out == free:
         raise SystemExit("refusing to write a templated queue into the free pool; pass --out")
     return len(kinds), n_tmpl
 
@@ -99,12 +100,12 @@ def launch(gpus, queue, out, templates, dataset, nsample, prefix, csv_path, clai
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--queue", required=True)
-    ap.add_argument("--out", default=None, help=f"default {paths.FREE_DIR}")
+    ap.add_argument("--out", default=None, help="default the dataset's free pool")
     ap.add_argument("--templates", default=None, help="namespace, required for templated queues")
     ap.add_argument("--csv", default=None, help="default <out>/results.csv")
     ap.add_argument("--claim-dir", default=None, help="default <out>/claims")
     ap.add_argument("--log-dir", default=None, help="default <out>; worker logs are w<gpu>.log")
-    ap.add_argument("--dataset", choices=sorted(paths.DATASET_NAMES), default="pxm2025")
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     ap.add_argument("--nsample", type=int, default=5)
     ap.add_argument("--gpus", default=None, help="explicit device ids, e.g. 0,1,2,5")
     ap.add_argument("--allow-many", action="store_true",
@@ -118,8 +119,9 @@ def main():
     ap.add_argument("--run", action="store_true", help="launch; otherwise only report the plan")
     A = ap.parse_args()
 
-    out = A.out or str(paths.FREE_DIR)
-    n, n_tmpl = check(A.queue, out, A.templates)
+    free = str(paths.DATASETS[A.dataset].free)
+    out = A.out or free
+    n, n_tmpl = check(A.queue, out, A.templates, free)
     print(f"  queue {A.queue}\n  folds {n} ({n_tmpl} templated)\n  out   {out}")
     print(f"  csv   {A.csv or out + '/results.csv'}\n  claims {A.claim_dir or out + '/claims'}")
 

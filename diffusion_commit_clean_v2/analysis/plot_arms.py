@@ -12,7 +12,8 @@ SUMMARY
     the bar heights equal the "mean DockQ" columns of arm_statistics.md.
 
 INPUTS
-    --exp:        the templated experiment. Default experimental_data/self_template_fixed_50_seed.
+    --dataset:    pxm2025 or foldbench. Default pxm2025. Sets the pool csv and the defaults below.
+    --exp:        the templated experiment. Default the dataset's self_template_fixed_50_seed.
     --extra-csv:  free results csvs, colon-separated. Default as compare_arms.py.
     --out:        the figure. Default analysis/arm_barplot.png (a .pdf beside it too).
 
@@ -43,6 +44,7 @@ sys.path.insert(0, HERE)
 
 from arm_statistics import selected  # noqa: E402  (puts v2 on the path)
 import paths  # noqa: E402
+from score_experiment import arm_defaults  # noqa: E402
 
 GROUPS = [("all", "All interfaces"), ("solved", "Solved"), ("decoy", "Confident decoy"),
           ("nocov", "No acceptable pose")]
@@ -59,13 +61,15 @@ def wilcoxon(method, matched):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exp", default=f"{paths.DATA_DIR}/self_template_fixed_50_seed")
-    ap.add_argument("--extra-csv",
-                    default=f"{paths.FREE_DIR}/results.csv:{paths.DATA_DIR}/free_compute_matched/results.csv")
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
+    ap.add_argument("--exp", default=None)
+    ap.add_argument("--extra-csv", default=None)
     ap.add_argument("--out", default=f"{HERE}/arm_barplot.png")
     A = ap.parse_args()
 
-    sel, partial, unmatched = selected(A.exp, A.extra_csv)
+    ds, exp, extra_csv = arm_defaults(A.dataset)
+    A.exp, A.extra_csv = A.exp or exp, A.extra_csv or extra_csv
+    sel, partial, unmatched = selected(A.exp, A.extra_csv, str(ds.pool_csv))
     rng = random.Random(0)
     fig, ax = plt.subplots(figsize=(7.5, 4.6))
     w, top = 0.36, 1.0
@@ -99,7 +103,7 @@ def main():
                        plt.Rectangle((0, 0), 1, 1, fc=GRAY, alpha=0.6, ec=GRAY)],
               labels=["Self-template", "Free + compute-matched"], frameon=False, fontsize=8.5,
               loc="upper right", bbox_to_anchor=(1.0, 1.13), ncol=2)
-    ax.set_title(f"{os.path.basename(A.exp)}", loc="left", fontsize=9, color=MUTED, pad=18)
+    ax.set_title(f"{A.dataset} -- {os.path.basename(A.exp)}", loc="left", fontsize=9, color=MUTED, pad=18)
     fig.text(0.01, 0.005, f"Bars: mean; dots: interfaces; dashed line: acceptable (DockQ 0.23). "
              f"p: paired two-sided Wilcoxon signed-rank across interfaces.\n"
              f"{partial} unfinished interfaces and {unmatched} unmatched complexes excluded.",

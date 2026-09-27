@@ -31,6 +31,8 @@ INPUTS
     --poses:   csv of pdb, seed, sample -- the pool. Required.
     --out-dir: where the csvs and the manifest go. Required.
     --jobs:    worker processes. Default 8. CPU only.
+    --dataset: pxm2025 or foldbench (paths.DATASETS). Default pxm2025. Picks the free pool the poses are
+               read from, and the role file and crystal chain maps pose_roles() reads.
 
 OUTPUTS
     <out-dir>/pose_contacts.csv:     per pose, every antibody-antigen chain pair in contact, in the
@@ -41,7 +43,7 @@ OUTPUTS
     <out-dir>/anchor_manifest.json:  the anchor chosen per complex, and what was mapped or failed
 
 EXAMPLE
-    anchor_relabel.py --poses exp/poses.csv --out-dir exp/chain_frame
+    anchor_relabel.py --poses exp/poses.csv --out-dir exp/chain_frame --dataset foldbench
 
 FUNCTIONS
     pose_roles():     every pose -> {annotated pose chain: antibody | antigen}
@@ -71,8 +73,9 @@ MAP_FIELDS = ["pdb", "seed", "sample", "chain_mapping", "anchor_seed", "anchor_s
 ANTIBODY, ANTIGEN = "antibody", "antigen"
 
 
-def pose_roles(poses):
-    """in: [(pdb, seed, sample)].  out: {(pdb, seed, sample): {pose chain: "antibody" | "antigen"}}
+def pose_roles(poses, ds):
+    """in: [(pdb, seed, sample)], the dataset.
+    out: {(pdb, seed, sample): {pose chain: "antibody" | "antigen"}}
 
     Which chains are antibody and antigen is taken as KNOWN, and read the way the benchmark records it:
     its role file names the crystal's antibody and antigen chains, and each pose's crystal chain map
@@ -81,9 +84,9 @@ def pose_roles(poses):
     if a pose has no map covering its role chains: a role must never be guessed.
     """
     import pool_index
-    xmaps = pool_index.load_chain_maps(f"{paths.PXM2025_DIR}/chain_maps.csv")
+    xmaps = pool_index.load_chain_maps(str(ds.chain_maps))
     ab, ag = collections.defaultdict(set), collections.defaultdict(set)
-    for iface, (a, g) in pool_index.load_roles(str(paths.PXM2025_CHAIN_ROLES)).items():
+    for iface, (a, g) in pool_index.load_roles(str(ds.chain_roles)).items():
         ab[iface.split("_")[0]].add(a)
         ag[iface.split("_")[0]].add(g)
     out, bad = {}, []
@@ -121,14 +124,14 @@ def every_copy(path, role):
 
 
 def pose_pairs(task):
-    """in: (pdb, seed, sample, {annotated pose chain: role}).
+    """in: (pdb, seed, sample, {annotated pose chain: role}, free pool dir).
     out: (pdb, seed, sample, [(ab chain, ag chain, chain_pair_iptm)] in contact, roles on every
           copy, error or "")
     """
     import contacts
     import pool_index
-    pdb, seed, sample, role = task
-    path = paths.pool_pose(pdb, seed, sample)
+    pdb, seed, sample, role, free = task
+    path = paths.pool_pose(pdb, seed, sample, free)
     try:
         role = every_copy(path, role)
         ab = sorted(c for c, r in role.items() if r == ANTIBODY)
@@ -141,20 +144,20 @@ def pose_pairs(task):
 
 
 def map_to_anchor(task):
-    """in: (pdb, seed, sample, anchor seed, anchor sample)
+    """in: (pdb, seed, sample, anchor seed, anchor sample, free pool dir)
     out: a csv row; chain_mapping is "" and anchor_sample carries the reason when mapping fails
     """
-    pdb, seed, sample, aseed, asamp = task
+    pdb, seed, sample, aseed, asamp, free = task
     from pxmeter.mapping import MappingResult
     t = time.time()
     base = {"pdb": pdb, "seed": seed, "sample": sample, "anchor_seed": aseed, "anchor_sample": asamp}
-    apath = paths.pool_pose(pdb, aseed, asamp)
+    apath = paths.pool_pose(pdb, aseed, asamp, free)
     if (seed, sample) == (aseed, asamp):
         import gemmi                              # the anchor against itself is the identity
         cm = {c.name: c.name for c in gemmi.read_structure(apath)[0]}
     else:
         try:
-            m = MappingResult.from_cifs(apath, paths.pool_pose(pdb, seed, sample))
+            m = MappingResult.from_cifs(apath, paths.pool_pose(pdb, seed, sample, free))
         except Exception as e:
             return {**base, "chain_mapping": "", "seconds": round(time.time() - t, 2),
                     "anchor_sample": f"FAILED: {type(e).__name__}"}
@@ -168,11 +171,14 @@ def main():
     ap.add_argument("--poses", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--jobs", type=int, default=8)
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     A = ap.parse_args()
     os.makedirs(A.out_dir, exist_ok=True)
+    ds = paths.DATASETS[A.dataset]
+    free = str(ds.free)
 
     poses = sorted({(r["pdb"], r["seed"], int(r["sample"])) for r in csv.DictReader(open(A.poses))})
-    roles = pose_roles(poses)
+    roles = pose_roles(poses, ds)
     import multiprocessing as mp
 
     # 1. every pose's antibody-antigen pairs in contact, with their confidence
@@ -182,7 +188,7 @@ def main():
     with open(fcon, "w", newline="") as fh, mp.Pool(A.jobs) as pool:
         w = csv.writer(fh)
         w.writerow(["pdb", "seed", "sample", "ab_chain", "ag_chain", "pair_iptm"])
-        tasks = [(p, s, x, roles[(p, s, x)]) for p, s, x in poses]
+        tasks = [(p, s, x, roles[(p, s, x)], free) for p, s, x in poses]
         for i, (p, s, x, got, role, err) in enumerate(pool.imap_unordered(pose_pairs, tasks, 8), 1):
             if err:
                 failed.append(f"{p} {s} {x}: {err}")
@@ -212,7 +218,7 @@ def main():
     # 3. every pose mapped onto its complex's anchor
     fmap = f"{A.out_dir}/chain_maps_anchor.csv"
     t0, nfail = time.time(), 0
-    tasks = [(p, s, x, anchors[p][0], anchors[p][1]) for p, s, x in poses]
+    tasks = [(p, s, x, anchors[p][0], anchors[p][1], free) for p, s, x in poses]
     with open(fmap, "w", newline="") as fh, mp.Pool(A.jobs) as pool:
         w = csv.DictWriter(fh, fieldnames=MAP_FIELDS)
         w.writeheader()
@@ -230,7 +236,7 @@ def main():
         for p, (s, x, _) in sorted(anchors.items()):
             w.writerows([p, c, r] for c, r in sorted(roles[(p, s, x)].items()))
 
-    json.dump({"poses": A.poses, "n_complexes": len(anchors),
+    json.dump({"poses": A.poses, "dataset": A.dataset, "n_complexes": len(anchors),
                "anchors": {p: {"seed": s, "sample": x, "mean_pair_iptm": round(v, 6)}
                            for p, (s, x, v) in sorted(anchors.items())},
                "poses_without_contact": dict(no_contact), "poses_mapped": len(tasks),

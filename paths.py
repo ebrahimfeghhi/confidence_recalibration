@@ -18,7 +18,9 @@ are NOT moved here.
 """
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Tuple
 
 HOME = Path.home()
 
@@ -104,21 +106,70 @@ PXM2025_POOL_CSV = _path("PXM2025_POOL_CSV", PXM2025_DIR / "dockq_pxm2025.csv")
 PXM2025_CHAIN_ROLES = _path("PXM2025_CHAIN_ROLES", PXM2025_DIR / "chain_roles.csv")
 
 
-def dataset(name):
-    """(job dir, ground-truth cif for a pdb, scorer name) for a pool, as strings."""
-    if name == "pxm2025":
-        return str(PXM2025_JOBS), (lambda pdb: f"{PXM2025_CIF}/{pdb}.cif"), "pxm"
-    if name == "foldbench":
-        return str(JSON_DIR), (lambda pdb: f"{GROUND_TRUTHS}/{pdb}-assembly1.cif"), "ost"
-    raise KeyError(f"unknown dataset {name!r}")
-
-
-DATASET_NAMES = ("pxm2025", "foldbench")
-
-
 # --- run trees ---------------------------------------------------------------
 # Every fold we generate lands in one of these two, as <pdb>/<seed>/<run_id>/.
 FREE_DIR = _path("FREE_DIR", DATA_DIR / "free")
+
+# FoldBench, run the same way. Its experiments live under experimental_data/protenix/foldbench/; its
+# inputs there are built once by diffusion_commit_clean_v2/foldbench_setup.py from the FoldBench 50-seed
+# Protenix run (poses in POSES_FOLDBENCH, OST scores in FOLDBENCH_OST_CSV).
+FOLDBENCH_DATA = _path("FOLDBENCH_DATA", DATA_DIR / "protenix" / "foldbench")
+POSES_FOLDBENCH = _path("POSES_FOLDBENCH", REPO_ROOT / "poses" / "predictions_template")
+FOLDBENCH_OST_CSV = _path(
+    "FOLDBENCH_OST_CSV",
+    REPO_ROOT / "archive" / "esmfold2_era" / "results" / "csv_files" / "dockq_ost_protenix_full.csv",
+)
+
+
+@dataclass(frozen=True)
+class Dataset:
+    """Everything a pipeline step needs to know about one benchmark, so no step hardcodes one.
+
+    data:        where its experiments live (free_compute_matched/, self_template_*/ ...)
+    free:        the free pool; every template's donor is a pose under here
+    jobs:        Protenix job jsons, <pdb>-final-updated.json
+    ref:         pdb -> the ground-truth cif (EVALUATION ONLY)
+    scorer:      "pxm" or "ost", matching how the pool was scored
+    pool_csv:    the crystal-scored pool: pdb, chain1, chain2, seed, sample, dockq, pair_iptm (EVALUATION,
+                 plus which complexes form the benchmark)
+    chain_maps:  crystal chain map per pose (reference chain -> pose chain); used for ROLES only
+    chain_roles: the benchmark's antibody / antigen chains (interface, pdb, chain_1, chain_2, ab_chain,
+                 ag_chain)
+    pool_seeds:  the seeds the pool rule admits, in order; the first 50 define the free baseline
+    """
+    name: str
+    data: Path
+    free: Path
+    jobs: Path
+    ref: Callable[[str], str]
+    scorer: str
+    pool_csv: Path
+    chain_maps: Path
+    chain_roles: Path
+    pool_seeds: Tuple[str, ...]
+
+
+DATASETS = {
+    "pxm2025": Dataset(
+        name="pxm2025", data=DATA_DIR, free=FREE_DIR, jobs=PXM2025_JOBS,
+        ref=lambda pdb: f"{PXM2025_CIF}/{pdb}.cif", scorer="pxm", pool_csv=PXM2025_POOL_CSV,
+        chain_maps=PXM2025_DIR / "chain_maps.csv", chain_roles=PXM2025_CHAIN_ROLES,
+        pool_seeds=tuple(str(300000 + i) for i in range(50))),
+    "foldbench": Dataset(
+        name="foldbench", data=FOLDBENCH_DATA, free=FOLDBENCH_DATA / "free", jobs=JSON_DIR,
+        ref=lambda pdb: f"{GROUND_TRUTHS}/{pdb}-assembly1.cif", scorer="ost",
+        pool_csv=FOLDBENCH_DATA / "pool.csv", chain_maps=FOLDBENCH_DATA / "chain_maps.csv",
+        chain_roles=FOLDBENCH_DATA / "chain_roles.csv",
+        pool_seeds=tuple(str(101 + i) for i in range(50))),
+}
+DATASET_NAMES = tuple(DATASETS)
+
+
+def dataset(name):
+    """(job dir, ground-truth cif for a pdb, scorer name) for a pool, as strings -- the older
+    three-field view of DATASETS[name]."""
+    d = DATASETS[name]
+    return str(d.jobs), d.ref, d.scorer
 # anchor_relabel.py writes the chain maps, roles and manifest here; pose_interfaces.py and the queue
 # builders read them. Points at the existing data rather than a new location so nothing has to move.
 ANCHOR_DIR = _path("ANCHOR_DIR", DATA_DIR / "archive" / "superseded_2026-09-25" / "anchor_frame")
@@ -133,8 +184,9 @@ PROTENIX_SRC = _path("PROTENIX_SRC", Path.home() / "Protenix")
 LEGACY_RUN = "legacy-no-provenance"
 
 
-def pool_pose(pdb, seed, sample):
-    """Path to one pose of the free pool, whatever run id its fold was written under.
+def pool_pose(pdb, seed, sample, free_dir=None):
+    """Path to one pose of a free pool (default FREE_DIR, pxm2025's), whatever run id its fold was
+    written under.
 
     The legacy path is tried FIRST and returned if it exists, so every pose that resolved before this
     function learned to glob still resolves to exactly the same file. Only seeds outside the legacy
@@ -144,14 +196,15 @@ def pool_pose(pdb, seed, sample):
     Raises on a seed with two fold directories holding poses. Folds do not reproduce, so those are
     different data and picking one would be a silent choice; there are none today.
     """
-    legacy = f"{FREE_DIR}/{pdb}/{seed}-{LEGACY_RUN}/predictions/{pdb}_sample_{sample}.cif"
+    free_dir = free_dir or FREE_DIR
+    legacy = f"{free_dir}/{pdb}/{seed}-{LEGACY_RUN}/predictions/{pdb}_sample_{sample}.cif"
     if os.path.exists(legacy):
         return legacy
     # search the whole fold directory: the legacy layout is <seed>-<rid>/predictions/<pdb>_sample_N.cif
     # while the current driver writes <seed>-<rid>/<jobname>/seed_<seed>/predictions/<jobname>_sample_N.cif
     # -- deeper, and the filename carries the job name, so both the depth and the prefix differ
     import glob as _glob
-    hits = sorted(_glob.glob(f"{FREE_DIR}/{pdb}/{seed}-*/**/{pdb}*_sample_{sample}.cif",
+    hits = sorted(_glob.glob(f"{free_dir}/{pdb}/{seed}-*/**/{pdb}*_sample_{sample}.cif",
                              recursive=True))
     if len(hits) == 1:
         return hits[0]

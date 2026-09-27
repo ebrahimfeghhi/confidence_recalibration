@@ -293,7 +293,7 @@ def main():
     ap.add_argument("--ns", required=True)
     ap.add_argument("--maps", required=True)
     ap.add_argument("--roles", required=True)
-    ap.add_argument("--dataset", choices=sorted(paths.DATASET_NAMES), default="pxm2025")
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     ap.add_argument("--jobs", type=int, default=8)
     A = ap.parse_args()
 
@@ -304,7 +304,7 @@ def main():
             uniq.setdefault(f"{f[2]}_{f[3]}", (f[1], f[2], f[5].split()))
 
     maps, roles = pool_index.load_chain_maps(A.maps), pool_index.load_roles(A.roles)
-    jobs_dir, _, _ = paths.dataset(A.dataset)
+    jobs_dir = str(paths.DATASETS[A.dataset].jobs)
     os.makedirs(f"{A.ns}/mmcif", exist_ok=True)
 
     tasks, n = [], 0

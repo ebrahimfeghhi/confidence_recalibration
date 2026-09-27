@@ -28,6 +28,7 @@ INPUTS
     --out:      the queue to write. Required.
     --cap:      donors per complex. Default 50.
     --seed:     the seed every templated fold uses. Default 430000.
+    --dataset:  pxm2025 or foldbench. Default pxm2025. Which free pool the donor paths point into.
 
 OUTPUTS
     <out>: one line per fold -- kind, pdb, interface, tag, seed, donor pose. The interface is the one
@@ -100,7 +101,9 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--cap", type=int, default=50)
     ap.add_argument("--seed", type=int, default=430000)
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     A = ap.parse_args()
+    free = str(paths.DATASETS[A.dataset].free)
 
     bypdb = collections.defaultdict(dict)
     for f in sorted(os.listdir(A.matrices)):
@@ -111,7 +114,7 @@ def main():
     for pdb, ifs in sorted(bypdb.items()):
         per = {i: leaders(p, A.cap) for i, p in ifs.items()}
         for n, (key, iface) in enumerate(round_robin(per, A.cap)):
-            pose = paths.pool_pose(pdb, key[0], key[1])
+            pose = paths.pool_pose(pdb, key[0], key[1], free)
             if not os.path.exists(pose):
                 missing += 1
                 continue

@@ -13,9 +13,10 @@ SUMMARY
     pose-to-pose DockQ. The crystal is otherwise read only to score folds (scorer.py) and to report
     arms (score_experiment.py, compare_arms.py).
 
-    THE POOL RULE, hardcoded here and nowhere else:
+    THE POOL RULE, per dataset (paths.DATASETS) and applied here and nowhere else:
 
-      seeds 300000-300049, and the legacy-no-provenance fold directory only.
+      the dataset's 50 pool seeds (pxm2025: 300000-300049; foldbench: 101-150), and the
+      legacy-no-provenance fold directory of its free pool only.
 
     The pool on disk holds up to 95 seeds on some complexes and several fold directories per seed on
     others; an earlier build drew 302 of 3,132 donors from seeds past 300049 because nothing capped it.
@@ -49,6 +50,8 @@ INPUTS
     --jobs:          worker processes for the CPU steps. Default 16.
     --force:         recompute from this step onward. Default off, i.e. resume.
     --stop-after:    run no further than this step.
+    --dataset:       pxm2025 or foldbench. Default pxm2025. Picks the free pool, the benchmark's complexes,
+                     the role file and the job jsons; every step is passed the same one.
 
     DOCKQ_GPUS (env): GPUs for the DockQ step, comma-separated. Required when that step runs; never
     guessed on a shared machine. DOCKQ_DEADLINE_S (env): seconds before extra shards stop. Default 1800.
@@ -104,28 +107,28 @@ PXM_PY = str(paths.PXMETER_PYTHON)
 PY = str(paths.PROTENIX_PYTHON)
 DOCKQ_DEADLINE_S = int(os.environ.get("DOCKQ_DEADLINE_S", "1800"))
 
-# the rule. seeds 300000-300049 and the legacy fold directory, nothing else.
-POOL_SEEDS = [str(300000 + i) for i in range(50)]
+# the rule: the dataset's pool seeds (paths.DATASETS) and the legacy fold directory, nothing else
 SAMPLES = range(5)
 RUN_DIR = paths.LEGACY_RUN
 
 STEPS = ["pool", "anchor", "interfaces", "dockq", "filter", "templates", "preflight"]
 
 
-def pool_poses(dst, log):
-    """in: the poses.csv path, a logger.  out: nothing; raises unless every pose the rule names exists
+def pool_poses(dst, log, ds):
+    """in: the poses.csv path, a logger, the dataset.
+    out: nothing; raises unless every pose the rule names exists
 
-    Benchmark complexes are the ids in the crystal-scored pool csv (the evaluated set, the same 123
+    Benchmark complexes are the ids in the crystal-scored pool csv (the evaluated set, the same ones
     the free arms use); only its pdb column is read.
     """
-    pdbs = sorted({r["pdb"] for r in csv.DictReader(open(str(paths.PXM2025_POOL_CSV)))})
+    pdbs = sorted({r["pdb"] for r in csv.DictReader(open(str(ds.pool_csv)))})
     rows, missing = [], []
     for pdb in pdbs:
-        for seed in POOL_SEEDS:
+        for seed in ds.pool_seeds:
             for x in SAMPLES:
-                p = f"{paths.FREE_DIR}/{pdb}/{seed}-{RUN_DIR}/predictions/{pdb}_sample_{x}.cif"
+                p = f"{ds.free}/{pdb}/{seed}-{RUN_DIR}/predictions/{pdb}_sample_{x}.cif"
                 (rows if os.path.exists(p) else missing).append((pdb, seed, x))
-    log(f"  [pool] {len(pdbs)} complexes x {len(POOL_SEEDS)} seeds x {len(SAMPLES)} samples, "
+    log(f"  [pool] {len(pdbs)} complexes x {len(ds.pool_seeds)} seeds x {len(SAMPLES)} samples, "
         f"{RUN_DIR} only: {len(rows)} poses on disk, {len(missing)} missing")
     if missing:
         raise SystemExit(f"[pool] {len(missing)} poses missing, e.g. {missing[:3]}")
@@ -216,8 +219,9 @@ def run_sharded(cmd, gpus, outputs, log, name, deadline_s):
             env={"CUDA_VISIBLE_DEVICES": gpus[0]})
 
 
-def validate(name, out, log):
-    """in: the step just finished and the experiment directory.  out: nothing, raises on a problem
+def validate(name, out, log, ds):
+    """in: the step just finished, the experiment directory, a logger, the dataset.
+    out: nothing, raises on a problem
 
     Each check compares a step's output with what the steps before it produced.
     """
@@ -267,7 +271,7 @@ def validate(name, out, log):
         if unexplained:
             fail(f"{len(unexplained)} interfaces have no matrix and no logged reason: "
                  f"{sorted(unexplained)[:5]}")
-        rule = set(POOL_SEEDS)
+        rule = set(ds.pool_seeds)
         for f in sorted(files):
             z = np.load(f"{mats}/{f}.npz")
             if {str(s) for s in z["seed"]} - rule:
@@ -286,8 +290,8 @@ def validate(name, out, log):
             fail("the queue names interfaces this build did not declare")
         seeds = {re.search(r"/free/[^/]+/(\d+)-", f[5]).group(1) for f in q}
         runs = {re.search(r"/free/[^/]+/\d+-([^/]+)/", f[5]).group(1) for f in q}
-        if seeds - set(POOL_SEEDS) or runs != {RUN_DIR}:
-            fail(f"donors outside the rule: seeds {sorted(seeds - set(POOL_SEEDS))[:5]}, runs {runs}")
+        if seeds - set(ds.pool_seeds) or runs != {RUN_DIR}:
+            fail(f"donors outside the rule: seeds {sorted(seeds - set(ds.pool_seeds))[:5]}, runs {runs}")
         if len({(f[1], f[5]) for f in q}) != len(q) or len({(f[1], f[3]) for f in q}) != len(q):
             fail("a donor or a tag repeats within a complex")
         per = collections.Counter(f[1] for f in q)
@@ -369,7 +373,9 @@ def main():
     ap.add_argument("--jobs", type=int, default=16)
     ap.add_argument("--force", choices=STEPS, default=None)
     ap.add_argument("--stop-after", choices=STEPS, default=None)
+    ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     A = ap.parse_args()
+    ds = paths.DATASETS[A.dataset]
 
     out = os.path.abspath(A.out)
     os.makedirs(out, exist_ok=True)
@@ -386,18 +392,19 @@ def main():
     frame, mats, ns = f"{out}/chain_frame", f"{out}/pose_dockq_matrices", f"{out}/templates"
     poses, ifaces = f"{out}/poses.csv", f"{out}/interfaces.csv"
     maps = f"{frame}/chain_maps_anchor.csv"
-    log(f"\n=== self_template_50seeds_pxm -> {out}   seeds 300000-300049, {RUN_DIR} only ===")
+    log(f"\n=== self_template_50seeds_pxm -> {out}   {A.dataset}: seeds {ds.pool_seeds[0]}-"
+        f"{ds.pool_seeds[-1]}, {RUN_DIR} only ===")
 
     for i, step in enumerate(STEPS[:last + 1]):
         if step == "pool":
             if forced["pool"] or not os.path.exists(poses):
-                pool_poses(poses, log)
+                pool_poses(poses, log, ds)
             else:
                 log("  [pool] present, skipping")
             continue
         if step == "anchor":
             run([PXM_PY, f"{HERE}/anchor_relabel.py", "--poses", poses,
-                 "--out-dir", frame, "--jobs", A.jobs],
+                 "--out-dir", frame, "--jobs", A.jobs, "--dataset", A.dataset],
                 [maps, f"{frame}/anchor_chains.csv", f"{frame}/pose_contacts.csv"], forced[step], log,
                 step)
         elif step == "interfaces":
@@ -408,22 +415,22 @@ def main():
             if not gpus:
                 raise SystemExit("[dockq] set DOCKQ_GPUS: this machine is shared, GPUs are never guessed")
             run_sharded([PY, f"{HERE}/pose_to_pose_dockq.py", "--poses", poses, "--maps", maps,
-                         "--roles", ifaces, "--out", mats, "--device", "cuda"],
+                         "--roles", ifaces, "--out", mats, "--device", "cuda", "--dataset", A.dataset],
                         gpus, [mats], log, step, DOCKQ_DEADLINE_S)
         elif step == "filter":
             run([PY, f"{HERE}/structural_diversity_filter.py", "--matrices", mats,
-                 "--out", f"{out}/queue.tsv", "--cap", A.cap, "--seed", A.seed],
+                 "--out", f"{out}/queue.tsv", "--cap", A.cap, "--seed", A.seed, "--dataset", A.dataset],
                 [f"{out}/queue.tsv"], forced[step], log, step)
         elif step == "templates":
             run([PY, f"{HERE}/build_templates.py", "--queue", f"{out}/queue.tsv", "--ns", ns,
-                 "--maps", maps, "--roles", ifaces, "--jobs", A.jobs],
+                 "--maps", maps, "--roles", ifaces, "--jobs", A.jobs, "--dataset", A.dataset],
                 [f"{ns}/release_dates.json"], forced[step], log, step)
         elif step == "preflight":
             run([PY, f"{HERE}/preflight.py", "--ns", ns, "--queue", f"{out}/queue.tsv",
                  "--maps", maps, "--roles", ifaces], [], True, log, step)
             continue
         log(f"  [{step}] validating")
-        validate(step, out, log)
+        validate(step, out, log, ds)
 
     if last < len(STEPS) - 1:
         return 0
