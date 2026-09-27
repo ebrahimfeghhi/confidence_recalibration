@@ -36,6 +36,10 @@ SUMMARY
         run's own evaluation rewrote each model's entity block first, eval_ost_foldbench.postprocess_cif,
         which our scorer does not)
       a complex with no poses on disk (8evd)
+      a complex with a protein entity of fewer than 4 standard residues (7yv1: a cyclic peptide with 9 of
+        11 residues modified; 8b1a: a dipeptide) -- build_templates.pick_chains needs a pose chain of at
+        least 4 standard residues for EVERY protein entity, so every donor of such a complex fails.
+        Read from the job json, not the crystal. Neither entity is in a benchmark interface
       a complex whose role file makes two copies of one molecule the antibody and the antigen (8dtn: its
         only listed interface is nanobody A with nanobody B, identical chains) -- a role belongs to the
         molecule (anchor_relabel.every_copy), so such a labelling has no consistent reading
@@ -62,6 +66,7 @@ EXAMPLE
     foldbench_setup.py --jobs 16
 
 FUNCTIONS
+    short_entity(): a complex -> the standard-residue count of its shortest protein entity
     interfaces():  the role file -> the benchmark's interfaces per complex, and complexes excluded
     link_free():   the free pool as symlinks into the 50-seed run
     score_pose():  one pool pose -> its OST result per interface and its chain mapping (resumable)
@@ -96,6 +101,19 @@ SAMPLES = range(5)
 TOL_IPTM = 1e-4       # both paths read the same float from the same json
 
 
+def short_entity(pdb):
+    """in: a complex.  out: the standard-residue count of its shortest protein entity, from the job json"""
+    job = json.load(open(f"{DS.jobs}/{pdb}-final-updated.json"))
+    job = job[0] if isinstance(job, list) else job
+    counts = []
+    for e in job["sequences"]:
+        if "proteinChain" in e:
+            mod = {m["ptmPosition"] for m in e["proteinChain"].get("modifications") or []}
+            seq = e["proteinChain"]["sequence"]
+            counts.append(sum(1 for i, a in enumerate(seq, 1) if a != "X" and i not in mod))
+    return min(counts)
+
+
 def interfaces():
     """in: nothing.  out: ({pdb: [(chain1, chain2, ab chain, ag chain)]}, {pdb: reason} excluded)"""
     out, excluded = collections.defaultdict(list), {}
@@ -109,6 +127,10 @@ def interfaces():
     for pdb in list(out):
         if pdb in excluded or not os.path.isdir(f"{paths.POSES_FOLDBENCH}/{pdb}"):
             excluded.setdefault(pdb, "no poses on disk")
+            del out[pdb]
+        elif short_entity(pdb) < 4:
+            excluded[pdb] = (f"a protein entity has {short_entity(pdb)} standard residues; the template "
+                             f"builder needs >= 4 for every entity")
             del out[pdb]
     return dict(out), excluded
 

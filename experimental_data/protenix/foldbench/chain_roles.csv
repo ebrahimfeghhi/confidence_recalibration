@@ -11,8 +11,6 @@ interface,pdb,chain_1,chain_2,ab_chain,ag_chain
 7x8p_AB,7x8p,A,B,B,A
 7xld_AB,7xld,A,B,B,A
 7yds_AC,7yds,A,C,C,A
-7yv1_AB,7yv1,A,B,B,A
-7yv1_AC,7yv1,A,C,C,A
 7yxu_AB,7yxu,A,B,B,A
 7yxu_AC,7yxu,A,C,C,A
 7z1x_AB,7z1x,A,B,B,A
@@ -32,7 +30,6 @@ interface,pdb,chain_1,chain_2,ab_chain,ag_chain
 8ath_AE,8ath,A,E,E,A
 8ath_AF,8ath,A,F,F,A
 8av2_AC,8av2,A,C,C,A
-8b1a_AB,8b1a,A,B,B,A
 8b7h_AC,8b7h,A,C,A,C
 8b7h_BC,8b7h,B,C,B,C
 8be1_AC,8be1,A,C,A,C
