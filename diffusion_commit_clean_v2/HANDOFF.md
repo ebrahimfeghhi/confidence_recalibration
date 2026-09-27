@@ -47,7 +47,7 @@ pxm2025's pool: protenix-v2, 10 cycles, 200 steps, bf16), every pool pose rescor
 with reasons in `setup_audit.md` (8a67, 8dtn, 8evd, 8f60, 8im0, 8sfz, 8ts0; 8sfz is borderline -- its
 antigen copies differ only in chromophore, CR2 vs CRO).
 
-- Build: `self_template_50seeds_pxm.py --dataset foldbench --out experimental_data/protenix/foldbench/
+- Build: `build_experiment.py --dataset foldbench --out experimental_data/protenix/foldbench/
   self_template_fixed_50_seed --jobs 48`, DOCKQ_GPUS=0,1,2,5. 469 predicted interfaces; donors by the same
   ipTM-order diversity filter, round-robin, cap 50; every donor on seed 430000. No `--diff-against`:
   nothing to carry.

@@ -68,7 +68,7 @@ OUTPUTS
     <out>/build.log                  every step's stdout
 
 EXAMPLE
-    DOCKQ_GPUS=0,1,2,5 self_template_50seeds_pxm.py --out experimental_data/self_template_fixed_50_seed \
+    DOCKQ_GPUS=0,1,2,5 build_experiment.py --out experimental_data/self_template_fixed_50_seed \
         --diff-against experimental_data/self_template_fixed_50_seed_old_crystal_iptm \
         --jobs 48
 
@@ -392,7 +392,7 @@ def main():
     frame, mats, ns = f"{out}/chain_frame", f"{out}/pose_dockq_matrices", f"{out}/templates"
     poses, ifaces = f"{out}/poses.csv", f"{out}/interfaces.csv"
     maps = f"{frame}/chain_maps_anchor.csv"
-    log(f"\n=== self_template_50seeds_pxm -> {out}   {A.dataset}: seeds {ds.pool_seeds[0]}-"
+    log(f"\n=== build_experiment -> {out}   {A.dataset}: seeds {ds.pool_seeds[0]}-"
         f"{ds.pool_seeds[-1]}, {RUN_DIR} only ===")
 
     for i, step in enumerate(STEPS[:last + 1]):

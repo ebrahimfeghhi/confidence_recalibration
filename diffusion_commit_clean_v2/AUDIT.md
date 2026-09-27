@@ -177,6 +177,9 @@ everything else A's).
 
 ## Tidy-ups
 
+`self_template_50seeds_pxm.py` renamed `build_experiment.py` (2026-09-27): it builds either dataset, and
+the `_pxm` suffix dated from when pxm2025 was the only one. Old `build.log` files keep the old name.
+
 Stager and watcher moved into v2, stager capped at our four GPUs (`7ca54cf`, `cc487fa`); two leftover
 `watch.sh` auto-restarters stopped and `watch.sh` removed (`8c85264`); `run.json` records the code the
 worker loaded (`2e8c961`); orchestrator output names made descriptive (`25e04ea`); `folder.py

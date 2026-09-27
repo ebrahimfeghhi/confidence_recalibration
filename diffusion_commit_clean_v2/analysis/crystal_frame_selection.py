@@ -6,7 +6,7 @@ SUMMARY
 
       A  crystal-free, the experiment as run: interfaces are the antibody-antigen chain pairs in contact
          in >= 1 predicted pose, chains named after a predicted anchor pose, ranked by the pose's own
-         ipTM at those chains (self_template_50seeds_pxm.py).
+         ipTM at those chains (build_experiment.py).
       B  crystal-defined: the crystal's interfaces only, each pose's chains matched to the crystal's,
          ranked by the pose's ipTM at those matched chains.
 

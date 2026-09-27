@@ -10,29 +10,50 @@ them: which complexes form the benchmark, and which chains are antibody and whic
 that concerns binding — which chains interface, the chain naming, the ranking, the similarity, the
 donors — comes from the predicted poses. The crystal is read again only to score folds and to report.
 
-## The selection pipeline
+## How the code fits together
 
-One command, `self_template_50seeds_pxm.py --out <exp> [--diff-against <earlier exp>]`, runs every step
-before folding and validates each against the one before it.
+Four stages, each a script or two. A dataset (pxm2025 or FoldBench) goes through all four.
 
-| step | file | what it decides | from |
+| stage | what happens | scripts | output |
+|:---|:---|:---|:---|
+| 0. inputs, once per dataset | 50 free Protenix seeds per complex, every pose scored against the crystal, the chain maps and the antibody/antigen roles | pxm2025: built in earlier phases (below). FoldBench: `foldbench_setup.py` | `free/`, pool csv, `chain_maps.csv`, `chain_roles.csv` |
+| 1. build an experiment | choose the donor poses and make a template from each | `build_experiment.py` (runs the 7 steps below) | `queue.tsv`, `templates/` |
+| 2. fold | fold every donor with its template, score every pose | `call_folder.py` → `folder.py` → `scorer.py` | `poses/`, `results.csv` |
+| 3. compare | free 50 vs free + compute-matched vs self-templating | `compare_arms.py`, `analysis/` | tables, plots |
+
+**Why only FoldBench has a setup script.** pxm2025's inputs were built weeks ago, piece by piece, by
+scripts from earlier phases: the chain maps by `diffusion_commit_clean/chain_map.py`, the pool scoring
+by scripts now in `archive/confident_decoy_experiments/scripts/` (e.g. `score_pxm2025.py`). They are
+finished and verified, so they were not rebuilt. FoldBench's were built in one pass by
+`foldbench_setup.py`, which also rescored every pose because the old FoldBench scores were stale.
+
+## Stage 1: building an experiment
+
+`build_experiment.py --dataset <pxm2025|foldbench> --out <exp> [--diff-against <earlier exp>]` runs
+these steps in order and checks each against the ones before it.
+
+| step | script | what it does | writes |
 |---:|:---|:---|:---|
-| 1 | `self_template_50seeds_pxm.py` (`pool_poses()`) | the pool | poses on disk: the dataset's 50 pool seeds (pxm2025 300000–300049, FoldBench 101–150), `legacy-no-provenance` only |
-| 2 | `anchor_relabel.py` | antibody/antigen label of every chain, every copy alike | known input (benchmark role file via the crystal chain map) |
-| 3 | `anchor_relabel.py` | each pose's antibody–antigen pairs in contact, and their ipTM | the pose and its confidence json |
-| 4 | `anchor_relabel.py` | the anchor, and every pose's chains renamed after it | highest mean ipTM over the pairs a pose forms |
-| 5 | `pose_interfaces.py` | the interfaces | anchor pairs in contact in ≥ 1 pose |
-| 6 | `pose_to_pose_dockq.py` | pose-to-pose DockQ and ipTM per interface | the poses (`dockq_torch.py`, GPU) |
-| 7 | `structural_diversity_filter.py` | the donors | ipTM order, keep if DockQ < 0.23 to all kept, round-robin, cap 50 |
-| 8 | `build_templates.py` | a template per donor | the donor pose |
-| 9 | `preflight.py` | nothing — refuses a bad namespace before any GPU time | |
+| 1 | `build_experiment.py` | **The pool.** Lists every pose selection may use: the dataset's first 50 free seeds × 5 samples = 250 poses per complex (pxm2025 seeds 300000–300049, FoldBench 101–150) | `poses.csv` |
+| 2 | `anchor_relabel.py` | **Roles.** Marks every chain of every pose antibody or antigen. The only fact taken from the benchmark, and every copy of a molecule gets the same role | (in memory) |
+| 3 | `anchor_relabel.py` | **Contacts, per pose.** For each pose separately: which antibody–antigen chain pairs touch (5 Å), and the model's ipTM for each — in that pose's own chain letters | `chain_frame/pose_contacts.csv` |
+| 4 | `anchor_relabel.py` | **One naming for all poses.** Protenix may call the same antigen copy B in one pose and C in the next. Picks an anchor pose (highest mean ipTM over its touching pairs) and renames every pose's chains to match it | `chain_frame/chain_maps_anchor.csv` |
+| 5 | `pose_interfaces.py` | **The interface list, per complex.** Translates step 3's pairs into step 4's names and keeps each antibody–antigen pair that touches in at least one pose | `interfaces.csv` |
+| 6 | `pose_to_pose_dockq.py` | **Similarity.** DockQ of every pose against every other, per interface (GPU) | `pose_dockq_matrices/` |
+| 7 | `structural_diversity_filter.py` | **The donors.** Per interface, walk the poses in ipTM order and keep one if it is not similar (DockQ < 0.23) to any already kept; alternate across interfaces; at most 50 per complex | `queue.tsv` |
+| 8 | `build_templates.py` | **Templates.** Turns each donor pose into a template Protenix can load | `templates/` |
+| 9 | `preflight.py` | **A last check.** Refuses a broken template set before any GPU time | — |
+
+Steps 3 and 5 are easy to confuse. Step 3 looks at each pose on its own, in its own chain letters.
+Step 5 works on the whole complex, after step 4 has given all poses the same letters, and decides
+which pairs count as interfaces.
 
 With `--diff-against`, folds already scored with the same donor, seed and template chains are carried
 into `results.csv`, and only the rest go into `queue_tofold.tsv`. `build_varseed_queue.py` then writes
 the variable-seed arm's queue: the same donors, each on one of the exact free seeds `compare_arms.py`
 counts as that complex's compute match, so both arms spend the same folds.
 
-## Folding, scoring, reporting
+## Stages 2 and 3: folding, scoring, reporting
 
 | file | role |
 |:---|:---|
@@ -53,7 +74,7 @@ Tests: `tests/test_folder.py`. Paper analyses: `analysis/`.
 
 ## Datasets
 
-Every step takes `--dataset pxm2025` (the default) or `--dataset foldbench`, and `self_template_50seeds_pxm.py`
+Every step takes `--dataset pxm2025` (the default) or `--dataset foldbench`, and `build_experiment.py`
 passes it to each step. What a dataset means — its free pool, pool csv, role file, crystal chain maps,
 job jsons, reference cifs, scorer and pool seeds — is one `Dataset` record in `paths.DATASETS`; no
 script names a benchmark itself. FoldBench's inputs are built once by `foldbench_setup.py` from the
