@@ -150,6 +150,16 @@ and a scoring exception is a FAILED unit with its claim released. Tested in `tes
 (overlap happens, scorings never overlap each other, failure releases the claim). Opt-in: the stager
 passes it to the variable-seed arm only; the fixed arm runs the sequential path it was verified on.
 
+**Scorer launch failures (2026-09-26, `cdec046`).** On the overlapped path, 14 of the variable-seed
+arm's first 787 folds failed to START the scorer: `OSError: [Errno 14] Bad address`, from the background
+thread while the main thread folded. The folds succeeded; no rows were written; each claim was released,
+so nothing was lost, but a worker passes each queue line once and would have left them unfolded. The
+cause is a guess, not tested: Python 3.12 launches subprocesses with vfork. Scorer launches now use
+fork + exec (`subprocess._USE_VFORK = False`) and `spawn()` retries a launch that fails with OSError
+(safe: nothing ran). The four workers were stopped at 17:08 and relaunched; the failed folds, earlier in
+the queue than where the workers had reached, were the first they claimed. Their first, unscored poses
+stay on disk in their own run directories.
+
 ## Variable-seed seeds = the compute-matched free seeds
 
 The variable-seed queue drew a random subset of 300100-300149 per complex, while free + matched counts
