@@ -17,7 +17,7 @@ before folding and validates each against the one before it.
 
 | step | file | what it decides | from |
 |---:|:---|:---|:---|
-| 1 | (orchestrator) | the pool | poses on disk, seeds 300000–300049, `legacy-no-provenance` only |
+| 1 | `self_template_50seeds_pxm.py` (`pool_poses()`) | the pool | poses on disk: the dataset's 50 pool seeds (pxm2025 300000–300049, FoldBench 101–150), `legacy-no-provenance` only |
 | 2 | `anchor_relabel.py` | antibody/antigen label of every chain, every copy alike | known input (benchmark role file via the crystal chain map) |
 | 3 | `anchor_relabel.py` | each pose's antibody–antigen pairs in contact, and their ipTM | the pose and its confidence json |
 | 4 | `anchor_relabel.py` | the anchor, and every pose's chains renamed after it | highest mean ipTM over the pairs a pose forms |
@@ -53,7 +53,7 @@ Tests: `tests/test_folder.py`. Paper analyses: `analysis/`.
 
 ## Datasets
 
-Every step takes `--dataset pxm2025` (the default) or `--dataset foldbench`, and the orchestrator
+Every step takes `--dataset pxm2025` (the default) or `--dataset foldbench`, and `self_template_50seeds_pxm.py`
 passes it to each step. What a dataset means — its free pool, pool csv, role file, crystal chain maps,
 job jsons, reference cifs, scorer and pool seeds — is one `Dataset` record in `paths.DATASETS`; no
 script names a benchmark itself. FoldBench's inputs are built once by `foldbench_setup.py` from the
