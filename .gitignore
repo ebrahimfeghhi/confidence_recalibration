@@ -120,7 +120,7 @@ experimental_data/**/ns/**
 experimental_data/**/ns_stale*/**
 experimental_data/**/build_log*.csv
 # a benchmark's free pool made of symlinks into its original run: foldbench_setup.py rebuilds them
-experimental_data/protenix/*/free/**
+experimental_data/protenix/*/free/*/
 
 # watcher runtime state (last claims/rows per arm) -- rewritten every 30 min
 experimental_data/.watch_state

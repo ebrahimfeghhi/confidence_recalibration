@@ -60,18 +60,28 @@ antigen copies differ only in chromophore, CR2 vs CRO).
 - Launched 2026-09-27 00:27: 104 complexes, 3,209 folds (`donor_summary.md`), preflight clean. First
   folds verified: a template found on every chain, OST rows in results.csv. Startup burst: the four
   workers used ~255 cores for ~60 s while loading, then ~1 core each -- cap threads on the next launch.
-- The waiter in tmux `resumevar` runs exactly this (log `experimental_data/resume_variable_sweep.log`):
+- Order changed 2026-09-27 (user): FoldBench fixed arm -> FoldBench compute-matched free top-up ->
+  resume the pxm2025 variable-seed sweep. Top-up: 3,209 donors need 3,209 extra free folds; 1,137 are
+  already on disk (seeds outside 101-150, scored by `foldbench_setup.py` into `free/results.csv`, the
+  same settings: protenix-v2, 10 cycles, bf16); 2,072 new folds over 76 complexes, seeds 151-200
+  (`free_compute_matched/topup_fixed_arm.csv`, `queue_free_topup_fixed.tsv`, session `fb_free`).
+- tmux `armchain` runs exactly this (log `experimental_data/resume_variable_sweep.log`):
 
 ```bash
-echo "$(date '+%F %T') waiting: resume the pxm2025 variable-seed sweep once FoldBench's fixed arm has every fold claimed and no fb_fixedw worker left" >> /home/ebrahim/tts_abag/experimental_data/resume_variable_sweep.log
-while tmux ls 2>/dev/null | grep -q '^fb_fixedw' || [ $(ls /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/self_template_fixed_50_seed/claims | wc -l) -lt $(grep -c . /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/self_template_fixed_50_seed/queue.tsv) ]; do sleep 300; done
-for g in 0 1 2 5; do echo "$(date '+%F %T') === sweep resumed: FoldBench's fixed arm finished ===" >> /home/ebrahim/tts_abag/experimental_data/self_template_variable_50_seed/w$g.log; done
+# waits for one arm: every queue line claimed and no worker session left
+done_() { ! tmux ls 2>/dev/null | grep -q "^$1" && [ $(ls $2/claims 2>/dev/null | wc -l) -ge $(grep -c . $3) ]; }
+echo "$(date '+%F %T') chain: FoldBench fixed arm -> FoldBench free top-up (2,072 folds) -> resume the pxm2025 variable-seed sweep" >> /home/ebrahim/tts_abag/experimental_data/resume_variable_sweep.log
+until done_ fb_fixedw /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/self_template_fixed_50_seed /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/self_template_fixed_50_seed/queue.tsv; do sleep 60; done
+echo "$(date '+%F %T') FoldBench fixed arm finished; launching the FoldBench free top-up" >> /home/ebrahim/tts_abag/experimental_data/resume_variable_sweep.log
+/home/ebrahim/Protenix/.venv/bin/python /home/ebrahim/tts_abag/diffusion_commit_clean_v2/call_folder.py --dataset foldbench --queue /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/free_compute_matched/queue_free_topup_fixed.tsv --out /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/free_compute_matched --csv /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/free_compute_matched/results.csv --claim-dir /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/free_compute_matched/claims --log-dir /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/free_compute_matched --session fb_free --gpus 0,1,2,5 --overlap-scoring --run >> /home/ebrahim/tts_abag/experimental_data/resume_variable_sweep.log 2>&1
+echo "$(date '+%F %T') launched: $(tmux ls 2>/dev/null | grep -c '^fb_freew') FoldBench free workers" >> /home/ebrahim/tts_abag/experimental_data/resume_variable_sweep.log
+until done_ fb_freew /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/free_compute_matched /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/free_compute_matched/queue_free_topup_fixed.tsv; do sleep 60; done
+for g in 0 1 2 5; do echo "$(date '+%F %T') === sweep resumed: FoldBench's fixed arm and free top-up finished ===" >> /home/ebrahim/tts_abag/experimental_data/self_template_variable_50_seed/w$g.log; done
 /home/ebrahim/Protenix/.venv/bin/python /home/ebrahim/tts_abag/diffusion_commit_clean_v2/call_folder.py --queue /home/ebrahim/tts_abag/experimental_data/self_template_variable_50_seed/queue.tsv --out /home/ebrahim/tts_abag/experimental_data/self_template_variable_50_seed/poses --csv /home/ebrahim/tts_abag/experimental_data/self_template_variable_50_seed/results.csv --claim-dir /home/ebrahim/tts_abag/experimental_data/self_template_variable_50_seed/claims --log-dir /home/ebrahim/tts_abag/experimental_data/self_template_variable_50_seed --templates /home/ebrahim/tts_abag/experimental_data/self_template_fixed_50_seed/templates --gpus 0,1,2,5 --overlap-scoring --run >> /home/ebrahim/tts_abag/experimental_data/resume_variable_sweep.log 2>&1
 echo "$(date '+%F %T') relaunched: $(tmux ls 2>/dev/null | grep -c '^self_template_variable_50_seedw') variable-seed workers" >> /home/ebrahim/tts_abag/experimental_data/resume_variable_sweep.log
 ```
 
-- Then: compute-matched free folds for FoldBench (35 complexes already have unscored extra seeds on disk,
-  up to 299 -- score those before folding new ones), and `compare_arms.py --dataset foldbench`.
+- Then: `compare_arms.py --dataset foldbench` and `analysis/arm_statistics.py --dataset foldbench`.
 
 ## When the fixed arm finishes
 

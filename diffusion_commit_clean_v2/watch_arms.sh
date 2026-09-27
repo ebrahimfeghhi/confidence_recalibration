@@ -25,6 +25,7 @@ ARMS=(
     "self_template_variable_50_seed|$D/self_template_variable_50_seed|self_template_variable_50_seedw"
     "free_compute_matched|$D/free_compute_matched|free_compute_matchedw"
     "foldbench_fixed|$FB/self_template_fixed_50_seed|fb_fixedw"
+    "foldbench_free|$FB/free_compute_matched|fb_freew"
 )
 say() { echo "$(date '+%F %T') $*" >> "$LOG"; }
 

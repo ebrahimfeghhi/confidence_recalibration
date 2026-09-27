@@ -13,7 +13,7 @@ poses `/home/ebrahim/tts_abag/poses/predictions_template`, seeds 101-150, scored
 - excluded 8sfz: labelled chain D lands on different molecules across poses
 - excluded 8ts0: interface A-C, B-C scored on no pose
 - free/: 0 seed links made, 9607 already present
-- OST errors: 250, e.g. ['8ts0 101 2: OST produced no result', '8ts0 101 3: OST produced no result', '8ts0 101 4: OST produced no result']
+- OST errors: 250, e.g. ['8ts0 103 0: OST produced no result', '8ts0 103 1: OST produced no result', '8ts0 103 2: OST produced no result']
 
 ## Audit
 
@@ -25,3 +25,7 @@ poses `/home/ebrahim/tts_abag/poses/predictions_template`, seeds 101-150, scored
 |:---|---:|---:|
 | seeds 101-127 | 17977 | 3623 |
 | seeds 128-150 | 18398 | 0 |
+
+## Extra free seeds
+
+- every free seed on disk outside 101-150, scored the same way: 27845 rows over 3413 folds in `free/results.csv`; 0 OST errors

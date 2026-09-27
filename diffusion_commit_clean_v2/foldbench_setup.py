@@ -18,6 +18,9 @@ SUMMARY
       pool.csv        pdb, chain1, chain2, seed, sample, dockq, pair_iptm -- from those, per interface
       chain_maps.csv  pdb, seed, sample, chain_mapping {reference chain: pose chain}, OST's own mapping
       chain_roles.csv interface, pdb, chain_1, chain_2, ab_chain, ag_chain -- the benchmark's roles
+      free/results.csv  every free seed on disk OUTSIDE the pool seeds, scored the same way, in the fold
+                      results' format (arm "free", no donor): extra free folds a compute-matched
+                      baseline can count before any new seed is folded, as pxm2025's free/results.csv
 
     WHY RESCORE rather than use the run's OST table (paths.FOLDBENCH_OST_CSV): for ~30 complexes that
     table's seeds 101-127 no longer match the poses on disk (those folds were re-run after it was made),
@@ -56,7 +59,8 @@ SUMMARY
 
 INPUTS
     --jobs:        OST processes in parallel. Default 16. Each is pinned by ost_dockq (OST_TASKSET).
-    --stop-after:  "link" or "score" to stop early. Default run everything.
+    --stop-after:  "link", "score" or "audit" to stop early. Default run everything, ending with the
+                   extra free seeds.
 
 OUTPUTS
     paths.FOLDBENCH_DATA/{free/, ost_json/, pool.csv, chain_maps.csv, chain_roles.csv, setup_audit.md}
@@ -75,6 +79,7 @@ FUNCTIONS
     molecules():   one pose -> {chain: its residue names}, which identifies the molecule
     write_csv():   write a csv, refusing to replace a different one
     iptm_check():  one pool row -> |pair_iptm - the pose's chain_pair_iptm|, read independently
+    extra_free():  every free seed outside the pool, scored -> free/results.csv rows
     main():        link, score, write, audit
 """
 import argparse
@@ -233,10 +238,30 @@ def iptm_check(task):
         return f"{pdb} {seed} {sample} {m1}{m2}: {type(e).__name__}: {e}"
 
 
+def extra_free(ifs, jobs):
+    """in: the kept complexes' interfaces, worker count.
+    out: (rows for free/results.csv, errors) -- every free seed on disk outside the pool seeds"""
+    import multiprocessing as mp
+    tasks = [(p, d.split("-")[0], x, [(c1, c2) for c1, c2, _, _ in ifs[p]])
+             for p in sorted(ifs) for d in sorted(os.listdir(f"{DS.free}/{p}"))
+             if d.endswith(paths.LEGACY_RUN) and d.split("-")[0] not in DS.pool_seeds
+             for x in SAMPLES]
+    rows, errors = [], []
+    with mp.Pool(jobs) as pool:
+        for i, (p, s, x, got, _, err) in enumerate(pool.imap_unordered(score_pose, tasks, 4), 1):
+            if err:
+                errors.append(f"{p} {s} {x}: {err}")
+            rows += [[f"{p}_{c1}{c2}", s, "free", "-1", "", x, f"{dq:.4f}", f"{ip:.4f}"]
+                     for (c1, c2), (dq, ip, _) in got.items()]
+            if i % 2000 == 0 or i == len(tasks):
+                print(f"    extra free seeds scored {i}/{len(tasks)}  errors {len(errors)}", flush=True)
+    return sorted(rows, key=lambda r: (r[0], int(r[1]), r[5])), errors
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs", type=int, default=16)
-    ap.add_argument("--stop-after", choices=("link", "score"), default=None)
+    ap.add_argument("--stop-after", choices=("link", "score", "audit"), default=None)
     A = ap.parse_args()
     os.makedirs(DS.data, exist_ok=True)
     import multiprocessing as mp
@@ -346,7 +371,20 @@ def main():
     open(f"{DS.data}/setup_audit.md", "w").write("\n".join(lines))
     print("\n".join(lines[4:]))
     kept_errors = [e for e in errors if e.split()[0] in ifs]     # an excluded complex's are its reason
-    return 0 if not (kept_errors or unmapped or roles_missing or bad) else 1
+    ok = not (kept_errors or unmapped or roles_missing or bad)
+    if A.stop_after == "audit" or not ok:
+        return 0 if ok else 1
+
+    # extra free seeds: the folds a compute-matched baseline can use before folding any new seed
+    rows, errs = extra_free(ifs, A.jobs)
+    print(f"  free/results.csv: {write_csv(f'{DS.free}/results.csv', ['iface', 'seed', 'arm', 'donor_pose', 'tmpl_chains', 'sample', 'dockq', 'iptm'], rows)} "
+          f"({len(rows)} rows, {len({(r[0].split('_')[0], r[1]) for r in rows})} folds, {len(errs)} errors)")
+    with open(f"{DS.data}/setup_audit.md", "a") as fh:
+        fh.write(f"\n## Extra free seeds\n\n- every free seed on disk outside {DS.pool_seeds[0]}-"
+                 f"{DS.pool_seeds[-1]}, scored the same way: {len(rows)} rows over "
+                 f"{len({(r[0].split('_')[0], r[1]) for r in rows})} folds in `free/results.csv`; "
+                 f"{len(errs)} OST errors" + (f", e.g. {errs[:3]}" if errs else "") + "\n")
+    return 0 if not errs else 1
 
 
 if __name__ == "__main__":
