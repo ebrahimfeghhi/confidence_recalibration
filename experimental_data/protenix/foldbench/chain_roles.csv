@@ -22,7 +22,6 @@ interface,pdb,chain_1,chain_2,ab_chain,ag_chain
 7zoz_AC,7zoz,A,C,C,A
 8a44_AC,8a44,A,C,C,A
 8a44_AD,8a44,A,D,D,A
-8a67_AD,8a67,A,D,D,A
 8acf_AB,8acf,A,B,B,A
 8acf_AD,8acf,A,D,D,A
 8ahn_AB,8ahn,A,B,B,A
@@ -113,7 +112,6 @@ interface,pdb,chain_1,chain_2,ab_chain,ag_chain
 8rp8_AC,8rp8,A,C,A,C
 8rp8_BC,8rp8,B,C,B,C
 8s0l_AB,8s0l,A,B,B,A
-8sfz_AD,8sfz,A,D,A,D
 8sgn_BC,8sgn,B,C,B,C
 8sgn_AC,8sgn,A,C,A,C
 8slb_AB,8slb,A,B,B,A

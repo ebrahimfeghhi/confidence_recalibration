@@ -39,6 +39,11 @@ SUMMARY
       a complex whose role file makes two copies of one molecule the antibody and the antigen (8dtn: its
         only listed interface is nanobody A with nanobody B, identical chains) -- a role belongs to the
         molecule (anchor_relabel.every_copy), so such a labelling has no consistent reading
+      a complex where a labelled chain lands on different molecules in different poses (8a67: its
+        antigen is laid over a 76-residue ubiquitin in 166 poses and a 72-residue one in 84) -- which
+        molecule is the antigen would then change from pose to pose. A pose chain's letter names the
+        same molecule in every pose of a complex (Protenix names chains in input order), so one pose's
+        sequences decide it
 
     THE AUDIT: every pool pose resolves through free/ with its json; every row's pair_iptm equals the
     pose's chain_pair_iptm read by an independent code path (pool_index.pair_iptm_at: gemmi chain order,
@@ -62,6 +67,7 @@ FUNCTIONS
     score_pose():  one pool pose -> its OST result per interface and its chain mapping (resumable)
     first_copy():  a {reference: model} map with copy-N names folded onto the first copy's
     same_molecule(): one pose, two of its chains -> whether they are copies of one molecule
+    molecules():   one pose -> {chain: its residue names}, which identifies the molecule
     write_csv():   write a csv, refusing to replace a different one
     iptm_check():  one pool row -> |pair_iptm - the pose's chain_pair_iptm|, read independently
     main():        link, score, write, audit
@@ -163,11 +169,17 @@ def score_pose(task):
         return pdb, seed, sample, {}, {}, f"{type(e).__name__}: {e}"
 
 
-def same_molecule(pdb, seed, sample, c1, c2):
-    """in: a pool pose and two of its chains.  out: whether their residue sequences are identical"""
+def molecules(pdb, seed, sample):
+    """in: a pool pose.  out: {chain: tuple of residue names} -- equal tuples are copies of one molecule"""
     import gemmi
     model = gemmi.read_structure(paths.pool_pose(pdb, seed, sample, str(DS.free)))[0]
-    return [r.name for r in model[c1]] == [r.name for r in model[c2]]
+    return {c.name: tuple(r.name for r in c) for c in model}
+
+
+def same_molecule(pdb, seed, sample, c1, c2):
+    """in: a pool pose and two of its chains.  out: whether their residue sequences are identical"""
+    m = molecules(pdb, seed, sample)
+    return m[c1] == m[c2]
 
 
 def write_csv(path, header, rows):
@@ -238,6 +250,19 @@ def main():
         if both:
             excluded[p] = (f"interface {', '.join(both)}: antibody and antigen chains are copies of one "
                            f"molecule")
+            del ifs[p]
+
+    # a complex where a labelled chain lands on different molecules in different poses
+    for p in sorted(ifs):
+        k = next((k for k in scored if k[0] == p and scored[k][1]), None)
+        if k is None:
+            continue
+        mol = molecules(*k)
+        split = sorted({c for c1, c2, ab, ag in ifs[p] for c in (ab, ag)
+                        if len({mol[cmap[c]] for (q, _, _), (_, cmap) in scored.items()
+                                if q == p and c in cmap}) > 1})
+        if split:
+            excluded[p] = f"labelled chain {', '.join(split)} lands on different molecules across poses"
             del ifs[p]
 
     # a complex with an interface no pose scores cannot be evaluated
