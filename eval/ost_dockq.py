@@ -21,6 +21,7 @@ Usage as a library:
     from ost_dockq import score
     r = score(model_cif, ref_cif, out_json)          # -> {"A,C": {"dockq":..., "model_chains":...}}
     r = score(model_cif, ref_cif, out_json, conf_json=cj)   # adds "pair_iptm"
+    v = interface(r, "A", "C")                        # that interface, in either order or copy
 
 Usage from the shell:
     ost_dockq.py --model m.cif --ref r.cif --out o.json [--conf summary_confidence.json]
@@ -127,6 +128,34 @@ def parse(out, conf_json=None):
         except Exception:
             pass
     return res
+
+
+def interface(res, c1, c2):
+    """in: a parse()/score() result and two REFERENCE chain names.  out: that interface's entry, or None
+
+    Looked up in either order. FoldBench references can hold the complex twice, the second copy's chains
+    named "<X>-2" (8fxv: A, B, A-2, B-2), and OST lays the model over whichever copy fits best -- so the
+    interface A-B can come back as "A-2,B-2". That is the same interface, and it is accepted as such
+    when both chains are from the same copy; a pair across copies ("A,B-2") is a different interface
+    and is not. Raises if two copies both match, which OST's one-to-one mapping should never produce.
+    References without copies (pxm2025) only ever take the first branch.
+    """
+    v = res.get(f"{c1},{c2}") or res.get(f"{c2},{c1}")
+    if v:
+        return v
+
+    def base(name):
+        head, _, tail = name.rpartition("-")
+        return (head, tail) if head and tail.isdigit() else (name, "")
+
+    hits = []
+    for key, v in res.items():
+        (b1, n1), (b2, n2) = (base(c) for c in key.split(","))
+        if n1 == n2 and n1 and {b1, b2} == {c1, c2}:
+            hits.append(v)
+    if len(hits) > 1:
+        raise ValueError(f"interface {c1},{c2} matches {len(hits)} reference copies")
+    return hits[0] if hits else None
 
 
 def score(model, ref, out, conf_json=None, extra=None, timeout=TIMEOUT):

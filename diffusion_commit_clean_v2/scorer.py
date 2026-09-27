@@ -80,7 +80,8 @@ for cif in sorted(glob.glob(f"{A.dir}/**/*_sample_*.cif", recursive=True)):
     conf = glob.glob(f"{A.dir}/**/*summary_confidence_sample_{k}.json", recursive=True)
     res = mod.score(cif, A.ref, os.path.join(jdir, f"{k}.json"),
                     conf_json=conf[0] if conf else None)
-    v = res.get(f"{c1},{c2}") or res.get(f"{c2},{c1}")
+    # either order, or the same interface in a second copy of the reference (ost_dockq.interface)
+    v = ost_dockq.interface(res, c1, c2)
     if not v or v.get("dockq") is None:
         continue          # this pose has no such interface -- a real condition, not an error
     ip = v.get("pair_iptm")
