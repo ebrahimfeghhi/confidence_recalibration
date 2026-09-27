@@ -6,9 +6,19 @@ Produced by `analysis/donor_summary.py`. Donor DockQ is against the crystal at e
 
 | complexes | donors | median | mean | 1-5 | 6-10 | 11-20 | 21-30 | 31-49 | 50 (cap) |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 104 | 3209 | 32.500 | 30.9 | 15 | 8 | 13 | 14 | 10 | 44 |
+| 104 | 3209 | 32.5 | 30.9 | 15 | 8 | 13 | 14 | 10 | 44 |
 
 benchmark complexes with no donor: 0
+
+## Donors per class (benchmark interfaces)
+
+Each interface is counted with its complex's donor count: a template is a whole complex.
+
+| class | interfaces | median donors | mean donors | at the cap (50) | under 10 |
+|:---|---:|---:|---:|---:|---:|
+| decoy | 28 | 50 | 40.2 | 16 | 2 |
+| solved | 119 | 24 | 28.2 | 44 | 28 |
+| nocov | 13 | 50 | 46.3 | 10 | 0 |
 
 ## Donor quality per class (benchmark interfaces)
 

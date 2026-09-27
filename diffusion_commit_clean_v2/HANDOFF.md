@@ -83,6 +83,12 @@ echo "$(date '+%F %T') relaunched: $(tmux ls 2>/dev/null | grep -c '^self_templa
 
 ## Open items
 
+- **Baseline to add: free + matched, uniform** (user, 2026-09-27). The same total number of extra free folds
+  as the method spends, spread evenly across complexes instead of per complex by donor count. Separates the
+  gain from templating from the gain from where the compute goes: the method gives decoy and nocov
+  complexes more folds (median 50 donors) than solved ones (median 24 on FoldBench, 13.5 on pxm2025;
+  `donor_summary.md`).
+
 - **The 33 unannotated chains** (22 complexes): the benchmark labels only the chains in its scored
   crystal interfaces, so which chains may form interfaces is still slightly shaped by the crystal.
   Close it by labelling every chain from 1-D metadata, checked by hand, and measuring the change.

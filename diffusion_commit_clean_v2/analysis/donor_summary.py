@@ -8,6 +8,8 @@ SUMMARY
     crystal_frame_selection.md:
 
       donors per complex   distinct donor poses in queue.tsv, binned
+      donors per class     per benchmark interface, its complex's donor count (a template serves the whole
+                           complex), summarised per class: median, mean, how many at the cap, under 10
       donor quality        EVALUATION, against the crystal: for each benchmark interface, the DockQ of
                            every donor of its complex (a template is a whole complex and a fold is scored
                            on every interface), from the dataset's pool csv. Per class (solved / decoy /
@@ -20,14 +22,15 @@ INPUTS
     --out:      also write the tables here as markdown. Optional.
 
 OUTPUTS
-    stdout (and --out): the two tables
+    stdout (and --out): the three tables
 
 EXAMPLE
     analysis/donor_summary.py --dataset foldbench \\
         --out experimental_data/protenix/foldbench/self_template_fixed_50_seed/donor_summary.md
 
 FUNCTIONS
-    main(): read the queue and the pool, tabulate
+    per_class(): donors per complex and the classes -> per-class donor counts, per interface
+    main():      read the queue and the pool, tabulate
 """
 import argparse
 import os
@@ -45,6 +48,19 @@ from fmt import table  # noqa: E402
 from score_experiment import arm_defaults, classes_at, pool_by_seed  # noqa: E402
 
 BINS = [(1, 5), (6, 10), (11, 20), (21, 30), (31, 49), (50, 50)]
+CAP = 50
+
+
+def per_class(n, cls, classes):
+    """in: {complex: donors}, {interface: class}, the classes.  out: table rows, one per class, each
+    interface counted with its complex's donor count"""
+    rows = []
+    for k in classes:
+        v = [n.get(i.split("_")[0], 0) for i, c in cls.items() if c == k]
+        if v:
+            rows.append([k, len(v), f"{statistics.median(v):g}", f"{statistics.mean(v):.1f}",
+                         sum(x == CAP for x in v), sum(x < 10 for x in v)])
+    return rows
 
 
 def main():
@@ -63,7 +79,7 @@ def main():
     missing = sorted({i.split("_")[0] for i in pool} - set(sel))
 
     v = sorted(len(x) for x in sel.values())
-    counts = [[len(sel), sum(v), statistics.median(v), f"{statistics.mean(v):.1f}"]
+    counts = [[len(sel), sum(v), f"{statistics.median(v):g}", f"{statistics.mean(v):.1f}"]
               + [sum(1 for x in v if a <= x <= b) for a, b in BINS]]
     q, unscored = donor_quality(sel, pool)
     lines = [f"# Donors: {A.dataset}, `{os.path.basename(A.exp)}`", "",
@@ -74,7 +90,12 @@ def main():
                    + [f"{a}-{b}" if a != b else f"{a} (cap)" for a, b in BINS], counts,
                    align=" ".join("r" * 10)), "",
              f"benchmark complexes with no donor: {len(missing)}" + (f" ({', '.join(missing)})" if missing else ""),
-             "", "## Donor quality per class (benchmark interfaces)", "",
+             "", "## Donors per class (benchmark interfaces)", "",
+             "Each interface is counted with its complex's donor count: a template is a whole complex.", "",
+             table(["class", "interfaces", "median donors", "mean donors", f"at the cap ({CAP})",
+                    "under 10"], per_class({p: len(v) for p, v in sel.items()}, cls,
+                                           ["decoy", "solved", "nocov"]), align="l r r r r r"), "",
+             "## Donor quality per class (benchmark interfaces)", "",
              table(["class", "interfaces", "any acceptable donor", "median best donor DockQ",
                     "mean donor DockQ"], summarise(q, cls, ["decoy", "solved", "nocov"]),
                    align="l r r r r"), "",
