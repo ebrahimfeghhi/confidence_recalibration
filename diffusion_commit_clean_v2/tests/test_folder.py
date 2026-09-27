@@ -236,6 +236,39 @@ def test_overlap_scoring_failure_releases_claim():
     print("ok  overlap scoring: a scoring exception fails the unit and releases its claim")
 
 
+def test_scorer_launch_retried():
+    """in: nothing.  out: passes, or AssertionError if a scorer that fails to START is not relaunched,
+    or if a launch failing every time is not raised after SPAWN_TRIES"""
+    real, sleep, calls = folder.subprocess.run, folder.time.sleep, []
+
+    def flaky(cmd, **k):
+        calls.append(cmd)
+        if len(calls) == 1:
+            raise OSError(14, "Bad address")
+        return "ran"
+
+    def broken(cmd, **k):
+        calls.append(cmd)
+        raise OSError(14, "Bad address")
+
+    folder.time.sleep = lambda s: None
+    try:
+        folder.subprocess.run = flaky
+        assert folder.spawn(["scorer"]) == "ran" and len(calls) == 2, calls
+        calls.clear()
+        folder.subprocess.run = broken
+        try:
+            folder.spawn(["scorer"])
+            raise AssertionError("a launch failing every time was not raised")
+        except OSError:
+            pass
+        assert len(calls) == folder.SPAWN_TRIES, calls
+    finally:
+        folder.subprocess.run, folder.time.sleep = real, sleep
+    assert folder.subprocess._USE_VFORK is False
+    print("ok  scorer launch: retried after OSError, raised after SPAWN_TRIES, vfork off")
+
+
 if __name__ == "__main__":
     test_run_id_survives_reseeding()
     test_move_refuses_overwrite()
@@ -243,4 +276,5 @@ if __name__ == "__main__":
     test_dead_claim_released_despite_shared_seed()
     test_overlap_scoring()
     test_overlap_scoring_failure_releases_claim()
+    test_scorer_launch_retried()
     print("ALL PASSED")

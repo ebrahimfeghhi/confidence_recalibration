@@ -94,6 +94,7 @@ FUNCTIONS
     fold():             run one fold; assert it produced poses and the expected template count
     provenance():       the unit -> (donor_pose, tmpl_chains), the two fields that identify a fold
     score_fold():       run scorer.py per interface and append its rows to the csv
+    spawn():            start a scorer, retrying a launch that fails with OSError (nothing ran)
     normalise_poses():  flatten Protenix's nested output to <run dir>/predictions/, never overwriting
     _move_new():        os.replace that refuses an existing destination
     reconcile_claims(): at startup, free claims whose unit was never scored (a killed worker's work)
@@ -133,6 +134,12 @@ import runmeta   # noqa: E402
 
 DC = os.path.dirname(os.path.realpath(__file__))   # scorer.py must be the copy beside this file
 PY = str(paths.PROTENIX_PYTHON)
+
+# With --overlap-scoring the scorer is started from a background thread while the main thread folds.
+# Started with vfork (Python's default), 14 of the variable-seed arm's first 787 folds failed to launch
+# it with OSError EFAULT "Bad address"; fork + exec is the documented way to opt out of vfork.
+subprocess._USE_VFORK = False
+SPAWN_TRIES = 3     # a scorer that fails to START wrote nothing, so launching it again is safe
 
 # mandatory: without it the model emits NaN coordinates silently
 os.environ.setdefault("LAYERNORM_TYPE", "openfold")
@@ -617,11 +624,10 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
     donor, chains = provenance(ctx.A, target, tag, poses)
     got, err = 0, ""
     for iface in [i for i in want if (i, str(seed), tag) not in ctx.rows_done]:
-        out = subprocess.run([PY, f"{DC}/scorer.py", "--dir", f"{rdir}/{name}", "--iface", iface,
-                              "--seed", str(seed), "--arm", tag, "--donor", donor,
-                              "--chains", chains,
-                              "--ref", ctx.ref(pdb), "--scorer", ctx.scorer],
-                             cwd=DC, capture_output=True, text=True)
+        cmd = [PY, f"{DC}/scorer.py", "--dir", f"{rdir}/{name}", "--iface", iface, "--seed", str(seed),
+               "--arm", tag, "--donor", donor, "--chains", chains, "--ref", ctx.ref(pdb),
+               "--scorer", ctx.scorer]
+        out = spawn(cmd)
         err = out.stderr or err
         if out.stdout.strip():
             with open(ctx.A.csv, "a") as fh:      # flushed per interface, not at the end
@@ -629,6 +635,21 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
             ctx.rows_done.add((iface, str(seed), tag))
             got += 1
     return got, err
+
+
+def spawn(cmd):
+    """in: a scorer command.  out: its CompletedProcess -- the launch retried if it fails to start.
+
+    Only an OSError from starting the process is retried: the scorer never ran, so nothing was written.
+    """
+    for attempt in range(1, SPAWN_TRIES + 1):
+        try:
+            return subprocess.run(cmd, cwd=DC, capture_output=True, text=True)
+        except OSError as e:
+            if attempt == SPAWN_TRIES:
+                raise
+            print(f"      scorer failed to start ({e}); retry {attempt}/{SPAWN_TRIES - 1}", flush=True)
+            time.sleep(2)
 
 
 def _move_new(src, dst):
