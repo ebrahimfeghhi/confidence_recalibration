@@ -36,6 +36,9 @@ SUMMARY
         run's own evaluation rewrote each model's entity block first, eval_ost_foldbench.postprocess_cif,
         which our scorer does not)
       a complex with no poses on disk (8evd)
+      a complex whose role file makes two copies of one molecule the antibody and the antigen (8dtn: its
+        only listed interface is nanobody A with nanobody B, identical chains) -- a role belongs to the
+        molecule (anchor_relabel.every_copy), so such a labelling has no consistent reading
 
     THE AUDIT: every pool pose resolves through free/ with its json; every row's pair_iptm equals the
     pose's chain_pair_iptm read by an independent code path (pool_index.pair_iptm_at: gemmi chain order,
@@ -58,6 +61,7 @@ FUNCTIONS
     link_free():   the free pool as symlinks into the 50-seed run
     score_pose():  one pool pose -> its OST result per interface and its chain mapping (resumable)
     first_copy():  a {reference: model} map with copy-N names folded onto the first copy's
+    same_molecule(): one pose, two of its chains -> whether they are copies of one molecule
     write_csv():   write a csv, refusing to replace a different one
     iptm_check():  one pool row -> |pair_iptm - the pose's chain_pair_iptm|, read independently
     main():        link, score, write, audit
@@ -159,6 +163,13 @@ def score_pose(task):
         return pdb, seed, sample, {}, {}, f"{type(e).__name__}: {e}"
 
 
+def same_molecule(pdb, seed, sample, c1, c2):
+    """in: a pool pose and two of its chains.  out: whether their residue sequences are identical"""
+    import gemmi
+    model = gemmi.read_structure(paths.pool_pose(pdb, seed, sample, str(DS.free)))[0]
+    return [r.name for r in model[c1]] == [r.name for r in model[c2]]
+
+
 def write_csv(path, header, rows):
     """in: a path, the header, the rows.  out: "written" or "unchanged"; raises if a different file is
     already there -- these are inputs, and a silent change under a finished run is how results drift"""
@@ -215,6 +226,19 @@ def main():
                 print(f"    scored {i}/{len(tasks)}  errors {len(errors)}", flush=True)
     if A.stop_after == "score":
         return 0
+
+    # a complex whose role file names two copies of one molecule as antibody and antigen
+    for p in sorted(ifs):
+        k = next((k for k in scored if k[0] == p and scored[k][1]), None)
+        if k is None:
+            continue                     # no pose mapped at all: excluded just below
+        cmap = scored[k][1]
+        both = [f"{c1}-{c2}" for c1, c2, ab, ag in ifs[p]
+                if ab in cmap and ag in cmap and same_molecule(p, k[1], k[2], cmap[ab], cmap[ag])]
+        if both:
+            excluded[p] = (f"interface {', '.join(both)}: antibody and antigen chains are copies of one "
+                           f"molecule")
+            del ifs[p]
 
     # a complex with an interface no pose scores cannot be evaluated
     n_rows = collections.Counter((p, c1, c2) for (p, _, _), (got, _) in scored.items() for c1, c2 in got)

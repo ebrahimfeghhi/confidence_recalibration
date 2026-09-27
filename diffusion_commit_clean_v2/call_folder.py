@@ -23,7 +23,9 @@ INPUTS
                   be templated on or used as a baseline, and folds do not reproduce.
     --csv:        results csv. Default <out>/results.csv.
     --claim-dir:  claim directory. Default <out>/claims.
-    --log-dir:    where w<gpu>.log go, and what the tmux sessions are named after. Default <out>.
+    --log-dir:    where w<gpu>.log go. Default <out>.
+    --session:    tmux sessions are <session>w<gpu>. Default the log dir's name -- pass one when two
+                  datasets have arms of the same name, or the watcher counts one arm's workers as both.
     --dataset:    pxm2025 or foldbench. Default pxm2025. Passed to every worker.
     --nsample:    poses per fold. Default 5.
     --overlap-scoring: workers score each fold on a background thread while the next one folds
@@ -105,6 +107,7 @@ def main():
     ap.add_argument("--csv", default=None, help="default <out>/results.csv")
     ap.add_argument("--claim-dir", default=None, help="default <out>/claims")
     ap.add_argument("--log-dir", default=None, help="default <out>; worker logs are w<gpu>.log")
+    ap.add_argument("--session", default=None, help="tmux name prefix; default the log dir's name")
     ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     ap.add_argument("--nsample", type=int, default=5)
     ap.add_argument("--gpus", default=None, help="explicit device ids, e.g. 0,1,2,5")
@@ -136,7 +139,7 @@ def main():
     csv_path = A.csv or f"{out}/results.csv"
     claim_dir = A.claim_dir or f"{out}/claims"
     log_dir = A.log_dir or out
-    prefix = f"{os.path.basename(os.path.normpath(log_dir))}w"
+    prefix = f"{A.session or os.path.basename(os.path.normpath(log_dir))}w"
     names = launch(gpus, A.queue, out, A.templates, A.dataset, A.nsample,
                    prefix, csv_path, claim_dir, log_dir, A.drop_cifs, A.overlap_scoring)
     print(f"\n  launched {len(names)} workers: {', '.join(names)}")
