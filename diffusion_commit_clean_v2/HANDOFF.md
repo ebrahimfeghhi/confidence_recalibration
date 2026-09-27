@@ -38,6 +38,28 @@ folded).
 - Our GPUs are 0, 1, 2, 5. GPU 4 is another user's. **Never more than 4 without asking.** An idle card
   is held with `hold_gpus.py` (tmux `hold<gpu>`); the stager releases it at launch.
 
+## FoldBench, fixed seed (method recorded before launch, 2026-09-26)
+
+Same pipeline, `--dataset foldbench` (see README, Datasets). Inputs `experimental_data/protenix/foldbench/`
+from `foldbench_setup.py`: the existing 50-seed Protenix run (seeds 101-150, same model and settings as
+pxm2025's pool: protenix-v2, 10 cycles, 200 steps, bf16), every pool pose rescored with our OST scorer
+(the run's own table is stale for seeds 101-127). 106 complexes, 163 benchmark interfaces; 8 excluded
+with reasons in `setup_audit.md` (8a67, 8dtn, 8evd, 8f60, 8im0, 8sfz, 8ts0; 8sfz is borderline -- its
+antigen copies differ only in chromophore, CR2 vs CRO).
+
+- Build: `self_template_50seeds_pxm.py --dataset foldbench --out experimental_data/protenix/foldbench/
+  self_template_fixed_50_seed --jobs 48`, DOCKQ_GPUS=0,1,2,5. 469 predicted interfaces; donors by the same
+  ipTM-order diversity filter, round-robin, cap 50; every donor on seed 430000. No `--diff-against`:
+  nothing to carry.
+- Fold: `call_folder.py --dataset foldbench --session fb_fixed --overlap-scoring` on GPUs 0,1,2,5, into
+  that directory (`poses/`, `results.csv`, `claims/`, `w<gpu>.log`). Scored with `scorer.py --scorer ost`.
+- GPUs come from the pxm2025 variable-seed sweep, paused (user's call, 2026-09-26): each worker was
+  stopped by PID right after a fold finished, and each log says so. The sweep's queue and claims are kept.
+- Resume: tmux `resumevar` waits until no `fb_fixedw` session is left, then relaunches the variable-seed
+  sweep on the same four GPUs, the same command it ran with (absolute paths, `--overlap-scoring`).
+- Then: compute-matched free folds for FoldBench (35 complexes already have unscored extra seeds on disk,
+  up to 299 -- score those before folding new ones), and `compare_arms.py --dataset foldbench`.
+
 ## When the fixed arm finishes
 
 1. `compare_arms.py --exp experimental_data/self_template_fixed_50_seed` — free 50 vs free + matched vs
