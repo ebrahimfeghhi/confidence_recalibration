@@ -43,12 +43,21 @@ counts as that complex's compute match, so both arms spend the same folds.
 | `build_varseed_queue.py` | the variable-seed queue: fixed-arm donors on the compute-matched free seeds |
 | `score_experiment.py` | did templating help, given the pool — rescued / broken per class |
 | `compare_arms.py` | free 50 vs free + compute-matched vs the method, per class |
+| `foldbench_setup.py` | build FoldBench's inputs (free-pool links, pool csv, chain maps, roles) and audit them |
 | `stage_arms.sh` | per GPU: fixed-seed arm → free top-up → variable-seed arm |
 | `watch_arms.sh` | every 30 min: claims and scored rows per arm, checked separately |
 | `hold_gpus.py` | hold an idle card so the shared machine does not reclaim it |
 
 Shared: `pool_index.py` (index files, ipTM at given chains), `contacts.py` (5 Å heavy-atom contact).
 Tests: `tests/test_folder.py`. Paper analyses: `analysis/`.
+
+## Datasets
+
+Every step takes `--dataset pxm2025` (the default) or `--dataset foldbench`, and the orchestrator
+passes it to each step. What a dataset means — its free pool, pool csv, role file, crystal chain maps,
+job jsons, reference cifs, scorer and pool seeds — is one `Dataset` record in `paths.DATASETS`; no
+script names a benchmark itself. FoldBench's inputs are built once by `foldbench_setup.py` from the
+existing 50-seed Protenix run (seeds 101–150, OST-scored); its audit is `setup_audit.md` beside them.
 
 ## Experiment layout
 
@@ -60,7 +69,12 @@ experimental_data/
     poses.csv  interfaces.csv  queue.tsv  queue_tofold.tsv  results.csv
     chain_frame/  pose_dockq_matrices/  templates/  poses/  claims/  build.log
   self_template_variable_50_seed/        the same donors, one seed each
+  protenix/foldbench/                    FoldBench, same arms and names; free/ links into the 50-seed run
+    free/  pool.csv  chain_maps.csv  chain_roles.csv  setup_audit.md
 ```
+
+pxm2025's arms move to `protenix/pxm2025/` once the variable-seed arm has finished (their paths are
+baked into running queues and templates until then).
 
 `free/` must never be renamed: every template and queue points at it by absolute path. A template
 namespace is named at build time for the same reason — its path is baked into every job json.
