@@ -85,11 +85,14 @@ def main():
     if len(seeds) < n:
         print(f"  NOTE {A.pdb}: {len(seeds)} of {n} matched free seeds scored so far; the free + "
               f"matched panel shows what exists")
+    # say what the free panel holds: until the top-up is folded it is the free 50 plus what exists
+    free_name = MATCHED if len(seeds) >= n else f"free 50 + {len(seeds)}/{n} matched seeds"
     fig, axes = plt.subplots(len(data), 2, figsize=(9, 3.6 * len(data)), squeeze=False,
                              sharex=True, sharey=True)
     for row, (iface, arm) in enumerate(data.items()):
         for col, (name, colour) in enumerate(((TEMPLATED, BLUE), (MATCHED, GRAY))):
             ax, v = axes[row][col], arm[name]
+            name = name if name == TEMPLATED else free_name
             if not v:
                 ax.text(0.5, 0.5, "no poses", ha="center", va="center", color=MUTED,
                         transform=ax.transAxes)
