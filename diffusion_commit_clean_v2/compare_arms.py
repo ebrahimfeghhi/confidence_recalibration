@@ -32,6 +32,8 @@ INPUTS
                   and compute-matched baseline.
     --classes:    which classes to report. Default decoy,solved,nocov.
     --pool-seeds: how many seeds define the baseline pool. Default 50.
+    --select:     iptm (default): each arm's pose is its highest-ipTM one, as deployed. oracle: its
+                  best-DockQ one -- EVALUATION ONLY, the best pose the arm made available, reading the crystal.
     --out:        write the table as markdown here. Optional.
 
 OUTPUTS
@@ -48,6 +50,7 @@ FUNCTIONS
     matched_seeds():  one complex -> the free seeds that count as its compute match
     tmpl_by_donor():  the experiment's scored rows -> {interface: [(iptm, dockq, donor)]}
     top():            rows -> the DockQ of the highest-ipTM one
+    oracle():         rows -> the best DockQ among them
     arms():           assemble the four arms per interface
     main():           read, compare, print, optionally write markdown
 """
@@ -137,9 +140,15 @@ def top(rows):
     return max(rows, key=lambda r: r[0])[1] if rows else None
 
 
+def oracle(rows):
+    """in: [(iptm, dockq, ...)].  out: the best DockQ among them, or None (evaluation only)"""
+    return max(r[1] for r in rows) if rows else None
+
+
 def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
-         require_match=True):
-    """in: everything loaded.  out: (rows, n unmatched complexes, n partial interfaces)"""
+         require_match=True, pick=top):
+    """in: everything loaded, and pick (top or oracle).  out: (rows, n unmatched complexes, n partial
+    interfaces)"""
     acc = collections.defaultdict(lambda: collections.defaultdict(list))
     unmatched, partial = set(), 0
     by_pdb = collections.defaultdict(list)
@@ -166,10 +175,10 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
         t_all = tmpl.get(iface, [])
         t_50 = [r for r in t_all if shallow.get(r[2], False)]
         k = cls[iface]
-        acc[k]["free50"].append(top(base))
-        acc[k]["matched"].append(top(base + add))
-        acc[k]["m50"].append(top(t_50) if t_50 else top(base))
-        acc[k]["mall"].append(top(t_all) if t_all else top(base))
+        acc[k]["free50"].append(pick(base))
+        acc[k]["matched"].append(pick(base + add))
+        acc[k]["m50"].append(pick(t_50) if t_50 else pick(base))
+        acc[k]["mall"].append(pick(t_all) if t_all else pick(base))
     rows = []
     for k in classes:
         d = acc[k]
@@ -191,6 +200,7 @@ def main():
     ap.add_argument("--pool-seeds", type=int, default=50)
     ap.add_argument("--no-require-match", action="store_true",
                     help="report the method arms over every finished interface, matched or not; the free+matched column is then not comparable")
+    ap.add_argument("--select", choices=["iptm", "oracle"], default="iptm")
     ap.add_argument("--out", default=None)
     A = ap.parse_args()
     ds, exp, extra_csv = arm_defaults(A.dataset)
@@ -204,11 +214,13 @@ def main():
     made, unfinished = load_scored(A.exp)
     rows, unmatched, partial = arms(pool, first, cls, per, shallow, extra, tmpl,
                                     made, unfinished, A.classes.split(","),
-                                    require_match=not A.no_require_match)
+                                    require_match=not A.no_require_match,
+                                    pick=oracle if A.select == "oracle" else top)
     head = ["class", "interfaces (n)", f"free {A.pool_seeds}", "free + matched",
             f"method ({A.pool_seeds}-seed donors)", "method (all donors)"]
     out = table(head, rows, align="l r r r r r")
     tail = (f"\n  dataset: {A.dataset}   experiment: {A.exp}\n"
+            f"  pose per arm: {'best DockQ (oracle, evaluation only)' if A.select == 'oracle' else 'highest ipTM'}\n"
             f"  classes computed on the first {A.pool_seeds} seeds per complex\n"
             f"  complexes excluded as not yet compute-matched: {unmatched}\n"
             f"  interfaces excluded as unfinished: {partial}")
@@ -216,7 +228,8 @@ def main():
     print(tail)
     if A.out:
         os.makedirs(os.path.dirname(A.out) or ".", exist_ok=True)
-        open(A.out, "w").write(f"# arm comparison at matched compute\n\n{out}\n{tail}\n")
+        title = "arm comparison at matched compute" + (", best-DockQ pose (oracle)" if A.select == "oracle" else "")
+        open(A.out, "w").write(f"# {title}\n\n{out}\n{tail}\n")
         print(f"\n  wrote {A.out}")
     return 0
 
