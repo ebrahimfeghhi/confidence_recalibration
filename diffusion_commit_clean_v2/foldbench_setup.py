@@ -18,6 +18,9 @@ SUMMARY
       pool.csv        pdb, chain1, chain2, seed, sample, dockq, pair_iptm -- from those, per interface
       chain_maps.csv  pdb, seed, sample, chain_mapping {reference chain: pose chain}, OST's own mapping
       chain_roles.csv interface, pdb, chain_1, chain_2, ab_chain, ag_chain -- the benchmark's roles
+      free/<pdb>/<seed>-<run>                 later free runs on single complexes, linked under their
+                                              own run name (EXTRA_RUNS): used only where verified to be the
+                                              same inputs and settings as the pool
       free/results.csv  every free seed on disk OUTSIDE the pool seeds, scored the same way, in the fold
                       results' format (arm "free", no donor): extra free folds a compute-matched
                       baseline can count before any new seed is folded, as pxm2025's free/results.csv
@@ -72,7 +75,7 @@ EXAMPLE
 FUNCTIONS
     short_entity(): a complex -> the standard-residue count of its shortest protein entity
     interfaces():  the role file -> the benchmark's interfaces per complex, and complexes excluded
-    link_free():   the free pool as symlinks into the 50-seed run
+    link_free():   the free pool as symlinks into the 50-seed run and the verified later free runs
     score_pose():  one pool pose -> its OST result per interface and its chain mapping (resumable)
     first_copy():  a {reference: model} map with copy-N names folded onto the first copy's
     same_molecule(): one pose, two of its chains -> whether they are copies of one molecule
@@ -85,6 +88,7 @@ FUNCTIONS
 import argparse
 import collections
 import csv
+import glob
 import io
 import json
 import os
@@ -101,6 +105,15 @@ sys.path.insert(0, str(paths.EVAL_DIR))
 import ost_dockq  # noqa: E402
 
 DS = paths.DATASETS["foldbench"]
+# Later free runs on single complexes, found on disk 2026-09-27, each checked before use: its job
+# jsons are identical to the pool's (sequences, MSAs, template paths), its logs show the pool's
+# settings (protenix-v2, 10 cycles, 200 steps, bf16), no seed repeats a pool seed or another run's,
+# and every seed has all 5 poses. {pdb: (run name, run directory holding <pdb>_freedeep_*/seed_<n>)}
+_SWEEP = "/home/ebrahim/confident_decoy_experiments/artifacts/sweep_out"
+EXTRA_RUNS = {
+    "8pn0": ("freedeep8pn0", f"{_SWEEP}/freedeep8pn0/freedeep8pn0"),   # seeds 151-2036, 499 folds
+    "7zau": ("free1k7zau", f"{_SWEEP}/free1k7zau/free1k7zau"),         # seeds 50-816, 162 folds
+}
 OST_DIR = DS.data / "ost_json"
 SAMPLES = range(5)
 TOL_IPTM = 1e-4       # both paths read the same float from the same json
@@ -156,6 +169,22 @@ def link_free(pdbs):
                 same += 1
                 continue
             os.makedirs(os.path.dirname(dst), exist_ok=True)
+            os.symlink(src, dst)
+            made += 1
+    for pdb, (run, root) in EXTRA_RUNS.items():
+        if pdb not in pdbs:
+            continue
+        for src in sorted(glob.glob(f"{root}/{pdb}_*/seed_*")):
+            seed = src.rsplit("seed_", 1)[1]
+            dst = f"{DS.free}/{pdb}/{seed}-{run}"
+            if os.path.islink(dst):
+                if os.readlink(dst) != src:
+                    raise SystemExit(f"{dst} points at {os.readlink(dst)}, not {src}")
+                same += 1
+                continue
+            taken = [d for d in os.listdir(f"{DS.free}/{pdb}") if d.split("-")[0] == seed]
+            if taken:
+                raise SystemExit(f"{pdb} seed {seed} of {run} is already in the pool as {taken}")
             os.symlink(src, dst)
             made += 1
     return made, same
@@ -244,7 +273,7 @@ def extra_free(ifs, jobs):
     import multiprocessing as mp
     tasks = [(p, d.split("-")[0], x, [(c1, c2) for c1, c2, _, _ in ifs[p]])
              for p in sorted(ifs) for d in sorted(os.listdir(f"{DS.free}/{p}"))
-             if d.endswith(paths.LEGACY_RUN) and d.split("-")[0] not in DS.pool_seeds
+             if d.split("-")[0] not in DS.pool_seeds
              for x in SAMPLES]
     rows, errors = [], []
     with mp.Pool(jobs) as pool:

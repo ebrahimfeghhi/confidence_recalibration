@@ -61,10 +61,13 @@ antigen copies differ only in chromophore, CR2 vs CRO).
   folds verified: a template found on every chain, OST rows in results.csv. Startup burst: the four
   workers used ~255 cores for ~60 s while loading, then ~1 core each -- cap threads on the next launch.
 - Order changed 2026-09-27 (user): FoldBench fixed arm -> FoldBench compute-matched free top-up ->
-  resume the pxm2025 variable-seed sweep. Top-up: 3,209 donors need 3,209 extra free folds; 1,137 are
-  already on disk (seeds outside 101-150, scored by `foldbench_setup.py` into `free/results.csv`, the
-  same settings: protenix-v2, 10 cycles, bf16); 2,072 new folds over 76 complexes, seeds 151-200
-  (`free_compute_matched/topup_fixed_arm.csv`, `queue_free_topup_fixed.tsv`, session `fb_free`).
+  resume the pxm2025 variable-seed sweep. Top-up: 3,209 donors need 3,209 extra free folds; 1,237 are
+  already on disk (seeds outside 101-150 in the original run, plus two later free runs found and verified
+  2026-09-27 -- freedeep8pn0, free1k7zau; `foldbench_setup.EXTRA_RUNS` -- all scored into
+  `free/results.csv`, same settings: protenix-v2, 10 cycles, bf16); 1,972 new folds over 74 complexes
+  (`free_compute_matched/topup_fixed_arm.csv`, `queue_free_topup_fixed.tsv`, session `fb_free`). Other
+  archived free-deep runs (`experimental_data/archive/free*_scores.json`) cover only complexes already
+  fully matched, and their poses are gone, so they are not used.
 - tmux `armchain` runs exactly this (log `experimental_data/resume_variable_sweep.log`):
 
 ```bash
