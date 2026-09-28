@@ -86,6 +86,22 @@ echo "$(date '+%F %T') relaunched: $(tmux ls 2>/dev/null | grep -c '^self_templa
 
 - Then: `compare_arms.py --dataset foldbench` and `analysis/arm_statistics.py --dataset foldbench`.
 
+## 7zoz, templated on the donor's own seed (user's request, 2026-09-27; method recorded before launch)
+
+On FoldBench 7zoz the fixed arm broke both solved interfaces: donor A05 (free seed 139 sample 2, DockQ
+0.10/0.07, ipTM 0.26/0.25) refolded on seed 430000 to the same wrong pose at ipTM 0.51, above every correct
+refold. Test: the same 24 donors, the same templates (the fixed arm's namespace), each folded on its
+DONOR'S free seed instead of 430000 (`experimental_data/protenix/foldbench/self_template_donor_seed_7zoz/
+queue.tsv`: the fixed queue's 7zoz lines with the seed field replaced). Folded with `call_folder.py
+--dataset foldbench --session fb_7zoz` on GPUs 0,1,2,5 while the FoldBench fixed arm is paused at fold
+boundaries (resumed straight after; `armchain` cannot fire while that arm's queue is unclaimed).
+
+Result (20:45; 24/24 folds, 240 rows, a template found on every chain): no rescue. Selected DockQ 0.077 /
+0.063 (fixed seed: 0.088 / 0.066); A05 again the most confident, ipTM 0.519 on its donor's seed 139 vs
+0.517 on 430000, same wrong pose. The correct refolds came out less confident (A09 0.490 -> 0.408), so
+4-5 wrong folds now sit above the best correct one instead of 1. Two refolds turned acceptable (A12, A15)
+at low ipTM (0.21-0.22).
+
 ## When the fixed arm finishes
 
 1. `compare_arms.py --exp experimental_data/self_template_fixed_50_seed` — free 50 vs free + matched vs
