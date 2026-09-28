@@ -12,7 +12,8 @@ SUMMARY
     Pose-to-pose DockQ is OST's (eval/ost_dockq.py, the project's reference; --method ost, the default),
     or dockq_torch.dockq_matrix, the pipeline's build-step-6 implementation (--method torch). They differ
     when a pose has a stray terminal OXT atom in the interface: OST's clean-up removes OXT, dockq_torch
-    keeps it (7zoz A05 sample 2: one misplaced OXT added 10 contacts and moved one pair 0.96 -> 0.58). Each
+    keeps it (7zoz A05 sample 2: one misplaced OXT added 10 contacts and moved one pair 0.96 -> 0.58).
+    So --method torch here leaves OXT out, as OST does. Each
     sample's chains for the interface come from that sample's own crystal mapping -- a templated fold's
     scorer json (ost_json/<k>.json or pxm_json/<k>.json), a free pose's chain_maps.csv row -- so a copy
     that moves between samples is followed.
@@ -29,6 +30,7 @@ INPUTS
     --jobs:     worker processes. Default 32. CPU only.
     --pdbs:     comma-separated complexes to restrict to. Default all.
     --method:   ost or torch. Default ost.
+    --device:   for --method torch: cpu or cuda[:n]. Default cpu.
     --out:      the per-fold csv. Default <exp>/fold_scatter.csv.
 
 OUTPUTS
@@ -86,7 +88,7 @@ def agreement(items):
     import torch
     torch.set_num_threads(1)
     from dockq_torch import dockq_matrix
-    M = dockq_matrix(items, device="cpu", verbose=False)
+    M = dockq_matrix(items, device=G.get("device", "cpu"), verbose=False, skip=("OXT",))
     n = len(items)
     return statistics.mean((M[i][j] + M[j][i]) / 2 for i in range(n) for j in range(i + 1, n))
 
@@ -183,6 +185,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=32)
     ap.add_argument("--pdbs", default=None)
     ap.add_argument("--method", choices=("ost", "torch"), default="ost")
+    ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default=None)
     A = ap.parse_args()
     ds, exp, _ = arm_defaults(A.dataset)
@@ -204,7 +207,7 @@ def main():
         json="ost_json" if ds.scorer == "ost" else "pxm_json",
         maps={k: first_copy(v) for k, v in pool_index.load_chain_maps(str(ds.chain_maps)).items()},
         pool={(i, s, x): (ip, dq) for i, rs in pool.items() for s, x, dq, ip in rs},
-        method=A.method, ost_dir=f"{os.path.splitext(A.out)[0]}_ost")
+        method=A.method, device=A.device, ost_dir=f"{os.path.splitext(A.out)[0]}_ost")
 
     tasks, seen = [], set()
     for root in [f"{A.exp}/poses"] + [p for p in A.poses.split(":") if p]:

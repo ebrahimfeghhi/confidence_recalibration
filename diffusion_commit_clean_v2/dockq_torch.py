@@ -57,8 +57,9 @@ IFACE_T2 = 10.0 ** 2
 
 
 # ---------------------------------------------------------------- loading
-def load_poses(items, device):
-    """in: [(pose path, chain 1, chain 2)] of ONE complex, a device.
+def load_poses(items, device, skip=()):
+    """in: [(pose path, chain 1, chain 2)] of ONE complex, a device, atom names to leave out (e.g.
+    ("OXT",) to match OST's clean-up; default none, as the pipeline has always scored).
     out: (all1, all2, bb1, bb2, seg1, seg2) tensors, described below
 
     ONE CHAIN PAIR PER POSE, because the model chain letters are NOT fixed.
@@ -89,6 +90,8 @@ def load_poses(items, device):
             for ri, res in enumerate(chain):
                 bb = {}
                 for at in res:
+                    if at.name in skip:
+                        continue
                     all_xyz.append([at.pos.x, at.pos.y, at.pos.z]); seg.append(ri)
                     if at.name in BACKBONE:
                         bb[at.name] = [at.pos.x, at.pos.y, at.pos.z]
@@ -172,14 +175,15 @@ def kabsch_rt(P, Q):
 
 
 # ---------------------------------------------------------------- the matrix
-def dockq_matrix(items, device="cuda", verbose=True, timings=None):
-    """in: [(pose path, chain 1, chain 2)], a device, verbosity, an optional dict for timings.
+def dockq_matrix(items, device="cuda", verbose=True, timings=None, skip=()):
+    """in: [(pose path, chain 1, chain 2)], a device, verbosity, an optional dict for timings, atom
+    names to leave out (see load_poses).
     out: the [N, N] DockQ matrix as numpy; entry [i, j] = DockQ(reference = pose i, model = pose j)
 
     One chain pair PER POSE (see load_poses). Pass timings={} to get load and compute seconds back.
     """
     t0 = time.time()
-    all1, all2, bb1, bb2, seg1, seg2 = load_poses(items, device)
+    all1, all2, bb1, bb2, seg1, seg2 = load_poses(items, device, skip)
     t_load = time.time() - t0
     if timings is not None:
         timings["load_s"] = t_load
@@ -189,7 +193,7 @@ def dockq_matrix(items, device="cuda", verbose=True, timings=None):
 
     D = residue_sqdist(all1, all2, seg1, seg2, n1, n2)          # [N, n1, n2] squared
     del all1, all2
-    torch.cuda.empty_cache() if device == "cuda" else None
+    torch.cuda.empty_cache() if str(device).startswith("cuda") else None
 
     # ---- fnat: one matmul over flattened contact masks ----
     C = (D < FNAT_T2).reshape(N, -1).float()                    # [N, n1*n2]
