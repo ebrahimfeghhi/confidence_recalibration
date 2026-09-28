@@ -24,6 +24,9 @@ INPUTS
     --csv:        results csv. Default <out>/results.csv.
     --claim-dir:  claim directory. Default <out>/claims.
     --log-dir:    where w<gpu>.log go. Default <out>.
+    --env:        KEY=VALUE set in every worker's environment; repeatable. For the settings folder.py
+                  reads from the environment (e.g. PROTENIX_MAX_TEMPLATE_CANDIDATES). A tmux session does not
+                  inherit this shell's environment, so exporting them here would not reach the workers.
     --session:    tmux sessions are <session>w<gpu>. Default the log dir's name -- pass one when two
                   datasets have arms of the same name, or the watcher counts one arm's workers as both.
     --dataset:    pxm2025 or foldbench. Default pxm2025. Passed to every worker.
@@ -80,11 +83,12 @@ def check(queue, out, templates, free):
 
 
 def launch(gpus, queue, out, templates, dataset, nsample, prefix, csv_path, claim_dir,
-           log_dir, drop_cifs=False, overlap_scoring=False):
+           log_dir, drop_cifs=False, overlap_scoring=False, env=()):
     """in: devices and the run's paths.  out: the tmux session names started, one per GPU."""
     names = []
     for g in gpus:
-        cmd = (f"cd {HERE} && CUDA_VISIBLE_DEVICES={g} LAYERNORM_TYPE=openfold "
+        extra = "".join(f"{shlex.quote(e)} " for e in env)
+        cmd = (f"cd {HERE} && CUDA_VISIBLE_DEVICES={g} LAYERNORM_TYPE=openfold {extra}"
                f"{paths.PROTENIX_PYTHON} folder.py --queue {shlex.quote(queue)} "
                f"--out {shlex.quote(out)} --csv {shlex.quote(csv_path)} "
                f"--claim-dir {shlex.quote(claim_dir)} --dataset {dataset} "
@@ -108,6 +112,7 @@ def main():
     ap.add_argument("--claim-dir", default=None, help="default <out>/claims")
     ap.add_argument("--log-dir", default=None, help="default <out>; worker logs are w<gpu>.log")
     ap.add_argument("--session", default=None, help="tmux name prefix; default the log dir's name")
+    ap.add_argument("--env", action="append", default=[], help="KEY=VALUE for every worker; repeatable")
     ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     ap.add_argument("--nsample", type=int, default=5)
     ap.add_argument("--gpus", default=None, help="explicit device ids, e.g. 0,1,2,5")
@@ -121,12 +126,17 @@ def main():
                     help="workers score each fold in the background while the next one folds")
     ap.add_argument("--run", action="store_true", help="launch; otherwise only report the plan")
     A = ap.parse_args()
+    for e in A.env:
+        if "=" not in e or not e.split("=", 1)[0].isidentifier():
+            raise SystemExit(f"--env {e!r}: expected KEY=VALUE")
 
     free = str(paths.DATASETS[A.dataset].free)
     out = A.out or free
     n, n_tmpl = check(A.queue, out, A.templates, free)
     print(f"  queue {A.queue}\n  folds {n} ({n_tmpl} templated)\n  out   {out}")
     print(f"  csv   {A.csv or out + '/results.csv'}\n  claims {A.claim_dir or out + '/claims'}")
+    if A.env:
+        print(f"  env   {' '.join(A.env)}")
 
     if not A.run:
         print("\n  nothing launched. re-run with --run --gpus <ids>")
@@ -141,7 +151,7 @@ def main():
     log_dir = A.log_dir or out
     prefix = f"{A.session or os.path.basename(os.path.normpath(log_dir))}w"
     names = launch(gpus, A.queue, out, A.templates, A.dataset, A.nsample,
-                   prefix, csv_path, claim_dir, log_dir, A.drop_cifs, A.overlap_scoring)
+                   prefix, csv_path, claim_dir, log_dir, A.drop_cifs, A.overlap_scoring, A.env)
     print(f"\n  launched {len(names)} workers: {', '.join(names)}")
     print(f"  watch: tmux attach -t {names[0]}   |   tail -f {out}/w{gpus[0]}.log")
     return 0

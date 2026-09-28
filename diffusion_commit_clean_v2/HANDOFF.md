@@ -102,6 +102,36 @@ Result (20:45; 24/24 folds, 240 rows, a template found on every chain): no rescu
 4-5 wrong folds now sit above the best correct one instead of 1. Two refolds turned acceptable (A12, A15)
 at low ipTM (0.21-0.22).
 
+## 7zoz, templating on every sibling of three donors (user's request, 2026-09-27; recorded before launch)
+
+Each free fold gives 5 samples. Templated on all 5 samples of the free folds behind A05 (seed 139, the wrong
+donor), A00 (seed 117, the free pick, all 5 correct) and A09 (seed 114, the best correct refold; 3 of 5
+correct), 15 folds, otherwise exactly as the fixed arm: seed 430000, interface 7zoz_BA pinned,
+build_templates.py into its own namespace, preflight clean. `experimental_data/protenix/foldbench/
+self_template_siblings_7zoz/` (tags S<seed>s<sample>). Folded with `--session fb_sib` while the FoldBench
+fixed arm is paused at fold boundaries, then resumed.
+
+## 7zoz, one fold per free fold templated on all 5 of its samples at once (user's request, 2026-09-27)
+
+Recorded before launch. The same three free folds (seed 139 = A05's, 117 = A00's, 114 = A09's); one
+templated fold each with all 5 samples as templates (PROTENIX_MAX_TEMPLATES=5 -- above the trained 4;
+folder.py fails a fold that does not consume exactly 5), seed 430000, 7zoz_BA pinned.
+`experimental_data/protenix/foldbench/self_template_family_7zoz/` (tags F<seed>all). Folded on GPUs 0,1,2
+while those three FoldBench fixed workers are paused at fold boundaries; GPU 5 keeps folding.
+
+## 7zoz, one fold templated on all 24 of its donors at once (user's request, 2026-09-27)
+
+Recorded before launch. One fold, all 24 7zoz donors as templates (A+B+C each), seed 430000, 7zoz_BA
+pinned; PROTENIX_MAX_TEMPLATES=24 (folder.py) and PROTENIX_MAX_TEMPLATE_CANDIDATES=30 (call_folder --env;
+the default 20 would truncate). Six times the trained maximum of 4 templates: out of distribution by
+design. `experimental_data/protenix/foldbench/self_template_all24_7zoz/`, session fb_all24, GPU 5, whose
+FoldBench fixed worker is paused at a fold boundary and relaunched after.
+
+Result (21:41; 24 templates found on every chain, 1 fold, 10 rows): all 5 samples wrong (DockQ 0.08-0.10 on
+AB, 0.06-0.19 on AC) at LOW confidence, ipTM ~0.30 (0.21-0.22 for sample 4), below the free pick (0.415)
+and every single-template refold. No copy of any one donor: closest DockQ to any donor 0.26-0.58 (a
+single-template refold matches its donor at 0.57-0.83); the closest donors are all wrong poses.
+
 ## When the fixed arm finishes
 
 1. `compare_arms.py --exp experimental_data/self_template_fixed_50_seed` — free 50 vs free + matched vs
