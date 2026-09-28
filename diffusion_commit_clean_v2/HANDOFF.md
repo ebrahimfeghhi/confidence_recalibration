@@ -132,6 +132,24 @@ AB, 0.06-0.19 on AC) at LOW confidence, ipTM ~0.30 (0.21-0.22 for sample 4), bel
 and every single-template refold. No copy of any one donor: closest DockQ to any donor 0.26-0.58 (a
 single-template refold matches its donor at 0.57-0.83); the closest donors are all wrong poses.
 
+## Broken FoldBench interfaces, decoy vs good donor with a query-only MSA (user's request, 2026-09-27)
+
+Recorded before launch. For the 5 complexes where templating broke a solved interface, the decoy donor
+(highest-ipTM refold) and the good donor (best DockQ) -- 7yxu A03/A00, 7zoz A05/A00, 8be3 A04/A29, 8fxv
+A01/A04, 8pn0 A18/A28 (8pn0's "decoy" donor is a good pose) -- refolded exactly as in the fixed arm (same
+template, seed 430000, pinned interface) with every chain's paired and unpaired MSA cut to its first row,
+the query alone. `analysis/query_only_msa.py` -> `experimental_data/protenix/foldbench/
+self_template_msa1_broken/` (preflight clean; the job jsons differ from the fixed arm's only in the MSA
+paths). Folded on GPUs 0,1,2,5 while the FoldBench fixed arm is paused at fold boundaries.
+
+Result (10/10 folds, N_msa=1 in every log, 0 failures; `results.csv`, and within-fold scatter by
+`analysis/fold_scatter.py --method ost` in `fold_scatter.csv`, compared per (interface, tag) with the full-MSA
+`self_template_fixed_50_seed/fold_scatter_broken.csv`). Top ipTM, decoy vs good donor, full MSA -> query only:
+7yxu_AB 0.697 vs 0.666 -> 0.653 vs 0.675; 7yxu_AC 0.706 vs 0.654 -> 0.6710 vs 0.6711; 7zoz_AB 0.517 vs 0.419
+-> 0.593 vs 0.521; 7zoz_AC 0.510 vs 0.409 -> 0.588 vs 0.489; 8be3_AB 0.859 vs 0.328 -> 0.413 vs 0.153;
+8fxv_AB 0.943 vs 0.670 -> 0.949 vs 0.713. Mean DockQ of each fold unchanged within 0.05 except 8be3 A29
+(0.455 -> 0.060) and 8pn0 A28 (0.262 -> 0.027).
+
 ## When the fixed arm finishes
 
 1. `compare_arms.py --exp experimental_data/self_template_fixed_50_seed` — free 50 vs free + matched vs
