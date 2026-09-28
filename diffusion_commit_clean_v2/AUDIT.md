@@ -175,6 +175,19 @@ complex (9hvk's 300083 had rows for 1 of 4 interfaces). The orchestrator's `--va
 and donor quality for the old arm, A (crystal-free) and B (the crystal's 292 interfaces and chain maps,
 everything else A's).
 
+## FoldBench free folds run template-free, like FoldBench's pool (2026-09-27)
+
+FoldBench's own Protenix setup disables templates (FoldBench/algorithms/Protenix/Protenix: configs_data.py
+"template": {"enable": False}), and every logged chain of our FoldBench free run found 0 templates.
+folder.py gave free folds Protenix's PDB templates -- on pxm2025 3-4 per chain, correct there -- so the
+queued FoldBench top-up would have differed from the pool it is matched against. A one-fold check
+(experimental_data/protenix/foldbench/checks/free_template_check, 7st5 seed 9001) confirmed it: 4
+templates on every chain. Now paths.Dataset.free_templates (pxm2025 True, FoldBench False); for a
+template-free dataset folder.py hands each free fold an EMPTY template file per chain -- Protenix parses
+no hits, logs "Found 0 templates" and pads the slots to 4 as for the pool -- and fails a free fold that
+consumes any. (An empty mmCIF directory does not work: Protenix reads parsed templates from its cache.)
+Re-check, seed 9002: 0 templates on all 3 chains, scored normally. Tests 7/7.
+
 ## Tidy-ups
 
 `self_template_50seeds_pxm.py` renamed `build_experiment.py` (2026-09-27): it builds either dataset, and

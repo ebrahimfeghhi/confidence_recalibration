@@ -136,6 +136,10 @@ class Dataset:
     chain_roles: the benchmark's antibody / antigen chains (interface, pdb, chain_1, chain_2, ab_chain,
                  ag_chain)
     pool_seeds:  the seeds the pool rule admits, in order; the first 50 define the free baseline
+    free_templates: whether a FREE fold uses Protenix's PDB templates. The free folds that make up a
+                 dataset's pool decide it, and every later free fold must match them: pxm2025's used 3-4
+                 per chain; FoldBench's used none (FoldBench's own Protenix setup disables templates,
+                 configs_data.py "template": {"enable": False}), so its free folds run template-free
     """
     name: str
     data: Path
@@ -147,6 +151,7 @@ class Dataset:
     chain_maps: Path
     chain_roles: Path
     pool_seeds: Tuple[str, ...]
+    free_templates: bool = True
 
 
 DATASETS = {
@@ -160,7 +165,7 @@ DATASETS = {
         ref=lambda pdb: f"{GROUND_TRUTHS}/{pdb}-assembly1.cif", scorer="ost",
         pool_csv=FOLDBENCH_DATA / "pool.csv", chain_maps=FOLDBENCH_DATA / "chain_maps.csv",
         chain_roles=FOLDBENCH_DATA / "chain_roles.csv",
-        pool_seeds=tuple(str(101 + i) for i in range(50))),
+        pool_seeds=tuple(str(101 + i) for i in range(50)), free_templates=False),
 }
 DATASET_NAMES = tuple(DATASETS)
 

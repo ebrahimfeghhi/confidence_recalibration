@@ -225,17 +225,23 @@ def build_runner(ckpt_dir, model_name, job_path, dump_dir, dtype):
     return InferenceRunner(configs), configs
 
 
-def named_job(src, name, out_dir):
-    """in:  source job json, a unique name, output dir
+def named_job(src, name, out_dir, templates=None):
+    """in:  source job json, a unique name, output dir, and optionally a template file for every chain
     out: path to a copy of the json named <name>.json
 
     Protenix derives its output directory from the job NAME, and configs.dump_dir is not re-read
     after the runner is built, so the name is the only per-fold control over where poses land.
+    `templates` replaces every protein chain's templatesPath -- an empty file makes a template-free
+    fold (see Ctx.no_templates).
     """
     obj = json.load(open(src))
     obj = obj if isinstance(obj, list) else [obj]
     for o in obj:
         o["name"] = name
+        if templates is not None:
+            for e in o.get("sequences", []):
+                if "proteinChain" in e:
+                    e["proteinChain"]["templatesPath"] = templates
     os.makedirs(out_dir, exist_ok=True)
     dst = f"{out_dir}/{name}.json"
     json.dump(obj, open(dst, "w"))
@@ -487,12 +493,15 @@ class Ctx:
         self.rows_done = rows_done      # {(iface, seed, arm)}; mutated as rows land
         self.units_done = units_done    # {(pdb, seed, donor)} -> [pinned chain sets]
         self.mm, self.rd = mm, rd   # template namespace, or None for a free-only queue
+        self.free_templates = True  # main() sets the dataset's; see point_templates_at
+        self.no_templates = None    # an empty template file, for free units when free_templates is off
 
     def point_templates_at(self, use_ns):
         """in: whether THIS unit is templated.  out: switches the template source.
 
-        Per unit, not per run: a free unit must see Protenix's own PDB templates, or the baseline it
-        provides is silently stripped of them.
+        Per unit, not per run: a free unit must see Protenix's own PDB templates where the dataset's free
+        pool did (pxm2025). Where it did not (FoldBench; paths.Dataset.free_templates), run_unit also
+        hands the free unit an empty template file, so it finds none, exactly like the pool.
         """
         m, r = (self.mm, self.rd) if use_ns else (self.stock_mm, self.stock_rd)
         self.configs.data.template.prot_template_mmcif_dir = m
@@ -756,7 +765,9 @@ def run_unit(ctx, unit):
 
     ctx.point_templates_at(kind != "free")
     if kind == "free":
-        job_src, env, expect = f"{ctx.jobs}/{pdb}-final-updated.json", {}, None
+        # a template-free dataset's free folds must consume none, or they do not match its pool
+        job_src, env = f"{ctx.jobs}/{pdb}-final-updated.json", {}
+        expect = None if ctx.free_templates else 0
     else:
         job_src = f"{A.templates}/jobs/{target}_{tag}/job.json"
         env = dict(TMPL_ENV, PROTENIX_MAX_TEMPLATES=str(len(poses)))
@@ -779,7 +790,8 @@ def run_unit(ctx, unit):
         release()
         return "failed"
     try:
-        dt, tcounts = fold(ctx.runner, ctx.configs, named_job(job_src, name, f"{rdir}/jobs"),
+        empty = ctx.no_templates if kind == "free" and not ctx.free_templates else None
+        dt, tcounts = fold(ctx.runner, ctx.configs, named_job(job_src, name, f"{rdir}/jobs", empty),
                            int(seed), name, A.ncycle, A.nsample, expect, rdir, env)
     except Exception as e:
         print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- {type(e).__name__}: {str(e)[:120]}",
@@ -902,6 +914,14 @@ def main():
     ctx = Ctx(A, runner, configs, jobs, ref, scorer, ifaces, rows_done, units_done, mm, rd)
     ctx.stock_mm = configs.data.template.prot_template_mmcif_dir
     ctx.stock_rd = configs.data.template.release_dates_path
+    # free folds match the dataset's pool. FoldBench's were template-free ("Found 0 templates" on every
+    # chain), so its free folds get an EMPTY template file per chain: Protenix parses no hits, logs
+    # "Found 0 templates" and pads the template slots to 4 exactly as for the pool. (Pointing Protenix at
+    # an empty mmCIF directory does not work: it reads parsed templates from its cache.)
+    ctx.free_templates = paths.DATASETS[A.dataset].free_templates
+    if not ctx.free_templates:
+        ctx.no_templates = f"{A.out}/.no_templates.a3m"
+        open(ctx.no_templates, "w").close()
     logging.getLogger().addHandler(_CountHandler())
     print(f"  model loaded in {time.time()-t_load:.0f}s | dtype={A.dtype} | {len(units)} units "
           f"| templates={A.templates}", flush=True)

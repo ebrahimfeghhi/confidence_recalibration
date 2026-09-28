@@ -105,7 +105,7 @@ def test_shared_run_dir_fails_and_keeps_first():
                                       csv=f"{tmp}/results.csv", ncycle=10, nsample=5,
                                       dtype="bf16", keep_cifs=True, overlap_scoring=False)
             os.makedirs(A.claim_dir)
-            ctx = types.SimpleNamespace(A=A, runner=None, configs=None, jobs=jobs,
+            ctx = types.SimpleNamespace(A=A, runner=None, configs=None, jobs=jobs, free_templates=True,
                                         ifaces={"1abc": {"1abc_AB"}}, rows_done=set(),
                                         units_done={}, point_templates_at=lambda use_ns: None)
             r1 = folder.run_unit(ctx, ("free", "1abc", "*", "F1", "430000", []))
@@ -184,7 +184,7 @@ def overlap_ctx(tmp):
                               out=f"{tmp}/poses", csv=f"{tmp}/results.csv", ncycle=10, nsample=5,
                               dtype="bf16", keep_cifs=True, overlap_scoring=True)
     os.makedirs(A.claim_dir)
-    return types.SimpleNamespace(A=A, runner=None, configs=None, jobs=jobs,
+    return types.SimpleNamespace(A=A, runner=None, configs=None, jobs=jobs, free_templates=True,
                                  ifaces={"1abc": {"1abc_AB"}}, rows_done=set(), units_done={},
                                  point_templates_at=lambda use_ns: None)
 
