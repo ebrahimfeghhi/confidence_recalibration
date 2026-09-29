@@ -1,0 +1,60 @@
+--- /home/ebrahim/tts_abag/self_template_from_trunks/archive/exploration_pair_rep_scatter/folder.py.before_mcrate	2026-09-28 16:58:01.552806485 -0700
++++ /home/ebrahim/tts_abag/diffusion_commit_clean_v2/folder.py	2026-09-29 12:17:21.059932961 -0700
+@@ -221,6 +221,11 @@
+     configs.use_template = True
+     if dtype is not None:
+         configs.dtype = dtype
++    # PROTENIX_MC_DROPOUT_APPLY_RATE=<p>: probability that a fold's recycle carry-over gets MC dropout
++    # (config default 0.4). 0 = never. Unset = the config's value, i.e. unchanged.
++    _mc = os.environ.get("PROTENIX_MC_DROPOUT_APPLY_RATE")
++    if _mc is not None:
++        configs.mc_dropout_apply_rate = float(_mc)
+     configs = update_gpu_compatible_configs(configs)
+     return InferenceRunner(configs), configs
+ 
+@@ -768,14 +773,45 @@
+         # a template-free dataset's free folds must consume none, or they do not match its pool
+         job_src, env = f"{ctx.jobs}/{pdb}-final-updated.json", {}
+         expect = None if ctx.free_templates else 0
++        # TRUNK_LOAD_DIR also serves FREE units (the compute-matched control): resume this seed's own saved trunk, <dir>/<pdb>/free_<seed>.npz,
++        # with no template. Missing file = the unit fails, never a fresh fold.
++        _tl = os.environ.get("TRUNK_LOAD_DIR")
++        if _tl:
++            _tf = f"{_tl}/{pdb}/free_{seed}.npz"
++            if not os.path.exists(_tf):
++                print(f"  {pdb} {tag}: no saved trunk for seed {seed} ({_tf})", flush=True)
++                release()
++                return "failed"
++            env = dict(env, PROTENIX_LOAD_TRUNK=_tf)
+     else:
+         job_src = f"{A.templates}/jobs/{target}_{tag}/job.json"
+         env = dict(TMPL_ENV, PROTENIX_MAX_TEMPLATES=str(len(poses)))
+         expect = len(poses)
++        # TRUNK_LOAD_DIR=<dir>: resume from the donor's OWN seed's saved trunk, <dir>/<pdb>/free_<seed>.npz, the seed
++        # read from the donor pose path (<seed>-<run>/predictions/). Missing file = the unit fails, never a fresh fold.
++        _tl = os.environ.get("TRUNK_LOAD_DIR")
++        if _tl:
++            _m = re.search(r"/(\d+)-[^/]+/predictions/", poses[0])
++            _tf = f"{_tl}/{pdb}/free_{_m.group(1)}.npz" if _m else None
++            if not _tf or not os.path.exists(_tf):
++                print(f"  {pdb} {tag}: no saved trunk for donor {poses[0]} ({_tf})", flush=True)
++                release()
++                return "failed"
++            env = dict(env, PROTENIX_LOAD_TRUNK=_tf)
+     if not os.path.exists(job_src):
+         print(f"  {target} {tag}: no job at {job_src}", flush=True)
+         release()
+         return "failed"
++    # TRUNK_DUMP_DIR=<dir>: save this fold's z_trunk/s_trunk (Protenix PROTENIX_DUMP_TRUNK hook) to
++    # <dir>/<pdb>/<tag>_<seed>.npz, one file per fold, never overwritten. Unset = nothing saved.
++    _td = os.environ.get("TRUNK_DUMP_DIR")
++    if _td:
++        _tf = f"{_td}/{pdb}/{tag}_{seed}.npz"
++        if os.path.exists(_tf):
++            print(f"  {pdb} {tag} seed {seed}: FAILED -- trunk file already exists: {_tf}", flush=True)
++            release()
++            return "failed"
++        env = dict(env, PROTENIX_DUMP_TRUNK=_tf)
+ 
+     rdir = runmeta.run_dir(A.out, pdb, seed, runmeta.run_id())
+     name = f"{target.replace('*', pdb)}_{tag}"

@@ -1,0 +1,63 @@
+--- /home/ebrahim/tts_abag/self_template_from_trunks/archive/exploration_pair_rep_scatter/backups/protenix.py.before_bf16dump	2026-09-29 01:16:35.423485754 -0700
++++ /home/ebrahim/Protenix/protenix/model/protenix.py	2026-09-29 01:35:40.750622396 -0700
+@@ -280,8 +280,13 @@
+         if _lt:
+             import numpy as _np
+             _d = _np.load(_lt)
+-            _z = torch.as_tensor(_d["z_trunk"], device=z.device).to(z.dtype)
+-            _s = torch.as_tensor(_d["s_trunk"], device=s.device).to(s.dtype)
++            if "dtype" in _d.files and str(_d["dtype"]) == "bf16":
++                # bf16 bits stored as uint16 (PROTENIX_DUMP_TRUNK_BF16): reinterpret, do not convert
++                _z = torch.from_numpy(_d["z_trunk"].view(_np.int16)).view(torch.bfloat16).to(z.device).to(z.dtype)
++                _s = torch.from_numpy(_d["s_trunk"].view(_np.int16)).view(torch.bfloat16).to(s.device).to(s.dtype)
++            else:
++                _z = torch.as_tensor(_d["z_trunk"], device=z.device).to(z.dtype)
++                _s = torch.as_tensor(_d["s_trunk"], device=s.device).to(s.dtype)
+             while _z.dim() < z.dim():
+                 _z = _z.unsqueeze(0)
+             while _s.dim() < s.dim():
+@@ -335,6 +340,8 @@
+                     _ph = ("none" if cycle_no < _a
+                            else "intra" if cycle_no < _b else "full")
+                     print(f"[MSAPHASE] cycle {cycle_no} -> {_ph}", flush=True)
++            if _msa_from_cycle > cycle_no and not _phases:
++                logger.warning(f"PROTENIX_MSA_FROM_CYCLE={_msa_from_cycle}: MSA module SKIPPED on cycle {cycle_no}")
+             with torch.set_grad_enabled(
+                 self.training
+                 and (not self.train_confidence_only)
+@@ -1065,9 +1072,32 @@
+                 }
+                 if torch.cuda.is_available():
+                     _rng["cuda"] = torch.cuda.get_rng_state().cpu().numpy()
+-                _np.savez(_f, z_trunk=_sq(z), s_trunk=_sq(s),
+-                          rng_py=_np.array(_rng["py"]), rng_torch=_rng["torch"],
+-                          **({"rng_cuda": _rng["cuda"]} if "cuda" in _rng else {}))
++                if _os.environ.get("PROTENIX_DUMP_TRUNK_BF16"):
++                    # PROTENIX_DUMP_TRUNK_BF16=1: store z/s as bf16 bits (uint16 view; numpy has no bf16) with
++                    # dtype="bf16" in the file. Half the size of float32, exact if the state is already bf16-valued,
++                    # and unlike float16 it keeps the float32 exponent range. The round-trip error and what float16
++                    # would have clipped are logged per dump so losslessness is measured, not assumed.
++                    def _b16(t, nm):
++                        t32 = t.detach().float()
++                        while t32.dim() > 2 and t32.shape[0] == 1:
++                            t32 = t32.squeeze(0)
++                        b = t32.to(torch.bfloat16)
++                        rt = b.float()
++                        a = t32.abs()
++                        logger.warning(
++                            f"DUMP_TRUNK_BF16 {nm} {tuple(t32.shape)} src_dtype={t.dtype}: "
++                            f"roundtrip max|diff|={float((rt - t32).abs().max()):.3g} "
++                            f"n_diff={int((rt != t32).sum())}/{t32.numel()} | fp16 would clip "
++                            f"(|x|>65504): {int((a > 65504).sum())}, underflow (0<|x|<6.1e-5): "
++                            f"{int(((a > 0) & (a < 6.1e-5)).sum())} | max|x|={float(a.max()):.4g}")
++                        return b.view(torch.uint16).cpu().numpy()
++                    _np.savez(_f, z_trunk=_b16(z, "z"), s_trunk=_b16(s, "s"), dtype=_np.array("bf16"),
++                              rng_py=_np.array(_rng["py"]), rng_torch=_rng["torch"],
++                              **({"rng_cuda": _rng["cuda"]} if "cuda" in _rng else {}))
++                else:
++                    _np.savez(_f, z_trunk=_sq(z), s_trunk=_sq(s),
++                              rng_py=_np.array(_rng["py"]), rng_torch=_rng["torch"],
++                              **({"rng_cuda": _rng["cuda"]} if "cuda" in _rng else {}))
+                 logger.warning(f"PROTENIX_DUMP_TRUNK: wrote {_f}")
+             except Exception as _e:
+                 logger.error(f"PROTENIX_DUMP_TRUNK failed: {_e}")

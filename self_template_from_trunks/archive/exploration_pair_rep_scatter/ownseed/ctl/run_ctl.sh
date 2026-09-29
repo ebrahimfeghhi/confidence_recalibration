@@ -1,0 +1,5 @@
+export GPU=1
+cd /home/ebrahim/tts_abag/diffusion_commit_clean_v2
+for spec in "batch2 /home/ebrahim/tts_abag/pair_rep_scatter/ownseed/ctl/queue_batch2_A00.tsv" "trunk_pilot /home/ebrahim/tts_abag/pair_rep_scatter/ownseed/ctl/queue_pilot_8fxv_A00.tsv"; do set -- $spec; d=$1; q=$2
+ CUDA_VISIBLE_DEVICES=1 LAYERNORM_TYPE=openfold PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TRUNK_LOAD_DIR=/home/ebrahim/tts_abag/pair_rep_scatter/$d/trunks PROTENIX_LOG_MC=1 OMP_NUM_THREADS=8 /home/ebrahim/Protenix/.venv/bin/python folder.py --queue $q --out /home/ebrahim/tts_abag/pair_rep_scatter/$d/resume/_logmc_control_fixedseed --csv /home/ebrahim/tts_abag/pair_rep_scatter/$d/resume/_logmc_control_fixedseed/results.csv --claim-dir /home/ebrahim/tts_abag/pair_rep_scatter/$d/resume/_logmc_control_fixedseed/claims --dataset foldbench --templates /home/ebrahim/tts_abag/pair_rep_scatter/$d/select/templates --ncycle 3 --nsample 5 --dtype bf16 2>&1 | tee -a /home/ebrahim/tts_abag/pair_rep_scatter/$d/resume/_logmc_control_fixedseed/w1_ctl.log
+done

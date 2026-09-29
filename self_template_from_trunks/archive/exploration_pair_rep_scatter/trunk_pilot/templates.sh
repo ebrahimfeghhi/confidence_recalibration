@@ -1,0 +1,5 @@
+#!/bin/bash
+export FOLDBENCH_DATA=/home/ebrahim/tts_abag/pair_rep_scatter/trunk_pilot/dataset OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4
+echo "[$(date +%T)] build_templates"; /home/ebrahim/Protenix/.venv/bin/python /home/ebrahim/tts_abag/diffusion_commit_clean_v2/build_templates.py --queue /home/ebrahim/tts_abag/pair_rep_scatter/trunk_pilot/select/queue.tsv --ns /home/ebrahim/tts_abag/pair_rep_scatter/trunk_pilot/select/templates --maps /home/ebrahim/tts_abag/pair_rep_scatter/trunk_pilot/select/chain_frame/chain_maps_anchor.csv --roles /home/ebrahim/tts_abag/pair_rep_scatter/trunk_pilot/select/interfaces.csv --jobs 8 --dataset foldbench || exit 1
+echo "[$(date +%T)] preflight"; /home/ebrahim/Protenix/.venv/bin/python /home/ebrahim/tts_abag/diffusion_commit_clean_v2/preflight.py --ns /home/ebrahim/tts_abag/pair_rep_scatter/trunk_pilot/select/templates --queue /home/ebrahim/tts_abag/pair_rep_scatter/trunk_pilot/select/queue.tsv --maps /home/ebrahim/tts_abag/pair_rep_scatter/trunk_pilot/select/chain_frame/chain_maps_anchor.csv --roles /home/ebrahim/tts_abag/pair_rep_scatter/trunk_pilot/select/interfaces.csv || exit 1
+echo "[$(date +%T)] DONE"

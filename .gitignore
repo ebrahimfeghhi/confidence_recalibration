@@ -124,3 +124,28 @@ experimental_data/protenix/*/free/*/
 
 # watcher runtime state (last claims/rows per arm) -- rewritten every 30 min
 experimental_data/.watch_state
+
+# saved z/s trunks (bf16), too big for git -- pair_rep_scatter pilot
+pair_rep_scatter/trunk_pilot/trunks/
+pair_rep_scatter/trunk_pilot/free/
+
+# batch2: saved trunks (bf16) and fold outputs
+pair_rep_scatter/batch2/trunks/
+pair_rep_scatter/batch2/free/
+pair_rep_scatter/batch2/resume/
+
+# pipeline: per-complex working data, kept trunks, archived test runs (large)
+
+# self_template_from_trunks: per-complex data, kept trunks and archive are large
+self_template_from_trunks/data/
+self_template_from_trunks/kept_trunks/
+self_template_from_trunks/archive/
+
+# self_template_from_trunks: run state and logs (results are committed deliberately, not automatically)
+self_template_from_trunks/*.log
+self_template_from_trunks/controller.stdout
+self_template_from_trunks/.report_marker
+self_template_from_trunks/production_started*.txt
+self_template_from_trunks/STOP
+self_template_from_trunks/code/history/
+/pair_rep_scatter
