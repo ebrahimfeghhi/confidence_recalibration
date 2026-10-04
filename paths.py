@@ -88,11 +88,14 @@ DATA_DIR = _path("DATA_DIR", REPO_ROOT / "experimental_data")
 EVAL_DIR = _path("EVAL_DIR", REPO_ROOT / "eval")
 # dockq_torch lives here; the GPU pose-to-pose DockQ imports it
 CLUSTERING_DIR = _path("CLUSTERING_DIR", REPO_ROOT / "diffusion_commit" / "clustering")
-# pose-to-pose DockQ matrices, one directory per frame
-# the crystal-framed pipeline's outputs, superseded 2026-09-25 and archived; read only by old code
-XTAL_MATRICES = _path("XTAL_MATRICES", DATA_DIR / "archive" / "superseded_2026-09-25" / "matrices")
-ANCHOR_MATRICES = _path("ANCHOR_MATRICES", DATA_DIR / "archive" / "superseded_2026-09-25" / "matrices_anchor_all")
-SPUR_MATRICES = _path("SPUR_MATRICES", DATA_DIR / "archive" / "superseded_2026-09-25" / "matrices_spur")
+# pose-to-pose DockQ matrices: ONE ROOT, one subdirectory per (dataset, frame). See its README.md.
+# A dataset's crystal-frame set is complete -- every interface of the pool has an npz -- so these are
+# read, never rebuilt. Dataset.matrices points at the right one for that dataset.
+POSE_DOCKQ_MATRICES = _path("POSE_DOCKQ_MATRICES", DATA_DIR / "pose_dockq_matrices")
+# The three names that used to live here -- XTAL_MATRICES, ANCHOR_MATRICES, SPUR_MATRICES -- pointed at
+# archive/superseded_2026-09-25 directories that are EMPTY, and nothing read them. They are gone rather
+# than left as live-looking constants resolving to nothing: a caller that globbed one got zero files and
+# no error. Use POSE_DOCKQ_MATRICES / Dataset.matrices.
 # The pxm scorer is a built environment, not code we edit, and every DockQ score shells out to it --
 # so it lives outside the archived repo.
 PXMETER_BIN = _path("PXMETER_BIN", REPO_ROOT / "envs" / "pxmeter" / "bin" / "pxm")
@@ -135,6 +138,8 @@ class Dataset:
     chain_maps:  crystal chain map per pose (reference chain -> pose chain); used for ROLES only
     chain_roles: the benchmark's antibody / antigen chains (interface, pdb, chain_1, chain_2, ab_chain,
                  ag_chain)
+    matrices:    pose-to-pose DockQ matrices in the CRYSTAL frame, keyed by interface name exactly as
+                 chain_roles names it, so `matrices / f"{iface}.npz"` resolves. Complete for the pool
     pool_seeds:  the seeds the pool rule admits, in order; the first 50 define the free baseline
     free_templates: whether a FREE fold uses Protenix's PDB templates. The free folds that make up a
                  dataset's pool decide it, and every later free fold must match them: pxm2025's used 3-4
@@ -150,6 +155,7 @@ class Dataset:
     pool_csv: Path
     chain_maps: Path
     chain_roles: Path
+    matrices: Path
     pool_seeds: Tuple[str, ...]
     free_templates: bool = True
 
@@ -159,12 +165,14 @@ DATASETS = {
         name="pxm2025", data=DATA_DIR, free=FREE_DIR, jobs=PXM2025_JOBS,
         ref=lambda pdb: f"{PXM2025_CIF}/{pdb}.cif", scorer="pxm", pool_csv=PXM2025_POOL_CSV,
         chain_maps=PXM2025_DIR / "chain_maps.csv", chain_roles=PXM2025_CHAIN_ROLES,
+        matrices=POSE_DOCKQ_MATRICES / "pxm2025_crystal",
         pool_seeds=tuple(str(300000 + i) for i in range(50))),
     "foldbench": Dataset(
         name="foldbench", data=FOLDBENCH_DATA, free=FOLDBENCH_DATA / "free", jobs=JSON_DIR,
         ref=lambda pdb: f"{GROUND_TRUTHS}/{pdb}-assembly1.cif", scorer="ost",
         pool_csv=FOLDBENCH_DATA / "pool.csv", chain_maps=FOLDBENCH_DATA / "chain_maps.csv",
         chain_roles=FOLDBENCH_DATA / "chain_roles.csv",
+        matrices=POSE_DOCKQ_MATRICES / "foldbench_crystal",
         pool_seeds=tuple(str(101 + i) for i in range(50)), free_templates=False),
 }
 DATASET_NAMES = tuple(DATASETS)
@@ -231,7 +239,7 @@ def _sh():
         "ESM_PREDICTIONS", "PROTENIX_PREDICTIONS", "RESULTS_DIR", "CSV_DIR",
         "STEER_DATA", "CODE_DIR", "DATA_DIR", "EVAL_DIR", "PXMETER_BIN",
         "PXM2025_DIR", "PXM2025_JOBS", "PXM2025_CIF", "PXM2025_POOL_CSV",
-        "FREE_DIR",
+        "FREE_DIR", "POSE_DOCKQ_MATRICES",
     ):
         print(f'export {name}="{globals()[name]}"')
 

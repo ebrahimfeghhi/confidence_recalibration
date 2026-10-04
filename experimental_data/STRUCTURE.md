@@ -14,6 +14,7 @@ Code lives in `../diffusion_commit_clean_v2/`; see its `README.md` and `HANDOFF.
 | `self_template_fixed_50_seed_old_crystal_iptm/` | 11 G | superseded 2026-09-25: the previous selection; source of the 2,144 carried folds |
 | `pxm2025/` | 8.0 G | inputs: job jsons, MSAs, crystal cifs, the crystal-scored pool csv, chain maps and roles |
 | `analysis/` | 52 M | intermediates of `diffusion_commit_clean_v2/analysis/` (e.g. the crystal-frame selection B) |
+| `pose_dockq_matrices/` | 166 M | pose-to-pose DockQ over the free-50 pool, one npz per interface, one subdirectory per (dataset, frame) — **read its `README.md` first**. `pxm2025_crystal` (292, symlink into `analysis/`) and `foldbench_crystal` (160) are COMPLETE for their pools; get them as `paths.DATASETS[name].matrices` and never rebuild them. `pxm2025/`, `foldbench/` are the anchor-frame sets. One other 292-npz set elsewhere looks identical and is WRONG — the README names it |
 | `archive/` | 180 G | earlier eras; `archive/superseded_2026-09-25/` holds the crystal-framed pipeline's outputs (`anchor_frame/`, `matrices*/`) and `reffree_50/` |
 
 Top-level logs: `stage_arms.log` (GPU handoffs), `watch_arms.log` (30-minute checks).
@@ -25,7 +26,7 @@ Top-level logs: `stage_arms.log` (GPU handoffs), `watch_arms.log` (30-minute che
 | `poses.csv` | the pool the selection drew from |
 | `chain_frame/` | per-pose contacts and ipTM, the anchor per complex, chain maps onto it |
 | `interfaces.csv` | the interfaces, in anchor letters |
-| `pose_dockq_matrices/` | pose-to-pose DockQ and ipTM, one npz per interface |
+| `pose_dockq_matrices/` | a symlink into the top-level `pose_dockq_matrices/<dataset>/` (since 2026-10-02 the npz live there, not per arm). Names are in the arm's ANCHOR chain letters (`chain_frame/`, `interfaces.csv`) — a crystal-frame name looked up here silently misses |
 | `queue.tsv` | every selected fold: kind, pdb, interface, tag, seed, donor pose |
 | `queue_tofold.tsv` | the folds not carried over from an earlier build |
 | `carry_over_folds.tsv`, `diff_vs_*.md` | what was carried, by fold identity (donor, seed, template chains) |
