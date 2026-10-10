@@ -149,3 +149,18 @@ self_template_from_trunks/production_started*.txt
 self_template_from_trunks/STOP
 self_template_from_trunks/code/history/
 /pair_rep_scatter
+
+# self-distillation dropout pilot (2026-10-02): trunks, poses and per-fold jsons are data, not code
+self_distill_dropout/**/*.npz
+self_distill_dropout/**/*.cif
+self_distill_dropout/**/free_*/
+self_distill_dropout/**/zdrop_*/
+self_distill_dropout/**/trunks/
+self_distill_dropout/**/*.log
+
+# extra_training: large transient data, never committed
+extra_training/data/
+extra_training/msa_out/
+extra_training/msa_queries/*.a3m
+tools/
+envs/

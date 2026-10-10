@@ -1,0 +1,80 @@
+--- envs/colabfold/lib/python3.12/site-packages/colabfold/mmseqs/search.py.orig	2026-10-10 13:15:07.947961446 -0700
++++ envs/colabfold/lib/python3.12/site-packages/colabfold/mmseqs/search.py	2026-10-10 13:16:39.659112765 -0700
+@@ -47,6 +47,14 @@
+     subprocess.check_call([mmseqs] + params)
+ 
+ 
++
++def _keep_intermediates() -> bool:
++    """PATCHED (tts_abag): retain uniref.a3m and prof_res so the uniref and env searches can be run
++    in separate passes with only one large database resident at a time."""
++    import os
++    return os.environ.get("COLABFOLD_KEEP_INTERMEDIATES") == "1"
++
++
+ def mmseqs_search_monomer(
+     dbbase: Path,
+     base: Path,
+@@ -89,6 +97,13 @@
+     if use_env:
+         used_dbs.append(metagenomic_db)
+ 
++    # PATCHED (tts_abag): when the databases are staged one at a time, a database whose search step
++    # will be skipped need not be present. uniref30 is skipped once uniref.a3m exists, so drop it from
++    # the precondition check -- otherwise this raises before the resume logic is ever reached.
++    if _keep_intermediates() and base.joinpath("uniref.a3m.dbtype").is_file():
++        used_dbs = [d for d in used_dbs if d != uniref_db]
++        logger.info("Staging mode: uniref.a3m exists, not requiring %s to be present", uniref_db)
++
+     for db in used_dbs:
+         if not dbbase.joinpath(f"{db}.dbtype").is_file():
+             raise FileNotFoundError(f"Database {db} does not exist")
+@@ -186,11 +201,19 @@
+ 
+     if use_env:
+         run_mmseqs(mmseqs, ["mergedbs", base.joinpath("qdb"), base.joinpath("final.a3m"), base.joinpath("uniref.a3m"), base.joinpath("bfd.mgnify30.metaeuk30.smag30.a3m")])
+-        run_mmseqs(mmseqs, ["rmdb", base.joinpath("bfd.mgnify30.metaeuk30.smag30.a3m")])
+-        run_mmseqs(mmseqs, ["rmdb", base.joinpath("uniref.a3m")])
++        # PATCHED (tts_abag): in staging mode keep both inputs, so a failed env pass can be retried
++        # without re-searching uniref30 (which is no longer on disk by then).
++        if not _keep_intermediates():
++            run_mmseqs(mmseqs, ["rmdb", base.joinpath("bfd.mgnify30.metaeuk30.smag30.a3m")])
++            run_mmseqs(mmseqs, ["rmdb", base.joinpath("uniref.a3m")])
+     else:
+-        run_mmseqs(mmseqs, ["mvdb", base.joinpath("uniref.a3m"), base.joinpath("final.a3m")])
+-        run_mmseqs(mmseqs, ["rmdb", base.joinpath("uniref.a3m")])
++        # PATCHED (tts_abag): with COLABFOLD_KEEP_INTERMEDIATES=1 keep uniref.a3m so a later
++        # --use-env 1 run can resume from it instead of re-searching uniref30.
++        if _keep_intermediates():
++            run_mmseqs(mmseqs, ["cpdb", base.joinpath("uniref.a3m"), base.joinpath("final.a3m")])
++        else:
++            run_mmseqs(mmseqs, ["mvdb", base.joinpath("uniref.a3m"), base.joinpath("final.a3m")])
++            run_mmseqs(mmseqs, ["rmdb", base.joinpath("uniref.a3m")])
+ 
+     if unpack:
+         run_mmseqs(mmseqs, ["unpackdb", base.joinpath("final.a3m"), base.joinpath("."), "--unpack-name-mode", "0", "--unpack-suffix", ".a3m"])
+@@ -201,13 +224,19 @@
+             if base.joinpath(f"{template_db}").exists():
+                 run_mmseqs(mmseqs, ["rmdb", base.joinpath(f"{template_db}")])
+ 
+-    run_mmseqs(mmseqs, ["rmdb", base.joinpath("prof_res")])
+-    run_mmseqs(mmseqs, ["rmdb", base.joinpath("prof_res_h")])
+-    shutil.rmtree(base.joinpath("tmp"))
++    # PATCHED (tts_abag): prof_res is the uniref profile the env search is driven from, so it must
++    # survive phase 1 when the databases are being staged one at a time.
++    if not _keep_intermediates():
++        run_mmseqs(mmseqs, ["rmdb", base.joinpath("prof_res")])
++        run_mmseqs(mmseqs, ["rmdb", base.joinpath("prof_res_h")])
++    # PATCHED (tts_abag): tolerate an already-removed tmp dir. On a staged second pass the tmp dir
++    # from the first pass is gone, and the bare rmtree raised FileNotFoundError after the a3m had
++    # already been written correctly.
++    shutil.rmtree(base.joinpath("tmp"), ignore_errors=True)
+     if use_templates:
+-        shutil.rmtree(base.joinpath("tmp2"))
++        shutil.rmtree(base.joinpath("tmp2"), ignore_errors=True)
+     if use_env:
+-        shutil.rmtree(base.joinpath("tmp3"))
++        shutil.rmtree(base.joinpath("tmp3"), ignore_errors=True)
+ 
+ def mmseqs_search_pair(
+     dbbase: Path,
