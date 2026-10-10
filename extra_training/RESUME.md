@@ -52,85 +52,93 @@ Check `run_free_extra10.sh` for the exact worker invocation rather than reconstr
 
 ---
 
-## 2. What is NOT running, and must not be started before the restart
+## 2. The MSA database build — RUNNING, resumable
 
-The MSA database build. A 107 GB download would be killed mid-flight, and `/var/tmp` may be cleared on
-boot, so there is nothing to gain by starting now.
+**`uniref30_2302` is downloading** into `tools/colabfold/db/` via
+`extra_training/scripts/phase1_uniref.sh`, launched in tmux session `msa_p1`, logging to
+`tools/colabfold/phase1.log`.
 
-**Nothing has been downloaded.** An earlier launch of `setup_databases.sh` was stopped and fully
-cleaned up: no `/var/tmp/colabfold_db`, no partial tarballs, quota unchanged.
+The restart will almost certainly interrupt either the download or the index build that follows.
+**Both resume.** After the restart:
 
-### What IS already in place
+```bash
+cd /home/ebrahim/tts_abag/tools/colabfold
+cp /home/ebrahim/tts_abag/extra_training/scripts/phase1_uniref.sh .   # if missing
+tmux new-session -d -s msa_p1 "bash phase1_uniref.sh > phase1.log 2>&1"
+```
+
+It skips any download already complete (size-checked, `curl -C -`), and `setup_databases.sh` skips
+stages whose `*_READY` marker exists. Safe to re-run as many times as needed.
+
+**Do not** run `setup_databases.sh` directly: its `DOWNLOADS_READY` block fetches uniref30 and the
+128 GB envdb together, which would need ~825 GB. The wrapper downloads one database at a time and
+pre-creates the other stages' markers.
+
+### What is already in place
 
 | | |
 |---|---|
-| `tools/mmseqs/bin/mmseqs` | MMseqs2 17-b804f, static build |
-| `tools/hmmer-3.1b2-linux-intel-x86_64/binaries` | HMMER 3.1b2 (ANARCI needs it; system 3.4 breaks ANARCI's parser) |
-| `tools/anarci_hmms/ALL.hmm` | ANARCI's HMMs, re-pressed with 3.1b2 |
-| `tools/colabfold/setup_databases.sh` | ColabFold DB setup script, downloaded |
-| `envs/colabfold/bin/colabfold_search` | installed from the ColabFold repo, `--help` verified |
-| `extra_training/data/` | SAbDab2 v0.2.0 tarball + 4 CSVs, 39 RCSB mmCIFs |
+| `tools/mmseqs/bin/mmseqs` | MMseqs2 17-b804f, static |
+| `envs/colabfold/bin/colabfold_search` | installed, **both patches applied** |
+| `envs/.../colabfold/mmseqs/search.py.orig` | pristine copy, for regenerating the patch |
+| `tools/hmmer-3.1b2-*/binaries` + `tools/anarci_hmms` | for ANARCI only; system HMMER 3.4 breaks it |
+| `tools/colabfold/db_mini` + `test/` | the 280 MB validation harness, still on disk |
+| `extra_training/msa_queries/` | query sets, `training_instances.txt`, manifests |
 
----
+### The two patches — verify after any venv rebuild
 
-## 3. The plan, in order
+```bash
+envs/colabfold/bin/python -c "import colabfold.mmseqs.search as m; print(m._emit_taxid(), m._keep_intermediates())"
+# expect: True False
+```
 
-Goal: fine-tune Protenix v2's confidence head on **our own pose distribution**, using their own FT3
-stage, and measure whether pose *selection* improves. See `README.md` in this folder for why.
+If the venv is ever recreated, re-apply `extra_training/patches/colabfold_search_staging.patch`.
+Without patch A there is no paired MSA; without patch B the staged build cannot work at all.
 
-### Phase 0 — verify staging works (minutes, no big download)
+### Decisions settled (do not revisit)
 
-`DEBUG_MINI_DB=1 bash setup_databases.sh <dir>` substitutes a 280 MB `mini_swissprot` for both large
-databases. Use it to confirm the three-phase sequence below actually runs with only one database
-resident at a time — by moving the other database's files aside between phases.
-
-This was about to run when the restart was announced. **It has not run yet.**
-
-What the code review already established (`colabfold/mmseqs/search.py:129-160`):
-
-- The uniref search is skipped when `uniref.a3m` exists in the output dir → phase 2 is resumable.
-- The env search is driven from `prof_res`, written to the **output** dir in phase 1, not from the
-  uniref database → so uniref does not need to be resident in phase 2.
-- **Caveat to test:** the *pairing* path is a separate function that searches uniref itself, so
-  pairing must happen in phase 1 while uniref is resident.
-
-### Phases 1-4 — the real build
-
-| phase | action | peak disk |
-|---|---|---|
-| 1 | download + unpack `uniref30_2302`, search, keep `uniref.a3m` + `prof_res`, delete DB | 367 GB |
-| 2 | download + unpack `colabfold_envdb_202108`, search (resumes from `prof_res`), delete DB | 459 GB |
-| 3 | download `pdb100` + PDB mmCIF (92.3 GB measured), template search, delete | ~136 GB |
-| 4 | convert to Protenix per-chain `pairing.a3m` / `non_pairing.a3m` / `hmmsearch.a3m` | ~25 GB permanent |
-
-**Sequences to search: 6,048** = 4,672 unique from the 557 training clusters + 1,376 from our existing
-benchmarks (632 FoldBench + 744 PXM).
-
-Why re-do the benchmark MSAs: ours were built on `uniref30_2103`, which is **no longer downloadable**,
-so new data would be on `2302`. Rebuilding both on 2302 removes that confound, and the databases are
-transient — doing it later means re-downloading 236 GB. Marginal cost now is +29% sequences, ~7 GB.
-
-**Do not overwrite the existing 2103 MSAs** (user instruction). Write benchmark output to a new
-directory alongside the old, so every number already reported stays interpretable.
-
-### Decisions already made (do not revisit)
-
-- Training set: **all 557 clusters**, not the 162 novel-only subset.
-- **Templates are included.** Do not pass `SKIP_TEMPLATES`.
-- Databases live **in `tts_abag`**, not `/var/tmp`.
-- Do **not** clear `~/.cache/huggingface` — it holds the ESMFold2 / ESM-C / ESM3 weights and a gated
-  auth token. Protenix weights are elsewhere (`~/checkpoint/protenix-v2.pt`) and unaffected.
+- **`uniref30_2302`**, not 2103. It is the current default in Protenix's own
+  `scripts/colabfold_msa.py`. 2103 is what our benchmark MSAs used, but gwdg serves it at 860 KB/s
+  (~24 h for 75 GB) and refuses parallel ranges, against 49 MB/s from opendata.
+- **Benchmark MSAs are rebuilt on 2302 too**, in the same pass, so train and test match. The existing
+  2103 MSAs are **kept, not overwritten**.
+- **Templates are in**, via Protenix's `runner/template_search.py` — `hmmsearch` against
+  `pdb_seqres_2022_09_28.fasta`. **No pdb70 and no 92 GB PDB mmCIF mirror.**
+- Databases live in `tts_abag`, not `/var/tmp`.
+- Do **not** clear `~/.cache/huggingface`: ESMFold2 / ESM-C / ESM3 weights and a gated token.
+- CPU cap **64 cores**.
 
 ### Disk
 
-Quota is **420 GB of 1024 GB**, so 604 GB headroom. Phase 2 peaks at ~459 GB, which fits. 461 GB was
-freed earlier today by deleting trunk `.npz` dumps (`self_distill_dropout/{anchor10,offline10}/trunks`,
-`pose_branch_300046/trunks`, and scattered `.npz` under `steer_8w5q_*` and `refold_fp32_9g9p_s50`).
-All poses were preserved and verified.
+Quota was 449 GB of 1024 GB with the download partway. Phase 2 peaks at ~459 GB. 461 GB was freed
+earlier by deleting trunk `.npz` dumps; all poses were preserved and verified.
 
-If phases turn out to need ~800 GB, the user has offered to arrange more space — ask.
+## 3. The pipeline
 
----
+**`extra_training/MSA_RUNBOOK.md` is authoritative** and executable on a fresh machine. It was
+rebuilt against the Protenix codebase after an earlier draft got three things wrong. In short:
+
+1. extract the 4,555 selected SAbDab2 instance cifs
+2. `scripts/msa/step1-get_prot_seq.py` -> unique sequences + `seq_to_pdb_index.json`
+3. phase 1: `colabfold_search --use-env 0` on uniref30_2302, then delete that database
+4. phase 2: `--use-env 1` on colabfold_envdb, resuming from `prof_res`
+5. `step3-uniref_add_taxid.py` then `step4-split_msa_to_uniref_and_others.py` -> `pairing.a3m` /
+   `non_pairing.a3m`
+6. `runner/template_search.py` -> `hmmsearch.a3m`
+
+**The thing most likely to be got wrong:** Protenix does not use ColabFold's pairing path. It searches
+each unique sequence once *with taxonomy*, then reconstructs pairing from species. That is why patch A
+exists -- `step3` reads `uniref_tax.m8`, and `step4` splits on `>UniRef100`.
+
+### Validated on the mini database
+
+`DEBUG_MINI_DB=1` substitutes a 280 MB `mini_swissprot` for both large databases.
+
+- **staging**: uniref30 physically absent during phase 2, depth roughly doubles
+  (1ejo_H 268 -> 531, 1ejo_L 422 -> 865, 1j1p_H 180 -> 403, 1j1p_L 334 -> 728, 1j1p_ag0 110 -> 270),
+  both staging log lines present, exit 0
+- **taxids**: `uniref_tax.m8` carries real annotations (`101 P84751 10090 Mus musculus`)
+- **leakage**: `train.fasta` and `bench.fasta` share 0 sequences
 
 ## 4. After the MSAs: the training plan
 
@@ -188,8 +196,8 @@ and new, on the same poses from the same `z`. Perfectly paired, nothing to store
 
 ## 5. Open questions for the user
 
-- Nothing blocking. Phase 0 is approved and ready to run once the server is back.
-- If the phased download turns out to need ~800 GB rather than 459 GB, ask about more space.
+- Nothing blocking. Phase 0 is done and passed; the phase-1 download is running and resumes itself.
+- Templates for TRAINING are settled. Whether the FoldBench evaluation arm should also use templates is open: PXM folds with `free_templates=True`, FoldBench with `False`, so a head trained with templates would be evaluated without them on FoldBench.
 
 ## 6. Loose ends, not blocking
 
