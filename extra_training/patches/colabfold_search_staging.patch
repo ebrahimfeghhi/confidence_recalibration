@@ -1,9 +1,24 @@
 --- envs/colabfold/lib/python3.12/site-packages/colabfold/mmseqs/search.py.orig	2026-10-10 13:15:07.947961446 -0700
-+++ envs/colabfold/lib/python3.12/site-packages/colabfold/mmseqs/search.py	2026-10-10 13:16:39.659112765 -0700
-@@ -47,6 +47,14 @@
++++ envs/colabfold/lib/python3.12/site-packages/colabfold/mmseqs/search.py	2026-10-10 13:38:47.356070820 -0700
+@@ -47,6 +47,29 @@
      subprocess.check_call([mmseqs] + params)
  
  
++
++
++def _emit_taxid() -> bool:
++    """PATCHED (tts_abag): emit uniref_tax.m8 alongside uniref.a3m.
++
++    Protenix's MSA pipeline needs it: scripts/msa/step3-uniref_add_taxid.py reads "the uniref_tax.m8
++    from output of mmseqs(colabfold search)" to write NCBI TaxIDs into the a3m headers, and
++    step4-split_msa_to_uniref_and_others.py then splits the result into pairing.a3m and
++    non_pairing.a3m. Without the taxids there is no paired MSA, and every Protenix job json requires
++    a pairedMsaPath. Upstream ColabFold does not produce this file (see ColabFold issue #216); the
++    convertalis call below is the one their step2 notebook instructs adding.
++    """
++    import os
++    return os.environ.get("COLABFOLD_EMIT_TAXID", "1") == "1"
++
 +
 +def _keep_intermediates() -> bool:
 +    """PATCHED (tts_abag): retain uniref.a3m and prof_res so the uniref and env searches can be run
@@ -15,7 +30,7 @@
  def mmseqs_search_monomer(
      dbbase: Path,
      base: Path,
-@@ -89,6 +97,13 @@
+@@ -89,6 +112,13 @@
      if use_env:
          used_dbs.append(metagenomic_db)
  
@@ -29,7 +44,27 @@
      for db in used_dbs:
          if not dbbase.joinpath(f"{db}.dbtype").is_file():
              raise FileNotFoundError(f"Database {db} does not exist")
-@@ -186,11 +201,19 @@
+@@ -140,6 +170,19 @@
+         run_mmseqs(mmseqs, ["result2msa", base.joinpath("qdb"), dbbase.joinpath(f"{uniref_db}{dbSuffix1}"),
+                             base.joinpath("res_exp_realign_filter"), base.joinpath("uniref.a3m"), "--msa-format-mode",
+                             "6", "--db-load-mode", str(db_load_mode), "--threads", str(threads)] + filter_param)
++        # PATCHED (tts_abag): must run while res_exp_realign_filter still exists, i.e. before the
++        # rmdb below. Tolerant of failure so a taxonomy-less database does not abort the search.
++        if _emit_taxid():
++            try:
++                run_mmseqs(mmseqs, ["convertalis", base.joinpath("qdb"),
++                                    dbbase.joinpath(f"{uniref_db}{dbSuffix1}"),
++                                    base.joinpath("res_exp_realign_filter"),
++                                    base.joinpath("uniref_tax.m8"), "--format-output",
++                                    "query,target,taxid,taxname,taxlineage,fident,alnlen,mismatch,"
++                                    "gapopen,qstart,qend,tstart,tend,evalue,bits,cigar",
++                                    "--db-load-mode", str(db_load_mode), "--threads", str(threads)])
++            except Exception as e:                      # noqa: BLE001
++                logger.warning("uniref_tax.m8 not produced (%s); paired MSAs will be unavailable", e)
+         run_mmseqs(mmseqs, ["rmdb", base.joinpath("res_exp_realign_filter")])
+         run_mmseqs(mmseqs, ["rmdb", base.joinpath("res_exp_realign")])
+         run_mmseqs(mmseqs, ["rmdb", base.joinpath("res_exp")])
+@@ -186,11 +229,19 @@
  
      if use_env:
          run_mmseqs(mmseqs, ["mergedbs", base.joinpath("qdb"), base.joinpath("final.a3m"), base.joinpath("uniref.a3m"), base.joinpath("bfd.mgnify30.metaeuk30.smag30.a3m")])
@@ -53,7 +88,7 @@
  
      if unpack:
          run_mmseqs(mmseqs, ["unpackdb", base.joinpath("final.a3m"), base.joinpath("."), "--unpack-name-mode", "0", "--unpack-suffix", ".a3m"])
-@@ -201,13 +224,19 @@
+@@ -201,13 +252,19 @@
              if base.joinpath(f"{template_db}").exists():
                  run_mmseqs(mmseqs, ["rmdb", base.joinpath(f"{template_db}")])
  

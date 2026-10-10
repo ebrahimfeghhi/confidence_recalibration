@@ -27,16 +27,35 @@ INPUTS
     --min-len:  skip sequences shorter than this. Default 20.
     --which:    train, bench, or both. Default both.
 
+    COMPLEX-LEVEL QUERIES ARE THE ONES ACTUALLY SEARCHED. Protenix needs a paired MSA per chain
+    (`pairedMsaPath` in every job json, and our existing benchmark MSAs all have `pairing.a3m`), and
+    colabfold_search only runs its pairing path when `get_queries` reports `is_complex` -- which
+    happens only for FASTA records whose chains are ':'-joined. Passing --pair-mode on a file of
+    single sequences is SILENTLY IGNORED. So `complexes_all.fasta` is the query set; with
+    --pair-mode unpaired_paired one pass yields both the paired and the unpaired MSAs.
+
+    The per-sequence fastas are kept for the dedup statistics and the train-vs-bench leakage check
+    (verified: 0 sequences shared), not for searching.
+
+    TRAIN AND BENCH GO IN ONE FILE. Rebuilding the benchmark MSAs on 2302 exists precisely to remove a
+    train/test database-version difference, so running them through the same pass removes any chance
+    of the two sets being treated differently, and halves database load overhead.
+
 OUTPUTS
-    <out-dir>/train.fasta  one record per unique training sequence, named <cluster>_<pdb>_<tag>
-    <out-dir>/bench.fasta  one record per unique benchmark sequence, named <pdb>_<chain>
-    <out-dir>/manifest.csv sequence id -> sha1, length, source, so a later step can map a3m back
+    <out-dir>/complexes_all.fasta   THE QUERY SET: one record per complex, chains ':'-joined
+    <out-dir>/complexes.csv         complex id -> chain order, lengths, source; needed to map the
+                                    per-complex a3m back onto Protenix's per-chain layout
+    <out-dir>/train.fasta           unique training sequences (stats and leakage check only)
+    <out-dir>/bench.fasta           unique benchmark sequences (same)
+    <out-dir>/manifest.csv          sequence id -> sha1, length, source
 
 FUNCTIONS
     training_clusters(): re-derive the surviving cluster set
     train_records():     the splits csv -> unique training sequences
     bench_records():     our pool csvs + reference cifs -> unique benchmark sequences
-    main():              write the fastas and the manifest
+    train_complexes():   the splits csv -> one (name, [chain seqs]) per training structure
+    bench_complexes():   reference cifs -> one (name, [chain seqs]) per benchmark complex
+    main():              write the fastas, the complex table and the manifest
 """
 import argparse
 import collections
@@ -128,6 +147,58 @@ def bench_records(min_len):
     return out
 
 
+def train_complexes(rows, min_len):
+    """in: the surviving splits rows, a minimum length.  out: [(name, [chain seqs])] per structure
+
+    One record per structure, not per cluster: training samples structures, and the sampler's cluster
+    weighting (via `cluster_id` in the indices csv) is what prevents a 1,001-structure cluster from
+    dominating. Chain order is heavy, light, then antigens in `agexpectedseqs` order, and that order is
+    recorded in complexes.csv because the per-complex a3m has to be split back onto it.
+    """
+    out, seen = [], set()
+    for r in rows.itertuples(index=False):
+        pdb = str(r.PDB_ID)[-4:]
+        chains = []
+        for v in (r.Hseq, r.Lseq):
+            if isinstance(v, str) and len(v.strip()) >= min_len:
+                chains.append(v.strip().upper())
+        for p in str(r.agexpectedseqs).split("/"):
+            q = p.strip().upper()
+            if len(q) >= min_len and q != "NAN":
+                chains.append(q)
+        key = (pdb, tuple(chains))
+        if len(chains) < 2 or key in seen:
+            continue
+        seen.add(key)
+        out.append((f"tr_c{r.ab_ag_cluster}_{pdb}", chains))
+    return out
+
+
+def bench_complexes(min_len):
+    """in: a minimum length.  out: [(name, [chain seqs])] per benchmark complex
+
+    Chains come from the reference cif in its own chain order, so the mapping back to Protenix's
+    per-chain msa/<n>/ directories follows the same order the folds already use.
+    """
+    out = []
+    for ds in paths.DATASET_NAMES:
+        D = paths.DATASETS[ds]
+        with open(str(D.pool_csv)) as fh:
+            pdbs = sorted({r["pdb"].lower() for r in csv.DictReader(fh)})
+        for pdb in pdbs:
+            ref = D.ref(pdb)
+            if not os.path.exists(ref):
+                continue
+            try:
+                chains = EH.chains_of(ref)
+            except Exception:                           # noqa: BLE001
+                continue
+            seqs = [q.upper() for _c, q in sorted(chains.items()) if len(q) >= min_len]
+            if len(seqs) >= 2:
+                out.append((f"bn_{ds[:2]}_{pdb}", seqs))
+    return out
+
+
 def write_fasta(path, records):
     with open(path, "w") as fh:
         for n, q in records:
@@ -169,6 +240,28 @@ def main():
         w.writerow(["name", "sha1", "length", "source"])
         w.writerows(manifest)
     print(f"wrote {a.out_dir}/manifest.csv ({len(manifest)} rows)")
+
+    # the query set actually searched: one record per complex, chains ':'-joined
+    cx = []
+    if a.which in ("train", "both"):
+        clusters, rows = training_clusters(a.splits, a.excluded)
+        cx += [(n, s, "train") for n, s in train_complexes(rows, a.min_len)]
+    if a.which in ("bench", "both"):
+        cx += [(n, s, "bench") for n, s in bench_complexes(a.min_len)]
+
+    write_fasta(f"{a.out_dir}/complexes_all.fasta", [(n, ":".join(s)) for n, s, _k in cx])
+    with open(f"{a.out_dir}/complexes.csv", "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["complex", "source", "n_chains", "chain_index", "length", "sha1"])
+        for n, seqs, kind in cx:
+            for i, q in enumerate(seqs):
+                w.writerow([n, kind, len(seqs), i, len(q),
+                            hashlib.sha1(q.encode()).hexdigest()])
+    nch = sum(len(s) for _n, s, _k in cx)
+    byk = collections.Counter(k for _n, _s, k in cx)
+    print(f"wrote {a.out_dir}/complexes_all.fasta: {len(cx)} complexes "
+          f"({byk['train']} train, {byk['bench']} bench), {nch} chain slots")
+    print(f"wrote {a.out_dir}/complexes.csv ({nch} rows)")
 
 
 if __name__ == "__main__":
