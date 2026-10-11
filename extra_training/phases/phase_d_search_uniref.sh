@@ -37,7 +37,11 @@
 #                    4 of FoldBench's 8 chains under 20 aa come back query-only -- and wrong for a
 #                    full batch, where an empty result means the search is broken. Default 0.
 #     MIN_Q=N        refuse to run if the query fasta holds fewer than N records. Default 1.
-#     CORES=0-63     taskset range. 64 cores is the stated maximum for this project.
+#     MIN_TAX_PCT=N  minimum percentage of the alignments' UniRef hits that must carry a taxid in
+#                    uniref_tax.m8. Default 95. This checks the taxid MECHANISM, not search depth.
+#     TAX_SAMPLE=N   how many alignments to sample for that check. Default 60.
+#     CORES=0-63     taskset range. 64 cores is the project cap (MSA_RUNBOOK.md:119); --threads is
+#                    derived from it with `taskset -c "$CORES" nproc`, never hardcoded.
 #
 # BATCHES RUN SO FAR, all with these parameters:
 #     query.fasta                  -> msa_initial_idx        5,305 chains of 20+ residues
@@ -55,6 +59,12 @@ DB=$R/tools/colabfold/db
 W=$R/extra_training/msa_work
 M=$R/tools/mmseqs/bin/mmseqs
 CORES="${CORES:-0-63}"
+# THREADS DERIVED FROM THE TASKSET, not hardcoded. `--threads 64` under a narrower --cpu-list
+# oversubscribes: the threads exist but the scheduler has only the pinned cores to put them on.
+# `taskset -c "$CORES" nproc` reports exactly how many CPUs that range allows, whatever its syntax,
+# so the two cannot disagree. The project cap is 64 cores (MSA_RUNBOOK.md:119 -- more has crashed
+# this server), which is the default here.
+NTHREADS=$(taskset -c "$CORES" nproc 2>/dev/null || echo 64)
 export PATH="$R/tools/mmseqs/bin:$PATH"
 
 QFA="${1:-}"
@@ -67,6 +77,29 @@ die() { say "STOP: $*"; exit 1; }
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$HERE/../scripts/lib_fetch.sh"      # fetch_tarball: completeness from the server, not a constant
+
+# ---------------------------------------------------------------- 0. the patch, checked not assumed
+# EVERYTHING BELOW DEPENDS ON THIS, so it is a gate rather than a comment telling the operator to
+# look. Without the staging patch there is no uniref_tax.m8 (so no paired MSA) and no resume from
+# uniref.a3m (so phase E cannot run once uniref30 is deleted). Unpatched, that surfaced only after
+# the 100 GB download and the search -- hours in, at the taxid gate. Four lines here instead.
+SEARCHPY=$R/envs/colabfold/lib/python3.12/site-packages/colabfold/mmseqs/search.py
+check_patch() {
+    [ -s "$SEARCHPY" ] || return 1
+    # The functions the patch adds, asked of the imported module rather than grepped for. Their
+    # RETURN values depend on the environment, so only their existence is checked.
+    $R/envs/colabfold/bin/python -c 'import sys, colabfold.mmseqs.search as m; sys.exit(0 if all(hasattr(m,f) for f in ("_emit_taxid","_keep_intermediates")) else 1)' || return 1
+    # Each of the four hunks carries this marker; counting them catches a partial application.
+    local n; n=$(grep -c 'PATCHED (tts_abag)' "$SEARCHPY" 2>/dev/null || true)
+    [ "${n:-0}" -ge 4 ] || { say "  only ${n:-0} PATCHED markers in search.py, expected at least 4"; return 1; }
+}
+if ! check_patch; then
+    say "the staging patch is not applied to $SEARCHPY"
+    say "  without it: no uniref_tax.m8 (no paired MSA), and phase E cannot resume once uniref30 is gone"
+    say "  apply extra_training/patches/colabfold_search_staging.patch to that file, then re-run"
+    die "colabfold_search is unpatched"
+fi
+say "staging patch applied"
 
 [ -n "$QFA" ] && [ -n "$OUT" ] || die "usage: phase_d_search_uniref.sh <query.fasta> <out-dir> [tag]"
 [ -s "$QFA" ] || die "no query fasta at $QFA"
@@ -118,7 +151,7 @@ if [ ! -s "$DB/uniref30_2302_db.idx" ]; then
     say "building the index (taxonomy, not speed -- see the header)"
     cd "$DB" || die "no db dir"
     rm -rf tmp1
-    taskset -c "$CORES" $M createindex uniref30_2302_db tmp1 --remove-tmp-files 1 --threads 64 \
+    taskset -c "$CORES" $M createindex uniref30_2302_db tmp1 --remove-tmp-files 1 --threads "$NTHREADS" \
         >> "$W/phase_d_index_$TAG.log" 2>&1
     say "createindex exit $? (not trusted; checking files)"
     [ -s "$DB/uniref30_2302_db.idx" ] || die "no uniref30_2302_db.idx after createindex"
@@ -150,7 +183,7 @@ say "taxonomy tables resolve"
 # exactly rather than merely not fall short.
 say "searching (resumable: existing .a3m are skipped)"
 COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c "$CORES" \
-    $R/envs/colabfold/bin/colabfold_search --mmseqs $M --threads 64 \
+    $R/envs/colabfold/bin/colabfold_search --mmseqs $M --threads "$NTHREADS" \
     --use-env 0 --use-templates 0 --db-load-mode 0 \
     "$QFA" "$DB" "$OUT" >> "$W/phase_d_search_$TAG.log" 2>&1
 say "colabfold_search exit $? (not trusted; checking output)"
@@ -170,15 +203,70 @@ if [ "${NMISS:-0}" -gt 0 ]; then
     die "$NMISS of $NQ queries have no alignment -- the search did not cover the batch"
 fi
 
+# WHAT THE m8 IS ACTUALLY FOR, and therefore what to measure. Protenix's step3 reads it as a
+# dictionary from COLUMN 2, the UniRef accession, to COLUMN 3, the taxid
+# (step3-uniref_add_taxid.py:253-255). The query column is never read -- and could not be: ColabFold
+# writes a constant query identifier, so every row of this file says `101`. The a3m files carry the
+# same constant as their first header. Any gate keyed on the query column therefore measures nothing;
+# an earlier version of this one did exactly that and always reported a single query.
+#
+# So the mechanism check is: of the UniRef hits that appear in the alignments, how many have a taxid?
+# That is what decides how much of each alignment can be paired. It should be ~100%; if convertalis
+# or the patch failed it collapses to 0 while the alignments themselves look perfectly normal.
+#
+# DEPTH IS REPORTED, NOT GATED. How many chains retrieved anything at all is a property of the
+# queries, not of the pipeline: in the 235-chain short batch only 34 have a single UniRef hit, the
+# rest being query-only, which is the expected outcome for 5-19 residue peptides.
+#
+# SAMPLED a3m, FULL m8 PASS. The sample bounds memory (batch 1's alignments hold far too many
+# accessions to hold all at once); the m8 must be streamed in full because membership is the
+# question. Tens of GB of sequential read, minutes against an hour of search.
 TAXF=$OUT/uniref_tax.m8
-NTAX=0
-[ -s "$TAXF" ] && NTAX=$(awk -F'\t' 'NR<=2000 && $3+0>0 {n++} END{print n+0}' "$TAXF")
-if [ "$NTAX" -le "${MIN_TAX:-10}" ]; then
+if [ ! -s "$TAXF" ]; then
     if [ "${ALLOW_THIN:-0}" = "1" ]; then
-        say "NOTE only $NTAX usable taxids. For short peptides that is a real outcome rather than a"
-        say "     fault -- they retrieved little or nothing -- so they will pair on what depth exists."
+        say "NOTE no uniref_tax.m8; nothing in this batch can be paired. Recorded only."
     else
-        die "uniref_tax.m8 has $NTAX usable taxids in its first 2000 rows -- pairing would be impossible"
+        die "no uniref_tax.m8 -- convertalis produced nothing, so no chain can be paired"
+    fi
+else
+    say "checking taxid coverage of the alignments' UniRef hits ($(du -h --apparent-size "$TAXF" | cut -f1) m8) ..."
+    COV=$($R/envs/colabfold/bin/python - "$OUT" "$TAXF" "${TAX_SAMPLE:-60}" <<'PYCOV'
+import glob, os, sys
+out, m8, nsample = sys.argv[1], sys.argv[2], int(sys.argv[3])
+files = sorted(f for f in glob.glob(os.path.join(out, "*.a3m"))
+               if os.path.basename(f) != "uniref.a3m")
+step = max(1, len(files) // nsample)
+sample = files[::step][:nsample]
+hits, withhits = set(), 0
+for p in sample:
+    n = 0
+    with open(p) as fh:
+        for line in fh:
+            if line.startswith(">UniRef100_"):
+                hits.add(line[1:].split()[0]); n += 1
+    if n:
+        withhits += 1
+found = set()
+if hits:
+    with open(m8) as fh:
+        for line in fh:
+            f = line.split("\t", 3)
+            if len(f) > 2 and f[1] in hits and f[2].strip() not in ("", "0"):
+                found.add(f[1])
+pct = 100 * len(found) // len(hits) if hits else -1
+print(f"{len(sample)} {withhits} {len(hits)} {len(found)} {pct}")
+PYCOV
+)
+    set -- $COV
+    say "  sampled ${1:-?} alignments: ${2:-?} have UniRef hits, ${3:-?} distinct hits, ${4:-?} with a taxid (${5:-?}%)"
+    if [ "${3:-0}" -eq 0 ]; then
+        [ "${ALLOW_THIN:-0}" = "1" ] && say "  NOTE no UniRef hits in the sample at all -- expected for short peptides" \
+            || die "no UniRef hits in a sample of ${1:-?} alignments -- the search returned nothing"
+    elif [ "${5:-0}" -lt "${MIN_TAX_PCT:-95}" ]; then
+        die "only ${5}% of the alignments' UniRef hits carry a taxid (floor ${MIN_TAX_PCT:-95}%).
+     step3 builds its taxid dictionary from this file, so the missing ones cannot be paired.
+     Check that convertalis ran: the staging patch emits uniref_tax.m8 before the rmdb that
+     destroys res_exp_realign_filter, and logs a warning rather than failing if it cannot."
     fi
 fi
 if [ ! -s "$OUT/uniref.a3m" ]; then

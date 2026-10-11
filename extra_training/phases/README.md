@@ -385,3 +385,47 @@ referenced by its *artifact*, not by another script, and `phase1_search_idx.sh` 
 all 5,305 batch-1 alignments. Both restored, and their procedure is now recorded in
 `phase_d_search_uniref.sh`. `phase1_search.sh` stays deleted — it produced the superseded
 index-free `msa_initial/`, which had no taxonomy table and could not pair.
+
+### Phase D, second review pass
+
+**The patch is now a gate, not a comment.** Everything in phase D depends on
+`patches/colabfold_search_staging.patch`: without it there is no `uniref_tax.m8` (so no paired MSA)
+and no resume from `uniref.a3m` (so phase E cannot run once uniref30 is deleted). The header used to
+tell the operator to verify it by hand, which meant an unpatched venv surfaced hours in, after a
+100 GB download and the search. Checked at the top now — the two functions the patch adds must exist
+on the imported module, and at least four `PATCHED (tts_abag)` markers must be present, which catches
+a partially applied patch.
+
+**`--threads` is derived from the taskset.** It was hardcoded at 64, which oversubscribes a narrower
+`--cpu-list`: the threads exist but the scheduler has only the pinned cores to put them on. Now
+`taskset -c "$CORES" nproc`, which reports exactly how many CPUs the range allows whatever its syntax
+(`0-63`→64, `0-31`→32, `0,2,4`→3). The documented project cap is 64 cores, not 32 — `MSA_RUNBOOK.md:119`,
+"more has crashed this server"; the 32 in `phase_a_define_train_set.py` is that script's own
+conservative default.
+
+**The taxid gate was measuring a column that cannot carry information.** It passed at "more than 10
+usable taxids in the first 2,000 rows". Replacing it with per-query coverage exposed something worse:
+**column 1 of the m8 is the constant `101` for every row**, because ColabFold writes a constant query
+identifier — the same artifact that makes every a3m start `>101` and that `prep_step4_inputs.py`
+exists to repair. So per-query attribution is impossible from this file, and a gate keyed on it
+reports exactly one query forever.
+
+What the file is actually for: `step3-uniref_add_taxid.py:253-255` reads it as a dictionary from
+**column 2, the UniRef accession**, to **column 3, the taxid**. The query column is never touched. So
+the measure that matters is: of the UniRef hits appearing in the alignments, how many carry a taxid?
+That decides how much of each alignment can be paired, and it collapses to zero if `convertalis` or
+the patch failed, while the alignments themselves still look normal.
+
+Measured on the completed short batch:
+
+| | |
+|---|---|
+| alignments | 235 |
+| with at least one UniRef hit | **34** — the other 201 are query-only |
+| distinct UniRef hits across them | 8,491 |
+| carrying a taxid in the m8 | **8,491, 100.0%** |
+
+So the mechanism is sound and what is low is *depth* — which is a property of 5–19 residue peptide
+queries, not of the pipeline, and matches FoldBench, where about half of the chains under 20 aa come
+back query-only. The gate therefore checks the mechanism (floor 95%, on a sample of 60 alignments
+against a full m8 pass) and only **reports** depth.
