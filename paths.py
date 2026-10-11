@@ -92,6 +92,8 @@ CLUSTERING_DIR = _path("CLUSTERING_DIR", REPO_ROOT / "diffusion_commit" / "clust
 # A dataset's crystal-frame set is complete -- every interface of the pool has an npz -- so these are
 # read, never rebuilt. Dataset.matrices points at the right one for that dataset.
 POSE_DOCKQ_MATRICES = _path("POSE_DOCKQ_MATRICES", DATA_DIR / "pose_dockq_matrices")
+# confidence-head finetune project root; everything for it lives here
+EXTRA_TRAINING = _path("EXTRA_TRAINING", REPO_ROOT / "extra_training")
 # The three names that used to live here -- XTAL_MATRICES, ANCHOR_MATRICES, SPUR_MATRICES -- pointed at
 # archive/superseded_2026-09-25 directories that are EMPTY, and nothing read them. They are gone rather
 # than left as live-looking constants resolving to nothing: a caller that globbed one got zero files and
@@ -102,7 +104,11 @@ PXMETER_BIN = _path("PXMETER_BIN", REPO_ROOT / "envs" / "pxmeter" / "bin" / "pxm
 
 # A pool travels as a unit: job jsons to fold, ground-truth cifs to score against, and the scorer
 # that matches them. Mixing them silently produces nothing.
-PXM2025_DIR = _path("PXM2025_DIR", DATA_DIR / "pxm2025")
+PXM2025_DATA = _path("PXM2025_DATA", DATA_DIR / "protenix" / "pxm2025")
+# pxm2025 now mirrors foldbench: inputs AND arms under one benchmark directory.
+# Before 2026-10-06 its data root WAS experimental_data itself, which is why two
+# different pools were both called free/ at different depths.
+PXM2025_DIR = _path("PXM2025_DIR", PXM2025_DATA)
 PXM2025_JOBS = _path("PXM2025_JOBS", PXM2025_DIR / "jsons")
 PXM2025_CIF = _path("PXM2025_CIF", PXM2025_DIR / "cif")
 PXM2025_POOL_CSV = _path("PXM2025_POOL_CSV", PXM2025_DIR / "dockq_pxm2025.csv")
@@ -111,7 +117,7 @@ PXM2025_CHAIN_ROLES = _path("PXM2025_CHAIN_ROLES", PXM2025_DIR / "chain_roles.cs
 
 # --- run trees ---------------------------------------------------------------
 # Every fold we generate lands in one of these two, as <pdb>/<seed>/<run_id>/.
-FREE_DIR = _path("FREE_DIR", DATA_DIR / "free")
+FREE_DIR = _path("FREE_DIR", PXM2025_DATA / "free")
 
 # FoldBench, run the same way. Its experiments live under experimental_data/protenix/foldbench/; its
 # inputs there are built once by diffusion_commit_clean_v2/foldbench_setup.py from the FoldBench 50-seed
@@ -162,7 +168,7 @@ class Dataset:
 
 DATASETS = {
     "pxm2025": Dataset(
-        name="pxm2025", data=DATA_DIR, free=FREE_DIR, jobs=PXM2025_JOBS,
+        name="pxm2025", data=PXM2025_DATA, free=FREE_DIR, jobs=PXM2025_JOBS,
         ref=lambda pdb: f"{PXM2025_CIF}/{pdb}.cif", scorer="pxm", pool_csv=PXM2025_POOL_CSV,
         chain_maps=PXM2025_DIR / "chain_maps.csv", chain_roles=PXM2025_CHAIN_ROLES,
         matrices=POSE_DOCKQ_MATRICES / "pxm2025_crystal",
@@ -174,6 +180,19 @@ DATASETS = {
         chain_roles=FOLDBENCH_DATA / "chain_roles.csv",
         matrices=POSE_DOCKQ_MATRICES / "foldbench_crystal",
         pool_seeds=tuple(str(101 + i) for i in range(50)), free_templates=False),
+    # The held-out validation set for the confidence-head finetune (extra_training/). 50 SAbDab2
+    # clusters, 2 structures each. Its DockQ references are the chosen SAbDab2 instance cifs, staged
+    # one-per-pdb by build_val_jobs.py so this lookup stays unambiguous when a pdb has several
+    # instances in the cluster. Templates are on, matching the pxm2025 convention.
+    "sabdab_val": Dataset(
+        name="sabdab_val", data=EXTRA_TRAINING, free=EXTRA_TRAINING / "val_fold",
+        jobs=EXTRA_TRAINING / "val_jobs",
+        ref=lambda pdb: f"{EXTRA_TRAINING}/val_refs/{pdb}.cif", scorer="ost",
+        pool_csv=EXTRA_TRAINING / "val_fold" / "pool.csv",
+        chain_maps=EXTRA_TRAINING / "val_fold" / "chain_maps.csv",
+        chain_roles=EXTRA_TRAINING / "val_fold" / "chain_roles.csv",
+        matrices=POSE_DOCKQ_MATRICES / "sabdab_val_crystal",
+        pool_seeds=tuple(str(400000 + i) for i in range(20))),
 }
 DATASET_NAMES = tuple(DATASETS)
 
@@ -238,7 +257,7 @@ def _sh():
         "PROTENIX_CKPT", "OST_BIN", "OST_LIB",
         "ESM_PREDICTIONS", "PROTENIX_PREDICTIONS", "RESULTS_DIR", "CSV_DIR",
         "STEER_DATA", "CODE_DIR", "DATA_DIR", "EVAL_DIR", "PXMETER_BIN",
-        "PXM2025_DIR", "PXM2025_JOBS", "PXM2025_CIF", "PXM2025_POOL_CSV",
+        "PXM2025_DATA", "PXM2025_DIR", "PXM2025_JOBS", "PXM2025_CIF", "PXM2025_POOL_CSV",
         "FREE_DIR", "POSE_DOCKQ_MATRICES",
     ):
         print(f'export {name}="{globals()[name]}"')

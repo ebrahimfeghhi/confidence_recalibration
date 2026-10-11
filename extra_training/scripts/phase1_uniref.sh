@@ -20,6 +20,7 @@ DB="${DB:-/home/ebrahim/tts_abag/tools/colabfold/db}"
 CORES="${CORES:-0-63}"   # 64 is the user-stated maximum
 mkdir -p "$DB"
 export PATH="/home/ebrahim/tts_abag/tools/mmseqs/bin:$PATH"
+MMSEQS_BIN="/home/ebrahim/tts_abag/tools/mmseqs/bin/mmseqs"
 
 log() { echo "[$(date '+%F %T')] $*"; }
 
@@ -65,11 +66,24 @@ log "all phase-1 downloads complete"
 touch "$DB/DOWNLOADS_READY" "$DB/COLABDB_READY" "$DB/PDB_READY" "$DB/PDB100_READY" "$DB/PDB_MMCIF_READY"
 log "markers set; building uniref30 only"
 
-UNIREF30DB=uniref30_2302 taskset -c "$CORES" bash setup_databases.sh "$DB"
+# MMSEQS_NO_INDEX=1 is REQUIRED, not an optimisation. createindex writes a .idx of roughly 300 GB
+# on top of the 232 GB extracted database; it exhausted a 1 TB quota, killed the running fold
+# workers, and left a corrupt partial index. setup_databases.sh itself calls the index "not useful
+# for colabfold_search in most cases", and Protenix's scripts/colabfold_msa.py defaults to
+# db_load_mode 0, which does not use one. Search with --db-load-mode 0.
+MMSEQS_NO_INDEX=1 UNIREF30DB=uniref30_2302 taskset -c "$CORES" bash setup_databases.sh "$DB"
 rc=$?
 log "setup_databases.sh exit=$rc"
-if [ "$rc" -eq 0 ] && [ -f "$DB/UNIREF30_READY" ]; then
-  log "UNIREF30_READY present -- uniref30_2302 built"
+# UNIREF30_READY alone is NOT evidence of success: setup_databases.sh touches it before the
+# taxonomy and index steps, so a failed run still reports ready. Check the databases are readable.
+if [ "$rc" -eq 0 ] && [ -f "$DB/UNIREF30_READY" ] \
+   && "$MMSEQS_BIN" dbtype "$DB/uniref30_2302_db" >/dev/null 2>&1 \
+   && "$MMSEQS_BIN" dbtype "$DB/uniref30_2302_db_seq" >/dev/null 2>&1 \
+   && [ -s "$DB/uniref30_2302_db_taxonomy" ]; then
+  log "uniref30_2302 built and readable"
+  # the tarball is extracted; holding 107 GB of it is what filled the quota
+  rm -f "$DB/uniref30_2302.tar.gz"
+  log "removed the extracted tarball"
   du -sh "$DB" 2>/dev/null
 else
   log "uniref30 build incomplete -- re-run this script, it resumes"

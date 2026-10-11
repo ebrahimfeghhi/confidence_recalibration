@@ -90,7 +90,8 @@ def training_clusters(splits, excluded):
         with open(excluded) as fh:
             hom = {r["cluster"] for r in csv.DictReader(fh)}
     s = pd.read_csv(splits, low_memory=False,
-                    usecols=["PDB_ID", "agtypes", "ab_ag_cluster", "Hseq", "Lseq", "agexpectedseqs"])
+                    usecols=["INSTANCE", "PDB_ID", "agtypes", "ab_ag_cluster", "Hseq", "Lseq",
+                             "agexpectedseqs"])
     s = s[s.agtypes.apply(lambda v: any(t in EH.POLY for t in str(v).split("/")))]
     s = s[~s.ab_ag_cluster.isin(by_id) & ~s.ab_ag_cluster.astype(str).isin(hom)]
     return set(s.ab_ag_cluster.dropna()), s
@@ -114,7 +115,12 @@ def train_records(rows, min_len):
             if len(q) < min_len or q == "NAN" or q in seen:
                 continue
             seen.add(q)
-            out.append((f"c{r.ab_ag_cluster}_{pdb}_{tag}", q))
+            # A sequence-hash suffix, because cluster+pdb+tag is NOT unique: the same PDB can appear
+            # twice in a cluster with different heavy-chain sequences, which collided for 544 of
+            # 4,672 queries. colabfold writes output as <name>.a3m, so a collision silently
+            # overwrites an MSA. The hash is stable across runs, unlike a running counter.
+            h = hashlib.sha1(q.encode()).hexdigest()[:6]
+            out.append((f"c{r.ab_ag_cluster}_{pdb}_{tag}_{h}", q))
     return out
 
 
