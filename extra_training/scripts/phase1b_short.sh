@@ -29,7 +29,13 @@ PH=$R/extra_training/phases
 W=$R/extra_training/msa_work
 DB=$R/tools/colabfold/db
 M=$R/tools/mmseqs/bin/mmseqs
-LOG=$W/phase1b_short.log
+# PARAMETERISED so the same script can run the main short pass and a later top-up without a copy.
+# QFA is the query fasta, OUT the output directory, TAG the log suffix. The defaults are the main
+# batch-2 pass; the top-up overrides all three.
+QFA="${QFA:-$W/query_short.fasta}"
+OUT="${OUT:-$W/msa_short_idx}"
+TAG="${TAG:-short}"
+LOG=$W/phase1b_$TAG.log
 TAR=$DB/uniref30_2302.tar.gz
 URL=https://opendata.mmseqs.org/colabfold/uniref30_2302.db.tar.gz
 export PATH="$R/tools/mmseqs/bin:$PATH"
@@ -43,7 +49,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$HERE/lib_fetch.sh"
 
 # ---------------------------------------------------------------- 1. the query set
-if [ ! -s "$W/query_short.fasta" ]; then
+if [ ! -s "$QFA" ]; then
     say "building the short-antigen query set"
     # ONE call: phase C does the set difference itself under --short-vs, so the fasta it writes and
     # the fasta it subtracts can never come from different runs.
@@ -57,9 +63,9 @@ if [ ! -s "$W/query_short.fasta" ]; then
         --short-out $W/query_short.fasta >> "$LOG" 2>&1 \
         || die "phase C batch-2 failed"
 fi
-NQ=$(grep -c '^>' "$W/query_short.fasta")
-[ "$NQ" -ge 100 ] || die "only $NQ short queries (expected ~235)"
-say "short queries: $NQ"
+NQ=$(grep -c '^>' "$QFA")
+[ "$NQ" -ge "${MIN_Q:-100}" ] || die "only $NQ queries in $QFA (expected >= ${MIN_Q:-100})"
+say "queries: $NQ from $(basename "$QFA") -> $(basename "$OUT")"
 
 # ---------------------------------------------------------------- 2. uniref30 database
 if ! [ -s "$DB/uniref30_2302_db_seq" ]; then
@@ -123,22 +129,37 @@ for l in mapping taxonomy; do
 done
 
 # ---------------------------------------------------------------- 4. the search
-say "searching $NQ short queries against uniref30 (--use-env 0, as the first pass did)"
+say "searching $NQ queries against uniref30 (--use-env 0, as the first pass did)"
 COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c 0-63 \
     $R/envs/colabfold/bin/colabfold_search --mmseqs $M --threads 64 \
     --use-env 0 --use-templates 0 --db-load-mode 0 \
-    "$W/query_short.fasta" "$DB" "$W/msa_short_idx" >> $W/phase1b_search.log 2>&1
+    "$QFA" "$DB" "$OUT" >> $W/phase1b_search_$TAG.log 2>&1
 say "colabfold_search exit $? (not trusted; checking output)"
-NA=$(ls $W/msa_short_idx/*.a3m 2>/dev/null | grep -vc '/uniref.a3m$')
-TAXF=$W/msa_short_idx/uniref_tax.m8
+NA=$(ls $OUT/*.a3m 2>/dev/null | grep -vc '/uniref.a3m$')
+TAXF=$OUT/uniref_tax.m8
 [ "$NA" -ge "$NQ" ] || die "$NA a3m for $NQ queries"
-[ -s "$TAXF" ] || die "no uniref_tax.m8 -- these chains could not be paired"
-NTAX=$(awk -F'\t' 'NR<=2000 && $3+0>0 {n++} END{print n+0}' "$TAXF")
-[ "$NTAX" -gt 10 ] || die "uniref_tax.m8 has $NTAX usable taxids in its first 2000 rows"
-[ -s "$W/msa_short_idx/uniref.a3m" ] || die "uniref.a3m not kept -- the env pass could not resume"
+# TAXID GATE. Sized for the main pass, where thousands of hits are expected. A top-up of a dozen
+# short peptides can legitimately retrieve nothing at all -- in FoldBench, 4 of 8 chains under 20 aa
+# came back query-only -- so ALLOW_THIN=1 turns "no hits" into a loud report rather than a failure.
+# It stays a failure by default: for the main pass an empty m8 means the search is broken.
+NTAX=0
+[ -s "$TAXF" ] && NTAX=$(awk -F'\t' 'NR<=2000 && $3+0>0 {n++} END{print n+0}' "$TAXF")
+if [ "$NTAX" -le "${MIN_TAX:-10}" ]; then
+    if [ "${ALLOW_THIN:-0}" = "1" ]; then
+        say "NOTE only $NTAX usable taxids (m8 $( [ -s "$TAXF" ] && echo present || echo absent)). For"
+        say "     short peptides that is a real outcome, not a fault: they retrieved little or nothing,"
+        say "     so they will pair on whatever depth they do have. Recorded, not treated as failure."
+    else
+        die "uniref_tax.m8 has $NTAX usable taxids in its first 2000 rows"
+    fi
+fi
+if [ ! -s "$OUT/uniref.a3m" ]; then
+    [ "${ALLOW_THIN:-0}" = "1" ] && say "NOTE no uniref.a3m kept; an env pass for this batch cannot resume" \
+        || die "uniref.a3m not kept -- the env pass could not resume"
+fi
 say "stage OK: $NA a3m, uniref_tax.m8 with real taxids, uniref.a3m kept for the env pass"
 say "  MSA depth of the first few:"
-for f in $(ls $W/msa_short_idx/*.a3m | grep -v '/uniref.a3m$' | head -5); do
+for f in $(ls $OUT/*.a3m | grep -v '/uniref.a3m$' | head -5); do
     say "    $(basename $f) $(grep -c '^>' $f) sequences"
 done
 

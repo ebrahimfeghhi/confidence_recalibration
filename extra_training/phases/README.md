@@ -7,11 +7,16 @@ inputs, outputs and gates in its own docstring. The plain-language account of wh
 | phase | script | writes |
 |---|---|---|
 | A | `phase_a_define_train_set.py` | `results/excluded_homolog_clusters.csv`; exports `training_clusters()` |
-| B | `phase_b_define_val_clusters.py` | `results/val_clusters.csv` |
+| B | `phase_b_define_val_clusters.py` | `results/val_clusters.csv`; exports `train_minus_val()` |
 | C | `phase_c_extract_msa_queries.py` | `msa_work/query.fasta`, `msa_work/query_short.fasta`, `msa_queries/*` |
+| D | `phase_d_search_uniref.sh` | `<out-dir>/*.a3m`, `uniref.a3m`, `uniref_tax.m8` per batch |
 
-Phases D through I (UniRef search, env pass, taxids and pairing, job JSONs, templates, folding) still
-live in `extra_training/scripts/` and `diffusion_commit_clean_v2/`. Moving them is pending.
+Phases E through I (env pass, taxids and pairing, job JSONs, templates, folding) still live in
+`extra_training/scripts/` and `diffusion_commit_clean_v2/`. Moving them is pending.
+
+**The end state** is one script per phase here, with `extra_training/scripts/` holding only what is
+not a phase: the three watchers (`quota_guard.sh`, `gpu_guard.sh`, `health.sh`) and the shared
+download helper `lib_fetch.sh`.
 
 ## Why A exports the training set
 
@@ -307,3 +312,76 @@ split, and nothing calls it yet because the training stage does not exist. A fun
 obliged to call does not prevent the failure it was written for. The stronger form is for phase B to
 emit a `train_clusters.csv` artifact that the training stage reads as its only input, so using the
 full 557 requires deliberately going around the pipeline. Worth doing when that stage is written.
+
+## Phase D
+
+`phase_d_search_uniref.sh <query.fasta> <out-dir> [tag]` replaces four scripts that between them did
+one job: `phase1_uniref.sh` (download and extract), `phase1_index.sh` (index), `phase1_search_idx.sh`
+(search batch 1) and `phase1b_short.sh` (search batch 2). It is idempotent at every step — an existing
+database, index or alignment is skipped — so the same code runs all three batches:
+
+| query fasta | output | queries |
+|---|---|---|
+| `query.fasta` | `msa_initial_idx` | 5,304 chains of 20+ residues |
+| `query_short.fasta` | `msa_short_idx` | 234 antigen chains of 5–19 residues |
+| `query_short_TODO_bench.fasta` | `msa_bench_short_idx` | 11 benchmark chains of 5–19 residues |
+
+`FREE_DB=1` deletes uniref30 and its index on success, so batches can run back to back without
+re-downloading 100 GB each time. `ALLOW_THIN=1` accepts a batch that retrieves little or nothing,
+which is a real outcome for short peptides — 4 of FoldBench's 8 chains under 20 aa come back
+query-only — and a fault for a full batch.
+
+### What phase D does not produce
+
+Alignments, not MSAs Protenix can read. Phase E deepens them against the environmental database and
+phase F writes the taxids into the headers and splits each one into `pairing.a3m` and
+`non_pairing.a3m`. Phase D is the uniref30 half.
+
+### The disk trick, and the patch it depends on
+
+uniref30 (450 GB extracted plus a 301 GB index) and colabfold_envdb (291 GB) do not both fit in the
+1,536 GB quota. So phase D searches uniref30, **keeps** its intermediates, and deletes the database;
+phase E resumes from `uniref.a3m` with uniref30 gone. That resume only works because of
+`patches/colabfold_search_staging.patch` — unpatched, `colabfold_search` refuses to start when
+uniref30 is missing. Check it before trusting any of this:
+
+```
+envs/colabfold/bin/python -c "import colabfold.mmseqs.search as m; print(m._emit_taxid())"
+```
+
+### Why the 301 GB index is built
+
+Not for speed — `setup_databases.sh` itself calls the index "not useful for colabfold_search in most
+cases", and at this batch size it buys nothing. It is the only route to **taxonomy**: `convertalis`
+resolves taxids through `.idx_mapping` and `.idx_taxonomy`, and an index-free search instead targets
+`_db_seq`, whose 350,950,053 member keys are not in the same key space as the mapping table's
+36,293,491 representatives. No index, no taxids; no taxids, no paired MSA; and phase F has nothing to
+split on.
+
+Earlier comments in this repo called the index unnecessary. That was true about speed and read as
+though it were about correctness — the two claims sat in different scripts and contradicted each other
+when read in sequence.
+
+### Three defects carried over and fixed
+
+**The success check was vacuous.** `phase1_uniref.sh` verified the build with
+`mmseqs dbtype <db>`, which returns exit 0 for a database that does not exist — verified. Combined
+with `setup_databases.sh` touching `UNIREF30_READY` *before* the steps that can fail, nothing in that
+path could detect a failed build. Phase D gates on five data files being non-empty.
+
+**No coverage gate on the search.** `phase1_search_idx.sh` ended with `exec colabfold_search`, so
+nothing checked that 5,305 queries produced 5,305 alignments. Phase D compares the two and fails.
+
+**Marker assumption.** Inherited from the fix in `c1cbe087`: the absence of `COLABDB_READY` makes
+`setup_databases.sh` extract the env database alongside uniref30, which is how both landed on disk at
+once. Phase D creates every marker whose database it wants left alone, and afterwards checks by data
+file whether anything was built that it did not ask for.
+
+### A deletion I got wrong
+
+`phase1_search_idx.sh` and `phase1_index.sh` were removed in `c1cbe087` as dead code on the test
+"nothing in the repo references it". That test is wrong for a script run once by hand: it is
+referenced by its *artifact*, not by another script, and `phase1_search_idx.sh` is the provenance of
+all 5,305 batch-1 alignments. Both restored, and their procedure is now recorded in
+`phase_d_search_uniref.sh`. `phase1_search.sh` stays deleted — it produced the superseded
+index-free `msa_initial/`, which had no taxonomy table and could not pair.
