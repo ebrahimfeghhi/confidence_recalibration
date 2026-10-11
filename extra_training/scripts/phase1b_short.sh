@@ -47,7 +47,12 @@ if [ ! -s "$W/query_short.fasta" ]; then
     say "building the short-antigen query set"
     # ONE call: phase C does the set difference itself under --short-vs, so the fasta it writes and
     # the fasta it subtracts can never come from different runs.
-    taskset -c 0-15 $PY $PH/phase_c_extract_msa_queries.py --min-len 5 --which train \
+    #
+    # --which BOTH, not train. Batch 1 used --min-len 20 for both sets, so the short chains it skipped
+    # exist on both sides. Running batch 2 over training chains only meant a benchmark complex with a
+    # 5-19 residue antigen was treated differently from its training counterparts -- the same
+    # train/test asymmetry the shared uniref30_2302 rebuild exists to remove.
+    taskset -c 0-15 $PY $PH/phase_c_extract_msa_queries.py --min-len 5 --which both \
         --out-dir $W/msa_queries_min5 --short-vs $W/query.fasta \
         --short-out $W/query_short.fasta >> "$LOG" 2>&1 \
         || die "phase C batch-2 failed"
@@ -89,32 +94,32 @@ if ! [ -s "$DB/uniref30_2302_db_seq" ]; then
 fi
 
 # ---------------------------------------------------------------- 3. index, for taxonomy
-# convertalis resolves taxids only through the index's own mapping and taxonomy tables.
+# convertalis resolves taxids only through .idx_mapping and .idx_taxonomy.
 #
-# AN EXISTENCE TEST IS NOT ENOUGH HERE. An earlier attempt left hand-made symlinks named
-# .idx_mapping and .idx_taxonomy in this directory, pointing at _db_mapping and _db_taxonomy; both
-# -e and -s follow a symlink to a real file, so either test would have reported a working index when
-# createindex had produced nothing. So: remove them first, drop a marker immediately before the
-# build, and require what comes out to be NEWER than that marker.
-MARK=$W/.index_start
+# THESE ARE SYMLINKS, AND THAT IS CORRECT. setup_databases.sh:168,171 creates them with `ln -sf`
+# pointing at _db_mapping and _db_taxonomy. An earlier version of this block assumed they were
+# leftovers from a hand-rolled attempt, deleted them before the build, and then required them to be
+# NEWER than the build -- which createindex never satisfies, because createindex does not create
+# them. That gate failed a complete 301 GB index. The links are recreated here rather than relied
+# upon, because we run createindex ourselves with MMSEQS_NO_INDEX=1 and so skip the part of
+# setup_databases.sh that would have made them.
 if [ ! -s "$DB/uniref30_2302_db.idx" ]; then
     say "building the uniref30 index (needed for convertalis to resolve taxids)"
     cd "$DB" || die "no db dir"
-    rm -rf tmp1 uniref30_2302_db.idx_mapping uniref30_2302_db.idx_taxonomy
-    rm -f "$MARK"; touch "$MARK"
+    rm -rf tmp1
     taskset -c 0-63 $M createindex uniref30_2302_db tmp1 --remove-tmp-files 1 --threads 64 \
         >> $W/phase1b_index.log 2>&1
     say "createindex exit $? (not trusted; checking files)"
     [ -s "$DB/uniref30_2302_db.idx" ] || die "no uniref30_2302_db.idx after createindex"
     say "index ready: $(du -sh $DB/uniref30_2302_db.idx | cut -f1)"
 fi
-for l in idx_mapping idx_taxonomy; do
-    q="$DB/uniref30_2302_db.$l"
-    [ -s "$q" ] || die "missing or empty $q -- taxids cannot resolve"
-    if [ -e "$MARK" ] && [ ! "$q" -nt "$MARK" ]; then
-        die "$q is older than the index build -- it is a leftover, not createindex output"
-    fi
-    say "  $l: $(du -shL "$q" | cut -f1), produced by this build"
+# Link, then gate on what the link RESOLVES to: -s follows the symlink, so an empty or dangling link
+# fails here. That is the property that matters -- convertalis reads through it either way.
+for l in mapping taxonomy; do
+    [ -s "$DB/uniref30_2302_db_$l" ] || die "missing $DB/uniref30_2302_db_$l -- taxids cannot resolve"
+    ln -sf "uniref30_2302_db_$l" "$DB/uniref30_2302_db.idx_$l"
+    [ -s "$DB/uniref30_2302_db.idx_$l" ] || die "$DB/uniref30_2302_db.idx_$l does not resolve"
+    say "  idx_$l -> $(readlink "$DB/uniref30_2302_db.idx_$l") ($(du -shL "$DB/uniref30_2302_db.idx_$l" | cut -f1))"
 done
 
 # ---------------------------------------------------------------- 4. the search

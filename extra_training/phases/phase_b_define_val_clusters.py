@@ -54,12 +54,20 @@ import phase_a_define_train_set as A  # noqa: E402
 
 
 
-def cluster_table():
-    """out: DataFrame, one row per surviving training cluster: cluster, n_structures, median_depo"""
+def cluster_table(splits=None, excluded=None):
+    """in: optional splits csv and exclusion csv.  out: one row per surviving training cluster:
+    cluster, n_structures, median_depo
+
+    Both paths are arguments rather than module defaults so this phase can be pointed at an
+    alternative splits release the same way phases A and C can -- otherwise B silently reads the
+    default while A and C read whatever they were told to, and the three disagree about the pool.
+    """
+    splits = splits or A.SPLITS
+    excluded = excluded or A.EXCLUDED
     # Count only the polypeptide-antigen rows that make up the training pool. Counting every row of a
     # cluster (haptens, sugars, apo) inflated the pool to 3,765 structures instead of 2,886.
-    _clusters, rows = A.training_clusters(A.SPLITS, A.EXCLUDED)
-    s = pd.read_csv(A.SPLITS, low_memory=False, usecols=["PDB_ID", "PDBdepo"])
+    _clusters, rows = A.training_clusters(splits, excluded)
+    s = pd.read_csv(splits, low_memory=False, usecols=["PDB_ID", "PDBdepo"])
     s = s.drop_duplicates("PDB_ID").set_index("PDB_ID")
     s = rows[["PDB_ID", "ab_ag_cluster"]].join(s, on="PDB_ID")
     s["depo"] = pd.to_datetime(s.PDBdepo, errors="coerce")
@@ -67,6 +75,44 @@ def cluster_table():
     return (per_struct.groupby("ab_ag_cluster")
             .agg(n_structures=("PDB_ID", "nunique"), median_depo=("depo", "median"))
             .reset_index().rename(columns={"ab_ag_cluster": "cluster"}))
+
+
+def train_minus_val(splits=None, excluded=None, val_csv=None):
+    """in: optional splits, exclusion and validation csv paths.
+    out: (training cluster set with validation removed, those rows of the splits table)
+
+    THE ONLY PLACE THE TRAIN/VAL SPLIT IS ENFORCED, and it exists because nothing else enforced it.
+    Phase A derives the 557-cluster pool, phase B holds 50 of them out, and phase C deliberately
+    builds MSAs for all 557 -- correctly, since the validation complexes have to be folded. So every
+    phase up to here legitimately carries the full pool, and the subtraction has to happen wherever
+    the training indices are built. At the time of writing nothing did it: the failure mode is
+    training on your own validation set with nothing raised, and then reporting the result.
+
+    A MISSING val_clusters.csv IS FATAL, never "nothing to hold out". That is the same reasoning as
+    the exclusion-csv guard in phase A: an absent artifact means the split was never applied.
+
+    Any training-index builder must take its cluster list from here, not from
+    phase_a_define_train_set.training_clusters(), which returns the pool INCLUDING validation.
+    """
+    val_csv = val_csv or f"{REPO}/extra_training/results/val_clusters.csv"
+    if not os.path.exists(val_csv):
+        raise SystemExit(
+            f"STOP: {val_csv} does not exist.\n"
+            "It is written by this phase's main(). Without it the training set would silently "
+            "include the validation clusters.\n"
+            f"  python {os.path.basename(__file__)} --out {val_csv}")
+    val = set(pd.read_csv(val_csv).cluster)
+    if not val:
+        raise SystemExit(f"STOP: {val_csv} lists no clusters; the split would hold nothing out.")
+    clusters, rows = A.training_clusters(splits or A.SPLITS, excluded or A.EXCLUDED)
+    missing = val - clusters
+    if missing:
+        raise SystemExit(
+            f"STOP: {len(missing)} validation cluster(s) are not in the training pool: "
+            f"{sorted(missing)[:10]}\n"
+            "val_clusters.csv and the pool have drifted apart -- re-run phases A and B in order.")
+    keep = clusters - val
+    return keep, rows[~rows.ab_ag_cluster.isin(val)]
 
 
 def main():
@@ -78,27 +124,97 @@ def main():
     ap.add_argument("--seed", type=int, default=20261010)
     ap.add_argument("--max-share", type=float, default=0.15,
                     help="no single cluster may exceed this share of the validation structures")
+    ap.add_argument("--splits", default=None, help="SAbDab2 abag_split.csv; default phase A's")
+    ap.add_argument("--excluded", default=None, help="phase A's exclusion csv; default phase A's")
+    ap.add_argument("--select", choices=["target", "band"], default="target",
+                    help="target: the draw closest to --frac (reproduces results/val_clusters.csv). "
+                         "band: uniform among draws inside --frac-lo/--frac-hi. See main().")
+    ap.add_argument("--frac-lo", type=float, default=0.05,
+                    help="accept any draw holding at least this share of the pool's structures")
+    ap.add_argument("--frac-hi", type=float, default=0.12,
+                    help="...and at most this share. See the band comment in main().")
     ap.add_argument("--out", default=f"{REPO}/extra_training/results/val_clusters.csv")
     a = ap.parse_args()
 
-    t = cluster_table().sort_values("median_depo").reset_index(drop=True)
+    t = cluster_table(a.splits, a.excluded).sort_values("median_depo").reset_index(drop=True)
     total = int(t.n_structures.sum())
     target = a.frac * total
     t["date_bin"] = pd.qcut(t.median_depo.rank(method="first"), a.n_bins, labels=False)
-    per_bin = a.n_val // a.n_bins
+    # THE REMAINDER IS DISTRIBUTED, NOT DISCARDED. `n_val // n_bins` silently returned 50 clusters
+    # for --n-val 51, so the file said 50 and the run reported success. The first (n_val % n_bins)
+    # bins take one extra cluster each.
+    base, extra = divmod(a.n_val, a.n_bins)
+    per_bin = [base + (1 if b < extra else 0) for b in range(a.n_bins)]
     bins = [t.index[t.date_bin == b].to_numpy() for b in range(a.n_bins)]
+    for b, (k, ix) in enumerate(zip(per_bin, bins)):
+        if k > len(ix):
+            raise SystemExit(f"STOP: bin {b} holds {len(ix)} clusters but {k} were asked for. "
+                             f"Lower --n-val or --n-bins.")
+    assert sum(per_bin) == a.n_val, (per_bin, a.n_val)
 
+    # TWO SELECTION RULES. --select target (the default, and what results/val_clusters.csv was built
+    # with) keeps the draw closest to --frac of the pool's structures. --select band accepts every
+    # draw inside [--frac-lo, --frac-hi] and picks uniformly among them.
+    #
+    # WHAT IS KNOWN ABOUT THE DIFFERENCE, measured on this pool. Of 20,000 draws, 11,296 pass the
+    # dominant-cluster rule; their held-out share runs 2.4% to 10.1%, median 4.5%. "target" with
+    # --frac 0.10 therefore selects the single largest-holdout draw of the 11,296 -- the edge of the
+    # distribution, not the middle. It gets there because holding out more structures requires
+    # picking larger clusters: median cluster size 2 against 1, and 29 of its 50 clusters have two or
+    # more distinct PDB entries against 22 for a typical draw. That matters because only clusters
+    # with two entries can contribute two folded representatives, so "target" yields 79 folded
+    # structures where a uniform draw yields a median of 72.
+    #
+    # WHAT IS NOT KNOWN: whether that makes validation easier or harder. Large clusters here are
+    # NEWER (median deposition 2021-07-30 for clusters of 6+, against 2019-10-09 for singletons; only
+    # 39% of their structures predate Protenix's 2021-09-30 cutoff, against 64%), so if anything they
+    # are less likely to sit inside the model's training data. The rank correlation between cluster
+    # size and date is 0.04. Post-cutoff coverage is identical either way -- 17 of 50 clusters -- as
+    # the date binning guarantees. So "target" is an extreme draw on cluster size, in a direction
+    # that is not established to flatter the result, and it buys 7 more folded structures.
+    # It stays the default on that basis; "band" is kept because the bias is real and may matter once
+    # per-cluster DockQ exists to measure it against.
     rng = np.random.default_rng(a.seed)
-    best, best_err = None, np.inf
+    sizes_all = t.n_structures.to_numpy()
+    lo, hi = a.frac_lo * total, a.frac_hi * total
+    ok, rejected_share, rejected_giant = [], 0, 0
+    best_err = np.inf
     for _ in range(a.draws):
-        pick = np.concatenate([rng.choice(ix, per_bin, replace=False) for ix in bins])
-        sizes = t.n_structures.to_numpy()[pick]
-        # one giant cluster can hit the 10% target on its own; that is one system, not 50
+        pick = np.concatenate([rng.choice(ix, k, replace=False) for k, ix in zip(per_bin, bins)])
+        sizes = sizes_all[pick]
+        # one giant cluster can hit the target on its own; that is one system studied N times, not 50
         if sizes.max() > a.max_share * target:
+            rejected_giant += 1
             continue
-        err = abs(sizes.sum() - target)
-        if err < best_err:
-            best, best_err = pick, err
+        if a.select == "target":
+            err = abs(sizes.sum() - target)
+            if err < best_err:
+                ok, best_err = [pick], err
+            continue
+        if not (lo <= sizes.sum() <= hi):
+            rejected_share += 1
+            continue
+        ok.append(pick)
+    if a.select == "target":
+        print(f"draws: {a.draws}   rejected {rejected_giant} for a dominant cluster   "
+              f"kept the draw {best_err:.0f} structures from the {target:.0f} target")
+    else:
+        print(f"draws: {a.draws}   accepted {len(ok)}   "
+              f"rejected {rejected_giant} for a dominant cluster, {rejected_share} outside "
+              f"[{100*a.frac_lo:.0f}%, {100*a.frac_hi:.0f}%]")
+    # NO SILENT None. The old code left `best` as None when every draw tripped --max-share and then
+    # failed inside pandas with an error naming neither the cause nor the knob.
+    if not ok:
+        raise SystemExit(
+            f"STOP: none of {a.draws} draws satisfied the constraints.\n"
+            f"  {rejected_giant} had a cluster above --max-share ({a.max_share:.0%} of "
+            f"{target:.0f} structures)\n"
+            + (f"  {rejected_share} fell outside --frac-lo/--frac-hi "
+               f"([{lo:.0f}, {hi:.0f}] structures)\n" if a.select == "band" else "")
+            + "Raise --max-share or --draws"
+            + (", or widen the band." if a.select == "band" else "."))
+    # "target" leaves exactly one survivor; "band" leaves many and picks uniformly.
+    best = ok[0] if a.select == "target" else ok[rng.integers(len(ok))]
 
     v = t.loc[np.sort(best)].copy()
     os.makedirs(os.path.dirname(a.out), exist_ok=True)

@@ -150,3 +150,123 @@ antigen still leaks.
 Lower-severity, left as is: `fetch()` treats any cached file over 1000 bytes as complete, and
 `train_tables()` zips `agtypes` against `agresolvedseqs` positionally, so a row whose two fields
 disagree in length would drop its trailing antigen chains without comment.
+
+## Audit, second and third passes
+
+Two further reviews of phases A–C. Fifteen issues; all fixed. The pool is unchanged throughout —
+561 → 557 clusters, the same four drops at the same identities — so none of this moved a result. Every
+one of them could have moved one later without raising anything.
+
+### Phase A
+
+**classify() kept one hit per chain, ranked by the wrong column.** Single-chain constructs carry two
+variable domains — 8r4u_B is 236 residues with envelopes 1-127 and 126-236 — and only one was stored.
+Worse, hits were ranked by column 7, the FULL-SEQUENCE E-value, which is a property of the (query,
+target) pair and so identical for every domain of one chain: 8r4u_B's two halves both read 5.0e-64
+against `human_L`. Ranking on it cannot distinguish a VH from a VL even in principle, and `human_H`
+hit that chain at 1.9e-57. Four of the 39 complexes (8r4u, 9gry, 9gs3, 9i20) consist only of such
+chains, so they contributed **no CDR-H3 query at all** and Filter 3 reported 0 for them whether or not
+a leak existed. Now one entry per domain, ranked by the per-domain i-Evalue (column 13), with
+overlapping envelopes merged: heavy domains 60 → **67**, complexes covered **35 → 39 of 39**. Filter 3
+still finds 0, and that 0 now covers every complex.
+
+**The CDR-H3 gate asserted chains, not complexes.** `--min-cdr-frac` checked recovery across chains
+already classified heavy and said nothing about how many complexes contributed one — printed and never
+checked, the exact pattern it was written to end. Asserted now, and it is what exposed the four above.
+
+**Cluster ids were canonicalised on only one side of the comparison.** `train_tables()` built FASTA
+headers with a raw f-string, `search()` and `cdr_hits()` parsed them back raw, and `main()` intersected
+the result against `{_ckey(c) for c in train_cl}`. Under float64 the hit keys read `"1496.0"` and the
+normalised side `"1496"`: the intersection empties, the run prints `union dropped: 0 clusters`, the csv
+is written with only a header, `training_clusters()` reads an empty exclusion set, the orphan guard
+finds no orphans to report, and the pool returns 561. The 557 → 561 failure the first pass identified,
+reached through the one path its fix did not cover. Headers now go through `_ckey()` at construction.
+
+**A missing exclusion csv counted as zero exclusions.** A mistyped `--excluded`, or any downstream
+phase run before phase A, admitted benchmark-homologous clusters silently. Now fatal, with the
+regeneration command in the message. A header-only file remains the way to record "none".
+
+**Failed downloads still produced an exclusion artifact.** `main()` printed `bad` and searched whatever
+had been fetched, so a network failure or partial cache under `--no-fetch` yielded a csv that looked
+complete while covering only part of the benchmark. Now aborts before searching;
+`--allow-missing-structures` to accept a knowingly partial exclusion.
+
+**fetch() cached partial downloads forever.** `urlretrieve` wrote straight to the destination and the
+"over 1000 bytes" test then treated a truncated file as complete. gemmi parses a truncated mmCIF
+without complaint and returns a short chain set — fewer antigen queries, exclusions missed. Downloads
+now land on `.part` and are renamed on success.
+
+**ALLHMM hardcoded a venv path**, which breaks on a rebuild and silently changes which HMM set types
+our chains. Resolved from the installed `anarci` package, with the literal as a last resort.
+
+### Phase B
+
+**Minimising the held-out structure count selects an extreme draw.** Of 20,000 draws, 11,296 pass the
+dominant-cluster rule; their held-out share runs 2.4% to 10.1%, median 4.5%. `--select target` with
+`--frac 0.10` therefore picks the single largest-holdout draw of the 11,296. It gets there because
+holding out more structures requires larger clusters: median cluster size 2 against 1, and 29 of 50
+clusters with two or more distinct PDB entries against 22. Only those can contribute two folded
+representatives, so this draw yields 79 folded structures where a uniform draw yields a median of 72.
+
+What is *not* established is the direction of the resulting bias. Large clusters here are **newer** —
+median deposition 2021-07-30 for clusters of 6+ against 2019-10-09 for singletons, and only 39% of
+their structures predate Protenix's 2021-09-30 cutoff against 64% — so they are if anything *less*
+likely to sit inside the model's training data. Rank correlation between cluster size and date is 0.04.
+Post-cutoff coverage is identical either way, 17 of 50 clusters, which the date binning guarantees.
+
+`target` therefore remains the default and `results/val_clusters.csv` is unchanged: it is an extreme
+draw on cluster size, in a direction not shown to flatter the result, and it buys 7 more folded
+structures. `--select band` is implemented and documented so the alternative is available once
+per-cluster DockQ exists to measure the two against each other.
+
+**`best` could stay None**, then fail inside pandas naming neither cause nor remedy. Now an explicit
+error naming both constraints and which knob to move.
+
+**The remainder of `--n-val / --n-bins` was discarded.** `--n-val 51` with 5 bins wrote 50 clusters and
+reported success. Distributed across bins, with a per-bin feasibility check.
+
+**No `--splits` or `--excluded`**, so B silently read the module defaults while A and C could be
+pointed elsewhere — three phases disagreeing about the pool. Both exposed.
+
+**`train_minus_val()` added — the only place the train/val split is enforced.** Phase A derives the 557,
+phase B holds out 50, and phase C deliberately builds MSAs for all 557, correctly, since the validation
+complexes have to be folded. So nothing up to here subtracts validation from training, and nothing did:
+the failure mode is training on your own validation set and reporting the result. Any training-index
+builder must take its clusters from here (507), not from `training_clusters()` (557). A missing
+`val_clusters.csv` is fatal, as is a validation cluster absent from the pool.
+
+### Phase C
+
+**An RNA antigen was searched as a protein.** `training_clusters()` keeps a row if *any* of its antigens
+is PROTEIN or PEPTIDE, but `train_records()` and `train_complexes()` took every entry of
+`agexpectedseqs` without consulting `agtypes`. The committed query set carried one: the RNA chain
+`c228_6cf2_ag1_4666db`. ColabFold searched it anyway, and the a3m/fasta consistency check downstream
+dropped it because the search had rewritten its `U` as `X` — so it cost a query slot and surfaced as a
+mismatch far from its cause. `poly_antigens()` now pairs each antigen chain with its own type, and
+errors if the two fields disagree in length rather than letting `zip()` drop the trailing chains.
+Query set 5,305 → **5,304**.
+
+**"verified 0 shared" was a comment.** It is also the strongest end-to-end test available: a sequence in
+both sets means a training complex carries a chain identical to a benchmark chain, which filters 1, 2
+and 3 should all have removed at 100% identity. Asserted now — it passes at 0, and it exercises all
+three filters at once.
+
+**Benchmark structures were skipped without a count.** Both bench functions `continue`d past a missing
+reference cif or a gemmi failure, and the printed line reported only a sequence count. A complex
+silently getting no 2302 MSA keeps its uniref30_2103 one at fold time, reintroducing the exact
+train/test database-version difference this rebuild exists to remove. One `bench_chains()` now reads
+them and asserts coverage: **227/227**.
+
+**Batch 2 covered training chains only.** Batch 1 used `--min-len 20` for both sets, so the chains it
+skipped exist on both sides; searching only the training ones left a benchmark complex with a 5–19
+residue antigen treated differently from its training counterparts. `phase1b_short.sh` now runs batch 2
+with `--which both`: 235 → **245** short queries.
+
+### Also fixed outside the phases
+
+**The index-mapping gate rejected a complete index.** The first audit claimed `.idx_mapping` and
+`.idx_taxonomy` were hand-made leftovers and required them to postdate the index build.
+`setup_databases.sh:168,171` creates them itself with `ln -sf`, and `createindex` does not — so the gate
+failed a finished 301 GB index twice and the watcher gave up. `phase1b_short.sh` now creates the links
+(we run `createindex` ourselves under `MMSEQS_NO_INDEX=1`, skipping the part of `setup_databases.sh`
+that would have) and gates on what they resolve to.

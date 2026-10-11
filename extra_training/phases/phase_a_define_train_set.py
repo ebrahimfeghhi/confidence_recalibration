@@ -89,7 +89,26 @@ SPLITS = f"{REPO}/extra_training/data/zenodo_splits/splits_final/abag_split.csv"
 EXCLUDED = f"{REPO}/extra_training/results/excluded_homolog_clusters.csv"
 CIFDIR = f"{REPO}/extra_training/data/rcsb_unlisted"
 MMSEQS = f"{REPO}/tools/mmseqs/bin/mmseqs"
-ALLHMM = ("/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/anarci/dat/HMMs/ALL.hmm")
+def _anarci_allhmm():
+    """out: the path to ANARCI's ALL.hmm, asked of the installed package
+
+    NOT A HARDCODED VENV PATH. The previous literal pointed into
+    /home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/, which breaks on a rebuilt venv and --
+    worse -- silently changes which HMM set types our chains if that venv is ever repointed. Asking
+    the imported package where it lives keeps the answer tied to the ANARCI actually in use. The
+    literal stays only as a last resort, and either way the caller checks the file exists.
+    """
+    try:
+        import anarci
+        p = os.path.join(os.path.dirname(anarci.__file__), "dat", "HMMs", "ALL.hmm")
+        if os.path.exists(p):
+            return p
+    except Exception:                               # noqa: BLE001
+        pass
+    return "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/anarci/dat/HMMs/ALL.hmm"
+
+
+ALLHMM = _anarci_allhmm()
 POLY = ("PROTEIN", "PEPTIDE")
 
 # THE EVALUATION SETS, named explicitly. Never paths.DATASET_NAMES: that tuple also carries
@@ -155,10 +174,19 @@ def training_clusters(splits, excluded):
     this derivation is how two tables in one paper end up disagreeing about the cluster count.
     """
     _miss, _listed, by_id = unlisted(splits)
-    hom = set()
-    if os.path.exists(excluded):
-        with open(excluded) as fh:
-            hom = {r["cluster"] for r in csv.DictReader(fh)}
+    # A MISSING CSV IS A MISSING ARTIFACT, NOT AN EMPTY RESULT. Continuing silently meant a mistyped
+    # --excluded, or running any downstream phase before phase A's main() had produced the file, let
+    # benchmark-homologous clusters straight into the training pool with nothing raised. A header-only
+    # file is the legitimate way to say "no homologous clusters"; absence means the filter never ran.
+    if not os.path.exists(excluded):
+        raise SystemExit(
+            f"STOP: {excluded} does not exist.\n"
+            "It is written by this phase's main(). Run phase A before phases B, C and G:\n"
+            f"  python {os.path.basename(__file__)} --out {excluded}\n"
+            "A file with only a header is how 'no homologous clusters' is recorded; an absent file\n"
+            "means the homology filter has not been applied at all.")
+    with open(excluded) as fh:
+        hom = {r["cluster"] for r in csv.DictReader(fh)}
     s = pd.read_csv(splits, low_memory=False,
                     usecols=["INSTANCE", "PDB_ID", "agtypes", "ab_ag_cluster", "Hseq", "Lseq",
                              "agexpectedseqs"])
@@ -187,10 +215,20 @@ def fetch(pdbs, cifdir, allow=True):
             if not allow:
                 bad.append(p)
                 continue
+            # DOWNLOAD TO .part AND RENAME ON SUCCESS. urlretrieve writes straight to dst, so an
+            # interrupted transfer left a truncated cif on disk, and the "> 1000 bytes" test above
+            # then treats it as complete forever. gemmi parses a truncated mmCIF without complaining
+            # and returns a short chain set -- fewer antigen queries, and exclusions silently missed.
+            # This is the filter that decides what we may train on, so the cache must only ever hold
+            # whole files.
+            tmp = dst + ".part"
             try:
                 urllib.request.urlretrieve(
-                    f"https://files.rcsb.org/download/{p.upper()}.cif", dst)
+                    f"https://files.rcsb.org/download/{p.upper()}.cif", tmp)
+                os.replace(tmp, dst)
             except Exception as e:                      # noqa: BLE001
+                if os.path.exists(tmp):
+                    os.remove(tmp)
                 bad.append(f"{p} ({type(e).__name__})")
                 continue
         got[p] = dst
@@ -220,11 +258,23 @@ def chains_of(cif):
 
 def classify(records, hmm, evalue, threads, workdir):
     """in: [(name, seq)], the ALL.hmm path, an e-value, threads, a workdir.
-    out: ({name: (chain_type, vh seq)} antibody chains, [(name, seq)] everything else)
+    out: ({"<name>#<i>": (chain_type, domain seq)} antibody domains, [(name, seq)] everything else)
 
-    hmmscan --domtblout against ANARCI's HMM set. Columns 4 (query), 7 (full-sequence E-value),
-    1 (target hmm, e.g. alpaca_H) and 20..21 (envelope in QUERY coordinates) are the ones used; the
-    envelope is what carves the variable domain out of a full-length chain.
+    hmmscan --domtblout against ANARCI's HMM set. Columns used: 4 query, 1 target hmm (e.g.
+    alpaca_H), 13 the PER-DOMAIN i-Evalue, and 20..21 the envelope in QUERY coordinates.
+
+    ONE ENTRY PER DOMAIN, NOT PER CHAIN. Single-chain constructs carry two variable domains -- 8r4u_B
+    is 236 residues with envelopes 1-127 and 126-236, an scFv -- and keeping one best hit per chain
+    threw the other domain away. Four of the 39 complexes (8r4u, 9gry, 9gs3, 9i20) consist only of
+    such chains, so they contributed no heavy domain and Filter 3 never queried their CDR-H3 at all.
+    It reported 0 hits for them whether or not a leak existed.
+
+    RANKED BY THE PER-DOMAIN E-VALUE (column 13), NOT THE FULL-SEQUENCE ONE (column 7). Column 7 is a
+    property of the (query, target) pair, so every domain of one chain carries the identical value --
+    8r4u_B's two halves both read 5.0e-64 against human_L. Ranking on it cannot tell a VH from a VL
+    even in principle, which is why these chains came back typed light while human_H hit them at
+    1.9e-57. Envelopes that overlap by more than half are treated as the same domain, keeping the
+    better-scoring assignment.
     """
     fa = f"{workdir}/chains.fa"
     with open(fa, "w") as fh:
@@ -233,27 +283,39 @@ def classify(records, hmm, evalue, threads, workdir):
     dom = f"{workdir}/chains.domtbl"
     subprocess.run(["hmmscan", "--domtblout", dom, "--cpu", str(threads), hmm, fa],
                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    best = {}
+    # Collect every domain hit, then keep the best assignment per distinct envelope.
+    per_chain = collections.defaultdict(list)
     with open(dom) as fh:
         for line in fh:
             if line.startswith("#"):
                 continue
             f = line.split()
-            if len(f) < 22:
+            if len(f) < 23:
                 continue
-            tgt, qry, ev = f[0], f[3], float(f[6])
+            tgt, qry = f[0], f[3]
+            ev = float(f[12])                      # i-Evalue: this domain, not the whole sequence
             if ev > evalue:
                 continue
-            if qry not in best or ev < best[qry][0]:
-                best[qry] = (ev, tgt, int(f[19]), int(f[20]))
-    seqs = dict(records)
+            per_chain[qry].append((ev, tgt, int(f[19]), int(f[20])))
+
+    def _same_domain(x, y):
+        """two envelopes describing the same variable domain: overlap over half the shorter one"""
+        lo, hi = max(x[0], y[0]), min(x[1], y[1])
+        ov = max(0, hi - lo + 1)
+        return ov > 0.5 * min(x[1] - x[0] + 1, y[1] - y[0] + 1)
+
     ab, rest = {}, []
-    for n, s in records:
-        if n in best:
-            _ev, tgt, a, b = best[n]
-            ab[n] = (tgt.split("_")[-1], s[max(0, a - 1):b])
-        else:
-            rest.append((n, s))
+    for n, seq in records:
+        kept = []                                  # [(ev, type, a, b)], one per distinct domain
+        for ev, tgt, a, b in sorted(per_chain.get(n, [])):
+            if any(_same_domain((a, b), (ka, kb)) for _e, _t, ka, kb in kept):
+                continue                           # a worse hit on a domain already assigned
+            kept.append((ev, tgt.split("_")[-1], a, b))
+        if not kept:
+            rest.append((n, seq))
+            continue
+        for i, (_ev, typ, a, b) in enumerate(sorted(kept, key=lambda k: k[2])):
+            ab[f"{n}#{i}"] = (typ, seq[max(0, a - 1):b])
     return ab, rest
 
 
@@ -342,6 +404,15 @@ def train_tables(splits, drop_clusters):
     """in: the splits csv, the clusters already excluded by id lookup.
     out: (protein-antigen records, peptide-antigen records, antibody records, the cluster set)
 
+    THE HEADER'S CLUSTER ID GOES THROUGH _ckey(). search() and cdr_hits() parse it straight back out
+    of the header, and main() intersects what they return against {_ckey(c) for c in train_cl}. With a
+    raw f-string the two sides disagree the moment ab_ag_cluster is float64: the hit keys read
+    "1496.0", the normalised side reads "1496", the intersection is empty, the run prints "union
+    dropped: 0 clusters", and the csv is written with only a header. training_clusters() then reads an
+    empty exclusion set, the orphan guard finds no orphans to complain about, and the pool comes back
+    561 instead of 557 -- benchmark-homologous clusters admitted, nothing raised. Canonicalising here
+    is what makes the two sides the same key space by construction.
+
     Each record is (header, seq) with the cluster id first in the header. agtypes, agresolvedseqs and
     agexpectedseqs are '/'-joined in the same chain order, so they are zipped to put each antigen chain
     under its own type. BOTH resolved and expected sequences go in: resolved has unmodelled gaps a
@@ -363,12 +434,12 @@ def train_tables(splits, drop_clusters):
                 if len(p) < 5 or p == "NAN":
                     continue
                 (prot if t == "PROTEIN" else pep if t == "PEPTIDE" else []).append(
-                    (f"{r.ab_ag_cluster}|{i}", p))
+                    (f"{_ckey(r.ab_ag_cluster)}|{i}", p))
         for v in (r.VH_numerable_seq, r.VL_numerable_seq, r.Hseq, r.Lseq):
             if isinstance(v, str) and len(v) >= 20:
-                ab.append((f"{r.ab_ag_cluster}|{i}", v.strip().upper()))
+                ab.append((f"{_ckey(r.ab_ag_cluster)}|{i}", v.strip().upper()))
         if isinstance(r.CDRH3, str) and len(r.CDRH3.strip()) >= 3:
-            cdr.append((f"{r.ab_ag_cluster}|{i}", r.CDRH3.strip().upper()))
+            cdr.append((f"{_ckey(r.ab_ag_cluster)}|{i}", r.CDRH3.strip().upper()))
     return prot, pep, ab, cdr, set(s.ab_ag_cluster.dropna())
 
 
@@ -414,6 +485,10 @@ def search(q, t, out, ident, cov, threads, label):
             # 8xnh_B one run and 8xnh_C the next. The cluster and the identity never moved, only the
             # label, but an artifact that does not reproduce is not one to put in a paper. Lowest
             # query name wins a tie.
+            # best[cl] is (query_name, identity). Reads oddly on purpose: compare
+            # (this identity, STORED name) against (stored identity, THIS name), so higher identity
+            # wins and an exact tie goes to the lexicographically smaller query name. Writing it the
+            # obvious way round would make ties prefer the LARGER name. Do not "simplify" this.
             if cl not in best or (fid, best[cl][0]) > (best[cl][1], f[0]):
                 best[cl] = (f[0], fid)
     return best
@@ -437,6 +512,9 @@ def main():
                     help="fail unless CDR-H3 is recovered for this fraction of heavy chains; guards "
                          "against a silent ANARCI failure making the CDR-H3 filter vacuous")
     ap.add_argument("--no-fetch", action="store_true")
+    ap.add_argument("--allow-missing-structures", action="store_true",
+                    help="write an exclusion csv even though some benchmark structure could not be "
+                         "fetched. Off by default: those complexes get no homology check at all.")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
 
@@ -446,6 +524,16 @@ def main():
 
     got, bad = fetch(miss, a.cifdir, allow=not a.no_fetch)
     print(f"\nRCSB mmCIFs: {len(got)}/{len(miss)}" + (f"   FAILED: {bad}" if bad else ""))
+    # ABORT BEFORE SEARCHING OR WRITING. A structure we could not fetch gets no homology check at
+    # all, and the run still printed a cluster count and wrote an exclusion csv -- an artifact that
+    # looks complete while covering only the complexes that happened to download. Partial cache
+    # coverage under --no-fetch has the same effect. The exclusion must be all-or-nothing.
+    if bad and not a.allow_missing_structures:
+        raise SystemExit(
+            f"STOP: {len(bad)} of {len(miss)} unlisted benchmark structures are unavailable: {bad}\n"
+            "They would receive no homology check, and the csv written would silently cover only the\n"
+            "rest. Re-run with network access, or pass --allow-missing-structures to accept a\n"
+            "knowingly partial exclusion.")
 
     records = []
     for p, path in sorted(got.items()):
@@ -456,11 +544,12 @@ def main():
     wd = tempfile.mkdtemp(prefix="exclhom_")
     abq, agq = classify(records, ALLHMM, a.evalue, a.threads, wd)
     kinds = collections.Counter(t for t, _ in abq.values())
-    print(f"  antibody chains (hmmscan): {len(abq)}  types {dict(kinds)}")
+    print(f"  antibody DOMAINS (hmmscan): {len(abq)} over "
+          f"{len({k.split('#')[0] for k in abq})} chains  types {dict(kinds)}")
     print(f"  candidate antigen chains : {len(agq)} from "
           f"{len({n.split('_')[0] for n,_ in agq})} complexes")
 
-    heavy = [(n, v) for n, (t, v) in abq.items() if t == "H"]
+    heavy = [(n, v) for n, (t, v) in abq.items() if t == "H"]   # n is "<pdb>_<chain>#<domain>"
     qcdr = cdrh3_of(heavy)
     print(f"  CDR-H3 recovered (ANARCI, IMGT {CDR3_IMGT[0]}-{CDR3_IMGT[1]}): "
           f"{len(qcdr)}/{len(heavy)} heavy chains, "
@@ -475,10 +564,26 @@ def main():
     # rate has to be checked rather than printed. Observed: 60/60.
     if heavy and len(qcdr) < a.min_cdr_frac * len(heavy):
         raise SystemExit(
-            f"STOP: CDR-H3 recovered for only {len(qcdr)} of {len(heavy)} heavy chains "
+            f"STOP: CDR-H3 recovered for only {len(qcdr)} of {len(heavy)} heavy domains "
             f"(< {a.min_cdr_frac:.0%}). ANARCI is not numbering domains, so the CDR-H3 filter would "
             f"report 0 hits whether or not any exist. Check HMMER312={HMMER312} and "
             f"ANARCI_HMMS={ANARCI_HMMS}, then re-run.")
+    # AND THE SAME CHECK ONE LEVEL UP, WHICH IS WHERE IT ACTUALLY BITES. The gate above counts
+    # domains already classified heavy; it says nothing about how many of the 39 complexes
+    # contributed a heavy domain at all. That count was printed and never checked -- the exact
+    # pattern the gate above exists to end. It matters most here: these 39 are the complexes SAbDab2's
+    # own numbering failed on, so engineered formats are overrepresented. Four of them (8r4u, 9gry,
+    # 9gs3, 9i20) are single chains carrying two variable domains whose best full-sequence hit lands
+    # on a light model; they contributed no CDR-H3 query, and Filter 3 reported 0 for them whether or
+    # not a leak existed.
+    cdr_complexes = {n.split("_")[0] for n in qcdr}
+    if len(cdr_complexes) < len(got):
+        missing = sorted(set(got) - cdr_complexes)
+        raise SystemExit(
+            f"STOP: only {len(cdr_complexes)} of {len(got)} unlisted complexes contributed a CDR-H3 "
+            f"query. No query means Filter 3 cannot find a leak for: {missing}\n"
+            "Inspect their hmmscan domain assignment -- a single chain carrying two variable domains "
+            "must yield one entry per domain, see classify().")
 
     prot_t, pep_t, ab_t, cdr_t, train_cl = train_tables(a.splits, ours_cl)
     print(f"\ncandidate training pool: {len(train_cl)} clusters")

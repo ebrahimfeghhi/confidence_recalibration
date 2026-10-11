@@ -105,6 +105,34 @@ QUERY = f"{REPO}/extra_training/msa_work/query.fasta"
 QUERY_SHORT = f"{REPO}/extra_training/msa_work/query_short.fasta"
 
 
+def poly_antigens(row):
+    """in: a splits row.  out: [(tag, sequence)] for the PROTEIN and PEPTIDE antigen chains only
+
+    THE POOL FILTER IS PER ROW; THIS IS PER CHAIN. training_clusters() keeps a row if ANY of its
+    antigens is PROTEIN or PEPTIDE, so a complex with a protein antigen and an RNA antigen is kept
+    whole -- and taking every entry of agexpectedseqs then sent the RNA in as a protein MSA query.
+    The committed query set carries one: c228_6cf2_ag1_4666db. ColabFold searches it against uniref30
+    regardless, and the downstream a3m/fasta consistency check later dropped it because the search had
+    rewritten its U as X. So it cost a query slot and surfaced as a mismatch far from its cause.
+
+    agtypes and agexpectedseqs are '/'-joined in the same chain order. A length disagreement between
+    them would make zip() silently drop the trailing chains, so it is an error rather than a shrug.
+    """
+    types = str(row.agtypes).split("/")
+    seqs = str(row.agexpectedseqs).split("/")
+    if len(types) != len(seqs):
+        raise SystemExit(
+            f"STOP: {row.PDB_ID} lists {len(types)} antigen types but {len(seqs)} antigen "
+            f"sequences ({types} vs {len(seqs)} seqs). They are positional; zipping them would "
+            "silently drop chains.")
+    out = []
+    for i, (t, p) in enumerate(zip(types, seqs)):
+        q = p.strip().upper()
+        if t.strip().upper() in A.POLY and q and q != "NAN":
+            out.append((f"ag{i}", q))
+    return out
+
+
 def train_records(rows, min_len):
     """in: the surviving splits rows, a minimum length.  out: [(name, seq)] deduplicated by sequence
 
@@ -115,7 +143,7 @@ def train_records(rows, min_len):
     for r in rows.itertuples(index=False):
         pdb = str(r.PDB_ID)[-4:]
         items = [("H", r.Hseq), ("L", r.Lseq)]
-        items += [(f"ag{i}", p) for i, p in enumerate(str(r.agexpectedseqs).split("/"))]
+        items += poly_antigens(r)          # PROTEIN/PEPTIDE chains only -- see poly_antigens()
         for tag, v in items:
             if not isinstance(v, str):
                 continue
@@ -132,7 +160,49 @@ def train_records(rows, min_len):
     return out
 
 
-def bench_records(min_len):
+def bench_chains(require=True):
+    """in: whether a missing structure is fatal.  out: [(dataset, pdb, {chain: seq})] for all 227
+
+    ONE PLACE THAT READS THE BENCHMARK STRUCTURES, AND IT COUNTS. bench_records() and
+    bench_complexes() each walked the pool csvs and `continue`d past a missing reference cif or a
+    gemmi failure, and the line they printed reported only a sequence count -- never how many of the
+    227 complexes contributed. A complex silently getting no 2302 MSA keeps its old uniref30_2103 one
+    at fold time, which puts back exactly the train/test database-version difference this rebuild
+    exists to remove. The expected number is known, so it is asserted.
+    """
+    out, want, failed = [], [], []
+    for ds in A.BENCHMARKS:
+        D = paths.DATASETS[ds]
+        with open(str(D.pool_csv)) as fh:
+            pdbs = sorted({r["pdb"].lower() for r in csv.DictReader(fh)})
+        for pdb in pdbs:
+            want.append(pdb)
+            ref = D.ref(pdb)
+            if not os.path.exists(ref):
+                failed.append(f"{pdb} (no reference cif)")
+                continue
+            try:
+                chains = A.chains_of(ref)
+            except Exception as e:                      # noqa: BLE001
+                failed.append(f"{pdb} ({type(e).__name__})")
+                continue
+            if not chains:
+                failed.append(f"{pdb} (no polymer chains)")
+                continue
+            out.append((ds, pdb, chains))
+    print(f"benchmark structures: {len(out)}/{len(want)} contributed chains"
+          + (f"   FAILED: {failed}" if failed else ""))
+    if failed and require:
+        raise SystemExit(
+            f"STOP: {len(failed)} of {len(want)} benchmark complexes contributed no chains: "
+            f"{failed}\n"
+            "Each would get no uniref30_2302 MSA and would fall back to its 2103 one at fold time, "
+            "reintroducing the database-version difference this rebuild removes.\n"
+            "Pass --no-require-bench to accept that knowingly.")
+    return out
+
+
+def bench_records(min_len, require=True):
     """in: a minimum length.  out: [(name, seq)] unique chain sequences of our benchmark complexes
 
     Read from the reference cifs rather than the job jsons, so the sequence is the one the structure
@@ -140,24 +210,13 @@ def bench_records(min_len):
     matter for an MSA.
     """
     seen, out = set(), []
-    for ds in A.BENCHMARKS:
-        D = paths.DATASETS[ds]
-        with open(str(D.pool_csv)) as fh:
-            pdbs = sorted({r["pdb"].lower() for r in csv.DictReader(fh)})
-        for pdb in pdbs:
-            ref = D.ref(pdb)
-            if not os.path.exists(ref):
+    for _ds, pdb, chains in bench_chains(require):
+        for c, q in sorted(chains.items()):
+            q = q.upper()
+            if len(q) < min_len or q in seen:
                 continue
-            try:
-                chains = A.chains_of(ref)
-            except Exception:                           # noqa: BLE001
-                continue
-            for c, q in sorted(chains.items()):
-                q = q.upper()
-                if len(q) < min_len or q in seen:
-                    continue
-                seen.add(q)
-                out.append((f"{pdb}_{c}", q))
+            seen.add(q)
+            out.append((f"{pdb}_{c}", q))
     return out
 
 
@@ -176,9 +235,8 @@ def train_complexes(rows, min_len):
         for v in (r.Hseq, r.Lseq):
             if isinstance(v, str) and len(v.strip()) >= min_len:
                 chains.append(v.strip().upper())
-        for p in str(r.agexpectedseqs).split("/"):
-            q = p.strip().upper()
-            if len(q) >= min_len and q != "NAN":
+        for _tag, q in poly_antigens(r):
+            if len(q) >= min_len:
                 chains.append(q)
         key = (pdb, tuple(chains))
         if len(chains) < 2 or key in seen:
@@ -188,28 +246,17 @@ def train_complexes(rows, min_len):
     return out
 
 
-def bench_complexes(min_len):
+def bench_complexes(min_len, require=True):
     """in: a minimum length.  out: [(name, [chain seqs])] per benchmark complex
 
     Chains come from the reference cif in its own chain order, so the mapping back to Protenix's
     per-chain msa/<n>/ directories follows the same order the folds already use.
     """
     out = []
-    for ds in A.BENCHMARKS:
-        D = paths.DATASETS[ds]
-        with open(str(D.pool_csv)) as fh:
-            pdbs = sorted({r["pdb"].lower() for r in csv.DictReader(fh)})
-        for pdb in pdbs:
-            ref = D.ref(pdb)
-            if not os.path.exists(ref):
-                continue
-            try:
-                chains = A.chains_of(ref)
-            except Exception:                           # noqa: BLE001
-                continue
-            seqs = [q.upper() for _c, q in sorted(chains.items()) if len(q) >= min_len]
-            if len(seqs) >= 2:
-                out.append((f"bn_{ds[:2]}_{pdb}", seqs))
+    for ds, pdb, chains in bench_chains(require):
+        seqs = [q.upper() for _c, q in sorted(chains.items()) if len(q) >= min_len]
+        if len(seqs) >= 2:
+            out.append((f"bn_{ds[:2]}_{pdb}", seqs))
     return out
 
 
@@ -251,6 +298,9 @@ def main():
                          "records whose sequence is absent from it. Run with --min-len 5 --which "
                          "train to pick up the antigen chains a --min-len 20 pass skipped.")
     ap.add_argument("--short-out", default=QUERY_SHORT)
+    ap.add_argument("--require-bench", action=argparse.BooleanOptionalAction, default=True,
+                    help="fail unless every benchmark complex contributed chains; a silent omission "
+                         "falls back to that complex's uniref30_2103 MSA at fold time")
     a = ap.parse_args()
     os.makedirs(a.out_dir, exist_ok=True)
 
@@ -267,7 +317,7 @@ def main():
         manifest += [(n, hashlib.sha1(q.encode()).hexdigest(), len(q), "train") for n, q in recs]
 
     if a.which in ("bench", "both"):
-        recs = bench_records(a.min_len)
+        recs = bench_records(a.min_len, a.require_bench)
         write_fasta(f"{a.out_dir}/bench.fasta", recs)
         all_recs += recs
         lens = sorted(len(q) for _n, q in recs)
@@ -302,6 +352,24 @@ def main():
         write_fasta(a.query_fasta, all_recs)
         print(f"{a.query_fasta}: {len(all_recs)} sequences -- THE SEARCH SET")
 
+    # ---- 2.2: THE 0-SHARED CLAIM, ENFORCED. This was a comment in the docstring. It is also the
+    # strongest end-to-end test available here: a sequence in both sets means a training complex
+    # carries a chain IDENTICAL to a benchmark chain, which filters 1, 2 and 3 should all have
+    # removed at 100% identity. So the count being zero is a consequence of the exclusion working,
+    # and asserting it tests all three filters at once.
+    if a.which == "both":
+        tr = {q for n, q in all_recs if n.startswith("c")}
+        bn = {q for n, q in all_recs if not n.startswith("c")}
+        shared = tr & bn
+        print(f"train/bench shared sequences: {len(shared)}   (train {len(tr)}, bench {len(bn)})")
+        if shared:
+            ex = sorted(shared)[:3]
+            raise SystemExit(
+                f"STOP: {len(shared)} sequence(s) appear in BOTH the training and benchmark sets.\n"
+                "A training complex carries a chain identical to a benchmark chain, so the exclusion "
+                "in phase A did not remove its cluster. Re-run phase A and inspect its filters.\n"
+                + "\n".join(f"  len {len(q)}: {q[:60]}..." for q in ex))
+
     with open(f"{a.out_dir}/manifest.csv", "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["name", "sha1", "length", "source"])
@@ -314,7 +382,7 @@ def main():
         clusters, rows = A.training_clusters(a.splits, a.excluded)
         cx += [(n, s, "train") for n, s in train_complexes(rows, a.min_len)]
     if a.which in ("bench", "both"):
-        cx += [(n, s, "bench") for n, s in bench_complexes(a.min_len)]
+        cx += [(n, s, "bench") for n, s in bench_complexes(a.min_len, a.require_bench)]
 
     write_fasta(f"{a.out_dir}/complexes_all.fasta", [(n, ":".join(s)) for n, s, _k in cx])
     with open(f"{a.out_dir}/complexes.csv", "w", newline="") as fh:
