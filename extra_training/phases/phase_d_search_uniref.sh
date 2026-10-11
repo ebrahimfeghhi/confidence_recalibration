@@ -139,7 +139,15 @@ say "taxonomy tables resolve"
 # ---------------------------------------------------------------- 3. the search
 # --use-env 0: the environmental database is phase E, and it is not on disk now.
 # --db-load-mode 0: no index-into-memory; the index exists for taxonomy, not for the search.
-# RESUMABLE: colabfold_search skips a query whose <name>.a3m already exists, so re-running continues.
+#
+# HOW RE-RUNNING ACTUALLY BEHAVES. Not per query. colabfold_search's skip logic is per DATABASE
+# SEARCH, keyed on the kept intermediate: search.py:191 logs "Skipping <uniref_db> search because
+# uniref.a3m already exists". So a re-run skips the expensive search and regenerates every per-query
+# a3m from uniref.a3m. Both this script and the phase1_search_idx.sh it replaces claimed it "skips a
+# query whose <name>.a3m already exists" -- that is not what the code does. The practical difference:
+# a re-run is cheap, but it rewrites all the per-query files rather than filling in gaps, so a
+# partial output cannot be topped up query-by-query. It also means the count below should match
+# exactly rather than merely not fall short.
 say "searching (resumable: existing .a3m are skipped)"
 COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c "$CORES" \
     $R/envs/colabfold/bin/colabfold_search --mmseqs $M --threads 64 \
@@ -148,9 +156,19 @@ COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c "$CORES" \
 say "colabfold_search exit $? (not trusted; checking output)"
 
 # ---------------------------------------------------------------- 4. the gates
+# BY NAME, NOT BY COUNT. A count with -ge is satisfied by any directory holding enough files,
+# including ones left by an earlier batch, so it cannot tell "this batch is covered" from "this
+# directory happens to be full". Every query header must have its own a3m.
 NA=$(ls "$OUT"/*.a3m 2>/dev/null | grep -vc '/uniref.a3m$')
-say "alignments written: $NA for $NQ queries"
-[ "$NA" -ge "$NQ" ] || die "$NA alignments for $NQ queries -- the search did not cover the batch"
+MISSING=$(awk '/^>/{sub(/^>/,""); print}' "$QFA" | while read -r n; do
+              [ -s "$OUT/$n.a3m" ] || echo "$n"
+          done)
+NMISS=$(printf '%s' "$MISSING" | grep -c . || true)
+say "alignments written: $NA in the directory; $NQ queries in this batch; $NMISS without an a3m"
+if [ "${NMISS:-0}" -gt 0 ]; then
+    say "  first few missing: $(printf '%s' "$MISSING" | head -5 | tr '\n' ' ')"
+    die "$NMISS of $NQ queries have no alignment -- the search did not cover the batch"
+fi
 
 TAXF=$OUT/uniref_tax.m8
 NTAX=0
