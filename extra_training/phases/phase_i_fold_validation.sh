@@ -89,6 +89,16 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
                 p = c.get(key)
                 if not p or not os.path.exists(p):
                     bad.append(f"{os.path.basename(f)} {key}={p}")
+                    continue
+                # THE SELF-TEMPLATING MARKER, and this is a structural check rather than a
+                # procedural one. Phase H writes <templatesPath>.filtered holding the cutoff it
+                # applied; without it the template file has never been date-filtered, and a
+                # structure deposited before 2021-09-30 may be holding its own entry at 100%
+                # identity. 46 of the 79 validation structures and 1,354 of the 2,886 training-pool
+                # entries are in that window, so no fold -- validation or training -- may run on an
+                # unmarked file.
+                if key == "templatesPath" and not os.path.exists(p + ".filtered"):
+                    bad.append(f"{os.path.basename(f)} templates not date-filtered: {p}")
 print(len(bad))
 for b in bad[:5]:
     print("  " + b)
@@ -97,8 +107,10 @@ PYCHK
     NBAD=$(printf '%s' "$BAD" | head -1)
     if [ "${NBAD:-1}" -ne 0 ]; then
         say "$BAD"
-        die "$NBAD chain paths in the job jsons do not exist. Templates are required by decision, so
-     phase H must have run; a dangling path folds without the file and nothing reports it."
+        die "$NBAD chain paths are missing or unfiltered. Templates are required by decision, so
+     phase H must have run -- and its date filter must have run too: a template file with no
+     .filtered marker may hand a pre-2021 structure its own entry at 100% identity. A dangling path
+     folds without the file and nothing reports it."
     fi
     NTMPL=$(find "$MSA" -name hmmsearch.a3m 2>/dev/null | wc -l)
     say "inputs OK: $NJOB jsons, $NIF interfaces over $NPDB structures, $NTMPL hmmsearch.a3m, no dangling paths"

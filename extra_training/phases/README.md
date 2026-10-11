@@ -625,3 +625,73 @@ unreachable today, but inconsistent with the stated discipline. Now `"${CFDB:?}"
 **`FREE_DB` defaulted to 1**, so anything phase F revealed about the env half would have cost a 120 GB
 re-download and another 90 minutes. Default is now 0, and `overnight.sh` frees the database after
 phase F has passed, which is the first point at which nothing in the pipeline still reads it.
+
+## Self-templating, and the one rule that governs templates everywhere
+
+The most serious finding of the phase E-I review, and the only one that could have invalidated the
+validation signal rather than biased a number.
+
+### The leak
+
+Protenix filters template hits by release date, but the **per-query part of that rule is train-only**:
+`template_featurizer.py:443` sets `query_release_date` only when `stage == "train"`, so at inference
+the cutoff collapses to the global `max_template_date`, 2021-09-30. The template database
+(`pdb_seqres_2022_09_28.fasta`) covers depositions to September 2022.
+
+So any structure deposited on or before 2021-09-30 can be handed **its own deposited entry** as a
+template at 100% identity:
+
+| | exposed | total |
+|---|---|---|
+| validation structures | **48** | 79 |
+| training-pool entries | **1,354** | 2,886 |
+
+That matters most for the training pool: a head trained on self-templated poses learns to be confident
+under conditions it will never meet at evaluation, which corrupts the thing being fitted rather than
+the thing being measured.
+
+### Why their design is reasonable and still fails for us
+
+At inference you normally predict something *new*, so a single global cap is already a complete
+self-exclusion rule — nothing in the database can be your answer. The per-query check is redundant,
+and they drop it. Our validation structures are from 1992–2021, so that assumption does not hold.
+
+### The rule
+
+    cutoff = min(2021-09-30, own release date − 60 days)
+
+which is Protenix's own training formula (`template_featurizer.py:358-361`), with their
+`DAYS_BEFORE_QUERY_DATE` of 60 (`template_utils.py:72`). Where it binds:
+
+| set | binding rule | effect |
+|---|---|---|
+| pxm2025, FoldBench | the 2021-09-30 cap | unchanged from the folds already on disk |
+| 33 validation structures (post-2021) | the cap | identical to what pxm2025 gets |
+| 46 validation structures (pre-2021) | own date | own entry blocked |
+| 1,354 training entries (pre-2021) | own date | own entry blocked |
+
+Dates come from Protenix's own `release_date_cache.json` (254,841 entries) and fall back to SAbDab2's
+deposition date. Coverage is complete: every pool structure has one from at least one source. A hit
+whose own date is unknown is **dropped**, matching Protenix's prefilter, which returns
+`"{pdb_id} date unknown"` rather than admitting it.
+
+### Why the global cap is kept rather than dropped
+
+Protenix's *training* stage uses `max_template_date = "3000-01-01"` — no cap at all — so matching
+their training conditions would mean dropping it. Three reasons not to, the last decisive:
+
+- **pxm2025 is entirely post-2021**: 90 of 123 complexes have dates, spanning 2023-08-26 to
+  2025-11-12, all after the cap. For pxm2025 the cap already *is* a complete self-exclusion rule.
+- **33 of those 123 have no date in any source**, so a per-query rule could not be applied there
+  uniformly even if we wanted it.
+- **the benchmarks will be refolded to apply the retrained head.** Widening their templates at the
+  same time would mean a change in DockQ or ipTM could be the head or the templates, with no way to
+  tell which. The refold must vary one thing.
+
+### Enforcement is structural
+
+Phase H writes `<templatesPath>.filtered` beside each template file, recording the cutoff applied.
+**Phase I refuses to fold any job whose `templatesPath` lacks that marker.** So a fold cannot
+silently use unfiltered templates, whichever job set it is handed — validation or training. Measured
+on a real template file: 30,092 hits in, 25,624 kept, 4,379 dropped as too recent, 89 dropped as
+undated, and a second run is a no-op.
