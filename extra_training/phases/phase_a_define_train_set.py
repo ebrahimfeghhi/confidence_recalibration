@@ -57,6 +57,8 @@ FUNCTIONS
     chains_of():     an mmCIF -> {chain: one-letter polymer sequence}
     classify():      chain sequences -> antibody chains (with variable-domain bounds) and the rest
     train_tables():  the candidate clusters -> their antigen seqs by type, and their antibody seqs
+    cdr_identity():  two CDR-H3 loops -> (identity over the shorter, coverage)
+    cdr_hits():      CDR-H3 queries vs targets, every pair -> {cluster: (query, identity)}
     search():        query/target fastas and a threshold -> {cluster: (query, identity)}
     main():          build, search, report
 """
@@ -287,30 +289,52 @@ def cdrh3_of(records, hmmerpath=HMMER312, hmms=ANARCI_HMMS):
     return out
 
 
-def brute_cdr_hits(queries, targets, ident):
-    """in: {name: cdrh3}, [(cluster|i, cdrh3)], an identity threshold.
-    out: {cluster: (query, identity)} by direct comparison
+def cdr_identity(q, t):
+    """in: two CDR-H3 loops.  out: (identity over the shorter loop, coverage)
 
-    A 13-residue loop at 95% identity needs 13 of 13 positions, so this threshold is near-exact and a
-    k-mer prefilter can drop the very hits it is meant to find. This compares every query against every
-    target at equal length (and as a substring either way), which is exact at this scale -- 39 queries
-    against a few thousand loops -- and is the check mmseqs is validated against.
+    UNGAPPED, EVERY OFFSET. The shorter loop is slid along the longer one and the best
+    position-by-position match is kept. Identity is counted over the shorter loop; coverage is the
+    length ratio. The two are returned separately because they answer different questions, and
+    conflating them was the bug this replaces: the old code scored a contained loop by its LENGTH
+    RATIO and called that identity, so a 13-mer sitting letter-perfect inside a 14-mer scored 0.93
+    and slipped under a 0.95 identity threshold despite matching at every position.
+
+    NO GAPS. At a 95% threshold a 14-residue loop must match at 14 of 14 positions, so an internal
+    insertion already puts a pair out of reach and modelling one buys nothing. Sliding is therefore
+    enough, and it keeps the function short enough to check by eye -- which matters more here than
+    generality, because this is the filter that decides what we may train on.
+    """
+    if not q or not t:
+        return 0.0, 0.0
+    short, lng = (q, t) if len(q) <= len(t) else (t, q)
+    best = max(sum(a == b for a, b in zip(short, lng[off:]))
+               for off in range(len(lng) - len(short) + 1))
+    return best / len(short), len(short) / len(lng)
+
+
+def cdr_hits(queries, targets, ident, cov):
+    """in: {name: cdrh3}, [(cluster|i, cdrh3)], an identity threshold, a coverage threshold.
+    out: {cluster: (query, identity)} keeping each cluster's best hit
+
+    EVERY PAIR, NO PREFILTER. This used to be two functions -- an mmseqs search and a direct
+    comparison -- cross-checked against each other, because mmseqs indexes short shared chunks and
+    can discard a near-exact match on a 14-letter string before aligning it. Running both left two
+    sets of blind spots to reason about and a bug in one of them. At this scale the direct comparison
+    IS the simple option: 60 query loops against a few thousand targets is a few hundred thousand
+    pairs, instant in plain Python, with nothing skipped and nothing to cross-check.
+
+    Ties go to the lowest query name, because a complex often deposits identical copies of a chain
+    and the artifact has to reproduce.
     """
     best = {}
     for qn, q in queries.items():
         for tn, t in targets:
             cl = tn.split("|")[0]
-            if not q or not t:
+            fid, c = cdr_identity(q, t)
+            if fid < ident or c < cov:
                 continue
-            if len(q) == len(t):
-                same = sum(a == b for a, b in zip(q, t)) / len(q)
-            elif q in t or t in q:
-                same = min(len(q), len(t)) / max(len(q), len(t))
-            else:
-                continue
-            # Same tie-break as search(), for the same reason.
-            if same >= ident and (cl not in best or (same, best[cl][0]) > (best[cl][1], qn)):
-                best[cl] = (qn, same)
+            if cl not in best or (fid, best[cl][0]) > (best[cl][1], qn):
+                best[cl] = (qn, fid)
     return best
 
 
@@ -355,7 +379,7 @@ def _fasta(path, records):
     return path
 
 
-def search(q, t, out, ident, cov, threads, label, extra=()):
+def search(q, t, out, ident, cov, threads, label):
     """in: query fasta, target fasta, result path, identity, coverage, threads, a label for logging.
     out: {cluster: (query, identity)} keeping each cluster's best hit
 
@@ -374,7 +398,7 @@ def search(q, t, out, ident, cov, threads, label, extra=()):
     subprocess.run([MMSEQS, "easy-search", q, t, out, f"{out}.tmp",
                     "--min-seq-id", str(ident), "-c", str(cov), "--cov-mode", "0",
                     "--seq-id-mode", "2", "-s", "7.5", "--threads", str(threads),
-                    "--format-output", "query,target,fident,alnlen,evalue", "-v", "1", *extra],
+                    "--format-output", "query,target,fident,alnlen,evalue", "-v", "1"],
                    check=True, capture_output=True, text=True)
     best = {}
     with open(out) as fh:
@@ -475,18 +499,13 @@ def main():
     print(f"  variable domain     >={100*a.vh_id:.0f}% id: {len(h3)} clusters hit  "
           f"(reported for reference; framework-driven, not used)")
 
-    # CDR-H3 is SAbDab2's actual antibody criterion. Run it twice: mmseqs with a short-sequence kmer,
-    # and a direct comparison, because at 95% on a ~15-mer the prefilter can drop the hits it is for.
-    h4 = search(_fasta(f"{wd}/q_cdr.fa", sorted(qcdr.items())),
-                _fasta(f"{wd}/t_cdr.fa", cdr_t), f"{wd}/r_cdr.m8",
-                a.cdr_id, a.cdr_cov, a.threads, f"CDR-H3 (mmseqs)     >={100*a.cdr_id:.0f}%",
-                extra=("-k", "5", "--spaced-kmer-mode", "0", "--comp-bias-corr", "0"))
-    h5 = brute_cdr_hits(qcdr, cdr_t, a.cdr_id)
-    print(f"  CDR-H3 mmseqs       >={100*a.cdr_id:.0f}% id: {len(h4)} clusters hit")
-    print(f"  CDR-H3 brute force  >={100*a.cdr_id:.0f}% id: {len(h5)} clusters hit"
-          + ("  [AGREE]" if set(h4) == set(h5) else f"  [DISAGREE: {sorted(set(h4) ^ set(h5))}]"))
+    # CDR-H3 is SAbDab2's actual antibody criterion (their cdrh3_cluster_95 column implies 95%).
+    # One exhaustive comparison, no search tool: see cdr_hits() for why that is the simpler choice.
+    h4 = cdr_hits(qcdr, cdr_t, a.cdr_id, a.cdr_cov)
+    print(f"  CDR-H3              >={100*a.cdr_id:.0f}% id, >={100*a.cdr_cov:.0f}% cov: "
+          f"{len(h4)} clusters hit   ({len(qcdr)} queries x {len(cdr_t)} targets, every pair)")
 
-    drop = (set(h1) | set(h2) | set(h4) | set(h5)) & {_ckey(c) for c in train_cl}
+    drop = (set(h1) | set(h2) | set(h4)) & {_ckey(c) for c in train_cl}
     keep = {c for c in train_cl if _ckey(c) not in drop}
     print(f"\nunion dropped: {len(drop)} clusters")
     print(f"TRAINING CLUSTERS: {len(train_cl)} -> {len(keep)}")
@@ -496,7 +515,7 @@ def main():
             w = csv.writer(fh)
             w.writerow(["cluster", "search", "query", "identity"])
             for name, h in (("antigen_protein", h1), ("antigen_peptide", h2),
-                            ("cdrh3_mmseqs", h4), ("cdrh3_brute", h5)):
+                            ("cdrh3", h4)):
                 for cl, (q, f) in sorted(h.items()):
                     if cl in drop:
                         w.writerow([cl, name, q, f"{f:.3f}"])

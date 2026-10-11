@@ -80,14 +80,72 @@ that does not reproduce does not belong in a paper. Ties now go to the lowest qu
 identical across `--threads 32` and `--threads 8`. The stored csv was regenerated, so it reads
 `8xnh_A` and `9kur_A`.
 
-### Noted, not changed — needs a decision
+**5. Filter 3 scored contained loops by length, not by letters — FIXED.** `brute_cdr_hits()` took
+the case where one loop sits inside another and scored it `min(len)/max(len)`, a length ratio, then
+compared that against an identity threshold. A 13-mer sitting letter-perfect inside a 14-mer scored
+0.93 and slipped under the 0.95 cutoff although it matched at every position — an exclusion filter
+erring toward *missing* a leak, the unsafe direction. Replaced; see **Filter 3** below. Re-running
+phase A gives the identical artifact and the same 561 → 557, so the correction costs no training
+data.
 
-`brute_cdr_hits()` scores the substring case as `min(len)/max(len)`, which is a length ratio rather
-than an identity: a 13-mer sitting exactly inside a 14-mer scores 0.93 and is missed at the 0.95
-threshold, although its aligned identity is 100%. That errs toward *missing* a leak, the unsafe
-direction for an exclusion filter. Treating an exact substring as identity 1.0 and testing length
-separately would be stricter and could drop further clusters — a change to the method, not a bug fix,
-so it is left alone pending a decision.
+## The two sequence filters, as implemented
+
+Filters 2 and 3 exist only for the 39 benchmark complexes that have no row in SAbDab2 and therefore
+no cluster to delete by id. Both ask whether a *training* cluster is too close to one of those 39.
+
+### Filter 2 — antigen sequence  (removes 4 clusters)
+
+The leak that matters most: if a training complex involves the same antigen as a held-out test
+complex, the model has already seen that target's surface, which is exactly what we then measure.
+
+- **Queries.** Every polymer chain of the 39, fetched fresh from RCSB, that `hmmscan` does *not* type
+  as an antibody domain — 81 candidate antigens from 177 chains. Taking every non-antibody chain
+  rather than the annotated antigen sidesteps a chain-naming disagreement between SAbDab2's roles and
+  our local cifs (9n6e: roles say E/F/G, the cif holds A,B,C,D,H,I,L). Over-including can only drop
+  more training clusters, the safe direction.
+- **Targets.** Every antigen sequence of the candidate training pool, split by SAbDab2's own
+  `agtypes` into PROTEIN and PEPTIDE, taking **both** `agresolvedseqs` and `agexpectedseqs` —
+  resolved sequences have unmodelled gaps a homolog could hide in, so searching both is stricter.
+- **Comparison.** `mmseqs easy-search -s 7.5 --seq-id-mode 2 --cov-mode 0 -c 0.50`. Identity is
+  measured over the shorter sequence, so a 15-residue peptide against a 500-residue protein is not
+  scored as trivially dissimilar. Sensitivity is raised from the default because a 40% match is
+  remote.
+- **Thresholds — ours, not SAbDab2's.** 40% identity for PROTEIN antigens, 80% for PEPTIDE. 40%
+  sounds permissive but at that level two proteins are generally the same protein from another
+  species or variant. Peptides need far higher identity before a match means anything, because short
+  strings match by chance.
+- **Result.** 4 clusters: 398 (9isf, 0.973), 1496 (8xnh, 0.966), 1497 (9kur, 0.827), 499 (8zp2,
+  0.578).
+
+### Filter 3 — antibody CDR-H3  (removes 0 clusters)
+
+The mirror question: do we train on a benchmark *antibody*? The same antibody against a different
+antigen still leaks.
+
+- **Why CDR-H3 and not the whole variable domain.** The variable domain at 95% hits 13 clusters, all
+  framework-driven — antibody frameworks are germline and cross 95% between unrelated antibodies.
+  CDR-H3 is the loop that determines what an antibody binds, and 95% CDR-H3 identity is SAbDab2's own
+  criterion (their `cdrh3_cluster_95` column). The variable-domain number is printed for reference
+  and deliberately not used.
+- **Queries.** CDR-H3 extracted by ANARCI at IMGT positions 105–117, SAbDab2's definition, from the
+  60 heavy chains `hmmscan` found. Recovery is 60/60 and is now **asserted** (`--min-cdr-frac`),
+  because ANARCI failing silently would make this filter report 0 hits whether or not any exist.
+- **Comparison.** `cdr_hits()`: every query loop against every target loop, 60 × 4,598 pairs, no
+  prefilter. For each pair the shorter loop is slid along the longer one ungapped and the best
+  position-by-position match is taken; **identity** is counted over the shorter loop and **coverage**
+  is the length ratio, reported and thresholded separately (0.95 identity, 0.90 coverage).
+- **Why no search tool.** This was previously an `mmseqs` search cross-checked against a direct
+  comparison, because `mmseqs` indexes short shared chunks and can discard a near-exact match on a
+  14-letter string before aligning it. That left two sets of blind spots to reason about and a bug in
+  one of them. At this scale the exhaustive comparison *is* the simple option — a few hundred
+  thousand pairs, instant, nothing skipped, nothing to cross-check.
+- **Why no gap handling.** At 95% a 14-residue loop must match 14 of 14, so an internal insertion is
+  already out of reach and modelling one buys nothing. Note the consequence: Filter 3 as configured
+  catches only essentially identical loops. Two 14-mers differing at one position score 0.929 and are
+  not flagged. That is what 95% on a short string means; Filter 2, at 40%, is the permissive filter
+  doing the real work.
+- **Result.** 0 clusters — and because the recovery rate is now asserted and every pair is compared,
+  that 0 is a finding rather than a possible silent failure.
 
 Lower-severity, left as is: `fetch()` treats any cached file over 1000 bytes as complete, and
 `train_tables()` zips `agtypes` against `agresolvedseqs` positionally, so a row whose two fields
