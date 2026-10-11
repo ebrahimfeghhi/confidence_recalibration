@@ -33,9 +33,10 @@
 # ENVIRONMENT
 #     FREE_DB=1      delete uniref30 and its index after a successful search. Default 0, so several
 #                    batches can run back to back without re-downloading 100 GB each time.
-#     ALLOW_THIN=1   accept a batch that retrieves little or nothing. Correct for short peptides --
-#                    4 of FoldBench's 8 chains under 20 aa come back query-only -- and wrong for a
-#                    full batch, where an empty result means the search is broken. Default 0.
+#     MIN_LONG_HIT_PCT=N  minimum percentage of queries of 20+ residues that must retrieve at least
+#                    one UniRef hit. Default 90; measured 100 on both completed batches. There is no
+#                    per-batch "allow thin" flag: whether a batch is expected to be thin is a property
+#                    of its query LENGTHS, not of its size, so the gate reads the lengths instead.
 #     MIN_Q=N        refuse to run if the query fasta holds fewer than N records. Default 1.
 #     MIN_TAX_PCT=N  minimum percentage of the alignments' UniRef hits that must carry a taxid in
 #                    uniref_tax.m8. Default 95. This checks the taxid MECHANISM, not search depth.
@@ -127,8 +128,17 @@ if [ ! -s "$DB/uniref30_2302_db_seq" ]; then
     # markers for everything we want left alone instead of assuming they are there.
     ENVDB_BEFORE=0
     [ -s "$DB/colabfold_envdb_202108_db_seq" ] && ENVDB_BEFORE=1
+    # MARKERS WE CREATE ARE REMOVED AGAIN, so the prior state is restored exactly. Leaving
+    # PDB_READY / PDB100_READY / PDB_MMCIF_READY behind makes a later bare setup_databases.sh call --
+    # which is how the template step runs -- skip its own downloads and report success. The
+    # discipline already exists elsewhere in the repo: phase2_envdb.sh removes COLABDB_READY before
+    # building. Track exactly what we touched; never remove a marker that was already there.
+    CREATED=""
     for m in COLABDB_READY PDB_READY PDB100_READY PDB_MMCIF_READY; do
-        [ -e "$DB/$m" ] || { touch "$DB/$m"; say "  created $m so setup_databases.sh skips it"; }
+        if [ ! -e "$DB/$m" ]; then
+            touch "$DB/$m"; CREATED="$CREATED $m"
+            say "  created $m so setup_databases.sh skips that database"
+        fi
     done
     rm -f "$DB/UNIREF30_READY"
     cd "$R/tools/colabfold" || die "no tools/colabfold"
@@ -143,6 +153,8 @@ if [ ! -s "$DB/uniref30_2302_db_seq" ]; then
         die "setup_databases.sh also extracted the env database; the two do not both fit"
     fi
     rm -f "$DB/uniref30_2302.tar.gz"
+    for m in $CREATED; do rm -f "$DB/$m"; done
+    [ -n "$CREATED" ] && say "  removed the markers this run created:$CREATED"
     say "uniref30 ready: $(du -sh --apparent-size "$DB/uniref30_2302_db_seq" | cut -f1) of members"
 fi
 
@@ -181,7 +193,20 @@ say "taxonomy tables resolve"
 # a re-run is cheap, but it rewrites all the per-query files rather than filling in gaps, so a
 # partial output cannot be topped up query-by-query. It also means the count below should match
 # exactly rather than merely not fall short.
-say "searching (resumable: existing .a3m are skipped)"
+# FREEZE THE FASTA THAT IS ACTUALLY SEARCHED, beside its outputs, with a checksum.
+# search.py:517 runs `createdb <query_file> qdb --shuffle 0` unconditionally, and ColabFold keys
+# everything by POSITION in that database. So phase E resuming from uniref.a3m and prof_res is only
+# correct if it is handed the byte-identical fasta in the same order. This is not hypothetical: on
+# 2026-10-11 phase C's new antigen-type filter removed one RNA chain from query.fasta, which sat at
+# key 479 of 5,305 -- rebuilding qdb from the shortened file would have shifted 4,825 keys and
+# mis-assigned that many alignments to the wrong chains, silently. Phase E must read
+# <out-dir>/query.searched.fasta and verify this checksum, never msa_work/query.fasta, which is
+# phase C's current output and may legitimately have moved on.
+cp -f "$QFA" "$OUT/query.searched.fasta"
+( cd "$OUT" && sha256sum query.searched.fasta > query.searched.fasta.sha256 )
+say "froze the searched fasta: $(cut -c1-16 "$OUT/query.searched.fasta.sha256")"
+
+say "searching"
 COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c "$CORES" \
     $R/envs/colabfold/bin/colabfold_search --mmseqs $M --threads "$NTHREADS" \
     --use-env 0 --use-templates 0 --db-load-mode 0 \
@@ -214,65 +239,112 @@ fi
 # That is what decides how much of each alignment can be paired. It should be ~100%; if convertalis
 # or the patch failed it collapses to 0 while the alignments themselves look perfectly normal.
 #
-# DEPTH IS REPORTED, NOT GATED. How many chains retrieved anything at all is a property of the
-# queries, not of the pipeline: in the 235-chain short batch only 34 have a single UniRef hit, the
-# rest being query-only, which is the expected outcome for 5-19 residue peptides.
+# DEPTH IS GATED BY QUERY LENGTH, not by a per-batch flag. The expectation is a property of the
+# query: a 12-residue peptide retrieving nothing is correct, a 300-residue chain retrieving nothing is
+# a fault. Measured on the completed batches, the split is clean -- of 200 sampled queries of 20+
+# residues, 200 have UniRef hits (100%); of 200 sampled under 20 residues, 25 do (12%). So the gate
+# requires hits for the long queries and exempts the short ones, which makes a small peptide batch
+# pass for the right reason rather than by being small, and keeps a mixed batch honest.
 #
 # SAMPLED a3m, FULL m8 PASS. The sample bounds memory (batch 1's alignments hold far too many
 # accessions to hold all at once); the m8 must be streamed in full because membership is the
 # question. Tens of GB of sequential read, minutes against an hour of search.
 TAXF=$OUT/uniref_tax.m8
-if [ ! -s "$TAXF" ]; then
-    if [ "${ALLOW_THIN:-0}" = "1" ]; then
-        say "NOTE no uniref_tax.m8; nothing in this batch can be paired. Recorded only."
-    else
-        die "no uniref_tax.m8 -- convertalis produced nothing, so no chain can be paired"
-    fi
-else
-    say "checking taxid coverage of the alignments' UniRef hits ($(du -h --apparent-size "$TAXF" | cut -f1) m8) ..."
-    COV=$($R/envs/colabfold/bin/python - "$OUT" "$TAXF" "${TAX_SAMPLE:-60}" <<'PYCOV'
+say "measuring depth by query length, and taxid coverage of the hits ..."
+COV=$($R/envs/colabfold/bin/python - "$OUT" "$TAXF" "${TAX_SAMPLE:-200}" <<'PYCOV'
 import glob, os, sys
 out, m8, nsample = sys.argv[1], sys.argv[2], int(sys.argv[3])
+fa, n = {}, None
+with open(os.path.join(out, "query.searched.fasta")) as fh:
+    for line in fh:
+        line = line.strip()
+        if line.startswith(">"):
+            n = line[1:]; fa[n] = ""
+        elif n:
+            fa[n] += line
 files = sorted(f for f in glob.glob(os.path.join(out, "*.a3m"))
                if os.path.basename(f) != "uniref.a3m")
 step = max(1, len(files) // nsample)
 sample = files[::step][:nsample]
-hits, withhits = set(), 0
+# long = 20+ residues, the floor phase C's first batch used
+long_tot = long_hit = short_tot = short_hit = 0
+hits = set()
 for p in sample:
-    n = 0
+    q = fa.get(os.path.basename(p)[:-4])
+    if q is None:
+        continue
+    n_hit = 0
     with open(p) as fh:
         for line in fh:
             if line.startswith(">UniRef100_"):
-                hits.add(line[1:].split()[0]); n += 1
-    if n:
-        withhits += 1
+                hits.add(line[1:].split()[0]); n_hit += 1
+    if len(q) >= 20:
+        long_tot += 1; long_hit += 1 if n_hit else 0
+    else:
+        short_tot += 1; short_hit += 1 if n_hit else 0
 found = set()
-if hits:
+if hits and os.path.exists(m8):
     with open(m8) as fh:
         for line in fh:
             f = line.split("\t", 3)
             if len(f) > 2 and f[1] in hits and f[2].strip() not in ("", "0"):
                 found.add(f[1])
-pct = 100 * len(found) // len(hits) if hits else -1
-print(f"{len(sample)} {withhits} {len(hits)} {len(found)} {pct}")
+lpct = 100 * long_hit // long_tot if long_tot else -1
+tpct = 100 * len(found) // len(hits) if hits else -1
+print(f"{len(sample)} {long_tot} {long_hit} {lpct} {short_tot} {short_hit} {len(hits)} {len(found)} {tpct}")
 PYCOV
 )
-    set -- $COV
-    say "  sampled ${1:-?} alignments: ${2:-?} have UniRef hits, ${3:-?} distinct hits, ${4:-?} with a taxid (${5:-?}%)"
-    if [ "${3:-0}" -eq 0 ]; then
-        [ "${ALLOW_THIN:-0}" = "1" ] && say "  NOTE no UniRef hits in the sample at all -- expected for short peptides" \
-            || die "no UniRef hits in a sample of ${1:-?} alignments -- the search returned nothing"
-    elif [ "${5:-0}" -lt "${MIN_TAX_PCT:-95}" ]; then
-        die "only ${5}% of the alignments' UniRef hits carry a taxid (floor ${MIN_TAX_PCT:-95}%).
-     step3 builds its taxid dictionary from this file, so the missing ones cannot be paired.
-     Check that convertalis ran: the staging patch emits uniref_tax.m8 before the rmdb that
-     destroys res_exp_realign_filter, and logs a warning rather than failing if it cannot."
+set -- $COV
+NS=${1:-0}; LTOT=${2:-0}; LHIT=${3:-0}; LPCT=${4:--1}; STOT=${5:-0}; SHIT=${6:-0}
+NHITS=${7:-0}; NFOUND=${8:-0}; TPCT=${9:--1}
+say "  sampled $NS alignments"
+[ "$LTOT" -gt 0 ] && say "    20+ residues: $LHIT of $LTOT have UniRef hits (${LPCT}%)"
+[ "$STOT" -gt 0 ] && say "    under 20:     $SHIT of $STOT have UniRef hits -- query-only is expected here"
+say "    $NHITS distinct UniRef hits, $NFOUND carry a taxid (${TPCT}%)"
+
+# DEPTH, gated only on the long queries.
+if [ "$LTOT" -gt 0 ] && [ "$LPCT" -lt "${MIN_LONG_HIT_PCT:-90}" ]; then
+    die "only ${LPCT}% of sampled queries of 20+ residues retrieved any UniRef hit (floor
+     ${MIN_LONG_HIT_PCT:-90}%). A chain that long returning nothing is a fault rather than a property
+     of the query -- on both completed batches this was 200 of 200."
+fi
+
+# TAXID MECHANISM. Only meaningful where there are hits to attach taxids to: a batch of short
+# peptides that retrieved nothing legitimately has no m8, and that is not a fault. Which is why no
+# per-batch flag is needed -- "is this expected to be thin" is answered by the query lengths.
+if [ "$NHITS" -gt 0 ]; then
+    [ -s "$TAXF" ] || die "no uniref_tax.m8 although the alignments carry $NHITS UniRef hits --
+     convertalis did not run, so nothing in this batch can be paired. Check the staging patch."
+    if [ "$TPCT" -lt "${MIN_TAX_PCT:-95}" ]; then
+        die "only ${TPCT}% of the alignments' UniRef hits carry a taxid (floor ${MIN_TAX_PCT:-95}%).
+     step3 builds its taxid dictionary from this file, so the rest cannot be paired."
     fi
+elif [ "$LTOT" -gt 0 ]; then
+    die "no UniRef hits at all in a sample holding $LTOT queries of 20+ residues -- the search
+     returned nothing where it should have returned a great deal."
+else
+    say "  no UniRef hits in the sample and every sampled query is under 20 residues: expected"
 fi
-if [ ! -s "$OUT/uniref.a3m" ]; then
-    [ "${ALLOW_THIN:-0}" = "1" ] && say "NOTE no uniref.a3m kept; phase E cannot resume for this batch" \
-        || die "uniref.a3m not kept -- phase E could not resume without uniref30 on disk"
-fi
+
+# THE INTERMEDIATES MUST BE COMPLETE, NOT MERELY PRESENT -- and unlike the depth check above, this
+# one has no exemption for short queries. A batch without complete intermediates simply never gets
+# phase E, which is a different failure from a batch that legitimately retrieved little.
+#
+# WHY COMPLETENESS AND NOT EXISTENCE. colabfold_search skips the uniref search when uniref.a3m
+# exists (search.py:191) -- it does not check that it is COMPLETE. A search killed mid-write leaves a
+# truncated intermediate, and the re-run then expands that truncation into per-query files. Tail
+# truncation shows up as missing a3m and the by-name gate above catches it; a boundary query whose
+# record was cut mid-record comes out non-empty but thin, and nothing above would notice. The index
+# entry counts are what close that: they must equal the number of queries exactly.
+for f in uniref.a3m prof_res; do
+    [ -s "$OUT/$f" ] || die "$OUT/$f missing -- phase E cannot resume without uniref30 on disk"
+    [ -s "$OUT/$f.index" ] || die "$OUT/$f.index missing -- cannot verify the intermediate is complete"
+    N=$(wc -l < "$OUT/$f.index")
+    [ "$N" -eq "$NQ" ] || die "$f holds $N entries for $NQ queries -- the intermediate is incomplete.
+     colabfold_search skips the search when uniref.a3m merely EXISTS, so a re-run would expand this
+     truncation into per-query alignments. Delete $OUT/$f* and re-run to search again."
+    say "  $f complete: $N entries for $NQ queries"
+done
 say "depth of the first few:"
 for f in $(ls "$OUT"/*.a3m 2>/dev/null | grep -v '/uniref.a3m$' | head -5); do
     say "   $(basename "$f") $(grep -c '^>' "$f") sequences"
