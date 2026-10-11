@@ -14,8 +14,11 @@ inputs, outputs and gates in its own docstring. The plain-language account of wh
 | F | `phase_f_pair_and_split.py` | `mmcif_msa/<chain>/{pairing,non_pairing}.a3m` — the first files Protenix can read |
 | G | `phase_g_build_val_jobs.py` | `val_jobs/*.json`, `val_fold/pool.csv`, `val_fold/chain_roles.csv` |
 | H | `phase_h_search_templates.py` | `mmcif_msa/<chain>/hmmsearch.a3m` |
+| I | `phase_i_fold_validation.sh` | `val_fold/{poses,trunks,results.csv}` — the deliverable |
 
-Phase I, the fold itself, is still `extra_training/scripts/val_fold.sh`.
+All nine phases are here. `extra_training/scripts/` now holds only what is not a phase: the three
+watchers, the shared download helper, the two orchestrators, and the superseded scripts kept until
+their replacements have each run once.
 
 `extra_training/scripts/overnight.sh` is the orchestrator: it verifies phases A–D's artifacts and then
 calls E, F, G and H in order. Each phase owns its own gates, so the orchestrator's job is order and
@@ -542,3 +545,53 @@ passed and the default applies.
 Every effective parameter matches, so `filter_param` — the `qsc`/`--diff`/`--max-seq-id` list that
 shapes each alignment — is identical to Protenix's. Combined with the staged-equals-unstaged result,
 the premise the review was worried about holds: our MSAs are built the way Protenix's were.
+
+## Phase I
+
+`phase_i_fold_validation.sh smoke | run | verify`, absorbing `val_fold.sh` and the smoke assertions
+that used to live in `see_it_through.sh`.
+
+**What the phase is for.** Not the poses. The deliverable is a cache complete enough to re-run
+Protenix's confidence head offline, repeatedly, without a GPU: `z_trunk` and `s_trunk`, the head's
+other two inputs, the pose in *model* atom order, the contact probabilities the ipTM summary is
+computed from, the six input features it reads, and the python/torch/cuda RNG state.
+
+### Three things that are easy to get wrong, and how the phase pins them
+
+**bf16, not fp16.** The model runs bf16 and the head runs inside autocast, so bf16 is what it would
+see anyway — and bf16 has fp32's exponent range where fp16 does not. This is not cosmetic: a float16
+trunk dump once cost a good pose outright, 8vqf seed 300048 going from DockQ 0.495 to 0.056. The
+smoke assertion checks the stored dtype.
+
+**`TRUNK_DUMP_DIR`, not `PROTENIX_DUMP_TRUNK`.** `folder.py:831` turns the former into a per-fold path
+`<dir>/<pdb>/<tag>_<seed>.npz` and refuses to overwrite. Pointing the latter at a directory makes
+`protenix.py:1362` write `<dir>/trunk.npz` for every fold — one file, overwritten 1,580 times — and a
+smoke test that only counted files would pass. So the assertion opens the npz and checks the tensors.
+
+**`pool.csv` must exist.** `folder.py`'s `interfaces_by_pdb()` reads it to decide what a `target=*`
+unit is scored on. Without it the fold runs and scores *nothing*.
+
+### Gates before any GPU is taken
+
+Every job json is opened and every `pairedMsaPath`, `unpairedMsaPath` and `templatesPath` checked to
+exist. A dangling path folds without the file and nothing reports it, which is the most expensive way
+to find a missing file. `pool.csv`'s structure count must equal the json count.
+
+**Templates are required, by decision.** pxm2025 folds use them and validation is the arm compared
+against pxm2025, so it is built the same way. The consequence for the write-up: FoldBench folds do
+*not* use templates, so a head calibrated here is evaluated there without them. Decided 2026-10-11 to
+keep templates; the asymmetry is stated rather than resolved.
+
+### Smoke is the phase's own precondition
+
+`run` refuses to start without `SMOKE_OK`. 16 hours of GPU and a paused PXM sweep should not be
+reachable by calling scripts in the wrong order, so the ordering is enforced by the phase rather than
+by whichever orchestrator happens to call it.
+
+### PXM
+
+Paused by killing **by PID**, never by pattern — a pattern kill matches this script. `fx_watch` is
+stopped too, since it would otherwise relaunch PXM straight onto the cards we just took. Afterwards
+the phase confirms the workers actually came back rather than assuming the relaunch worked, and
+checks that the number of trunk dumps equals the number of folded units, because if those diverge the
+cache cannot re-run the head on every pose, which is the entire point.

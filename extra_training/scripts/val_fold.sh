@@ -1,4 +1,11 @@
 #!/bin/bash
+# SUPERSEDED by extra_training/phases/phase_i_fold_validation.sh, which absorbed this file together
+# with the smoke assertions that used to live in see_it_through.sh. Kept only until phase I has run
+# once. Differences in phase I, all deliberate: it verifies every job json path resolves BEFORE
+# taking the GPUs (a dangling templatesPath folds without the file and nothing reports it), it
+# refuses to fold until smoke has passed rather than trusting the caller's ordering, and it verifies
+# that PXM actually came back afterwards instead of assuming the relaunch worked.
+#
 # Fold the validation set and cache what the confidence head needs, then hand the GPUs back to PXM.
 #
 #   val_fold.sh smoke   one complex, one seed -- proves the job json, the trunk dump and OST DockQ
