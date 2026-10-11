@@ -63,13 +63,24 @@ run_workers() {
           --dtype bf16 --overlap-scoring >> $E/w$g.log 2>&1"
         say "  launched $tag worker on GPU $g"
     done
+    local last=-1 tick=0
     while :; do
         local alive=0
         for g in $GPUS; do tmux has-session -t vf_${tag}_$g 2>/dev/null && alive=1; done
         [ "$alive" -eq 0 ] && break
+        tick=$((tick+1))
+        if [ $((tick % 15)) -eq 0 ]; then
+            local n; n=$(done_units)
+            say "  progress: $n units folded$([ "$n" -eq "$last" ] && echo '  (no change in 15 min)')"
+            last=$n
+        fi
         sleep 60
     done
 }
+
+# How many (complex, seed) units are finished: folder.py writes one run.json per unit and skips
+# units already in results.csv at startup, so this is also what a relaunch would resume from.
+done_units() { find $E/poses -name run.json 2>/dev/null | wc -l; }
 
 if [ "$MODE" = "smoke" ]; then
     say "=== SMOKE: one complex, one seed (PXM sweep untouched) ==="
@@ -109,8 +120,26 @@ $PY $C/reconcile_stale_claims.py $PXM --dataset pxm2025 2>&1 | tail -2 | tee -a 
 
 # ---------------------------------------------------------------- fold validation
 Q=$E/queue.tsv
+TARGET=$((NJOB*SEEDS))
 say "validation queue: $(build_queue $SEEDS $Q) units ($NJOB complexes x $SEEDS seeds)"
-run_workers "$Q" val
+
+# ROUNDS, not one shot. A worker that dies (OOM, a bad cif, a node hiccup) ends its tmux session and
+# run_workers returns with the queue unfinished. folder.py reconciles stale claims at startup and
+# skips units already in results.csv, so relaunching simply continues. The loop stops when the target
+# is met, or when a whole round adds nothing -- that is a real fault, not a transient one.
+for round in 1 2 3 4 5; do
+    before=$(done_units)
+    [ "$before" -ge "$TARGET" ] && { say "all $TARGET units already folded"; break; }
+    say "round $round: $before/$TARGET units done, launching workers"
+    run_workers "$Q" val
+    after=$(done_units)
+    say "round $round ended at $after/$TARGET units (+$((after-before)))"
+    [ "$after" -ge "$TARGET" ] && break
+    if [ "$after" -le "$before" ]; then
+        say "ESCALATE: round $round folded nothing. Stopping rounds; see $E/w0.log and $E/w1.log"
+        break
+    fi
+done
 say "validation folding finished"
 say "  poses: $(find $E/poses -name '*.cif' 2>/dev/null | wc -l)"
 say "  trunk dumps: $(ls $E/trunks 2>/dev/null | wc -l)"

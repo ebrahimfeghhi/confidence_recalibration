@@ -43,16 +43,17 @@ NA3M=$(ls "$W"/msa_initial_idx/*.a3m 2>/dev/null | wc -l)
 say "stage 1 OK: $NA3M a3m, uniref_tax.m8 with real taxids"
 
 # ---------------------------------------------------------------- stage 2: env database
-say "stage 2: colabfold_envdb -- removing uniref30 and its index first"
+# uniref30 is already gone (deleted 2026-10-10 21:00). The env pass resumes from uniref.a3m, which
+# the staging patch keeps, so uniref30 is never needed again -- the search log line
+# "Staging mode: uniref.a3m exists" confirmed that path works.
 rm -rf "$DB"/uniref30_2302_db* "$DB"/UNIREF30_READY
-say "freed; quota now $(quota -s 2>/dev/null | awk '/nvme/{print $2}')"
-cd $R/tools/colabfold || die "no tools/colabfold"
-CFDB=colabfold_envdb_202108 MMSEQS_NO_INDEX= taskset -c $CORES bash setup_databases.sh "$DB" \
-    >> $W/phase2_setup.log 2>&1
-"$R/tools/mmseqs/bin/mmseqs" dbtype "$DB/colabfold_envdb_202108_db" >/dev/null 2>&1 \
-    || die "envdb not readable after setup"
-rm -f "$DB"/colabfold_envdb_202108.tar.gz
-say "stage 2a OK: envdb built"
+say "stage 2: colabfold_envdb via phase2_envdb.sh (download + build, index-free)"
+bash $R/extra_training/scripts/phase2_envdb.sh || die "envdb download/build failed (phase2_envdb.log)"
+# gate on the data file, NOT on an exit code: `mmseqs dbtype <missing-db>` returns 0, which is how
+# the 2026-10-10 chain reported "envdb built" 30 s after setup_databases.sh had died on PATH.
+[ -s "$DB/colabfold_envdb_202108_db" ] && [ -s "$DB/colabfold_envdb_202108_db_seq" ] \
+    || die "envdb data files missing or empty after build"
+say "stage 2a OK: envdb built ($(du -sh "$DB" 2>/dev/null | cut -f1) in db/)"
 
 COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c $CORES \
   $R/envs/colabfold/bin/colabfold_search --mmseqs $R/tools/mmseqs/bin/mmseqs --threads 64 \
