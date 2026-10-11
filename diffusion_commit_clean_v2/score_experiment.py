@@ -76,11 +76,30 @@ def arm_defaults(dataset):
     """in: a dataset name.  out: (paths.Dataset, its fixed-seed arm, its free results csvs joined by ":")
 
     What every reporter defaults to, so --dataset alone switches benchmark. A csv that does not exist is
-    skipped by the readers: FoldBench's free pool has no results.csv of its own.
+    skipped by the readers.
+
+    ONE free csv as of the 2026-10-06 split. `free/results.csv` now holds exactly the compute-matched
+    extras (seeds 151-200, every one with a run.json); the pool's own scores live in `pool_csv`, and
+    the 31,395 rows of undocumented leftovers moved to `free_other_seeds/`. That matters because
+    `extra_free()` takes "every seed outside the pool's first 50" and `matched_seeds()` then picks the
+    LOWEST available -- while the leftovers shared this csv, that pair drew seeds 0-100, which measured
+    0.060 worse than the pool on DockQ and made adding free seeds look like it HURT the baseline. The
+    clean block is now the only thing here, so the selection cannot reach the leftovers at all. To
+    analyse the deep-seed runs deliberately, point a reader at `free_other_seeds/results.csv`.
     """
     ds = paths.DATASETS[dataset]
-    return (ds, f"{ds.data}/self_template_fixed_50_seed",
-            f"{ds.free}/results.csv:{ds.data}/free_compute_matched/results.csv")
+    # FoldBench merged its matched extras INTO free/ on 2026-10-06; pxm2025 still keeps them in a
+    # sibling free_compute_matched/. Listing both and letting the readers skip what is absent means
+    # one line serves both -- hardcoding only free/results.csv silently dropped every pxm extra seed.
+    # Both benchmarks merged their matched extras INTO free/ (foldbench 2026-10-06, pxm the same
+    # day), so free/results.csv is pool-and-extras for each. The sibling path stays listed because a
+    # reader skips what is absent, and an un-migrated dataset would otherwise lose every extra seed.
+    csvs = [f"{ds.free}/results.csv", f"{ds.data}/free_compute_matched/results.csv"]
+    # The mask-OFF self-templating arms were archived on 2026-10-06; the kept arm is the mask-ON one.
+    arm = f"{ds.data}/selftmpl_mask_on_nc10"
+    if not os.path.exists(arm):
+        arm = f"{ds.data}/self_template_fixed_50_seed"
+    return (ds, arm, ":".join(c for c in csvs if os.path.exists(c)))
 
 
 def pool_by_seed(n_seeds, pool_csv=None):

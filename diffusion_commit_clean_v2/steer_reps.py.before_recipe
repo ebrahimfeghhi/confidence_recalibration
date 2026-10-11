@@ -1,0 +1,394 @@
+#!/usr/bin/env python
+"""Optimise a saved trunk state (z_trunk + s_trunk) so the diffusion module reproduces ONE target pose.
+
+THE QUESTION. For a seed whose diffusion samples land in several docking arrangements from a single
+frozen trunk state, can z/s be edited so that the sampler commits to the target arrangement every
+time, and how large an edit does that take? The target is a pose the seed ALREADY produces (a
+superposition being resolved), not a pose the model never held.
+
+PARAMETERISATION. z_trunk and s_trunk are optimised DIRECTLY (unconstrained, every entry free). Raw z
+is 502x502x256 here and 1474x1474x256 at the largest, so Adam state is 2x that again; nothing keeps the
+edit on the manifold of pair reps the pairformer can emit -- read the edit-size yardstick with that in
+mind. (An earlier version had a low-rank channel-update option, --rank; it was removed.)
+
+THE LOSS is Protenix's own training loss for the diffusion module, restricted to the terms that make
+sense here, one denoising step, no trunk in the graph (generator.py sample_diffusion_training):
+
+    1. pick a noise level sigma ~ the TRAINING distribution (sigma_data * exp(p_mean + p_std * n)),
+       corrupt a randomly rotated+translated copy of the target with it, and denoise ONCE
+       (--n-sample-loss independent draws per step);
+    2. MSE term (loss.py MSELoss): the TARGET is rigidly aligned onto the denoised structure (weighted
+       Kabsch, gradient stopped), then the per-atom squared error is taken, then multiplied by
+       (sigma^2 + sigma_data^2) / (sigma * sigma_data)^2 -- the EDM weight, large at small sigma;
+    3. smooth-lDDT term (loss.py SmoothLDDTLoss): frame-independent, rewards local distances within
+       15 A of each atom, so interface geometry counts. Weighted by --lddt-weight (default 1.0, the
+       value in configs_base.py). Zero switches it off.
+    total = MSE + lddt_weight * smooth-lDDT.  (Protenix multiplies both by alpha_diffusion = 4; Adam is
+    scale-invariant so that constant is omitted. The bond term has weight 0 in configs_base.py.)
+
+    WHY THE ALIGNMENT MATTERS. sample_diffusion_training returns x_denoised in the frame of the RANDOMLY
+    ROTATED copy it noised. Comparing that with the un-rotated target (as the first version of this
+    script did) measures the random rotation, not the pose. MSELoss removes the frame by aligning.
+
+pair_z IS DELIBERATELY None so the diffusion module recomputes it from z_trunk INSIDE the graph; a
+cached pair_z would detach the leaf and silently optimise nothing (checked by tests/check_steer_reps.py).
+
+SHAPES. z [N,N,c_z], s [N,c_s], s_inputs [N,c_si] with NO batch dimension, exactly as
+protenix.py passes them; the input feature dict has none either, so adding one crashes in
+prepare_cache (got 4 and 3 dims).
+
+PRECISION. Optimisation and decoding both run under bf16 autocast, as folder.py --dtype bf16 does (the
+original folds were bf16). Parameters and checkpoints are float32: an edited z is not bf16-valued, and
+the first version saved it as float16, which quantises away small edits before decoding.
+
+REPORTED PER CHECKPOINT: relative edit size ||dz||/||z||, and optionally the distance between two REAL
+trunk states of the same complex (--ref-trunk, a second seed) as a yardstick. An edit far below that
+is persuasion; far above it is overwriting.
+
+Usage:
+  LAYERNORM_TYPE=openfold steer_reps.py --dump <run>/full/8w5q_free_seed300019 \
+        --target-cif <run>/out/8w5q/300019-*/predictions/8w5q_sample_0.cif \
+        --ckpts 0,10,25,50,100 --decode --template-cif <same cif> --out <dir>
+"""
+import argparse
+import json
+import os
+import sys
+import time
+
+import numpy as np
+import torch
+
+sys.path.insert(0, "/home/ebrahim/Protenix")
+
+
+def build_model(ckpt_dir, model_name, device):
+    """Instantiate Protenix exactly as runner/inference.py does, then load the checkpoint.
+
+    The config assembly is replicated rather than imported because inference.py performs it inside
+    run(), which also parses argv and launches a full inference job.
+    """
+    # Without openfold layernorm the model emits NaN coordinates silently (folder.py docstring).
+    if os.environ.get("LAYERNORM_TYPE") != "openfold":
+        raise SystemExit("set LAYERNORM_TYPE=openfold (without it coordinates are silently NaN)")
+    from collections.abc import Mapping
+    from configs.configs_base import configs as configs_base
+    from configs.configs_data import data_configs
+    from configs.configs_inference import inference_configs
+    from protenix.config import parse_configs
+    from protenix.model.protenix import Protenix
+    try:
+        from runner.inference import update_gpu_compatible_configs, model_configs
+    except ImportError:
+        from runner.inference import model_configs
+        update_gpu_compatible_configs = lambda c: c
+
+    base = {**configs_base, **{"data": data_configs}, **inference_configs}
+
+    def deep_update(d, u):
+        for k, v in u.items():
+            if isinstance(v, Mapping) and k in d and isinstance(d[k], Mapping):
+                deep_update(d[k], v)
+            else:
+                d[k] = v
+        return d
+    deep_update(base, model_configs[model_name])
+    configs = parse_configs(configs=base, arg_str="", fill_required_with_null=True)
+    configs.load_checkpoint_dir = ckpt_dir
+    configs.model_name = model_name
+    configs = update_gpu_compatible_configs(configs)
+
+    model = Protenix(configs).to(device)
+    ck = torch.load(os.path.join(ckpt_dir, f"{model_name}.pt"), map_location=device,
+                    weights_only=False)
+    sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
+    sd = {k.removeprefix("module."): v for k, v in sd.items()}
+    res = model.load_state_dict(sd, strict=False)
+    print(f"checkpoint: {len(res.missing_keys)} missing keys, {len(res.unexpected_keys)} unexpected")
+    if res.missing_keys:
+        raise SystemExit(f"checkpoint is missing {len(res.missing_keys)} weights, e.g. "
+                         f"{res.missing_keys[:5]} -- the model would run partly random")
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad_(False)          # only z/s are optimised
+    return model, configs
+
+
+def load_dump(stem, device):
+    """Read <stem>_reps.npz + <stem>_feat.npz written by Protenix DUMP_FULL.
+    Returns feat, z [N,N,c_z], s [N,c_s], s_inputs [N,c_si], coords [n_pose,N_atom,3] (DUMP order,
+    which is NOT the order of the *_sample_k.cif files -- those are sorted by ranking score)."""
+    from protenix.model.protenix import update_input_feature_dict
+    R = np.load(f"{stem}_reps.npz")
+    F = np.load(f"{stem}_feat.npz")
+    feat = {}
+    for k in F.files:
+        v = F[k]
+        if v.dtype == np.bool_:
+            feat[k] = torch.from_numpy(v).to(device)
+        elif np.issubdtype(v.dtype, np.integer):
+            feat[k] = torch.from_numpy(v).long().to(device)
+        else:
+            feat[k] = torch.from_numpy(v).float().to(device)
+    # d_lm / v_lm / pad_info are rebuilt rather than trusted from the dump: pad_info was never saved,
+    # and all three are pure functions of ref_pos + ref_space_uid (protenix.py:55).
+    feat = update_input_feature_dict(feat)
+    for k in ("d_lm", "v_lm", "pad_info", "is_dna", "is_rna", "is_ligand", "asym_id"):
+        assert k in feat, f"feature {k} missing after load"
+    z = torch.from_numpy(R["z_trunk"]).float().to(device)
+    s = torch.from_numpy(R["s_trunk"]).float().to(device)
+    si = torch.from_numpy(R["s_inputs"]).float().to(device)
+    coords = torch.from_numpy(R["coordinate"]).float().to(device)
+    assert z.dim() == 3 and s.dim() == 2 and si.dim() == 2 and coords.dim() == 3, \
+        (z.shape, s.shape, si.shape, coords.shape)
+    assert z.shape[0] == z.shape[1] == s.shape[0] == si.shape[0]
+    for name, t in (("z", z), ("s", s), ("s_inputs", si), ("coordinate", coords)):
+        assert torch.isfinite(t).all(), f"{name} has non-finite values"
+    return feat, z, s, si, coords
+
+
+def cif_coords(path):
+    """Atom coordinates of a CIF in file order (== the model's atom order, verified 0.000 A)."""
+    import gemmi
+    return np.array([a.pos.tolist() for ch in gemmi.read_structure(path)[0] for r in ch for a in r])
+
+
+def resolve_target(coords, target_sample, target_cif):
+    """Pick the target pose. --target-cif finds the dump index by EXACT coordinate match (and refuses
+    unless exactly one dumped pose matches), so the CIF-vs-dump ordering can not be got wrong."""
+    if target_cif:
+        c = torch.from_numpy(cif_coords(target_cif)).float().to(coords.device)
+        assert c.shape == coords.shape[1:], (c.shape, coords.shape)
+        d = (coords - c.unsqueeze(0)).abs().amax(dim=(1, 2)).cpu().numpy()
+        hits = np.where(d < 1e-2)[0]          # CIF text rounds to 3 decimals
+        assert len(hits) == 1, f"target cif matches {len(hits)} dumped poses (max diffs {d.round(4)})"
+        idx = int(hits[0])
+        print(f"target cif -> dump index {idx} (max coordinate diff {d[idx]:.4f} A)")
+    else:
+        assert target_sample is not None, "give --target-cif or --target-sample"
+        idx = target_sample
+        assert 0 <= idx < coords.shape[0], idx
+    return idx, coords[idx]
+
+
+def make_loss(model, configs, feat, s_inputs, tgt, lddt_weight, dev):
+    """Return loss_fn(z, s, n_draws) -> (total, parts). See the module docstring."""
+    from protenix.model.generator import sample_diffusion_training, TrainingNoiseSampler
+    from protenix.model.loss import MSELoss, SmoothLDDTLoss, compute_lddt_mask
+    from protenix.utils.torch_utils import cdist
+    # configs.train_noise_sampler, NOT configs.loss.*: p_mean -1.2, p_std 1.5, sigma_data 16.0
+    noise_sampler = TrainingNoiseSampler(**configs.train_noise_sampler.to_dict())
+    mse = MSELoss(**configs.loss.diffusion.mse)
+    coord_mask = torch.ones(tgt.shape[0], device=dev)
+    label = {"coordinate": tgt, "coordinate_mask": coord_mask}
+    sd = float(configs.sigma_data)
+    lddt = lmask = None
+    if lddt_weight > 0:
+        lddt = SmoothLDDTLoss(**configs.loss.diffusion.smooth_lddt)
+        dmask = coord_mask[:, None] * coord_mask[None, :]
+        lmask = compute_lddt_mask(true_distance=cdist(tgt, tgt) * dmask, distance_mask=dmask,
+                                  is_nucleotide=(feat["is_dna"] + feat["is_rna"]).bool(),
+                                  is_nucleotide_threshold=30.0, is_not_nucleotide_threshold=15.0)
+
+    def loss_fn(z, s, n_draws):
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            _x_gt_augmented_unused, x_den, sigma = sample_diffusion_training(
+                noise_sampler=noise_sampler, denoise_net=model.diffusion_module,
+                label_dict=label, input_feature_dict=feat,
+                s_inputs=s_inputs, s_trunk=s, z_trunk=z,
+                pair_z=None, p_lm=None, c_l=None, N_sample=n_draws)
+        # x_den is in the frame of the augmented copy; MSELoss aligns the target onto it.
+        x_den = x_den.float()
+        sigma = sigma.float()
+        scale = (sigma ** 2 + sd ** 2) / ((sd * sigma) ** 2)
+        l_mse = mse(pred_coordinate=x_den, true_coordinate=tgt, coordinate_mask=coord_mask,
+                    is_dna=feat["is_dna"], is_rna=feat["is_rna"], is_ligand=feat["is_ligand"],
+                    per_sample_scale=scale)
+        total = l_mse
+        parts = dict(mse=float(l_mse.detach()), sigma_mean=float(sigma.mean()))
+        if lddt is not None:
+            l_l = lddt.dense_forward(pred_coordinate=x_den, true_coordinate=tgt, lddt_mask=lmask,
+                                     diffusion_chunk_size=getattr(configs.loss, "diffusion_lddt_chunk_size", None))
+            total = total + lddt_weight * l_l
+            parts["lddt"] = float(l_l.detach())
+        return total, parts
+    return loss_fn
+
+
+def decode(model, configs, feat, s_inputs, z, s, n, seed, dev):
+    """The normal 200-step sampler from a given trunk state; returns coordinates [n,N_atom,3].
+    pair_z=None so it is rebuilt from the (edited) z."""
+    from protenix.model.generator import InferenceNoiseScheduler
+    sched = InferenceNoiseScheduler(**configs.inference_noise_scheduler.to_dict())
+    noise_schedule = sched(N_step=configs.sample_diffusion.N_step, device=dev)
+    torch.manual_seed(seed)
+    with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        x = model.sample_diffusion(
+            denoise_net=model.diffusion_module, input_feature_dict=feat,
+            s_inputs=s_inputs, s_trunk=s, z_trunk=z, pair_z=None, p_lm=None, c_l=None,
+            N_sample=n, noise_schedule=noise_schedule, inplace_safe=False)
+    x = x.float()
+    assert x.dim() == 3 and torch.isfinite(x).all(), "sampler returned non-finite coordinates"
+    return x
+
+
+def confidence(model, configs, feat, s_inputs, s, z, x, n_cycle):
+    """ipTM / ranking score / pLDDT logits for poses x, exactly as protenix.py computes them.
+    Returns (summary, plddt_logits). Validated against the saved summary jsons in tests/."""
+    from protenix.model import sample_confidence
+    from protenix.utils.torch_utils import autocasting_disable_decorator
+    with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        plddt, pae, pde, _resolved = model.run_confidence_head(
+            input_feature_dict=feat, s_inputs=s_inputs, s_trunk=s, z_trunk=z, pair_mask=None,
+            x_pred_coords=x, triangle_multiplicative=configs.triangle_multiplicative,
+            triangle_attention=configs.triangle_attention, inplace_safe=False, chunk_size=None)
+        cp = autocasting_disable_decorator(True)(sample_confidence.compute_contact_prob)(
+            distogram_logits=model.distogram_head(z),
+            **sample_confidence.get_bin_params(configs.loss.distogram))
+        summary, _full = autocasting_disable_decorator(True)(
+            sample_confidence.compute_full_data_and_summary)(
+            configs=configs, pae_logits=pae, plddt_logits=plddt, pde_logits=pde, contact_probs=cp,
+            token_asym_id=feat["asym_id"], token_has_frame=feat["has_frame"], atom_coordinate=x,
+            atom_to_token_idx=feat["atom_to_token_idx"], atom_is_polymer=1 - feat["is_ligand"],
+            N_recycle=n_cycle, interested_atom_mask=None, return_full_data=True,
+            mol_id=None, elements_one_hot=None)
+    return summary, plddt
+
+
+def write_cifs(template_cif, xa, out_dir, prefix):
+    import gemmi
+    st0 = gemmi.read_structure(template_cif)
+    assert sum(1 for ch in st0[0] for r in ch for a in r) == xa.shape[1]
+    os.makedirs(out_dir, exist_ok=True)
+    for k in range(xa.shape[0]):
+        st = st0.clone()
+        i = 0
+        for ch in st[0]:
+            for r in ch:
+                for a in r:
+                    a.pos = gemmi.Position(*[float(v) for v in xa[k, i]])
+                    i += 1
+        st.make_mmcif_document().write_file(f"{out_dir}/{prefix}_{k:02d}.cif")
+
+
+def kabsch_rmsd(a, b):
+    """Whole-complex RMSD after optimal superposition. A rough diagnostic only: DockQ against the
+    crystal (scorer.py) is the real measure."""
+    a = a - a.mean(0); b = b - b.mean(0)
+    U, _, Vt = np.linalg.svd(a.T @ b)
+    d = np.sign(np.linalg.det(U @ Vt))
+    R = U @ np.diag([1, 1, d]) @ Vt
+    return float(np.sqrt(((a @ R - b) ** 2).sum(1).mean()))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dump", required=True, help="stem, without _reps.npz / _feat.npz")
+    ap.add_argument("--target-cif", default="", help="CIF of the target pose (preferred)")
+    ap.add_argument("--target-sample", type=int, default=None,
+                    help="index into the DUMPED coordinate array (NOT the CIF sample number)")
+    ap.add_argument("--ckpts", default="0,10,25,50,100")
+    ap.add_argument("--lr", type=float, default=0.01)
+    ap.add_argument("--lddt-weight", type=float, default=1.0)
+    ap.add_argument("--n-sample-loss", type=int, default=4, help="noise draws per optimisation step")
+    ap.add_argument("--ref-trunk", default="", help="npz with z_trunk/s_trunk of another real seed, for the edit-size yardstick")
+    ap.add_argument("--ckpt-dir", default="/home/ebrahim/checkpoint")
+    ap.add_argument("--model-name", default="protenix-v2")
+    ap.add_argument("--seed", type=int, default=0, help="seed for the optimisation noise draws")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--decode", action="store_true", help="decode poses at each checkpoint")
+    ap.add_argument("--n-sample-decode", type=int, default=20)
+    ap.add_argument("--decode-seed", type=int, default=1234,
+                    help="noise seed for decoding; same at every checkpoint, different from --seed")
+    ap.add_argument("--template-cif", default="", help="with --decode: write decoded poses as CIFs")
+    A = ap.parse_args()
+    os.makedirs(A.out, exist_ok=True)
+    dev = "cuda"
+    assert A.decode_seed != A.seed, "decode noise must differ from the optimisation noise"
+
+    model, configs = build_model(A.ckpt_dir, A.model_name, dev)
+    feat, z0, s0, s_inputs, coords = load_dump(A.dump, dev)
+    idx, tgt = resolve_target(coords, A.target_sample, A.target_cif)
+    n_cycle = int(np.load(f"{A.dump}_reps.npz")["n_cycle"])
+    print(f"tokens {z0.shape[0]}  atoms {tgt.shape[0]}  c_z {z0.shape[-1]}  c_s {s0.shape[-1]}  target=dump[{idx}]")
+
+    zn = z0.norm().item(); sn = s0.norm().item()
+    yard = None
+    if A.ref_trunk:
+        R = np.load(A.ref_trunk)
+        zr = torch.from_numpy(R["z_trunk"]).float().to(dev); sr = torch.from_numpy(R["s_trunk"]).float().to(dev)
+        assert zr.shape == z0.shape and sr.shape == s0.shape, "ref trunk is a different complex"
+        yard = dict(rel_z=(z0 - zr).norm().item() / zn, rel_s=(s0 - sr).norm().item() / sn)
+        print(f"YARDSTICK two real trunk states: ||dz||/||z|| = {yard['rel_z']:.5f}   ||ds||/||s|| = {yard['rel_s']:.5f}")
+        del zr, sr
+
+    loss_fn = make_loss(model, configs, feat, s_inputs, tgt, A.lddt_weight, dev)
+    torch.manual_seed(A.seed)
+    zp = z0.clone().requires_grad_(True)
+    sp = s0.clone().requires_grad_(True)
+    opt = torch.optim.Adam([zp, sp], lr=A.lr)
+    print(f"optimising {zp.numel() + sp.numel():,} parameters (z/s directly), lr {A.lr}")
+
+    ckpts = sorted({int(x) for x in A.ckpts.split(",")})
+    hist = []
+
+    def save(step, loss, parts):
+        rel_z = (zp - z0).norm().item() / zn
+        rel_s = (sp - s0).norm().item() / sn
+        np.savez(f"{A.out}/ckpt{step:04d}.npz", z_trunk=zp.detach().cpu().numpy(),
+                 s_trunk=sp.detach().cpu().numpy(), step=np.array(step),
+                 rel_z=np.array(rel_z), rel_s=np.array(rel_s))
+        hist.append(dict(step=step, rel_z=rel_z, rel_s=rel_s, loss=loss, **parts))
+        print(f"   [ckpt {step:>4}] ||dz||/||z|| {rel_z:.5f}   ||ds||/||s|| {rel_s:.5f}   "
+              f"loss of these parameters {loss:.4f} {parts}")
+
+    t0 = time.time()
+    for step in range(max(ckpts) + 1):
+        last = step == max(ckpts)
+        with torch.set_grad_enabled(not last):
+            loss, parts = loss_fn(zp, sp, A.n_sample_loss)
+        if step in ckpts:
+            save(step, float(loss.detach()), parts)     # the loss of exactly the parameters saved
+        if last:
+            break
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        gz = zp.grad.norm().item(); gs = sp.grad.norm().item()
+        if not (np.isfinite(gz) and np.isfinite(gs) and np.isfinite(float(loss))):
+            raise SystemExit(f"step {step}: non-finite loss/gradient (loss {float(loss)}, |gz| {gz}, |gs| {gs})")
+        if step == 0:
+            assert gz > 0 and gs > 0, "zero gradient to z or s: the graph is detached from the leaf"
+        opt.step()
+        if True:                                   # every step, so the loss can be tracked live
+            print(f"   step {step:>4}  loss {float(loss):.4f} {parts}  |grad z| {gz:.3g} |grad s| {gs:.3g}  "
+                  f"({(time.time()-t0)/(step+1):.1f}s/step)")
+
+    if A.decode:
+        dec = []
+        t_np = tgt.cpu().numpy()
+        for step in ckpts:
+            C = np.load(f"{A.out}/ckpt{step:04d}.npz")
+            zc = torch.from_numpy(C["z_trunk"]).float().to(dev)
+            sc = torch.from_numpy(C["s_trunk"]).float().to(dev)
+            x = decode(model, configs, feat, s_inputs, zc, sc, A.n_sample_decode, A.decode_seed, dev)
+            summ, _ = confidence(model, configs, feat, s_inputs, sc, zc, x, n_cycle)
+            xa = x.cpu().numpy()
+            d = [kabsch_rmsd(xa[k], t_np) for k in range(xa.shape[0])]
+            np.savez(f"{A.out}/decode{step:04d}.npz", coordinate=xa, rmsd_to_target=np.array(d))
+            if A.template_cif:
+                write_cifs(A.template_cif, xa, f"{A.out}/decode{step:04d}", "pose")
+            rec = dict(step=int(step), rmsd_to_target=d, rmsd_mean=float(np.mean(d)),
+                       rmsd_spread=float(max(d) - min(d)),
+                       iptm=[float(m["iptm"]) for m in summ], ranking_score=[float(m["ranking_score"]) for m in summ])
+            dec.append(rec)
+            print(f"   [decode {step:>4}] RMSD to target mean {np.mean(d):6.2f} A  spread {max(d)-min(d):5.2f}  "
+                  f"ipTM mean {np.mean(rec['iptm']):.3f}")
+        json.dump(dec, open(f"{A.out}/decode.json", "w"), indent=1)
+
+    json.dump(dict(history=hist, yardstick=yard, target_dump_index=idx, args=vars(A)),
+              open(f"{A.out}/history.json", "w"), indent=1)
+    print(f"\nwrote {len(ckpts)} checkpoints to {A.out}  ({time.time()-t0:.0f}s)")
+
+
+if __name__ == "__main__":
+    main()

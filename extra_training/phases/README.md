@@ -9,10 +9,17 @@ inputs, outputs and gates in its own docstring. The plain-language account of wh
 | A | `phase_a_define_train_set.py` | `results/excluded_homolog_clusters.csv`; exports `training_clusters()` |
 | B | `phase_b_define_val_clusters.py` | `results/val_clusters.csv`; exports `train_minus_val()` |
 | C | `phase_c_extract_msa_queries.py` | `msa_work/query.fasta`, `msa_work/query_short.fasta`, `msa_queries/*` |
-| D | `phase_d_search_uniref.sh` | `<out-dir>/*.a3m`, `uniref.a3m`, `uniref_tax.m8` per batch |
+| D | `phase_d_search_uniref.sh` | `<out-dir>/*.a3m`, `uniref.a3m`, `uniref_tax.m8`, `query.searched.fasta` per batch |
+| E | `phase_e_search_envdb.sh` | the same a3m, deepened against colabfold_envdb |
+| F | `phase_f_pair_and_split.py` | `mmcif_msa/<chain>/{pairing,non_pairing}.a3m` — the first files Protenix can read |
+| G | `phase_g_build_val_jobs.py` | `val_jobs/*.json`, `val_fold/pool.csv`, `val_fold/chain_roles.csv` |
+| H | `phase_h_search_templates.py` | `mmcif_msa/<chain>/hmmsearch.a3m` |
 
-Phases E through I (env pass, taxids and pairing, job JSONs, templates, folding) still live in
-`extra_training/scripts/` and `diffusion_commit_clean_v2/`. Moving them is pending.
+Phase I, the fold itself, is still `extra_training/scripts/val_fold.sh`.
+
+`extra_training/scripts/overnight.sh` is the orchestrator: it verifies phases A–D's artifacts and then
+calls E, F, G and H in order. Each phase owns its own gates, so the orchestrator's job is order and
+escalation, not re-checking — which took it from 230 lines to 129.
 
 **The end state** is one script per phase here, with `extra_training/scripts/` holding only what is
 not a phase: the three watchers (`quota_guard.sh`, `gpu_guard.sh`, `health.sh`) and the shared

@@ -1,0 +1,262 @@
+#!/usr/bin/env python
+"""Optimise a dumped trunk state (z_trunk + s_trunk) so the diffusion module commits to ONE pose.
+
+THE QUESTION. 9x1h_EF seed 300014 is an UNCOMMITTED seed: its five diffusion samples span DockQ
+0.044-0.634 from a single frozen pair rep, and ipTM cannot tell them apart (0.117-0.151, a 0.034
+span against a 0.591 span in quality). So the trunk is holding several docking arrangements at once
+and the sampler picks between them. If we optimise z/s so the denoiser reproduces ONE of those poses
+-- sample 3, DockQ 0.634, the seed's own best -- do all five samples collapse onto it, and how large
+an edit does that take?
+
+This targets a pose the seed ALREADY PRODUCES, so it is resolving a superposition rather than
+implanting a belief the model never held. That distinction is what makes the edit size interpretable.
+
+WHY NO TRUNK IS INVOLVED. The diffusion loss in Protenix is a ONE-STEP objective (generator.py:357:
+sample a noise level, noise the target once, denoise once, compare) -- not a rollout. So the graph is
+the diffusion module alone: no pairformer, no recycling, no MSA. z_trunk is the leaf. That is both
+far cheaper than steering through the trunk and in-distribution, since it is exactly the loss the
+model was trained with.
+
+pair_z IS DELIBERATELY PASSED AS None so DiffusionModule.prepare_cache recomputes it from z_trunk
+inside the graph; passing a cached pair_z would detach the leaf and silently optimise nothing.
+
+PARAMETERISATION. z_trunk and s_trunk are optimised DIRECTLY (unconstrained, every entry free). Raw z
+is 1474x1474x256 = 556M values, so this costs ~7GB of Adam state, and nothing keeps the edit on the
+manifold of pair reps the pairformer can actually emit -- read the edit-size yardstick below with that
+in mind. (An earlier version had a low-rank channel-update option, --rank; it was removed.)
+
+REPORTED PER CHECKPOINT: relative edit size ||dz||/||z||, benchmarked against the distance between
+two REAL trunk states of the same complex (seed 300014 vs 300018) -- the natural scale of variation
+the model itself produces. An edit far below that is persuasion; far above it is overwriting.
+
+Usage:
+  steer_reps.py --dump artifacts/dump9x1h/reps/seed300014 --target-sample 3 \
+                --ckpts 0,5,10,20,50,100 --out artifacts/steer9x1h
+"""
+import argparse
+import json
+import os
+import sys
+import time
+
+import numpy as np
+import torch
+
+sys.path.insert(0, "/home/ebrahim/Protenix")
+EXP = "/home/ebrahim/tts_abag/confident_decoy_experiments"
+
+
+def build_model(ckpt_dir, model_name, device, blocks_per_ckpt=None):
+    """Instantiate Protenix exactly as runner/inference.py does, then load the checkpoint.
+
+    The config assembly is replicated rather than imported because inference.py performs it inside
+    run(), which also parses argv and launches a full inference job.
+    """
+    from collections.abc import Mapping
+    from configs.configs_base import configs as configs_base
+    from configs.configs_data import data_configs
+    from configs.configs_inference import inference_configs
+    from protenix.config import parse_configs
+    from protenix.model.protenix import Protenix
+    try:
+        from runner.inference import update_gpu_compatible_configs, model_configs
+    except ImportError:
+        from runner.inference import model_configs
+        update_gpu_compatible_configs = lambda c: c
+
+    base = {**configs_base, **{"data": data_configs}, **inference_configs}
+
+    def deep_update(d, u):
+        for k, v in u.items():
+            if isinstance(v, Mapping) and k in d and isinstance(d[k], Mapping):
+                deep_update(d[k], v)
+            else:
+                d[k] = v
+        return d
+    deep_update(base, model_configs[model_name])
+    # Gradient checkpointing through the pairformer: inference never does a backward pass, so the
+    # stock config leaves this off. Recomputing blocks is far cheaper than storing 48 blocks of
+    # activations at 1474 tokens.
+    if blocks_per_ckpt is not None:
+        base["blocks_per_ckpt"] = blocks_per_ckpt
+    configs = parse_configs(configs=base, arg_str="", fill_required_with_null=True)
+    configs.load_checkpoint_dir = ckpt_dir
+    configs.model_name = model_name
+    configs = update_gpu_compatible_configs(configs)
+
+    model = Protenix(configs).to(device)
+    ck = torch.load(os.path.join(ckpt_dir, f"{model_name}.pt"), map_location=device,
+                    weights_only=False)
+    sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
+    sd = {k.removeprefix("module."): v for k, v in sd.items()}
+    model.load_state_dict(sd, strict=False)
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad_(False)          # only z/s are optimised
+    return model, configs
+
+
+def load_dump(stem, device):
+    from protenix.model.protenix import update_input_feature_dict
+    R = np.load(f"{stem}_reps.npz")
+    F = np.load(f"{stem}_feat.npz")
+    feat = {}
+    for k in F.files:
+        v = F[k]
+        if v.dtype == np.bool_:
+            feat[k] = torch.from_numpy(v).to(device)
+        elif np.issubdtype(v.dtype, np.integer):
+            feat[k] = torch.from_numpy(v).long().to(device)
+        else:
+            feat[k] = torch.from_numpy(v).float().to(device)
+    # d_lm / v_lm / pad_info are rebuilt rather than trusted from the dump: pad_info was never saved,
+    # and all three are pure functions of ref_pos + ref_space_uid (protenix.py:55).
+    feat = update_input_feature_dict(feat)
+    z = torch.from_numpy(R["z_trunk"]).float().to(device)
+    s = torch.from_numpy(R["s_trunk"]).float().to(device)
+    si = torch.from_numpy(R["s_inputs"]).float().to(device)
+    coords = torch.from_numpy(R["coordinate"]).float().to(device)
+    return feat, z, s, si, coords
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dump", required=True, help="stem, without _reps.npz / _feat.npz")
+    ap.add_argument("--target-sample", type=int, default=3)
+    ap.add_argument("--ckpts", default="0,5,10,20,50,100")
+    ap.add_argument("--lr", type=float, default=0.01)
+    ap.add_argument("--n-sample-loss", type=int, default=4, help="noise draws per optimisation step")
+    ap.add_argument("--ref-dump", default="", help="second real trunk state, for the edit-size yardstick")
+    ap.add_argument("--ckpt-dir", default="/home/ebrahim/checkpoint")
+    ap.add_argument("--model-name", default="protenix-v2")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--decode", action="store_true", help="also decode 5 samples at each checkpoint")
+    ap.add_argument("--n-sample-decode", type=int, default=5)
+    A = ap.parse_args()
+    os.makedirs(A.out, exist_ok=True)
+    dev = "cuda"
+    torch.manual_seed(0)
+
+    model, configs = build_model(A.ckpt_dir, A.model_name, dev)
+    feat, z0, s0, s_inputs, coords = load_dump(A.dump, dev)
+    tgt = coords[A.target_sample]
+    print(f"tokens {z0.shape[0]}  atoms {tgt.shape[0]}  c_z {z0.shape[-1]}  c_s {s0.shape[-1]}")
+    print(f"target = sample {A.target_sample}")
+
+    zn = z0.norm().item(); sn = s0.norm().item()
+    if A.ref_dump:
+        _, zr, sr, _, _ = load_dump(A.ref_dump, dev)
+        print(f"YARDSTICK ||z_this - z_ref||/||z|| = {(z0-zr).norm().item()/zn:.4f}   "
+              f"||s_this - s_ref||/||s|| = {(s0-sr).norm().item()/sn:.4f}   (two real trunk states)")
+        del zr, sr
+
+    from protenix.model.generator import sample_diffusion_training, TrainingNoiseSampler
+    # configs.train_noise_sampler (configs_base.py:165), NOT configs.loss.* -- the loss block has no
+    # sampler. p_mean -1.2, p_std 1.5, sigma_data 16.0: the exact training noise distribution.
+    noise_sampler = TrainingNoiseSampler(**configs.train_noise_sampler.to_dict())
+
+    zp = z0.clone().requires_grad_(True); sp = s0.clone().requires_grad_(True)
+    params = [zp, sp]
+    opt = torch.optim.Adam(params, lr=A.lr)
+    print(f"optimising {sum(p.numel() for p in params):,} parameters (z/s directly)")
+
+    ckpts = sorted({int(x) for x in A.ckpts.split(",")})
+    label = {"coordinate": tgt.unsqueeze(0),
+             "coordinate_mask": torch.ones(tgt.shape[0], device=dev).unsqueeze(0)}
+    hist = []
+
+    def current():
+        return zp, sp
+
+    def save(step):
+        z, s = current()
+        rel_z = (z - z0).norm().item() / zn
+        rel_s = (s - s0).norm().item() / sn
+        np.savez(f"{A.out}/ckpt{step:04d}.npz",
+                 z_trunk=z.detach().half().cpu().numpy(),
+                 s_trunk=s.detach().float().cpu().numpy(),
+                 step=np.array(step), rel_z=np.array(rel_z), rel_s=np.array(rel_s))
+        print(f"   [ckpt {step:>4}] ||dz||/||z|| {rel_z:.5f}   ||ds||/||s|| {rel_s:.5f}")
+        return rel_z, rel_s
+
+    step = 0
+    last_loss = None
+    t0 = time.time()
+    for step in range(max(ckpts) + 1):
+        if step in ckpts:
+            rz, rs = save(step)
+            hist.append(dict(step=step, rel_z=rz, rel_s=rs, loss=last_loss))
+        if step == max(ckpts):
+            break
+        z, s = current()
+        _, x_den, sigma = sample_diffusion_training(
+            noise_sampler=noise_sampler, denoise_net=model.diffusion_module,
+            label_dict=label, input_feature_dict=feat,
+            s_inputs=s_inputs.unsqueeze(0), s_trunk=s.unsqueeze(0), z_trunk=z.unsqueeze(0),
+            pair_z=None, p_lm=None, c_l=None, N_sample=A.n_sample_loss)
+        # EDM-weighted MSE against the target, matching loss.py:1639
+        sd2 = configs.sigma_data ** 2
+        w = (sigma ** 2 + sd2) / ((sigma * configs.sigma_data) ** 2)
+        mse = ((x_den - tgt.unsqueeze(0).unsqueeze(0)) ** 2).sum(-1).mean(-1)
+        loss = (w * mse).mean()
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+        if step % 5 == 0 or step < 3:
+            print(f"   step {step:>4}  loss {loss.item():.4f}  "
+                  f"({(time.time()-t0)/max(step,1):.1f}s/step)")
+        last_loss = loss.item()
+
+    # ---- decode every checkpoint with the normal 200-step sampler -------------------------------
+    # pair_z is left as None so the sampler rebuilds it from the EDITED z, exactly as the optimiser
+    # did. Passing the cached pair_z from the unedited run would decode the original trunk state and
+    # silently report "steering did nothing".
+    if A.decode:
+        from protenix.model.generator import InferenceNoiseScheduler
+        sched = InferenceNoiseScheduler(**configs.inference_noise_scheduler.to_dict())
+        noise_schedule = sched(N_step=configs.sample_diffusion.N_step, device=dev)
+        dec = []
+        for step in ckpts:
+            C = np.load(f"{A.out}/ckpt{step:04d}.npz")
+            zc = torch.from_numpy(C["z_trunk"]).float().to(dev).unsqueeze(0)
+            sc = torch.from_numpy(C["s_trunk"]).float().to(dev).unsqueeze(0)
+            torch.manual_seed(1234)          # same noise draws at every checkpoint
+            with torch.no_grad():
+                x = model.sample_diffusion(
+                    denoise_net=model.diffusion_module, input_feature_dict=feat,
+                    s_inputs=s_inputs.unsqueeze(0), s_trunk=sc, z_trunk=zc, pair_z=None,
+                    p_lm=None, c_l=None, N_sample=A.n_sample_decode,
+                    noise_schedule=noise_schedule, inplace_safe=False)
+                conf = model.run_confidence_head(
+                    input_feature_dict=feat, s_inputs=s_inputs.unsqueeze(0), s_trunk=sc,
+                    z_trunk=zc, pair_mask=None, x_pred_coords=x,
+                    triangle_multiplicative=configs.triangle_multiplicative)
+            xa = x.squeeze(0).float().cpu().numpy()
+            # RMSD to the target pose, after removing the global frame the sampler is free to choose
+            d = []
+            t = tgt.cpu().numpy()
+            for k in range(xa.shape[0]):
+                a = xa[k] - xa[k].mean(0); b = t - t.mean(0)
+                U, _, Vt = np.linalg.svd(a.T @ b)
+                dd = np.sign(np.linalg.det(U @ Vt))
+                R = U @ np.diag([1, 1, dd]) @ Vt
+                d.append(float(np.sqrt(((a @ R - b) ** 2).sum(1).mean())))
+            np.savez(f"{A.out}/decode{step:04d}.npz", coordinate=xa,
+                     rmsd_to_target=np.array(d))
+            rec = dict(step=int(step), rmsd_to_target=d,
+                       rmsd_mean=float(np.mean(d)), rmsd_spread=float(max(d) - min(d)))
+            try:
+                rec["conf_keys"] = [k for k in (conf[0] if isinstance(conf, tuple) else conf)]
+            except Exception:
+                pass
+            dec.append(rec)
+            print(f"   [decode {step:>4}] RMSD to target  mean {np.mean(d):6.2f} A   "
+                  f"spread {max(d)-min(d):5.2f}   per-sample {[round(v,1) for v in d]}")
+        json.dump(dec, open(f"{A.out}/decode.json", "w"), indent=1)
+
+    json.dump(hist, open(f"{A.out}/history.json", "w"), indent=1)
+    print(f"\nwrote {len(ckpts)} checkpoints to {A.out}  ({time.time()-t0:.0f}s)")
+
+
+if __name__ == "__main__":
+    main()

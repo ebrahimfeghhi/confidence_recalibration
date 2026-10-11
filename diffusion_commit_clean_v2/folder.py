@@ -44,6 +44,10 @@ INPUTS
                   reference cifs, the scorer, the pool csv and the free pool.
     --ncycle:     recycles per fold. Default 10.
     --nsample:    poses per fold. Default 5.
+    --expect-poses: cifs a fold must write, when that differs from --nsample. Modes that decode
+                  more than once per fold (PROTENIX_POSE_Z_BRANCH re-decodes every pose) write
+                  N_sample + (N_sample+1)*M cifs from one fold; without this the pose-count check
+                  would reject every such fold as short.
     --dtype:      bf16, fp32 or fp16. Default bf16.
     --keep-cifs:  keep the poses. On by default; --drop-cifs deletes them after scoring.
     --skip-by-template: skip a unit already folded with the same (complex, seed, template). Off by
@@ -150,7 +154,7 @@ TMPL_ENV = {k: os.environ.get(k, v) for k, v in {
     "PROTENIX_MULTICHAIN_MASK": "0", "PROTENIX_TMPL_KEEP_FRAME": "1",
     "PROTENIX_TMPL_NODEDUP": "1", "PROTENIX_MAX_TEMPLATE_CANDIDATES": "20"}.items()}
 
-KINDS = ("free", "tmpl")
+KINDS = ("free", "tmpl", "posez")   # posez: free job + ONE pose injected into z (not a template)
 ALIASES = {"all5": "tmpl"}          # old queue files spell tmpl as all5
 _TEMPLATE_COUNTS = []
 
@@ -253,7 +257,8 @@ def named_job(src, name, out_dir, templates=None):
     return dst
 
 
-def fold(runner, configs, job, seed, name, n_cycle, n_sample, expect_templates, dump_base, env):
+def fold(runner, configs, job, seed, name, n_cycle, n_sample, expect_templates, dump_base, env,
+         expect_poses=None):
     """in:  runner/configs, a named job json, seed, cycle and sample counts, expect_templates, env
     out: (seconds, template counts seen per chain); raises ArmError if the fold produced nothing
 
@@ -297,8 +302,9 @@ def fold(runner, configs, job, seed, name, n_cycle, n_sample, expect_templates, 
             raise ArmError(f"templates consumed {sorted(set(_TEMPLATE_COUNTS))}, expected "
                            f"{expect_templates} on every chain")
     n = len(glob.glob(f"{dump_base}/{name}/**/*_sample_*.cif", recursive=True))
-    if n != n_sample:
-        raise ArmError(f"produced {n}/{n_sample} poses")
+    want = n_sample if expect_poses is None else expect_poses
+    if n != want:
+        raise ArmError(f"produced {n}/{want} poses")
     return dt, sorted(set(_TEMPLATE_COUNTS))
 
 
@@ -322,6 +328,8 @@ def read_queue(path):
             raise SystemExit(f"{path}:{lineno}: kind must be one of {KINDS}, got {kind!r}")
         if kind == "free" and poses:
             raise SystemExit(f"{path}:{lineno}: free units take no poses")
+        if kind == "posez" and len(poses) != 1:
+            raise SystemExit(f"{path}:{lineno}: posez takes exactly one pose, got {len(poses)}")
         if kind != "free" and not poses:
             raise SystemExit(f"{path}:{lineno}: {kind} needs pose paths")
         for p in poses:
@@ -529,6 +537,8 @@ def parse_args():
     ap.add_argument("--dtype", choices=("bf16", "fp32", "fp16"), default="bf16")
     ap.add_argument("--ncycle", type=int, default=10)
     ap.add_argument("--nsample", type=int, default=5)
+    ap.add_argument("--expect-poses", type=int, default=None,
+                    help="cifs a fold must write when it differs from --nsample")
     ap.add_argument("--dataset", choices=paths.DATASET_NAMES, default="pxm2025")
     ap.add_argument("--ckpt-dir", default=str(paths.PROTENIX_CKPT))
     ap.add_argument("--model-name", default="protenix-v2")
@@ -562,7 +572,7 @@ def check_queue(A, units):
     an incomplete namespace, and a templated queue aimed at the shared free pool -- whose poses would
     then become candidates for templating themselves.
     """
-    templated = [u for u in units if u[0] != "free"]
+    templated = [u for u in units if u[0] not in ("free", "posez")]
     if templated and not A.templates:
         raise SystemExit(f"{len(templated)} templated units need --templates "
                          "(run build_templates.py first)")
@@ -768,16 +778,30 @@ def run_unit(ctx, unit):
             except OSError:
                 pass
 
-    ctx.point_templates_at(kind != "free")
-    if kind == "free":
+    ctx.point_templates_at(kind not in ("free", "posez"))
+    if kind in ("free", "posez"):
         # a template-free dataset's free folds must consume none, or they do not match its pool
         job_src, env = f"{ctx.jobs}/{pdb}-final-updated.json", {}
         expect = None if ctx.free_templates else 0
+        # posez: the pose enters z through the CONFIDENCE HEAD's distance projections, not as a
+        # template -- undiluted and with the inter-chain block intact, where the template path
+        # averages a self-pose with every real hit and zeroes cross-chain features by default.
+        # POSEZ_CYCLES / POSEZ_GAIN override the injection point and strength for the whole queue.
+        if kind == "posez":
+            env = dict(env,
+                       PROTENIX_POSE_Z_CIF=poses[0],
+                       PROTENIX_POSE_Z_CYCLES=os.environ.get("POSEZ_CYCLES", "0"),
+                       PROTENIX_POSE_Z_GAIN=os.environ.get("POSEZ_GAIN", "1.0"))
         # TRUNK_LOAD_DIR also serves FREE units (the compute-matched control): resume this seed's own saved trunk, <dir>/<pdb>/free_<seed>.npz,
         # with no template. Missing file = the unit fails, never a fresh fold.
         _tl = os.environ.get("TRUNK_LOAD_DIR")
         if _tl:
-            _tf = f"{_tl}/{pdb}/free_{seed}.npz"
+            # TAG@SUFFIX names the trunk: a unit tagged "br03@p2" resumes the trunk dumped by the
+            # unit tagged "br03". Needed because the default name is keyed on the SEED alone, so 20
+            # repeats of one seed would all collide on free_<seed>.npz -- and repeats of one seed is
+            # exactly the design here. No "@" in the tag => the old free_<seed>.npz name.
+            _tt = tag.split("@")[0] if "@" in tag else None
+            _tf = (f"{_tl}/{pdb}/{_tt}_{seed}.npz" if _tt else f"{_tl}/{pdb}/free_{seed}.npz")
             if not os.path.exists(_tf):
                 print(f"  {pdb} {tag}: no saved trunk for seed {seed} ({_tf})", flush=True)
                 release()
@@ -812,6 +836,16 @@ def run_unit(ctx, unit):
             release()
             return "failed"
         env = dict(env, PROTENIX_DUMP_TRUNK=_tf)
+    # CONF_ZDROP_DIR=<dir> (with PROTENIX_CONF_ZDROP=<p> in the environment): the self-distillation dropout
+    # check writes this fold's per-pose clean and z-dropout chain_pair_iptm to <dir>/<pdb>/<tag>_<seed>.json.
+    _zd = os.environ.get("CONF_ZDROP_DIR")
+    if _zd:
+        _zf = f"{_zd}/{pdb}/{tag}_{seed}.json"
+        if os.path.exists(_zf):
+            print(f"  {pdb} {tag} seed {seed}: FAILED -- zdrop file already exists: {_zf}", flush=True)
+            release()
+            return "failed"
+        env = dict(env, PROTENIX_CONF_ZDROP_OUT=_zf)
 
     rdir = runmeta.run_dir(A.out, pdb, seed, runmeta.run_id())
     name = f"{target.replace('*', pdb)}_{tag}"
@@ -826,9 +860,11 @@ def run_unit(ctx, unit):
         release()
         return "failed"
     try:
-        empty = ctx.no_templates if kind == "free" and not ctx.free_templates else None
+        empty = (ctx.no_templates
+                 if kind in ("free", "posez") and not ctx.free_templates else None)
         dt, tcounts = fold(ctx.runner, ctx.configs, named_job(job_src, name, f"{rdir}/jobs", empty),
-                           int(seed), name, A.ncycle, A.nsample, expect, rdir, env)
+                           int(seed), name, A.ncycle, A.nsample, expect, rdir, env,
+                           expect_poses=A.expect_poses)
     except Exception as e:
         print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- {type(e).__name__}: {str(e)[:120]}",
               flush=True)
@@ -965,6 +1001,28 @@ def main():
     tally = run_queue(ctx, units)
     print(f"queue complete: {tally['ran']} folds run, {tally['skipped']} already scored, "
           f"{tally['failed']} failed", flush=True)
+
+    # SECOND PASS over whatever is still unscored. A worker walks the queue ONCE, so a unit that
+    # becomes claimable only AFTER it has gone past is orphaned: nobody comes back for it, and the
+    # complex never reaches its full count. That is not hypothetical -- releasing a dead worker's
+    # claim does exactly this, and on 2026-10-06 one fold of 8che sat unclaimed and unfolded at 49/50
+    # while both workers had already moved on to the next complex, holding two decoy interfaces out
+    # of the comparison.
+    #
+    # Each pass re-reads the csv, so anything another worker has since finished is skipped, and claims
+    # still keep two workers off the same unit. Passes stop as soon as one runs nothing -- bounded, so
+    # a genuinely failing unit cannot spin here.
+    for sweep in range(1, 4):
+        ctx.rows_done, ctx.units_done = open_csv(A.csv)
+        if A.claim_dir:
+            reconcile_claims(A.claim_dir, A.csv, ifaces)
+        again = run_queue(ctx, units)
+        if not again["ran"]:
+            break
+        print(f"  sweep {sweep}: picked up {again['ran']} orphaned folds "
+              f"({again['failed']} failed)", flush=True)
+        for k, v in again.items():
+            tally[k] += v
     return 0
 
 

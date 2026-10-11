@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-"""Build hmmsearch templates for the validation job jsons, using Protenix's own template search.
+"""PHASE H -- find structural templates for every validation chain, with Protenix's own search.
+
+WHAT A TEMPLATE IS. A known, already-solved structure whose sequence resembles our chain. Handing
+one to the model gives it a starting guess for the fold, which is a different kind of information
+from an alignment: the alignment says how the sequence varies, the template says what a relative
+actually looked like.
 
 WHY A DRIVER IS NEEDED
     runner/template_search.py exposes update_template_info(json_data, ...), which for every protein
@@ -23,8 +28,14 @@ THE DATABASE is pdb_seqres_2022_09_28.fasta. template_search.py downloads it to
 
 INPUTS   --jobs-dir: the directory of validation job jsons. Each is rewritten in place with its
                      templatesPath fields pointing at the hmmsearch.a3m that now exists.
-OUTPUTS  <msa_dir>/hmmsearch.a3m per unique chain sequence, and a report on stdout.
+         --msa-dir:  where the per-chain MSA directories are, for the final count.
+OUTPUTS  <msa_dir>/<chain>/hmmsearch.a3m per unique chain sequence, and a report on stdout.
          Exit code 1 if any protein chain still lacks a template file.
+
+AN OPEN METHODOLOGICAL POINT, recorded rather than silently decided. pxm2025 folds use templates and
+FoldBench folds do not. A confidence head calibrated on template-bearing poses would then be
+evaluated on FoldBench without them. The validation set is built WITH templates to match pxm2025,
+which is the arm it is compared against, but this difference has to be stated in the write-up.
 """
 import argparse
 import glob
@@ -32,7 +43,14 @@ import json
 import os
 import sys
 
-sys.path.insert(0, "/home/ebrahim/Protenix")
+# PROTENIX_ROOT_DIR IS SET HERE, not left to the caller. template_search.py downloads
+# pdb_seqres_2022_09_28.fasta to $PROTENIX_ROOT_DIR/search_database/ on first use, and with the
+# variable unset that lands in $HOME -- outside tts_abag, which everything in this project is
+# supposed to stay inside, and on a quota that is not the one we manage.
+PROTENIX = os.environ.get("PROTENIX_DIR", "/home/ebrahim/Protenix")
+os.environ.setdefault("PROTENIX_ROOT_DIR", "/home/ebrahim/tts_abag/extra_training/protenix_root")
+os.makedirs(os.path.join(os.environ["PROTENIX_ROOT_DIR"], "search_database"), exist_ok=True)
+sys.path.insert(0, PROTENIX)
 
 from runner.template_search import update_template_info  # noqa: E402
 
@@ -40,7 +58,9 @@ from runner.template_search import update_template_info  # noqa: E402
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--jobs-dir", default="/home/ebrahim/tts_abag/extra_training/val_jobs")
+    ap.add_argument("--msa-dir", default="/home/ebrahim/tts_abag/extra_training/msa_work/mmcif_msa")
     a = ap.parse_args()
+    print(f"PROTENIX_ROOT_DIR={os.environ['PROTENIX_ROOT_DIR']}")
 
     files = sorted(f for f in glob.glob(f"{a.jobs_dir}/*.json"))
     if not files:
@@ -82,6 +102,14 @@ def main():
         print(f"  PROBLEM {n}: {why}")
     if failed:
         sys.exit(f"STOP: {len(failed)} chains have no template file")
+
+    # The per-chain count, which the per-json check above does not give: MSA directories are keyed by
+    # sequence, so chains shared between complexes are one file checked many times.
+    n_tmpl = sum(1 for d in os.listdir(a.msa_dir)
+                 if os.path.isfile(os.path.join(a.msa_dir, d, "hmmsearch.a3m")))
+    n_msa = sum(1 for d in os.listdir(a.msa_dir)
+                if os.path.isfile(os.path.join(a.msa_dir, d, "pairing.a3m")))
+    print(f"hmmsearch.a3m on disk: {n_tmpl} of {n_msa} chain directories")
     print("every protein chain in every validation json has an hmmsearch.a3m")
 
 

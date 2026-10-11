@@ -141,7 +141,7 @@ makes the staged two-database build possible.
 which in their pipeline is `<pdb_id>_<entity_id>` (their example `0.a3m` begins `>102m_1`). The
 installed ColabFold instead writes a constant `>101` in all 5,305 files and carries the real query
 name only in the filename; run unmodified it would resolve one key for every query and collapse all
-output into a single directory, keeping the last. `prep_step4_inputs.py` gives each alignment its own
+output into a single directory, keeping the last. `phase_f_pair_and_split.py` gives each alignment its own
 query header — both occurrences, because `step3` locates the UniRef/env boundary by the query header
 repeating — and writes `step4`'s two index files from the query fastas. It first asserts that every
 a3m's second line equals the fasta sequence for its filename (5,304 of 5,305; the single exception is
@@ -214,10 +214,10 @@ before/after on the same poses with the same scorer, so any scorer offset cancel
 | `extra_training/scripts/phase1_uniref.sh`, `phase1_index.sh`, `phase1_search_idx.sh` | UniRef30 build, index and first search |
 | `extra_training/scripts/phase1b_short.sh` | second UniRef pass for the short antigen chains |
 | `extra_training/scripts/phase2_envdb.sh` | environmental database, `download` / `build` modes |
-| `extra_training/scripts/prep_step4_inputs.py` | per-query a3m headers and `step4`'s index files |
+| `extra_training/phases/phase_f_pair_and_split.py` | per-query a3m headers and `step4`'s index files |
 | `extra_training/phases/phase_b_define_val_clusters.py` | the date-binned, cluster-held-out validation split |
-| `diffusion_commit_clean_v2/build_val_jobs.py` | job jsons, `pool.csv`, `chain_roles.csv`, staged references |
-| `extra_training/scripts/run_template_search.py` | templates for every validation chain |
+| `extra_training/phases/phase_g_build_val_jobs.py` | job jsons, `pool.csv`, `chain_roles.csv`, staged references |
+| `extra_training/phases/phase_h_search_templates.py` | templates for every validation chain |
 | `extra_training/scripts/overnight.sh` | the gated preparation chain |
 | `extra_training/scripts/val_fold.sh` | smoke test and the validation fold |
 | `extra_training/scripts/see_it_through.sh` | drives preparation → smoke → fold → hand back the GPUs |

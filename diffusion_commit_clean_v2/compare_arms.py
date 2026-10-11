@@ -81,10 +81,14 @@ def donors_used(exp, first):
         f = line.rstrip("\n").split("\t")
         if len(f) >= 6:
             srcs.add(f[5])
-    for r in csv.DictReader(open(f"{exp}/results.csv")):
-        d = r.get("donor_pose", "")
-        if d and d != "-1":
-            srcs.add(d)
+    # An arm that is queued but has not folded yet has NO results.csv. Its donors are fully described
+    # by the queue, so treat the missing file as "nothing scored" rather than crashing -- the pxm
+    # mask-ON arm is in exactly that state (2,937 folds queued, 0 done).
+    if os.path.exists(f"{exp}/results.csv"):
+        for r in csv.DictReader(open(f"{exp}/results.csv")):
+            d = r.get("donor_pose", "")
+            if d and d != "-1":
+                srcs.add(d)
     per, shallow = collections.defaultdict(set), {}
     for d in srcs:
         m = DONOR_SEED.search(d)
@@ -146,9 +150,17 @@ def oracle(rows):
 
 
 def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
-         require_match=True, pick=top):
-    """in: everything loaded, and pick (top or oracle).  out: (rows, n unmatched complexes, n partial
-    interfaces)"""
+         require_match=True, pick=top, match_factor=1.0):
+    """in: everything loaded, pick (top or oracle), and the compute-match factor.
+    out: (rows, n unmatched complexes, n partial interfaces)
+
+    MATCH_FACTOR is free seeds per method fold. 1.0 assumes a method fold costs one free fold, which
+    holds when both run the same recycles. An arm run at FEWER recycles is cheaper, so matching 1:1
+    would hand it more compute than the baseline and flatter it. Measured on 36 paired 9g9p folds
+    (same donors, same seeds, 4 workers either way), ncycle 5 costs 0.68 of ncycle 10 -- so a
+    5-recycle arm is matched with --match-factor 0.68. The seed COUNT is rounded, and at least one
+    seed is kept whenever any donor exists, so a small interface does not silently lose its baseline.
+    """
     acc = collections.defaultdict(lambda: collections.defaultdict(list))
     unmatched, partial = set(), 0
     by_pdb = collections.defaultdict(list)
@@ -162,8 +174,9 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
             partial += 1
             continue
         n_donor = len(per.get(pdb, ()))
-        avail = matched_seeds(extra, by_pdb[pdb], n_donor)
-        if len(avail) < n_donor:
+        n_match = max(1, round(n_donor * match_factor)) if n_donor else 0
+        avail = matched_seeds(extra, by_pdb[pdb], n_match)
+        if len(avail) < n_match:
             unmatched.add(pdb)
             if require_match:
                 continue
@@ -171,7 +184,7 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
         base = [(ip, dq) for s, _, dq, ip in rows if s in first[pdb]]
         if not base:
             continue
-        add = [v for s in avail[:n_donor] for v in extra[iface][s]]
+        add = [v for s in avail[:n_match] for v in extra[iface][s]]
         t_all = tmpl.get(iface, [])
         t_50 = [r for r in t_all if shallow.get(r[2], False)]
         k = cls[iface]
@@ -179,15 +192,49 @@ def arms(pool, first, cls, per, shallow, extra, tmpl, made, unfinished, classes,
         acc[k]["matched"].append(pick(base + add))
         acc[k]["m50"].append(pick(t_50) if t_50 else pick(base))
         acc[k]["mall"].append(pick(t_all) if t_all else pick(base))
+        # POOLED: the free 50 plus the method's templated folds. This is base + t_all, NOT
+        # base + add + t_all -- adding the matched extras too would spend 50 + 2N folds against the
+        # baseline's 50 + N and quietly double the method's compute.
+        #
+        # WHY IT BELONGS HERE. "method" selects from the templated poses ALONE, so it holds only
+        # N*5 poses while "free + matched" holds (50+N)*5 -- measured at 200 vs 450 on the FoldBench
+        # decoys, i.e. 44% as many at EQUAL compute. Oracle DockQ rises with pool size, so comparing
+        # those two columns on oracle charges the method for a pool-size gap rather than a quality
+        # gap. This column restores the pose count: base + t_all is (50+N)*5, exactly matching
+        # "free + matched" in both folds and poses, so the only difference left is whether the extra
+        # N folds were free seeds or templated ones -- which is the actual question.
+        #
+        # CAVEAT for the top-ipTM column: pair_iptm is not comparable across regimes, but NOT because templated folds
+        # run hotter -- measured 2026-10-06 on 110 solved interfaces, templated ipTM is LOWER than
+        # free at every DockQ level (-0.013 to -0.044) and its mean is 0.507 vs free's 0.592. The
+        # real mechanism is the UPPER TAIL: a templated pose beats free's own best ipTM on 76% of
+        # interfaces by a median +0.021, while extra FREE poses do so on only 30% (median -0.005).
+        # Templated poses are 31% of the pooled arm yet win 76% of the argmaxes -- 2.5x their share,
+        # where extra free poses win 30%, exactly their share. Templating is effectively bimodal (a
+        # confident pose or a poor one) and an argmax over 250+ poses only ever sees the confident
+        # mode. So pooling can prefer a templated pose worse than an available free one -- measured
+        # on 8fdd, where the pool held free at 0.579 and selected 0.221 on a 0.0006 ipTM margin.
+        # Read this column as a coverage ceiling under --select oracle; under top-ipTM it is a real
+        # arm but an uncalibrated one.
+        acc[k]["pooled"].append(pick(base + t_all) if t_all else pick(base))
+        # ALL: every scored interface in one row, so the net effect is visible without the reader
+        # having to weight three class means by hand. Accumulated per interface (not averaged over
+        # the class means), so an interface counts once however its class is sized.
+        for _a, _v in (("free50", pick(base)), ("matched", pick(base + add)),
+                       ("m50", pick(t_50) if t_50 else pick(base)),
+                       ("mall", pick(t_all) if t_all else pick(base)),
+                       ("pooled", pick(base + t_all) if t_all else pick(base))):
+            acc["ALL"][_a].append(_v)
     rows = []
-    for k in classes:
+    for k in list(classes) + (["ALL"] if len(acc) > 2 else []):
         d = acc[k]
         if not d:
             continue
         n = len(d["free50"])
         # acceptable count, then the mean DockQ of the selected pose over the same interfaces
         hit = lambda v: f"{sum(1 for x in v if x >= ACCEPTABLE)}/{n} ({sum(v) / n:.3f})"  # noqa: E731
-        rows.append([k, n, hit(d["free50"]), hit(d["matched"]), hit(d["m50"]), hit(d["mall"])])
+        rows.append([k, n, hit(d["free50"]), hit(d["matched"]), hit(d["m50"]), hit(d["mall"]),
+                     hit(d["pooled"])])
     return rows, len(unmatched), partial
 
 
@@ -201,6 +248,12 @@ def main():
     ap.add_argument("--no-require-match", action="store_true",
                     help="report the method arms over every finished interface, matched or not; the free+matched column is then not comparable")
     ap.add_argument("--select", choices=["iptm", "oracle"], default="iptm")
+    ap.add_argument("--match-factor", type=float, default=1.0,
+                    help="free seeds per method fold; 0.68 for a 5-recycle arm against 10-recycle "
+                         "free folds (measured on 36 paired 9g9p folds)")
+    ap.add_argument("--per-interface", action="store_true",
+                    help="one row per finished interface -- class, interface, free, free matched, "
+                         "method -- instead of the per-class summary. For watching a run fill in.")
     ap.add_argument("--out", default=None)
     A = ap.parse_args()
     ds, exp, extra_csv = arm_defaults(A.dataset)
@@ -212,18 +265,63 @@ def main():
     extra = extra_free(A.extra_csv, first)
     tmpl = tmpl_by_donor(A.exp)
     made, unfinished = load_scored(A.exp)
+    if A.per_interface:
+        by_pdb = collections.defaultdict(list)
+        for i in pool:
+            by_pdb[i.split("_")[0]].append(i)
+        out = []
+        for iface in sorted(pool):
+            if iface not in made or iface in unfinished:
+                continue
+            pdb = iface.split("_")[0]
+            n_donor = len(per.get(pdb, ()))
+            n_match = max(1, round(n_donor * A.match_factor)) if n_donor else 0
+            avail = matched_seeds(extra, by_pdb[pdb], n_match)
+            base = [(ip, dq) for s, _, dq, ip in pool[iface] if s in first[pdb]]
+            add = [v for s in avail[:n_match] for v in extra[iface][s]]
+            t = tmpl.get(iface, [])
+            if not base or not t:
+                continue
+            pick = oracle if A.select == "oracle" else top
+            out.append([cls.get(iface), iface, f"{pick(base):.3f}",
+                        f"{pick(base + add):.3f}", f"{pick(t):.3f}"])
+        print(table(["class", "interface", "free", "free matched", "method"], out,
+                    align="l l r r r"))
+        print(f"\n  interfaces: {len(out)}   unfinished excluded: {len(unfinished)}"
+              f"   compute match: {A.match_factor:g} free seeds per method fold")
+        return 0
+
     rows, unmatched, partial = arms(pool, first, cls, per, shallow, extra, tmpl,
                                     made, unfinished, A.classes.split(","),
                                     require_match=not A.no_require_match,
-                                    pick=oracle if A.select == "oracle" else top)
-    head = ["class", "interfaces (n)", f"free {A.pool_seeds}", "free + matched",
-            f"method ({A.pool_seeds}-seed donors)", "method (all donors)"]
-    out = table(head, rows, align="l r r r r r")
+                                    pick=oracle if A.select == "oracle" else top,
+                                    match_factor=A.match_factor)
+    # The two method arms differ ONLY where donors came from seeds past the first 50 (pxm2025: 302 of
+    # 3,132 donor poses). On an arm whose donors are all inside the first 50 -- every FoldBench arm so
+    # far -- the columns are identical and printing both invites the reader to look for a difference
+    # that cannot exist. Collapse to one column in that case and say so in the tail.
+    # rows are [class, n, free50, matched, m50, mall, pooled]. The two method arms collapse to one
+    # when identical (see arms()); the pooled column stays last either way.
+    collapsed = bool(rows) and all(r[-3] == r[-2] for r in rows)
+    if collapsed:
+        rows = [r[:-3] + r[-2:] for r in rows]
+        head = ["class", "interfaces (n)", "free",
+                f"free + matched x{A.match_factor:g}", "method", "free + method"]
+    else:
+        head = ["class", "interfaces (n)", "free",
+                f"free + matched x{A.match_factor:g}",
+                f"method ({A.pool_seeds}-seed donors)", "method (all donors)",
+                "free + method"]
+    out = table(head, rows, align="l r" + " r" * (len(head) - 2))
     tail = (f"\n  dataset: {A.dataset}   experiment: {A.exp}\n"
             f"  pose per arm: {'best DockQ (oracle, evaluation only)' if A.select == 'oracle' else 'highest ipTM'}\n"
             f"  classes computed on the first {A.pool_seeds} seeds per complex\n"
+            f"  compute match: {A.match_factor:g} free seeds per method fold\n"
             f"  complexes excluded as not yet compute-matched: {unmatched}\n"
-            f"  interfaces excluded as unfinished: {partial}")
+            f"  interfaces excluded as unfinished: {partial}"
+            + ("\n  method: every donor came from the first "
+               f"{A.pool_seeds} seeds, so the '{A.pool_seeds}-seed donors' and 'all donors' arms are "
+               "identical and are shown as one column" if collapsed else ""))
     print(out)
     print(tail)
     if A.out:

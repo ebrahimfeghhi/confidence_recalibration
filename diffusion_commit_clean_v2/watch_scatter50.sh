@@ -1,0 +1,74 @@
+#!/bin/bash
+# Every 30 minutes: check the seed_scatter_50 run is folding, remediate what can be fixed, score what is new.
+#
+#   folds done      run.json written under poses/ (a fold that finished all 50 samples)
+#   FAILED / OOM    counted from the worker logs
+#
+# REMEDIATE: a GPU in GPUS with no worker session while the queue is unfinished gets its worker
+# relaunched (claims make that safe; folder.py releases a dead worker's claim at startup).
+# ESCALATE (logged for Claude's 30-minute check, not fixed here): workers up but no fold finished in 30
+# minutes, or OOM failures -- a 50-sample fold that does not fit needs a decision, not a blind retry.
+# Then the scorer (analysis/seed_scatter_score.py, CPU) scores every newly finished fold. When the queue
+# is done and no worker is left: final score, release the GPU holders, exit.
+set -u
+E=/home/ebrahim/tts_abag/experimental_data/protenix/pxm2025/seed_scatter_50
+C=/home/ebrahim/tts_abag/diffusion_commit_clean_v2
+PY=/home/ebrahim/Protenix/.venv/bin/python
+GPUS="${GPUS:-0 1 2 3}"
+PREFIX=s50ww
+LOG=$E/watch.log
+say() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+
+total=$(grep -c . "$E/queue.tsv")
+prev_done=-1
+while true; do
+    done_n=$(ls "$E"/poses/*/*/run.json 2>/dev/null | wc -l)
+    workers=$(tmux ls 2>/dev/null | grep -c "^${PREFIX}")
+    # failed = folds whose LAST attempt failed and that have no finished run (a retried fold that then
+    # succeeded is not a failure)
+    failed=0
+    for f in $(grep -h FAILED "$E"/w[0-9]*.log 2>/dev/null | grep -o '[0-9a-z]\{4\} \* scatter50 seed [0-9]*' | awk '{print $1"/"$5}' | sort -u); do
+        ls "$E"/poses/${f%/*}/${f#*/}-*/run.json >/dev/null 2>&1 || failed=$((failed + 1))
+    done
+    oom=$(cat "$E"/w[0-9]*.log 2>/dev/null | grep -ci "out of memory")   # cumulative over the run
+    used=$(quota -s 2>/dev/null | tail -1 | awk '{print $2}')
+    say "folds done $done_n/$total  workers $workers  FAILED $failed  OOM lines $oom  disk $used of 1024G"
+
+    if [ "$((done_n + failed))" -lt "$total" ]; then
+        for g in $GPUS; do
+            if ! tmux has-session -t "${PREFIX}$g" 2>/dev/null; then
+                tmux kill-session -t "hold$g" 2>/dev/null
+                say "  REMEDIATE: no worker on GPU $g with the queue unfinished -- relaunching"
+                (cd "$C" && $PY call_folder.py --queue "$E/queue.tsv" --out "$E/poses" --csv "$E/results.csv" \
+                    --claim-dir "$E/claims" --log-dir "$E" --session s50w --nsample 50 --gpus "$g" \
+                    --env PROTENIX_CONF_OFFLOAD_TOKENS=0 --run >> "$LOG" 2>&1)
+            fi
+        done
+        [ "$done_n" -eq "$prev_done" ] && ! ls /home/ebrahim/tts_abag/experimental_data/protenix/foldbench/seed_scatter_50/w[0-9]*.log >/dev/null 2>&1 \
+            && say "  ESCALATE: no fold finished in 30 min with $workers workers up"
+    fi
+    [ "$oom" -gt "${prev_oom:-0}" ] && say "  ESCALATE: $oom out-of-memory lines -- $(grep -hi -B2 'out of memory' "$E"/w[0-9]*.log | grep -o '[0-9a-z]\{4\}_scatter50 \[seed:[0-9]*\]' | sort -u | tr '\n' ' ')"
+    used_g=${used%G}
+    [ "${used_g%%.*}" -ge 950 ] 2>/dev/null && say "  ESCALATE: disk at $used"
+
+    (cd "$C" && $PY analysis/seed_scatter_score.py --jobs 16 2>&1 | tail -n 6 >> "$LOG")
+    # FoldBench decoys (switch_to_foldbench.sh moves GPUs there after the pxm2025 decoys): report and score
+    F=/home/ebrahim/tts_abag/experimental_data/protenix/foldbench/seed_scatter_50
+    if [ -d "$F/poses" ]; then
+        fb_done=$(ls "$F"/poses/*/*/run.json 2>/dev/null | wc -l)
+        fb_fail=$(cat "$F"/w[0-9]*.log 2>/dev/null | grep -c FAILED)
+        fb_oom=$(cat "$F"/w[0-9]*.log 2>/dev/null | grep -ci "out of memory")
+        say "FoldBench decoys: folds done $fb_done/$(grep -c . "$F/queue.tsv")  FAILED lines $fb_fail  OOM lines $fb_oom"
+        [ "$fb_oom" -gt 0 ] && say "  ESCALATE: FoldBench out-of-memory lines $fb_oom"
+        (cd "$C" && $PY analysis/seed_scatter_score.py --dataset foldbench --jobs 16 2>&1 | tail -n 4 >> "$LOG")
+    fi
+    prev_done=$done_n; prev_oom=$oom
+
+    if [ "$((done_n + failed))" -ge "$total" ] && [ "$(tmux ls 2>/dev/null | grep -c "^${PREFIX}")" -eq 0 ]; then
+        for g in $GPUS; do tmux kill-session -t "hold$g" 2>/dev/null; done
+        say "DONE: queue finished ($done_n folds, $failed failed); final score written; watcher exiting"
+        exit 0
+    fi
+    say "---"
+    sleep 1800
+done

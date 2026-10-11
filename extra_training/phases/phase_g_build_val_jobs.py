@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Write Protenix job jsons for the validation clusters, one representative structure per cluster.
+"""PHASE G -- write one Protenix job json per validation structure.
 
 SUMMARY
     Validation for the confidence-head finetune is held out BY CLUSTER (phase_b_define_val_clusters.py: 50
@@ -44,15 +44,15 @@ import sys
 
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-# Phases A-C live under extra_training/phases/. This file is phase G and has not moved yet.
-sys.path.insert(0, os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "extra_training", "phases"))
+# This file lives at <repo>/extra_training/phases/, so the repo root is three levels up. paths.py
+# stays at the repo root: it is shared infrastructure that 20+ files import.
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+sys.path.insert(0, REPO)
 
 import phase_a_define_train_set as A  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VAL = f"{REPO}/extra_training/results/val_clusters.csv"
 MSA_ROOT = f"{REPO}/extra_training/msa_work/mmcif_msa"
 OUT = f"{REPO}/extra_training/val_jobs"

@@ -1,5 +1,13 @@
 #!/usr/bin/env python
-"""Make ColabFold's a3m output consumable by Protenix's step3/step4, and write their two index files.
+"""SUPERSEDED by extra_training/phases/phase_f_pair_and_split.py, which absorbed this file.
+
+Kept only until phase F has run once against the real batches. Two differences in phase F, both
+deliberate: it reads each batch's frozen query.searched.fasta rather than msa_work/query.fasta (the
+a3m filenames come from the fasta ColabFold was given, and phase C's current output legitimately
+differs by a record), and it writes the step4 index files ONCE from all batches in a single process
+instead of merging into them per batch, which could leave stale entries behind after a re-run.
+
+Make ColabFold's a3m output consumable by Protenix's step3/step4, and write their two index files.
 
 WHY THIS IS NEEDED
     Protenix's MSA pipeline assumes the a3m files come from THEIR step1 fasta, whose headers are
