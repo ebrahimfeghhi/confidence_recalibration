@@ -43,10 +43,10 @@ NA3M=$(ls "$W"/msa_initial_idx/*.a3m 2>/dev/null | wc -l)
 say "stage 1 OK: $NA3M a3m, uniref_tax.m8 with real taxids"
 
 # ---------------------------------------------------------------- stage 2: env database
-# uniref30 is already gone (deleted 2026-10-10 21:00). The env pass resumes from uniref.a3m, which
-# the staging patch keeps, so uniref30 is never needed again -- the search log line
-# "Staging mode: uniref.a3m exists" confirmed that path works.
-rm -rf "$DB"/uniref30_2302_db* "$DB"/UNIREF30_READY
+# uniref30's database is already gone and is not needed again: the env pass resumes from uniref.a3m,
+# which the staging patch keeps ("Staging mode: uniref.a3m exists" in the search log).
+# UNIREF30_READY MUST STAY. setup_databases.sh is re-entered here to build the env database, and
+# without that marker it first tries to rebuild uniref30 from a tarball that no longer exists.
 say "stage 2: colabfold_envdb via phase2_envdb.sh (download + build, index-free)"
 bash $R/extra_training/scripts/phase2_envdb.sh || die "envdb download/build failed (phase2_envdb.log)"
 # gate on the data file, NOT on an exit code: `mmseqs dbtype <missing-db>` returns 0, which is how
@@ -66,24 +66,56 @@ rm -rf "$DB"/colabfold_envdb_202108_db* "$DB"/COLABDB_READY
 say "envdb removed; quota now $(quota -s 2>/dev/null | awk '/nvme/{print $2}')"
 
 # ---------------------------------------------------------------- stage 3: taxids + pairing split
-say "stage 3: step1 (sequence index), step3 (taxids), step4 (pairing split)"
-mkdir -p $W/pdb_seqs
+# step1 is NOT run. It reads _entity_poly.pdbx_seq_one_letter_code_can from the mmCIF, which the
+# SAbDab2 cifs do not carry (it skipped 4,550 of 4,555), and its sequences would be the full deposited
+# constructs rather than the SAbDab2 chain sequences our MSAs were searched with. prep_step4_inputs.py
+# writes the two index files from the query fasta instead, and gives each a3m its own query header --
+# our ColabFold writes a constant ">101" in all 5,305, which would collapse step4's output into one
+# directory.
+say "stage 3a: per-query a3m headers + step4 index files"
+$PY $R/extra_training/scripts/prep_step4_inputs.py --a3m-dir $W/msa_initial_idx \
+    --fasta $W/query.fasta --out-dir $W/msa_initial_named --index-dir $W/pdb_seqs \
+    >> $W/prep_step4.log 2>&1 || die "prep_step4_inputs.py failed (see prep_step4.log)"
+[ -s "$W/pdb_seqs/seq_to_pdb_index.json" ] || die "prep_step4_inputs.py wrote no seq_to_pdb_index.json"
+NNAMED=$(ls $W/msa_initial_named/*.a3m 2>/dev/null | wc -l)
+[ "$NNAMED" -ge 5000 ] || die "only $NNAMED a3m carry a per-query header (expected ~5304)"
+say "stage 3a OK: $NNAMED a3m renamed, $(grep -c . $W/pdb_seqs/seq_to_pdb_index.json 2>/dev/null) index file written"
+
+say "stage 3b: step3 -- write NCBI taxids into the UniRef headers"
 cd $P || die "no Protenix"
-$PY scripts/msa/step1-get_prot_seq.py --cif_dir $R/extra_training/data/training_cifs \
-    --out_dir $W/pdb_seqs >> $W/step1.log 2>&1 || die "step1 failed (see step1.log)"
-[ -s "$W/pdb_seqs/seq_to_pdb_index.json" ] || die "step1 produced no seq_to_pdb_index.json"
-say "stage 3a OK: $(/usr/bin/python3 -c "import json;print(len(json.load(open('$W/pdb_seqs/seq_to_pdb_index.json'))))") sequences indexed"
-say "stage 3b: step3/step4 are UNTIMED and their CLI is not verified -- running with a hard timeout"
-timeout 10800 $PY scripts/msa/step3-uniref_add_taxid.py >> $W/step3.log 2>&1 \
+taskset -c $CORES timeout 14400 $PY scripts/msa/step3-uniref_add_taxid.py \
+    --input_msa_dir $W/msa_initial_named --output_msa_dir $W/mmcif_msa_with_taxid \
+    --num_workers 16 --mp_read_workers 16 >> $W/step3.log 2>&1 \
     || say "WARN step3 returned non-zero or timed out; see step3.log"
-timeout 10800 $PY scripts/msa/step4-split_msa_to_uniref_and_others.py \
+# GATE ON CONTENT, not on file count: step3 writes an output file whether or not it found a taxid, and
+# a taxid-less run is exactly the silent failure that makes pairing impossible. A tagged header looks
+# like ">UniRef100_A0A123_9606/".
+NOUT=$(ls $W/mmcif_msa_with_taxid/*.a3m 2>/dev/null | wc -l)
+NTAGGED=0
+for f in $(ls $W/mmcif_msa_with_taxid/*.a3m 2>/dev/null | head -20); do
+    grep -qE '^>UniRef100_.*_[0-9]+/' "$f" && NTAGGED=$((NTAGGED+1))
+done
+say "stage 3b: $NOUT files out, $NTAGGED of the first 20 carry taxid-tagged headers"
+[ "$NOUT" -ge 5000 ] || die "step3 wrote only $NOUT a3m"
+[ "$NTAGGED" -ge 15 ] || die "only $NTAGGED of 20 sampled a3m have taxid-tagged headers -- pairing would be empty"
+say "stage 3b OK"
+
+say "stage 3c: step4 -- split each a3m into pairing.a3m (UniRef100) and non_pairing.a3m"
+taskset -c $CORES timeout 14400 $PY scripts/msa/step4-split_msa_to_uniref_and_others.py \
     --input_msa_dir $W/mmcif_msa_with_taxid --output_msa_dir $W/mmcif_msa \
     --seq_to_pdb_id $W/pdb_seqs/seq_to_pdb_id_entity_id.json \
-    --seq_to_pdb_index $W/pdb_seqs/seq_to_pdb_index.json >> $W/step4.log 2>&1 \
+    --seq_to_pdb_index $W/pdb_seqs/seq_to_pdb_index.json --num_workers 32 >> $W/step4.log 2>&1 \
     || say "WARN step4 returned non-zero or timed out; see step4.log"
 NPAIR=$(find $W/mmcif_msa -name pairing.a3m 2>/dev/null | wc -l)
-[ "$NPAIR" -ge 100 ] || die "only $NPAIR pairing.a3m produced -- step3/step4 did not work as assumed"
-say "stage 3 OK: $NPAIR pairing.a3m"
+# ONE DIRECTORY PER QUERY. The old threshold of 100 would have passed the header-collision bug, which
+# produces exactly one directory, so the gate is the query count.
+[ "$NPAIR" -ge 5000 ] || die "only $NPAIR pairing.a3m -- expected one per query (~5304)"
+NEMPTY=0
+for f in $(find $W/mmcif_msa -name pairing.a3m | head -40); do
+    [ "$(wc -l < "$f")" -le 2 ] && NEMPTY=$((NEMPTY+1))
+done
+say "stage 3 OK: $NPAIR pairing.a3m, $NEMPTY of the first 40 hold only the query"
+[ "$NEMPTY" -le 20 ] || die "$NEMPTY of 40 pairing.a3m are empty -- taxid tagging did not take"
 
 # ---------------------------------------------------------------- stage 4: templates
 say "stage 4: templates (hmmsearch vs pdb_seqres) -- untimed, hard timeout"

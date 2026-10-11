@@ -55,9 +55,16 @@ build_queue() {
 run_workers() {
     local queue=$1 tag=$2
     for g in $GPUS; do
+        # TRUNK_DUMP_DIR, *not* PROTENIX_DUMP_TRUNK: folder.py:831 turns the former into a per-fold
+        # path <dir>/<pdb>/<tag>_<seed>.npz and refuses to overwrite an existing one. Pointing
+        # PROTENIX_DUMP_TRUNK at a directory instead makes protenix.py:1362 write <dir>/trunk.npz for
+        # every fold -- one file, overwritten 1,579 times.
+        # PROTENIX_DUMP_CONF_INPUTS=1 adds what re-running the CONFIDENCE HEAD offline needs:
+        # s_inputs, s_trunk in f32, the poses in model atom order, contact_probs and the six input
+        # features the head and the ipTM summary read. ~6 MB per fold on top of z.
         tmux new-session -d -s vf_${tag}_$g "cd $P && CUDA_VISIBLE_DEVICES=$g \
           LAYERNORM_TYPE=openfold \
-          PROTENIX_DUMP_TRUNK=$E/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
+          TRUNK_DUMP_DIR=$E/trunks PROTENIX_DUMP_TRUNK_BF16=1 PROTENIX_DUMP_CONF_INPUTS=1 \
           $PY $C/folder.py --queue $queue --out $E/poses --csv $E/results.csv \
           --claim-dir $E/claims --dataset sabdab_val --ncycle 10 --nsample 5 \
           --dtype bf16 --overlap-scoring >> $E/w$g.log 2>&1"
@@ -90,7 +97,7 @@ if [ "$MODE" = "smoke" ]; then
     say "queue: $(cat $SQ)"
     run_workers "$SQ" smoke
     say "-- did it produce a pose?"; find $E/poses -name '*.cif' | wc -l | sed 's/^/   cifs: /' | tee -a "$LOG"
-    say "-- did it dump a trunk?"; ls -la $E/trunks 2>/dev/null | tail -3 | tee -a "$LOG"
+    say "-- did it dump a trunk?"; find $E/trunks -name '*.npz' -printf '   %p %s bytes\n' 2>/dev/null | tee -a "$LOG"
     say "-- did the default scorer give DockQ?"; head -3 $E/results.csv 2>/dev/null | tee -a "$LOG"
     say "=== SMOKE DONE. Inspect the three above, then: val_fold.sh run ==="
     exit 0
@@ -142,7 +149,7 @@ for round in 1 2 3 4 5; do
 done
 say "validation folding finished"
 say "  poses: $(find $E/poses -name '*.cif' 2>/dev/null | wc -l)"
-say "  trunk dumps: $(ls $E/trunks 2>/dev/null | wc -l)"
+say "  trunk dumps: $(find $E/trunks -name '*.npz' 2>/dev/null | wc -l)"
 say "  scored rows: $(($(wc -l < $E/results.csv 2>/dev/null || echo 1)-1))"
 say "  cache size: $(du -sh $E/trunks 2>/dev/null | cut -f1)"
 

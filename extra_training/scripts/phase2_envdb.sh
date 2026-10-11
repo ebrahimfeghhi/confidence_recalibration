@@ -23,9 +23,14 @@
 set -u
 R=/home/ebrahim/tts_abag
 DB=$R/tools/colabfold/db
+# THE PREBUILT DATABASE, not the .tsv one. setup_databases.sh defaults FAST_PREBUILT_DATABASES=1
+# (line 20), and in that mode it extracts ${CFDB}.tar.gz straight to MMseqs db format and never calls
+# tsv2exprofiledb. phase1_uniref.sh:34 did the same for uniref30: it fetched uniref30_2302.db.tar.gz
+# and saved it under the plain name the script looks for. Verified by listing the archive head: its
+# first member is "colabfold_envdb_202108_db".
 TAR=$DB/colabfold_envdb_202108.tar.gz
-URL=https://opendata.mmseqs.org/colabfold/colabfold_envdb_202108.tar.gz
-WANT=117965643010
+URL=https://opendata.mmseqs.org/colabfold/colabfold_envdb_202108.db.tar.gz
+WANT=128576661224
 LOG=$R/extra_training/msa_work/phase2_envdb.log
 export PATH="$R/tools/mmseqs/bin:$PATH"
 
@@ -57,8 +62,12 @@ CFDB=colabfold_envdb_202108 MMSEQS_NO_INDEX=1 taskset -c 0-63 \
 rc=$?
 say "setup_databases.sh exit $rc (not trusted; checking the files)"
 
-# the gate: the data file itself, not an exit code
-for f in _db _db_h _db_seq _db_aln; do
+# THE GATE: the data files themselves, never an exit code -- setup_databases.sh touches its READY
+# marker and returns 0 even when it converted nothing.
+# These are exactly the three paths colabfold_search opens for the env pass: search.py checks
+# {metagenomic_db}.dbtype, then reads {metagenomic_db}_seq (dbSuffix1) and _aln (dbSuffix2) when no
+# index is present.
+for f in _db.dbtype _db_seq _db_aln _db_h; do
     p="$DB/colabfold_envdb_202108$f"
     [ -s "$p" ] || die "missing or empty $p"
     say "  ok $(basename "$p") $(du -h "$p" | cut -f1)"
