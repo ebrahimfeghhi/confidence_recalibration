@@ -512,6 +512,9 @@ def main():
                     help="fail unless CDR-H3 is recovered for this fraction of heavy chains; guards "
                          "against a silent ANARCI failure making the CDR-H3 filter vacuous")
     ap.add_argument("--no-fetch", action="store_true")
+    ap.add_argument("--allow-missing-cdr-complexes", action="store_true",
+                    help="proceed although some unlisted complex contributed no CDR-H3 query. Filter "
+                         "3 cannot cover those complexes; off by default.")
     ap.add_argument("--allow-missing-structures", action="store_true",
                     help="write an exclusion csv even though some benchmark structure could not be "
                          "fetched. Off by default: those complexes get no homology check at all.")
@@ -576,14 +579,20 @@ def main():
     # 9gs3, 9i20) are single chains carrying two variable domains whose best full-sequence hit lands
     # on a light model; they contributed no CDR-H3 query, and Filter 3 reported 0 for them whether or
     # not a leak existed.
+    # AN ESCAPE, DELIBERATELY. Strict equality is right today (39/39) and hard-failing is the safe
+    # direction for an exclusion filter. But a future benchmark entry may genuinely carry no antibody
+    # heavy chain -- a TCR complex, or a construct hmmscan cannot type -- and the answer to that
+    # should not be editing this file while a pipeline is blocked.
     cdr_complexes = {n.split("_")[0] for n in qcdr}
-    if len(cdr_complexes) < len(got):
+    if len(cdr_complexes) < len(got) and not a.allow_missing_cdr_complexes:
         missing = sorted(set(got) - cdr_complexes)
         raise SystemExit(
             f"STOP: only {len(cdr_complexes)} of {len(got)} unlisted complexes contributed a CDR-H3 "
             f"query. No query means Filter 3 cannot find a leak for: {missing}\n"
             "Inspect their hmmscan domain assignment -- a single chain carrying two variable domains "
-            "must yield one entry per domain, see classify().")
+            "must yield one entry per domain, see classify().\n"
+            "If a complex genuinely has no heavy chain, pass --allow-missing-cdr-complexes and say "
+            "so in the methods: filter 3 cannot cover it.")
 
     prot_t, pep_t, ab_t, cdr_t, train_cl = train_tables(a.splits, ours_cl)
     print(f"\ncandidate training pool: {len(train_cl)} clusters")

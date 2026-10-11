@@ -352,16 +352,21 @@ def main():
         write_fasta(a.query_fasta, all_recs)
         print(f"{a.query_fasta}: {len(all_recs)} sequences -- THE SEARCH SET")
 
-    # ---- 2.2: THE 0-SHARED CLAIM, ENFORCED. This was a comment in the docstring. It is also the
-    # strongest end-to-end test available here: a sequence in both sets means a training complex
-    # carries a chain IDENTICAL to a benchmark chain, which filters 1, 2 and 3 should all have
-    # removed at 100% identity. So the count being zero is a consequence of the exclusion working,
-    # and asserting it tests all three filters at once.
+    # ---- THE 0-SHARED CLAIM, ENFORCED. This was a comment in the docstring; now it is checked.
+    #
+    # WHAT IT DOES AND DOES NOT TEST. A sequence in both sets means a training complex carries a
+    # chain IDENTICAL to a benchmark chain, which the exclusion should have removed. But identity 1.0
+    # is the EASIEST case any of the filters face -- filter 2 is set at 0.40 for proteins and filter 3
+    # at 0.95 -- and in most cases filter 1 removes it by cluster id before sequence ever enters it.
+    # So passing says the exclusion catches the trivial case. It does not test whether the thresholds
+    # are right, which is the part that actually carries risk. Treat it as a smoke test that would
+    # fire loudly on a wiring mistake, not as evidence the filters are calibrated.
     if a.which == "both":
         tr = {q for n, q in all_recs if n.startswith("c")}
         bn = {q for n, q in all_recs if not n.startswith("c")}
         shared = tr & bn
-        print(f"train/bench shared sequences: {len(shared)}   (train {len(tr)}, bench {len(bn)})")
+        print(f"train/bench shared sequences: {len(shared)}   (train {len(tr)}, bench {len(bn)})"
+              "   [smoke test: identity 1.0 is the easiest case the filters face]")
         if shared:
             ex = sorted(shared)[:3]
             raise SystemExit(

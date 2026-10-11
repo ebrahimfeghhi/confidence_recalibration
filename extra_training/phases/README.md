@@ -246,10 +246,12 @@ mismatch far from its cause. `poly_antigens()` now pairs each antigen chain with
 errors if the two fields disagree in length rather than letting `zip()` drop the trailing chains.
 Query set 5,305 → **5,304**.
 
-**"verified 0 shared" was a comment.** It is also the strongest end-to-end test available: a sequence in
-both sets means a training complex carries a chain identical to a benchmark chain, which filters 1, 2
-and 3 should all have removed at 100% identity. Asserted now — it passes at 0, and it exercises all
-three filters at once.
+**"verified 0 shared" was a comment.** Now checked, and it passes at 0. The reviewer described it as
+testing all three filters at once; that overstates it and the code says so. Identity 1.0 is the
+*easiest* case any filter faces — filter 2 sits at 0.40 for proteins, filter 3 at 0.95 — and filter 1
+usually removes such a cluster by id before sequence comparison enters it. So it is a smoke test that
+would fire loudly on a wiring mistake, not evidence the thresholds are calibrated. Worth having at two
+lines; not worth citing as validation of the filters.
 
 **Benchmark structures were skipped without a count.** Both bench functions `continue`d past a missing
 reference cif or a gemmi failure, and the printed line reported only a sequence count. A complex
@@ -270,3 +272,38 @@ with `--which both`: 235 → **245** short queries.
 failed a finished 301 GB index twice and the watcher gave up. `phase1b_short.sh` now creates the links
 (we run `createindex` ourselves under `MMSEQS_NO_INDEX=1`, skipping the part of `setup_databases.sh`
 that would have) and gates on what they resolve to.
+
+## Reviewer edits not adopted, or adopted with reservations
+
+**Not adopted: banding the held-out structure count (`--select band` as the default).** The diagnosis
+was right — argmin does select an extreme draw — but the stated rationale was that the held-out
+structure count "only affects how much training data you give up, not the validation set itself." It
+affects the validation set directly: 55% of clusters are singletons and can only ever supply one
+representative, so the held-out structure count is close to a proxy for how many clusters can supply
+two. Switching cost 79 → 72 folded structures. And the bias has no established direction: large
+clusters here are newer and less likely to be inside the model's training data. Implemented as an
+option, not the default, with the measurements recorded above.
+
+**Narrowing the band was tested and rejected.** [8%, 12%] leaves 25 of 20,000 draws and [9%, 13%]
+leaves 2 — that is argmin again, with none of the bias removed. Held-out share is also a noisy proxy
+for folded count: [8%, 12%] holds out more structures (236) yet folds fewer (71) than [5%, 12%]
+(161 → 72). If this is revisited, the quantity to constrain is folded representatives, not structures.
+
+**Adopted with a reservation: Filter 3's "0 clusters removed" as load-bearing evidence.** Both reviews
+treat that 0 as meaningful. It is now honestly earned — 39 of 39 complexes queried, every pair
+compared — but it was always close to expected. At 95% identity on a 14-residue loop an exact match is
+required, and SAbDab2's `ab_ag_cluster` is a connected component over shared antibody *or* antigen
+cluster, so any cluster sharing an antibody with one of the 188 listed complexes is already gone via
+filter 1. Filter 3 can only ever speak to the 39 unlisted ones. Keep it; do not present it as
+independent confirmation that the exclusion is thorough.
+
+**Adopted with an escape hatch: asserting CDR-H3 complex coverage equals the number of structures.**
+Correct today at 39/39, and hard-failing is the safe direction. But a future benchmark entry may
+genuinely carry no antibody heavy chain, and the response to that should not be editing this file
+while a pipeline is blocked — hence `--allow-missing-cdr-complexes`, off by default.
+
+**`train_minus_val()` is insurance, not a guarantee.** It is the only enforcement of the train/val
+split, and nothing calls it yet because the training stage does not exist. A function nobody is
+obliged to call does not prevent the failure it was written for. The stronger form is for phase B to
+emit a `train_clusters.csv` artifact that the training stage reads as its only input, so using the
+full 557 requires deliberately going around the pipeline. Worth doing when that stage is written.
