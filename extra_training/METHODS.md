@@ -233,3 +233,34 @@ returns 0.
   features would be evaluated without them on FoldBench. Unresolved.
 - Ground-truth coordinates in model atom order are not cached. They are not needed to re-run the head
   or to compare ipTM before and after, but a training loss computed offline would require them.
+
+## Decided 2026-10-11: the benchmarks stay in their released settings
+
+**PXM-2025 and FoldBench are folded with the MSAs and templates they already have.** Their MSAs were
+built on uniref30_2103 and their templates under Protenix's inference cutoff of 2021-09-30. Neither is
+changed for the refold that applies the retrained confidence head.
+
+**Why.** The refold exists to measure one thing — whether the retrained head selects better poses. If
+it also changed the MSA database version or the template regime, any movement in DockQ or ipTM would
+be attributable to the head *or* to the inputs, with no way to separate them. The same argument that
+keeps the 2021-09-30 template cap in place applies to the MSAs: vary one thing.
+
+It also preserves comparability with everything already measured on these benchmarks — the free-seed
+baselines, the epitope decomposition, the PXM selection gap. Rebuilding their MSAs would invalidate
+all of it.
+
+**The cost, stated plainly.** The head is trained on poses built from uniref30_2302 MSAs and applied
+to poses built from 2103 MSAs. That is a regime mismatch. It is judged the lesser risk because the
+head predicts error from trunk representations, and MSA depth already varies enormously *within* any
+dataset — Protenix's own confidence head was trained across all of it.
+
+**What happens to the 2302 benchmark MSAs.** They are built and kept: 633 benchmark chain sequences
+in the main search batch plus 11 short ones from the top-up. They become a **sensitivity check** —
+fold a subset of benchmark complexes both ways and confirm the database version does not move the
+baseline. That turns the paragraph above from an assumption into a measurement, cheaply, and it is
+worth doing before the headline claim is written.
+
+**What this does not change.** The training pool and the validation set keep their 2302 MSAs; they had
+no 2103 alternative, since 2103 is no longer downloadable. The self-templating date filter applies to
+training and validation folds, and leaves the benchmarks untouched because the 2021-09-30 cap already
+binds for every PXM complex (all 90 dated ones are 2023-2025) and FoldBench folds use no templates.
