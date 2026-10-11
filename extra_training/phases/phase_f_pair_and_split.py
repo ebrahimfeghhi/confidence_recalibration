@@ -149,7 +149,12 @@ def rename_headers(batch, fa, out_dir):
                          header_lines_rewritten=n_rw))
     m8 = os.path.join(batch, "uniref_tax.m8")
     link = os.path.join(out_dir, "uniref_tax.m8")
-    if os.path.exists(m8) and not os.path.exists(link):
+    # lexists, NOT exists. os.path.exists follows the link and is False for a DANGLING one, so a
+    # stale link left by an earlier run made os.symlink raise FileExistsError instead of being
+    # replaced. lexists sees the link itself.
+    if os.path.lexists(link):
+        os.remove(link)
+    if os.path.exists(m8):
         os.symlink(m8, link)
     elif not os.path.exists(m8):
         print(f"  NOTE {batch} has no uniref_tax.m8; its alignments cannot gain taxids")
@@ -208,9 +213,13 @@ def main():
     ap.add_argument("--cores", default="0-63",
                     help="taskset range; 64 is the project cap (MSA_RUNBOOK.md:119)")
     ap.add_argument("--workers", type=int, default=16)
-    ap.add_argument("--min-frac", type=float, default=0.98,
-                    help="fraction of queries that must survive each step. Below 1.0 because a "
-                         "nucleic-acid antigen searched as protein legitimately drops out.")
+    ap.add_argument("--max-seq-mismatch", type=int, default=5,
+                    help="how many a3m may legitimately disagree with their fasta record. One per "
+                         "batch is expected: a nucleic-acid antigen the search transcribed U to X.")
+    ap.add_argument("--min-pairing-frac", type=float, default=0.50,
+                    help="fraction of chains of 20+ residues that must have a NON-EMPTY pairing.a3m. "
+                         "This phase exists to produce pairing, so its completion criterion has to "
+                         "test pairing. All-empty is the failure it must catch.")
     ap.add_argument("--min-tagged-frac", type=float, default=0.90)
     a = ap.parse_args()
     batches = [b for b in a.batches if os.path.isdir(b)]
@@ -229,6 +238,15 @@ def main():
         # A SEQUENCE IN TWO BATCHES WOULD COLLIDE in a sequence-keyed index, silently keeping one
         # alignment for both. The batches are disjoint by construction -- each later one is a set
         # difference against the earlier fastas -- so this is a check that construction held.
+        # WITHIN the batch first. seq_to_index[seq] = name overwrites silently, so two chains in one
+        # batch sharing a sequence yield ONE directory and the other chain has no MSA at all. Phase C
+        # defends this upstream with its duplicate check, but phase F is where the damage lands, and
+        # the cross-batch case below already has two independent defences.
+        if len(s2x) != len(rows):
+            raise SystemExit(
+                f"STOP: {os.path.basename(b)} has {len(rows)} renamed alignments but only "
+                f"{len(s2x)} distinct sequences. Two chains share a sequence, so a sequence-keyed "
+                "index keeps one alignment for both and the other chain gets no MSA.")
         clash = set(s2x) & set(seq_to_index)
         if clash:
             sys.exit(f"STOP: {len(clash)} sequence(s) appear in more than one batch, so the "
@@ -254,9 +272,29 @@ def main():
 
     two = sum(1 for r in all_rows if r["header_lines_rewritten"] == 2)
     print(f"  query-header lines rewritten twice (a uniref AND an env block): {two} of {len(all_rows)}")
-    need = int(nq_total * a.min_frac)
-    if len(seq_to_index) < need:
-        sys.exit(f"STOP: the index covers {len(seq_to_index)} of {nq_total} queries (want >= {need})")
+    # DROPS ARE CLASSIFIED, NOT TOLERATED IN BULK. A flat 98% floor permitted 106 silent losses on
+    # batch 1 while the only documented legitimate cause is a nucleic-acid chain the search
+    # transcribed U to X -- one per batch. So: any drop for a reason OTHER than that sequence
+    # mismatch is fatal, and the mismatches themselves are capped. This is the 39-of-39 discipline
+    # phase A uses, rather than a percentage that happens to cover the known case.
+    known = [d for d in all_dropped if "line-2 sequence != fasta sequence" in d[1]]
+    other = [d for d in all_dropped if d not in known]
+    print(f"  drops: {len(known)} sequence mismatches (nucleic acid searched as protein), "
+          f"{len(other)} for other reasons")
+    if other:
+        for n, why in other[:5]:
+            print(f"     UNEXPECTED DROP {n}: {why}")
+        sys.exit(f"STOP: {len(other)} alignment(s) dropped for reasons other than the known "
+                 "nucleic-acid mismatch. Each one is a chain with no MSA; none should be guessed at.")
+    if len(known) > a.max_seq_mismatch:
+        sys.exit(f"STOP: {len(known)} sequence mismatches, above --max-seq-mismatch "
+                 f"{a.max_seq_mismatch}. One per batch is expected; more means the a3m files and the "
+                 "frozen fasta have diverged, which is what the checksum is meant to prevent.")
+    need = nq_total - len(known)
+    if len(seq_to_index) != need:
+        sys.exit(f"STOP: the index covers {len(seq_to_index)} sequences; {nq_total} queries minus "
+                 f"{len(known)} known mismatches is {need}. The difference is unexplained.")
+    print(f"  index covers {len(seq_to_index)} of {nq_total} queries, all drops accounted for")
 
     # ---------------------------------------------------------------- step 2: taxids
     print("=== phase F step 2: step3, write NCBI taxids into the UniRef headers ===")
@@ -302,10 +340,32 @@ def main():
     stray = [d for d in dirs if d not in known]
     if stray:
         sys.exit(f"STOP: {len(stray)} output directories are not names we indexed: {stray[:5]}")
-    empty = [d for d in dirs
-             if os.path.getsize(os.path.join(a.msa_dir, d, "pairing.a3m")) == 0]
-    print(f"  all {len(dirs)} directories correspond to indexed queries; "
-          f"{len(empty)} have an empty pairing.a3m")
+    # THE COMPLETION CRITERION HAS TO TEST PAIRING, which is what this phase exists to produce.
+    # Counting directories does not: if step4 ran but parsed no taxids, EVERY pairing.a3m is empty,
+    # len(dirs) is correct, every name is one we indexed, and the phase reports OK. Step 2 above
+    # proves taxids are in the alignments; nothing proved step4 used them.
+    #
+    # GATED ON THE LONG CHAINS ONLY, the same shape as the depth gates in phases D and E. A 5-19
+    # residue peptide that retrieved no UniRef hits has nothing to pair, so an empty pairing.a3m
+    # there is the correct answer; a 200-residue antibody chain with an empty one is a fault.
+    len_of = {name: len(seq) for seq, name in seq_to_index.items()}
+    def nonempty(d):
+        return os.path.getsize(os.path.join(a.msa_dir, d, "pairing.a3m")) > 0
+    long_d = [d for d in dirs if len_of.get(d, 0) >= 20]
+    short_d = [d for d in dirs if 0 < len_of.get(d, 0) < 20]
+    long_ok = [d for d in long_d if nonempty(d)]
+    short_ok = [d for d in short_d if nonempty(d)]
+    pct = 100 * len(long_ok) // len(long_d) if long_d else -1
+    print(f"  pairing.a3m non-empty: {len(long_ok)} of {len(long_d)} chains of 20+ residues ({pct}%)")
+    if short_d:
+        print(f"                         {len(short_ok)} of {len(short_d)} shorter chains "
+              "-- empty is expected where nothing was retrieved")
+    if long_d and pct < int(a.min_pairing_frac * 100):
+        sys.exit(f"STOP: only {pct}% of chains of 20+ residues have a non-empty pairing.a3m "
+                 f"(floor {a.min_pairing_frac:.0%}). step4 ran but produced no pairs, so no chain "
+                 "can be paired with another and the MSAs are unusable for a complex.")
+    if not long_d:
+        sys.exit("STOP: no chain of 20+ residues reached the split; the input looks wrong.")
     print(f"=== phase F OK: {len(dirs)} chains ready for Protenix in {a.msa_dir} ===")
 
 

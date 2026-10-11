@@ -726,3 +726,53 @@ worth doing before the headline claim is written.
 no 2103 alternative, since 2103 is no longer downloadable. The self-templating date filter applies to
 training and validation folds, and leaves the benchmarks untouched because the 2021-09-30 cap already
 binds for every PXM complex (all 90 dated ones are 2023-2025) and FoldBench folds use no templates.
+
+## Phase E-I review, round one: all findings addressed
+
+### Phase F
+
+**The emptiness of pairing.a3m was computed and printed but never gated.** This phase exists to
+produce pairing, and its completion criterion did not test pairing. If step4 ran but parsed no
+taxids, every `pairing.a3m` is empty, the directory count is correct, every name is one we indexed,
+and the phase reports OK. Step 2 proves taxids are *in* the alignments; nothing proved step4 *used*
+them. Now gated on the fraction of chains of 20+ residues with a non-empty `pairing.a3m`
+(`--min-pairing-frac`, default 0.50), with shorter chains reported separately because a peptide that
+retrieved nothing has nothing to pair.
+
+**Within-batch sequence collisions were unchecked.** The clash test was cross-batch only;
+`seq_to_index[seq] = name` overwrites silently, so two chains in one batch sharing a sequence yield
+one directory and the other chain gets no MSA at all. `len(s2x) != len(rows)` catches it in two lines.
+
+**`--min-frac 0.98` permitted 106 silent losses on batch 1** while the only documented legitimate
+cause is one nucleic-acid chain per batch. Replaced by classification: a drop for any reason other
+than that known sequence mismatch is fatal, the mismatches themselves are capped
+(`--max-seq-mismatch`, default 5), and the index must then cover exactly `queries − mismatches`. Same
+all-or-nothing discipline phase A uses, rather than a percentage sized to cover the known case.
+
+**`os.path.exists` is False for a dangling symlink**, so a stale `uniref_tax.m8` link made
+`os.symlink` raise `FileExistsError` instead of being replaced. Now `os.path.lexists`, which sees the
+link itself.
+
+### Phase I
+
+**`--nsample` produces N poses per unit but the cache was gated as one npz.** `z_trunk` and `s_trunk`
+are rightly per seed, but `ci_coordinate` and `ci_contact_probs` are per *pose*, and the assertion
+only checked that the keys existed — an npz holding the last of five looks identical to one holding
+all five. If it were one, four of every five poses would have no cached head inputs and the stated
+deliverable would be 20% met, unrecoverably: repeating a seed does not reproduce its poses. The smoke
+test now asserts the leading dimension equals `nsample`, after squeezing batch dimensions of 1.
+
+**No `trap`, so a killed run never resumed PXM.** Every other phase restores what it changes. A run
+killed between the pause and the resume left the sweep down and `fx_watch` dead indefinitely, because
+the thing that would have restarted them was the script that died. INT, TERM and EXIT now route
+through one `resume_pxm`, which is also the normal path, so there is a single code path.
+
+**`run_workers` waited forever on a hung worker**, with PXM paused for the duration, and the
+15-minute no-change line was logged and acted on by nothing. Two bounds now — total elapsed
+(`MAX_WAIT_MIN`) and time since the last completed unit (`STALL_MIN`, default 90) — and on either the
+workers are killed by PID so the round ends and the trap restores PXM.
+
+**`results.csv` was read positionally** for DockQ and ipTM (`$7`, `$8`). `csv_numeric` resolves both
+from the header row and exits non-zero if the column is absent, removing a silent dependency on
+folder.py's column order. Verified against the live PXM results: 19,560 numeric rows for each, and a
+missing column exits 2.
