@@ -595,3 +595,33 @@ stopped too, since it would otherwise relaunch PXM straight onto the cards we ju
 the phase confirms the workers actually came back rather than assuming the relaunch worked, and
 checks that the number of trunk dumps equals the number of folded units, because if those diverge the
 cache cannot re-run the head on every pose, which is the entire point.
+
+### Phase E review, first pass — all four findings fixed
+
+**Per-query env growth was not gated at all.** The by-name check required every query to have a
+non-empty a3m — but phase D already left every query one, so it passed regardless of what the env
+pass did. And `AFTER > BEFORE` is a *directory* total, satisfied by other queries' growth. A chain
+that received zero environmental sequences while the rest grew was invisible.
+
+Fixed by snapshotting per-query sizes before the pass and comparing after, with the same
+length-shaped floor phase D uses: chains of 20+ residues must have gained something (floor 90%),
+shorter ones are exempt because many legitimately gain nothing. Negative-tested by running the check
+with before == after: 0 of 5,305 long queries grew, so it fails at 0% against the floor, where the
+old gate passed.
+
+**The query line was not re-asserted after the pass.** Verifying each a3m's line 2 against its fasta
+record is the direct test that qdb keys did not shift, and the env pass is exactly where `mergedbs`
+could misalign them — the input checksum prevents a changed fasta, not a misaligned merge. Phase D's
+review ran that check by hand on the input; phase E now runs it on the output.
+
+The threshold distinguishes the two causes rather than demanding zero: a key shift produces
+*thousands* of mismatches (the worked example was 4,825 of 5,305), while a single mismatch is the
+known nucleic-acid chain whose U the search transcribed to X. Measured now: 1 mismatch in each batch,
+against a tolerance of 53 for the main one.
+
+**`${CFDB}` was unguarded in both `rm` globs** while `${DB:?}` and `${m:?}` were guarded —
+unreachable today, but inconsistent with the stated discipline. Now `"${CFDB:?}"`.
+
+**`FREE_DB` defaulted to 1**, so anything phase F revealed about the env half would have cost a 120 GB
+re-download and another 90 minutes. Default is now 0, and `overnight.sh` frees the database after
+phase F has passed, which is the first point at which nothing in the pipeline still reads it.

@@ -24,10 +24,14 @@
 #     phase_e_search_envdb.sh [out-dir ...]      default: all three phase D output directories
 #
 # ENVIRONMENT
-#     FREE_DB=1      delete the env database once every batch succeeds. Default 1 -- phase F does not
-#                    need it and 291 GB is most of the disk headroom. On failure it is always kept,
-#                    so a retry costs no re-download.
+#     FREE_DB=1      delete the env database once every batch succeeds. DEFAULT 0, deliberately:
+#                    phase F is the first thing that reads the env half of these alignments, and
+#                    anything it reveals would otherwise cost a 120 GB re-download. The orchestrator
+#                    frees it after phase F passes. 291 GB is most of the disk headroom, so this is
+#                    not free -- it is cheap insurance against repeating an hour and a half.
 #     KEEP_TARBALL=1 keep the 120 GB tarball after extracting. Default 0.
+#     MIN_LONG_GROW_PCT=N  minimum percentage of chains of 20+ residues that must gain at least one
+#                    sequence from the env pass. Default 90.
 #     CORES=0-63     taskset range; --threads is derived from it, never hardcoded.
 set -u
 R=/home/ebrahim/tts_abag
@@ -117,7 +121,7 @@ if [ ! -s "$DB/${CFDB}_db_seq" ]; then
     for m in $CREATED; do rm -f "${DB:?}/${m:?}"; done
     [ -n "$CREATED" ] && say "  removed the markers this run created:$CREATED"
     [ "${KEEP_TARBALL:-0}" = "1" ] || rm -f "${TAR:?}"
-    rm -f "${DB:?}"/${CFDB}_*.tsv "${DB:?}"/${CFDB}.tsv
+    rm -f "${DB:?}"/"${CFDB:?}"_*.tsv "${DB:?}"/"${CFDB:?}".tsv
 fi
 say "env database ready: $(du -sh --apparent-size "$DB/${CFDB}_db_seq" | cut -f1) of members"
 
@@ -130,12 +134,21 @@ say "env database ready: $(du -sh --apparent-size "$DB/${CFDB}_db_seq" | cut -f1
 a3m_bytes() { find "$1" -maxdepth 1 -name '*.a3m' ! -name 'uniref.a3m' -printf '%s\n' 2>/dev/null \
                 | awk '{s+=$1} END{print s+0}'; }
 
+# PER-QUERY SIZES, snapshotted before the pass. A directory total is satisfied by other queries'
+# growth, so it cannot see a chain that received nothing while the rest grew -- and the by-name check
+# cannot either, because phase D already left every query a non-empty a3m. The only thing that
+# answers "did THIS chain gain env sequences" is its own size, before against after.
+snapshot() { find "$1" -maxdepth 1 -name '*.a3m' ! -name 'uniref.a3m' \
+                  ! -name 'bfd.mgnify30.metaeuk30.smag30.a3m' -printf '%f\t%s\n' 2>/dev/null | sort; }
+
 FAILED=0
 for OUT in "${BATCHES[@]}"; do
     LBL=$(basename "$OUT")
     QFA=$OUT/query.searched.fasta
     NQ=$(grep -c '^>' "$QFA")
     BEFORE=$(a3m_bytes "$OUT")
+    SNAP=$W/phase_e_sizes_$LBL
+    snapshot "$OUT" > "$SNAP"
     say "--- $LBL: $NQ queries, alignments currently $(numfmt --to=iec "$BEFORE")"
     COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c "$CORES" \
         $R/envs/colabfold/bin/colabfold_search --mmseqs $M --threads "$NTHREADS" \
@@ -146,32 +159,100 @@ for OUT in "${BATCHES[@]}"; do
         && say "  note: the log mentions skipping a search, consistent with resuming from uniref.a3m"
 
     AFTER=$(a3m_bytes "$OUT")
-    # BY NAME, as in phase D: a count is satisfied by any directory holding enough files.
-    MISSING=$(awk '/^>/{sub(/^>/,""); print}' "$QFA" | while read -r n; do
-                  [ -s "$OUT/$n.a3m" ] || echo "$n"
-              done)
-    NMISS=$(printf '%s' "$MISSING" | grep -c . || true)
-    say "  alignments $(numfmt --to=iec "$BEFORE") -> $(numfmt --to=iec "$AFTER"); $NMISS of $NQ without one"
-    if [ "${NMISS:-0}" -gt 0 ]; then
-        say "  first few missing: $(printf '%s' "$MISSING" | head -5 | tr '\n' ' ')"
-        say "  ESCALATE $LBL: the env pass did not cover the batch"; FAILED=$((FAILED+1)); continue
-    fi
+    snapshot "$OUT" > "$SNAP.after"
     # The intermediate colabfold keeps for the env half, named for the databases it merges. Its
     # presence distinguishes "the env search ran" from "the uniref alignments were rewritten".
     ENVINT=$(ls "$OUT"/bfd.mgnify30.metaeuk30.smag30.a3m 2>/dev/null | wc -l)
-    if [ "$AFTER" -le "$BEFORE" ]; then
-        say "  ESCALATE $LBL: no sequences added ($BEFORE -> $AFTER bytes); env intermediate: $ENVINT"
+    say "  alignments $(numfmt --to=iec "$BEFORE") -> $(numfmt --to=iec "$AFTER"); env intermediate: $ENVINT"
+
+    # PER QUERY, AND THE QUERY LINE RE-ASSERTED. Two questions a directory total cannot answer:
+    #   did each chain of 20+ residues actually gain sequences, and
+    #   does each a3m still begin with ITS OWN query sequence?
+    # The second is the direct test that qdb keys did not shift. The env pass is where mergedbs could
+    # misalign them, which is the failure the checksum gate on the input exists to prevent -- so the
+    # same check phase D's review ran by hand on the input is run here on the output.
+    REPORT=$($R/envs/colabfold/bin/python - "$OUT" "$QFA" "$SNAP" "$SNAP.after" <<'PYCHK'
+import os, sys
+out, qfa, before_f, after_f = sys.argv[1:5]
+fa, n = {}, None
+with open(qfa) as fh:
+    for line in fh:
+        line = line.strip()
+        if line.startswith(">"):
+            n = line[1:]; fa[n] = ""
+        elif n:
+            fa[n] += line
+def sizes(p):
+    d = {}
+    with open(p) as fh:
+        for line in fh:
+            k, v = line.rstrip("\n").split("\t")
+            d[k[:-4]] = int(v)
+    return d
+before, after = sizes(before_f), sizes(after_f)
+lt = lg = st = sg = 0
+mism, absent = [], []
+for name, seq in fa.items():
+    p = os.path.join(out, name + ".a3m")
+    if not os.path.exists(p) or os.path.getsize(p) == 0:
+        absent.append(name); continue
+    grew = after.get(name, 0) > before.get(name, 0)
+    if len(seq) >= 20:
+        lt += 1; lg += 1 if grew else 0
+    else:
+        st += 1; sg += 1 if grew else 0
+    with open(p) as fh:
+        fh.readline()
+        line2 = fh.readline().strip()
+    if line2.upper() != seq.upper():
+        mism.append(name)
+lpct = 100 * lg // lt if lt else -1
+print(f"{lt} {lg} {lpct} {st} {sg} {len(mism)} {len(absent)}")
+print(" ".join(mism[:5]))
+print(" ".join(absent[:5]))
+PYCHK
+)
+    set -- $(printf '%s' "$REPORT" | head -1)
+    LTOT=${1:-0}; LGREW=${2:-0}; LPCT=${3:--1}; STOT=${4:-0}; SGREW=${5:-0}; NMISM=${6:-0}; NABS=${7:-0}
+    [ "$LTOT" -gt 0 ] && say "    20+ residues: $LGREW of $LTOT gained sequences (${LPCT}%)"
+    [ "$STOT" -gt 0 ] && say "    under 20:     $SGREW of $STOT gained sequences -- many legitimately gain none"
+    say "    query-line mismatches: $NMISM    alignments absent or empty: $NABS"
+
+    if [ "$NABS" -gt 0 ]; then
+        say "  ESCALATE $LBL: $NABS queries have no alignment: $(printf '%s' "$REPORT" | sed -n 3p)"
         FAILED=$((FAILED+1)); continue
     fi
-    say "  $LBL OK: +$(numfmt --to=iec $((AFTER - BEFORE))), env intermediate present: $ENVINT"
+    # A KEY SHIFT WOULD PRODUCE THOUSANDS OF MISMATCHES, not one: the worked example was 4,825 of
+    # 5,305. A single mismatch is the known nucleic-acid chain the search transcribed U to X. So the
+    # threshold distinguishes those two cases rather than demanding zero.
+    MAXMISM=$(( NQ / 100 )); [ "$MAXMISM" -lt 2 ] && MAXMISM=2
+    if [ "$NMISM" -gt "$MAXMISM" ]; then
+        say "  ESCALATE $LBL: $NMISM a3m do not begin with their own query sequence (tolerance
+     $MAXMISM). That is the signature of shifted qdb keys, not of a transcribed base.
+     First few: $(printf '%s' "$REPORT" | sed -n 2p)"
+        FAILED=$((FAILED+1)); continue
+    fi
+    if [ "$LTOT" -gt 0 ] && [ "$LPCT" -lt "${MIN_LONG_GROW_PCT:-90}" ]; then
+        say "  ESCALATE $LBL: only ${LPCT}% of chains of 20+ residues gained any env sequence
+     (floor ${MIN_LONG_GROW_PCT:-90}%). A chain that long gaining nothing from a database this large
+     is a fault, not a property of the query."
+        FAILED=$((FAILED+1)); continue
+    fi
+    if [ "$AFTER" -le "$BEFORE" ]; then
+        say "  ESCALATE $LBL: the directory did not grow at all ($BEFORE -> $AFTER bytes)"
+        FAILED=$((FAILED+1)); continue
+    fi
+    say "  $LBL OK: +$(numfmt --to=iec $((AFTER - BEFORE)))"
 done
 
 [ "$FAILED" -eq 0 ] || die "$FAILED of ${#BATCHES[@]} batches failed. The env database is LEFT ON DISK
      so they can be retried without a 120 GB re-download."
 
 # ---------------------------------------------------------------- 3. free the database
-if [ "${FREE_DB:-1}" = "1" ]; then
-    say "freeing the env database; phase F does not need it"
-    rm -rf "${DB:?}"/${CFDB}_db* "${DB:?}"/COLABDB_READY
+if [ "${FREE_DB:-0}" = "1" ]; then
+    say "freeing the env database as asked (FREE_DB=1)"
+    rm -rf "${DB:?}"/"${CFDB:?}"_db* "${DB:?}"/COLABDB_READY
 fi
+[ "${FREE_DB:-0}" = "1" ] || say "env database LEFT ON DISK so phase F can be retried without a
+     120 GB re-download. Free it with FREE_DB=1 once phase F has passed."
 say "=== phase E OK, all ${#BATCHES[@]} batches; quota $(quota -s 2>/dev/null | awk '/nvme/{print $2" of "$4}') ==="

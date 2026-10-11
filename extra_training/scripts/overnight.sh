@@ -97,6 +97,15 @@ $PY $PH/phase_f_pair_and_split.py >> $W/phase_f.log 2>&1 \
 NPAIR=$(find $W/mmcif_msa -name pairing.a3m 2>/dev/null | wc -l)
 say "stage 6 OK: $NPAIR chains with pairing.a3m"
 
+# FREE THE ENV DATABASE HERE, NOT IN PHASE E. Phase F is the first thing that reads the env half of
+# those alignments, so freeing 291 GB before it has passed would make anything F reveals cost a
+# 120 GB re-download and another 90 minutes. Now that F has succeeded, the database has no further
+# reader in this pipeline.
+if [ -s "$DB/colabfold_envdb_202108_db_seq" ]; then
+    rm -rf "${DB:?}"/colabfold_envdb_202108_db* "${DB:?}"/COLABDB_READY
+    say "env database freed after phase F; quota $(quota -s 2>/dev/null | awk '/nvme/{print $2" of "$4}')"
+fi
+
 # ---------------------------------------------------------------- stage 7: phase G, the job jsons
 say "stage 7: phase G -- validation job jsons"
 $PY $PH/phase_g_build_val_jobs.py --reps $REPS --msa-root $W/mmcif_msa \
