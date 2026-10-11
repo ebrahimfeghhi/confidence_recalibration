@@ -2,14 +2,20 @@
 """PHASE G -- write one Protenix job json per validation structure.
 
 SUMMARY
-    Validation for the confidence-head finetune is held out BY CLUSTER (phase_b_define_val_clusters.py: 50
-    clusters, 291 structures, spread across release dates). Only ONE structure per cluster is folded:
-    structures inside a cluster are near-duplicates by construction, so the other 241 would cost GPU
-    hours without adding information, and the cluster is the unit generalisation is measured over.
+    Validation for the confidence-head finetune is held out BY CLUSTER
+    (phase_b_define_val_clusters.py: 50 clusters, 291 structures, spread across release dates).
 
-    THE REPRESENTATIVE is the structure with the median token count in its cluster -- not the largest
-    (worst case for memory) and not the smallest (often a partial construct). Ties break on PDB id so
-    the choice is deterministic.
+    TWO structures per cluster are folded, not one (--reps, default 2), and only where two distinct
+    PDB entries exist: 29 clusters supply two and 21 supply one, giving 79 picks. Two more are then
+    excluded for an ambiguous reference labelling, so **77 structures and 150 interfaces are folded**
+    -- that is the number to quote, and it is printed on every run rather than kept here.
+
+    Structures inside a cluster are near-duplicates by construction, so folding all 291 would cost
+    GPU hours without adding information, and the cluster is the unit generalisation is measured over.
+
+    THE REPRESENTATIVES are spread over the INTERIOR of the cluster's size range, deliberately
+    avoiding both the largest structure (the memory worst case) and the smallest (often a partial
+    construct). Ties break on PDB id, so the choice is deterministic.
 
     MSA PATHS come from Protenix's own seq_to_pdb_index.json, which maps a sequence to its directory
     under mmcif_msa_template/. That file is written by scripts/msa/step1-get_prot_seq.py, so this
@@ -42,6 +48,7 @@ import json
 import os
 import sys
 
+import gemmi
 import pandas as pd
 
 # This file lives at <repo>/extra_training/phases/, so the repo root is three levels up. paths.py
@@ -56,6 +63,82 @@ import phase_a_define_train_set as A  # noqa: E402
 VAL = f"{REPO}/extra_training/results/val_clusters.csv"
 MSA_ROOT = f"{REPO}/extra_training/msa_work/mmcif_msa"
 OUT = f"{REPO}/extra_training/val_jobs"
+
+
+def ref_auth_to_label(cif):
+    """in: a reference mmCIF.  out: ({auth chain: label_asym_id}, {shared label: [auth chains]})
+
+    An empty first element with a non-empty second means the reference's labelling is ambiguous and
+    the structure cannot be used -- see the reverse check at the end.
+
+    WHY THE LABEL NAME IS THE ONE THAT MATTERS. The scorer keys every interface by the REFERENCE
+    chain name, and the reference name it sees is label_asym_id, not auth_asym_id: an actual scorer
+    output for 8ror carries ref_chain_info keys ['A','B','C'] and
+    ref_to_model_chain_mapping {'A':'A','B':'B','C':'C'}, while gemmi reports that same cif's auth
+    chains as ['1','L','H'].
+
+    pxm2025 happens to have label chains A, B, C, which is why pool.csv's A/B/C letters have always
+    worked there. The validation references do not: 1him is D/E/F, 7wur is B/E/F, 1rzk is A/C/D. An
+    interface written as "AC" against those is looked up with res["A,C"], which does not exist, and
+    ost_dockq.interface() has no positional fallback -- so it returns None and NO ROW IS WRITTEN. On
+    8 of 8 sampled validation structures that is every interface.
+
+    This class of error has already cost this project once: archive/.../iface_chains.py records
+    scripts that read these labels as MODEL names, which silently measured an antibody-internal
+    contact as the epitope on 8gy5 and affected 72 of 161 interfaces.
+    """
+    st = gemmi.read_structure(cif)
+    st.setup_entities()
+    out = {}
+    for ch in st[0]:
+        subs = [sub.subchain_id() for sub in ch.subchains() if len([r for r in sub]) >= 5]
+        if not subs:
+            continue
+        if len(subs) > 1:
+            # Measured 0 of 70 on the validation references, but a Fab split into variable and
+            # constant label chains would land here, and guessing which one the role means would be
+            # exactly the kind of assumption that caused the 8gy5 error.
+            raise SystemExit(
+                f"STOP: in {cif}, auth chain {ch.name!r} covers several polymer label chains "
+                f"{subs}. The reference chain name for a role is then ambiguous; resolve it "
+                "explicitly rather than guessing.")
+        out[ch.name] = subs[0]
+
+    # AND THE REVERSE, which is the direction that actually occurs. label_asym_id is supposed to be
+    # unique per chain instance, and in two of the validation references it is not: 8evg carries
+    # (auth N1, label L) AND (auth N2, label L), 8vfx the same with J. The heavy and light chains are
+    # then indistinguishable by reference name, so the H-antigen and L-antigen interfaces collapse
+    # into one pair and neither can be scored as itself. Returning an empty mapping makes the caller
+    # exclude the structure, which is the only honest option -- the alternative is silently scoring
+    # one interface twice and calling it two.
+    back = {}
+    for an, ln in out.items():
+        back.setdefault(ln, []).append(an)
+    shared = {ln: a for ln, a in back.items() if len(a) > 1}
+    if shared:
+        return {}, shared
+    return out, {}
+
+
+def relabel_unique(src, dst):
+    """in: a cif whose label_asym_id is shared by several auth chains, a path to write.
+    out: the written path, with one unique label per auth chain
+
+    Assigns each auth chain's residues a fresh subchain id -- gemmi's own field, written by its own
+    mmCIF writer -- restoring the invariant the format requires. Auth names, coordinates and residue
+    numbering are untouched; only the label is changed, and only where it was already degenerate.
+    `setup_entities()` alone does not fix this: it preserves the duplicate labels.
+    """
+    st = gemmi.read_structure(src)
+    st.setup_entities()
+    nxt = iter("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+    for ch in st[0]:
+        lab = next(nxt)
+        for res in ch:
+            res.subchain = lab
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    st.make_mmcif_document().write_file(dst)
+    return dst
 
 
 def _chains(row, min_len=5):
@@ -97,7 +180,14 @@ def representatives(val_csv, reps=1, min_len=5):
     for cl, grp in rows.groupby("ab_ag_cluster"):
         g = (grp.drop_duplicates("PDB_ID").sort_values(["ntok", "PDB_ID"]).reset_index(drop=True))
         k = min(reps, len(g))
-        idx = [int(round((i + 0.5) * len(g) / k)) for i in range(k)]
+        # SPREAD OVER THE INTERIOR, not over the full range. The old arithmetic,
+        # round((i+0.5)*len/k), lands on the LARGEST structure whenever k=2: indices 1 and 2 for a
+        # cluster of 3, 1 and 4 for a cluster of 5. The largest structure is the memory worst case,
+        # which is exactly what picking the median avoided at reps=1, and phase I's only backstop for
+        # an OOM is a round that completes nothing. Scaling by (len-1) instead keeps both picks away
+        # from the extreme: 0 and 1 for a cluster of 3, 1 and 3 for a cluster of 5.
+        span = max(1, len(g) - 1)
+        idx = [int(round((i + 0.5) * span / k)) for i in range(k)]
         for i in sorted(set(min(j, len(g) - 1) for j in idx)):
             r = g.iloc[i]
             picks.append((cl, str(r.PDB_ID)[-4:].lower(), r.chains, r.instance))
@@ -116,6 +206,9 @@ def main():
                     help="shortest antigen chain to include. 5, not 20: FoldBench contains protein "
                          "chains under 20 aa and searches them normally, and phase1b_short.sh built "
                          "MSAs for the 235 such antigen chains the first pass skipped.")
+    ap.add_argument("--splits", default=f"{REPO}/extra_training/data/zenodo_splits/"
+                                        "splits_final/abag_split.csv",
+                    help="SAbDab2's own chain-role assignment, for the auth chain names")
     ap.add_argument("--require-msa", action=argparse.BooleanOptionalAction, default=True)
     a = ap.parse_args()
 
@@ -134,6 +227,24 @@ def main():
     else:
         print(f"NOTE {seq_index_path} absent -- surveying only, no jsons written")
 
+    # THE AUTH CHAIN NAMES, from SAbDab2's own role assignment, keyed by instance. agchains is
+    # '/'-joined in the same order as agtypes and agexpectedseqs, so ag<i> is agchains[i].
+    sp = pd.read_csv(a.splits, low_memory=False,
+                     usecols=["INSTANCE", "Hchain", "Lchain", "agchains"])
+    auth_names = {}
+    for r in sp.itertuples(index=False):
+        d = {}
+        if isinstance(r.Hchain, str) and r.Hchain.strip():
+            d["H"] = r.Hchain.strip()
+        if isinstance(r.Lchain, str) and r.Lchain.strip():
+            d["L"] = r.Lchain.strip()
+        if isinstance(r.agchains, str):
+            for i, c in enumerate(r.agchains.split("/")):
+                if c.strip():
+                    d[f"ag{i}"] = c.strip()
+        auth_names[str(r.INSTANCE)] = d
+
+    unresolved, ambiguous, relabelled = [], [], []
     picks, skipped = representatives(a.val_clusters, a.reps, a.min_len)
     print(f"structures picked: {len(picks)} from {len(set(c for c, *_ in picks))} clusters"
           + (f"   SKIPPED (fewer than 2 chains): {skipped}" if skipped else ""))
@@ -146,11 +257,44 @@ def main():
         # every (antibody chain, antigen chain) pair, alphabetically ordered, which is the convention
         # the pxm2025 pool uses (8ror: A-B and A-C, antigen against each antibody chain) and excludes
         # the intra-antibody H-L interface, which is not what these folds are about.
+        # MODEL letters follow the json order; REFERENCE labels come from the cif. Both are recorded,
+        # and pool.csv carries the REFERENCE ones because that is what the scorer looks up.
         letters = {i: chr(ord("A") + i) for i in range(len(chains))}
-        ab = [letters[i] for i, (r, _) in enumerate(chains) if r in ("H", "L")]
-        ag = [letters[i] for i, (r, _) in enumerate(chains) if r.startswith("ag")]
+        # THE SOURCE CIF, not the staged copy. The staged val_refs/<pdb>.cif is written further down
+        # this same loop, so reading it here saw only files left by a previous run -- every newly
+        # picked structure came back "cif offers []" and looked like a data problem when it was an
+        # ordering bug.
+        src_cif = f"{REPO}/extra_training/data/training_cifs/{inst}.cif"
+        a2l, shared_lbl = ref_auth_to_label(src_cif) if os.path.exists(src_cif) else ({}, {})
+        if shared_lbl:
+            # RELABELLED, NOT EXCLUDED. label_asym_id must be unique per chain instance and in a
+            # couple of SAbDab2's processed cifs it is not (8evg: auth N1 and N2 both labelled L),
+            # which collapses the heavy-antigen and light-antigen interfaces into one unscoreable
+            # pair. The deposited RCSB entries are clean, but SAbDab2 renamed the chains, so their
+            # names cannot bridge the two files. Instead the staged reference gets unique labels
+            # assigned here, and pool.csv is written to match -- both sides come from this function,
+            # so they cannot disagree.
+            src_cif = relabel_unique(src_cif, f"{REPO}/extra_training/val_refs/{pdb}.relabelled.cif")
+            a2l, shared_lbl = ref_auth_to_label(src_cif)
+            if shared_lbl:
+                raise SystemExit(f"STOP: {pdb} still has shared reference labels after relabelling: "
+                                 f"{shared_lbl}")
+            relabelled.append(pdb)
+        auth = auth_names.get(inst, {})
+        ref_of = {}
         for i, (r, _) in enumerate(chains):
-            roles.append(dict(pdb=pdb, chain=letters[i], role=r))
+            an = auth.get(r)
+            ln = a2l.get(an) if an else None
+            ref_of[i] = ln
+            roles.append(dict(pdb=pdb, model_chain=letters[i], ref_chain=ln or "",
+                              auth_chain=an or "", role=r))
+        # NOT named `missing`: that counter already exists below for chains lacking an MSA.
+        miss_ref = [(letters[i], r) for i, (r, _) in enumerate(chains) if not ref_of[i]]
+        if miss_ref:
+            unresolved.append((pdb, miss_ref, sorted(a2l.items())))
+            continue
+        ab = [ref_of[i] for i, (r, _) in enumerate(chains) if r in ("H", "L")]
+        ag = [ref_of[i] for i, (r, _) in enumerate(chains) if r.startswith("ag")]
         for abc in ab:
             for agc in ag:
                 c1, c2 = sorted((abc, agc))
@@ -171,14 +315,20 @@ def main():
         # Stage the chosen instance's cif as the DockQ reference. folder.py resolves references via
         # paths.DATASETS[...].ref(pdb), so one file per pdb under val_refs/ keeps that lookup trivial
         # and unambiguous when a pdb has several instances in the cluster.
-        src = f"{REPO}/extra_training/data/training_cifs/{inst}.cif"
+        src = src_cif
         ref_ok = os.path.exists(src)
         if ref_ok:
             os.makedirs(f"{REPO}/extra_training/val_refs", exist_ok=True)
             dst = f"{REPO}/extra_training/val_refs/{pdb}.cif"
-            if not os.path.exists(dst):
-                os.link(src, dst) if os.stat(src).st_dev == os.stat(
-                    os.path.dirname(dst)).st_dev else __import__("shutil").copyfile(src, dst)
+            # ALWAYS RE-STAGE. The old `if not os.path.exists(dst)` meant a file left by an earlier
+            # run was never replaced -- which silently defeated the relabelling above: 8evg's
+            # corrected reference was written, and then the stale copy with the degenerate labels was
+            # kept, so its four interfaces still named chains the reference did not have. The source
+            # is authoritative, so overwriting is always right and removes a whole staleness class.
+            if os.path.exists(dst) or os.path.islink(dst):
+                os.remove(dst)
+            same_fs = os.stat(src).st_dev == os.stat(os.path.dirname(dst)).st_dev
+            os.link(src, dst) if same_fs else __import__("shutil").copyfile(src, dst)
         rows.append(dict(cluster=cl, pdb=pdb, instance=inst, n_chains=len(chains),
                          n_tokens=sum(len(q) for _, q in chains), msa_ok=ok, ref_ok=ref_ok,
                          n_ifaces=len(ab) * len(ag)))
@@ -195,7 +345,7 @@ def main():
         w.writeheader()
         w.writerows(pool)
     with open(f"{REPO}/extra_training/val_fold/chain_roles.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["pdb", "chain", "role"])
+        w = csv.DictWriter(fh, fieldnames=["pdb", "model_chain", "ref_chain", "auth_chain", "role"])
         w.writeheader()
         w.writerows(roles)
     print(f"pool.csv: {len(pool)} interfaces over {len(set(r['pdb'] for r in pool))} structures")
@@ -204,6 +354,30 @@ def main():
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
         w.writeheader()
         w.writerows(rows)
+
+    if relabelled:
+        print(f"  relabelled {len(relabelled)} reference(s) whose label_asym_id was shared by "
+              f"several auth chains: {relabelled}")
+
+    if ambiguous:
+        # EXCLUDED, NOT FAILED. Two structures with a defective reference labelling should not block
+        # the other 77, and scoring what cannot be named is worse than not scoring it.
+        for pdb, sh in ambiguous:
+            print(f"  EXCLUDED {pdb}: reference label(s) shared by several auth chains {sh}; its "
+                  "antibody-antigen interfaces cannot be named distinctly")
+        print(f"  {len(ambiguous)} structure(s) excluded for ambiguous reference labelling")
+
+    if unresolved:
+        for pdb, miss, labels in unresolved[:5]:
+            print(f"  UNRESOLVED {pdb}: no reference label for {miss}; cif offers {labels}")
+        raise SystemExit(
+            f"STOP: {len(unresolved)} structures have a chain with no reference label. pool.csv would "
+            "name an interface the scorer cannot find, and the fold would score NOTHING for them.")
+
+    if not rows:
+        raise SystemExit(
+            "STOP: no structure survived. Nothing was picked, or every pick was excluded for an "
+            "ambiguous reference labelling or an unresolvable chain. Check the messages above.")
 
     tok = sorted(r["n_tokens"] for r in rows)
     print(f"tokens: min {tok[0]} median {tok[len(tok)//2]} max {tok[-1]}")
