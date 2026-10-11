@@ -320,11 +320,31 @@ one job: `phase1_uniref.sh` (download and extract), `phase1_index.sh` (index), `
 (search batch 1) and `phase1b_short.sh` (search batch 2). It is idempotent at every step — an existing
 database, index or alignment is skipped — so the same code runs all three batches:
 
-| query fasta | output | queries |
-|---|---|---|
-| `query.fasta` | `msa_initial_idx` | 5,304 chains of 20+ residues |
-| `query_short.fasta` | `msa_short_idx` | 234 antigen chains of 5–19 residues |
-| `query_short_TODO_bench.fasta` | `msa_bench_short_idx` | 11 benchmark chains of 5–19 residues |
+| query fasta | output | queries searched | state |
+|---|---|---|---|
+| `query.fasta` | `msa_initial_idx` | 5,305 chains of 20+ residues | done |
+| `query_short.fasta` | `msa_short_idx` | 235 antigen chains of 5–19 residues | done |
+| `query_short_TODO_bench.fasta` | `msa_bench_short_idx` | 11 benchmark chains of 5–19 residues | done 2026-10-11 15:33 |
+
+The counts are what was **searched**, which is what each batch's frozen `query.searched.fasta` records.
+Phase C's current output is one record shorter in the first two cases, because its antigen-type filter
+now removes a nucleic-acid chain from each — see the frozen-fasta note below for why that difference
+must never be handed to phase E.
+
+### The 11-chain benchmark top-up, as an illustration of the depth gate
+
+| chain | alignment depth |
+|---|---|
+| 8fym_P | 597 sequences |
+| 8fbw_E | 130 |
+| 8gho_C | 5 |
+| the other 8 | 1 — query-only |
+
+3 of 11 retrieved real alignments. That is the expected shape for 11–18 residue peptides and close to
+FoldBench, where about half of the chains under 20 aa come back query-only. It is also exactly why
+depth is gated on query length rather than on a per-batch flag: every one of these is under 20
+residues, so the gate exempts them, and a 300-residue chain returning a single sequence would still
+fail.
 
 `FREE_DB=1` deletes uniref30 and its index on success, so batches can run back to back without
 re-downloading 100 GB each time. `ALLOW_THIN=1` accepts a batch that retrieves little or nothing,
@@ -429,3 +449,24 @@ So the mechanism is sound and what is low is *depth* — which is a property of 
 queries, not of the pipeline, and matches FoldBench, where about half of the chains under 20 aa come
 back query-only. The gate therefore checks the mechanism (floor 95%, on a sample of 60 alignments
 against a full m8 pass) and only **reports** depth.
+
+### Verification status, stated plainly
+
+`phase_d_search_uniref.sh` **has not been run end to end.** All three batches were produced by the
+four scripts it replaces. What has been verified is every gate's logic against the completed
+artifacts, and the script's syntax and usage handling:
+
+| checked | result |
+|---|---|
+| by-name coverage gate | 0 of 5,304 and 0 of 234 queries without an alignment |
+| taxid coverage of hits | 100% on the short batch (4,478 of 4,478) |
+| depth by length | 200 of 200 for 20+ residues; 25 of 200 under 20 |
+| intermediate completeness | `uniref.a3m` and `prof_res` entry counts equal the query count on all three batches |
+| thread derivation | `0-63`→64, `0-31`→32, `0-7`→8, `0,2,4`→3 |
+| patch gate inputs | 8 `PATCHED` markers, both functions present |
+
+What is **untested** is the expensive path through the new code: download, extract, marker creation
+and removal, index build, and the search invocation itself. Closing that needs either a uniref30 cycle
+(~1.5 h) or a run against the 280 MB `mini_swissprot` database, which would also settle the two open
+questions from the review — whether the 301 GB index is required at all, and whether the staged search
+equals an unstaged one empirically as well as by code reading.
