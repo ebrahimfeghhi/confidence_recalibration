@@ -80,5 +80,9 @@ for f in _db.dbtype _db_seq _db_aln _db_h; do
     [ -s "$p" ] || die "missing or empty $p"
     say "  ok $(basename "$p") $(du -h "$p" | cut -f1)"
 done
+# LEAVE THE MARKER BEHIND. setup_databases.sh decides what to build from these markers, so without
+# COLABDB_READY the NEXT call -- phase1b_short.sh's, for uniref30 -- extracts this 291 GB database all
+# over again alongside it. That is exactly how both databases ended up on disk at once on 2026-10-11.
+touch "$DB/COLABDB_READY"
 rm -f "$TAR" "$DB"/colabfold_envdb_202108_*.tsv "$DB"/colabfold_envdb_202108.tsv
 say "envdb READY; tarball and tsv removed; quota $(quota -s 2>/dev/null | awk '/nvme/{print $2}')"

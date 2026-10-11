@@ -61,8 +61,18 @@ if ! [ -s "$DB/uniref30_2302_db_seq" ]; then
     say "fetching uniref30_2302.db.tar.gz"
     fetch_tarball "$URL" "$TAR" || die "uniref30 tarball incomplete"
     say "tarball complete; building (index built separately below)"
-    # UNIREF30_READY must go so the uniref30 branch runs; COLABDB_READY stays so the env database is
-    # not touched here. The gate below is the data files, never the exit code.
+    # POSITIVE CONTROL OVER WHAT setup_databases.sh BUILDS, not an assumption about it. It decides
+    # from the READY markers in $DB: removing UNIREF30_READY makes it rebuild uniref30, and the
+    # ABSENCE of COLABDB_READY makes it extract the 291 GB env database too, in the very same call.
+    # That is what happened on 2026-10-11: an earlier phase2_envdb.sh run had deleted COLABDB_READY
+    # before a build that then failed, this script's comment asserted the marker "stays", and one call
+    # put both databases on disk at once -- 760 GB, quota at 91%, and the quota guard killed the index
+    # build. Assuming a marker is present is not the same as ensuring it is.
+    ENVDB_BEFORE=0
+    [ -s "$DB/colabfold_envdb_202108_db_seq" ] && ENVDB_BEFORE=1
+    for m in COLABDB_READY PDB100_READY PDB_READY PDB_MMCIF_READY; do
+        [ -e "$DB/$m" ] || { touch "$DB/$m"; say "  created $m so setup_databases.sh leaves it alone"; }
+    done
     rm -f "$DB/UNIREF30_READY"
     cd "$R/tools/colabfold" || die "no tools/colabfold"
     MMSEQS_NO_INDEX=1 taskset -c 0-63 bash setup_databases.sh "$DB" >> $W/phase1b_setup.log 2>&1
@@ -70,6 +80,10 @@ if ! [ -s "$DB/uniref30_2302_db_seq" ]; then
     for f in _db.dbtype _db_seq _db_aln; do
         [ -s "$DB/uniref30_2302$f" ] || die "missing or empty $DB/uniref30_2302$f"
     done
+    # Did it build anything we did not ask for? Checked by data file, not by marker.
+    if [ "$ENVDB_BEFORE" -eq 0 ] && [ -s "$DB/colabfold_envdb_202108_db_seq" ]; then
+        die "setup_databases.sh also extracted the env database; uniref30 and envdb do not both fit"
+    fi
     rm -f "$TAR"
     say "uniref30 database ready: $(du -sh $DB/uniref30_2302_db_seq | cut -f1) of members"
 fi
