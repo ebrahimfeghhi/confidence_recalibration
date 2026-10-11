@@ -41,6 +41,9 @@
 #     MIN_TAX_PCT=N  minimum percentage of the alignments' UniRef hits that must carry a taxid in
 #                    uniref_tax.m8. Default 95. This checks the taxid MECHANISM, not search depth.
 #     TAX_SAMPLE=N   how many alignments to sample for that check. Default 60.
+#     BUILD_INDEX=0  skip the 301 GB index and give _db_seq the taxonomy sidecars instead. Measured
+#                    to give identical taxids on mini_swissprot; the default is 1 because uniref30's
+#                    key-space gap is ~10x against mini's 4.5x and that scale is untested.
 #     CORES=0-63     taskset range. 64 cores is the project cap (MSA_RUNBOOK.md:119); --threads is
 #                    derived from it with `taskset -c "$CORES" nproc`, never hardcoded.
 #
@@ -159,7 +162,36 @@ if [ ! -s "$DB/uniref30_2302_db_seq" ]; then
 fi
 
 # ---------------------------------------------------------------- 2. the index, for taxonomy only
-if [ ! -s "$DB/uniref30_2302_db.idx" ]; then
+#
+# MEASURED 2026-10-11: THE INDEX IS NOT ACTUALLY REQUIRED FOR TAXONOMY. search.py:134-139 sets
+# dbSuffix1 to "_seq" when no index is present and ".idx" when one is, and convertalis then wants the
+# taxonomy sidecars for whichever suffix it is handed. With an index that is .idx_mapping /
+# .idx_taxonomy; without one it is _db_seq_mapping / _db_seq_taxonomy, which nothing creates -- so an
+# index-free run failed with exit 1 and `uniref_tax.m8 not produced`, and the index looked mandatory.
+# It is not: creating the _db_seq sidecars as symlinks makes an index-free run produce taxids, and on
+# mini_swissprot the two routes gave IDENTICAL assignments -- 610 targets each, 610 shared, 0
+# disagreeing, none unique to either (scripts/verify_minidb.sh).
+#
+# WHY THE INDEX IS STILL BUILT BY DEFAULT. The mini database's _db and _db_seq differ 4.5x in size
+# (127,203 against 573,661 entries), so the key-space concern was exercised -- but the real uniref30
+# differs nearly 10x (36,293,491 representatives against 350,950,053 members), and that scale is
+# untested. A wrong-but-nonzero taxid is the dangerous failure here, far worse than a missing one, so
+# the verified-safe route stays the default.
+#
+# BUILD_INDEX=0 takes the cheap route. Worth doing: it saves 301 GB and ~5 minutes per batch, and it
+# would let uniref30 (450 GB) and colabfold_envdb (291 GB) sit on disk together, which removes the
+# entire staging arrangement -- the two-pass split, the kept intermediates, and the reason the
+# staging patch exists. Before flipping the default, run one real-uniref30 batch both ways and
+# confirm the m8 target->taxid assignments are identical, as they were on mini.
+if [ "${BUILD_INDEX:-1}" = "0" ]; then
+    say "BUILD_INDEX=0: skipping the index; giving _db_seq its own taxonomy sidecars instead"
+    for l in mapping taxonomy; do
+        [ -s "$DB/uniref30_2302_db_$l" ] || die "missing $DB/uniref30_2302_db_$l"
+        ln -sf "uniref30_2302_db_$l" "$DB/uniref30_2302_db_seq_$l"
+        [ -s "$DB/uniref30_2302_db_seq_$l" ] || die "$DB/uniref30_2302_db_seq_$l does not resolve"
+        say "  db_seq_$l -> $(readlink "$DB/uniref30_2302_db_seq_$l")"
+    done
+elif [ ! -s "$DB/uniref30_2302_db.idx" ]; then
     say "building the index (taxonomy, not speed -- see the header)"
     cd "$DB" || die "no db dir"
     rm -rf tmp1
@@ -174,11 +206,13 @@ fi
 # hand-made leftovers and demanded they postdate the index build, which failed a finished 301 GB
 # index twice. We create them (we skip the part of setup_databases.sh that would have) and gate on
 # what they RESOLVE to -- `-s` follows a symlink, so a dangling one fails here.
-for l in mapping taxonomy; do
-    [ -s "$DB/uniref30_2302_db_$l" ] || die "missing $DB/uniref30_2302_db_$l -- taxids cannot resolve"
-    ln -sf "uniref30_2302_db_$l" "$DB/uniref30_2302_db.idx_$l"
-    [ -s "$DB/uniref30_2302_db.idx_$l" ] || die "$DB/uniref30_2302_db.idx_$l does not resolve"
-done
+if [ "${BUILD_INDEX:-1}" != "0" ]; then
+    for l in mapping taxonomy; do
+        [ -s "$DB/uniref30_2302_db_$l" ] || die "missing $DB/uniref30_2302_db_$l -- taxids cannot resolve"
+        ln -sf "uniref30_2302_db_$l" "$DB/uniref30_2302_db.idx_$l"
+        [ -s "$DB/uniref30_2302_db.idx_$l" ] || die "$DB/uniref30_2302_db.idx_$l does not resolve"
+    done
+fi
 say "taxonomy tables resolve"
 
 # ---------------------------------------------------------------- 3. the search

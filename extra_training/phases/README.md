@@ -470,3 +470,68 @@ and removal, index build, and the search invocation itself. Closing that needs e
 (~1.5 h) or a run against the 280 MB `mini_swissprot` database, which would also settle the two open
 questions from the review — whether the 301 GB index is required at all, and whether the staged search
 equals an unstaged one empirically as well as by code reading.
+
+### Phase D verification, 2026-10-11 — both review experiments run
+
+`scripts/verify_minidb.sh` runs both on the 280 MB `mini_swissprot` database, which
+`DEBUG_MINI_DB=1` extracts twice, once as each of the two databases, so the whole staged search fits
+in 2.5 GB of its own directory. 45 seconds end to end.
+
+**Staged equals unstaged, byte for byte.** 6 alignments compared, 6 identical, 0 differing. Confirms
+the code reading (`search.py:157/172/210/231`): filtering is applied per database pass with the same
+parameters and `mergedbs` concatenates by key without filtering the union, so splitting the search
+across two runs cannot change the result.
+
+**The 301 GB index is not required for taxonomy.** `search.py:134-139` sets `dbSuffix1` to `_seq`
+without an index and `.idx` with one, and `convertalis` wants the taxonomy sidecars for whichever
+suffix it gets. With an index that is `.idx_mapping` / `.idx_taxonomy`; without one it is
+`_db_seq_mapping` / `_db_seq_taxonomy`, which nothing creates — so an index-free run fails with
+`exit 1` and `uniref_tax.m8 not produced`, and the index *looks* mandatory. Creating those two
+symlinks makes it work:
+
+| route | rows | with a taxid | targets | disagreeing assignments |
+|---|---|---|---|---|
+| index-free + `_db_seq` sidecars | 1,309 | 1,309 | 610 | — |
+| index-based | 1,309 | 1,309 | 610 | **0** |
+
+Identical target→taxid assignments, nothing unique to either side.
+
+**So the two claims the review asked me to separate resolve differently.** "An index-free search
+targets `_db_seq` rather than the representatives" is **true** and is the whole mechanism. "No index
+means `convertalis` cannot resolve taxids" is **false** — it was a coincidental consequence of nobody
+creating the `_db_seq` sidecars.
+
+**`BUILD_INDEX=0` added; the default stays 1.** The mini database's `_db` and `_db_seq` differ 4.5×
+(127,203 against 573,661 entries), so the key-space concern was exercised — but the real uniref30
+differs nearly 10× (36,293,491 representatives against 350,950,053 members), and that scale is
+untested. A wrong-but-nonzero taxid is far worse here than a missing one, so the verified-safe route
+remains the default.
+
+Worth flipping it, though: it saves 301 GB and ~5 minutes per batch, and it would let uniref30
+(450 GB) and colabfold_envdb (291 GB) coexist — which removes the **entire staging arrangement**: the
+two-pass split, the kept intermediates, and the reason `colabfold_search_staging.patch` exists. The
+test that would justify it is one real-uniref30 batch run both ways with the m8 assignments compared,
+which costs a single ~1.5 h cycle.
+
+### Parameter parity with Protenix — checked, no differences
+
+Diffed our effective flags against `Protenix/scripts/colabfold_msa.py` and ColabFold's own argparse
+defaults. Protenix's `LocalColabFoldConfig` sets `use_env=1`, `filter=1`, `db_load_mode=0`, and never
+passes `--use-templates`; note that `if config.db_load_mode:` is falsy at 0, so that flag is never
+passed and the default applies.
+
+| flag | ColabFold default | Protenix effective | ours |
+|---|---|---|---|
+| `--db1` / `--db2` / `--db3` | `uniref30_2302_db`, `""`, `colabfold_envdb_202108_db` | defaults | defaults |
+| `--use-env` | 1 | 1 | phase D 0 + phase E 1 → net 1 |
+| `--use-env-pairing` | 0 | 0 | 0 |
+| `--use-templates` | 0 | 0 (never passed) | 0 |
+| `--filter` | 1 | 1 | not passed → 1 |
+| `--db-load-mode` | 0 | 0 (never passed) | 0 |
+| `--pairing_strategy` | 0 | 0 | 0 |
+| `--unpack` | 1 | 1 | 1 |
+| `--threads` | 64 | 64 | derived from `CORES`, 64 |
+
+Every effective parameter matches, so `filter_param` — the `qsc`/`--diff`/`--max-seq-id` list that
+shapes each alignment — is identical to Protenix's. Combined with the staged-equals-unstaged result,
+the premise the review was worried about holds: our MSAs are built the way Protenix's were.
