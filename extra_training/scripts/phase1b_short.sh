@@ -25,26 +25,32 @@ P=/home/ebrahim/Protenix
 PY=$P/.venv/bin/python
 C=$R/diffusion_commit_clean_v2
 S=$R/extra_training/scripts
+PH=$R/extra_training/phases
 W=$R/extra_training/msa_work
 DB=$R/tools/colabfold/db
 M=$R/tools/mmseqs/bin/mmseqs
 LOG=$W/phase1b_short.log
 TAR=$DB/uniref30_2302.tar.gz
 URL=https://opendata.mmseqs.org/colabfold/uniref30_2302.db.tar.gz
-WANT=106688276925
 export PATH="$R/tools/mmseqs/bin:$PATH"
 
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 die() { say "STOP: $*"; exit 1; }
 
+# Completeness of a 100+ GB download is judged by the server's Content-Length and by whether the gzip
+# stream reads end to end -- never by a constant in this file. See lib_fetch.sh.
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$HERE/lib_fetch.sh"
+
 # ---------------------------------------------------------------- 1. the query set
 if [ ! -s "$W/query_short.fasta" ]; then
     say "building the short-antigen query set"
-    taskset -c 0-15 $PY $C/extract_msa_queries.py --min-len 5 --which train \
-        --out-dir $W/msa_queries_min5 >> "$LOG" 2>&1 || die "extract_msa_queries failed"
-    $PY $S/extract_short_queries.py --all $W/msa_queries_min5/train.fasta \
-        --already $W/query.fasta --out $W/query_short.fasta >> "$LOG" 2>&1 \
-        || die "extract_short_queries failed"
+    # ONE call: phase C does the set difference itself under --short-vs, so the fasta it writes and
+    # the fasta it subtracts can never come from different runs.
+    taskset -c 0-15 $PY $PH/phase_c_extract_msa_queries.py --min-len 5 --which train \
+        --out-dir $W/msa_queries_min5 --short-vs $W/query.fasta \
+        --short-out $W/query_short.fasta >> "$LOG" 2>&1 \
+        || die "phase C batch-2 failed"
 fi
 NQ=$(grep -c '^>' "$W/query_short.fasta")
 [ "$NQ" -ge 100 ] || die "only $NQ short queries (expected ~235)"
@@ -52,16 +58,8 @@ say "short queries: $NQ"
 
 # ---------------------------------------------------------------- 2. uniref30 database
 if ! [ -s "$DB/uniref30_2302_db_seq" ]; then
-    if [ ! -s "$TAR" ] || [ "$(stat -c%s "$TAR")" -ne "$WANT" ]; then
-        say "downloading uniref30_2302.db.tar.gz ($(numfmt --to=iec $WANT))"
-        for try in 1 2 3 4 5; do
-            curl -L -C - --retry 5 --retry-delay 10 -o "$TAR" "$URL" >> "$LOG" 2>&1
-            got=$(stat -c%s "$TAR" 2>/dev/null || echo 0)
-            [ "$got" -eq "$WANT" ] && break
-            say "  attempt $try stopped at $(numfmt --to=iec "$got"); resuming"
-        done
-    fi
-    [ "$(stat -c%s "$TAR" 2>/dev/null || echo 0)" -eq "$WANT" ] || die "uniref30 tarball incomplete"
+    say "fetching uniref30_2302.db.tar.gz"
+    fetch_tarball "$URL" "$TAR" || die "uniref30 tarball incomplete"
     say "tarball complete; building (index built separately below)"
     # UNIREF30_READY must go so the uniref30 branch runs; COLABDB_READY stays so the env database is
     # not touched here. The gate below is the data files, never the exit code.
@@ -77,9 +75,19 @@ if ! [ -s "$DB/uniref30_2302_db_seq" ]; then
 fi
 
 # ---------------------------------------------------------------- 3. index, for taxonomy
+# convertalis resolves taxids only through the index's own mapping and taxonomy tables.
+#
+# AN EXISTENCE TEST IS NOT ENOUGH HERE. An earlier attempt left hand-made symlinks named
+# .idx_mapping and .idx_taxonomy in this directory, pointing at _db_mapping and _db_taxonomy; both
+# -e and -s follow a symlink to a real file, so either test would have reported a working index when
+# createindex had produced nothing. So: remove them first, drop a marker immediately before the
+# build, and require what comes out to be NEWER than that marker.
+MARK=$W/.index_start
 if [ ! -s "$DB/uniref30_2302_db.idx" ]; then
     say "building the uniref30 index (needed for convertalis to resolve taxids)"
     cd "$DB" || die "no db dir"
+    rm -rf tmp1 uniref30_2302_db.idx_mapping uniref30_2302_db.idx_taxonomy
+    rm -f "$MARK"; touch "$MARK"
     taskset -c 0-63 $M createindex uniref30_2302_db tmp1 --remove-tmp-files 1 --threads 64 \
         >> $W/phase1b_index.log 2>&1
     say "createindex exit $? (not trusted; checking files)"
@@ -87,7 +95,12 @@ if [ ! -s "$DB/uniref30_2302_db.idx" ]; then
     say "index ready: $(du -sh $DB/uniref30_2302_db.idx | cut -f1)"
 fi
 for l in idx_mapping idx_taxonomy; do
-    [ -e "$DB/uniref30_2302_db.$l" ] || die "missing $DB/uniref30_2302_db.$l -- taxids cannot resolve"
+    q="$DB/uniref30_2302_db.$l"
+    [ -s "$q" ] || die "missing or empty $q -- taxids cannot resolve"
+    if [ -e "$MARK" ] && [ ! "$q" -nt "$MARK" ]; then
+        die "$q is older than the index build -- it is a leftover, not createindex output"
+    fi
+    say "  $l: $(du -shL "$q" | cut -f1), produced by this build"
 done
 
 # ---------------------------------------------------------------- 4. the search

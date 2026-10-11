@@ -35,24 +35,49 @@ cur() { awk '/=== overnight chain starting/{buf=""} {buf=buf $0 "\n"} END{printf
 
 say "=== watcher starting ==="
 
-# ---------------------------------------------------------------- 1. wait for prep
-if ! cur | grep -q "PREP COMPLETE"; then
-    say "waiting for the MSA/prep chain (session: overnight)"
-    tick=0
-    while tmux has-session -t overnight 2>/dev/null; do
+# ---------------------------------------------------------------- 1. wait for prep, RETRYING
+# A WATCHER THAT ONLY PRINTS IS NOT WATCHING. This block used to escalate into a log file and exit;
+# the one time a gate wrongly rejected a complete 100 GB download, that left the machine idle for
+# 2.4 h until a human noticed. The prep chain is idempotent by construction -- every stage skips what
+# it already finished -- so the correct response to a stop is to run it again.
+#
+# WHEN TO STOP RETRYING: when two attempts in a row die in the same stage with the same message.
+# That is a real fault and relaunching into it would burn days. A different failure, or a later
+# stage, means progress was made and earns another attempt. Six attempts is the hard ceiling.
+prep_stage() { cur | grep -oE 'stage [0-9]+[a-c]?' | tail -1; }
+prep_stop()  { cur | grep 'STOP:' | tail -1 | sed 's/^\[[^]]*\] //'; }
+
+tick=0; attempt=0; last_fail=""
+while ! cur | grep -q "PREP COMPLETE"; do
+    if tmux has-session -t overnight 2>/dev/null; then
         tick=$((tick+1))
         if [ $((tick % 15)) -eq 0 ]; then
             say "  prep: $(tail -1 "$R/extra_training/overnight.log" | cut -c1-110)"
         fi
         sleep 60
-    done
-fi
-# The chain prints STOP on any failed gate.
-if cur | grep -q "STOP:"; then
-    say "prep chain stopped:"; cur | tail -6 | tee -a "$LOG"
-    esc "prep did not complete"
-fi
-cur | grep -q "PREP COMPLETE" || esc "prep chain ended without PREP COMPLETE"
+        continue
+    fi
+    fail="$(prep_stage) :: $(prep_stop)"
+    if [ "$attempt" -gt 0 ]; then
+        say "prep attempt $attempt ended at: $fail"
+        if [ "$fail" = "$last_fail" ]; then
+            cur | tail -8 | tee -a "$LOG"
+            esc "prep stopped twice in the same place: $fail"
+        fi
+    elif [ -n "$(prep_stop)" ]; then
+        say "an earlier prep run had stopped at: $fail"
+    fi
+    if [ "$attempt" -ge 6 ]; then
+        esc "prep still not complete after $attempt attempts"
+    fi
+    last_fail="$fail"
+    attempt=$((attempt+1))
+    say "launching prep attempt $attempt (finished stages are skipped, so it resumes)"
+    tmux new-session -d -s overnight "bash $S/overnight.sh" \
+        || esc "could not start the overnight session"
+    sleep 30
+done
+say "prep complete after $attempt attempt(s) by this watcher"
 NJOB=$(ls $R/extra_training/val_jobs/*.json 2>/dev/null | wc -l)
 [ "$NJOB" -ge 70 ] || esc "only $NJOB validation job jsons"
 say "prep complete: $NJOB job jsons, target $((NJOB*SEEDS)) units"

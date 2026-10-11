@@ -3,7 +3,7 @@
 spread across release dates.
 
 SUMMARY
-    The training pool is 557 SAbDab2 ab_ag_clusters / 2,886 structures (see extract_msa_queries.py
+    The training pool is 557 SAbDab2 ab_ag_clusters / 2,886 structures (see phase_a_define_train_set.py
     for how it is derived). Validation is held out BY CLUSTER, never by structure, so near-duplicates
     cannot straddle the split.
 
@@ -42,20 +42,24 @@ import sys
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# This file lives at <repo>/extra_training/phases/, so the repo root is three levels up, not two.
+# paths.py stays at the repo root: 20+ files across the project import it, and it is shared
+# infrastructure rather than anything specific to this pipeline.
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+sys.path.insert(0, REPO)
 
-import extract_msa_queries as Q  # noqa: E402
+import phase_a_define_train_set as A  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def cluster_table():
     """out: DataFrame, one row per surviving training cluster: cluster, n_structures, median_depo"""
     # Count only the polypeptide-antigen rows that make up the training pool. Counting every row of a
     # cluster (haptens, sugars, apo) inflated the pool to 3,765 structures instead of 2,886.
-    _clusters, rows = Q.training_clusters(Q.SPLITS, Q.EXCLUDED)
-    s = pd.read_csv(Q.SPLITS, low_memory=False, usecols=["PDB_ID", "PDBdepo"])
+    _clusters, rows = A.training_clusters(A.SPLITS, A.EXCLUDED)
+    s = pd.read_csv(A.SPLITS, low_memory=False, usecols=["PDB_ID", "PDBdepo"])
     s = s.drop_duplicates("PDB_ID").set_index("PDB_ID")
     s = rows[["PDB_ID", "ab_ag_cluster"]].join(s, on="PDB_ID")
     s["depo"] = pd.to_datetime(s.PDBdepo, errors="coerce")

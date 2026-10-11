@@ -121,7 +121,7 @@ Cap CPU at **64 cores** (`taskset -c 0-63`); more has crashed this server. GPU i
 ### Step A — the cif set
 
 The 4,555 selected instance cifs come out of the SAbDab2 tarball. `training_instances.txt` is
-committed, derived by `exclude_homologs.py` + `extract_msa_queries.py`:
+committed, derived by `phase_a_define_train_set.py` + `phase_c_extract_msa_queries.py`:
 
 ```bash
 cd $REPO/extra_training/data/zenodo_splits

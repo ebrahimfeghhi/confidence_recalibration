@@ -36,30 +36,26 @@ DB=$R/tools/colabfold/db
 # first member is "colabfold_envdb_202108_db".
 TAR=$DB/colabfold_envdb_202108.tar.gz
 URL=https://opendata.mmseqs.org/colabfold/colabfold_envdb_202108.db.tar.gz
-WANT=128576661224
 LOG=$R/extra_training/msa_work/phase2_envdb.log
 export PATH="$R/tools/mmseqs/bin:$PATH"
 
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 die() { say "STOP: $*"; exit 1; }
 
+# Completeness of a 100+ GB download is judged by the server's Content-Length and by whether the gzip
+# stream reads end to end -- never by a constant in this file. See lib_fetch.sh.
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$HERE/lib_fetch.sh"
+
 command -v mmseqs >/dev/null || die "mmseqs still not on PATH"
 
 # ---------------------------------------------------------------- download (resumable)
 if [ "$MODE" = "build" ]; then
     say "mode=build: skipping the download"
-elif [ ! -s "$TAR" ] || [ "$(stat -c%s "$TAR")" -ne "$WANT" ]; then
-    say "downloading envdb tarball ($(numfmt --to=iec $WANT))"
-    for try in 1 2 3 4 5; do
-        curl -L -C - --retry 5 --retry-delay 10 -o "$TAR" "$URL" >> "$LOG" 2>&1
-        got=$(stat -c%s "$TAR" 2>/dev/null || echo 0)
-        [ "$got" -eq "$WANT" ] && break
-        say "  attempt $try stopped at $(numfmt --to=iec "$got"); resuming"
-    done
+else
+    say "fetching the envdb tarball"
+    fetch_tarball "$URL" "$TAR" || die "envdb tarball incomplete"
 fi
-got=$(stat -c%s "$TAR" 2>/dev/null || echo 0)
-[ "$got" -eq "$WANT" ] || die "tarball is $got bytes, expected $WANT"
-say "tarball complete and the right size"
 if [ "$MODE" = "download" ]; then
     say "mode=download: stopping before the build, as asked"
     exit 0

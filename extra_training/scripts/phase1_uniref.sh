@@ -24,9 +24,11 @@ MMSEQS_BIN="/home/ebrahim/tts_abag/tools/mmseqs/bin/mmseqs"
 
 log() { echo "[$(date '+%F %T')] $*"; }
 
-# name -> expected byte size, so a truncated file is detected rather than trusted
+# name -> expected byte size. 0 means ASK THE SERVER (the branch below): a constant written here goes
+# stale silently. The constant that used to sit on the uniref30 line was 41 MB short of the real file
+# and later cost a chain run that was holding a complete download.
 declare -A WANT=(
-  ["uniref30_2302.tar.gz"]=106688276925
+  ["uniref30_2302.tar.gz"]=0
   ["uniref30_2302_newtaxonomy.tar.gz"]=0
   ["pdb100_230517.fasta.gz"]=0
 )

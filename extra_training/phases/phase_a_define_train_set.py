@@ -51,7 +51,8 @@ OUTPUTS
     --out:  one row per dropped cluster: which query hit it, in which search, at what identity
 
 FUNCTIONS
-    unlisted():      our pool complexes, split into the ones SAbDab2 lists and the ones it does not
+    unlisted():         our pool complexes, split into the ones SAbDab2 lists and the ones it does not
+    training_clusters(): THE TRAINING SET -- the surviving clusters and their rows. Imported by B and C
     fetch():         pdb ids -> cached RCSB mmCIF paths
     chains_of():     an mmCIF -> {chain: one-letter polymer sequence}
     classify():      chain sequences -> antibody chains (with variable-domain bounds) and the rest
@@ -71,17 +72,29 @@ import urllib.request
 
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# This file lives at <repo>/extra_training/phases/, so the repo root is three levels up, not two.
+# paths.py stays at the repo root: 20+ files across the project import it, and it is shared
+# infrastructure rather than anything specific to this pipeline.
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+sys.path.insert(0, REPO)
 
 import paths  # noqa: E402
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPLITS = f"{REPO}/extra_training/data/zenodo_splits/splits_final/abag_split.csv"
+# Written by this phase's main(); read back by training_clusters() and by phases B and C.
+EXCLUDED = f"{REPO}/extra_training/results/excluded_homolog_clusters.csv"
 CIFDIR = f"{REPO}/extra_training/data/rcsb_unlisted"
 MMSEQS = f"{REPO}/tools/mmseqs/bin/mmseqs"
 ALLHMM = ("/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/anarci/dat/HMMs/ALL.hmm")
 POLY = ("PROTEIN", "PEPTIDE")
+
+# THE EVALUATION SETS, named explicitly. Never paths.DATASET_NAMES: that tuple also carries
+# sabdab_val, which is DERIVED from this pool. Sweeping it in here would exclude the validation
+# clusters from the pool they are drawn from, and in phase C it would file 79 validation structures
+# as "benchmark" sequences. Both are silent errors -- sabdab_val has a readable pool.csv.
+BENCHMARKS = ("pxm2025", "foldbench")
 
 # ANARCI's wrapper parses hmmscan's TEXT output with Biopython's Hmmer3TextParser, which cannot read
 # HMMER 3.4's format: the HSP coordinates come back None, every hit is dropped, and no domain is
@@ -104,16 +117,37 @@ def unlisted(splits):
     s = pd.read_csv(splits, usecols=["PDB_ID", "ab_ag_cluster"], low_memory=False)
     s["short"] = s.PDB_ID.str[-4:].str.lower()
     ours = set()
-    # THE BENCHMARKS ONLY, named explicitly rather than taken from paths.DATASET_NAMES. The exclusion
-    # asks "which clusters hold a complex we evaluate on", so it must range over the evaluation sets.
-    # Iterating every registered dataset swept in sabdab_val, which is DERIVED from this pool and has
-    # no pool.csv -- it raised FileNotFoundError, and had it had one it would have excluded the
-    # validation clusters from the pool they are drawn from.
-    for ds in ("pxm2025", "foldbench"):
+    # The exclusion asks "which clusters hold a complex we evaluate on", so it ranges over the
+    # evaluation sets only -- see BENCHMARKS above for why that tuple is written out by hand.
+    for ds in BENCHMARKS:
         with open(str(paths.DATASETS[ds].pool_csv)) as fh:
             ours |= {r["pdb"].lower() for r in csv.DictReader(fh)}
     hit = s[s.short.isin(ours)]
     return sorted(ours - set(hit.short)), set(hit.short), set(hit.ab_ag_cluster.dropna())
+
+
+def training_clusters(splits, excluded):
+    """in: the splits csv, the homology-exclusion csv.  out: (surviving cluster set, the splits rows)
+
+    THE DEFINITION OF THE TRAINING SET, and the reason this function lives in phase A rather than in
+    the phase that first needed it. Filter 1 removes the clusters holding one of our 227 benchmark
+    complexes, by id lookup over every row each complex appears in. Filter 2 removes the handful that
+    main() found homologous to the 39 complexes SAbDab2 does not list, read back from its csv.
+
+    Phases B, C and G all import this rather than keeping a cluster list of their own: four copies of
+    this derivation is how two tables in one paper end up disagreeing about the cluster count.
+    """
+    _miss, _listed, by_id = unlisted(splits)
+    hom = set()
+    if os.path.exists(excluded):
+        with open(excluded) as fh:
+            hom = {r["cluster"] for r in csv.DictReader(fh)}
+    s = pd.read_csv(splits, low_memory=False,
+                    usecols=["INSTANCE", "PDB_ID", "agtypes", "ab_ag_cluster", "Hseq", "Lseq",
+                             "agexpectedseqs"])
+    s = s[s.agtypes.apply(lambda v: any(t in POLY for t in str(v).split("/")))]
+    s = s[~s.ab_ag_cluster.isin(by_id) & ~s.ab_ag_cluster.astype(str).isin(hom)]
+    return set(s.ab_ag_cluster.dropna()), s
 
 
 def fetch(pdbs, cifdir, allow=True):

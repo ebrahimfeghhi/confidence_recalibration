@@ -2,7 +2,7 @@
 """Write Protenix job jsons for the validation clusters, one representative structure per cluster.
 
 SUMMARY
-    Validation for the confidence-head finetune is held out BY CLUSTER (pick_val_clusters.py: 50
+    Validation for the confidence-head finetune is held out BY CLUSTER (phase_b_define_val_clusters.py: 50
     clusters, 291 structures, spread across release dates). Only ONE structure per cluster is folded:
     structures inside a cluster are near-duplicates by construction, so the other 241 would cost GPU
     hours without adding information, and the cluster is the unit generalisation is measured over.
@@ -21,7 +21,7 @@ SUMMARY
           pairedMsaPath, unpairedMsaPath, templatesPath}}, ...]}
 
 INPUTS
-    --val-clusters: pick_val_clusters.py output. Default extra_training/results/val_clusters.csv.
+    --val-clusters: phase B output. Default extra_training/results/val_clusters.csv.
     --msa-root:     directory holding mmcif_msa_template/ and seq_to_pdb_index.json.
                     Default extra_training/msa_work/mmcif_msa.
     --seq-index:    seq_to_pdb_index.json. Default <msa-root>/../pdb_seqs/seq_to_pdb_index.json.
@@ -46,8 +46,11 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Phases A-C live under extra_training/phases/. This file is phase G and has not moved yet.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "extra_training", "phases"))
 
-import extract_msa_queries as Q  # noqa: E402
+import phase_a_define_train_set as A  # noqa: E402
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VAL = f"{REPO}/extra_training/results/val_clusters.csv"
@@ -83,7 +86,7 @@ def representatives(val_csv, reps=1, min_len=5):
     `reps` contributes all it has -- the median across validation clusters is only 2.
     """
     want = set(pd.read_csv(val_csv).cluster)
-    _clusters, rows = Q.training_clusters(Q.SPLITS, Q.EXCLUDED)
+    _clusters, rows = A.training_clusters(A.SPLITS, A.EXCLUDED)
     rows = rows[rows.ab_ag_cluster.isin(want)].copy()
     rows["chains"] = [_chains(r, min_len) for r in rows.itertuples(index=False)]
     rows["instance"] = rows.INSTANCE.astype(str)

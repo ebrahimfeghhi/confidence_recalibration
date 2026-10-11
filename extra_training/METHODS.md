@@ -36,7 +36,7 @@ restricting to post-cutoff entries that are also absent from both benchmarks lea
 to train on. Because FT3 freezes the trunk, the trunk having seen these structures does not leak into
 what is being fitted — only the head's calibration is changed.
 
-**Exclusion against our benchmarks**, two steps (`exclude_homologs.py`):
+**Exclusion against our benchmarks**, two steps (`phase_a_define_train_set.py`):
 
 1. *By identifier.* 188 of our 227 benchmark complexes (FoldBench and PXM-2025) are listed in
    SAbDab2 and occupy **140 clusters**, all dropped. The cluster id is read from *every* row a
@@ -58,7 +58,7 @@ antibody — so cluster-balanced sampling is mandatory, as Protenix's own datalo
 
 ## 3. Validation split
 
-Held out **by cluster** (`pick_val_clusters.py`). Clusters are binned into 5 bins of equal cluster
+Held out **by cluster** (`phase_b_define_val_clusters.py`). Clusters are binned into 5 bins of equal cluster
 count by median deposition date; 10 clusters are drawn from each bin over 20,000 random draws, and
 the draw whose structure count lands closest to 10 % of unique PDB entries is kept. Draws in which a
 single cluster exceeds 15 % of the target are rejected — without that constraint one 183-structure
@@ -208,14 +208,14 @@ before/after on the same poses with the same scorer, so any scorer offset cancel
 
 | script | role |
 |---|---|
-| `diffusion_commit_clean_v2/exclude_homologs.py` | benchmark exclusion, by id and by antigen homology |
-| `diffusion_commit_clean_v2/extract_msa_queries.py` | the unique-sequence query fastas |
-| `extra_training/scripts/extract_short_queries.py` | the 5–19 residue antigen chains the first pass skipped |
+| `extra_training/phases/phase_a_define_train_set.py` | benchmark exclusion, by id and by antigen homology |
+| `extra_training/phases/phase_c_extract_msa_queries.py` | the unique-sequence query fastas |
+| `extra_training/phases/phase_c_extract_msa_queries.py --short-vs` | the 5–19 residue antigen chains the first pass skipped |
 | `extra_training/scripts/phase1_uniref.sh`, `phase1_index.sh`, `phase1_search_idx.sh` | UniRef30 build, index and first search |
 | `extra_training/scripts/phase1b_short.sh` | second UniRef pass for the short antigen chains |
 | `extra_training/scripts/phase2_envdb.sh` | environmental database, `download` / `build` modes |
 | `extra_training/scripts/prep_step4_inputs.py` | per-query a3m headers and `step4`'s index files |
-| `diffusion_commit_clean_v2/pick_val_clusters.py` | the date-binned, cluster-held-out validation split |
+| `extra_training/phases/phase_b_define_val_clusters.py` | the date-binned, cluster-held-out validation split |
 | `diffusion_commit_clean_v2/build_val_jobs.py` | job jsons, `pool.csv`, `chain_roles.csv`, staged references |
 | `extra_training/scripts/run_template_search.py` | templates for every validation chain |
 | `extra_training/scripts/overnight.sh` | the gated preparation chain |

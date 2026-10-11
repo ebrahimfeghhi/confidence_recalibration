@@ -75,7 +75,7 @@ extra_training/
 
 Code lives with the rest of the pipeline, not here:
 
-- `diffusion_commit_clean_v2/exclude_homologs.py` — builds the pool and runs the exclusion
+- `extra_training/phases/phase_a_define_train_set.py` — builds the pool and runs the exclusion
 - `diffusion_commit_clean_v2/budget_decomposition.py` — the selection-vs-coverage measurement
 
 Tools fetched for this work are in `tts_abag/tools/`: `mmseqs/` (17-b804f),
@@ -98,6 +98,136 @@ epitope rather than generalise. `abag_split` forecloses it.
 The `_sd` files are a subset (single-domain, `type` in SD-H/SD-L), with identical split labels —
 verified 688/688 test and 2,694/2,694 train agree. Use `abag_split.csv` and filter on `type`; do not
 concatenate, or the 3,382 single-domain instances are counted twice.
+
+## Phase-by-phase walkthrough
+
+Written for a reader without a structural-biology background. Each phase says what it is for, what it
+produced, and how we know the output is right. The sections after this one give the same ground in
+full detail; this is the orientation.
+
+### Vocabulary, once
+
+- An **antibody** is a protein shaped like a Y, built from a **heavy** and a **light** chain. Only the
+  tips of the Y touch anything.
+- The **antigen** is what it grabs — typically a piece of a virus or a cell-surface protein.
+- Every protein is a string of letters, one per amino acid. **Sequence identity** is the fraction of
+  positions that match once two strings are aligned: 0.97 means 97% of letters agree.
+- The tip of the Y is the **variable domain**; inside it one loop varies far more than the rest, the
+  **CDR-H3**. It is the best single fingerprint of what an antibody binds.
+- A **complex** is one antibody plus its antigen. Our benchmarks are 227 complexes.
+- An **instance** is one antibody-antigen pairing. One PDB entry can hold several, which is why
+  instance counts exceed structure counts throughout.
+
+### Phase A — build the training pool
+
+**For.** Retraining the confidence head needs antibody-antigen structures. If any of them also appear
+in FoldBench or PXM, our reported DockQ is meaningless, because the model would be tuned on its own
+test set. So the pool is SAbDab2 minus everything that touches the benchmarks.
+
+**How SAbDab2 groups structures.** Three levels, no code and no documented thresholds shipped, so the
+scheme was read back off the data (full evidence in *How SAbDab2 clusters* below):
+
+| column | clusters, whole file | groups |
+|---|---|---|
+| `cdrh3_cluster` | 4,635 | antibodies by CDR-H3 at 95% identity |
+| `agclusters` | 1,631 | antigens, typed by prefix: `P` protein, `E` peptide, `D` DNA, `R` RNA |
+| `ab_ag_cluster` | 2,641 | the complex — the one we use |
+
+The complex-level cluster behaves as a **connected component**: two structures share a cluster if
+their antibodies cluster together *or* their antigens do, chained transitively. Verified on the whole
+15,810-row file — 0 of 4,285 antibody clusters are split across complex clusters, and only 9 of 1,631
+antigen clusters are. (Counts above are for the whole file; the sections below quote the
+polypeptide-antigen subset, which is smaller.)
+
+That makes clusters conservative, which is what a holdout wants, and lumpy: median 2 structures,
+largest 2,812.
+
+Clusters, not structures, are the unit throughout. Two structures in one cluster are near-duplicates,
+so they are one data point.
+
+**Filter 1, by name.** 188 of the 227 benchmark complexes have a row in SAbDab2. Look up each one's
+`ab_ag_cluster` and drop it: **140 clusters removed**, fewer than 188 because several benchmark
+complexes share a cluster.
+
+**Filter 2, by sequence, for the 39 that are not listed.** The other 39 benchmark complexes have no
+row at all — no cluster to delete. Absence is not safety: a training cluster can carry *the same
+antigen* bound by a different antibody, and training on that means studying the exact surface we then
+test on. Since there is no ID to match, we match spelling. For each of the 39: fetch the deposited
+mmCIF from RCSB, take every polymer chain, use `hmmscan` against ANARCI's own HMMs to decide which
+chains are antibody (the same recognizer SAbDab2 used), then search the rest against the pool's
+antigens and the antibody chains against the pool's antibodies. Thresholds are **ours, not
+SAbDab2's**: 40% identity against protein antigens, 80% against peptides (short strings match by
+coincidence far more easily), 95% over the antibody variable domain, 50% coverage, identity measured
+over the shorter sequence. 40% sounds permissive, but at that level two proteins are usually the same
+protein from another species or variant — the same target in practice.
+
+**4 clusters removed**, all through the antigen search:
+
+| cluster | caught by | identity |
+|---|---|---|
+| 398 | 9isf | 0.973 |
+| 1496 | 8xnh | 0.966 |
+| 1497 | 9kur | 0.827 |
+| 499 | 8zp2 | 0.578 |
+
+Nothing was caught by the antibody or peptide searches, so no training cluster shares an antibody with
+an unlisted benchmark complex.
+
+**Filter 3, CDR-H3 near-identity.** The mirror question to filter 2: do we train on a benchmark
+*antibody*? The same antibody against a different antigen still leaks. Compare every training
+antibody's CDR-H3 against every benchmark antibody's; drop at 95% or above. **0 clusters removed** —
+evidence, rather than an assumption, that filters 1 and 2 were already thorough.
+
+**Out.** **557 clusters / 4,555 instances / 2,886 unique PDB entries.**
+
+### Phase B — hold out a validation set
+
+**For.** To tell whether retraining helped, we need structures the retrained head never saw. Held out
+by **cluster**, never by structure: a near-duplicate split across the boundary would make the head
+look good for the wrong reason.
+
+**Why not 50 at random.** Cluster sizes are lopsided — cluster 171 alone holds 1,001 structures. A
+random 50 either lands on 50 tiny clusters (about 1% of the data, too small to measure) or catches a
+giant and validation becomes one system studied a thousand times: noisy, and informative only about
+whichever antigen dominated.
+
+**How instead.** Give each cluster the median deposition date of its structures; cut the clusters into
+5 date bins of equal cluster count, so each bin is one era; draw 10 clusters per bin, 50 total, 20,000
+times; reject any draw where one cluster exceeds a set share of the total; keep the draw landing
+closest to 10% of the pool. Fixed seed, so it regenerates exactly.
+
+**Out.** **50 clusters / 291 structures — 10.1% of the pool's 2,886 PDB entries.**
+
+| era, by median deposition date | clusters | structures |
+|---|---|---|
+| 1993-09 to 2011-04 | 10 | 91 |
+| 2013-05 to 2018-02 | 10 | 21 |
+| 2018-03 to 2021-01 | 10 | 68 |
+| 2021-07 to 2023-05 | 10 | 84 |
+| 2023-11 to 2026-01 | 10 | 27 |
+
+Largest validation cluster: 39 structures, 13.4% of validation — material, not dominant.
+
+**A useful side effect.** Protenix v2's own training data stops at 2021-09-30. **17 of the 50 clusters
+(78 structures) have a median date after that cutoff.** The date binning was not aimed at this, but it
+gives a second, stronger check: improvement on structures Protenix itself never saw.
+
+**What actually gets folded.** Not all 291 — folding is the expensive part and within-cluster
+structures are near-duplicates. We ask for **2 representatives per cluster** and get them where they
+exist:
+
+| | clusters | structures |
+|---|---|---|
+| contributed 2 representatives | 29 | 58 |
+| contributed 1 (only one available) | 21 | 21 |
+| **total** | **50** | **79** |
+
+The 21 are clusters whose instance count comes from repeats inside a single PDB entry; the
+representative picker deduplicates to distinct PDB entries, so there is only one structure to take.
+Where a cluster gives 2, its structures are sorted by size and two evenly spaced picks are taken, so
+one is small and one large rather than both being tiny partial constructs.
+
+**79 structures x 20 seeds = 1,580 folds**, roughly 16 h on two GPUs.
 
 ## How SAbDab2 clusters (reverse-engineered — no code ships with the record)
 
@@ -178,7 +308,7 @@ sequence, so a 15-residue peptide against a 500-residue protein is not scored as
 Targets include both `agresolvedseqs` and `agexpectedseqs`: resolved sequences have unmodelled gaps a
 homolog could hide in, and searching both is strictly more conservative.
 
-**The four real drops** — clusters 1496, 1497, 398, 499 — triggered by `8xnh_A` (96.6%), `9isf_A`
+**The four real drops** — clusters 1496, 1497, 398, 499 — triggered by `8xnh_B` (96.6%), `9isf_A`
 (97.3%), `9kur_A` (82.7%), `8zp2_A` (57.8%).
 
 ### Final pool
@@ -208,7 +338,7 @@ SAbDab2's own annotation: CDR-H3 for their first row comes back `VRRAFDSDVGFAS`,
 
 ```bash
 cd diffusion_commit_clean_v2
-/home/ebrahim/Protenix/.venv/bin/python exclude_homologs.py \
+/home/ebrahim/Protenix/.venv/bin/python extra_training/phases/phase_a_define_train_set.py \
     --out ../extra_training/results/excluded_homolog_clusters.csv
 ```
 
