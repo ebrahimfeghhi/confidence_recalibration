@@ -126,14 +126,30 @@ def main():
     if os.path.exists(m8) and not os.path.exists(link):
         os.symlink(m8, link)
 
-    with open(f"{a.index_dir}/seq_to_pdb_id_entity_id.json", "w") as fh:
-        json.dump(seq_to_id, fh)
-    with open(f"{a.index_dir}/seq_to_pdb_index.json", "w") as fh:
-        json.dump(seq_to_index, fh)
-    with open(f"{a.index_dir}/prep_step4_report.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["name", "n_lines", "header_lines_rewritten", "ok"])
-        w.writeheader()
-        w.writerows(rows)
+    # MERGE, never overwrite: this runs once per search batch (the main query set and the short
+    # peptide antigens are searched separately, because their ColabFold query databases are keyed
+    # independently), and step4 takes ONE pair of index files covering every sequence.
+    def merge(path, new_items):
+        old = {}
+        if os.path.exists(path):
+            old = json.load(open(path))
+        before = len(old)
+        old.update(new_items)
+        with open(path, "w") as fh:
+            json.dump(old, fh)
+        print(f"  {os.path.basename(path)}: {before} -> {len(old)} sequences")
+        return old
+
+    merge(f"{a.index_dir}/seq_to_pdb_id_entity_id.json", seq_to_id)
+    merge(f"{a.index_dir}/seq_to_pdb_index.json", seq_to_index)
+    rep = f"{a.index_dir}/prep_step4_report.csv"
+    fresh = not os.path.exists(rep)
+    with open(rep, "a", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["batch", "name", "n_lines", "header_lines_rewritten", "ok"])
+        if fresh:
+            w.writeheader()
+        for r in rows:
+            w.writerow(dict(batch=os.path.basename(a.a3m_dir.rstrip("/")), **r))
 
     two = sum(1 for r in rows if r["header_lines_rewritten"] == 2)
     print(f"written: {len(rows)}   dropped: {len(dropped)}")

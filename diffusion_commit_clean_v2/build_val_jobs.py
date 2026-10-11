@@ -55,7 +55,7 @@ MSA_ROOT = f"{REPO}/extra_training/msa_work/mmcif_msa"
 OUT = f"{REPO}/extra_training/val_jobs"
 
 
-def _chains(row, min_len=20):
+def _chains(row, min_len=5):
     """in: a splits row.  out: [(role, sequence)] in chain order -- heavy, light, then antigens
 
     The ORDER IS THE CONTRACT. Protenix labels predicted chains A, B, C... in the order of the job
@@ -73,7 +73,7 @@ def _chains(row, min_len=20):
     return out
 
 
-def representatives(val_csv, reps=1):
+def representatives(val_csv, reps=1, min_len=5):
     """in: the validation-cluster csv, structures to take per cluster.
     out: [(cluster, pdb, [sequences])], up to `reps` per cluster
 
@@ -85,7 +85,7 @@ def representatives(val_csv, reps=1):
     want = set(pd.read_csv(val_csv).cluster)
     _clusters, rows = Q.training_clusters(Q.SPLITS, Q.EXCLUDED)
     rows = rows[rows.ab_ag_cluster.isin(want)].copy()
-    rows["chains"] = [_chains(r) for r in rows.itertuples(index=False)]
+    rows["chains"] = [_chains(r, min_len) for r in rows.itertuples(index=False)]
     rows["instance"] = rows.INSTANCE.astype(str)
     rows["ntok"] = rows.chains.apply(lambda c: sum(len(q) for _, q in c))
     rows = rows[rows.chains.apply(len) >= 2]
@@ -109,6 +109,10 @@ def main():
     ap.add_argument("--out-dir", default=OUT)
     ap.add_argument("--reps", type=int, default=2,
                     help="structures per cluster; median of validation clusters has only 2")
+    ap.add_argument("--min-len", type=int, default=5,
+                    help="shortest antigen chain to include. 5, not 20: FoldBench contains protein "
+                         "chains under 20 aa and searches them normally, and phase1b_short.sh built "
+                         "MSAs for the 235 such antigen chains the first pass skipped.")
     ap.add_argument("--require-msa", action=argparse.BooleanOptionalAction, default=True)
     a = ap.parse_args()
 
@@ -127,7 +131,7 @@ def main():
     else:
         print(f"NOTE {seq_index_path} absent -- surveying only, no jsons written")
 
-    picks, skipped = representatives(a.val_clusters, a.reps)
+    picks, skipped = representatives(a.val_clusters, a.reps, a.min_len)
     print(f"structures picked: {len(picks)} from {len(set(c for c, *_ in picks))} clusters"
           + (f"   SKIPPED (fewer than 2 chains): {skipped}" if skipped else ""))
 

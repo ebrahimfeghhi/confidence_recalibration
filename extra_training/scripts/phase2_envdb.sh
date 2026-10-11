@@ -20,7 +20,13 @@
 # peak near the quota ceiling again.
 #
 # DISK: 118 GB tarball + ~320 GB tsv + ~160 GB db, peak under 600 GB, against 971 GB free.
+#
+# MODE (argument 1): "download" fetches the tarball only, "build" extracts it, "all" (the default)
+# does both. They are separable because uniref30 must come back for the short-peptide pass and the two
+# databases do not fit on disk together, so the order is: fetch this tarball, run the uniref30 pass,
+# free uniref30, only then extract this one.
 set -u
+MODE="${1:-all}"
 R=/home/ebrahim/tts_abag
 DB=$R/tools/colabfold/db
 # THE PREBUILT DATABASE, not the .tsv one. setup_databases.sh defaults FAST_PREBUILT_DATABASES=1
@@ -40,7 +46,9 @@ die() { say "STOP: $*"; exit 1; }
 command -v mmseqs >/dev/null || die "mmseqs still not on PATH"
 
 # ---------------------------------------------------------------- download (resumable)
-if [ ! -s "$TAR" ] || [ "$(stat -c%s "$TAR")" -ne "$WANT" ]; then
+if [ "$MODE" = "build" ]; then
+    say "mode=build: skipping the download"
+elif [ ! -s "$TAR" ] || [ "$(stat -c%s "$TAR")" -ne "$WANT" ]; then
     say "downloading envdb tarball ($(numfmt --to=iec $WANT))"
     for try in 1 2 3 4 5; do
         curl -L -C - --retry 5 --retry-delay 10 -o "$TAR" "$URL" >> "$LOG" 2>&1
@@ -52,6 +60,10 @@ fi
 got=$(stat -c%s "$TAR" 2>/dev/null || echo 0)
 [ "$got" -eq "$WANT" ] || die "tarball is $got bytes, expected $WANT"
 say "tarball complete and the right size"
+if [ "$MODE" = "download" ]; then
+    say "mode=download: stopping before the build, as asked"
+    exit 0
+fi
 
 # ---------------------------------------------------------------- build
 rm -f "$DB/COLABDB_READY"
