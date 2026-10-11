@@ -107,6 +107,21 @@ ANARCI_HMMS = f"{REPO}/tools/anarci_hmms"
 CDR3_IMGT = (105, 117)      # IMGT CDR3 span; reproduces SAbDab2's CDRH3 column
 
 
+def _ckey(v):
+    """in: a cluster id from either the splits csv or our own csv.  out: a canonical string key
+
+    WHY THIS EXISTS. ab_ag_cluster is int64 in today's splits file, so str() gives "1496" and matches
+    the "1496" our exclusion csv stores. A single NaN anywhere in that column makes pandas read it as
+    float64, str() then gives "1496.0", every homology exclusion stops matching, and the pool grows
+    back from 557 to 561 with no error raised -- we would train on benchmark-homologous clusters and
+    never know. Collapsing both sides through int() removes the dependence on the column's dtype.
+    """
+    try:
+        return str(int(float(v)))
+    except (TypeError, ValueError):
+        return str(v)
+
+
 def unlisted(splits):
     """in: the splits csv.  out: (unlisted pdb ids, listed pdb ids, clusters our listed ones occupy)
 
@@ -146,7 +161,17 @@ def training_clusters(splits, excluded):
                     usecols=["INSTANCE", "PDB_ID", "agtypes", "ab_ag_cluster", "Hseq", "Lseq",
                              "agexpectedseqs"])
     s = s[s.agtypes.apply(lambda v: any(t in POLY for t in str(v).split("/")))]
-    s = s[~s.ab_ag_cluster.isin(by_id) & ~s.ab_ag_cluster.astype(str).isin(hom)]
+    keys = s.ab_ag_cluster.map(_ckey)
+    hom_keys = {_ckey(h) for h in hom}
+    # A cluster in the exclusion csv that matches nothing in the splits file means the two files have
+    # drifted apart -- a regenerated splits release, or the dtype problem _ckey() documents. Either
+    # way the exclusion is not being applied, which must not pass quietly.
+    orphans = sorted(hom_keys - set(keys))
+    if orphans:
+        raise SystemExit(
+            f"STOP: {len(orphans)} cluster(s) in {excluded} are absent from {splits}: {orphans}\n"
+            "The homology exclusion is not being applied. Re-run phase A to regenerate the csv.")
+    s = s[~s.ab_ag_cluster.isin(by_id) & ~keys.isin(hom_keys)]
     return set(s.ab_ag_cluster.dropna()), s
 
 
@@ -241,7 +266,6 @@ def cdrh3_of(records, hmmerpath=HMMER312, hmms=ANARCI_HMMS):
     """
     import importlib
     m = importlib.import_module("anarci.anarci")
-    m = sys.modules["anarci.anarci"]
     m.HMM_path = hmms
     out = {}
     for name, seq in records:
@@ -284,7 +308,8 @@ def brute_cdr_hits(queries, targets, ident):
                 same = min(len(q), len(t)) / max(len(q), len(t))
             else:
                 continue
-            if same >= ident and (cl not in best or same > best[cl][1]):
+            # Same tie-break as search(), for the same reason.
+            if same >= ident and (cl not in best or (same, best[cl][0]) > (best[cl][1], qn)):
                 best[cl] = (qn, same)
     return best
 
@@ -338,9 +363,14 @@ def search(q, t, out, ident, cov, threads, label, extra=()):
     --seq-id-mode 2 so identity is over the shorter sequence -- a 15-residue peptide against a
     500-residue protein is otherwise scored as trivially dissimilar.
     """
-    if os.path.getsize(q) == 0 or os.path.getsize(t) == 0:
-        print(f"  {label}: skipped (empty {'query' if os.path.getsize(q)==0 else 'target'})")
-        return {}
+    # AN EMPTY INPUT IS A FAULT. Returning {} here would read as "this filter found nothing to
+    # exclude", which is exactly what a working filter reports -- so a broken classifier or a broken
+    # CDR-H3 extractor would look like a clean result. Every search in this phase has thousands of
+    # targets and tens of queries on real data.
+    for role, path in (("query", q), ("target", t)):
+        if os.path.getsize(path) == 0:
+            raise SystemExit(f"STOP: {label} has an empty {role} fasta ({path}). "
+                             "An exclusion filter with no input cannot exclude anything.")
     subprocess.run([MMSEQS, "easy-search", q, t, out, f"{out}.tmp",
                     "--min-seq-id", str(ident), "-c", str(cov), "--cov-mode", "0",
                     "--seq-id-mode", "2", "-s", "7.5", "--threads", str(threads),
@@ -353,7 +383,14 @@ def search(q, t, out, ident, cov, threads, label, extra=()):
             if len(f) < 3:
                 continue
             cl, fid = f[1].split("|")[0], float(f[2])
-            if cl not in best or fid > best[cl][1]:
+            # DETERMINISTIC TIE-BREAK. A complex often deposits several identical copies of its
+            # antigen -- 8xnh chains A, B and C are the same 438-residue sequence -- so they hit the
+            # same cluster at exactly the same identity. With a strict `>` the winner was whichever
+            # row mmseqs emitted first, which is not stable across runs: the same input produced
+            # 8xnh_B one run and 8xnh_C the next. The cluster and the identity never moved, only the
+            # label, but an artifact that does not reproduce is not one to put in a paper. Lowest
+            # query name wins a tie.
+            if cl not in best or (fid, best[cl][0]) > (best[cl][1], f[0]):
                 best[cl] = (f[0], fid)
     return best
 
@@ -372,6 +409,9 @@ def main():
     ap.add_argument("--cov", type=float, default=0.50)
     ap.add_argument("--evalue", type=float, default=1e-10)
     ap.add_argument("--threads", type=int, default=32)
+    ap.add_argument("--min-cdr-frac", type=float, default=0.95,
+                    help="fail unless CDR-H3 is recovered for this fraction of heavy chains; guards "
+                         "against a silent ANARCI failure making the CDR-H3 filter vacuous")
     ap.add_argument("--no-fetch", action="store_true")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
@@ -404,6 +444,17 @@ def main():
     if qcdr:
         ls = sorted(len(v) for v in qcdr.values())
         print(f"    loop length: min {ls[0]} median {ls[len(ls)//2]} max {ls[-1]}")
+    # THE GATE THAT MAKES FILTER 3'S RESULT MEAN SOMETHING. cdrh3_of() swallows exceptions per chain,
+    # so a wrong HMM path or a missing hmmer-3.1b2 binary yields an empty qcdr -- and then this filter
+    # reports "0 clusters hit", indistinguishable from the genuine answer it reports today. Filter 3
+    # removing 0 clusters is quoted as evidence that filters 1 and 2 were thorough, so the recovery
+    # rate has to be checked rather than printed. Observed: 60/60.
+    if heavy and len(qcdr) < a.min_cdr_frac * len(heavy):
+        raise SystemExit(
+            f"STOP: CDR-H3 recovered for only {len(qcdr)} of {len(heavy)} heavy chains "
+            f"(< {a.min_cdr_frac:.0%}). ANARCI is not numbering domains, so the CDR-H3 filter would "
+            f"report 0 hits whether or not any exist. Check HMMER312={HMMER312} and "
+            f"ANARCI_HMMS={ANARCI_HMMS}, then re-run.")
 
     prot_t, pep_t, ab_t, cdr_t, train_cl = train_tables(a.splits, ours_cl)
     print(f"\ncandidate training pool: {len(train_cl)} clusters")
@@ -435,8 +486,8 @@ def main():
     print(f"  CDR-H3 brute force  >={100*a.cdr_id:.0f}% id: {len(h5)} clusters hit"
           + ("  [AGREE]" if set(h4) == set(h5) else f"  [DISAGREE: {sorted(set(h4) ^ set(h5))}]"))
 
-    drop = (set(h1) | set(h2) | set(h4) | set(h5)) & {str(c) for c in train_cl}
-    keep = {c for c in train_cl if str(c) not in drop}
+    drop = (set(h1) | set(h2) | set(h4) | set(h5)) & {_ckey(c) for c in train_cl}
+    keep = {c for c in train_cl if _ckey(c) not in drop}
     print(f"\nunion dropped: {len(drop)} clusters")
     print(f"TRAINING CLUSTERS: {len(train_cl)} -> {len(keep)}")
 

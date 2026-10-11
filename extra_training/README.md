@@ -308,7 +308,7 @@ sequence, so a 15-residue peptide against a 500-residue protein is not scored as
 Targets include both `agresolvedseqs` and `agexpectedseqs`: resolved sequences have unmodelled gaps a
 homolog could hide in, and searching both is strictly more conservative.
 
-**The four real drops** — clusters 1496, 1497, 398, 499 — triggered by `8xnh_B` (96.6%), `9isf_A`
+**The four real drops** — clusters 1496, 1497, 398, 499 — triggered by `8xnh_A` (96.6%), `9isf_A`
 (97.3%), `9kur_A` (82.7%), `8zp2_A` (57.8%).
 
 ### Final pool
