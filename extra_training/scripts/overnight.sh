@@ -117,22 +117,40 @@ done
 say "stage 3 OK: $NPAIR pairing.a3m, $NEMPTY of the first 40 hold only the query"
 [ "$NEMPTY" -le 20 ] || die "$NEMPTY of 40 pairing.a3m are empty -- taxid tagging did not take"
 
-# ---------------------------------------------------------------- stage 4: templates
-say "stage 4: templates (hmmsearch vs pdb_seqres) -- untimed, hard timeout"
-export PROTENIX_ROOT_DIR=$R/extra_training/protenix_root
-mkdir -p $PROTENIX_ROOT_DIR/search_database
-timeout 21600 $PY runner/template_search.py --help >> $W/template.log 2>&1
-say "stage 4: template_search.py CLI logged to template.log -- NOT run blind; see stage 5 gate"
-
-# ---------------------------------------------------------------- stage 5: validation jobs
-say "stage 5: validation job jsons"
+# ---------------------------------------------------------------- stage 4: validation job jsons
+# BEFORE the template search, which walks the jsons to find each chain's MSA directory.
+say "stage 4: validation job jsons"
 cd $C || die "no code dir"
 $PY build_val_jobs.py --reps $REPS --msa-root $W/mmcif_msa \
     --seq-index $W/pdb_seqs/seq_to_pdb_index.json --out-dir $R/extra_training/val_jobs \
     >> $W/val_jobs.log 2>&1 || die "build_val_jobs.py failed (see val_jobs.log)"
 NJOB=$(ls $R/extra_training/val_jobs/*.json 2>/dev/null | wc -l)
 [ "$NJOB" -ge 70 ] || die "only $NJOB validation jsons written (expected ~79)"
-say "stage 5 OK: $NJOB validation jsons"
+# pool.csv decides which interfaces a target=* unit is scored on. folder.py's interfaces_by_pdb()
+# opens it unconditionally, so a missing or empty file means the fold scores nothing at all.
+POOL=$R/extra_training/val_fold/pool.csv
+[ -s "$POOL" ] || die "no val_fold/pool.csv -- the fold would score no interfaces"
+NIF=$(($(wc -l < $POOL)-1))
+NPDB_POOL=$(tail -n +2 $POOL | cut -d, -f1 | sort -u | wc -l)
+say "stage 4: $NJOB jsons, pool.csv has $NIF interfaces over $NPDB_POOL structures"
+[ "$NPDB_POOL" -eq "$NJOB" ] || die "pool.csv covers $NPDB_POOL structures but there are $NJOB jsons -- every folded structure needs at least one interface"
+say "stage 4 OK"
+
+# ---------------------------------------------------------------- stage 5: templates
+# pxm2025 folds use templates (free_templates defaults True and their jsons carry real hmmsearch.a3m),
+# so the validation set is built the same way. update_template_info() is only called from Protenix's
+# batch_inference.py, never from the inference.py path folder.py uses, so it must be run here or every
+# templatesPath would dangle. Single-process and up front: MSA directories are keyed by sequence, so
+# two workers sharing a chain would otherwise run hmmsearch into the same path at once.
+say "stage 5: templates (hmmsearch vs pdb_seqres) -- untimed, hard timeout"
+export PROTENIX_ROOT_DIR=$R/extra_training/protenix_root
+mkdir -p $PROTENIX_ROOT_DIR/search_database
+cd $P || die "no Protenix"
+taskset -c $CORES timeout 21600 $PY $R/extra_training/scripts/run_template_search.py \
+    --jobs-dir $R/extra_training/val_jobs >> $W/template.log 2>&1 \
+    || die "template search incomplete (see template.log)"
+NTMPL=$(find $W/mmcif_msa -name hmmsearch.a3m 2>/dev/null | wc -l)
+say "stage 5 OK: $NTMPL hmmsearch.a3m written"
 
 say "=== PREP COMPLETE. Folding is NOT started automatically. ==="
 say "The validation fold needs a 1-fold smoke test (new job jsons + new trunk-dump path) before"

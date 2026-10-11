@@ -56,15 +56,20 @@ OUT = f"{REPO}/extra_training/val_jobs"
 
 
 def _chains(row, min_len=20):
-    """in: a splits row.  out: [sequence] in chain order -- heavy, light, then antigens"""
+    """in: a splits row.  out: [(role, sequence)] in chain order -- heavy, light, then antigens
+
+    The ORDER IS THE CONTRACT. Protenix labels predicted chains A, B, C... in the order of the job
+    json's `sequences` array -- verified against an existing fold: 8ror's json order (1457, 218, 222
+    residues) comes back as chains A, B, C with those exact lengths. pool.csv below depends on it.
+    """
     out = []
-    for v in (row.Hseq, row.Lseq):
+    for role, v in (("H", row.Hseq), ("L", row.Lseq)):
         if isinstance(v, str) and len(v.strip()) >= min_len:
-            out.append(v.strip().upper())
-    for p in str(row.agexpectedseqs).split("/"):
+            out.append((role, v.strip().upper()))
+    for i, p in enumerate(str(row.agexpectedseqs).split("/")):
         q = p.strip().upper()
         if len(q) >= min_len and q != "NAN":
-            out.append(q)
+            out.append((f"ag{i}", q))
     return out
 
 
@@ -82,7 +87,7 @@ def representatives(val_csv, reps=1):
     rows = rows[rows.ab_ag_cluster.isin(want)].copy()
     rows["chains"] = [_chains(r) for r in rows.itertuples(index=False)]
     rows["instance"] = rows.INSTANCE.astype(str)
-    rows["ntok"] = rows.chains.apply(lambda c: sum(len(x) for x in c))
+    rows["ntok"] = rows.chains.apply(lambda c: sum(len(q) for _, q in c))
     rows = rows[rows.chains.apply(len) >= 2]
 
     picks, skipped = [], sorted(want - set(rows.ab_ag_cluster))
@@ -127,10 +132,23 @@ def main():
           + (f"   SKIPPED (fewer than 2 chains): {skipped}" if skipped else ""))
 
     os.makedirs(a.out_dir, exist_ok=True)
-    rows, missing = [], 0
+    rows, missing, pool, roles = [], 0, [], []
     for cl, pdb, chains, inst in picks:
         seqs, ok = [], True
-        for q in chains:
+        # Chain letters follow the json order, so enumerate(chains) gives A, B, C... Interfaces are
+        # every (antibody chain, antigen chain) pair, alphabetically ordered, which is the convention
+        # the pxm2025 pool uses (8ror: A-B and A-C, antigen against each antibody chain) and excludes
+        # the intra-antibody H-L interface, which is not what these folds are about.
+        letters = {i: chr(ord("A") + i) for i in range(len(chains))}
+        ab = [letters[i] for i, (r, _) in enumerate(chains) if r in ("H", "L")]
+        ag = [letters[i] for i, (r, _) in enumerate(chains) if r.startswith("ag")]
+        for i, (r, _) in enumerate(chains):
+            roles.append(dict(pdb=pdb, chain=letters[i], role=r))
+        for abc in ab:
+            for agc in ag:
+                c1, c2 = sorted((abc, agc))
+                pool.append(dict(pdb=pdb, chain1=c1, chain2=c2))
+        for _role, q in chains:
             idx = seq_to_idx.get(q)
             d = os.path.join(a.msa_root, str(idx)) if idx is not None else None
             if d is None or not os.path.isdir(d):
@@ -155,10 +173,25 @@ def main():
                 os.link(src, dst) if os.stat(src).st_dev == os.stat(
                     os.path.dirname(dst)).st_dev else __import__("shutil").copyfile(src, dst)
         rows.append(dict(cluster=cl, pdb=pdb, instance=inst, n_chains=len(chains),
-                         n_tokens=sum(len(x) for x in chains), msa_ok=ok, ref_ok=ref_ok))
+                         n_tokens=sum(len(q) for _, q in chains), msa_ok=ok, ref_ok=ref_ok,
+                         n_ifaces=len(ab) * len(ag)))
         if seq_to_idx and ok:
             with open(f"{a.out_dir}/{pdb}.json", "w") as fh:
                 json.dump([{"name": pdb, "sequences": seqs}], fh, indent=2)
+
+    # pool.csv is what folder.py's interfaces_by_pdb() reads to decide which interfaces a target=*
+    # unit is scored on. Without it the fold runs and scores NOTHING, and paths.py already points
+    # sabdab_val's pool_csv here.
+    os.makedirs(f"{REPO}/extra_training/val_fold", exist_ok=True)
+    with open(f"{REPO}/extra_training/val_fold/pool.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["pdb", "chain1", "chain2"])
+        w.writeheader()
+        w.writerows(pool)
+    with open(f"{REPO}/extra_training/val_fold/chain_roles.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["pdb", "chain", "role"])
+        w.writeheader()
+        w.writerows(roles)
+    print(f"pool.csv: {len(pool)} interfaces over {len(set(r['pdb'] for r in pool))} structures")
 
     with open(f"{a.out_dir}/manifest.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]))
