@@ -107,7 +107,7 @@ TARGET=$((NJOB*SEEDS))
 done_n() { find $E/poses -name run.json 2>/dev/null | wc -l; }
 if [ "$(done_n)" -lt "$TARGET" ]; then
     say "starting the full fold: $(done_n)/$TARGET units. This pauses the PXM sweep."
-    say "  pxm before pause: $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/1230"
+    say "  pxm before pause: $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/$(wc -l < $PXM/queue.tsv 2>/dev/null)"
     bash $S/val_fold.sh run >> "$LOG" 2>&1
 else
     say "validation already complete at $(done_n)/$TARGET units"
@@ -125,7 +125,7 @@ say "  quota $(quota -s 2>/dev/null | awk '/nvme/{print $2" of "$4}')"
 sleep 30
 up=0
 for g in 0 1; do tmux has-session -t fx_pxm2025_$g 2>/dev/null && up=$((up+1)); done
-say "  pxm workers back up: $up/2   folds $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/1230"
+say "  pxm workers back up: $up/2   folds $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/$(wc -l < $PXM/queue.tsv 2>/dev/null)"
 [ "$up" -eq 2 ] || say "ESCALATE: only $up/2 pxm workers restarted -- check $PXM/w0.log and w1.log"
 
 # one npz per folded unit. If these diverge, dumps were overwritten or failed silently, and the

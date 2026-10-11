@@ -107,7 +107,7 @@ fi
 
 # ---------------------------------------------------------------- pause PXM
 say "=== RUN: pausing the PXM sweep ==="
-say "pxm folds before pause: $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/1230"
+say "pxm folds before pause: $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/$(wc -l < $PXM/queue.tsv 2>/dev/null)"
 for g in $GPUS; do
     if tmux has-session -t fx_pxm2025_$g 2>/dev/null; then
         # kill the worker by PID, never by pattern: a pattern kill matches this script too

@@ -41,7 +41,7 @@ while true; do
     done_n=$(find $PXM/poses -name run.json 2>/dev/null | wc -l)
     rows=$(($(wc -l < $PXM/results.csv 2>/dev/null || echo 1)-1))
     fail=$(grep -c FAILED $PXM/w0.log $PXM/w1.log 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')
-    say "   folds $done_n/1230   scored rows $rows   failed $fail"
+    say "   folds $done_n/$(wc -l < $PXM/queue.tsv 2>/dev/null) scored rows $rows   failed $fail"
 
     say "-- msa pipeline"
     say "   $(tail -1 $R/extra_training/overnight.log 2>/dev/null | cut -c1-100)"

@@ -104,7 +104,12 @@ def unlisted(splits):
     s = pd.read_csv(splits, usecols=["PDB_ID", "ab_ag_cluster"], low_memory=False)
     s["short"] = s.PDB_ID.str[-4:].str.lower()
     ours = set()
-    for ds in paths.DATASET_NAMES:
+    # THE BENCHMARKS ONLY, named explicitly rather than taken from paths.DATASET_NAMES. The exclusion
+    # asks "which clusters hold a complex we evaluate on", so it must range over the evaluation sets.
+    # Iterating every registered dataset swept in sabdab_val, which is DERIVED from this pool and has
+    # no pool.csv -- it raised FileNotFoundError, and had it had one it would have excluded the
+    # validation clusters from the pool they are drawn from.
+    for ds in ("pxm2025", "foldbench"):
         with open(str(paths.DATASETS[ds].pool_csv)) as fh:
             ours |= {r["pdb"].lower() for r in csv.DictReader(fh)}
     hit = s[s.short.isin(ours)]
