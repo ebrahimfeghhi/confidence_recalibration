@@ -69,15 +69,25 @@ for b in d["batches"]:
         print(f"no frozen checksum for {b['dir']}"); sys.exit(1)
     if open(sha).read().split()[0] != b["sha256"]:
         print(f"{b['dir']} was re-searched since phase F ran"); sys.exit(1)
-# EVERY CHAIN, INDIVIDUALLY. This is the check a total cannot make.
-msa = d["msa_dir"]; missing = []
-for name in d.get("chains", []):
-    for half in ("pairing.a3m", "non_pairing.a3m"):
-        if not os.path.exists(os.path.join(msa, name, half)):
-            missing.append(f"{name}/{half}")
-if missing:
-    print(f"{len(missing)} output(s) absent, e.g. {missing[:4]}"); sys.exit(1)
-print(f"ok {len(d['chains'])} chains over {len(d['batches'])} batches")
+# EVERY CHAIN, INDIVIDUALLY, AND BY SIZE. This is the check a total cannot make -- and existence
+# alone is not enough either: an interrupted rerun can leave every recorded file truncated to zero
+# bytes, which `os.path.exists` happily accepts. The record carries the byte counts phase F produced,
+# so any change is detectable without having to decide which emptiness is legitimate (a short peptide
+# that retrieved nothing has a legitimately empty pairing.a3m).
+msa = d["msa_dir"]; bad = []
+ch = d.get("chains", {})
+if not isinstance(ch, dict):
+    print("record predates byte-count verification; re-run phase F"); sys.exit(1)
+for name, sizes in ch.items():
+    for half, want in zip(("pairing.a3m", "non_pairing.a3m"), sizes):
+        f = os.path.join(msa, name, half)
+        if not os.path.exists(f):
+            bad.append(f"{name}/{half} absent")
+        elif os.path.getsize(f) != want:
+            bad.append(f"{name}/{half} is {os.path.getsize(f)}B, record says {want}B")
+if bad:
+    print(f"{len(bad)} output(s) changed since phase F, e.g. {bad[:3]}"); sys.exit(1)
+print(f"ok {len(ch)} chains over {len(d['batches'])} batches, byte counts match")
 PYF
 )
     if [ $? -eq 0 ]; then

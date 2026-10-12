@@ -62,6 +62,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 R = "/home/ebrahim/tts_abag"
 W = f"{R}/extra_training/msa_work"
@@ -317,6 +318,19 @@ def main():
     print(f"  batches: {[os.path.basename(b) for b in batches]}")
 
     # ---------------------------------------------------------------- step 1
+    # INVALIDATE BEFORE MUTATING ANYTHING. The record below is written at the end, but until now
+    # nothing removed the PREVIOUS one first -- so a rerun that rewrote outputs and then failed left
+    # the old record in place, describing files that no longer match it, and the next resume trusted
+    # it. Every path from here on rewrites alignments, so the record stops being true at this line
+    # and must stop existing at this line. It is moved aside rather than deleted, so a failed rerun
+    # leaves evidence of what the previous run had claimed.
+    os.makedirs(a.index_dir, exist_ok=True)
+    _rec = os.path.join(a.index_dir, "phase_f_complete.json")
+    if os.path.exists(_rec):
+        os.replace(_rec, _rec + ".superseded")
+        print(f"  invalidated the previous completion record -> {os.path.basename(_rec)}.superseded")
+        print("  (outputs are about to be rewritten; no resume may trust the old record from here)")
+
     print(f"=== phase F step 1: query headers and the step4 index, {len(batches)} batch(es) ===")
     all_rows, all_dropped, seq_to_id, seq_to_index = [], [], {}, {}
     nq_total = 0
@@ -514,12 +528,22 @@ def main():
                      "queries": len(check_frozen(b))} for b in batches],
         "msa_dir": os.path.abspath(a.msa_dir),
         "taxid_dir": os.path.abspath(a.taxid_dir),
-        "chains": sorted(dirs),
+        # SIZES, NOT JUST NAMES. Existence alone cannot distinguish a usable alignment from one
+        # truncated to zero bytes by an interrupted rerun, and "non-empty" is not a valid
+        # requirement either -- a short peptide that retrieved nothing legitimately has an empty
+        # pairing.a3m. Recording the byte counts this run produced lets a resume detect ANY change
+        # without having to know which emptiness is legitimate.
+        "chains": {d: [os.path.getsize(os.path.join(a.msa_dir, d, "pairing.a3m")),
+                       os.path.getsize(os.path.join(a.msa_dir, d, "non_pairing.a3m"))]
+                   for d in sorted(dirs)},
     }
+    # PUBLISHED ATOMICALLY, so a crash mid-write cannot leave a half-written record that parses.
     rec = os.path.join(a.index_dir, "phase_f_complete.json")
-    with open(rec, "w") as fh:
+    fd, tmp = tempfile.mkstemp(dir=a.index_dir, prefix=".pfc_", suffix=".json")
+    with os.fdopen(fd, "w") as fh:
         json.dump(done, fh, indent=1)
-    print(f"  wrote {rec}: {len(dirs)} chains over {len(batches)} batch(es)")
+    os.replace(tmp, rec)
+    print(f"  wrote {rec}: {len(dirs)} chains over {len(batches)} batch(es), with byte counts")
     print(f"=== phase F OK: {len(dirs)} chains ready for Protenix in {a.msa_dir} ===")
 
 
