@@ -59,6 +59,30 @@ def finite(x):
     return math.isfinite(v)
 
 
+def read_skips(path):
+    """in: val_fold/skipped.csv.  out: {pdb: reason}
+
+    A SKIP IS A RECORDED DECISION, NOT AN ABSENCE. Settled 2026-10-11: a structure that will not fold
+    is dropped from the validation set rather than accommodated by reducing N_sample or N_cycle,
+    because changing the fold settings part-way would make the cached tensors non-comparable across
+    the set -- and comparability is the whole point of caching them.
+
+    So the skip has to be written down with a reason, and verify() reports the skipped structures
+    separately instead of folding them into "unfolded". Without this file a skip and a fault look
+    identical, and "INCOMPLETE" in the morning would not say which it was.
+    """
+    out = {}
+    if not os.path.exists(path):
+        return out
+    with open(path, newline="") as fh:
+        for r in csv.DictReader(fh):
+            pdb = str(r.get("pdb", "")).strip()
+            why = str(r.get("reason", "")).strip()
+            if pdb:
+                out[pdb] = why or "NO REASON RECORDED"
+    return out
+
+
 def expected_units(jobs, suffix, seeds, seed0):
     pdbs = sorted(os.path.basename(f)[:-len(suffix)] for f in glob.glob(os.path.join(jobs, "*" + suffix)))
     return pdbs, [(p, str(seed0 + i)) for p in pdbs for i in range(seeds)]
@@ -146,6 +170,25 @@ def verify(a):
     if not pdbs:
         print(f"FAIL no job files matching *{a.suffix} in {a.jobs}")
         return 1
+    skips = read_skips(os.path.join(a.e, "skipped.csv"))
+    if skips:
+        print(f"skipped by decision: {len(skips)} structure(s) -- excluded from the expected set")
+        for pdb, why in sorted(skips.items()):
+            print(f"   {pdb}: {why}")
+        # A SKIP WITHOUT A REASON IS NOT A DECISION. Left unchecked, skipped.csv becomes the place
+        # anything inconvenient goes, and the validation set quietly shrinks to whatever folded.
+        blank = [p for p, w in skips.items() if w == "NO REASON RECORDED"]
+        if blank:
+            print(f"FAIL {len(blank)} skip(s) carry no reason: {blank}. A skip is a recorded "
+                  "decision; without a reason it is indistinguishable from a fault.")
+            return 1
+        unknown = [p for p in skips if p not in pdbs]
+        if unknown:
+            print(f"FAIL skipped.csv names {len(unknown)} structure(s) that are not in the job set: "
+                  f"{unknown}. Either the skip is stale or the job is missing.")
+            return 1
+        pdbs = [p for p in pdbs if p not in skips]
+        units = [(p, sd) for p, sd in units if p not in skips]
 
     unfolded, no_rows, bad_scores, bad_cache = [], [], [], []
     no_pose, no_contact = [], []
@@ -175,7 +218,8 @@ def verify(a):
         if why:
             bad_cache.append((pdb, seed, why))
 
-    print(f"expected units {len(units)} over {len(pdbs)} structures; "
+    print(f"expected units {len(units)} over {len(pdbs)} structures"
+          + (f" ({len(skips)} skipped by decision)" if skips else "") + "; "
           f"interfaces per structure {sum(len(v) for v in pool.values())} total")
     print(f"  unfolded units                     : {len(unfolded)}")
     print(f"  poses absent (unrecoverable)       : {len(no_pose)}")
