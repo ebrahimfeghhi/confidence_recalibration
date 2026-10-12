@@ -5,7 +5,11 @@
 #                                       eye. Does NOT pause the PXM sweep.
 #   phase_i_fold_validation.sh run      pause PXM, fold every structure x every seed, resume PXM,
 #                                       then verify. Refuses to start until smoke has passed.
-#   phase_i_fold_validation.sh verify   the post-fold checks on their own.
+#   phase_i_fold_validation.sh verify   the post-fold checks on their own; nonzero if incomplete.
+#   phase_i_fold_validation.sh rescore  score folded units that have no interface rows. A refold
+#                                       CANNOT recover those: the trunk npz already exists and
+#                                       folder.py refuses to overwrite it, and repeating a seed does
+#                                       not reproduce its poses anyway.
 #
 # WHAT IS CACHED per (structure, seed), and why each piece. The point of this phase is not the poses:
 # it is a cache complete enough to re-run Protenix's confidence head offline, over and over, without
@@ -67,7 +71,7 @@ ROUNDS="${ROUNDS:-5}"
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 die() { say "STOP: $*"; exit 1; }
 
-case "$MODE" in smoke|run|verify) ;; *) die "usage: phase_i_fold_validation.sh smoke|run|verify" ;; esac
+case "$MODE" in smoke|run|verify|rescore) ;; *) die "usage: phase_i_fold_validation.sh smoke|run|verify|rescore" ;; esac
 mkdir -p "$E" "$E/trunks" "$E/poses"
 
 # ---------------------------------------------------------------- inputs, checked before any GPU
@@ -90,7 +94,7 @@ check_inputs() {
     [ "$NPDB" -eq "$NJOB" ] || die "pool.csv covers $NPDB structures but there are $NJOB jsons"
     # Dangling paths, by opening each json. Templates are required by decision, see the header.
     BAD=$($PY - "$J" <<'PYCHK'
-import glob, json, os, sys
+import glob, hashlib, json, os, sys
 bad = []
 for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
     for task in json.load(open(f)):
@@ -110,8 +114,27 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
                 # identity. 46 of the 79 validation structures and 1,354 of the 2,886 training-pool
                 # entries are in that window, so no fold -- validation or training -- may run on an
                 # unmarked file.
-                if key == "templatesPath" and not os.path.exists(p + ".filtered"):
-                    bad.append(f"{os.path.basename(f)} templates not date-filtered: {p}")
+                if key == "templatesPath":
+                    # THE MARKER IS VERIFIED, NOT COUNTED. It records the filtered file's sha256,
+                    # the cutoff applied and the filter version. Checking only that the marker exists
+                    # let a raw template file keep an old marker and pass -- so a pre-2021 structure
+                    # could still be handed its own entry at 100% identity. The hash closes that.
+                    mk = p + ".filtered"
+                    if not os.path.exists(mk):
+                        bad.append(f"{os.path.basename(f)} templates not date-filtered: {p}")
+                        continue
+                    try:
+                        m = json.load(open(mk))
+                    except Exception:                           # noqa: BLE001
+                        bad.append(f"{os.path.basename(f)} unreadable filter marker: {mk}")
+                        continue
+                    h = hashlib.sha256()
+                    with open(p, "rb") as fh:
+                        for blk in iter(lambda: fh.read(1 << 20), b""):
+                            h.update(blk)
+                    if m.get("sha256") != h.hexdigest():
+                        bad.append(f"{os.path.basename(f)} template file does not match its filter "
+                                   f"marker (replaced since filtering?): {p}")
 print(len(bad))
 for b in bad[:5]:
     print("  " + b)
@@ -241,8 +264,14 @@ root, nsample = sys.argv[1], int(sys.argv[2])
 f = sorted(glob.glob(f"{root}/trunks/*/*.npz"))
 assert f, "no npz found"
 d = np.load(f[0], allow_pickle=True)
+# ALL SIX FEATURE TENSORS, not the two that happened to be listed. The dump writes
+# distogram_rep_atom_mask, atom_to_token_idx, atom_to_tokatom_idx, asym_id, has_frame and is_ligand;
+# the head and the ipTM summary read all of them, so a cache missing any one cannot be replayed.
 need = ["z_trunk", "s_trunk", "ci_s_inputs", "ci_s_trunk_f32", "ci_coordinate",
-        "ci_contact_probs", "ci_feat_atom_to_token_idx", "ci_feat_asym_id", "ci_N_cycle"]
+        "ci_contact_probs", "ci_N_cycle", "ci_z_dtype", "ci_s_dtype", "ci_s_inputs_dtype",
+        "rng_py", "rng_torch"] + [f"ci_feat_{k}" for k in (
+            "distogram_rep_atom_mask", "atom_to_token_idx", "atom_to_tokatom_idx",
+            "asym_id", "has_frame", "is_ligand")]
 missing = [k for k in need if k not in d.files]
 print(f"npz {f[0]}")
 for k in d.files:
@@ -301,22 +330,91 @@ PYEOF
 fi
 
 # ---------------------------------------------------------------- verify
+# COMPLETION MEANS SCORED AND CACHED, NOT FOLDED. folder.py writes run.json BEFORE scoring, so
+# counting run.json and announcing "folded, scored and cached" could report success over units with no
+# interface scores and no trunk dump. This checks the three together, per unit, and returns nonzero.
 verify() {
-    local n rows trunks up g
+    local n rows trunks up g bad_rows bad_npz
     n=$(done_units)
     rows=$(($(wc -l < $E/results.csv 2>/dev/null || echo 1)-1))
     trunks=$(find $E/trunks -name '*.npz' 2>/dev/null | wc -l)
-    say "  units $n/$TARGET   scored rows $rows   trunk dumps $trunks   cache $(du -sh $E/trunks 2>/dev/null | cut -f1)"
-    # ONE NPZ PER FOLDED UNIT. If these diverge, dumps were overwritten or failed silently and the
-    # cache cannot re-run the head on every pose -- which is the entire deliverable.
-    [ "$trunks" -eq "$n" ] || say "ESCALATE: $trunks trunk npz for $n folded units; they must match"
+    say "  units with run.json $n/$TARGET   scored rows $rows   trunk npz $trunks   cache $(du -sh $E/trunks 2>/dev/null | cut -f1)"
+
+    # PER UNIT: every interface of its pdb must have a row at that seed, and its npz must exist.
+    local report
+    report=$($PY - "$E" "$J" "$JOB_SUFFIX" "$SEEDS" <<'PYV' 2>/dev/null
+import csv, glob, json, os, sys, collections
+E, J, suf, seeds = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+pdbs = [os.path.basename(f)[:-len(suf)] for f in glob.glob(os.path.join(J, "*" + suf))]
+ifaces = collections.defaultdict(set)
+pool = os.path.join(E, "pool.csv")
+if os.path.exists(pool):
+    for r in csv.DictReader(open(pool)):
+        ifaces[r["pdb"]].add(f"{r['pdb']}_{r['chain1']}{r['chain2']}")
+have = collections.defaultdict(set)
+res = os.path.join(E, "results.csv")
+if os.path.exists(res):
+    for r in csv.DictReader(open(res)):
+        have[(r["iface"], r["seed"])].add(r["arm"])
+missing_rows = missing_npz = 0
+for pdb in pdbs:
+    for i in range(seeds):
+        seed = str(400000 + i)
+        rj = glob.glob(os.path.join(E, "poses", pdb, f"{seed}-*", "run.json"))
+        if not rj:
+            continue                      # not folded yet; counted by the unit total above
+        for ifc in ifaces.get(pdb, ()):
+            if not have.get((ifc, seed)):
+                missing_rows += 1
+        if not os.path.exists(os.path.join(E, "trunks", pdb, f"free_{seed}.npz")):
+            missing_npz += 1
+print(f"{missing_rows} {missing_npz} {len(pdbs)}")
+PYV
+)
+    set -- $report
+    bad_rows=${1:-0}; bad_npz=${2:-0}
+    say "  folded units missing an interface score: $bad_rows    missing their trunk npz: $bad_npz"
+
     up=0
     for g in $GPUS; do tmux has-session -t fx_pxm2025_$g 2>/dev/null && up=$((up+1)); done
-    say "  pxm workers back up: $up   folds $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/$(wc -l < $PXM/queue.tsv 2>/dev/null)"
-    [ "$n" -ge "$TARGET" ] && say "=== COMPLETE: all $TARGET units folded, scored and cached ===" \
-        || say "ESCALATE: $((TARGET-n)) units short. Poses are kept; re-run 'run' to continue."
+    say "  pxm workers up: $up   folds $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/$(wc -l < $PXM/queue.tsv 2>/dev/null)"
+
+    local rc=0
+    [ "$n" -ge "$TARGET" ] || { say "ESCALATE: $((TARGET-n)) units unfolded"; rc=1; }
+    [ "${bad_rows:-0}" -eq 0 ] || { say "ESCALATE: $bad_rows folded (pdb,seed,interface) have no score -- see 'rescore'"; rc=1; }
+    [ "${bad_npz:-0}" -eq 0 ] || { say "ESCALATE: $bad_npz folded units have no trunk npz; the cache is incomplete"; rc=1; }
+    [ "$rc" -eq 0 ] && say "=== COMPLETE: all $TARGET units folded, every interface scored, every npz cached ===" \
+        || say "=== INCOMPLETE: poses are kept. 'rescore' recovers scores; 'run' continues folding. ==="
+    return $rc
 }
-if [ "$MODE" = "verify" ]; then check_inputs; verify; exit 0; fi
+
+# RESCORE, because a refold cannot recover this. folder.py builds units_done from results.csv rows,
+# not from run.json, so a unit that folded but failed to score is retried -- and then fails every
+# time, because TRUNK_DUMP_DIR refuses to overwrite the npz the first attempt already wrote
+# (folder.py:831). Refolding would be wrong even if it were possible: repeating a seed does not
+# reproduce its poses, so new poses would not match the cached tensors. The only correct recovery is
+# to score the poses already on disk.
+rescore() {
+    local pdb seed rdir ifc n=0
+    say "=== rescore: scoring folded units that have no interface rows ==="
+    while IFS=, read -r pdb c1 c2; do
+        [ "$pdb" = "pdb" ] && continue
+        ifc="${pdb}_${c1}${c2}"
+        for rdir in $E/poses/$pdb/*/; do
+            [ -f "$rdir/run.json" ] || continue
+            seed=$($PY -c "import json,sys; print(json.load(open(sys.argv[1]))['seed'])" "$rdir/run.json" 2>/dev/null)
+            [ -n "$seed" ] || continue
+            grep -q "^$ifc,$seed,free," "$E/results.csv" 2>/dev/null && continue
+            say "  scoring $ifc seed $seed from $(basename "$rdir")"
+            $PY $C/scorer.py --dir "$rdir" --iface "$ifc" --seed "$seed" --arm free \
+                --donor -1 --chains "" --ref "$E/../val_refs/$pdb.cif" --scorer pxm \
+                >> "$E/results.csv" 2>>"$E/rescore.err" && n=$((n+1))
+        done
+    done < "$E/pool.csv"
+    say "=== rescore wrote rows for $n (interface, seed) pairs; errors in $E/rescore.err ==="
+}
+if [ "$MODE" = "rescore" ]; then check_inputs; rescore; verify; exit $?; fi
+if [ "$MODE" = "verify" ]; then check_inputs; verify; exit $?; fi
 
 # ---------------------------------------------------------------- run
 check_inputs
@@ -330,21 +428,49 @@ check_inputs
 # indefinitely, and silently, because the thing that would have restarted them is the script that
 # just died. INT, TERM and EXIT all route through the same restore.
 PXM_PAUSED=0
+PXM_WAS=""        # which fx_pxm2025_<g> sessions existed before we paused
+WATCH_WAS=0       # whether fx_watch was running before we killed it
+
+# in: a session name prefix and the gpu list.  out: nothing; kills those sessions BY PID
+kill_sessions() {
+    local prefix=$1 g pid child
+    for g in $GPUS; do
+        tmux has-session -t ${prefix}$g 2>/dev/null || continue
+        for pid in $(tmux list-panes -t ${prefix}$g -F '#{pane_pid}' 2>/dev/null); do
+            # BY PID, never by pattern: a pattern kill matches this script.
+            for child in $(pgrep -P "$pid" 2>/dev/null) "$pid"; do
+                say "    kill PID $child (${prefix}$g)"; kill "$child" 2>/dev/null
+            done
+        done
+        sleep 3; tmux kill-session -t ${prefix}$g 2>/dev/null
+    done
+}
+
 resume_pxm() {
     [ "$PXM_PAUSED" -eq 1 ] || return 0
     PXM_PAUSED=0
+    # OUR WORKERS GO FIRST. The previous version restarted PXM without stopping the validation
+    # workers, so an interrupted run put BOTH workloads on the same cards -- two folds per GPU,
+    # competing for memory, with neither job aware of the other.
+    say "=== stopping validation workers before restoring PXM ==="
+    kill_sessions vf_val_
+    kill_sessions vf_smoke_
     say "=== restoring the PXM sweep ==="
     $PY $C/reconcile_stale_claims.py $PXM --dataset pxm2025 2>&1 | tail -1 | tee -a "$LOG"
-    for g in $GPUS; do
+    # ONLY WHAT WAS RUNNING BEFORE. Starting a worker on a card that had none is not a restore, it is
+    # a new allocation -- and GPU allocation is not this script's call to make.
+    for g in $PXM_WAS; do
         tmux has-session -t fx_pxm2025_$g 2>/dev/null && continue
         tmux new-session -d -s fx_pxm2025_$g "cd $P && CUDA_VISIBLE_DEVICES=$g LAYERNORM_TYPE=openfold \
           $PY $C/folder.py --queue $PXM/queue.tsv --out $PXM/poses --csv $PXM/results.csv \
           --claim-dir $PXM/claims --dataset pxm2025 --ncycle 10 --nsample "$NSAMPLE" --dtype bf16 \
           --overlap-scoring >> $PXM/w$g.log 2>&1"
-        say "  relaunched pxm worker on GPU $g"
+        say "  relaunched pxm worker on GPU $g (it was running before)"
     done
-    tmux has-session -t fx_watch 2>/dev/null \
-        || { tmux new-session -d -s fx_watch "bash $C/watch_free_extra10.sh" && say "  restarted fx_watch"; }
+    [ -n "$PXM_WAS" ] || say "  no pxm worker was running before; none started"
+    if [ "$WATCH_WAS" -eq 1 ] && ! tmux has-session -t fx_watch 2>/dev/null; then
+        tmux new-session -d -s fx_watch "bash $C/watch_free_extra10.sh" && say "  restarted fx_watch"
+    fi
 }
 trap 'say "interrupted -- restoring PXM before exit"; resume_pxm; exit 130' INT TERM
 trap 'resume_pxm' EXIT
@@ -352,6 +478,9 @@ trap 'resume_pxm' EXIT
 say "=== run: $TARGET units ($NJOB structures x $SEEDS seeds) on GPUs $GPUS ==="
 say "pausing the PXM sweep: $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/$(wc -l < $PXM/queue.tsv 2>/dev/null) folds so far"
 PXM_PAUSED=1
+for g in $GPUS; do tmux has-session -t fx_pxm2025_$g 2>/dev/null && PXM_WAS="$PXM_WAS $g"; done
+tmux has-session -t fx_watch 2>/dev/null && WATCH_WAS=1
+say "  running before the pause: pxm on GPU(s)${PXM_WAS:- none}, fx_watch=$WATCH_WAS"
 for g in $GPUS; do
     if tmux has-session -t fx_pxm2025_$g 2>/dev/null; then
         # BY PID, NEVER BY PATTERN. A pattern kill matches this script too.

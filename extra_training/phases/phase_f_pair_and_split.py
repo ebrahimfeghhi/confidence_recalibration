@@ -105,6 +105,27 @@ def check_frozen(batch):
     return read_fasta(qfa)
 
 
+NUCLEOTIDES = set("ACGTUN")
+
+
+def classify_mismatch(want, got):
+    """in: the fasta sequence and the a3m's line 2.  out: "nucleotide->X" or a specific reason
+
+    Only "nucleotide->X" is treated as expected downstream. Everything else names what it actually
+    is, so an unexplained difference cannot hide inside the tolerated class.
+    """
+    if len(want) != len(got):
+        return f"length {len(want)} vs {len(got)}"
+    diffs = [(i, a, b) for i, (a, b) in enumerate(zip(want.upper(), got.upper())) if a != b]
+    if not diffs:
+        return "identical after case folding"
+    if all(b == "X" and a in NUCLEOTIDES for _i, a, b in diffs):
+        return "nucleotide->X"
+    bad = diffs[:3]
+    return (f"{len(diffs)} differing position(s) not explained by nucleotide->X, e.g. "
+            + ", ".join(f"{i}:{a}->{b}" for i, a, b in bad))
+
+
 def rename_headers(batch, fa, out_dir):
     """in: a batch dir, its {name: sequence}, where to write.  out: (rows, dropped, seq maps)
 
@@ -130,10 +151,15 @@ def rename_headers(batch, fa, out_dir):
             dropped.append((name, "no such query in the frozen fasta"))
             continue
         if seq.upper() != want.upper():
-            # The known case is a nucleic-acid antigen searched as protein, with U transcribed to X.
-            # It has no meaningful protein alignment and is dropped rather than patched. Anything
-            # else is a file/query mix-up and must not be guessed at.
-            dropped.append((name, f"line-2 sequence != fasta sequence ({seq[:20]}... vs {want[:20]}...)"))
+            # THE MISMATCH MUST BE THE KNOWN TRANSFORMATION, not merely a mismatch. Classifying every
+            # line-2 difference as "the known nucleic-acid case" would accept ordinary sequence
+            # corruption and drop it silently. The known case is specific: a nucleic-acid antigen
+            # searched as protein, where mmseqs wrote X over each nucleotide. So it qualifies only if
+            # the lengths match and EVERY differing position is a nucleotide in the fasta that became
+            # exactly X in the a3m.
+            why = classify_mismatch(want, seq)
+            dropped.append((name, f"line-2 sequence != fasta sequence [{why}] "
+                                  f"({seq[:20]}... vs {want[:20]}...)"))
             continue
         n_rw = 0
         with open(os.path.join(out_dir, fn), "w") as out:
@@ -175,33 +201,33 @@ def run(cmd, log, label, cores, timeout):
     return rc
 
 
-def taxid_coverage(d, every=97):
-    """in: a directory of a3m.  out: (sampled files with UniRef hits, how many carry a taxid)
+def taxid_coverage(d, names=None, every=97):
+    """in: a directory of a3m, optionally the names belonging to one batch.
+    out: (hit records seen, hit records carrying a taxid, files sampled)
 
-    A SAMPLE, AND A RATIO OVER THE FILES THE QUESTION APPLIES TO. A short peptide can retrieve no
-    UniRef hits at all -- 201 of the 235 in the short batch -- and such a file has no header to tag,
-    so counting it as a failure would fail the run on correct data. The denominator is files that
-    contain a UniRef100 header. Every 97th file rather than the first few, because the start of the
-    listing is not a sample and a fault confined to one batch would hide behind it.
+    OVER HIT RECORDS, NOT OVER FILES. The previous version asked whether a file contained AT LEAST
+    ONE tagged header and stopped reading at the first one -- so a file with 100 UniRef hits and a
+    single tagged hit counted as fully tagged. What matters is the fraction of hits step3 actually
+    annotated, because every untagged hit is a sequence that cannot be paired.
+
+    PER BATCH when `names` is given. The batches are searched separately and step3 runs once per
+    batch, so a failure confined to one of them averages away in a pooled figure.
     """
     import re
     tagged_re = re.compile(r"^>UniRef100_.+_[0-9]+/")
     files = sorted(f for f in os.listdir(d) if f.endswith(".a3m"))
+    if names is not None:
+        files = [f for f in files if f[:-4] in names]
+    sample = files[::every] if every > 1 else files
     seen = tagged = 0
-    for fn in files[::every]:
-        has_uniref = False
-        has_tag = False
+    for fn in sample:
         with open(os.path.join(d, fn)) as fh:
             for line in fh:
                 if line.startswith(">UniRef100"):
-                    has_uniref = True
+                    seen += 1
                     if tagged_re.match(line):
-                        has_tag = True
-                        break
-        if has_uniref:
-            seen += 1
-            tagged += 1 if has_tag else 0
-    return seen, tagged
+                        tagged += 1
+    return seen, tagged, len(sample)
 
 
 def main():
@@ -213,6 +239,9 @@ def main():
     ap.add_argument("--cores", default="0-63",
                     help="taskset range; 64 is the project cap (MSA_RUNBOOK.md:119)")
     ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument("--ignore-step-rc", action="store_true",
+                    help="continue when step3 or step4 exits nonzero. Off by default: their output "
+                         "from an earlier attempt would otherwise satisfy every count below.")
     ap.add_argument("--allow-missing-batches", action="store_true",
                     help="process only the batch directories that exist. Off by default: an absent "
                          "batch means phase D has not finished, and its chains would get no MSA.")
@@ -291,7 +320,7 @@ def main():
     # transcribed U to X -- one per batch. So: any drop for a reason OTHER than that sequence
     # mismatch is fatal, and the mismatches themselves are capped. This is the 39-of-39 discipline
     # phase A uses, rather than a percentage that happens to cover the known case.
-    known = [d for d in all_dropped if "line-2 sequence != fasta sequence" in d[1]]
+    known = [d for d in all_dropped if "[nucleotide->X]" in d[1]]
     other = [d for d in all_dropped if d not in known]
     print(f"  drops: {len(known)} sequence mismatches (nucleic acid searched as protein), "
           f"{len(other)} for other reasons")
@@ -299,7 +328,8 @@ def main():
         for n, why in other[:5]:
             print(f"     UNEXPECTED DROP {n}: {why}")
         sys.exit(f"STOP: {len(other)} alignment(s) dropped for reasons other than the known "
-                 "nucleic-acid mismatch. Each one is a chain with no MSA; none should be guessed at.")
+                 "nucleotide->X transformation. Each is a chain with no MSA, and the reason is "
+                 "printed above rather than folded into the tolerated class.")
     if len(known) > a.max_seq_mismatch:
         sys.exit(f"STOP: {len(known)} sequence mismatches, above --max-seq-mismatch "
                  f"{a.max_seq_mismatch}. One per batch is expected; more means the a3m files and the "
@@ -313,40 +343,71 @@ def main():
     # ---------------------------------------------------------------- step 2: taxids
     print("=== phase F step 2: step3, write NCBI taxids into the UniRef headers ===")
     os.makedirs(a.taxid_dir, exist_ok=True)
+    # THE RETURN CODE IS CHECKED, and the outputs must be from THIS run. Ignoring it meant existing
+    # files from an earlier attempt satisfied every count after step3 or step4 had failed outright --
+    # "nonzero bytes" is not evidence that the current run produced anything. A marker is dropped
+    # first and the outputs must postdate it.
+    t0 = os.path.join(W, ".phase_f_step3_start")
+    open(t0, "w").close()
     for b in batches:
         lbl = os.path.basename(b.rstrip("/"))
-        run([PY, "scripts/msa/step3-uniref_add_taxid.py",
-             "--input_msa_dir", f"{W}/msa_named_{lbl}",
-             "--output_msa_dir", a.taxid_dir,
-             "--num_workers", str(a.workers), "--mp_read_workers", str(a.workers)],
-            f"{W}/phase_f_step3_{lbl}.log", f"step3 {lbl}", a.cores, 14400)
+        rc = run([PY, "scripts/msa/step3-uniref_add_taxid.py",
+                  "--input_msa_dir", f"{W}/msa_named_{lbl}",
+                  "--output_msa_dir", a.taxid_dir,
+                  "--num_workers", str(a.workers), "--mp_read_workers", str(a.workers)],
+                 f"{W}/phase_f_step3_{lbl}.log", f"step3 {lbl}", a.cores, 14400)
+        if rc != 0 and not a.ignore_step_rc:
+            sys.exit(f"STOP: step3 on {lbl} exited {rc}. See {W}/phase_f_step3_{lbl}.log. Existing "
+                     "output from an earlier attempt would otherwise satisfy the counts below.")
+    fresh = [f for f in os.listdir(a.taxid_dir) if f.endswith(".a3m")
+             and os.path.getmtime(os.path.join(a.taxid_dir, f)) >= os.path.getmtime(t0)]
+    print(f"  a3m written by THIS run: {len(fresh)}")
+    if not fresh:
+        sys.exit("STOP: step3 exited 0 but wrote nothing in this run; the directory holds only older "
+                 "output, which the counts below cannot distinguish from success.")
     n_out = len([f for f in os.listdir(a.taxid_dir) if f.endswith(".a3m")])
-    seen, tagged = taxid_coverage(a.taxid_dir)
-    print(f"  {n_out} a3m out; of {seen} sampled files carrying UniRef hits, {tagged} have taxids")
+    seen = tagged = 0
+    for b in batches:
+        lbl = os.path.basename(b.rstrip("/"))
+        bn = {r["name"] for r in all_rows if r["batch"] == lbl}
+        bs, bt, nf = taxid_coverage(a.taxid_dir, bn)
+        bpct = 100 * bt // bs if bs else -1
+        print(f"  {lbl}: {nf} files sampled, {bs} UniRef hit records, {bt} carry a taxid ({bpct}%)")
+        if bs and bpct < a.min_tagged_frac * 100:
+            sys.exit(f"STOP: in batch {lbl} only {bpct}% of UniRef hit records carry a taxid "
+                     f"(want >= {a.min_tagged_frac:.0%}). Every untagged hit is a sequence that "
+                     "cannot be paired, and a failure in one batch does not average away.")
+        seen += bs; tagged += bt
+    print(f"  {n_out} a3m out; {tagged} of {seen} sampled UniRef hit records carry a taxid")
     if n_out < need:
         sys.exit(f"STOP: step3 wrote {n_out} a3m for {nq_total} queries (want >= {need})")
-    if seen < 5:
-        sys.exit(f"STOP: only {seen} sampled a3m had any UniRef hits -- phase E looks wrong")
-    if tagged < a.min_tagged_frac * seen:
-        sys.exit(f"STOP: only {tagged} of {seen} a3m with UniRef hits carry taxids "
-                 f"(want >= {a.min_tagged_frac:.0%}). step3 did not do its job, so nothing can pair.")
+    if seen < 50:
+        sys.exit(f"STOP: only {seen} UniRef hit records in the whole sample -- phase E looks wrong")
 
     # ---------------------------------------------------------------- step 3: the split
     print("=== phase F step 3: step4, split into pairing.a3m and non_pairing.a3m ===")
     os.makedirs(a.msa_dir, exist_ok=True)
-    run([PY, "scripts/msa/step4-split_msa_to_uniref_and_others.py",
-         "--input_msa_dir", a.taxid_dir, "--output_msa_dir", a.msa_dir,
-         "--seq_to_pdb_id", f"{a.index_dir}/seq_to_pdb_id_entity_id.json",
-         "--seq_to_pdb_index", f"{a.index_dir}/seq_to_pdb_index.json",
-         "--num_workers", "32"],
-        f"{W}/phase_f_step4.log", "step4", a.cores, 14400)
+    t1 = os.path.join(W, ".phase_f_step4_start")
+    open(t1, "w").close()
+    rc = run([PY, "scripts/msa/step4-split_msa_to_uniref_and_others.py",
+              "--input_msa_dir", a.taxid_dir, "--output_msa_dir", a.msa_dir,
+              "--seq_to_pdb_id", f"{a.index_dir}/seq_to_pdb_id_entity_id.json",
+              "--seq_to_pdb_index", f"{a.index_dir}/seq_to_pdb_index.json",
+              "--num_workers", "32"],
+             f"{W}/phase_f_step4.log", "step4", a.cores, 14400)
+    if rc != 0 and not a.ignore_step_rc:
+        sys.exit(f"STOP: step4 exited {rc}. See {W}/phase_f_step4.log.")
 
     # ONE DIRECTORY PER SEQUENCE. The header-collision bug this phase exists to prevent produces
     # exactly ONE directory, so a threshold like "at least 100" would pass it. The gate is the
     # sequence count, and then that each directory's name is a query we actually indexed.
     dirs = [d for d in os.listdir(a.msa_dir)
             if os.path.isfile(os.path.join(a.msa_dir, d, "pairing.a3m"))]
-    print(f"  directories with pairing.a3m: {len(dirs)}")
+    fresh_d = [d for d in dirs
+               if os.path.getmtime(os.path.join(a.msa_dir, d, "pairing.a3m")) >= os.path.getmtime(t1)]
+    print(f"  directories with pairing.a3m: {len(dirs)}; written by THIS run: {len(fresh_d)}")
+    if not fresh_d:
+        sys.exit("STOP: step4 exited 0 but wrote no pairing.a3m in this run.")
     if len(dirs) < need:
         sys.exit(f"STOP: {len(dirs)} pairing.a3m for {nq_total} queries (want >= {need}). "
                  "One directory for everything is the header-collision failure this phase prevents.")

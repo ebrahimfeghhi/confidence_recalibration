@@ -84,6 +84,7 @@ WHY THE GLOBAL CAP IS KEPT at 2021-09-30 rather than dropped to match Protenix's
 """
 import argparse
 import glob
+import hashlib
 import json
 import os
 import sys
@@ -135,7 +136,18 @@ def query_cutoffs(files, rel, splits_csv, days, global_cap="2021-09-30"):
                     depo.setdefault(pid, r["PDBdepo"][:10])
     per_pdb, per_dir, undated = {}, {}, []
     for f in files:
-        pdb = os.path.basename(f)[:-5].lower()
+        # FROM THE JSON'S OWN "name", not the filename. Deriving the pdb id from the file name ties
+        # the date lookup to a naming convention -- and that convention had to change once already
+        # (phase G now writes <pdb>-final-updated.json because folder.py loads that), which would
+        # silently have broken every cutoff. The name inside the file is what the job calls itself.
+        try:
+            tasks = json.load(open(f))
+            pdb = str(tasks[0].get("name", "")).lower()
+        except Exception:                                       # noqa: BLE001
+            pdb = ""
+        if not pdb:
+            pdb = os.path.basename(f).split("-")[0].removesuffix(".json").lower()
+            print(f"  NOTE {os.path.basename(f)} has no name field; falling back to {pdb!r}")
         raw = rel.get(pdb) or depo.get(pdb)
         if not raw:
             undated.append(pdb)
@@ -161,18 +173,51 @@ def query_cutoffs(files, rel, splits_csv, days, global_cap="2021-09-30"):
     return per_dir, per_pdb, undated
 
 
+FILTER_VERSION = 2          # bump when the filtering rule changes, so old markers stop validating
+
+
+def _sha(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for blk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
 def filter_a3m(path, cutoff, rel):
     """in: an hmmsearch.a3m, a cutoff date, {pdb: date}.  out: (kept, dropped, dropped_undated)
 
     Records are ">pdbid_chain/range ...". A hit is kept only if its own release date is strictly
     before the cutoff; an unknown date is dropped, which is what Protenix's prefilter does.
+
+    DERIVED FROM A PRESERVED RAW COPY, NEVER FILTERED IN PLACE. Filtering the file itself destroyed
+    hits irreversibly: apply an early cutoff, later relax it, and the removed templates never come
+    back -- the only way to recover them was to delete the file and re-run hmmsearch. The first call
+    moves the search output to hmmsearch.raw.a3m and every filtered file is regenerated from it, so
+    a changed cutoff is just a re-derivation.
+
+    THE MARKER IS BOUND TO THE FILE, not merely to the cutoff. It records the filtered file's own
+    sha256, the cutoff and the filter version, so replacing a filtered file with raw templates while
+    keeping its marker no longer passes: the hash will not match. phase_i checks the same three
+    values before folding.
     """
+    raw = path[:-4] + ".raw.a3m" if path.endswith(".a3m") else path + ".raw"
     marker = path + ".filtered"
-    if os.path.exists(marker) and open(marker).read().strip() == cutoff:
-        return None  # already filtered at this cutoff; do not filter twice
+    if not os.path.exists(raw):
+        if not os.path.exists(path):
+            return None
+        os.rename(path, raw)
+    if os.path.exists(marker) and os.path.exists(path):
+        try:
+            m = json.load(open(marker))
+            if (m.get("cutoff") == cutoff and m.get("version") == FILTER_VERSION
+                    and m.get("sha256") == _sha(path)):
+                return None            # already filtered at this cutoff, and the file is unchanged
+        except Exception:                                       # noqa: BLE001
+            pass
     kept_lines, kept, dropped, undated = [], 0, 0, 0
     keep_this = False
-    with open(path) as fh:
+    with open(raw) as fh:
         for line in fh:
             if line.startswith(">"):
                 pdb = line[1:5].lower()
@@ -188,7 +233,9 @@ def filter_a3m(path, cutoff, rel):
     with open(path, "w") as fh:
         fh.writelines(kept_lines)
     with open(marker, "w") as fh:
-        fh.write(cutoff + "\n")
+        json.dump({"cutoff": cutoff, "version": FILTER_VERSION, "sha256": _sha(path),
+                   "raw": os.path.basename(raw), "kept": kept, "dropped_recent": dropped,
+                   "dropped_undated": undated}, fh)
     return kept, dropped, undated
 
 
