@@ -354,24 +354,31 @@ def cdrh3_of(records, hmmerpath=HMMER312, hmms=ANARCI_HMMS):
 def cdr_identity(q, t):
     """in: two CDR-H3 loops.  out: (identity over the shorter loop, coverage)
 
-    UNGAPPED, EVERY OFFSET. The shorter loop is slid along the longer one and the best
-    position-by-position match is kept. Identity is counted over the shorter loop; coverage is the
-    length ratio. The two are returned separately because they answer different questions, and
-    conflating them was the bug this replaces: the old code scored a contained loop by its LENGTH
-    RATIO and called that identity, so a 13-mer sitting letter-perfect inside a 14-mer scored 0.93
-    and slipped under a 0.95 identity threshold despite matching at every position.
+    GAPPED, via Biopython's PairwiseAligner. The previous version slid the shorter loop along the
+    longer one ungapped, which cannot see an internal insertion: a 14-residue loop against the same
+    loop with one residue inserted scored identity 0.50, because after the insertion every position
+    is offset by one. A gapped alignment returns 1.0, which is what "identity over the shorter
+    sequence" means. The earlier claim that gap handling could not matter at a 95% threshold was
+    wrong, and it was wrong in the unsafe direction: it MISSES a leak.
 
-    NO GAPS. At a 95% threshold a 14-residue loop must match at 14 of 14 positions, so an internal
-    insertion already puts a pair out of reach and modelling one buys nothing. Sliding is therefore
-    enough, and it keeps the function short enough to check by eye -- which matters more here than
-    generality, because this is the filter that decides what we may train on.
+    Local alignment with a simple match/mismatch scheme rather than a substitution matrix: the
+    question is near-identity, so a biochemical similarity score would only blur it. Identity is
+    matches over the shorter loop's length; coverage is the length ratio, reported separately because
+    conflating the two was the original defect here.
     """
     if not q or not t:
         return 0.0, 0.0
-    short, lng = (q, t) if len(q) <= len(t) else (t, q)
-    best = max(sum(a == b for a, b in zip(short, lng[off:]))
-               for off in range(len(lng) - len(short) + 1))
-    return best / len(short), len(short) / len(lng)
+    from Bio import Align
+    al = Align.PairwiseAligner(mode="local", match_score=1, mismatch_score=-1,
+                               open_gap_score=-1, extend_gap_score=-1)
+    try:
+        aln = al.align(q.upper(), t.upper())[0]
+    except Exception:                                       # noqa: BLE001
+        return 0.0, 0.0
+    a, b = str(aln[0]), str(aln[1])
+    matches = sum(1 for x, y in zip(a, b) if x == y and x != "-")
+    short = min(len(q), len(t))
+    return matches / short, short / max(len(q), len(t))
 
 
 def cdr_hits(queries, targets, ident, cov):
@@ -533,6 +540,10 @@ def main():
     ap.add_argument("--min-cdr-frac", type=float, default=0.95,
                     help="fail unless CDR-H3 is recovered for this fraction of heavy chains; guards "
                          "against a silent ANARCI failure making the CDR-H3 filter vacuous")
+    ap.add_argument("--audit-all", action="store_true",
+                    help="also compare the 188 complexes excluded by cluster id against the "
+                         "surviving pool, by sequence. Report-only: it tests whether SAbDab2's "
+                         "clustering actually removed what the id lookup assumes it did.")
     ap.add_argument("--no-fetch", action="store_true")
     ap.add_argument("--allow-missing-cdr-complexes", action="store_true",
                     help="proceed although some unlisted complex contributed no CDR-H3 query. Filter "
@@ -648,6 +659,39 @@ def main():
     keep = {c for c in train_cl if _ckey(c) not in drop}
     print(f"\nunion dropped: {len(drop)} clusters")
     print(f"TRAINING CLUSTERS: {len(train_cl)} -> {len(keep)}")
+
+    # ---------------------------------------------------------------- the full leakage audit
+    # THE OTHER 188 ARE EXCLUDED BY CLUSTER ID, which is SAbDab2's clustering taken on trust. This
+    # checks it: every one of the 227 benchmark complexes is compared by SEQUENCE against the pool
+    # that survives. A hit here means a surviving cluster shares an antigen with a complex we
+    # evaluate on, i.e. the id-based exclusion missed it. REPORT-ONLY -- it changes no artifact,
+    # because if it ever fires the right response is to look, not to silently drop more.
+    if a.audit_all:
+        say_pdbs = sorted(listed)
+        got2, bad2 = fetch(say_pdbs, a.cifdir, allow=not a.no_fetch)
+        print(f"\nAUDIT: all {len(listed)+len(miss)} benchmark complexes against the surviving pool")
+        print(f"  listed complexes fetched: {len(got2)}/{len(say_pdbs)}"
+              + (f"   unavailable: {len(bad2)}" if bad2 else ""))
+        recs2 = []
+        for pdb_, path in sorted(got2.items()):
+            for c, q in chains_of(path).items():
+                recs2.append((f"{pdb_}_{c}", q))
+        wd2 = tempfile.mkdtemp(prefix="audit_")
+        ab2, ag2 = classify(recs2, ALLHMM, a.evalue, a.threads, wd2)
+        print(f"  chains {len(recs2)}; antibody domains {len(ab2)}; candidate antigens {len(ag2)}")
+        prot2, pep2, _ab, _cdr, surv = train_tables(a.splits, ours_cl)
+        surv = {c for c in surv if _ckey(c) not in drop}
+        keep_rows = [(n, q) for n, q in prot2 if _ckey(n.split("|")[0]) in {_ckey(c) for c in surv}]
+        h_a = search(_fasta(f"{wd2}/q.fa", ag2), _fasta(f"{wd2}/t.fa", keep_rows),
+                     f"{wd2}/r.m8", a.prot_id, a.cov, a.threads,
+                     f"AUDIT antigen vs surviving PROTEIN >={100*a.prot_id:.0f}%",
+                     a.seq_id_mode, a.cov_mode)
+        hits = {c: v for c, v in h_a.items() if c in {_ckey(x) for x in surv}}
+        print(f"  surviving clusters sharing an antigen with ANY benchmark complex: {len(hits)}")
+        for c, (qn, fid) in sorted(hits.items(), key=lambda kv: -kv[1][1]):
+            print(f"     cluster {c} <- {qn} at {fid:.3f}")
+        if not hits:
+            print("  nothing: SAbDab2's cluster-id exclusion is complete on this measure")
 
     if a.out:
         with open(a.out, "w", newline="") as fh:
