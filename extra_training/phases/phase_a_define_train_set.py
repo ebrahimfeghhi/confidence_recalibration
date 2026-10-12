@@ -611,6 +611,12 @@ def main():
                          "of what each complex contains, and that record omits folded chains.")
     ap.add_argument("--min-job-len", type=int, default=20,
                     help="length boundary for the folded-chain queries: at or above this they are compared to\n                         the PROTEIN targets at --prot-id, below it to the PEPTIDE targets at\n                         --pep-id. Nothing is dropped for being short.")
+    ap.add_argument("--abq-id", type=float, default=0.95,
+                    help="identity at which a folded chain CLASSIFIED AS ANTIBODY still excludes a "
+                         "training cluster on its antigen tables. An Ig-superfamily antigen is "
+                         "classified as an antibody and would otherwise never be compared to any "
+                         "antigen; the threshold is separate from --prot-id because antibody "
+                         "frameworks are broadly similar and 0.40 would drop clusters wholesale.")
     ap.add_argument("--allow-partial-audit", action="store_true",
                     help="proceed when the folded-chain comparison does not cover every benchmark "
                          "complex. Off by default: leakage is excluded only for the complexes "
@@ -728,7 +734,7 @@ def main():
     # proteinChain.sequence from the job jsons, classified by the same hmmscan pass, keeping the
     # non-antibody chains. This is the same criterion applied to the same question; what changes is
     # that it no longer depends on SAbDab2 having written the antigen down.
-    h6, h7 = {}, {}
+    h6, h7, h8 = {}, {}, {}
     if not a.no_job_antigens:
         jobseq, covered = job_sequences()
         # COVERAGE FIRST, because an exclusion is only as complete as the set it was applied to.
@@ -788,6 +794,41 @@ def main():
                             f"folded antigen vs PEPTIDE >={100*a.pep_id:.0f}%",
                             a.seq_id_mode, a.cov_mode)
                 print(f"  folded antigen vs PEPTIDE >={100*a.pep_id:.0f}% id: {len(h7)} clusters hit")
+
+            # AN ANTIGEN CAN BE AN IMMUNOGLOBULIN. Splitting the folded chains into "antibody" and
+            # "antigen" and then comparing only the antigens leaves a whole class of leakage
+            # uncompared: when the benchmark's ANTIGEN is itself an Ig-superfamily domain, hmmscan
+            # matches it to the antibody HMMs, classify() files it under antibody, and it is never
+            # compared to any training antigen. 7st5 is exactly this -- its antigen is a 125-residue
+            # V-set receptor domain -- and the all-227 audit caught training cluster 947 holding that
+            # same sequence at identity 1.000 while every filter above had passed it.
+            #
+            # So the antibody-classified folded chains are compared to the ANTIGEN tables too, at a
+            # separate and much higher threshold (--abq-id, 0.95). The threshold has to be separate:
+            # antibody frameworks are broadly similar, so reusing --prot-id's 0.40 here would drop
+            # clusters merely for having an antibody somewhere in their antigen column. Near-identity
+            # is the event worth acting on, and it is the event the audit found.
+            # THE WHOLE CHAIN, not the variable-domain envelope. classify() returns antibody
+            # DOMAINS, and a domain is a fragment: searched against a full-length training antigen it
+            # fails target coverage and the hit is lost -- which is how the 7st5 match at identity
+            # 1.000 was found by the audit (whole chain) and missed by the filter. So the query here
+            # is the folded chain itself, selected by whether any antibody domain was found in it.
+            ab_names = {k.split("#")[0] for k in abj}
+            ab_chains = [(n, q) for n, q in jobseq if n in ab_names]
+            print(f"  folded chains carrying an antibody domain: {len(ab_chains)}")
+            if ab_chains:
+                # the target fastas were written by the searches above; _fasta returns its path
+                h8 = search(_fasta(f"{wdj}/qab.fa", ab_chains), _fasta(f"{wd}/t_prot.fa", prot_t),
+                            f"{wdj}/rab.m8", a.abq_id, a.cov, a.threads,
+                            f"folded Ig-like chain vs ANTIGEN >={100*a.abq_id:.0f}%",
+                            a.seq_id_mode, a.cov_mode)
+                h8p = search(f"{wdj}/qab.fa", _fasta(f"{wd}/t_pep.fa", pep_t),
+                             f"{wdj}/rabp.m8", a.abq_id, a.cov, a.threads,
+                             f"folded Ig-like chain vs PEPTIDE ANTIGEN >={100*a.abq_id:.0f}%",
+                             a.seq_id_mode, a.cov_mode)
+                h8.update(h8p)
+                print(f"  folded Ig-like chain vs ANTIGEN >={100*a.abq_id:.0f}% id: "
+                      f"{len(h8)} clusters hit  (the class the 7st5 audit finding belongs to)")
     h2 = search(qa, _fasta(f"{wd}/t_pep.fa", pep_t), f"{wd}/r_pep.m8",
                 a.pep_id, a.cov, a.threads, f"antigen vs PEPTIDE  >={100*a.pep_id:.0f}%",
                 a.seq_id_mode, a.cov_mode)
@@ -804,7 +845,7 @@ def main():
     print(f"  CDR-H3              >={100*a.cdr_id:.0f}% id, >={100*a.cdr_cov:.0f}% cov: "
           f"{len(h4)} clusters hit   ({len(qcdr)} queries x {len(cdr_t)} targets, every pair)")
 
-    drop = (set(h1) | set(h2) | set(h4) | set(h6) | set(h7)) & {_ckey(c) for c in train_cl}
+    drop = (set(h1) | set(h2) | set(h4) | set(h6) | set(h7) | set(h8)) & {_ckey(c) for c in train_cl}
     keep = {c for c in train_cl if _ckey(c) not in drop}
     print(f"\nunion dropped: {len(drop)} clusters")
     print(f"TRAINING CLUSTERS: {len(train_cl)} -> {len(keep)}")
@@ -848,7 +889,8 @@ def main():
             w.writerow(["cluster", "search", "query", "identity"])
             for name, h in (("antigen_protein", h1), ("antigen_peptide", h2),
                             ("cdrh3", h4), ("folded_benchmark_antigen", h6),
-                            ("folded_benchmark_peptide", h7)):
+                            ("folded_benchmark_peptide", h7),
+                            ("folded_iglike_vs_antigen", h8)):
                 for cl, (q, f) in sorted(h.items()):
                     if cl in drop:
                         w.writerow([cl, name, q, f"{f:.3f}"])

@@ -891,3 +891,118 @@ So the split was redrawn once from the final 537-cluster pool: **50 clusters, te
 structures (9.7%)**. It regenerates byte-identically from the committed code and seed, verified. From
 here it is frozen, and `phase_b_define_val_clusters.py` refuses to redraw without `--force` while
 failing loudly — naming the clusters — if the pinned split ever stops being a subset of the pool.
+
+## Review round 3: coverage, freshness, the cutoff, and a verifier that can fail
+
+Five findings, all fixed in `9f98aa1d`. Each one had the same shape: a check that looked like a check
+but could not fail for the reason it existed.
+
+### Phase A — the audit covered what it happened to read
+
+`job_sequences()` dropped every folded chain under 20 residues and turned an unreadable job json into
+a printed note. So an audit over 200 of the 227 complexes read exactly like an audit over all 227,
+and a short folded antigen was never compared to anything at all.
+
+Now the function returns the pdb ids it actually read, and the caller compares them against each
+benchmark's own `pool_csv` — the denominator comes from the dataset definition, so adding an
+interface to a pool cannot leave the audit quietly partial. A gap is fatal unless
+`--allow-partial-audit` is passed, and then it is printed by name. Length is handled where it
+belongs: chains of 20+ residues go to the protein targets at `--prot-id`, shorter ones to the peptide
+targets at `--pep-id`. Nothing is dropped for being short.
+
+The folded chains are also searched against the **peptide** target table now. They had been searched
+against protein targets only, so the peptide half of the training pool was still being compared
+against the 39 unlisted complexes alone: a benchmark chain identical to a training peptide antigen, in
+any of the other 188 complexes, had nothing to hit. That search alone excluded 3 more clusters.
+
+### Phase A — an antigen can be an immunoglobulin, and ours was
+
+The all-227 audit fired for the first time: training cluster 947 held an antigen **identical**
+(identity 1.000) to a chain of 7st5, a FoldBench complex we evaluate on, and every filter above had
+passed it.
+
+The cause is a classification assumption, not a threshold. 7st5's antigen is a 125-residue
+Ig-superfamily V-set receptor domain. `hmmscan` matches it to ANARCI's antibody HMMs, `classify()`
+files it under *antibody*, and the folded-chain filter only ever queried the chains filed under
+*antigen*. An Ig-like antigen was therefore structurally invisible to the leakage search — a class of
+complex, not one complex.
+
+So the folded chains that carry an antibody domain are now searched against the antigen tables too,
+at a separate threshold `--abq-id` (0.95). The threshold has to be separate: antibody frameworks are
+broadly similar, and reusing `--prot-id`'s 0.40 would drop clusters wholesale for having an antibody
+anywhere in their antigen column. Near-identity is the event worth acting on, and near-identity is
+what the audit found. The query is the **whole folded chain**, not the variable-domain envelope
+`classify()` returns — a domain searched against a full-length training antigen fails target
+coverage, which is precisely why the audit (whole chain) saw this and the filter (domain) did not.
+
+### Phase F — "one fresh output" is not "the outputs are fresh"
+
+The gates after step3 and step4 were `if not fresh: exit`, which passed the moment a single file was
+new; every count that followed was taken over the whole directory and could not tell this run's
+output from an earlier attempt's. A step that crashed part-way through therefore left some chains
+carrying stale taxids or a stale split while the phase reported OK, and the staleness only surfaces
+later as a chain that cannot pair.
+
+`fresh_outputs()` now requires **every expected query** to have an output from this run. A file older
+than the start marker is reuse: reuse must validate (step3's output is re-checked against the query
+sequence it claims), must be asked for with `--allow-stale-reuse`, and is printed by name. Anything
+missing is fatal either way. `non_pairing.a3m` is checked as well — it was not checked at all, and
+Protenix reads it as the unpaired MSA, so a chain with a fresh `pairing.a3m` and a stale
+`non_pairing.a3m` folds against someone else's alignment.
+
+### Phases H/I — the hash proved the file had not changed, not that it was right
+
+Phase H writes `<templatesPath>.filtered` holding `{cutoff, version, sha256}`, and phase I checked the
+hash. The hash proves the file has not been swapped since filtering. It does not prove the file was
+filtered **for this query**: one MSA directory is shared by every structure with that chain sequence,
+and phase H gives the directory the earliest cutoff among the structures it was run for. If phase H
+last ran on a job set that did not include the oldest structure, the marker holds a later cutoff, the
+hash still matches, and a pre-2021 structure receives templates from its own era — its own entry at
+100% identity among them. Self-templating through the back door.
+
+`phase_i_inputs.py` imports phase H, recomputes the cutoff the **current** job set requires with
+phase H's own `query_cutoffs()`, and requires the marker to be at or below it, at the current
+`FILTER_VERSION`, with a matching hash. One implementation of the cutoff rule, consulted by both
+phases. A query with no release or deposition date is now a stop rather than a warning: without a
+date there is no cutoff to enforce, so nothing rules out the structure seeing its own era.
+
+### Phase I — a verifier that reported completion over a failure
+
+Reproduced with fixtures: `verify()` passed with one of five samples scored, a NaN DockQ, a blank
+ipTM and an invalid NPZ; an unrelated `run.json` compensated for a missing expected unit; and a
+crashed verification subprocess defaulted to zero failures through `${1:-0}`.
+
+Both routines moved to `phase_i_check.py`, where an exit status is an exit status. It demands exact
+`(unit, interface, sample)` coverage against `pool.csv` and the job set — "a row exists" is no longer
+a scored interface — finite DockQ and ipTM, an NPZ that loads and holds all `nsample` poses with the
+same twelve tensors the smoke test asserts, and a `run.json` that **names** the unit it stands for.
+
+`rescore()` was the worst of it. It read `pool.csv` with `IFS=, read`, which keeps the CR of a CRLF
+file in the last field and produces interfaces like `6mnq_AB\r` that `scorer.py` rejects outright; it
+hardcoded `--scorer pxm` when `sabdab_val` scores with `ost`, which would have mixed two DockQ
+implementations into one results.csv; and it skipped an interface once any sample row existed. It now
+parses CSV properly, resolves the scorer from `paths.py`, and appends only the missing samples. Phase
+G writes LF (`lineterminator="\n"`) so no reader has to strip anything, and `SEED0` is defined once
+rather than written as a literal in three places.
+
+### What round 3 did to the numbers
+
+| Quantity | Before round 3 | After | What changed it |
+|---|---|---|---|
+| candidate pool | 561 | 561 | unchanged; this is SAbDab2's clustering minus the id lookup |
+| clusters excluded | 24 | 28 | +3 folded-chain vs peptide antigens, +1 Ig-like antigen (7st5) |
+| **training pool** | **537** | **533** | the four above |
+| validation clusters | 50 | 50 | none of the 50 was among the four, so the split is unchanged |
+| training after removing validation | 487 | 483 | 533 − 50 |
+| surviving clusters sharing an antigen with a benchmark complex | 1 | **0** | the Ig-like search closed the last one |
+
+The last row is the one to quote. The all-227 audit is the independent check on everything above it —
+it compares every benchmark complex by sequence against the pool that survives, and it is report-only
+by design, so that when it fires the response is to look rather than to silently drop more. It fired
+once, on 7st5, we looked, and the cause was a classification assumption that has now been fixed
+structurally. On the second run it reports nothing.
+
+The validation split needed no redraw: `results/val_clusters.csv` and `results/train_clusters.csv`
+are unchanged, and the 50 drawn clusters are all still in the pool. Phase B's `--prune` was kept in
+the chain (`run_e_to_i.sh` stage 3a) anyway, so that if a later leakage check does hit a drawn
+cluster, the split is reconciled before phase G builds jobs from it rather than after folding.
