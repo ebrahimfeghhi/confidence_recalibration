@@ -20,7 +20,7 @@ are NOT moved here.
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 HOME = Path.home()
 
@@ -118,6 +118,14 @@ PXM2025_CHAIN_ROLES = _path("PXM2025_CHAIN_ROLES", PXM2025_DIR / "chain_roles.cs
 # --- run trees ---------------------------------------------------------------
 # Every fold we generate lands in one of these two, as <pdb>/<seed>/<run_id>/.
 FREE_DIR = _path("FREE_DIR", PXM2025_DATA / "free")
+# one directory for every benchmark's free seeds, assembled per benchmark into a single
+# pose-level table. Separate from each benchmark's own experiment tree because the whole point is
+# that an analysis should not have to know a benchmark lives under protenix/ or beside it.
+# NOT a third top-level directory. Each benchmark's pooled free table lives inside that
+# benchmark's own folder as `free_pool/`, so there is exactly one directory per benchmark and no
+# analysis has to know whether a benchmark sits under protenix/ or beside it. An earlier
+# experimental_data/free/ held the pxm pose pool, was migrated away, and is still referenced by
+# stale docstrings -- reusing that name would have revived the ambiguity.
 
 # FoldBench, run the same way. Its experiments live under experimental_data/protenix/foldbench/; its
 # inputs there are built once by diffusion_commit_clean_v2/foldbench_setup.py from the FoldBench 50-seed
@@ -147,6 +155,12 @@ class Dataset:
     matrices:    pose-to-pose DockQ matrices in the CRYSTAL frame, keyed by interface name exactly as
                  chain_roles names it, so `matrices / f"{iface}.npz"` resolves. Complete for the pool
     pool_seeds:  the seeds the pool rule admits, in order; the first 50 define the free baseline
+    free_pool:   EVERY free pose-level score for this benchmark in one table, pool_csv plus the
+                 later top-up arms, with a `block` column saying which arm each row came from.
+                 Built by diffusion_commit_clean_v2/build_free_pool.py; INDEX.md beside it records
+                 where each block's poses are. Deeper than pool_csv (foldbench 60 seeds, pxm2025 a
+                 median of 70), so prefer it for anything seed-depth dependent and use pool_csv
+                 only when the free-50 baseline itself is the point
     free_templates: whether a FREE fold uses Protenix's PDB templates. The free folds that make up a
                  dataset's pool decide it, and every later free fold must match them: pxm2025's used 3-4
                  per chain; FoldBench's used none (FoldBench's own Protenix setup disables templates,
@@ -164,6 +178,7 @@ class Dataset:
     matrices: Path
     pool_seeds: Tuple[str, ...]
     free_templates: bool = True
+    free_pool: Optional[Path] = None
 
 
 DATASETS = {
@@ -172,14 +187,16 @@ DATASETS = {
         ref=lambda pdb: f"{PXM2025_CIF}/{pdb}.cif", scorer="pxm", pool_csv=PXM2025_POOL_CSV,
         chain_maps=PXM2025_DIR / "chain_maps.csv", chain_roles=PXM2025_CHAIN_ROLES,
         matrices=POSE_DOCKQ_MATRICES / "pxm2025_crystal",
-        pool_seeds=tuple(str(300000 + i) for i in range(50))),
+        pool_seeds=tuple(str(300000 + i) for i in range(50)),
+        free_pool=PXM2025_DATA / "free_pool" / "results.csv"),
     "foldbench": Dataset(
         name="foldbench", data=FOLDBENCH_DATA, free=FOLDBENCH_DATA / "free", jobs=JSON_DIR,
         ref=lambda pdb: f"{GROUND_TRUTHS}/{pdb}-assembly1.cif", scorer="ost",
         pool_csv=FOLDBENCH_DATA / "pool.csv", chain_maps=FOLDBENCH_DATA / "chain_maps.csv",
         chain_roles=FOLDBENCH_DATA / "chain_roles.csv",
         matrices=POSE_DOCKQ_MATRICES / "foldbench_crystal",
-        pool_seeds=tuple(str(101 + i) for i in range(50)), free_templates=False),
+        pool_seeds=tuple(str(101 + i) for i in range(50)), free_templates=False,
+        free_pool=FOLDBENCH_DATA / "free_pool" / "results.csv"),
     # The held-out validation set for the confidence-head finetune (extra_training/). 50 SAbDab2
     # clusters, 2 structures each. Its DockQ references are the chosen SAbDab2 instance cifs, staged
     # one-per-pdb by build_val_jobs.py so this lookup stays unambiguous when a pdb has several
@@ -193,6 +210,18 @@ DATASETS = {
         chain_roles=EXTRA_TRAINING / "val_fold" / "chain_roles.csv",
         matrices=POSE_DOCKQ_MATRICES / "sabdab_val_crystal",
         pool_seeds=tuple(str(400000 + i) for i in range(20))),
+    # the 483 training clusters, one representative each. Same pipeline as sabdab_val and a
+    # DISJOINT cluster set -- these are the poses the confidence head is finetuned ON, so nothing
+    # here may share a store with the validation fold it is evaluated against.
+    "sabdab_train": Dataset(
+        name="sabdab_train", data=EXTRA_TRAINING, free=EXTRA_TRAINING / "train_fold",
+        jobs=EXTRA_TRAINING / "train_jobs",
+        ref=lambda pdb: f"{EXTRA_TRAINING}/train_refs/{pdb}.cif", scorer="ost",
+        pool_csv=EXTRA_TRAINING / "train_fold" / "pool.csv",
+        chain_maps=EXTRA_TRAINING / "train_fold" / "chain_maps.csv",
+        chain_roles=EXTRA_TRAINING / "train_fold" / "chain_roles.csv",
+        matrices=POSE_DOCKQ_MATRICES / "sabdab_train_crystal",
+        pool_seeds=tuple(str(500000 + i) for i in range(20))),
 }
 DATASET_NAMES = tuple(DATASETS)
 
