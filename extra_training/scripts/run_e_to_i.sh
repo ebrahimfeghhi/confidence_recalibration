@@ -30,6 +30,32 @@ die() { say "STOP: $*"; echo "FAILED" > "$STATE"; exit 1; }
 mark() { echo "$1" > "$STATE"; say "--> stage now: $1"; }
 
 say "=== run_e_to_i starting (pid $$) ==="
+
+# ---------------------------------------------------------------- resume: are the MSAs already done?
+# STAGES 0-2 ARE SKIPPED WHEN PHASE F HAS FINISHED, and this is not an optimisation. Stage 0 is gated
+# on the env database's data file, which phase F's success DELETES (160 GB freed, by design, because
+# nothing downstream reads it). So a plain relaunch after a later stage failed would re-download 120
+# GB and rebuild a database no remaining stage uses -- about 90 minutes to arrive back where it
+# started. The completion test is phase F's own report against its own outputs: one renamed alignment
+# per row, one directory with BOTH halves of the split per alignment.
+FREPORT=$W/pdb_seqs/phase_f_report.csv
+FDONE=0
+if [ -s "$FREPORT" ]; then
+    NROW=$(($(wc -l < "$FREPORT")-1))
+    NPAIR=$(find $W/mmcif_msa -name pairing.a3m 2>/dev/null | wc -l)
+    NNON=$(find $W/mmcif_msa -name non_pairing.a3m 2>/dev/null | wc -l)
+    if [ "$NROW" -gt 0 ] && [ "$NPAIR" -eq "$NROW" ] && [ "$NNON" -eq "$NROW" ]; then
+        FDONE=1
+        say "resume: phase F already complete -- $NROW alignments, $NPAIR pairing, $NNON non_pairing."
+        say "  skipping stages 0-2. The env database was freed when F passed and no later stage reads"
+        say "  it, so rebuilding it would cost 120 GB and 90 minutes for nothing."
+    else
+        say "resume: phase F looks incomplete ($NROW rows, $NPAIR pairing, $NNON non_pairing) --
+     running stages 0-2"
+    fi
+fi
+
+if [ "$FDONE" -eq 0 ]; then
 mark "stage0_envdb"
 
 # ---------------------------------------------------------------- stage 0: the env database
@@ -68,6 +94,8 @@ if [ -s "$DB/colabfold_envdb_202108_db_seq" ]; then
     rm -rf "${DB:?}"/colabfold_envdb_202108_db* "${DB:?}"/COLABDB_READY
     say "env database freed after phase F; quota $(quota -s 2>/dev/null | awk '/nvme/{print $2" of "$4}')"
 fi
+
+fi   # end of the stages 0-2 block skipped on resume
 
 # ---------------------------------------------------------------- stage 3a: the validation split
 mark "stage3a_split"

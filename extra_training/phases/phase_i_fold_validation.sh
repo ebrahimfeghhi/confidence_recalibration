@@ -104,7 +104,7 @@ check_inputs() {
     # sequence, so a marker written for a newer structure carries a later cutoff, and the pre-2021
     # structure sharing the directory would receive templates from its own era, its own entry at
     # 100% identity among them.
-    $PY $PH/phase_i_inputs.py --jobs "$J" --phases "$PH" --suffix "$JOB_SUFFIX" 2>&1 | tee -a "$LOG"
+    $PY $PH/phase_i_inputs.py --jobs "$J" --phases "$PH" --suffix="$JOB_SUFFIX" 2>&1 | tee -a "$LOG"
     [ "${PIPESTATUS[0]}" -eq 0 ] || die "input check failed (see above). Templates are required by
      decision, so phase H must have run -- and its date filter must have run for THESE jobs: a
      template file filtered at a later cutoff may hand a pre-2021 structure its own entry at 100%
@@ -413,7 +413,7 @@ fi
 
 check_py() {
     $PY $PH/phase_i_check.py "$1" --e "$E" --jobs "$J" --refs "$R/extra_training/val_refs" \
-        --suffix "$JOB_SUFFIX" --seeds "$SEEDS" --seed0 "$SEED0" --nsample "$NSAMPLE" \
+        --suffix="$JOB_SUFFIX" --seeds "$SEEDS" --seed0 "$SEED0" --nsample "$NSAMPLE" \
         --scorer "$SCORER" --py "$PY" --code "$C" 2>&1 | tee -a "$LOG"
     return "${PIPESTATUS[0]}"
 }
