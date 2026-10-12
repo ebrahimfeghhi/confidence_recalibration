@@ -137,7 +137,27 @@ def check_npz(path, nsample):
     return ""
 
 
-def classify_missing(rundir, scorer, k):
+def _ost():
+    """out: the ost_dockq module, or None
+
+    OST'S OWN PARSER, not a hand-rolled one. The project rule is that chain mapping and DockQ come
+    from OST; reimplementing "does this json contain this interface" here would be a second, divergent
+    reader of a format we do not own.
+    """
+    import importlib.util
+    p = "/home/ebrahim/tts_abag/eval/ost_dockq.py"
+    if not os.path.exists(p):
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("ost_dockq_ro", p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+    except Exception:                                           # noqa: BLE001
+        return None
+
+
+def classify_missing(rundir, scorer, k, iface=None, invalidate=False):
     """in: a run directory, the scorer name, a sample index.  out: ("", why) or (bucket, why)
 
     A MISSING ROW IS NOT ALWAYS A MISSING SCORE. scorer.py:85 skips a pose in which the two chains do
@@ -158,9 +178,47 @@ def classify_missing(rundir, scorer, k):
     cif = glob.glob(os.path.join(rundir, "**", f"*_sample_{k}.cif"), recursive=True)
     if not cif:
         return "no_pose", f"sample {k}: no pose cif"
-    if not os.path.exists(os.path.join(rundir, f"{scorer}_json", f"{k}.json")):
+    sj = os.path.join(rundir, f"{scorer}_json", f"{k}.json")
+    if not os.path.exists(sj):
         return "unscored", f"sample {k}: pose exists, never scored"
-    return "", f"sample {k}: scored, no contact at this interface"
+
+    # THE JSON IS PARSED, NOT MERELY COUNTED. Its existence was treated as proof the pose went
+    # through the scorer, but ost_dockq.run():76 reuses ANY nonempty file as a result -- so a
+    # truncated json from a killed OST run is cached forever, parse() returns {}, no row is written,
+    # and "the json exists" turned a permanent scoring failure into "no contact". Five such files
+    # made a fold with zero score rows report COMPLETE.
+    mod = _ost() if scorer == "ost" else None
+    if mod is None:
+        return "unscored", f"sample {k}: cannot verify the {scorer} cache (parser unavailable)"
+    # GUARDED. parse()'s docstring promises it returns {} rather than raising on a truncated file,
+    # and for truncated JSON it does -- but a file that parses as JSON with a short
+    # dockq_interfaces entry raises IndexError (ost_dockq.py:120). A bad cache must not take the
+    # verifier down with it, so any exception here is treated as an unusable cache.
+    try:
+        res = mod.parse(sj)
+    except Exception as e:                                      # noqa: BLE001
+        res = {}
+        why_parse = f"{type(e).__name__}"
+    else:
+        why_parse = "empty"
+    if not res:
+        # INVALIDATED, or the retry is futile: run() would reuse this file and never re-invoke OST.
+        if invalidate:
+            os.replace(sj, sj + ".invalid")
+            return "unscored", (f"sample {k}: unusable {scorer} cache ({why_parse}), "
+                                "moved aside for a retry")
+        return "unscored", f"sample {k}: unusable {scorer} cache ({why_parse}): {sj}"
+
+    # AN EXPLICIT PER-INTERFACE OUTCOME. A valid json that does report this chain pair, while
+    # results.csv has no row for it, is not "no contact" -- it is a row that went missing.
+    if iface:
+        chains = iface.split("_")[-1]
+        if len(chains) == 2:
+            v = mod.interface(res, chains[0], chains[1])
+            if v and v.get("dockq") is not None:
+                return "unscored", (f"sample {k}: the {scorer} cache reports this interface "
+                                    f"(dockq {v['dockq']:.4f}) but results.csv has no row")
+    return "", f"sample {k}: scored, {len(res)} interface(s) found, none is this chain pair"
 
 
 def verify(a):
@@ -204,7 +262,7 @@ def verify(a):
             for k in range(a.nsample):
                 if str(k) in got:
                     continue
-                bucket, why = classify_missing(d, a.scorer, k)
+                bucket, why = classify_missing(d, a.scorer, k, iface=ifc)
                 if bucket == "no_pose":
                     no_pose.append((ifc, seed, why))
                 elif bucket == "unscored":
@@ -257,8 +315,11 @@ def rescore(a):
             # interface will never produce a row however many times it is re-scored, so including it
             # here would make rescore() re-run the scorer on every call and append nothing -- and
             # verify() would stay INCOMPLETE forever.
+            # invalidate=True: a cached json that cannot be parsed is moved aside, because
+            # ost_dockq.run() would otherwise reuse it and the retry would be a no-op.
             miss = {str(k) for k in range(a.nsample) if str(k) not in got
-                    and classify_missing(d, a.scorer, str(k))[0] == "unscored"}
+                    and classify_missing(d, a.scorer, str(k), iface=ifc,
+                                         invalidate=True)[0] == "unscored"}
             if not miss:
                 continue
             # THE DATASET'S OWN SCORER. Recovery must not change the method: sabdab_val scores with

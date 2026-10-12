@@ -21,7 +21,7 @@ remote_size() {
     # -L follows redirects, so several Content-Length headers can come back; the last one belongs to
     # the final 200 response. IGNORECASE because header case is not guaranteed, and \r must go
     # because HTTP line endings are CRLF.
-    curl -sIL --retry 3 --retry-delay 5 --max-time 120 "$1" 2>/dev/null \
+    curl --no-progress-meter -sIL --retry 3 --retry-delay 5 --max-time 120 "$1" 2>/dev/null \
       | awk 'BEGIN{IGNORECASE=1} /^content-length:/{n=$2} END{gsub(/[^0-9]/,"",n); print n+0}'
 }
 
@@ -47,7 +47,7 @@ fetch_tarball() {
             return 0
         fi
         [ "$try" -gt 1 ] && say "  attempt $try: have $(numfmt --to=iec "$got"), resuming"
-        curl -L -C - --retry 5 --retry-delay 10 -o "$path" "$url" >> "${LOG:-/dev/null}" 2>&1
+        curl --no-progress-meter -L -C - --retry 5 --retry-delay 10 -o "$path" "$url" >> "${LOG:-/dev/null}" 2>&1
     done
     # Out of attempts. Before failing, let the archive speak: a size that disagrees with the server by
     # a little is not evidence of corruption, and a stream that lists cleanly is complete by

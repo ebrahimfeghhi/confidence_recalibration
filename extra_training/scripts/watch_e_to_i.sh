@@ -34,7 +34,12 @@ esc() { echo "[$(date '+%F %T')] ESCALATE: $*" >> "$LOG"; }
 # own product is not growing is stalled whatever its process table looks like.
 progress() {
     case "$(cat $STATE 2>/dev/null)" in
-        stage0_envdb)  stat -c %s "$DB/colabfold_envdb_202108.tar.gz" 2>/dev/null || du -sb "$DB" 2>/dev/null | cut -f1 ;;
+        # THE WHOLE DIRECTORY, not the tarball. Stage 0 is two jobs -- a download and a build -- and
+        # measuring the tarball only covers the first: the moment the download finished, the measure
+        # went flat while tsv2exprofiledb was writing db files for the next hour, and the stall
+        # counter started climbing toward a false escalation. Total bytes under db/ grows through
+        # both halves.
+        stage0_envdb)  du -sb "$DB" 2>/dev/null | cut -f1 ;;
         stage1_phaseE) find $W/msa_initial_idx $W/msa_short_idx $W/msa_bench_short_idx -name 'bfd*.a3m' 2>/dev/null | wc -l ;;
         stage2_phaseF) find $W/mmcif_msa -name non_pairing.a3m 2>/dev/null | wc -l ;;
         stage3*)       ls $R/extra_training/val_jobs/*-final-updated.json 2>/dev/null | wc -l ;;

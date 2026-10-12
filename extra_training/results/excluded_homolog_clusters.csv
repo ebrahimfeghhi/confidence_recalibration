@@ -29,3 +29,7 @@ cluster,search,query,identity
 917,folded_benchmark_antigen,8sgn_j2,1.000
 922,folded_benchmark_antigen,9mnx_j5,0.684
 958,folded_benchmark_antigen,8b1a_j0,0.532
+2238,folded_benchmark_peptide,9u9b_j0,0.913
+2483,folded_benchmark_peptide,8dtn_j1,1.000
+2557,folded_benchmark_peptide,8g4p_j4,0.948
+947,folded_iglike_vs_antigen,7st5_j2,1.000

@@ -77,6 +77,38 @@ def cluster_table(splits=None, excluded=None):
             .reset_index().rename(columns={"ab_ag_cluster": "cluster"}))
 
 
+def write_training(keep, krows, out, excluded):
+    """write train_clusters.csv, after asserting it shares nothing with the exclusion list
+
+    THE ASSERTION IS THE POINT. train_clusters.csv is the file the training stage reads, and it was
+    committed holding 487 clusters of which four -- 947, 2238, 2483, 2557 -- the current leakage
+    search excludes. Nothing compared the two, because the exclusion was applied when the pool was
+    built and never re-checked against the artifact that outlived it. A list that is written from the
+    pool is not automatically disjoint from a newer exclusion file, so it is checked here, where the
+    file is produced, rather than trusted.
+    """
+    ex = set()
+    if excluded and os.path.exists(excluded):
+        import csv as _csv
+        with open(excluded, newline="") as fh:
+            ex = {str(r["cluster"]).strip() for r in _csv.DictReader(fh) if r.get("cluster")}
+    bad = sorted(str(c) for c in keep if str(c) in ex)
+    if bad:
+        raise SystemExit(
+            f"STOP: {len(bad)} cluster(s) are in BOTH the training list and the exclusion file "
+            f"{excluded}: {bad[:10]}. Each one shares an antigen or a CDR-H3 with a complex we "
+            "evaluate on, so training on it is leakage. Re-run phase A so the exclusion file is "
+            "current, then re-run this.")
+    tc = os.path.join(os.path.dirname(out), "train_clusters.csv")
+    with open(tc, "w") as fh:
+        fh.write("cluster\n")
+        for c in sorted(keep):
+            fh.write(f"{c}\n")
+    print(f"wrote {tc}: {len(keep)} training clusters ({krows.PDB_ID.nunique()} structures), "
+          f"validation removed, disjoint from {len(ex)} excluded clusters")
+    return tc
+
+
 def train_minus_val(splits=None, excluded=None, val_csv=None):
     """in: optional splits, exclusion and validation csv paths.
     out: (training cluster set with validation removed, those rows of the splits table)
@@ -171,15 +203,9 @@ def main():
             print(f"  PRUNED {len(gone)} excluded cluster(s) from the pinned split: {sorted(gone)}")
             print(f"  validation is now {len(v0)-len(gone)} clusters; the rest stay pinned")
         keep, krows = train_minus_val(a.splits, a.excluded, a.out)
-        tc = os.path.join(os.path.dirname(a.out), "train_clusters.csv")
-        with open(tc, "w") as fh:
-            fh.write("cluster\n")
-            for c in sorted(keep):
-                fh.write(f"{c}\n")
+        tc = write_training(keep, krows, a.out, a.excluded or A.EXCLUDED)
         v = pd.read_csv(a.out)
         print(f"  pinned split: {len(v)} validation clusters, every one still in the pool")
-        print(f"  wrote {tc}: {len(keep)} training clusters "
-              f"({krows.PDB_ID.nunique()} structures), validation removed")
         return
 
     t = cluster_table(a.splits, a.excluded).sort_values("median_depo").reset_index(drop=True)
@@ -284,13 +310,7 @@ def main():
     # training stage reads a file that already has validation removed, so using the full pool
     # requires deliberately going around the pipeline rather than merely forgetting a call.
     keep, krows = train_minus_val(a.splits, a.excluded, a.out)
-    tc = os.path.join(os.path.dirname(a.out), "train_clusters.csv")
-    with open(tc, "w") as fh:
-        fh.write("cluster\n")
-        for c in sorted(keep):
-            fh.write(f"{c}\n")
-    print(f"wrote {tc}: {len(keep)} training clusters ({krows.PDB_ID.nunique()} structures), "
-          f"validation removed")
+    write_training(keep, krows, a.out, a.excluded or A.EXCLUDED)
     print(f"wrote {a.out}")
 
 

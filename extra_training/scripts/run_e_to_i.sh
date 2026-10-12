@@ -72,21 +72,21 @@ fi
 # ---------------------------------------------------------------- stage 3a: the validation split
 mark "stage3a_split"
 say "stage 3a: reconciling the validation split with phase A's widened leakage search"
-AOUT=$R/extra_training/results/exclusions_round3.csv
-if [ -s "$AOUT" ]; then
-    $PY $PH/phase_b_define_val_clusters.py --prune --excluded "$AOUT" >> $W/phase_b.log 2>&1 \
-        && say "stage 3a OK: split reconciled against $(basename $AOUT)" \
-        || die "phase B could not reconcile the split against $AOUT (msa_work/phase_b.log)"
-else
-    say "stage 3a: no $AOUT yet -- phase A is still running or did not finish. The split stands as
-     drawn from the 537-cluster pool; if phase A drops any of the 50 drawn clusters this must be
-     re-run before the fold is used for a paper."
-fi
+# ONE EXCLUSION ARTIFACT, PASSED TO EVERY PHASE THAT READS ONE. Writing the round-3 exclusions to a
+# second file left B and G defaulting to a stale 24-cluster copy, and four known benchmark leaks
+# survived in the committed training list. This is now the canonical path phase A writes by default,
+# and it is passed explicitly here so the chain does not depend on a module default either.
+AOUT=$R/extra_training/results/excluded_homolog_clusters.csv
+[ -s "$AOUT" ] || die "no exclusion artifact at $AOUT -- run phase A before the chain"
+$PY $PH/phase_b_define_val_clusters.py --prune --excluded "$AOUT" >> $W/phase_b.log 2>&1 \
+    && say "stage 3a OK: split reconciled against $(basename $AOUT)" \
+    || die "phase B could not reconcile the split against $AOUT (msa_work/phase_b.log). If it
+     reports clusters in BOTH the training list and the exclusions, phase A must be re-run first."
 
 # ---------------------------------------------------------------- stage 3: phase G
 mark "stage3_phaseG"
 say "stage 3: phase G -- validation job jsons"
-$PY $PH/phase_g_build_val_jobs.py --reps 2 --msa-root $W/mmcif_msa \
+$PY $PH/phase_g_build_val_jobs.py --reps 2 --msa-root $W/mmcif_msa --excluded "$AOUT" \
     --seq-index $W/pdb_seqs/seq_to_pdb_index.json --out-dir $R/extra_training/val_jobs \
     >> $W/phase_g.log 2>&1 || die "phase G failed (msa_work/phase_g.log)"
 NJOB=$(ls $R/extra_training/val_jobs/*-final-updated.json 2>/dev/null | wc -l)

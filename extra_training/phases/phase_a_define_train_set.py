@@ -88,6 +88,10 @@ import paths  # noqa: E402
 
 SPLITS = f"{REPO}/extra_training/data/zenodo_splits/splits_final/abag_split.csv"
 # Written by this phase's main(); read back by training_clusters() and by phases B and C.
+# THE ONE AUTHORITATIVE EXCLUSION ARTIFACT. Every downstream default resolves to this path, so
+# writing the round-3 exclusions to a NEW file left phases B and G defaulting to a stale 24-cluster
+# version while the current search had found 28 -- and four known benchmark leaks (947, 2238, 2483,
+# 2557) stayed in the committed training list. One path, written by default, read by everyone.
 EXCLUDED = f"{REPO}/extra_training/results/excluded_homolog_clusters.csv"
 CIFDIR = f"{REPO}/extra_training/data/rcsb_unlisted"
 MMSEQS = f"{REPO}/tools/mmseqs/bin/mmseqs"
@@ -632,7 +636,10 @@ def main():
     ap.add_argument("--allow-missing-structures", action="store_true",
                     help="write an exclusion csv even though some benchmark structure could not be "
                          "fetched. Off by default: those complexes get no homology check at all.")
-    ap.add_argument("--out", default=None)
+    ap.add_argument("--out", default=EXCLUDED,
+                    help="where to write the exclusion csv. Defaults to the ONE path every "
+                         "downstream default reads, so a fresh run cannot leave phases B and G on a "
+                         "stale copy. Pass an alternative only to compare two searches.")
     a = ap.parse_args()
 
     miss, listed, ours_cl = unlisted(a.splits)
