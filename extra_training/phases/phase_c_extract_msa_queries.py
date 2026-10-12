@@ -95,6 +95,7 @@ import collections
 import glob
 import csv
 import hashlib
+import json
 import os
 import sys
 
@@ -224,9 +225,15 @@ def bench_from_jobs(min_len):
         D = paths.DATASETS[ds]
         for f in sorted(glob.glob(os.path.join(str(D.jobs), "*.json"))):
             pdb = os.path.basename(f).split("-")[0].lower()
+            # NARROW, so a programming error cannot hide here. A bare `except Exception` swallowed
+            # the NameError from a missing `import json` and silently skipped all 732 job files,
+            # reporting 0 sequences as though the jsons held none -- the same shape of fault this
+            # phase's own gates exist to prevent.
             try:
-                tasks = json.load(open(f))
-            except Exception:                                   # noqa: BLE001
+                with open(f) as fh:
+                    tasks = json.load(fh)
+            except (OSError, ValueError) as e:
+                print(f"  NOTE unreadable job json {os.path.basename(f)}: {e}")
                 continue
             for t in tasks if isinstance(tasks, list) else [tasks]:
                 for k, sq in enumerate(t.get("sequences", [])):
