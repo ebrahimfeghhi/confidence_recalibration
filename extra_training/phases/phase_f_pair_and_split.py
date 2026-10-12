@@ -56,6 +56,7 @@ OUTPUTS
 """
 import argparse
 import csv
+import datetime
 import hashlib
 import json
 import os
@@ -496,6 +497,29 @@ def main():
                  "can be paired with another and the MSAs are unusable for a complex.")
     if not long_d:
         sys.exit("STOP: no chain of 20+ residues reached the split; the input looks wrong.")
+    # ---------------------------------------------------------------- the completion record
+    # WRITTEN ONLY HERE, AFTER EVERY GATE ABOVE HAS PASSED. phase_f_report.csv is written in step 1,
+    # before step3 and step4 have run at all, so its existence says nothing about taxids or the
+    # split -- and the orchestrator's resume check was comparing aggregate counts against it, which
+    # leftover files from a failed attempt can satisfy while a specific chain has neither half of
+    # its split. This record is the only thing that means "phase F finished": it names the batches
+    # it consumed with their frozen-fasta checksums, and lists every chain it produced, so a resume
+    # can verify each expected chain individually instead of trusting a total.
+    done = {
+        "version": 1,
+        "written": datetime.datetime.now().isoformat(timespec="seconds"),
+        "batches": [{"dir": os.path.abspath(b),
+                     "sha256": open(os.path.join(b, "query.searched.fasta.sha256")).read().split()[0]
+                     if os.path.exists(os.path.join(b, "query.searched.fasta.sha256")) else None,
+                     "queries": len(check_frozen(b))} for b in batches],
+        "msa_dir": os.path.abspath(a.msa_dir),
+        "taxid_dir": os.path.abspath(a.taxid_dir),
+        "chains": sorted(dirs),
+    }
+    rec = os.path.join(a.index_dir, "phase_f_complete.json")
+    with open(rec, "w") as fh:
+        json.dump(done, fh, indent=1)
+    print(f"  wrote {rec}: {len(dirs)} chains over {len(batches)} batch(es)")
     print(f"=== phase F OK: {len(dirs)} chains ready for Protenix in {a.msa_dir} ===")
 
 

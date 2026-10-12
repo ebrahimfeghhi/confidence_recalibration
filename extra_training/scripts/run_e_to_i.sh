@@ -38,21 +38,60 @@ say "=== run_e_to_i starting (pid $$) ==="
 # GB and rebuild a database no remaining stage uses -- about 90 minutes to arrive back where it
 # started. The completion test is phase F's own report against its own outputs: one renamed alignment
 # per row, one directory with BOTH halves of the split per alignment.
-FREPORT=$W/pdb_seqs/phase_f_report.csv
+# THE COMPLETION RECORD, NOT A COUNT. phase_f_report.csv is written in step 1 -- before taxids and
+# before the split -- so its existence proves only that the headers were renamed. Comparing its row
+# count against aggregate totals of pairing.a3m and non_pairing.a3m let a FAILED phase F pass the
+# resume test: leftover files from an earlier attempt can make the totals agree while a specific
+# expected chain has neither half, and stages E and F would then be skipped along with every gate
+# they carry. phase_f_complete.json is written only after all of F's gates pass; it names the batches
+# it consumed with their frozen-fasta checksums and lists every chain it produced, and each of those
+# chains is verified individually here.
+FREC=$W/pdb_seqs/phase_f_complete.json
 FDONE=0
-if [ -s "$FREPORT" ]; then
-    NROW=$(($(wc -l < "$FREPORT")-1))
-    NPAIR=$(find $W/mmcif_msa -name pairing.a3m 2>/dev/null | wc -l)
-    NNON=$(find $W/mmcif_msa -name non_pairing.a3m 2>/dev/null | wc -l)
-    if [ "$NROW" -gt 0 ] && [ "$NPAIR" -eq "$NROW" ] && [ "$NNON" -eq "$NROW" ]; then
+if [ -s "$FREC" ]; then
+    FCHECK=$($PY - "$FREC" "$W" <<'PYF'
+import hashlib, json, os, sys
+rec, W = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(rec))
+except (OSError, ValueError) as e:
+    print(f"unreadable record: {e}"); sys.exit(1)
+if d.get("version") != 1:
+    print(f"record version {d.get('version')}, expected 1"); sys.exit(1)
+want = [f"{W}/msa_initial_idx", f"{W}/msa_short_idx", f"{W}/msa_bench_short_idx"]
+got = [b["dir"] for b in d.get("batches", [])]
+if sorted(os.path.abspath(x) for x in want) != sorted(got):
+    print(f"record covers {got}, chain needs {want}"); sys.exit(1)
+# THE BATCHES MUST STILL BE THE ONES F CONSUMED. A re-searched batch invalidates the split.
+for b in d["batches"]:
+    sha = os.path.join(b["dir"], "query.searched.fasta.sha256")
+    if b["sha256"] is None or not os.path.exists(sha):
+        print(f"no frozen checksum for {b['dir']}"); sys.exit(1)
+    if open(sha).read().split()[0] != b["sha256"]:
+        print(f"{b['dir']} was re-searched since phase F ran"); sys.exit(1)
+# EVERY CHAIN, INDIVIDUALLY. This is the check a total cannot make.
+msa = d["msa_dir"]; missing = []
+for name in d.get("chains", []):
+    for half in ("pairing.a3m", "non_pairing.a3m"):
+        if not os.path.exists(os.path.join(msa, name, half)):
+            missing.append(f"{name}/{half}")
+if missing:
+    print(f"{len(missing)} output(s) absent, e.g. {missing[:4]}"); sys.exit(1)
+print(f"ok {len(d['chains'])} chains over {len(d['batches'])} batches")
+PYF
+)
+    if [ $? -eq 0 ]; then
         FDONE=1
-        say "resume: phase F already complete -- $NROW alignments, $NPAIR pairing, $NNON non_pairing."
-        say "  skipping stages 0-2. The env database was freed when F passed and no later stage reads"
-        say "  it, so rebuilding it would cost 120 GB and 90 minutes for nothing."
+        say "resume: phase F complete and verified ($FCHECK) -- skipping stages 0-2."
+        say "  The env database was freed when F passed and no later stage reads it, so rebuilding"
+        say "  it would cost 120 GB and 90 minutes for nothing."
     else
-        say "resume: phase F looks incomplete ($NROW rows, $NPAIR pairing, $NNON non_pairing) --
-     running stages 0-2"
+        say "resume: phase F record present but NOT usable -- $FCHECK"
+        say "  running stages 0-2 from the top; a partial phase F must not be skipped."
     fi
+elif [ -s "$W/pdb_seqs/phase_f_report.csv" ]; then
+    say "resume: phase_f_report.csv exists but phase_f_complete.json does not. The report is written
+     in step 1, before taxids and the split, so this is an UNFINISHED phase F. Running stages 0-2."
 fi
 
 if [ "$FDONE" -eq 0 ]; then
