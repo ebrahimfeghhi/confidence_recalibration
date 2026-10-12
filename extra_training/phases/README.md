@@ -832,3 +832,50 @@ pretrained weights. Currently **30 of 79** folded structures are post-cutoff.
 overwrite an existing `val_clusters.csv` without `--force`, so a plain re-run cannot silently redraw
 it. A re-run instead regenerates `results/train_clusters.csv` from the pinned split, which doubles as
 the check that all 50 validation clusters are still in the pool.
+
+## Final numbers, after the all-227 leakage check
+
+**Decided 2026-10-11.** Filter 2 now queries the antigen chains of **all 227** benchmark complexes as
+they are actually folded — `proteinChain.sequence` from the job jsons, classified by the same hmmscan
+pass, keeping the 209 non-antibody chains — rather than only the 39 SAbDab2 does not list.
+
+### Why the cluster-id exclusion was not enough
+
+It is only as complete as SAbDab2's record of what each complex contains, and that record omits
+chains the benchmark folds. `8vui`'s single SAbDab2 row reads `agtypes='ION'`, `agclusters=nan`: it is
+catalogued as an antibody bound to an ion and its protein chain is never recorded as an antigen, so
+its `ab_ag_cluster` was formed without that protein and there is no antigen-cluster link to follow to
+the training cluster whose antigen is identical to it. Taking the 188 listed complexes' clusters on
+trust left 18 such clusters in the pool, ten at identity 1.000.
+
+This is not a stricter threshold than SAbDab2's. It is the same criterion applied to chains SAbDab2
+never wrote down.
+
+### The cascade
+
+| | clusters | |
+|---|---|---|
+| after the id lookup | 561 | 140 clusters removed by name |
+| +4 | 557 | antigen homology to the 39 unlisted complexes |
+| +2 | 555 | `--cov-mode 1`, which exposed two 9ms8 matches the old setting hid |
+| +18 | **537** | all 227 complexes, on the chains they fold |
+
+| | before | after |
+|---|---|---|
+| training clusters | 555 | **537** |
+| validation clusters | 50 | **46** |
+| training clusters after removing validation | 505 | **491** |
+| folded validation structures | 79 | **71** |
+| validation interfaces | 157 | **137** |
+| post-cutoff folded structures | 30 | **26** |
+
+### The validation split was pruned, not redrawn
+
+Four pinned validation clusters — 125, 266, 278, 922 — were among the 18. They cannot stay: validating
+on a cluster that shares an antigen with a benchmark complex is validating on data that leaks into the
+benchmark. `phase_b_define_val_clusters.py --prune` removes exactly those and leaves the other 46
+pinned. Redrawing would have replaced 45 of 50 for no reason connected to the leak, and the phase
+refuses to redraw without `--force`.
+
+Without `--prune` the phase now **fails loudly** rather than proceeding, naming the clusters, because
+a pinned split that is no longer a subset of the pool is not a valid split.

@@ -124,6 +124,9 @@ def main():
     ap.add_argument("--seed", type=int, default=20261010)
     ap.add_argument("--max-share", type=float, default=0.15,
                     help="no single cluster may exceed this share of the validation structures")
+    ap.add_argument("--prune", action="store_true",
+                    help="drop pinned validation clusters that a later leakage check has excluded "
+                         "from the pool, keeping the rest pinned. The minimal correct repair.")
     ap.add_argument("--force", action="store_true",
                     help="draw a NEW validation split even though one exists. Off by default: the "
                          "committed split is pinned, and redrawing after results have been seen is "
@@ -147,6 +150,26 @@ def main():
     # from it -- which is also the check that the pinned split is still a subset of the pool.
     if os.path.exists(a.out) and not a.force:
         print(f"{a.out} exists; NOT redrawing. Use --force to draw a new split.")
+        # PRUNED, NOT REDRAWN. A later leakage check can exclude a cluster that is already in the
+        # pinned split -- extending filter 2 to all 227 benchmark complexes excluded 4 of the 50
+        # (125, 266, 278, 922). Those cannot stay: validating on a cluster that shares an antigen
+        # with a benchmark complex is validating on data that leaks into the benchmark. Removing them
+        # keeps the other 46 pinned, which is the minimal correct change; redrawing would replace 45
+        # of 50 for no reason connected to the leak.
+        v0 = pd.read_csv(a.out)
+        pool0, _r0 = A.training_clusters(a.splits or A.SPLITS, a.excluded or A.EXCLUDED)
+        poolk = {A._ckey(c) for c in pool0}
+        gone = [c for c in v0.cluster if A._ckey(c) not in poolk]
+        if gone:
+            if not a.prune:
+                raise SystemExit(
+                    f"STOP: {len(gone)} pinned validation cluster(s) are no longer in the training "
+                    f"pool: {sorted(gone)}\nThey were excluded by a later leakage check, so they "
+                    "cannot be validated on. Re-run with --prune to drop exactly those and keep the "
+                    "rest pinned, or --force to draw an entirely new split.")
+            v0[~v0.cluster.isin(gone)].to_csv(a.out, index=False)
+            print(f"  PRUNED {len(gone)} excluded cluster(s) from the pinned split: {sorted(gone)}")
+            print(f"  validation is now {len(v0)-len(gone)} clusters; the rest stay pinned")
         keep, krows = train_minus_val(a.splits, a.excluded, a.out)
         tc = os.path.join(os.path.dirname(a.out), "train_clusters.csv")
         with open(tc, "w") as fh:

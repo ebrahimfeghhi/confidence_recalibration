@@ -65,6 +65,8 @@ FUNCTIONS
 import argparse
 import collections
 import csv
+import glob
+import json
 import os
 import re
 import subprocess
@@ -141,6 +143,37 @@ def _ckey(v):
         return str(int(float(v)))
     except (TypeError, ValueError):
         return str(v)
+
+
+def job_sequences(min_len=20):
+    """out: [(name, sequence)] -- every protein chain the benchmark job jsons actually fold
+
+    proteinChain.sequence is what Protenix is given, which is the right thing to compare against for
+    leakage: a chain the benchmark folds can be identical to a training antigen even when SAbDab2
+    never recorded it as an antigen at all.
+    """
+    out, seen = [], set()
+    for ds in BENCHMARKS:
+        jdir = str(paths.DATASETS[ds].jobs)
+        for f in sorted(glob.glob(os.path.join(jdir, "*.json"))):
+            pdb = os.path.basename(f).split("-")[0].lower()
+            try:
+                with open(f) as fh:
+                    tasks = json.load(fh)
+            except (OSError, ValueError) as e:
+                print(f"  NOTE unreadable job json {os.path.basename(f)}: {e}")
+                continue
+            for t in (tasks if isinstance(tasks, list) else [tasks]):
+                for k, sq in enumerate(t.get("sequences", [])):
+                    c = sq.get("proteinChain")
+                    if not c:
+                        continue
+                    q = str(c.get("sequence", "")).upper()
+                    if len(q) < min_len or q in seen:
+                        continue
+                    seen.add(q)
+                    out.append((f"{pdb}_j{k}", q))
+    return out
 
 
 def unlisted(splits):
@@ -540,6 +573,12 @@ def main():
     ap.add_argument("--min-cdr-frac", type=float, default=0.95,
                     help="fail unless CDR-H3 is recovered for this fraction of heavy chains; guards "
                          "against a silent ANARCI failure making the CDR-H3 filter vacuous")
+    ap.add_argument("--no-job-antigens", action="store_true",
+                    help="skip querying the antigen chains the benchmarks actually fold. Off by "
+                         "default: the cluster-id exclusion is only as complete as SAbDab2's record "
+                         "of what each complex contains, and that record omits folded chains.")
+    ap.add_argument("--min-job-len", type=int, default=20,
+                    help="shortest folded chain to use as a query")
     ap.add_argument("--audit-all", action="store_true",
                     help="also compare the 188 complexes excluded by cluster id against the "
                          "surviving pool, by sequence. Report-only: it tests whether SAbDab2's "
@@ -639,6 +678,33 @@ def main():
                 a.prot_id, a.cov, a.threads, f"antigen vs PROTEIN  >={100*a.prot_id:.0f}%",
                 a.seq_id_mode, a.cov_mode)
     print(f"  antigen vs PROTEIN  >={100*a.prot_id:.0f}% id: {len(h1)} clusters hit")
+
+    # ---------------------------------------------------------------- all 227, on what they FOLD
+    # THE CLUSTER-ID EXCLUSION IS ONLY AS COMPLETE AS SAbDab2's RECORD, and that record omits things
+    # the benchmark folds. 8vui's single SAbDab2 row reads agtypes='ION' with agclusters=nan: it is
+    # catalogued as an antibody bound to an ion and its protein chain is never recorded as an
+    # antigen. Its ab_ag_cluster was therefore formed without that protein, so there is no
+    # antigen-cluster link to follow to the training cluster whose antigen is identical to it. Taking
+    # the clusters of the 188 listed complexes on trust left 18 such clusters in the pool, ten at
+    # identity 1.000.
+    #
+    # So filter 2 also queries the antigen chains of ALL 227 complexes as they are actually folded --
+    # proteinChain.sequence from the job jsons, classified by the same hmmscan pass, keeping the
+    # non-antibody chains. This is the same criterion applied to the same question; what changes is
+    # that it no longer depends on SAbDab2 having written the antigen down.
+    h6 = {}
+    if not a.no_job_antigens:
+        jobseq = job_sequences(a.min_job_len)
+        print(f"\nfolded benchmark chains from the job jsons: {len(jobseq)}")
+        if jobseq:
+            wdj = tempfile.mkdtemp(prefix="exclhom_jobs_")
+            abj, agj = classify(jobseq, ALLHMM, a.evalue, a.threads, wdj)
+            print(f"  antibody domains {len(abj)}; folded ANTIGEN chains {len(agj)}")
+            h6 = search(_fasta(f"{wdj}/q.fa", agj), _fasta(f"{wd}/t_prot.fa", prot_t),
+                        f"{wdj}/r.m8", a.prot_id, a.cov, a.threads,
+                        f"folded antigen vs PROTEIN >={100*a.prot_id:.0f}%",
+                        a.seq_id_mode, a.cov_mode)
+            print(f"  folded antigen vs PROTEIN >={100*a.prot_id:.0f}% id: {len(h6)} clusters hit")
     h2 = search(qa, _fasta(f"{wd}/t_pep.fa", pep_t), f"{wd}/r_pep.m8",
                 a.pep_id, a.cov, a.threads, f"antigen vs PEPTIDE  >={100*a.pep_id:.0f}%",
                 a.seq_id_mode, a.cov_mode)
@@ -655,7 +721,7 @@ def main():
     print(f"  CDR-H3              >={100*a.cdr_id:.0f}% id, >={100*a.cdr_cov:.0f}% cov: "
           f"{len(h4)} clusters hit   ({len(qcdr)} queries x {len(cdr_t)} targets, every pair)")
 
-    drop = (set(h1) | set(h2) | set(h4)) & {_ckey(c) for c in train_cl}
+    drop = (set(h1) | set(h2) | set(h4) | set(h6)) & {_ckey(c) for c in train_cl}
     keep = {c for c in train_cl if _ckey(c) not in drop}
     print(f"\nunion dropped: {len(drop)} clusters")
     print(f"TRAINING CLUSTERS: {len(train_cl)} -> {len(keep)}")
@@ -698,7 +764,7 @@ def main():
             w = csv.writer(fh)
             w.writerow(["cluster", "search", "query", "identity"])
             for name, h in (("antigen_protein", h1), ("antigen_peptide", h2),
-                            ("cdrh3", h4)):
+                            ("cdrh3", h4), ("folded_benchmark_antigen", h6)):
                 for cl, (q, f) in sorted(h.items()):
                     if cl in drop:
                         w.writerow([cl, name, q, f"{f:.3f}"])
