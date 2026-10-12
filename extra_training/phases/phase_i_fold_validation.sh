@@ -57,6 +57,9 @@ MSA=$R/extra_training/msa_work/mmcif_msa
 PXM=$R/experimental_data/protenix/pxm2025/free_extra10
 LOG=$R/extra_training/phase_i.log
 GPUS="${GPUS:-0 1}"
+# folder.py resolves a job as <jobs>/<pdb>-final-updated.json, so the pdb id is the basename with
+# that suffix removed -- not just ".json".
+JOB_SUFFIX="-final-updated.json"
 SEEDS="${SEEDS:-20}"
 NSAMPLE="${NSAMPLE:-5}"
 ROUNDS="${ROUNDS:-5}"
@@ -72,8 +75,13 @@ mkdir -p "$E" "$E/trunks" "$E/poses"
 # job json whose templatesPath or MSA path does not exist produces a fold that runs and scores
 # nothing, which is the most expensive way to discover a missing file.
 check_inputs() {
-    NJOB=$(ls $J/*.json 2>/dev/null | wc -l)
-    [ "$NJOB" -ge 1 ] || die "no job jsons in $J -- phase G has not run"
+    # COUNTED BY THE NAME folder.py WILL LOOK FOR. Counting *.json would pass a directory full of
+    # files the driver cannot find, which is exactly how the <pdb>.json mismatch survived review.
+    NJOB=$(ls $J/*$JOB_SUFFIX 2>/dev/null | wc -l)
+    NANY=$(ls $J/*.json 2>/dev/null | wc -l)
+    [ "$NJOB" -ge 1 ] || die "no *$JOB_SUFFIX in $J (found $NANY other .json). folder.py:784 opens
+     <jobs>/<pdb>$JOB_SUFFIX, so differently named files are invisible to it."
+    [ "$NJOB" -eq "$NANY" ] || say "  note: $((NANY-NJOB)) json in $J do not match *$JOB_SUFFIX"
     POOL=$E/pool.csv
     [ -s "$POOL" ] || die "no $POOL -- folder.py's interfaces_by_pdb() reads it, and without it the
      fold runs and scores NOTHING"
@@ -137,8 +145,8 @@ csv_numeric() {
 build_queue() {
     local n=$1 out=$2
     : > "$out"
-    for f in $J/*.json; do
-        local pdb; pdb=$(basename "$f" .json)
+    for f in $J/*$JOB_SUFFIX; do
+        local pdb; pdb=$(basename "$f" "$JOB_SUFFIX")
         for i in $(seq 0 $((n-1))); do
             printf 'free\t%s\t*\tfree\t%d\n' "$pdb" $((400000+i)) >> "$out"
         done
@@ -197,7 +205,8 @@ if [ "$MODE" = "smoke" ]; then
     check_inputs
     say "=== smoke: one complex, one seed. The PXM sweep is NOT paused. ==="
     SQ=$E/queue_smoke.tsv
-    head -1 <(for f in $J/*.json; do printf 'free\t%s\t*\tfree\t400000\n' "$(basename "$f" .json)"; done) > $SQ
+    head -1 <(for f in $J/*$JOB_SUFFIX; do
+                  printf 'free\t%s\t*\tfree\t400000\n' "$(basename "$f" "$JOB_SUFFIX")"; done) > $SQ
     say "queue: $(cat $SQ)"
     run_workers "$SQ" smoke
 
@@ -222,7 +231,11 @@ if [ "$MODE" = "smoke" ]; then
     # OPEN THE NPZ. Counting files proves nothing about whether the head can be re-run from it: the
     # tensors are what matter, and a dump that silently dropped them looks identical on disk. This is
     # the assertion the whole phase exists to satisfy.
-    $PY - "$E" "$NSAMPLE" <<'PYEOF' 2>&1 | tee -a "$LOG"
+    # EXIT STATUS, NOT A GREP OVER THE LOG. The validator was piped through tee without pipefail
+    # and then grepped for NPZ_OK across the whole appended log, so a FAILING run passed as soon as
+    # any earlier run had printed that marker. Its output is captured, shown, and its status checked.
+    NPZOUT=$($PY - "$E" "$NSAMPLE" <<'PYEOF' 2>&1
+
 import glob, sys, numpy as np
 root, nsample = sys.argv[1], int(sys.argv[2])
 f = sorted(glob.glob(f"{root}/trunks/*/*.npz"))
@@ -250,16 +263,38 @@ def lead(a):
     while len(sh) > 1 and sh[0] == 1:
         sh.pop(0)
     return sh
-for k in ("ci_coordinate", "ci_contact_probs"):
-    sh = lead(d[k])
-    print(f"   {k}: effective shape {sh}, expecting {nsample} poses in the leading dimension")
-    assert sh and sh[0] == nsample, (
-        f"{k} has leading dimension {sh[0] if sh else None}, expected nsample={nsample}. "
-        f"The cache holds {sh[0] if sh else 0} of {nsample} poses per unit, and the missing ones "
-        "cannot be recovered -- repeating a seed does not reproduce its poses.")
-print("NPZ_OK all confidence-head tensors present, with one entry per pose")
+# COORDINATES ARE PER POSE and must all be there.
+sh = lead(d["ci_coordinate"])
+print(f"   ci_coordinate: effective shape {sh}, expecting {nsample} poses leading")
+assert sh and sh[0] == nsample, (
+    f"ci_coordinate has leading dimension {sh[0] if sh else None}, expected nsample={nsample}. "
+    f"The cache holds {sh[0] if sh else 0} of {nsample} poses per unit, and the missing ones cannot "
+    "be recovered -- repeating a seed does not reproduce its poses.")
+
+# CONTACT PROBABILITIES ARE SHARED, NOT PER POSE. protenix.py:1284 computes them from the single
+# trunk z with shape [N_token, N_token], and `per_sample_contact_probs` exists only when the
+# permutation path stacked one per sample (permutation.py:447). Requiring nsample leading would
+# therefore REJECT A VALID CACHE. Both shapes are accepted; which one it is gets printed, because
+# an offline replay has to broadcast in the shared case and index in the other.
+cp = lead(d["ci_contact_probs"])
+ntok = lead(d["s_trunk"])[0]
+if len(cp) == 2:
+    assert cp == [ntok, ntok], f"ci_contact_probs {cp} is not [N_token, N_token] = [{ntok}, {ntok}]"
+    print(f"   ci_contact_probs: shared across poses, {cp} -- broadcast when replaying")
+elif len(cp) == 3:
+    assert cp[0] == nsample and cp[1:] == [ntok, ntok], (
+        f"ci_contact_probs {cp} is neither [N_token,N_token] nor [{nsample},{ntok},{ntok}]")
+    print(f"   ci_contact_probs: one per pose, {cp}")
+else:
+    raise AssertionError(f"ci_contact_probs has unexpected rank: shape {cp}")
+print("NPZ_OK all confidence-head tensors present, coordinates per pose")
 PYEOF
-    grep -q "NPZ_OK" "$LOG" || die "the trunk npz lacks tensors the confidence head needs (see above)"
+)
+    NPZRC=$?
+    printf '%s\n' "$NPZOUT" | tee -a "$LOG"
+    [ "$NPZRC" -eq 0 ] || die "the trunk npz validator failed (exit $NPZRC); see the output above"
+    printf '%s' "$NPZOUT" | grep -q "NPZ_OK" \
+        || die "the validator exited 0 but did not confirm NPZ_OK -- treat as a failure"
     touch "$E/SMOKE_OK"
     say "=== smoke OK: pose, per-fold npz with every head tensor, DockQ, ipTM, confidence json ==="
     exit 0

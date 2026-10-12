@@ -450,13 +450,23 @@ def _fasta(path, records):
     return path
 
 
-def search(q, t, out, ident, cov, threads, label):
+def search(q, t, out, ident, cov, threads, label, seq_id_mode=1, cov_mode=0):
     """in: query fasta, target fasta, result path, identity, coverage, threads, a label for logging.
     out: {cluster: (query, identity)} keeping each cluster's best hit
 
-    -s 7.5 because a 40% antigen match is remote enough that default sensitivity misses it, and
-    --seq-id-mode 2 so identity is over the shorter sequence -- a 15-residue peptide against a
-    500-residue protein is otherwise scored as trivially dissimilar.
+    -s 7.5 because a 40% antigen match is remote enough that default sensitivity misses it.
+
+    --seq-id-mode: 1 IS "shorter", 2 IS "longer". This had it backwards. mmseqs' own help reads
+    "0: alignment length  1: shorter, 2: longer sequence", and this code passed 2 while the comment
+    claimed identity was taken over the shorter sequence. The consequence is the opposite of the
+    stated method: a 15-residue peptide matching perfectly inside a 500-residue protein scored
+    15/500 = 3% and could never reach the 40% threshold, so fragment/full-length homologs the filter
+    was meant to catch were missed. Now a flag, defaulting to 1, which is what the method says.
+
+    COVERAGE IS A SEPARATE DECISION and --cov-mode 0 defeats containment on its own: it requires the
+    fraction to hold for query AND target, so the same 15-in-500 case fails at 15/500 coverage of the
+    target however identity is computed. Exposed as --cov-mode so the choice is explicit rather than
+    implied; see the note in the module docstring for what each mode means here.
     """
     # AN EMPTY INPUT IS A FAULT. Returning {} here would read as "this filter found nothing to
     # exclude", which is exactly what a working filter reports -- so a broken classifier or a broken
@@ -467,8 +477,9 @@ def search(q, t, out, ident, cov, threads, label):
             raise SystemExit(f"STOP: {label} has an empty {role} fasta ({path}). "
                              "An exclusion filter with no input cannot exclude anything.")
     subprocess.run([MMSEQS, "easy-search", q, t, out, f"{out}.tmp",
-                    "--min-seq-id", str(ident), "-c", str(cov), "--cov-mode", "0",
-                    "--seq-id-mode", "2", "-s", "7.5", "--threads", str(threads),
+                    "--min-seq-id", str(ident), "-c", str(cov),
+                    "--seq-id-mode", str(seq_id_mode), "--cov-mode", str(cov_mode),
+                    "-s", "7.5", "--threads", str(threads),
                     "--format-output", "query,target,fident,alnlen,evalue", "-v", "1"],
                    check=True, capture_output=True, text=True)
     best = {}
@@ -506,6 +517,14 @@ def main():
     ap.add_argument("--cdr-cov", type=float, default=0.90,
                     help="CDR-H3 coverage; high, so a short loop must align almost end to end")
     ap.add_argument("--cov", type=float, default=0.50)
+    ap.add_argument("--seq-id-mode", type=int, default=1, choices=[0, 1, 2],
+                    help="mmseqs identity denominator: 0 alignment length, 1 SHORTER sequence, "
+                         "2 longer. Default 1, which is what this filter's method states. It passed "
+                         "2 (longer) while claiming shorter, which silently weakened it.")
+    ap.add_argument("--cov-mode", type=int, default=0, choices=[0, 1, 2, 3, 4, 5],
+                    help="mmseqs coverage mode: 0 query AND target, 1 target, 2 query, 5 shorter vs "
+                         "longer length. 0 means a short sequence contained in a long one fails on "
+                         "coverage whatever the identity mode -- see --seq-id-mode.")
     ap.add_argument("--evalue", type=float, default=1e-10)
     ap.add_argument("--threads", type=int, default=32)
     ap.add_argument("--min-cdr-frac", type=float, default=0.95,
@@ -603,13 +622,16 @@ def main():
     qv = _fasta(f"{wd}/q_vh.fa", [(n, v) for n, (_t, v) in abq.items()])
     print()
     h1 = search(qa, _fasta(f"{wd}/t_prot.fa", prot_t), f"{wd}/r_prot.m8",
-                a.prot_id, a.cov, a.threads, f"antigen vs PROTEIN  >={100*a.prot_id:.0f}%")
+                a.prot_id, a.cov, a.threads, f"antigen vs PROTEIN  >={100*a.prot_id:.0f}%",
+                a.seq_id_mode, a.cov_mode)
     print(f"  antigen vs PROTEIN  >={100*a.prot_id:.0f}% id: {len(h1)} clusters hit")
     h2 = search(qa, _fasta(f"{wd}/t_pep.fa", pep_t), f"{wd}/r_pep.m8",
-                a.pep_id, a.cov, a.threads, f"antigen vs PEPTIDE  >={100*a.pep_id:.0f}%")
+                a.pep_id, a.cov, a.threads, f"antigen vs PEPTIDE  >={100*a.pep_id:.0f}%",
+                a.seq_id_mode, a.cov_mode)
     print(f"  antigen vs PEPTIDE  >={100*a.pep_id:.0f}% id: {len(h2)} clusters hit")
     h3 = search(qv, _fasta(f"{wd}/t_ab.fa", ab_t), f"{wd}/r_ab.m8",
-                a.vh_id, a.cov, a.threads, f"variable domain     >={100*a.vh_id:.0f}%")
+                a.vh_id, a.cov, a.threads, f"variable domain     >={100*a.vh_id:.0f}%",
+                a.seq_id_mode, a.cov_mode)
     print(f"  variable domain     >={100*a.vh_id:.0f}% id: {len(h3)} clusters hit  "
           f"(reported for reference; framework-driven, not used)")
 

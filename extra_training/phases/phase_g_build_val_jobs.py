@@ -333,7 +333,13 @@ def main():
                          n_tokens=sum(len(q) for _, q in chains), msa_ok=ok, ref_ok=ref_ok,
                          n_ifaces=len(ab) * len(ag)))
         if seq_to_idx and ok:
-            with open(f"{a.out_dir}/{pdb}.json", "w") as fh:
+            # THE NAME folder.py LOADS, not a name of our choosing. folder.py:784 opens
+            # f"{jobs}/{pdb}-final-updated.json" and :985 builds the runner from the same pattern, and
+            # pxm2025 and foldbench both follow it (8ror-final-updated.json, 7st5-final-updated.json).
+            # Writing <pdb>.json meant zero matches: the fold would have died at runner
+            # initialisation, before folding anything -- and phase I's input check globs THESE files,
+            # so it validated them happily and could not see the mismatch.
+            with open(f"{a.out_dir}/{pdb}-final-updated.json", "w") as fh:
                 json.dump([{"name": pdb, "sequences": seqs}], fh, indent=2)
 
     # pool.csv is what folder.py's interfaces_by_pdb() reads to decide which interfaces a target=*

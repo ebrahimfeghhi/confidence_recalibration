@@ -149,6 +149,14 @@ for OUT in "${BATCHES[@]}"; do
     BEFORE=$(a3m_bytes "$OUT")
     SNAP=$W/phase_e_sizes_$LBL
     snapshot "$OUT" > "$SNAP"
+    # HAS THIS BATCH ALREADY BEEN DEEPENED? colabfold keeps bfd.mgnify30.metaeuk30.smag30.a3m once
+    # the env half has run, and a second pass over finished alignments is a no-op by design. The
+    # growth gate would then see zero growth and reject a correct result -- which matters because the
+    # orchestrator reruns the whole chain when a LATER phase fails. So growth is required only on the
+    # first pass; on a rerun the same correctness checks run and growth is reported, not demanded.
+    ALREADY=0
+    [ -s "$OUT/bfd.mgnify30.metaeuk30.smag30.a3m" ] && ALREADY=1
+    [ "$ALREADY" -eq 1 ] && say "    (env intermediate already present: this is a rerun, growth not required)"
     say "--- $LBL: $NQ queries, alignments currently $(numfmt --to=iec "$BEFORE")"
     COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c "$CORES" \
         $R/envs/colabfold/bin/colabfold_search --mmseqs $M --threads "$NTHREADS" \
@@ -232,13 +240,13 @@ PYCHK
      First few: $(printf '%s' "$REPORT" | sed -n 2p)"
         FAILED=$((FAILED+1)); continue
     fi
-    if [ "$LTOT" -gt 0 ] && [ "$LPCT" -lt "${MIN_LONG_GROW_PCT:-90}" ]; then
+    if [ "$ALREADY" -eq 0 ] && [ "$LTOT" -gt 0 ] && [ "$LPCT" -lt "${MIN_LONG_GROW_PCT:-90}" ]; then
         say "  ESCALATE $LBL: only ${LPCT}% of chains of 20+ residues gained any env sequence
      (floor ${MIN_LONG_GROW_PCT:-90}%). A chain that long gaining nothing from a database this large
      is a fault, not a property of the query."
         FAILED=$((FAILED+1)); continue
     fi
-    if [ "$AFTER" -le "$BEFORE" ]; then
+    if [ "$ALREADY" -eq 0 ] && [ "$AFTER" -le "$BEFORE" ]; then
         say "  ESCALATE $LBL: the directory did not grow at all ($BEFORE -> $AFTER bytes)"
         FAILED=$((FAILED+1)); continue
     fi

@@ -236,9 +236,25 @@ say "taxonomy tables resolve"
 # mis-assigned that many alignments to the wrong chains, silently. Phase E must read
 # <out-dir>/query.searched.fasta and verify this checksum, never msa_work/query.fasta, which is
 # phase C's current output and may legitimately have moved on.
-cp -f "$QFA" "$OUT/query.searched.fasta"
-( cd "$OUT" && sha256sum query.searched.fasta > query.searched.fasta.sha256 )
-say "froze the searched fasta: $(cut -c1-16 "$OUT/query.searched.fasta.sha256")"
+# COMPARE BEFORE WRITING. Overwriting unconditionally meant a rerun stamped a NEW checksum onto
+# OLD intermediates: point this at an existing output directory with a reordered or changed fasta and
+# uniref.a3m/prof_res still describe the previous query order, while the checksum says everything
+# agrees. Phase E then trusts it. So an existing frozen fasta is authoritative -- if it differs, this
+# is a different batch and needs its own directory.
+FROZ=$OUT/query.searched.fasta
+if [ -s "$FROZ" ]; then
+    if ! cmp -s "$QFA" "$FROZ"; then
+        die "$OUT already holds a DIFFERENT searched fasta ($(grep -c '^>' "$FROZ") records against
+     $NQ in $QFA). Its uniref.a3m and prof_res are keyed by that older query order, and ColabFold
+     keys by position, so reusing this directory would mis-assign alignments. Use a fresh output
+     directory for a changed query set."
+    fi
+    say "frozen fasta already present and identical: $(cut -c1-16 "$FROZ.sha256" 2>/dev/null)"
+else
+    cp -f "$QFA" "$FROZ"
+    ( cd "$OUT" && sha256sum query.searched.fasta > query.searched.fasta.sha256 )
+    say "froze the searched fasta: $(cut -c1-16 "$FROZ.sha256")"
+fi
 
 say "searching"
 COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c "$CORES" \
@@ -383,7 +399,11 @@ say "depth of the first few:"
 for f in $(ls "$OUT"/*.a3m 2>/dev/null | grep -v '/uniref.a3m$' | head -5); do
     say "   $(basename "$f") $(grep -c '^>' "$f") sequences"
 done
-say "=== phase D OK for $TAG: $NA alignments, taxids $([ "$NTAX" -gt 0 ] && echo present || echo thin) ==="
+# $NTAX no longer exists: the taxid gate was rewritten to measure coverage of the alignments' hits,
+# and this line still referenced the old variable. Under set -u that produced an unbound-variable
+# diagnostic inside a command substitution, where it does not fail the surrounding command -- so the
+# run reported success while printing an error. It now reports what was actually measured.
+say "=== phase D OK for $TAG: $NA alignments; $NFOUND of $NHITS sampled UniRef hits carry a taxid ==="
 
 # ---------------------------------------------------------------- 5. free the database, on request
 if [ "${FREE_DB:-0}" = "1" ]; then

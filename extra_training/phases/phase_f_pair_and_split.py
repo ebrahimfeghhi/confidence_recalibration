@@ -213,6 +213,9 @@ def main():
     ap.add_argument("--cores", default="0-63",
                     help="taskset range; 64 is the project cap (MSA_RUNBOOK.md:119)")
     ap.add_argument("--workers", type=int, default=16)
+    ap.add_argument("--allow-missing-batches", action="store_true",
+                    help="process only the batch directories that exist. Off by default: an absent "
+                         "batch means phase D has not finished, and its chains would get no MSA.")
     ap.add_argument("--max-seq-mismatch", type=int, default=5,
                     help="how many a3m may legitimately disagree with their fasta record. One per "
                          "batch is expected: a nucleic-acid antigen the search transcribed U to X.")
@@ -222,9 +225,20 @@ def main():
                          "test pairing. All-empty is the failure it must catch.")
     ap.add_argument("--min-tagged-frac", type=float, default=0.90)
     a = ap.parse_args()
-    batches = [b for b in a.batches if os.path.isdir(b)]
+    # EVERY REQUESTED BATCH, NOT THE ONES THAT HAPPEN TO EXIST. Filtering silently let the phase
+    # succeed on a subset: run it before the short-antigen batch finished and it would index 5,305
+    # sequences, pass every gate, and leave 246 chains with no MSA at all. The defaults are three
+    # known directories, so an absent one is a pipeline-ordering error, not an option.
+    batches = list(a.batches)
+    absent = [b for b in batches if not os.path.isdir(b)]
+    if absent and not a.allow_missing_batches:
+        sys.exit(f"STOP: {len(absent)} requested batch directory does not exist: {absent}\n"
+                 "Phase D must have run for every batch before phase F. Pass "
+                 "--allow-missing-batches only to process a deliberate subset.")
+    batches = [b for b in batches if os.path.isdir(b)]
     if not batches:
         sys.exit(f"STOP: none of these batch directories exist: {a.batches}")
+    print(f"  batches: {[os.path.basename(b) for b in batches]}")
 
     # ---------------------------------------------------------------- step 1
     print(f"=== phase F step 1: query headers and the step4 index, {len(batches)} batch(es) ===")
