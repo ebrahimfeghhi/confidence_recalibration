@@ -812,3 +812,23 @@ deliberate pin, not an oversight.
 six extra sequences already searched belong to the newly excluded clusters. The frozen
 `query.searched.fasta` is authoritative — ColabFold keys by position, so the set that was searched is
 the set phases E and F must use — and those six simply go unreferenced.
+
+## Analysis conventions, recorded before any numbers exist
+
+**Equal cluster weighting.** Improvements are evaluated per cluster, not per pose or per interface.
+The independent sample size is ~50 clusters; 157 interfaces and 1,580 folds are repeated measurements
+within them, and weighting by interface would let one well-studied antigen dominate.
+
+**Uncertainty by resampling clusters**, not poses or interfaces — the resampling unit has to match the
+independence unit.
+
+**Pre- and post-cutoff reported separately, by each folded structure's own deposition date.**
+`val_jobs/manifest.csv` carries `deposited` and `post_cutoff` per structure. A cluster's median date
+does not settle it: a cluster whose median is after 2021-09-30 can still have contributed a
+representative from before, and freezing the trunk does not make that representative unseen by the
+pretrained weights. Currently **30 of 79** folded structures are post-cutoff.
+
+**The split is fixed before any DockQ is examined.** `phase_b_define_val_clusters.py` refuses to
+overwrite an existing `val_clusters.csv` without `--force`, so a plain re-run cannot silently redraw
+it. A re-run instead regenerates `results/train_clusters.csv` from the pinned split, which doubles as
+the check that all 50 validation clusters are still in the pool.

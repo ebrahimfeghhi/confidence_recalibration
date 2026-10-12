@@ -179,6 +179,9 @@ for OUT in "${BATCHES[@]}"; do
     # The second is the direct test that qdb keys did not shift. The env pass is where mergedbs could
     # misalign them, which is the failure the checksum gate on the input exists to prevent -- so the
     # same check phase D's review ran by hand on the input is run here on the output.
+    # ITS EXIT STATUS IS CHECKED. On failure the shell substituted an empty string, `set --` left
+    # every field unset, and the ${x:-0} defaults made a crashed validator look like a batch with
+    # nothing to report -- absent files and sequence mismatches included.
     REPORT=$($R/envs/colabfold/bin/python - "$OUT" "$QFA" "$SNAP" "$SNAP.after" <<'PYCHK'
 import os, sys
 out, qfa, before_f, after_f = sys.argv[1:5]
@@ -199,7 +202,7 @@ def sizes(p):
     return d
 before, after = sizes(before_f), sizes(after_f)
 lt = lg = st = sg = 0
-mism, absent = [], []
+mism, absent, unexplained = [], [], []
 for name, seq in fa.items():
     p = os.path.join(out, name + ".a3m")
     if not os.path.exists(p) or os.path.getsize(p) == 0:
@@ -214,25 +217,66 @@ for name, seq in fa.items():
         line2 = fh.readline().strip()
     if line2.upper() != seq.upper():
         mism.append(name)
+        # EXPLAINED OR NOT. The expected transformation is a nucleic-acid chain the search wrote as
+        # X: same length, and every differing position a nucleotide that became exactly X.
+        nuc = set("ACGTUN")
+        if len(line2) != len(seq) or not all(
+                b.upper() == "X" and a.upper() in nuc
+                for a, b in zip(seq, line2) if a.upper() != b.upper()):
+            unexplained.append(name)
 lpct = 100 * lg // lt if lt else -1
-print(f"{lt} {lg} {lpct} {st} {sg} {len(mism)} {len(absent)}")
-print(" ".join(mism[:5]))
+print(f"{lt} {lg} {lpct} {st} {sg} {len(mism)} {len(absent)} {len(unexplained)}")
+print(" ".join(unexplained[:5]) or " ".join(mism[:5]))
 print(" ".join(absent[:5]))
 PYCHK
 )
+    RC=$?
+    if [ "$RC" -ne 0 ] || [ -z "$REPORT" ]; then
+        say "  ESCALATE $LBL: the per-query validator exited $RC (output: ${REPORT:-<empty>})."
+        say "    Its checks did not run, so nothing about this batch has been verified."
+        FAILED=$((FAILED+1)); continue
+    fi
     set -- $(printf '%s' "$REPORT" | head -1)
-    LTOT=${1:-0}; LGREW=${2:-0}; LPCT=${3:--1}; STOT=${4:-0}; SGREW=${5:-0}; NMISM=${6:-0}; NABS=${7:-0}
+    if [ "$#" -ne 8 ]; then
+        say "  ESCALATE $LBL: validator returned $# fields, expected 8: $REPORT"
+        FAILED=$((FAILED+1)); continue
+    fi
+    LTOT=${1:-0}; LGREW=${2:-0}; LPCT=${3:--1}; STOT=${4:-0}; SGREW=${5:-0}; NMISM=${6:-0}
+    NABS=${7:-0}; NUNEXP=${8:-0}
     [ "$LTOT" -gt 0 ] && say "    20+ residues: $LGREW of $LTOT gained sequences (${LPCT}%)"
     [ "$STOT" -gt 0 ] && say "    under 20:     $SGREW of $STOT gained sequences -- many legitimately gain none"
-    say "    query-line mismatches: $NMISM    alignments absent or empty: $NABS"
+    say "    query-line mismatches: $NMISM ($NUNEXP unexplained)   absent or empty: $NABS"
+    # THE ENV INTERMEDIATE, CHECKED DIRECTLY. Byte growth is an indirect measure: it says the files
+    # changed, not that env sequences were added. colabfold keeps the env half as its own MMseqs
+    # database, so its index has one entry per query when the env search actually covered the batch.
+    ENVIDX=$OUT/bfd.mgnify30.metaeuk30.smag30.a3m.index
+    if [ -s "$ENVIDX" ]; then
+        NENV=$(wc -l < "$ENVIDX")
+        say "    env intermediate: $NENV entries for $NQ queries"
+        if [ "$NENV" -ne "$NQ" ]; then
+            say "  ESCALATE $LBL: the env intermediate holds $NENV entries for $NQ queries, so the
+     env search did not cover the batch whatever the byte totals say"
+            FAILED=$((FAILED+1)); continue
+        fi
+    else
+        say "  ESCALATE $LBL: no env intermediate index; the env half did not run"
+        FAILED=$((FAILED+1)); continue
+    fi
 
     if [ "$NABS" -gt 0 ]; then
         say "  ESCALATE $LBL: $NABS queries have no alignment: $(printf '%s' "$REPORT" | sed -n 3p)"
         FAILED=$((FAILED+1)); continue
     fi
-    # A KEY SHIFT WOULD PRODUCE THOUSANDS OF MISMATCHES, not one: the worked example was 4,825 of
-    # 5,305. A single mismatch is the known nucleic-acid chain the search transcribed U to X. So the
-    # threshold distinguishes those two cases rather than demanding zero.
+    # EVERY MISMATCH MUST BE EXPLAINED, not merely rare. A 1% tolerance accepted up to 53 swapped or
+    # corrupted alignments on batch 1, and a handful of wrong alignments is still wrong. The
+    # validator classifies each one: the expected case is a nucleic-acid chain whose nucleotides the
+    # search wrote as X, and anything else is reported by name and fails regardless of how few there
+    # are. A key shift shows up as thousands, which the same check catches a fortiori.
+    if [ "${NUNEXP:-0}" -gt 0 ]; then
+        say "  ESCALATE $LBL: $NUNEXP a3m differ from their query for reasons other than
+     nucleotide->X: $(printf '%s' "$REPORT" | sed -n 2p)"
+        FAILED=$((FAILED+1)); continue
+    fi
     MAXMISM=$(( NQ / 100 )); [ "$MAXMISM" -lt 2 ] && MAXMISM=2
     if [ "$NMISM" -gt "$MAXMISM" ]; then
         say "  ESCALATE $LBL: $NMISM a3m do not begin with their own query sequence (tolerance

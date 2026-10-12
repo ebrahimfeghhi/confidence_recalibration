@@ -59,6 +59,14 @@ TWO INVOCATIONS, which is what the pipeline actually runs
     `complexes_all.fasta` and `complexes.csv` are kept because they are cheap and record the chain
     order per complex, but nothing in the live pipeline searches them.
 
+    THE BENCHMARK HALF IS A SENSITIVITY EXPERIMENT, not the main path. Decided 2026-10-11: PXM-2025
+    and FoldBench are evaluated with the MSAs they were released with, built on uniref30_2103, so
+    that the refold which applies the retrained head varies only the head. The 633 benchmark
+    sequences here get 2302 MSAs so a subset can be folded both ways and the database version shown
+    not to move the baseline. Use --bench-from-jobs for that comparison: it takes
+    proteinChain.sequence from the actual job jsons rather than the observed residues of a reference
+    structure, which is what the benchmark folds are built from.
+
     TRAIN AND BENCH GO IN ONE FILE. Rebuilding the benchmark MSAs on 2302 exists precisely to remove a
     train/test database-version difference, so running them through the same pass removes any chance
     of the two sets being treated differently, and halves database load overhead.
@@ -84,6 +92,7 @@ FUNCTIONS
 """
 import argparse
 import collections
+import glob
 import csv
 import hashlib
 import os
@@ -202,6 +211,37 @@ def bench_chains(require=True):
     return out
 
 
+def bench_from_jobs(min_len):
+    """out: [(name, sequence)] taken from the benchmark JOB JSONS rather than reference structures
+
+    For the sensitivity experiment the sequence that matters is the one Protenix is actually given --
+    proteinChain.sequence in the job json. bench_records() reads observed residues out of a reference
+    cif instead, so unmodelled residues or a tag make its rebuilt MSA correspond to a different
+    sequence from the one the benchmark folds against, and the comparison would not be like for like.
+    """
+    seen, out = set(), []
+    for ds in A.BENCHMARKS:
+        D = paths.DATASETS[ds]
+        for f in sorted(glob.glob(os.path.join(str(D.jobs), "*.json"))):
+            pdb = os.path.basename(f).split("-")[0].lower()
+            try:
+                tasks = json.load(open(f))
+            except Exception:                                   # noqa: BLE001
+                continue
+            for t in tasks if isinstance(tasks, list) else [tasks]:
+                for k, sq in enumerate(t.get("sequences", [])):
+                    c = sq.get("proteinChain")
+                    if not c:
+                        continue
+                    q = str(c.get("sequence", "")).upper()
+                    if len(q) < min_len or q in seen:
+                        continue
+                    seen.add(q)
+                    out.append((f"{pdb}_j{k}", q))
+    print(f"bench-from-jobs: {len(out)} unique sequences from the benchmark job jsons")
+    return out
+
+
 def bench_records(min_len, require=True):
     """in: a minimum length.  out: [(name, seq)] unique chain sequences of our benchmark complexes
 
@@ -298,6 +338,10 @@ def main():
                          "records whose sequence is absent from it. Run with --min-len 5 --which "
                          "train to pick up the antigen chains a --min-len 20 pass skipped.")
     ap.add_argument("--short-out", default=QUERY_SHORT)
+    ap.add_argument("--bench-from-jobs", action="store_true",
+                    help="take benchmark sequences from the job jsons' proteinChain.sequence rather "
+                         "than from reference structures. Use this for the 2302-vs-2103 sensitivity "
+                         "experiment, so the rebuilt MSA matches the sequence actually folded.")
     ap.add_argument("--require-bench", action=argparse.BooleanOptionalAction, default=True,
                     help="fail unless every benchmark complex contributed chains; a silent omission "
                          "falls back to that complex's uniref30_2103 MSA at fold time")
@@ -317,13 +361,46 @@ def main():
         manifest += [(n, hashlib.sha1(q.encode()).hexdigest(), len(q), "train") for n, q in recs]
 
     if a.which in ("bench", "both"):
-        recs = bench_records(a.min_len, a.require_bench)
+        recs = bench_from_jobs(a.min_len) if a.bench_from_jobs \
+            else bench_records(a.min_len, a.require_bench)
         write_fasta(f"{a.out_dir}/bench.fasta", recs)
         all_recs += recs
         lens = sorted(len(q) for _n, q in recs)
         print(f"bench.fasta: {len(recs)} unique sequences; len median {lens[len(lens)//2]}, "
               f"total {sum(lens):,} residues")
         manifest += [(n, hashlib.sha1(q.encode()).hexdigest(), len(q), "bench") for n, q in recs]
+
+    # ---- CHECKED BEFORE ANYTHING IS WRITTEN. These ran after the search fasta had been written, so
+    # a failing phase left an apparently usable search input on disk for the next stage to pick up.
+    # THE 0-SHARED CLAIM, ENFORCED. This was a comment in the docstring; now it is checked.
+    #
+    # WHAT IT DOES AND DOES NOT TEST. A sequence in both sets means a training complex carries a
+    # chain IDENTICAL to a benchmark chain, which the exclusion should have removed. But identity 1.0
+    # is the EASIEST case any of the filters face -- filter 2 is set at 0.40 for proteins and filter 3
+    # at 0.95 -- and in most cases filter 1 removes it by cluster id before sequence ever enters it.
+    # So passing says the exclusion catches the trivial case. It does not test whether the thresholds
+    # are right, which is the part that actually carries risk. Treat it as a smoke test that would
+    # fire loudly on a wiring mistake, not as evidence the filters are calibrated.
+    if a.which == "both":
+        tr = {q for n, q in all_recs if n.startswith("c")}
+        bn = {q for n, q in all_recs if not n.startswith("c")}
+        shared = tr & bn
+        names = [n for n, _ in all_recs]
+        if len(set(names)) != len(names):
+            import collections as _c
+            dup = [n for n, k in _c.Counter(names).items() if k > 1]
+            raise SystemExit(f"STOP: {len(dup)} duplicate query NAME(s), e.g. {dup[:3]}. ColabFold "
+                             "writes <name>.a3m, so duplicates silently overwrite one another.")
+        print(f"train/bench shared sequences: {len(shared)}   (train {len(tr)}, bench {len(bn)})"
+              "   [smoke test: identity 1.0 is the easiest case the filters face]")
+        if shared:
+            ex = sorted(shared)[:3]
+            raise SystemExit(
+                f"STOP: {len(shared)} sequence(s) appear in BOTH the training and benchmark sets.\n"
+                "A training complex carries a chain identical to a benchmark chain, so the exclusion "
+                "in phase A did not remove its cluster. Re-run phase A and inspect its filters.\n"
+                + "\n".join(f"  len {len(q)}: {q[:60]}..." for q in ex))
+
 
     # THE FILE THAT IS ACTUALLY SEARCHED. train.fasta and bench.fasta are per-source; the search
     # takes one file so that both go through the identical pass -- rebuilding the benchmark MSAs on
@@ -351,29 +428,6 @@ def main():
         os.makedirs(os.path.dirname(a.query_fasta), exist_ok=True)
         write_fasta(a.query_fasta, all_recs)
         print(f"{a.query_fasta}: {len(all_recs)} sequences -- THE SEARCH SET")
-
-    # ---- THE 0-SHARED CLAIM, ENFORCED. This was a comment in the docstring; now it is checked.
-    #
-    # WHAT IT DOES AND DOES NOT TEST. A sequence in both sets means a training complex carries a
-    # chain IDENTICAL to a benchmark chain, which the exclusion should have removed. But identity 1.0
-    # is the EASIEST case any of the filters face -- filter 2 is set at 0.40 for proteins and filter 3
-    # at 0.95 -- and in most cases filter 1 removes it by cluster id before sequence ever enters it.
-    # So passing says the exclusion catches the trivial case. It does not test whether the thresholds
-    # are right, which is the part that actually carries risk. Treat it as a smoke test that would
-    # fire loudly on a wiring mistake, not as evidence the filters are calibrated.
-    if a.which == "both":
-        tr = {q for n, q in all_recs if n.startswith("c")}
-        bn = {q for n, q in all_recs if not n.startswith("c")}
-        shared = tr & bn
-        print(f"train/bench shared sequences: {len(shared)}   (train {len(tr)}, bench {len(bn)})"
-              "   [smoke test: identity 1.0 is the easiest case the filters face]")
-        if shared:
-            ex = sorted(shared)[:3]
-            raise SystemExit(
-                f"STOP: {len(shared)} sequence(s) appear in BOTH the training and benchmark sets.\n"
-                "A training complex carries a chain identical to a benchmark chain, so the exclusion "
-                "in phase A did not remove its cluster. Re-run phase A and inspect its filters.\n"
-                + "\n".join(f"  len {len(q)}: {q[:60]}..." for q in ex))
 
     with open(f"{a.out_dir}/manifest.csv", "w", newline="") as fh:
         w = csv.writer(fh)

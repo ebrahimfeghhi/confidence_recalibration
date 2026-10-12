@@ -124,6 +124,10 @@ def main():
     ap.add_argument("--seed", type=int, default=20261010)
     ap.add_argument("--max-share", type=float, default=0.15,
                     help="no single cluster may exceed this share of the validation structures")
+    ap.add_argument("--force", action="store_true",
+                    help="draw a NEW validation split even though one exists. Off by default: the "
+                         "committed split is pinned, and redrawing after results have been seen is "
+                         "what makes a validation set stop being one.")
     ap.add_argument("--splits", default=None, help="SAbDab2 abag_split.csv; default phase A's")
     ap.add_argument("--excluded", default=None, help="phase A's exclusion csv; default phase A's")
     ap.add_argument("--select", choices=["target", "band"], default="target",
@@ -135,6 +139,25 @@ def main():
                     help="...and at most this share. See the band comment in main().")
     ap.add_argument("--out", default=f"{REPO}/extra_training/results/val_clusters.csv")
     a = ap.parse_args()
+
+    # THE PINNED SPLIT IS NOT OVERWRITTEN. results/val_clusters.csv was drawn from a 557-cluster
+    # pool; the pool is now 555, and redrawing changes 45 of its 50 clusters. Re-drawing a validation
+    # split after the fact is what this phase's own docstring warns against, and it would happen on
+    # any plain re-run. So an existing output is kept, and only train_clusters.csv is regenerated
+    # from it -- which is also the check that the pinned split is still a subset of the pool.
+    if os.path.exists(a.out) and not a.force:
+        print(f"{a.out} exists; NOT redrawing. Use --force to draw a new split.")
+        keep, krows = train_minus_val(a.splits, a.excluded, a.out)
+        tc = os.path.join(os.path.dirname(a.out), "train_clusters.csv")
+        with open(tc, "w") as fh:
+            fh.write("cluster\n")
+            for c in sorted(keep):
+                fh.write(f"{c}\n")
+        v = pd.read_csv(a.out)
+        print(f"  pinned split: {len(v)} validation clusters, every one still in the pool")
+        print(f"  wrote {tc}: {len(keep)} training clusters "
+              f"({krows.PDB_ID.nunique()} structures), validation removed")
+        return
 
     t = cluster_table(a.splits, a.excluded).sort_values("median_depo").reset_index(drop=True)
     total = int(t.n_structures.sum())
@@ -232,6 +255,19 @@ def main():
         tb, vb = t[t.date_bin == b], v[v.date_bin == b]
         print(f"| {b} | {tb.median_depo.min().date()} .. {tb.median_depo.max().date()} "
               f"| {len(vb)} | {int(vb.n_structures.sum())} |")
+    # THE TRAINING CLUSTER LIST, AS A FILE. train_minus_val() is the only enforcement of the split
+    # and nothing calls it yet, because the training stage does not exist -- and a helper nobody is
+    # obliged to call does not prevent the failure it was written for. Writing the list means the
+    # training stage reads a file that already has validation removed, so using the full pool
+    # requires deliberately going around the pipeline rather than merely forgetting a call.
+    keep, krows = train_minus_val(a.splits, a.excluded, a.out)
+    tc = os.path.join(os.path.dirname(a.out), "train_clusters.csv")
+    with open(tc, "w") as fh:
+        fh.write("cluster\n")
+        for c in sorted(keep):
+            fh.write(f"{c}\n")
+    print(f"wrote {tc}: {len(keep)} training clusters ({krows.PDB_ID.nunique()} structures), "
+          f"validation removed")
     print(f"wrote {a.out}")
 
 

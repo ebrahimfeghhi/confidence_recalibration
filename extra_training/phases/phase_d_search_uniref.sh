@@ -152,6 +152,21 @@ if [ ! -s "$DB/uniref30_2302_db_seq" ]; then
     for f in _db.dbtype _db_seq _db_aln _db_mapping _db_taxonomy; do
         [ -s "$DB/uniref30_2302$f" ] || die "missing or empty $DB/uniref30_2302$f"
     done
+    # NON-EMPTY IS NOT WHOLE. An intact .index can sit beside a truncated data file -- a tar that
+    # stopped part-way leaves exactly that -- and every count downstream would still agree. An MMseqs
+    # .index line is "key<TAB>offset<TAB>length", so the furthest byte any entry claims must lie
+    # inside the data file. A file shorter than its own index is truncated, full stop.
+    for base in uniref30_2302_db uniref30_2302_db_seq uniref30_2302_db_aln; do
+        idx=$DB/$base.index
+        [ -s "$idx" ] || die "missing $idx, so $base cannot be checked for completeness"
+        read -r NEED < <(awk -F'\t' '{e=$2+$3; if (e>m) m=e} END{print m+0}' "$idx")
+        HAVE=$(stat -c%s "$DB/$base")
+        if [ "$HAVE" -lt "$NEED" ]; then
+            die "$base is $HAVE bytes but its index claims data out to $NEED -- the file is
+     truncated. Delete the database and re-extract; the counts downstream cannot see this."
+        fi
+        say "  $base complete: $HAVE bytes, index claims $NEED"
+    done
     if [ "$ENVDB_BEFORE" -eq 0 ] && [ -s "$DB/colabfold_envdb_202108_db_seq" ]; then
         die "setup_databases.sh also extracted the env database; the two do not both fit"
     fi

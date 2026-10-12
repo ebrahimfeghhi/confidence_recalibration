@@ -152,14 +152,24 @@ def _chains(row, min_len=5):
     for role, v in (("H", row.Hseq), ("L", row.Lseq)):
         if isinstance(v, str) and len(v.strip()) >= min_len:
             out.append((role, v.strip().upper()))
-    for i, p in enumerate(str(row.agexpectedseqs).split("/")):
+    # BY ANTIGEN TYPE, the same rule phase C applies. Taking every agexpectedseqs entry emitted
+    # non-polypeptide antigens as proteinChain: a mixed protein/RNA row shipped its RNA antigen into
+    # the job json, where Protenix would fold it as a protein. agtypes is '/'-joined in the same
+    # order, and a length disagreement between the two fields means the positional pairing is not
+    # safe, so it is an error rather than a silent truncation by zip().
+    types = str(row.agtypes).split("/")
+    seqs = str(row.agexpectedseqs).split("/")
+    if len(types) != len(seqs):
+        raise SystemExit(f"STOP: {row.PDB_ID} lists {len(types)} antigen types but {len(seqs)} "
+                         "antigen sequences; they are positional and must correspond.")
+    for i, (t, p) in enumerate(zip(types, seqs)):
         q = p.strip().upper()
-        if len(q) >= min_len and q != "NAN":
+        if len(q) >= min_len and q != "NAN" and t.strip().upper() in A.POLY:
             out.append((f"ag{i}", q))
     return out
 
 
-def representatives(val_csv, reps=1, min_len=5):
+def representatives(val_csv, reps=1, min_len=5, splits=None, excluded=None):
     """in: the validation-cluster csv, structures to take per cluster.
     out: [(cluster, pdb, [sequences])], up to `reps` per cluster
 
@@ -169,7 +179,10 @@ def representatives(val_csv, reps=1, min_len=5):
     `reps` contributes all it has -- the median across validation clusters is only 2.
     """
     want = set(pd.read_csv(val_csv).cluster)
-    _clusters, rows = A.training_clusters(A.SPLITS, A.EXCLUDED)
+    # --splits AND --excluded PROPAGATED. These used phase A's module defaults while --splits
+    # controlled only the role-name lookup in main(), so pointing the phase at an alternative release
+    # mixed sequences from one dataset with roles from another.
+    _clusters, rows = A.training_clusters(splits or A.SPLITS, excluded or A.EXCLUDED)
     rows = rows[rows.ab_ag_cluster.isin(want)].copy()
     rows["chains"] = [_chains(r, min_len) for r in rows.itertuples(index=False)]
     rows["instance"] = rows.INSTANCE.astype(str)
@@ -206,6 +219,8 @@ def main():
                     help="shortest antigen chain to include. 5, not 20: FoldBench contains protein "
                          "chains under 20 aa and searches them normally, and phase1b_short.sh built "
                          "MSAs for the 235 such antigen chains the first pass skipped.")
+    ap.add_argument("--excluded", default=None,
+                    help="phase A's exclusion csv; default phase A's own path")
     ap.add_argument("--splits", default=f"{REPO}/extra_training/data/zenodo_splits/"
                                         "splits_final/abag_split.csv",
                     help="SAbDab2's own chain-role assignment, for the auth chain names")
@@ -244,8 +259,16 @@ def main():
                     d[f"ag{i}"] = c.strip()
         auth_names[str(r.INSTANCE)] = d
 
+    # deposition dates, by instance and by pdb, for the manifest's per-structure cutoff flag
+    _dp = pd.read_csv(a.splits, low_memory=False, usecols=["INSTANCE", "PDB_ID", "PDBdepo"])
+    depo_of = {}
+    for r in _dp.itertuples(index=False):
+        if isinstance(r.PDBdepo, str):
+            depo_of[str(r.INSTANCE)] = r.PDBdepo[:10]
+            depo_of.setdefault(str(r.PDB_ID)[-4:].lower(), r.PDBdepo[:10])
+
     unresolved, ambiguous, relabelled = [], [], []
-    picks, skipped = representatives(a.val_clusters, a.reps, a.min_len)
+    picks, skipped = representatives(a.val_clusters, a.reps, a.min_len, a.splits, a.excluded)
     print(f"structures picked: {len(picks)} from {len(set(c for c, *_ in picks))} clusters"
           + (f"   SKIPPED (fewer than 2 chains): {skipped}" if skipped else ""))
 
@@ -329,7 +352,13 @@ def main():
                 os.remove(dst)
             same_fs = os.stat(src).st_dev == os.stat(os.path.dirname(dst)).st_dev
             os.link(src, dst) if same_fs else __import__("shutil").copyfile(src, dst)
-        rows.append(dict(cluster=cl, pdb=pdb, instance=inst, n_chains=len(chains),
+        # EACH STRUCTURE'S OWN DATE, not its cluster's median. Pre/post-cutoff performance has to be
+        # reported per folded structure: a cluster whose median date is after 2021-09-30 can still
+        # have picked a representative from before it, and freezing the trunk does not make that
+        # representative unseen by the pretrained weights.
+        dep = depo_of.get(inst) or depo_of.get(pdb) or ""
+        rows.append(dict(cluster=cl, pdb=pdb, instance=inst, deposited=dep,
+                         post_cutoff=bool(dep and dep[:10] > "2021-09-30"), n_chains=len(chains),
                          n_tokens=sum(len(q) for _, q in chains), msa_ok=ok, ref_ok=ref_ok,
                          n_ifaces=len(ab) * len(ag)))
         if seq_to_idx and ok:
@@ -380,13 +409,46 @@ def main():
             f"STOP: {len(unresolved)} structures have a chain with no reference label. pool.csv would "
             "name an interface the scorer cannot find, and the fold would score NOTHING for them.")
 
+    # ONE JOB PER PDB ID. Two instances of the same entry picked from different clusters would write
+    # the same <pdb>-final-updated.json, and the second would overwrite the first -- one fold, two
+    # clusters' worth of expectations, and a pool.csv naming interfaces from both.
+    seen_pdb = {}
+    for r in rows:
+        if r["pdb"] in seen_pdb and seen_pdb[r["pdb"]] != r["instance"]:
+            raise SystemExit(
+                f"STOP: pdb {r['pdb']} was picked twice, as instances {seen_pdb[r['pdb']]} and "
+                f"{r['instance']}. Both would write the same job file.")
+        seen_pdb[r["pdb"]] = r["instance"]
+
+    # OBSOLETE JOBS REMOVED. A regenerated set with different picks left the previous run's job files
+    # behind, and phase I folds everything matching *-final-updated.json -- so it would fold
+    # structures this run did not choose, against a pool.csv that does not describe them.
+    want_jobs = {f"{r['pdb']}-final-updated.json" for r in rows}
+    stale = [f for f in os.listdir(a.out_dir)
+             if f.endswith("-final-updated.json") and f not in want_jobs] if os.path.isdir(a.out_dir) else []
+    for f in stale:
+        os.remove(os.path.join(a.out_dir, f))
+    if stale:
+        print(f"  removed {len(stale)} obsolete job file(s) from a previous selection: {stale[:5]}")
+
+    # THE CLUSTER SET IS WHAT WAS ASKED FOR.
+    want_cl = set(pd.read_csv(a.val_clusters).cluster)
+    got_cl = {r["cluster"] for r in rows}
+    if got_cl != want_cl:
+        miss_cl = sorted(want_cl - got_cl)
+        raise SystemExit(f"STOP: {len(miss_cl)} validation cluster(s) contributed no structure: "
+                         f"{miss_cl[:10]}")
+
     if not rows:
         raise SystemExit(
             "STOP: no structure survived. Nothing was picked, or every pick was excluded for an "
             "ambiguous reference labelling or an unresolvable chain. Check the messages above.")
 
     tok = sorted(r["n_tokens"] for r in rows)
+    npost = sum(1 for r in rows if r["post_cutoff"])
     print(f"tokens: min {tok[0]} median {tok[len(tok)//2]} max {tok[-1]}")
+    print(f"deposited after Protenix's 2021-09-30 cutoff: {npost} of {len(rows)} folded structures "
+          "(manifest.csv carries each one's own date; a cluster's median date does not settle it)")
     print(f"jsons written: {sum(1 for r in rows if r['msa_ok']) if seq_to_idx else 0}"
           f"   without complete MSAs: {missing}"
           f"   without a reference cif: {sum(1 for r in rows if not r['ref_ok'])}")
