@@ -328,7 +328,13 @@ def main():
             if d is None or not os.path.isdir(d):
                 ok = False
             seqs.append({"proteinChain": {
-                "sequence": q, "count": "1",
+                # count IS AN INT, not "1". Protenix's featuriser does
+                # `range(1, entity["count"] + 1)` (json_to_feature.py:136), which raises
+                # TypeError: can only concatenate str (not "int") to str on a string -- and it
+                # raises inside the dataloader, so the fold "completes" in 0.04s having produced
+                # nothing. The benchmark jsons we were copying use ints; this was a transcription
+                # error that cost the first smoke attempt.
+                "sequence": q, "count": 1,
                 "pairedMsaPath": f"{d}/pairing.a3m" if d else "",
                 "unpairedMsaPath": f"{d}/non_pairing.a3m" if d else "",
                 "templatesPath": f"{d}/hmmsearch.a3m" if d else "",

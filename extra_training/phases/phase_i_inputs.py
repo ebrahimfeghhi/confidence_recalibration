@@ -84,6 +84,19 @@ def main():
                 if not c:
                     continue
                 n_chain += 1
+                # THE SCHEMA THE FEATURISER REQUIRES, checked before a card is taken. This gate
+                # verified that every path resolves but not that the json is loadable, so a
+                # `"count": "1"` string sailed through it and died inside the dataloader --
+                # `range(1, entity["count"] + 1)` raises TypeError on a str. The fold then
+                # "completes" in 0.04s having written nothing, which is the most confusing possible
+                # failure: a worker that exits successfully with no pose.
+                cnt = c.get("count")
+                if not isinstance(cnt, int) or isinstance(cnt, bool) or cnt < 1:
+                    bad.append(f"{base} count={cnt!r} ({type(cnt).__name__}); the featuriser does "
+                               f"range(1, count + 1) and needs an int >= 1")
+                sq = c.get("sequence")
+                if not isinstance(sq, str) or not sq:
+                    bad.append(f"{base} sequence is {type(sq).__name__}, expected a non-empty str")
                 for key in ("pairedMsaPath", "unpairedMsaPath", "templatesPath"):
                     p = c.get(key)
                     if not p or not os.path.exists(p):
