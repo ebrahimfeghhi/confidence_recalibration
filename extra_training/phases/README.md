@@ -863,19 +863,31 @@ never wrote down.
 | | before | after |
 |---|---|---|
 | training clusters | 555 | **537** |
-| validation clusters | 50 | **46** |
-| training clusters after removing validation | 505 | **491** |
-| folded validation structures | 79 | **71** |
-| validation interfaces | 157 | **137** |
-| post-cutoff folded structures | 30 | **26** |
+| validation clusters | 50 | **50** (redrawn) |
+| training clusters after removing validation | 505 | **487** |
+| folded validation structures | 79 | **77** |
+| validation interfaces | 157 | **157** |
+| post-cutoff folded structures | 30 | **28** |
 
-### The validation split was pruned, not redrawn
+All 157 interfaces resolve against their staged reference, and all 197 chains the 77 structures need
+are already in the searched query set — 537 is a subset of the 557-cluster pool that set was built
+from, so no further MSA work is implied. The largest folded complex is now 2,289 tokens, up from
+1,543; PXM folded 2,275-token complexes at about 37.5 GB on a 97 GB card, so it fits.
 
-Four pinned validation clusters — 125, 266, 278, 922 — were among the 18. They cannot stay: validating
-on a cluster that shares an antigen with a benchmark complex is validating on data that leaks into the
-benchmark. `phase_b_define_val_clusters.py --prune` removes exactly those and leaves the other 46
-pinned. Redrawing would have replaced 45 of 50 for no reason connected to the leak, and the phase
-refuses to redraw without `--force`.
+### The validation split was redrawn once, from the final pool, and is now frozen
 
-Without `--prune` the phase now **fails loudly** rather than proceeding, naming the clusters, because
-a pinned split that is no longer a subset of the pool is not a valid split.
+Four pinned validation clusters — 125, 266, 278, 922 — were among the 18 and could not stay:
+validating on a cluster that shares an antigen with a benchmark complex is validating on data that
+leaks into the benchmark.
+
+`--prune` removes exactly those and keeps the rest pinned, and that is the right repair **once folding
+has begun**. It was not the right repair here. The rule against redrawing a validation split exists to
+stop a split being chosen after performance has been seen — and no validation fold had run, so no
+information had flowed from results to the choice. Pruning instead left 46 clusters with two date bins
+holding 8 rather than the designed 10, and a split that could not be regenerated from the code,
+because it was an artifact of a superseded pool plus a manual repair.
+
+So the split was redrawn once from the final 537-cluster pool: **50 clusters, ten per date bin, 271
+structures (9.7%)**. It regenerates byte-identically from the committed code and seed, verified. From
+here it is frozen, and `phase_b_define_val_clusters.py` refuses to redraw without `--force` while
+failing loudly — naming the clusters — if the pinned split ever stops being a subset of the pool.
