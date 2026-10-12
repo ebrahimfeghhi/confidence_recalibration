@@ -215,7 +215,21 @@ def classify_missing(rundir, scorer, k, iface=None, invalidate=False):
         chains = iface.split("_")[-1]
         if len(chains) == 2:
             v = mod.interface(res, chains[0], chains[1])
-            if v and v.get("dockq") is not None:
+            # PRESENT IN THE CACHE AT ALL MEANS IT IS NOT A NO-CONTACT. Testing
+            # `v.get("dockq") is not None` sent the dockq=None case to the no-contact branch, and
+            # that case is a scoring failure, not an absent interface: parse() builds an entry for
+            # every dockq_interfaces row and fills dockq from a parallel list, so a cache with
+            # dockq_interfaces=[["A","B","A","B"]] and dockq=[] yields {"A,B": {"dockq": None}} --
+            # OST reported the interface and produced no number for it. Five such caches made a
+            # fold with zero score rows report COMPLETE.
+            if v is not None:
+                if v.get("dockq") is None:
+                    if invalidate:
+                        os.replace(sj, sj + ".invalid")
+                        return "unscored", (f"sample {k}: {scorer} cache reports this interface "
+                                            "with no usable DockQ, moved aside for a retry")
+                    return "unscored", (f"sample {k}: {scorer} cache reports this interface but its "
+                                        f"DockQ is null -- a scoring failure, not a no-contact ({sj})")
                 return "unscored", (f"sample {k}: the {scorer} cache reports this interface "
                                     f"(dockq {v['dockq']:.4f}) but results.csv has no row")
     return "", f"sample {k}: scored, {len(res)} interface(s) found, none is this chain pair"

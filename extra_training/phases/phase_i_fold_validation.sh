@@ -132,7 +132,25 @@ check_inputs() {
 
 # How many (structure, seed) units are finished. folder.py writes one run.json per unit and skips
 # units already in results.csv at startup, so this is also what a relaunch resumes from.
-done_units() { find $E/poses -name run.json 2>/dev/null | wc -l; }
+# in: nothing.  out: how many EXPECTED (pdb, seed) units of the ACTIVE set are finished
+#
+# DISTINCT, ACTIVE, AND IN RANGE. Counting every run.json under poses/ let three different things
+# inflate the number that TARGET is compared against: a structure recorded in skipped.csv (TARGET
+# excludes it, this did not), a seed outside the expected range, and two run directories for one
+# unit. With TARGET reduced for a skip, the rounds loop could read "all N units already folded" and
+# return without launching a worker for work that was never done -- and a rerun would stop the same
+# way, so the loop could never recover. Verification would catch the incompleteness and nothing
+# would be able to fix it.
+done_units() {
+    local act; act=$(active_pdbs | tr '\n' '|')
+    find $E/poses -name run.json 2>/dev/null \
+      | awk -F/ -v act="|$act" -v s0="$SEED0" -v ns="$SEEDS" '\
+          { pdb=$(NF-2); seed=$(NF-1); sub(/-.*/, "", seed)
+            if (index(act, "|" pdb "|") == 0) next
+            if (seed+0 < s0+0 || seed+0 >= s0+ns) next
+            k = pdb "/" seed; if (!(k in seen)) { seen[k]=1; c++ } }
+          END { print c+0 }'
+}
 
 # in: a csv, a column NAME.  out: how many rows carry a numeric value there; exit 2 if no such column
 csv_numeric() {
@@ -294,7 +312,12 @@ if [ "$MODE" = "smoke" ]; then
     if [ -n "$PXM_WAS" ] || [ "$WATCH_WAS" -eq 1 ]; then
         say "  pausing pxm on GPU(s)${PXM_WAS:- none} and fx_watch=$WATCH_WAS for the smoke unit"
         tmux kill-session -t fx_watch 2>/dev/null && say "  stopped fx_watch so it cannot relaunch pxm"
-        kill_sessions fx_pxm2025 "$SMOKE_GPU"
+        # fx_pxm2025_ WITH THE TRAILING UNDERSCORE. kill_sessions builds "${prefix}${gpu}", so
+        # "fx_pxm2025" produced fx_pxm20250 -- a session that does not exist -- and the lookup
+        # silently matched nothing. Smoke therefore announced a pause it had not performed and ran
+        # alongside PXM on the same card. It happened on 2026-10-11: PXM's log shows it still
+        # folding at 20:57:13, inside the smoke window, with both jobs on GPU 0.
+        kill_sessions fx_pxm2025_ "$SMOKE_GPU"
         sleep 5
         $PY $C/reconcile_stale_claims.py $PXM --dataset pxm2025 2>&1 | tail -1 | tee -a "$LOG"
     fi
