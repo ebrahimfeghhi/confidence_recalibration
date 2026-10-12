@@ -70,6 +70,27 @@ def main():
     print("Holding a cluster out of training costs the post-cutoff complexes in it. An `all new` "
           "cluster with one complex costs one; a mixed cluster costs its post-cutoff share while its "
           "pre-cutoff structures are withheld too, and those are the ones Protenix already fits.\n")
+    # THE CURRENT VALIDATION SET, called out rather than left as a column value in 533 rows. The
+    # set is under review, and the question is which clusters give a clean test for what they cost.
+    vrows = [r for r in rows if r[6] == "val-folding"]
+    folded = collections.Counter()
+    for m in vman:
+        if m["pdb"] not in skips:
+            folded[m["cluster"]] += 1
+    print("## The 21 clusters currently in the validation fold\n")
+    print("| cluster | kind | complexes | pre-cutoff | post-cutoff | % post | folded | instances |")
+    print("|---|---|---|---|---|---|---|---|")
+    for c, n, npre, npost, frac, ni, _ in sorted(vrows, key=lambda t: (bool(t[2]), -t[3])):
+        kind = "mixed" if npre else "all new"
+        print(f"| {c} | {kind} | {n} | {npre} | {npost} | {100*frac:.0f}% | {folded[c]} | {ni} |")
+    vp = sum(r[3] for r in vrows)
+    print(f"\n{len(vrows)} clusters: {sum(1 for r in vrows if not r[2])} all new, "
+          f"{sum(1 for r in vrows if r[2])} mixed. They hold {vp} post-cutoff complexes "
+          f"({100*vp/S(rows,3):.1f}% of the pool's {S(rows,3)}), of which "
+          f"{sum(folded.values())} are folded.\n")
+    print("`folded` is how many of that cluster's structures are in the running 100-seed fold -- "
+          "phase G took up to two per cluster, so a cluster with many post-cutoff complexes "
+          "contributes at most two.\n")
     print("## Every cluster\n")
     print("Sorted by post-cutoff complexes, then size. `split` is where the cluster sits today; "
           "`val-folding` marks the 21 clusters in the running post-cutoff validation fold.\n")
