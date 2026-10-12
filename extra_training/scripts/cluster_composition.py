@@ -91,6 +91,24 @@ def main():
     print("`folded` is how many of that cluster's structures are in the running 100-seed fold -- "
           "phase G took up to two per cluster, so a cluster with many post-cutoff complexes "
           "contributes at most two.\n")
+    # THE ACTUAL STRUCTURES, by name. "folded: 2" does not tell you which two, and the redesign
+    # discussion needs the identities.
+    pool_if = collections.Counter()
+    for r in csv.DictReader(open(f"{REPO}/val_fold/pool.csv")):
+        pool_if[r["pdb"]] += 1
+    print("## The 28 structures in the validation fold\n")
+    print("| cluster | kind | pdb | deposited | tokens | interfaces | instance |")
+    print("|---|---|---|---|---|---|---|")
+    act = [m for m in vman if m["pdb"] not in skips]
+    kind_of = {r[0]: ("mixed" if r[2] else "all new") for r in rows}
+    for m in sorted(act, key=lambda m: (kind_of.get(m["cluster"], "?"), int(m["cluster"]),
+                                        m["deposited"])):
+        print(f"| {m['cluster']} | {kind_of.get(m['cluster'],'?')} | {m['pdb']} | "
+              f"{m['deposited']} | {m['n_tokens']} | {pool_if[m['pdb']]} | {m['instance']} |")
+    print(f"\n{len(act)} structures over {len({m['cluster'] for m in act})} clusters, "
+          f"{sum(pool_if[m['pdb']] for m in act)} interfaces. `instance` is the SAbDab2 instance "
+          f"phase G built the job from. All are deposited after 2021-09-30; the 49 pre-cutoff "
+          f"structures of these same validation clusters are in `val_fold/skipped.csv`.\n")
     print("## Every cluster\n")
     print("Sorted by post-cutoff complexes, then size. `split` is where the cluster sits today; "
           "`val-folding` marks the 21 clusters in the running post-cutoff validation fold.\n")
