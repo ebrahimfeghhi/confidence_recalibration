@@ -521,10 +521,13 @@ def main():
                     help="mmseqs identity denominator: 0 alignment length, 1 SHORTER sequence, "
                          "2 longer. Default 1, which is what this filter's method states. It passed "
                          "2 (longer) while claiming shorter, which silently weakened it.")
-    ap.add_argument("--cov-mode", type=int, default=0, choices=[0, 1, 2, 3, 4, 5],
-                    help="mmseqs coverage mode: 0 query AND target, 1 target, 2 query, 5 shorter vs "
-                         "longer length. 0 means a short sequence contained in a long one fails on "
-                         "coverage whatever the identity mode -- see --seq-id-mode.")
+    ap.add_argument("--cov-mode", type=int, default=1, choices=[0, 1, 2, 3, 4, 5],
+                    help="mmseqs coverage mode: 0 query AND target, 1 target, 2 query, 5 shorter "
+                         "against longer length. Default 1, coverage of the TARGET, so a training "
+                         "antigen contained in one of our benchmark chains is caught. Mode 0 "
+                         "requires the fraction of query AND target and so misses containment "
+                         "whatever the identity mode: it left clusters 1035 and 1147 in the pool, "
+                         "both matching benchmark complex 9ms8 at identity 0.996 and 1.000.")
     ap.add_argument("--evalue", type=float, default=1e-10)
     ap.add_argument("--threads", type=int, default=32)
     ap.add_argument("--min-cdr-frac", type=float, default=0.95,

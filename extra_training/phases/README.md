@@ -776,3 +776,39 @@ workers are killed by PID so the round ends and the trap restores PXM.
 from the header row and exits non-zero if the column is absent, removing a silent dependency on
 folder.py's column order. Verified against the live PXM results: 19,560 numeric rows for each, and a
 missing column exits 2.
+
+## The pool is 555 clusters, and why val_clusters.csv predates it
+
+**Decided 2026-10-11, second review pass.** Filter 2's coverage mode moved from 0 to 1.
+
+`--cov-mode 0` requires the coverage fraction to hold for query *and* target, so a training antigen
+contained inside one of our benchmark chains fails on coverage no matter how identity is computed.
+Correcting `--seq-id-mode` from 2 (longer) to 1 (shorter) alone changed nothing for exactly that
+reason. `--cov-mode 1`, coverage of the target, catches containment:
+
+| cluster | matched | identity |
+|---|---|---|
+| 1035 | 9ms8 | **0.996** |
+| 1147 | 9ms8 | **1.000** |
+| 1496 | 8xnh | 0.990 |
+| 1497 | 9kur | 1.000 |
+| 398 | 9isf | 1.000 |
+| 499 | 8zp2 | 0.601 |
+
+Six clusters instead of four, so the pool is **561 → 555**. A training cluster whose antigen matches a
+benchmark antigen at identity 1.000 is precisely what this filter exists to remove.
+
+**`results/val_clusters.csv` was drawn from the 557-cluster pool and is kept.** Re-running phase B
+against 555 clusters changes 45 of the 50 — a different draw, not a better one — and re-drawing a
+validation split after the fact is what phase B's own docstring warns against. The existing split
+remains valid on the stronger test: **every one of its 50 clusters is still in the 555-cluster pool**,
+and neither newly excluded cluster was ever in validation, so validation never contained leaked data.
+`train_minus_val()` enforces that invariant on every call and fails if it is ever broken.
+
+The consequence to state: phase B is not byte-reproducible against the current pool. That is a
+deliberate pin, not an oversight.
+
+**The searched query set stays at 5,305.** Phase C now derives 5,299 from the smaller pool, and the
+six extra sequences already searched belong to the newly excluded clusters. The frozen
+`query.searched.fasta` is authoritative — ColabFold keys by position, so the set that was searched is
+the set phases E and F must use — and those six simply go unreferenced.

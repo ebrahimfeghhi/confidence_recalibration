@@ -1,5 +1,7 @@
 cluster,search,query,identity
-1496,antigen_protein,8xnh_A,0.966
-1497,antigen_protein,9kur_A,0.827
-398,antigen_protein,9isf_A,0.973
-499,antigen_protein,8zp2_A,0.578
+1035,antigen_protein,9ms8_A,0.996
+1147,antigen_protein,9ms8_A,1.000
+1496,antigen_protein,8xnh_A,0.990
+1497,antigen_protein,9kur_A,1.000
+398,antigen_protein,9isf_A,1.000
+499,antigen_protein,8zp2_A,0.601
