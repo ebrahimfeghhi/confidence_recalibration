@@ -230,6 +230,48 @@ def taxid_coverage(d, names=None, every=97):
     return seen, tagged, len(sample)
 
 
+def fresh_outputs(expected, path_of, marker, label, allow_reuse, validate=None):
+    """in: the names that must have an output, name -> path, the start marker, a reuse validator.
+    out: nothing; exits on any shortfall.
+
+    EVERY EXPECTED OUTPUT, NOT ONE OF THEM. The gate here used to be `if not fresh: exit`, which
+    passed the moment a single file was new -- and the counts that followed it were taken over the
+    whole directory, so they could not tell this run's output from an earlier attempt's. A step3 or
+    step4 that crashed part-way through therefore left some chains carrying stale taxids or a stale
+    split while the phase reported OK, and the staleness only surfaces as a chain that cannot pair.
+
+    A file older than the marker is REUSE, and reuse is only acceptable when it is deliberate
+    (--allow-stale-reuse), validates, and is named in the log. Anything missing is fatal either way.
+    """
+    t = os.path.getmtime(marker)
+    fresh, reused, stale, missing = [], [], [], []
+    for n in sorted(expected):
+        p = path_of(n)
+        if not os.path.exists(p):
+            missing.append(n)
+        elif os.path.getmtime(p) >= t:
+            fresh.append(n)
+        elif validate is not None and not validate(n, p):
+            stale.append(n)
+        else:
+            reused.append(n)
+    print(f"  {label}: {len(fresh)} written by this run, {len(reused)} reused, "
+          f"{len(stale)} stale and unusable, {len(missing)} missing, of {len(expected)} expected")
+    if missing:
+        sys.exit(f"STOP: {len(missing)} expected {label} output(s) do not exist: {missing[:6]}. "
+                 "The step exited 0 without producing them, so some chains have no usable output "
+                 "and a directory-wide count cannot see it.")
+    if stale:
+        sys.exit(f"STOP: {len(stale)} {label} output(s) predate this run and do not validate: "
+                 f"{stale[:6]}. They are left over from an attempt that did not finish.")
+    if reused and not allow_reuse:
+        sys.exit(f"STOP: {len(reused)} {label} output(s) predate this run: {reused[:6]}. They may be "
+                 "correct, but this run did not produce them, so nothing here establishes that. "
+                 "Re-run the step, or pass --allow-stale-reuse to accept them explicitly.")
+    if reused:
+        print(f"     REUSED BY REQUEST: {reused[:10]}{' ...' if len(reused) > 10 else ''}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("batches", nargs="*", default=DEFAULT_BATCHES)
@@ -248,6 +290,10 @@ def main():
     ap.add_argument("--max-seq-mismatch", type=int, default=5,
                     help="how many a3m may legitimately disagree with their fasta record. One per "
                          "batch is expected: a nucleic-acid antigen the search transcribed U to X.")
+    ap.add_argument("--allow-stale-reuse", action="store_true",
+                    help="accept step3/step4 outputs that predate this run. Off by default: a step "
+                         "that exits 0 after crashing part-way leaves some chains stale, and a "
+                         "directory-wide count cannot tell those from this run's output.")
     ap.add_argument("--min-pairing-frac", type=float, default=0.50,
                     help="fraction of chains of 20+ residues that must have a NON-EMPTY pairing.a3m. "
                          "This phase exists to produce pairing, so its completion criterion has to "
@@ -359,12 +405,19 @@ def main():
         if rc != 0 and not a.ignore_step_rc:
             sys.exit(f"STOP: step3 on {lbl} exited {rc}. See {W}/phase_f_step3_{lbl}.log. Existing "
                      "output from an earlier attempt would otherwise satisfy the counts below.")
-    fresh = [f for f in os.listdir(a.taxid_dir) if f.endswith(".a3m")
-             and os.path.getmtime(os.path.join(a.taxid_dir, f)) >= os.path.getmtime(t0)]
-    print(f"  a3m written by THIS run: {len(fresh)}")
-    if not fresh:
-        sys.exit("STOP: step3 exited 0 but wrote nothing in this run; the directory holds only older "
-                 "output, which the counts below cannot distinguish from success.")
+    # PER EXPECTED QUERY. Every renamed alignment must have a taxid-tagged counterpart from this
+    # run; a reused one must still carry the query it claims to.
+    expect = {r["name"] for r in all_rows}
+    name_to_seq = {n: sq for sq, n in seq_to_index.items()}
+    def ok_tax(n, p):
+        try:
+            with open(p) as fh:
+                fh.readline()
+                return fh.readline().strip().replace("-", "").upper() == name_to_seq[n].upper()
+        except (OSError, KeyError, IndexError):
+            return False
+    fresh_outputs(expect, lambda n: os.path.join(a.taxid_dir, f"{n}.a3m"), t0, "step3",
+                  a.allow_stale_reuse, ok_tax)
     n_out = len([f for f in os.listdir(a.taxid_dir) if f.endswith(".a3m")])
     seen = tagged = 0
     for b in batches:
@@ -403,11 +456,13 @@ def main():
     # sequence count, and then that each directory's name is a query we actually indexed.
     dirs = [d for d in os.listdir(a.msa_dir)
             if os.path.isfile(os.path.join(a.msa_dir, d, "pairing.a3m"))]
-    fresh_d = [d for d in dirs
-               if os.path.getmtime(os.path.join(a.msa_dir, d, "pairing.a3m")) >= os.path.getmtime(t1)]
-    print(f"  directories with pairing.a3m: {len(dirs)}; written by THIS run: {len(fresh_d)}")
-    if not fresh_d:
-        sys.exit("STOP: step4 exited 0 but wrote no pairing.a3m in this run.")
+    # BOTH HALVES OF THE SPLIT, per expected query. non_pairing.a3m was never checked at all, and it
+    # is not optional: Protenix reads it as the unpaired MSA, so a chain with a fresh pairing.a3m and
+    # a stale or absent non_pairing.a3m folds against someone else's alignment or none.
+    for half in ("pairing.a3m", "non_pairing.a3m"):
+        fresh_outputs(expect, lambda n, h=half: os.path.join(a.msa_dir, n, h), t1,
+                      f"step4 {half}", a.allow_stale_reuse,
+                      lambda n, p: os.path.exists(p))
     if len(dirs) < need:
         sys.exit(f"STOP: {len(dirs)} pairing.a3m for {nq_total} queries (want >= {need}). "
                  "One directory for everything is the header-collision failure this phase prevents.")

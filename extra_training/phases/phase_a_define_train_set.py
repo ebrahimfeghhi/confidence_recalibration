@@ -145,35 +145,67 @@ def _ckey(v):
         return str(v)
 
 
-def job_sequences(min_len=20):
-    """out: [(name, sequence)] -- every protein chain the benchmark job jsons actually fold
+def job_sequences():
+    """out: [(name, sequence)] for EVERY protein chain the benchmark job jsons fold, any length
 
     proteinChain.sequence is what Protenix is given, which is the right thing to compare against for
     leakage: a chain the benchmark folds can be identical to a training antigen even when SAbDab2
     never recorded it as an antigen at all.
+
+    NO LENGTH FILTER HERE. This used to drop chains under 20 residues, on the reasoning that a short
+    query searches badly -- but dropping them means a short folded antigen is never compared to
+    anything, and the exclusion is only as complete as the set it covers. Length is handled where it
+    belongs instead: the caller sends long chains to the protein targets at --prot-id and short ones
+    to the peptide targets at --pep-id, which is the same split the SAbDab2-side searches use.
+
+    COVERAGE IS RETURNED, NOT ASSUMED. An unreadable or absent job json used to be a printed note, so
+    an audit over 200 of 227 complexes read exactly like an audit over all of them. The caller
+    compares the pdb ids actually read against each benchmark's own pool and stops on a shortfall.
     """
-    out, seen = [], set()
+    out, seen, covered = [], set(), {}
     for ds in BENCHMARKS:
         jdir = str(paths.DATASETS[ds].jobs)
+        got, unreadable = set(), []
         for f in sorted(glob.glob(os.path.join(jdir, "*.json"))):
             pdb = os.path.basename(f).split("-")[0].lower()
             try:
                 with open(f) as fh:
                     tasks = json.load(fh)
             except (OSError, ValueError) as e:
-                print(f"  NOTE unreadable job json {os.path.basename(f)}: {e}")
+                unreadable.append(f"{os.path.basename(f)}: {e}")
                 continue
+            n_chain = 0
             for t in (tasks if isinstance(tasks, list) else [tasks]):
                 for k, sq in enumerate(t.get("sequences", [])):
                     c = sq.get("proteinChain")
                     if not c:
                         continue
                     q = str(c.get("sequence", "")).upper()
-                    if len(q) < min_len or q in seen:
+                    if not q:
+                        continue
+                    n_chain += 1
+                    if q in seen:
                         continue
                     seen.add(q)
                     out.append((f"{pdb}_j{k}", q))
-    return out
+            if n_chain:
+                got.add(pdb)
+        covered[ds] = (got, unreadable)
+    return out, covered
+
+
+def benchmark_pdbs(ds):
+    """out: the pdb ids this benchmark evaluates, from its own pool csv
+
+    The denominator for the coverage check comes from the dataset definition rather than from a
+    literal 227, so adding an interface to a pool cannot leave the audit quietly partial.
+    """
+    pc = getattr(paths.DATASETS[ds], "pool_csv", None)
+    if not pc or not os.path.exists(str(pc)):
+        return set()
+    with open(str(pc), newline="") as fh:
+        return {str(r.get("pdb", "")).strip().lower()
+                for r in csv.DictReader(fh) if r.get("pdb")}
 
 
 def unlisted(splits):
@@ -578,7 +610,11 @@ def main():
                          "default: the cluster-id exclusion is only as complete as SAbDab2's record "
                          "of what each complex contains, and that record omits folded chains.")
     ap.add_argument("--min-job-len", type=int, default=20,
-                    help="shortest folded chain to use as a query")
+                    help="length boundary for the folded-chain queries: at or above this they are compared to\n                         the PROTEIN targets at --prot-id, below it to the PEPTIDE targets at\n                         --pep-id. Nothing is dropped for being short.")
+    ap.add_argument("--allow-partial-audit", action="store_true",
+                    help="proceed when the folded-chain comparison does not cover every benchmark "
+                         "complex. Off by default: leakage is excluded only for the complexes "
+                         "actually compared, so a partial audit understates it.")
     ap.add_argument("--audit-all", action="store_true",
                     help="also compare the 188 complexes excluded by cluster id against the "
                          "surviving pool, by sequence. Report-only: it tests whether SAbDab2's "
@@ -692,19 +728,66 @@ def main():
     # proteinChain.sequence from the job jsons, classified by the same hmmscan pass, keeping the
     # non-antibody chains. This is the same criterion applied to the same question; what changes is
     # that it no longer depends on SAbDab2 having written the antigen down.
-    h6 = {}
+    h6, h7 = {}, {}
     if not a.no_job_antigens:
-        jobseq = job_sequences(a.min_job_len)
+        jobseq, covered = job_sequences()
+        # COVERAGE FIRST, because an exclusion is only as complete as the set it was applied to.
+        # Unreadable or absent job jsons used to be a printed note, so an audit over 200 of the 227
+        # complexes read exactly like an audit over all of them -- and the clusters that the missing
+        # 27 would have excluded stay in the training pool.
+        short = []
+        for ds, (got, unreadable) in covered.items():
+            want = benchmark_pdbs(ds)
+            print(f"  {ds}: job jsons read for {len(got)} complexes"
+                  + (f", pool lists {len(want)}" if want else ", pool csv unavailable"))
+            for u in unreadable:
+                print(f"     UNREADABLE {u}")
+            if unreadable and not a.allow_partial_audit:
+                sys.exit(f"STOP: {len(unreadable)} job json(s) in {ds} could not be read, so the "
+                         "chains they fold were never compared against the training pool. Fix them "
+                         "or pass --allow-partial-audit to proceed with a stated gap.")
+            if want:
+                miss_ds = sorted(want - got)
+                if miss_ds:
+                    short.append((ds, miss_ds))
+        if short and not a.allow_partial_audit:
+            msg = "; ".join(f"{ds}: {len(m)} missing e.g. {m[:5]}" for ds, m in short)
+            sys.exit(f"STOP: the folded-chain audit does not cover every benchmark complex ({msg}). "
+                     "Leakage is excluded only for the complexes actually compared, so a partial "
+                     "audit understates it. Pass --allow-partial-audit to proceed with a stated gap.")
+        for ds, m in short:
+            print(f"  NOTE audit gap accepted for {ds}: {len(m)} complexes not compared: {m[:5]}")
+
         print(f"\nfolded benchmark chains from the job jsons: {len(jobseq)}")
         if jobseq:
             wdj = tempfile.mkdtemp(prefix="exclhom_jobs_")
             abj, agj = classify(jobseq, ALLHMM, a.evalue, a.threads, wdj)
             print(f"  antibody domains {len(abj)}; folded ANTIGEN chains {len(agj)}")
-            h6 = search(_fasta(f"{wdj}/q.fa", agj), _fasta(f"{wd}/t_prot.fa", prot_t),
-                        f"{wdj}/r.m8", a.prot_id, a.cov, a.threads,
-                        f"folded antigen vs PROTEIN >={100*a.prot_id:.0f}%",
-                        a.seq_id_mode, a.cov_mode)
-            print(f"  folded antigen vs PROTEIN >={100*a.prot_id:.0f}% id: {len(h6)} clusters hit")
+            # BY LENGTH, the same split the SAbDab2-side searches use. A long chain is compared to
+            # the protein targets at --prot-id; a short one to the peptide targets at --pep-id,
+            # because a 15-residue peptide matching perfectly inside a 500-residue protein is not
+            # the same event as two proteins being the same protein.
+            ag_long = [(n, q) for n, q in agj if len(q) >= a.min_job_len]
+            ag_short = [(n, q) for n, q in agj if len(q) < a.min_job_len]
+            print(f"  of those, {len(ag_long)} chains of {a.min_job_len}+ residues and "
+                  f"{len(ag_short)} shorter")
+            if ag_long:
+                h6 = search(_fasta(f"{wdj}/q.fa", ag_long), _fasta(f"{wd}/t_prot.fa", prot_t),
+                            f"{wdj}/r.m8", a.prot_id, a.cov, a.threads,
+                            f"folded antigen vs PROTEIN >={100*a.prot_id:.0f}%",
+                            a.seq_id_mode, a.cov_mode)
+                print(f"  folded antigen vs PROTEIN >={100*a.prot_id:.0f}% id: {len(h6)} clusters hit")
+            # THE PEPTIDE TARGETS TOO. The folded-chain search covered protein-typed training
+            # antigens only, so the peptide half of the training pool was still being compared
+            # against the 39 unlisted complexes alone -- a benchmark chain identical to a training
+            # PEPTIDE antigen, in any of the other 188 complexes, had nothing to hit.
+            qpep = ag_short + ag_long
+            if qpep:
+                h7 = search(_fasta(f"{wdj}/qp.fa", qpep), _fasta(f"{wd}/t_pep.fa", pep_t),
+                            f"{wdj}/rp.m8", a.pep_id, a.cov, a.threads,
+                            f"folded antigen vs PEPTIDE >={100*a.pep_id:.0f}%",
+                            a.seq_id_mode, a.cov_mode)
+                print(f"  folded antigen vs PEPTIDE >={100*a.pep_id:.0f}% id: {len(h7)} clusters hit")
     h2 = search(qa, _fasta(f"{wd}/t_pep.fa", pep_t), f"{wd}/r_pep.m8",
                 a.pep_id, a.cov, a.threads, f"antigen vs PEPTIDE  >={100*a.pep_id:.0f}%",
                 a.seq_id_mode, a.cov_mode)
@@ -721,7 +804,7 @@ def main():
     print(f"  CDR-H3              >={100*a.cdr_id:.0f}% id, >={100*a.cdr_cov:.0f}% cov: "
           f"{len(h4)} clusters hit   ({len(qcdr)} queries x {len(cdr_t)} targets, every pair)")
 
-    drop = (set(h1) | set(h2) | set(h4) | set(h6)) & {_ckey(c) for c in train_cl}
+    drop = (set(h1) | set(h2) | set(h4) | set(h6) | set(h7)) & {_ckey(c) for c in train_cl}
     keep = {c for c in train_cl if _ckey(c) not in drop}
     print(f"\nunion dropped: {len(drop)} clusters")
     print(f"TRAINING CLUSTERS: {len(train_cl)} -> {len(keep)}")
@@ -764,7 +847,8 @@ def main():
             w = csv.writer(fh)
             w.writerow(["cluster", "search", "query", "identity"])
             for name, h in (("antigen_protein", h1), ("antigen_peptide", h2),
-                            ("cdrh3", h4), ("folded_benchmark_antigen", h6)):
+                            ("cdrh3", h4), ("folded_benchmark_antigen", h6),
+                            ("folded_benchmark_peptide", h7)):
                 for cl, (q, f) in sorted(h.items()):
                     if cl in drop:
                         w.writerow([cl, name, q, f"{f:.3f}"])

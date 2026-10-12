@@ -58,6 +58,7 @@ C=$R/diffusion_commit_clean_v2
 E=$R/extra_training/val_fold
 J=$R/extra_training/val_jobs
 MSA=$R/extra_training/msa_work/mmcif_msa
+PH=$R/extra_training/phases
 PXM=$R/experimental_data/protenix/pxm2025/free_extra10
 LOG=$R/extra_training/phase_i.log
 GPUS="${GPUS:-0 1}"
@@ -66,6 +67,9 @@ GPUS="${GPUS:-0 1}"
 JOB_SUFFIX="-final-updated.json"
 SEEDS="${SEEDS:-20}"
 NSAMPLE="${NSAMPLE:-5}"
+# SEED0 in one place. The queue builder, the smoke queue and the verifier must agree on which seeds
+# are expected; three copies of the literal 400000 would let them drift apart silently.
+SEED0="${SEED0:-400000}"
 ROUNDS="${ROUNDS:-5}"
 
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
@@ -92,62 +96,19 @@ check_inputs() {
     NPDB=$(tail -n +2 "$POOL" | cut -d, -f1 | sort -u | wc -l)
     NIF=$(($(wc -l < "$POOL")-1))
     [ "$NPDB" -eq "$NJOB" ] || die "pool.csv covers $NPDB structures but there are $NJOB jsons"
-    # Dangling paths, by opening each json. Templates are required by decision, see the header.
-    BAD=$($PY - "$J" <<'PYCHK'
-import glob, hashlib, json, os, sys
-bad = []
-for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
-    for task in json.load(open(f)):
-        for s in task["sequences"]:
-            c = s.get("proteinChain")
-            if not c:
-                continue
-            for key in ("pairedMsaPath", "unpairedMsaPath", "templatesPath"):
-                p = c.get(key)
-                if not p or not os.path.exists(p):
-                    bad.append(f"{os.path.basename(f)} {key}={p}")
-                    continue
-                # THE SELF-TEMPLATING MARKER, and this is a structural check rather than a
-                # procedural one. Phase H writes <templatesPath>.filtered holding the cutoff it
-                # applied; without it the template file has never been date-filtered, and a
-                # structure deposited before 2021-09-30 may be holding its own entry at 100%
-                # identity. 46 of the 79 validation structures and 1,354 of the 2,886 training-pool
-                # entries are in that window, so no fold -- validation or training -- may run on an
-                # unmarked file.
-                if key == "templatesPath":
-                    # THE MARKER IS VERIFIED, NOT COUNTED. It records the filtered file's sha256,
-                    # the cutoff applied and the filter version. Checking only that the marker exists
-                    # let a raw template file keep an old marker and pass -- so a pre-2021 structure
-                    # could still be handed its own entry at 100% identity. The hash closes that.
-                    mk = p + ".filtered"
-                    if not os.path.exists(mk):
-                        bad.append(f"{os.path.basename(f)} templates not date-filtered: {p}")
-                        continue
-                    try:
-                        m = json.load(open(mk))
-                    except Exception:                           # noqa: BLE001
-                        bad.append(f"{os.path.basename(f)} unreadable filter marker: {mk}")
-                        continue
-                    h = hashlib.sha256()
-                    with open(p, "rb") as fh:
-                        for blk in iter(lambda: fh.read(1 << 20), b""):
-                            h.update(blk)
-                    if m.get("sha256") != h.hexdigest():
-                        bad.append(f"{os.path.basename(f)} template file does not match its filter "
-                                   f"marker (replaced since filtering?): {p}")
-print(len(bad))
-for b in bad[:5]:
-    print("  " + b)
-PYCHK
-)
-    NBAD=$(printf '%s' "$BAD" | head -1)
-    if [ "${NBAD:-1}" -ne 0 ]; then
-        say "$BAD"
-        die "$NBAD chain paths are missing or unfiltered. Templates are required by decision, so
-     phase H must have run -- and its date filter must have run too: a template file with no
-     .filtered marker may hand a pre-2021 structure its own entry at 100% identity. A dangling path
-     folds without the file and nothing reports it."
-    fi
+    # DANGLING PATHS AND THE TEMPLATE CUTOFF, in phase_i_inputs.py. It imports phase H and
+    # recomputes the cutoff THIS job set requires, then demands the marker be at least that strict,
+    # at the current filter version, with a hash matching the file. Verifying the hash alone -- what
+    # this did before -- proved only that the file had not changed since filtering, not that it was
+    # filtered for this query: one MSA directory is shared by every structure with that chain
+    # sequence, so a marker written for a newer structure carries a later cutoff, and the pre-2021
+    # structure sharing the directory would receive templates from its own era, its own entry at
+    # 100% identity among them.
+    $PY $PH/phase_i_inputs.py --jobs "$J" --phases "$PH" --suffix "$JOB_SUFFIX" 2>&1 | tee -a "$LOG"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || die "input check failed (see above). Templates are required by
+     decision, so phase H must have run -- and its date filter must have run for THESE jobs: a
+     template file filtered at a later cutoff may hand a pre-2021 structure its own entry at 100%
+     identity. A dangling path folds without the file and nothing reports it."
     NTMPL=$(find "$MSA" -name hmmsearch.a3m 2>/dev/null | wc -l)
     say "inputs OK: $NJOB jsons, $NIF interfaces over $NPDB structures, $NTMPL hmmsearch.a3m, no dangling paths"
     TARGET=$((NJOB * SEEDS))
@@ -171,7 +132,7 @@ build_queue() {
     for f in $J/*$JOB_SUFFIX; do
         local pdb; pdb=$(basename "$f" "$JOB_SUFFIX")
         for i in $(seq 0 $((n-1))); do
-            printf 'free\t%s\t*\tfree\t%d\n' "$pdb" $((400000+i)) >> "$out"
+            printf 'free\t%s\t*\tfree\t%d\n' "$pdb" $((SEED0+i)) >> "$out"
         done
     done
     wc -l < "$out"
@@ -229,7 +190,7 @@ if [ "$MODE" = "smoke" ]; then
     say "=== smoke: one complex, one seed. The PXM sweep is NOT paused. ==="
     SQ=$E/queue_smoke.tsv
     head -1 <(for f in $J/*$JOB_SUFFIX; do
-                  printf 'free\t%s\t*\tfree\t400000\n' "$(basename "$f" "$JOB_SUFFIX")"; done) > $SQ
+                  printf 'free\t%s\t*\tfree\t%d\n' "$(basename "$f" "$JOB_SUFFIX")" "$SEED0"; done) > $SQ
     say "queue: $(cat $SQ)"
     run_workers "$SQ" smoke
 
@@ -329,62 +290,35 @@ PYEOF
     exit 0
 fi
 
-# ---------------------------------------------------------------- verify
-# COMPLETION MEANS SCORED AND CACHED, NOT FOLDED. folder.py writes run.json BEFORE scoring, so
-# counting run.json and announcing "folded, scored and cached" could report success over units with no
-# interface scores and no trunk dump. This checks the three together, per unit, and returns nonzero.
+# ---------------------------------------------------------------- verify / rescore
+# BOTH LIVE IN phase_i_check.py. The shell versions of these two were the most error-prone code in
+# this file and failed for reasons shell makes easy: `IFS=, read` kept the \r of a CRLF pool.csv in
+# the last field and produced interfaces like "6mnq_AB\r" that scorer.py rejects; a crashed
+# verification subprocess fell back to zero failures via ${1:-0}, turning a crash into a pass; and
+# "a row exists" was accepted as a scored interface, so one scored sample of five, a NaN DockQ or a
+# blank ipTM all read as complete. The checker returns a real exit status and this reports it.
+#
+# THE SCORER IS THE DATASET'S OWN, read from paths.py rather than named here. sabdab_val scores with
+# 'ost'; an earlier rescore hardcoded 'pxm', which would have mixed two DockQ implementations into one
+# results.csv and made the recovered rows incomparable to the rest.
+SCORER=$($PY -c "import sys; sys.path.insert(0,'$C'); import paths; print(paths.DATASETS['sabdab_val'].scorer)" 2>/dev/null)
+[ -n "$SCORER" ] || die "cannot resolve the scorer for dataset sabdab_val from paths.py"
+
+check_py() {
+    $PY $PH/phase_i_check.py "$1" --e "$E" --jobs "$J" --refs "$R/extra_training/val_refs" \
+        --suffix "$JOB_SUFFIX" --seeds "$SEEDS" --seed0 "$SEED0" --nsample "$NSAMPLE" \
+        --scorer "$SCORER" --py "$PY" --code "$C" 2>&1 | tee -a "$LOG"
+    return "${PIPESTATUS[0]}"
+}
+
 verify() {
-    local n rows trunks up g bad_rows bad_npz
-    n=$(done_units)
-    rows=$(($(wc -l < $E/results.csv 2>/dev/null || echo 1)-1))
-    trunks=$(find $E/trunks -name '*.npz' 2>/dev/null | wc -l)
-    say "  units with run.json $n/$TARGET   scored rows $rows   trunk npz $trunks   cache $(du -sh $E/trunks 2>/dev/null | cut -f1)"
-
-    # PER UNIT: every interface of its pdb must have a row at that seed, and its npz must exist.
-    local report
-    report=$($PY - "$E" "$J" "$JOB_SUFFIX" "$SEEDS" <<'PYV' 2>/dev/null
-import csv, glob, json, os, sys, collections
-E, J, suf, seeds = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
-pdbs = [os.path.basename(f)[:-len(suf)] for f in glob.glob(os.path.join(J, "*" + suf))]
-ifaces = collections.defaultdict(set)
-pool = os.path.join(E, "pool.csv")
-if os.path.exists(pool):
-    for r in csv.DictReader(open(pool)):
-        ifaces[r["pdb"]].add(f"{r['pdb']}_{r['chain1']}{r['chain2']}")
-have = collections.defaultdict(set)
-res = os.path.join(E, "results.csv")
-if os.path.exists(res):
-    for r in csv.DictReader(open(res)):
-        have[(r["iface"], r["seed"])].add(r["arm"])
-missing_rows = missing_npz = 0
-for pdb in pdbs:
-    for i in range(seeds):
-        seed = str(400000 + i)
-        rj = glob.glob(os.path.join(E, "poses", pdb, f"{seed}-*", "run.json"))
-        if not rj:
-            continue                      # not folded yet; counted by the unit total above
-        for ifc in ifaces.get(pdb, ()):
-            if not have.get((ifc, seed)):
-                missing_rows += 1
-        if not os.path.exists(os.path.join(E, "trunks", pdb, f"free_{seed}.npz")):
-            missing_npz += 1
-print(f"{missing_rows} {missing_npz} {len(pdbs)}")
-PYV
-)
-    set -- $report
-    bad_rows=${1:-0}; bad_npz=${2:-0}
-    say "  folded units missing an interface score: $bad_rows    missing their trunk npz: $bad_npz"
-
+    local rc up g
+    say "=== verify: coverage, finite scores, replayable caches (scorer=$SCORER) ==="
+    check_py verify; rc=$?
     up=0
     for g in $GPUS; do tmux has-session -t fx_pxm2025_$g 2>/dev/null && up=$((up+1)); done
     say "  pxm workers up: $up   folds $(find $PXM/poses -name run.json 2>/dev/null | wc -l)/$(wc -l < $PXM/queue.tsv 2>/dev/null)"
-
-    local rc=0
-    [ "$n" -ge "$TARGET" ] || { say "ESCALATE: $((TARGET-n)) units unfolded"; rc=1; }
-    [ "${bad_rows:-0}" -eq 0 ] || { say "ESCALATE: $bad_rows folded (pdb,seed,interface) have no score -- see 'rescore'"; rc=1; }
-    [ "${bad_npz:-0}" -eq 0 ] || { say "ESCALATE: $bad_npz folded units have no trunk npz; the cache is incomplete"; rc=1; }
-    [ "$rc" -eq 0 ] && say "=== COMPLETE: all $TARGET units folded, every interface scored, every npz cached ===" \
-        || say "=== INCOMPLETE: poses are kept. 'rescore' recovers scores; 'run' continues folding. ==="
+    [ "$rc" -eq 0 ] || say "=== INCOMPLETE: poses are kept. 'rescore' recovers scores; 'run' continues folding. ==="
     return $rc
 }
 
@@ -393,25 +327,11 @@ PYV
 # time, because TRUNK_DUMP_DIR refuses to overwrite the npz the first attempt already wrote
 # (folder.py:831). Refolding would be wrong even if it were possible: repeating a seed does not
 # reproduce its poses, so new poses would not match the cached tensors. The only correct recovery is
-# to score the poses already on disk.
+# to score the poses already on disk -- per missing sample, so an interface with 3 of 5 samples gains
+# the 2 it lacks instead of being skipped for having rows, or gaining 5 duplicates.
 rescore() {
-    local pdb seed rdir ifc n=0
-    say "=== rescore: scoring folded units that have no interface rows ==="
-    while IFS=, read -r pdb c1 c2; do
-        [ "$pdb" = "pdb" ] && continue
-        ifc="${pdb}_${c1}${c2}"
-        for rdir in $E/poses/$pdb/*/; do
-            [ -f "$rdir/run.json" ] || continue
-            seed=$($PY -c "import json,sys; print(json.load(open(sys.argv[1]))['seed'])" "$rdir/run.json" 2>/dev/null)
-            [ -n "$seed" ] || continue
-            grep -q "^$ifc,$seed,free," "$E/results.csv" 2>/dev/null && continue
-            say "  scoring $ifc seed $seed from $(basename "$rdir")"
-            $PY $C/scorer.py --dir "$rdir" --iface "$ifc" --seed "$seed" --arm free \
-                --donor -1 --chains "" --ref "$E/../val_refs/$pdb.cif" --scorer pxm \
-                >> "$E/results.csv" 2>>"$E/rescore.err" && n=$((n+1))
-        done
-    done < "$E/pool.csv"
-    say "=== rescore wrote rows for $n (interface, seed) pairs; errors in $E/rescore.err ==="
+    say "=== rescore: scoring the (interface, sample) rows that are missing ==="
+    check_py rescore
 }
 if [ "$MODE" = "rescore" ]; then check_inputs; rescore; verify; exit $?; fi
 if [ "$MODE" = "verify" ]; then check_inputs; verify; exit $?; fi

@@ -375,18 +375,23 @@ def main():
     # unit is scored on. Without it the fold runs and scores NOTHING, and paths.py already points
     # sabdab_val's pool_csv here.
     os.makedirs(f"{REPO}/extra_training/val_fold", exist_ok=True)
+    # lineterminator="\n". csv.writer defaults to CRLF, and a shell reading the file with
+    # `IFS=, read -r pdb c1 c2` keeps the \r in the last field -- producing interfaces like
+    # "6mnq_AB\r", which scorer.py rejects because the chain pair is then three characters. Every
+    # consumer here is POSIX, so LF is the right output and no reader needs to strip anything.
     with open(f"{REPO}/extra_training/val_fold/pool.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["pdb", "chain1", "chain2"])
+        w = csv.DictWriter(fh, fieldnames=["pdb", "chain1", "chain2"], lineterminator="\n")
         w.writeheader()
         w.writerows(pool)
     with open(f"{REPO}/extra_training/val_fold/chain_roles.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["pdb", "model_chain", "ref_chain", "auth_chain", "role"])
+        w = csv.DictWriter(fh, fieldnames=["pdb", "model_chain", "ref_chain", "auth_chain", "role"],
+                           lineterminator="\n")
         w.writeheader()
         w.writerows(roles)
     print(f"pool.csv: {len(pool)} interfaces over {len(set(r['pdb'] for r in pool))} structures")
 
     with open(f"{a.out_dir}/manifest.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
 
