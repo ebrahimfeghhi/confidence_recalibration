@@ -170,3 +170,6 @@ extra_training/val_refs/
 extra_training/data/training_cifs/
 extra_training/protenix_root/
 extra_training/*.log
+
+# runtime state of the E-to-I chain: one word naming the current stage, not code
+extra_training/*.state
