@@ -109,9 +109,25 @@ check_inputs() {
      decision, so phase H must have run -- and its date filter must have run for THESE jobs: a
      template file filtered at a later cutoff may hand a pre-2021 structure its own entry at 100%
      identity. A dangling path folds without the file and nothing reports it."
+    # THE SCORER, RESOLVED HERE SO SMOKE EXERCISES IT. This used to sit beside verify(), below the
+    # smoke block, with only $C on sys.path -- but paths.py lives at $R, not $C, so it raised
+    # ModuleNotFoundError from any cwd, died on the `die` beneath it, and smoke never reached the
+    # line. Smoke would pass and the full run would fail instantly. Both roots are added: $R for
+    # paths.py, $C for the modules it pulls in.
+    SCORER=$($PY -c "import sys; sys.path[:0]=['$R','$C']; import paths; print(paths.DATASETS['sabdab_val'].scorer)" 2>&1)
+    case "$SCORER" in
+        ost|pxm) say "  scorer for dataset sabdab_val: $SCORER (from paths.py)" ;;
+        *) die "cannot resolve the scorer for dataset sabdab_val from paths.py: $SCORER" ;;
+    esac
     NTMPL=$(find "$MSA" -name hmmsearch.a3m 2>/dev/null | wc -l)
     say "inputs OK: $NJOB jsons, $NIF interfaces over $NPDB structures, $NTMPL hmmsearch.a3m, no dangling paths"
-    TARGET=$((NJOB * SEEDS))
+    # THE TARGET COUNTS ACTIVE STRUCTURES. Using the raw job count made a recorded skip read as
+    # permanently missing work: the rounds loop would keep relaunching for units that will never
+    # arrive, and verify() would never reach COMPLETE.
+    NACTIVE=$(active_pdbs | wc -l)
+    TARGET=$((NACTIVE * SEEDS))
+    [ "$NACTIVE" -eq "$NJOB" ] || say "  $((NJOB-NACTIVE)) structure(s) skipped by decision \
+(val_fold/skipped.csv); folding $NACTIVE of $NJOB"
 }
 
 # How many (structure, seed) units are finished. folder.py writes one run.json per unit and skips
@@ -127,10 +143,10 @@ csv_numeric() {
 }
 
 build_queue() {
-    local n=$1 out=$2
+    local n=$1 out=$2 pdb i
     : > "$out"
-    for f in $J/*$JOB_SUFFIX; do
-        local pdb; pdb=$(basename "$f" "$JOB_SUFFIX")
+    # OVER THE ACTIVE SET, so a recorded skip is not re-attempted 20 times a round for five rounds.
+    for pdb in $(active_pdbs); do
         for i in $(seq 0 $((n-1))); do
             printf 'free\t%s\t*\tfree\t%d\n' "$pdb" $((SEED0+i)) >> "$out"
         done
@@ -138,9 +154,28 @@ build_queue() {
     wc -l < "$out"
 }
 
+# in: nothing.  out: the pdb ids to fold, one per line -- the job set MINUS the recorded skips
+#
+# ONE ACTIVE SET, used by the queue, the target, smoke and verification. skipped.csv was honoured by
+# verification only, so a structure recorded as un-foldable stayed in every seed's queue and was
+# re-attempted 20 times a round, five rounds deep -- which defeats the point of recording it and
+# spends GPU on work already excluded by decision.
+active_pdbs() {
+    local skips=$E/skipped.csv f pdb
+    for f in $J/*$JOB_SUFFIX; do
+        pdb=$(basename "$f" "$JOB_SUFFIX")
+        if [ -s "$skips" ] && awk -F, -v p="$pdb" 'NR>1 && $1==p {found=1} END{exit !found}' "$skips"; then
+            continue
+        fi
+        echo "$pdb"
+    done
+}
+
 run_workers() {
-    local queue=$1 tag=$2 g last tick alive n
-    for g in $GPUS; do
+    # $3 is the gpu list, defaulting to all of them. Smoke passes ONE: it has a single work unit, so
+    # a second worker only loads the model onto another card and then finds nothing to claim.
+    local queue=$1 tag=$2 gpus=${3:-$GPUS} g last tick alive n
+    for g in $gpus; do
         tmux new-session -d -s vf_${tag}_$g "cd $P && CUDA_VISIBLE_DEVICES=$g \
           LAYERNORM_TYPE=openfold \
           TRUNK_DUMP_DIR=$E/trunks PROTENIX_DUMP_TRUNK_BF16=1 PROTENIX_DUMP_CONF_INPUTS=1 \
@@ -157,7 +192,7 @@ run_workers() {
     last=-1; tick=0; stall=0
     while :; do
         alive=0
-        for g in $GPUS; do tmux has-session -t vf_${tag}_$g 2>/dev/null && alive=1; done
+        for g in $gpus; do tmux has-session -t vf_${tag}_$g 2>/dev/null && alive=1; done
         [ "$alive" -eq 0 ] && break
         tick=$((tick+1)); stall=$((stall+1))
         n=$(done_units)
@@ -168,7 +203,7 @@ run_workers() {
         if [ "$stall" -ge "${STALL_MIN:-90}" ] || [ "$tick" -ge "${MAX_WAIT_MIN:-2400}" ]; then
             say "  BOUND HIT: $tick min elapsed, $stall min since the last unit"
             say "  (limits: MAX_WAIT_MIN=${MAX_WAIT_MIN:-2400}, STALL_MIN=${STALL_MIN:-90})"
-            for g in $GPUS; do
+            for g in $gpus; do
                 tmux has-session -t vf_${tag}_$g 2>/dev/null || continue
                 # BY PID, never by pattern: a pattern kill would match this script.
                 for pid in $(tmux list-panes -t vf_${tag}_$g -F '#{pane_pid}' 2>/dev/null); do
@@ -184,15 +219,89 @@ run_workers() {
     done
 }
 
+# ------------------------------------------------- PXM pause / restore, defined before both
+# modes. SMOKE NEEDS THIS TOO, which is why it lives here rather than beside the run block:
+# smoke launches a real worker that loads the model onto a real card, so running it while the
+# PXM sweep holds GPUs 0 and 1 risks an OOM in both jobs and makes the smoke result say more
+# about contention than about our inputs. Both modes therefore pause, work, and restore.
+
+# EVERY OTHER PHASE RESTORES WHAT IT CHANGED; this one must too. Without a trap, a run killed
+# between the pause below and the resume at the end leaves the PXM sweep down and fx_watch dead --
+# indefinitely, and silently, because the thing that would have restarted them is the script that
+# just died. INT, TERM and EXIT all route through the same restore.
+PXM_PAUSED=0
+PXM_WAS=""        # which fx_pxm2025_<g> sessions existed before we paused
+WATCH_WAS=0       # whether fx_watch was running before we killed it
+
+# in: a session name prefix and the gpu list.  out: nothing; kills those sessions BY PID
+kill_sessions() {
+    # $2 is the gpu list, defaulting to all of them -- smoke pauses only the one card it will use.
+    local prefix=$1 gpus=${2:-$GPUS} g pid child
+    for g in $gpus; do
+        tmux has-session -t ${prefix}$g 2>/dev/null || continue
+        for pid in $(tmux list-panes -t ${prefix}$g -F '#{pane_pid}' 2>/dev/null); do
+            # BY PID, never by pattern: a pattern kill matches this script.
+            for child in $(pgrep -P "$pid" 2>/dev/null) "$pid"; do
+                say "    kill PID $child (${prefix}$g)"; kill "$child" 2>/dev/null
+            done
+        done
+        sleep 3; tmux kill-session -t ${prefix}$g 2>/dev/null
+    done
+}
+
+resume_pxm() {
+    [ "$PXM_PAUSED" -eq 1 ] || return 0
+    PXM_PAUSED=0
+    # OUR WORKERS GO FIRST. The previous version restarted PXM without stopping the validation
+    # workers, so an interrupted run put BOTH workloads on the same cards -- two folds per GPU,
+    # competing for memory, with neither job aware of the other.
+    say "=== stopping validation workers before restoring PXM ==="
+    kill_sessions vf_val_
+    kill_sessions vf_smoke_
+    say "=== restoring the PXM sweep ==="
+    $PY $C/reconcile_stale_claims.py $PXM --dataset pxm2025 2>&1 | tail -1 | tee -a "$LOG"
+    # ONLY WHAT WAS RUNNING BEFORE. Starting a worker on a card that had none is not a restore, it is
+    # a new allocation -- and GPU allocation is not this script's call to make.
+    for g in $PXM_WAS; do
+        tmux has-session -t fx_pxm2025_$g 2>/dev/null && continue
+        tmux new-session -d -s fx_pxm2025_$g "cd $P && CUDA_VISIBLE_DEVICES=$g LAYERNORM_TYPE=openfold \
+          $PY $C/folder.py --queue $PXM/queue.tsv --out $PXM/poses --csv $PXM/results.csv \
+          --claim-dir $PXM/claims --dataset pxm2025 --ncycle 10 --nsample "$NSAMPLE" --dtype bf16 \
+          --overlap-scoring >> $PXM/w$g.log 2>&1"
+        say "  relaunched pxm worker on GPU $g (it was running before)"
+    done
+    [ -n "$PXM_WAS" ] || say "  no pxm worker was running before; none started"
+    if [ "$WATCH_WAS" -eq 1 ] && ! tmux has-session -t fx_watch 2>/dev/null; then
+        tmux new-session -d -s fx_watch "bash $C/watch_free_extra10.sh" && say "  restarted fx_watch"
+    fi
+}
+
 # ---------------------------------------------------------------- smoke
 if [ "$MODE" = "smoke" ]; then
     check_inputs
-    say "=== smoke: one complex, one seed. The PXM sweep is NOT paused. ==="
+    # ONE CARD, AND THE SWEEP PAUSED ON IT. Smoke used to launch a worker on every configured GPU
+    # while declaring the PXM sweep untouched: two workers for one work unit, both loading the model
+    # onto cards PXM already held. The second worker can only find nothing to claim, and the
+    # contention risks an OOM in both jobs -- so a smoke failure would say more about scheduling
+    # than about our inputs, which is the opposite of what a smoke test is for.
+    SMOKE_GPU=$(echo $GPUS | awk '{print $1}')
+    say "=== smoke: one complex, one seed, one worker on GPU $SMOKE_GPU ==="
+    trap 'say "interrupted -- restoring PXM before exit"; resume_pxm; exit 130' INT TERM
+    trap 'resume_pxm' EXIT
+    PXM_PAUSED=1
+    for g in $SMOKE_GPU; do tmux has-session -t fx_pxm2025_$g 2>/dev/null && PXM_WAS="$PXM_WAS $g"; done
+    tmux has-session -t fx_watch 2>/dev/null && WATCH_WAS=1
+    if [ -n "$PXM_WAS" ] || [ "$WATCH_WAS" -eq 1 ]; then
+        say "  pausing pxm on GPU(s)${PXM_WAS:- none} and fx_watch=$WATCH_WAS for the smoke unit"
+        tmux kill-session -t fx_watch 2>/dev/null && say "  stopped fx_watch so it cannot relaunch pxm"
+        kill_sessions fx_pxm2025 "$SMOKE_GPU"
+        sleep 5
+        $PY $C/reconcile_stale_claims.py $PXM --dataset pxm2025 2>&1 | tail -1 | tee -a "$LOG"
+    fi
     SQ=$E/queue_smoke.tsv
-    head -1 <(for f in $J/*$JOB_SUFFIX; do
-                  printf 'free\t%s\t*\tfree\t%d\n' "$(basename "$f" "$JOB_SUFFIX")" "$SEED0"; done) > $SQ
+    printf 'free\t%s\t*\tfree\t%d\n' "$(active_pdbs | head -1)" "$SEED0" > $SQ
     say "queue: $(cat $SQ)"
-    run_workers "$SQ" smoke
+    run_workers "$SQ" smoke "$SMOKE_GPU"
 
     NCIF=$(find $E/poses -name '*.cif' 2>/dev/null | wc -l)
     NTRUNK=$(find $E/trunks -name '*.npz' 2>/dev/null | wc -l)
@@ -301,8 +410,6 @@ fi
 # THE SCORER IS THE DATASET'S OWN, read from paths.py rather than named here. sabdab_val scores with
 # 'ost'; an earlier rescore hardcoded 'pxm', which would have mixed two DockQ implementations into one
 # results.csv and made the recovered rows incomparable to the rest.
-SCORER=$($PY -c "import sys; sys.path.insert(0,'$C'); import paths; print(paths.DATASETS['sabdab_val'].scorer)" 2>/dev/null)
-[ -n "$SCORER" ] || die "cannot resolve the scorer for dataset sabdab_val from paths.py"
 
 check_py() {
     $PY $PH/phase_i_check.py "$1" --e "$E" --jobs "$J" --refs "$R/extra_training/val_refs" \
@@ -343,55 +450,6 @@ check_inputs
 [ -f "$E/SMOKE_OK" ] || die "smoke has not passed. Run 'phase_i_fold_validation.sh smoke' first --
      it is the only check that the cache can actually re-run the confidence head."
 
-# EVERY OTHER PHASE RESTORES WHAT IT CHANGED; this one must too. Without a trap, a run killed
-# between the pause below and the resume at the end leaves the PXM sweep down and fx_watch dead --
-# indefinitely, and silently, because the thing that would have restarted them is the script that
-# just died. INT, TERM and EXIT all route through the same restore.
-PXM_PAUSED=0
-PXM_WAS=""        # which fx_pxm2025_<g> sessions existed before we paused
-WATCH_WAS=0       # whether fx_watch was running before we killed it
-
-# in: a session name prefix and the gpu list.  out: nothing; kills those sessions BY PID
-kill_sessions() {
-    local prefix=$1 g pid child
-    for g in $GPUS; do
-        tmux has-session -t ${prefix}$g 2>/dev/null || continue
-        for pid in $(tmux list-panes -t ${prefix}$g -F '#{pane_pid}' 2>/dev/null); do
-            # BY PID, never by pattern: a pattern kill matches this script.
-            for child in $(pgrep -P "$pid" 2>/dev/null) "$pid"; do
-                say "    kill PID $child (${prefix}$g)"; kill "$child" 2>/dev/null
-            done
-        done
-        sleep 3; tmux kill-session -t ${prefix}$g 2>/dev/null
-    done
-}
-
-resume_pxm() {
-    [ "$PXM_PAUSED" -eq 1 ] || return 0
-    PXM_PAUSED=0
-    # OUR WORKERS GO FIRST. The previous version restarted PXM without stopping the validation
-    # workers, so an interrupted run put BOTH workloads on the same cards -- two folds per GPU,
-    # competing for memory, with neither job aware of the other.
-    say "=== stopping validation workers before restoring PXM ==="
-    kill_sessions vf_val_
-    kill_sessions vf_smoke_
-    say "=== restoring the PXM sweep ==="
-    $PY $C/reconcile_stale_claims.py $PXM --dataset pxm2025 2>&1 | tail -1 | tee -a "$LOG"
-    # ONLY WHAT WAS RUNNING BEFORE. Starting a worker on a card that had none is not a restore, it is
-    # a new allocation -- and GPU allocation is not this script's call to make.
-    for g in $PXM_WAS; do
-        tmux has-session -t fx_pxm2025_$g 2>/dev/null && continue
-        tmux new-session -d -s fx_pxm2025_$g "cd $P && CUDA_VISIBLE_DEVICES=$g LAYERNORM_TYPE=openfold \
-          $PY $C/folder.py --queue $PXM/queue.tsv --out $PXM/poses --csv $PXM/results.csv \
-          --claim-dir $PXM/claims --dataset pxm2025 --ncycle 10 --nsample "$NSAMPLE" --dtype bf16 \
-          --overlap-scoring >> $PXM/w$g.log 2>&1"
-        say "  relaunched pxm worker on GPU $g (it was running before)"
-    done
-    [ -n "$PXM_WAS" ] || say "  no pxm worker was running before; none started"
-    if [ "$WATCH_WAS" -eq 1 ] && ! tmux has-session -t fx_watch 2>/dev/null; then
-        tmux new-session -d -s fx_watch "bash $C/watch_free_extra10.sh" && say "  restarted fx_watch"
-    fi
-}
 trap 'say "interrupted -- restoring PXM before exit"; resume_pxm; exit 130' INT TERM
 trap 'resume_pxm' EXIT
 

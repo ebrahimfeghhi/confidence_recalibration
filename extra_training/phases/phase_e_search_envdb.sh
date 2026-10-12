@@ -57,6 +57,26 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BATCHES=("$@")
 [ ${#BATCHES[@]} -gt 0 ] || BATCHES=("$W/msa_initial_idx" "$W/msa_short_idx" "$W/msa_bench_short_idx")
 
+# THE ENV INTERMEDIATE, VALIDATED AGAINST ITS OWN INDEX. "The file is nonempty" is not evidence that
+# a batch was deepened: an interrupted search leaves a truncated data file whose index still lists
+# every query, and an index whose entries point past the end of the data is exactly what a kill
+# mid-write produces. So: one entry per query, every length positive, and the furthest byte an entry
+# claims must actually exist in the data file.
+env_ok() {
+    local out=$1 nq=$2 idx=$1/bfd.mgnify30.metaeuk30.smag30.a3m.index
+    local dat=$1/bfd.mgnify30.metaeuk30.smag30.a3m
+    [ -s "$idx" ] && [ -s "$dat" ] || return 1
+    [ "$(wc -l < "$idx")" -eq "$nq" ] || return 1
+    local size end zero
+    size=$(stat -c %s "$dat")
+    # colabfold/mmseqs index lines are "<key>\t<offset>\t<length>"
+    end=$(awk -F'\t' 'BEGIN{m=0} {if($2+$3>m) m=$2+$3} END{print m+0}' "$idx")
+    zero=$(awk -F'\t' '$3+0<=0 {n++} END{print n+0}' "$idx")
+    [ "$zero" -eq 0 ] || return 1
+    [ "$end" -le "$size" ] || return 1
+    return 0
+}
+
 say "=== phase E: env pass for ${#BATCHES[@]} batch(es), $NTHREADS threads on cores $CORES ==="
 
 # ---------------------------------------------------------------- 0. the patch, and every input
@@ -154,15 +174,33 @@ for OUT in "${BATCHES[@]}"; do
     # growth gate would then see zero growth and reject a correct result -- which matters because the
     # orchestrator reruns the whole chain when a LATER phase fails. So growth is required only on the
     # first pass; on a rerun the same correctness checks run and growth is reported, not demanded.
+    # A RERUN IS ESTABLISHED BY A COMPLETE INTERMEDIATE, NOT A NONEMPTY ONE. Setting this from mere
+    # presence meant an interrupted search -- which leaves a truncated data file -- disabled BOTH
+    # growth gates, so a batch that had actually gained nothing passed as "already deepened".
     ALREADY=0
-    [ -s "$OUT/bfd.mgnify30.metaeuk30.smag30.a3m" ] && ALREADY=1
-    [ "$ALREADY" -eq 1 ] && say "    (env intermediate already present: this is a rerun, growth not required)"
+    if env_ok "$OUT" "$NQ"; then
+        ALREADY=1
+        say "    (env intermediate complete for all $NQ queries: this is a rerun, growth not required)"
+    elif [ -s "$OUT/bfd.mgnify30.metaeuk30.smag30.a3m" ]; then
+        say "    env intermediate present but INCOMPLETE or inconsistent with its index -- treating
+     this as a first pass, so growth is required and the checks below must pass on their own"
+    fi
     say "--- $LBL: $NQ queries, alignments currently $(numfmt --to=iec "$BEFORE")"
     COLABFOLD_KEEP_INTERMEDIATES=1 COLABFOLD_EMIT_TAXID=1 taskset -c "$CORES" \
         $R/envs/colabfold/bin/colabfold_search --mmseqs $M --threads "$NTHREADS" \
         --use-env 1 --use-templates 0 --db-load-mode 0 \
         "$QFA" "$DB" "$OUT" >> "$W/phase_e_search_$LBL.log" 2>&1
-    say "  colabfold_search exit $? (not trusted; the data decides)"
+    SRC=$?
+    # NONZERO IS PROOF OF FAILURE, zero is not proof of success. The original note here -- "not
+    # trusted; the data decides" -- was right about zero and wrong about nonzero: setup_databases.sh
+    # returning 0 having done nothing is why the data checks exist, but a search that exited 99 did
+    # not finish, and continuing past it let a truncated intermediate reach the gates below.
+    say "  colabfold_search exit $SRC"
+    if [ "$SRC" -ne 0 ]; then
+        say "  ESCALATE $LBL: colabfold_search exited $SRC. See $W/phase_e_search_$LBL.log. The
+     alignments it left are not a completed pass, whatever their byte totals say."
+        FAILED=$((FAILED+1)); continue
+    fi
     grep -q "Skipping" "$W/phase_e_search_$LBL.log" \
         && say "  note: the log mentions skipping a search, consistent with resuming from uniref.a3m"
 
@@ -253,6 +291,13 @@ PYCHK
     if [ -s "$ENVIDX" ]; then
         NENV=$(wc -l < "$ENVIDX")
         say "    env intermediate: $NENV entries for $NQ queries"
+        # THE DATA, NOT JUST THE ENTRY COUNT. An index listing every query says nothing about
+        # whether the bytes it points at were written.
+        if ! env_ok "$OUT" "$NQ"; then
+            say "  ESCALATE $LBL: the env intermediate's index does not agree with its data file
+     (entries pointing past the end, or a zero-length entry). The search was interrupted."
+            FAILED=$((FAILED+1)); continue
+        fi
         if [ "$NENV" -ne "$NQ" ]; then
             say "  ESCALATE $LBL: the env intermediate holds $NENV entries for $NQ queries, so the
      env search did not cover the batch whatever the byte totals say"
