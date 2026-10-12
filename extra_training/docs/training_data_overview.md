@@ -1,7 +1,15 @@
 # Training and validation data, after leakage removal
 
 The SAbDab2 antibody–antigen pool restricted to the 533 clusters that survived the homology audit
-against FoldBench and PXM-2025, split into the 483 training and 50 validation clusters.
+against FoldBench and PXM-2025.
+
+**Current state, as of 2026-10-12.** Validation is **21 clusters / 28 structures / 54 scored
+interfaces** -- the post-cutoff structures only. Every table below that says "50 validation
+clusters" describes the ORIGINAL phase B draw, which is still what `results/val_clusters.csv`
+contains: 50 clusters chosen without regard to deposition date. 26 of those 50 hold no post-cutoff
+structure at all and now contribute nothing, and 3 more hold one that was never folded, so 21 are
+live. See "Pending" at the bottom. The exact clusters and structures are in
+[`cluster_composition.md`](cluster_composition.md).
 
 | cutoff | clusters | structures | instances |
 |---|---|---|---|
@@ -30,6 +38,9 @@ against FoldBench and PXM-2025, split into the 483 training and 50 validation cl
 | validation | post | 24 | 163 | 364 |
 | validation | **total** | 50 | 487 | 948 |
 
+The validation rows are the phase B draw of 50 clusters, NOT the live validation set. 21 of those
+clusters are live; see the current-state note above.
+
 Train and validation clusters are disjoint, and neither intersects the exclusion list.
 
 ## What is actually folded, versus what is available
@@ -39,7 +50,8 @@ instance at 20 seeds is about 17 days on two GPUs against 2.3 days for one per c
 
 | | clusters | structures folded | seeds | interfaces |
 |---|---|---|---|---|
-| validation (`val_jobs/`, `--reps 2`) | 50 | 77 | 30 | 157 |
+| validation, phase B draw (`val_jobs/`, `--reps 2`) | 50 | 77 | — | 157 |
+| validation, LIVE (post-cutoff only) | **21** | **28** | 100 | **54** |
 | training (`train_jobs/`, `--reps 1`) | 483 | 483 | not folded yet | 922 |
 
 Of the 77 folded validation structures, 49 are pre-cutoff and 28 post. Of the 483 training
