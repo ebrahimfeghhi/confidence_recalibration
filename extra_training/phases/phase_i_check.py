@@ -113,6 +113,32 @@ def check_npz(path, nsample):
     return ""
 
 
+def classify_missing(rundir, scorer, k):
+    """in: a run directory, the scorer name, a sample index.  out: ("", why) or (bucket, why)
+
+    A MISSING ROW IS NOT ALWAYS A MISSING SCORE. scorer.py:85 skips a pose in which the two chains do
+    not contact at all -- "this pose has no such interface -- a real condition, not an error" -- so a
+    legitimately non-contacting pose produces no row. Demanding nsample rows unconditionally would
+    report INCOMPLETE forever and send rescore() into a loop that re-scores the same poses and
+    appends nothing.
+
+    The two cases are distinguishable on disk. scorer.py:81 writes <dir>/<scorer>_json/<k>.json
+    through mod.score() BEFORE it checks the interface, so that file existing proves pose k was put
+    through the scorer. And the pose itself must exist at all:
+
+        no pose cif            the fold never produced that sample -- a fault, and NOT recoverable by
+                               rescoring, because repeating a seed does not reproduce its poses
+        pose cif, no scorer json   scoring never reached this pose -- a fault rescore() can fix
+        pose cif and json      scored, and this pose has no such interface -- expected, reported
+    """
+    cif = glob.glob(os.path.join(rundir, "**", f"*_sample_{k}.cif"), recursive=True)
+    if not cif:
+        return "no_pose", f"sample {k}: no pose cif"
+    if not os.path.exists(os.path.join(rundir, f"{scorer}_json", f"{k}.json")):
+        return "unscored", f"sample {k}: pose exists, never scored"
+    return "", f"sample {k}: scored, no contact at this interface"
+
+
 def verify(a):
     pool = read_pool(os.path.join(a.e, "pool.csv"))
     have = read_results(os.path.join(a.e, "results.csv"))
@@ -122,6 +148,7 @@ def verify(a):
         return 1
 
     unfolded, no_rows, bad_scores, bad_cache = [], [], [], []
+    no_pose, no_contact = [], []
     for pdb, seed in units:
         d = run_dir_for(a.e, pdb, seed)
         if d is None:
@@ -131,9 +158,16 @@ def verify(a):
         # unit, and a blank or NaN score is not a score.
         for ifc in sorted(pool.get(pdb, ())):
             got = have.get((ifc, seed), {})
-            miss = [str(k) for k in range(a.nsample) if str(k) not in got]
-            if miss:
-                no_rows.append((ifc, seed, f"samples {miss}"))
+            for k in range(a.nsample):
+                if str(k) in got:
+                    continue
+                bucket, why = classify_missing(d, a.scorer, k)
+                if bucket == "no_pose":
+                    no_pose.append((ifc, seed, why))
+                elif bucket == "unscored":
+                    no_rows.append((ifc, seed, why))
+                else:
+                    no_contact.append((ifc, seed, why))
             for k, (dq, ip) in got.items():
                 if not finite(dq) or not finite(ip):
                     bad_scores.append((ifc, seed, k, dq, ip))
@@ -144,15 +178,20 @@ def verify(a):
     print(f"expected units {len(units)} over {len(pdbs)} structures; "
           f"interfaces per structure {sum(len(v) for v in pool.values())} total")
     print(f"  unfolded units                     : {len(unfolded)}")
-    print(f"  folded units missing sample rows   : {len(no_rows)}")
+    print(f"  poses absent (unrecoverable)       : {len(no_pose)}")
+    print(f"  poses never scored (rescore fixes) : {len(no_rows)}")
     print(f"  rows with a non-finite score       : {len(bad_scores)}")
     print(f"  unusable or absent trunk caches    : {len(bad_cache)}")
-    for lbl, items in (("unfolded", unfolded), ("missing rows", no_rows),
+    # REPORTED, NOT FAILED. A pose in which the two chains do not contact has no DockQ to report;
+    # scorer.py treats that as a real condition and so does this. It is printed because a large
+    # number of them is informative about the target, not about the pipeline.
+    print(f"  (scored, no contact at that interface, which is a result not a fault: {len(no_contact)})")
+    for lbl, items in (("unfolded", unfolded), ("no pose", no_pose), ("unscored", no_rows),
                        ("non-finite", bad_scores), ("cache", bad_cache)):
         for x in items[:3]:
             print(f"     {lbl}: {x}")
-    rc = 1 if (unfolded or no_rows or bad_scores or bad_cache) else 0
-    print("COMPLETE: every expected unit folded, every interface scored on every sample, "
+    rc = 1 if (unfolded or no_pose or no_rows or bad_scores or bad_cache) else 0
+    print("COMPLETE: every expected unit folded, every pose scored at every interface, "
           "every cache replayable" if rc == 0 else "INCOMPLETE")
     return rc
 
@@ -170,7 +209,12 @@ def rescore(a):
             continue
         for ifc in sorted(pool.get(pdb, ())):
             got = have.get((ifc, seed), {})
-            miss = {str(k) for k in range(a.nsample)} - set(got)
+            # ONLY THE RECOVERABLE ONES. A pose that was scored and simply has no contact at this
+            # interface will never produce a row however many times it is re-scored, so including it
+            # here would make rescore() re-run the scorer on every call and append nothing -- and
+            # verify() would stay INCOMPLETE forever.
+            miss = {str(k) for k in range(a.nsample) if str(k) not in got
+                    and classify_missing(d, a.scorer, str(k))[0] == "unscored"}
             if not miss:
                 continue
             # THE DATASET'S OWN SCORER. Recovery must not change the method: sabdab_val scores with
