@@ -40,8 +40,16 @@ progress() {
         # counter started climbing toward a false escalation. Total bytes under db/ grows through
         # both halves.
         stage0_envdb)  du -sb "$DB" 2>/dev/null | cut -f1 ;;
-        stage1_phaseE) find $W/msa_initial_idx $W/msa_short_idx $W/msa_bench_short_idx -name 'bfd*.a3m' 2>/dev/null | wc -l ;;
-        stage2_phaseF) find $W/mmcif_msa -name non_pairing.a3m 2>/dev/null | wc -l ;;
+        # BYTES BEING WRITTEN, not finished artifacts. Counting bfd*.a3m measured phase E's OUTPUT:
+        # colabfold writes that file when a batch COMPLETES, so the count sat at 0 through hours of
+        # real work (mmseqs at 62 cores, the batch directory growing ~2 GB/min) and the stall counter
+        # climbed toward a false escalation. Same mistake as the stage-0 tarball. The batch
+        # directories' total size grows continuously while the search runs.
+        stage1_phaseE) du -sb $W/msa_initial_idx $W/msa_short_idx $W/msa_bench_short_idx 2>/dev/null | awk '{s+=$1} END{print s+0}' ;;
+        # Phase F is two long steps: step3 writes one a3m per query into the taxid dir, step4 one
+        # directory per query into mmcif_msa. Counting only non_pairing.a3m -- step4's output -- read
+        # as zero progress through the whole of step3.
+        stage2_phaseF) echo $(( $(ls $W/mmcif_msa_with_taxid/*.a3m 2>/dev/null | wc -l) + $(ls -d $W/mmcif_msa/*/ 2>/dev/null | wc -l) )) ;;
         stage3*)       ls $R/extra_training/val_jobs/*-final-updated.json 2>/dev/null | wc -l ;;
         stage4_phaseH) find $W/mmcif_msa -name hmmsearch.a3m 2>/dev/null | wc -l ;;
         stage5_smoke|stage6_fold) find $E/trunks -name '*.npz' 2>/dev/null | wc -l ;;
