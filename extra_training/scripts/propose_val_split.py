@@ -51,9 +51,17 @@ def main():
                     help="permit fewer clusters than requested instead of failing")
     a = ap.parse_args()
 
-    train = {r["cluster"] for r in csv.DictReader(open(f"{REPO}/results/train_clusters.csv"))}
-    val = {r["cluster"] for r in csv.DictReader(open(f"{REPO}/results/val_clusters.csv"))}
-    pool = train | val
+    # THE POOL COMES FROM PHASE A, not from train_clusters + val_clusters. Reconstructing it as the
+    # union of two derived artifacts was circular -- it made the pool depend on whichever validation
+    # split happened to be on disk -- and it is what kept the superseded 50-cluster val_clusters.csv
+    # alive after the 40-cluster redesign. phase A's training_clusters() is the definition: the
+    # SAbDab2 clusters left after benchmark exclusion, 533 of them, independent of any split.
+    # _ckey, also phase A's, normalises the cluster id; str() on a pandas value reintroduces the
+    # dtype hazard (a float-formatted "171.0" never matching the string "171").
+    sys.path.insert(0, f"{REPO}/phases")
+    import phase_a_define_train_set as A          # noqa: E402
+    pool_raw, _rows = A.training_clusters(A.SPLITS, A.EXCLUDED)
+    pool = {A._ckey(c) for c in pool_raw}
 
     # PHASE A'S ELIGIBILITY, not "every row in the cluster". phase_a_define_train_set.py:118,262
     # keeps only rows with a polypeptide antigen; without it a hapten-only pairing can be chosen as
@@ -79,7 +87,7 @@ def main():
 
     pre, post, best = (collections.defaultdict(set), collections.defaultdict(set), {})
     for r in csv.DictReader(open(SPLIT)):
-        c = str(r["ab_ag_cluster"])
+        c = A._ckey(r["ab_ag_cluster"])
         if c not in pool:
             continue
         if not is_poly(r):

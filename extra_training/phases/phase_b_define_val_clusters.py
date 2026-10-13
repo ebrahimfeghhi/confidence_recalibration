@@ -25,7 +25,8 @@ INPUTS
     --n-bins:  date bins. Default 5 (so 10 clusters per bin).
     --draws:   random draws searched. Default 20000.
     --seed:    RNG seed. Default 20261010.
-    --out:     output csv. Default extra_training/results/val_clusters.csv.
+    --out:     output csv. Default extra_training/results/val_split_proposal_clusters.csv,
+               the LIVE 40-cluster split. The superseded 50-cluster draw is archived.
 
 OUTPUTS
     <out>                one row per validation cluster: cluster, n_structures, median_depo, date_bin
@@ -78,7 +79,7 @@ def cluster_table(splits=None, excluded=None):
 
 
 LIVE_VAL = f"{REPO}/extra_training/results/val_split_proposal_clusters.csv"
-LEGACY_VAL = f"{REPO}/extra_training/results/val_clusters.csv"
+LEGACY_VAL = f"{REPO}/extra_training/results/archive/val_clusters_SUPERSEDED_50cluster.csv"
 # THE LIVE VALIDATION SPLIT IS val_split_proposal_clusters.csv, 40 clusters, drawn 2026-10-13 by
 # scripts/propose_val_split.py. val_clusters.csv is the ORIGINAL 50-cluster phase-B draw and is
 # LEGACY: 22 of the live 40 are not in it, so using it as the validation list leaves those 22 in the
@@ -145,7 +146,7 @@ def train_minus_val(splits=None, excluded=None, val_csv=None):
     the training indices are built. At the time of writing nothing did it: the failure mode is
     training on your own validation set with nothing raised, and then reporting the result.
 
-    A MISSING val_clusters.csv IS FATAL, never "nothing to hold out". That is the same reasoning as
+    A MISSING VALIDATION CSV IS FATAL, never "nothing to hold out". That is the same reasoning as
     the exclusion-csv guard in phase A: an absent artifact means the split was never applied.
 
     Any training-index builder must take its cluster list from here, not from
@@ -167,7 +168,7 @@ def train_minus_val(splits=None, excluded=None, val_csv=None):
         raise SystemExit(
             f"STOP: {len(missing)} validation cluster(s) are not in the training pool: "
             f"{sorted(missing)[:10]}\n"
-            "val_clusters.csv and the pool have drifted apart -- re-run phases A and B in order.")
+            "the validation csv and the pool have drifted apart -- re-run phases A and B in order.")
     keep = clusters - val
     return keep, rows[~rows.ab_ag_cluster.isin(val)]
 
