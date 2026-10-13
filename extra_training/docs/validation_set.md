@@ -406,7 +406,8 @@ Append the 13 instances to a manifest and build them by **explicit instance**, n
 phase G's own second pick is the cluster median by token count, which is both unreviewed and the
 expensive end.
 
-    # 1. write results/val_split_second_reps.csv with cluster + instance columns
+    # 1. the manifest already exists: results/val_split_second_reps.csv, written by
+    #    scripts/pick_second_reps.py -- 40 first + 13 second = 53 instances, rule in code
     # 2. phase G, explicit instances, into the SAME val2 dirs so the fold is one set
     python3 phases/phase_g_build_val_jobs.py --instances results/val_split_second_reps.csv \
         --val-clusters results/val_split_proposal_clusters.csv \
