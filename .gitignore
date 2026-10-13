@@ -167,6 +167,10 @@ envs/
 extra_training/msa_work/
 extra_training/val_fold/
 extra_training/val_refs/
+extra_training/val2_fold/
+extra_training/val2_refs/
+extra_training/protenix_indices/
+extra_training/train_fold/
 extra_training/data/training_cifs/
 extra_training/protenix_root/
 extra_training/*.log
