@@ -1,8 +1,20 @@
 #!/usr/bin/env python
-"""Fraction of validation interfaces that are acceptable / decoy / no-acceptable, versus seed depth.
+"""Fraction of interfaces that are acceptable / decoy / no-acceptable, versus seed depth.
 
-    ./val_seed_depth_curve.py --out ../../extra_training/docs/figures/val_seed_depth
+    ./val_seed_depth_curve.py --out .../val_seed_depth                       # sabdab_val2
     ./val_seed_depth_curve.py --arm "all new" --out .../val_seed_depth_allnew
+    ./val_seed_depth_curve.py --dataset pxm2025 --weighting interface \
+        --arm-source sabdab --out .../pxm_seed_depth                         # a benchmark
+
+WEIGHTING. `interface` (the default) weights every interface equally, which is how these numbers are
+normally reported. `cluster` averages within each cluster then over clusters equally, which stops a
+cluster that contributes two representatives from counting twice; it is available with --weighting
+cluster and is the stricter choice for the validation set, where 13 of 40 clusters have two.
+
+ARM SOURCE. `split-csv` reads the `kind` column of our frozen validation split. `sabdab` derives it
+for any structure by looking its PDB id up in SAbDab2: a structure is `mixed` when its ab_ag_cluster
+also holds pre-2021-09-30 structures, `all new` when it does not, and is dropped from an arm-filtered
+plot when SAbDab2 does not contain it at all.
 
 Writes <out>.png, <out>.pdf and <out>.csv.
 
@@ -44,28 +56,75 @@ CLASSES = ("acceptable", "decoy", "no acceptable")
 COLOURS = {"acceptable": "#2d7d46", "decoy": "#c2691f", "no acceptable": "#8c2d3f"}
 
 
-def load(dataset, jobs_manifest, split_csv, universe):
-    """out: ({cluster: [ {seed: [(dockq, iptm), ...]} per interface ]}, {cluster: kind}, dropped)"""
+SPLITS = ("/home/ebrahim/tts_abag/extra_training/data/zenodo_splits/splits_final/abag_split.csv")
+CUT = "2021-09-30"
+
+
+def sabdab_kind_by_pdb():
+    """{pdb4: 'mixed'|'all new'} from SAbDab2; absent pdbs are simply not in the dict."""
+    pre, post, pdb2cl = (collections.defaultdict(set), collections.defaultdict(set),
+                         collections.defaultdict(set))
+    for r in csv.DictReader(open(SPLITS)):
+        p, c = r["PDB_ID"][-4:].lower(), str(r["ab_ag_cluster"])
+        pdb2cl[p].add(c)
+        (post if (r["PDBdepo"] or "")[:10] > CUT else pre)[c].add(p)
+    out = {}
+    for p, cs in pdb2cl.items():
+        out[p] = "mixed" if any(pre[c] and post[c] for c in cs) else "all new"
+    return out
+
+
+def load(dataset, jobs_manifest, split_csv, universe, weighting, arm_source):
+    """out: ({group: [ {seed: [(dockq, iptm), ...]} per interface ]}, {group: kind}, dropped)
+
+    `group` is a cluster under --weighting cluster and the interface key itself under `interface`,
+    so the averaging below is one code path."""
     d = paths.DATASETS[dataset]
-    pdb2cl = {m["pdb"]: m["cluster"] for m in csv.DictReader(open(jobs_manifest))}
-    kind = {r["cluster"]: r["kind"] for r in csv.DictReader(open(split_csv))}
+    if arm_source == "split-csv":
+        pdb2cl = {m["pdb"]: m["cluster"] for m in csv.DictReader(open(jobs_manifest))}
+        kind_by_group = {r["cluster"]: r["kind"] for r in csv.DictReader(open(split_csv))}
+    else:
+        pdb2cl, kind_by_group = None, None
+        sab = sabdab_kind_by_pdb()
+    # TWO SCHEMAS. A fold directory's results.csv is iface,seed,...,dockq,iptm. A benchmark's pooled
+    # table (paths.DATASETS[ds].free_pool) is pdb,chain1,chain2,seed,...,dockq,pair_iptm,tier -- and
+    # it is the right source for a benchmark, because the arm's own results.csv holds only that arm's
+    # seeds. Rows at tier `suspect` are excluded; see the pooled table's INDEX.md.
+    src = str(d.free_pool) if getattr(d, "free_pool", None) else os.path.join(str(d.free),
+                                                                             "results.csv")
     rows = collections.defaultdict(lambda: collections.defaultdict(list))
-    with open(os.path.join(str(d.free), "results.csv")) as fh:
-        for r in csv.DictReader(fh):
+    with open(src) as fh:
+        rd = csv.DictReader(fh)
+        pooled = "pair_iptm" in (rd.fieldnames or [])
+        for r in rd:
+            if pooled and r.get("tier") == "suspect":
+                continue
             try:
-                dq, ip = float(r["dockq"]), float(r["iptm"])
+                dq = float(r["dockq"])
+                ip = float(r["pair_iptm"] if pooled else r["iptm"])
             except Exception:
                 continue
             if math.isnan(dq) or math.isnan(ip):
                 continue
-            rows[r["iface"]][int(r["seed"])].append((dq, ip))
-    byclust, dropped = collections.defaultdict(list), 0
+            key = f"{r['pdb']}_{r['chain1']}{r['chain2']}" if pooled else r["iface"]
+            rows[key][int(r["seed"])].append((dq, ip))
+    print(f"   source: {src}")
+    byclust, kind, dropped = collections.defaultdict(list), {}, 0
     for k, sd in rows.items():
-        cl = pdb2cl.get(k.rsplit("_", 1)[0])
-        if cl is None or len(sd) < universe:
+        pdb = k.rsplit("_", 1)[0]
+        if len(sd) < universe:
             dropped += 1
             continue
-        byclust[cl].append({s: sd[s] for s in sorted(sd)[:universe]})
+        if weighting == "cluster":
+            g = pdb2cl.get(pdb) if pdb2cl else None
+            if g is None:
+                dropped += 1
+                continue
+            kind[g] = kind_by_group.get(g) if kind_by_group else sab.get(pdb)
+        else:
+            g = k
+            kind[g] = kind_by_group.get(pdb2cl.get(pdb)) if pdb2cl else sab.get(pdb)
+        byclust[g].append({s: sd[s] for s in sorted(sd)[:universe]})
     return byclust, kind, dropped
 
 
@@ -82,10 +141,18 @@ def main():
     ap.add_argument("--thresh", type=float, default=0.23)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--arm", default="all", choices=["all", "all new", "mixed"])
+    ap.add_argument("--weighting", default="interface", choices=["interface", "cluster"],
+                    help="interface: weight every interface equally, the field convention and the "
+                         "default. cluster: average within cluster then over clusters equally, which "
+                         "stops a cluster contributing two representatives from counting twice")
+    ap.add_argument("--arm-source", default="split-csv", choices=["split-csv", "sabdab"],
+                    help="where `all new` vs `mixed` comes from")
+    ap.add_argument("--label", default=None, help="overrides the title's dataset name")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
-    byclust, kind, dropped = load(a.dataset, a.jobs_manifest, a.split_csv, a.universe)
+    byclust, kind, dropped = load(a.dataset, a.jobs_manifest, a.split_csv, a.universe,
+                                  a.weighting, a.arm_source)
     clusters = sorted(c for c in byclust if a.arm == "all" or kind.get(c) == a.arm)
     if not clusters:
         raise SystemExit(f"STOP: no clusters match arm {a.arm!r}")
@@ -109,13 +176,16 @@ def main():
         return out
 
     depths = [int(x) for x in a.depths.split(",") if 0 < int(x) <= a.universe]
-    print(f"{a.dataset} arm={a.arm}: {len(clusters)} clusters, {nif} interfaces"
+    print(f"{a.dataset} arm={a.arm} weighting={a.weighting}: {len(clusters)} groups, {nif} interfaces"
           + (f" ({dropped} interfaces dropped for < {a.universe} seeds)" if dropped else ""))
     table = []
     for k in depths:
         if k == 1:
-            allseeds = sorted(byclust[clusters[0]][0].keys())
-            draws = [fracs(lambda sd, s=s: [s]) for s in allseeds]
+            # THE i-TH SEED OF EACH INTERFACE, not a shared seed id. Benchmarks do not share a seed
+            # set across interfaces -- pxm2025 has 25 distinct seed sets -- so indexing by position
+            # is the only definition that works for both, and it still enumerates every single-seed
+            # draw exactly rather than sampling them.
+            draws = [fracs(lambda sd, i=i: [sorted(sd)[i]]) for i in range(a.universe)]
         elif k >= a.universe:
             draws = [fracs(lambda sd: list(sd))]
         else:
@@ -152,15 +222,20 @@ def main():
     ax.xaxis.set_major_formatter(FixedFormatter([str(x) if x in label_at else "" for x in xs]))
     ax.xaxis.set_minor_locator(FixedLocator([]))
     ax.set_xlabel("seeds per interface (log scale)")
-    ax.set_ylabel("% of validation interfaces")
-    arm = "all clusters" if a.arm == "all" else f"{a.arm} clusters"
-    ax.set_title(f"Validation set, {arm}: {len(clusters)} clusters, {nif} interfaces", fontsize=11)
+    ax.set_ylabel("% of interfaces")
+    unit = "clusters" if a.weighting == "cluster" else "interfaces"
+    arm = f"all {unit}" if a.arm == "all" else f"{a.arm} {unit}"
+    name = a.label or a.dataset
+    shown = (f"{len(clusters)} clusters, {nif} interfaces" if a.weighting == "cluster"
+             else f"{nif} interfaces")
+    ax.set_title(f"{name}, {arm}: {shown}", fontsize=11)
     ax.set_ylim(0, 100)
     ax.grid(alpha=0.25, lw=0.5)
     ax.legend(frameon=False, fontsize=9, loc="center right")
     fig.text(0.005, 0.015,
-             f"x: seeds drawn per interface.  y: % of interfaces in each class, averaged within "
-             f"cluster then over clusters equally.\n"
+             f"x: seeds drawn per interface.  y: % of interfaces in each class, "
+             + ("averaged within cluster then over clusters equally.\n"
+                if a.weighting == "cluster" else "every interface weighted equally.\n") +
              f"band = ±1 sd over draws.  k=1 enumerates all {a.universe} single-seed draws; "
              f"k={a.universe} has one possible draw; otherwise {a.boots} draws without replacement.",
              fontsize=6.5, color="#555", va="bottom")
