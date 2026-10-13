@@ -9,6 +9,31 @@ structure. A *seed* is one fold: one trunk pass at `N_cycle=10` plus `N_sample` 
 `ab_ag_cluster` is SAbDab2's transitively merged antibody/antigen cluster; it is the generalisation
 unit. Cutoff means the Protenix-v2 training cutoff, **2021-09-30**.
 
+## 0. The proposal in one block
+
+Re-run Protenix's FT3 stage — confidence head only, trunk and diffusion frozen — on structures the
+generator was never trained on, and serve it from a precomputed cache.
+
+| | proposed |
+|---|---|
+| training set | post-cutoff structures in clusters holding ≥1 of them, redundancy-filtered |
+| structures | 663 (cap ≤2 per antibody/antigen pairing) |
+| seeds per structure | **10** |
+| each seed | one fold at `N_cycle=10`, 200 diffusion steps, `N_sample=5` poses |
+| cached per unit | `z_trunk`, `s_trunk`, `s_inputs`, the 5 poses, feature masks |
+| storage | **1,542 GB** of 2,040 GB free |
+| build cost | 6,630 folds ≈ 15 h on 3 GPUs |
+| training cost after build | ~1 h per run, versus ~19 h uncached |
+| control arm | the 924 excluded pre-cutoff structures, same recipe |
+
+The alternative split of the same budget — all 1,594 structures at 5 seeds, 1,509 GB — is question 2
+in §6 and is genuinely open.
+
+**What this is for.** Two claims. (1) Calibrating the confidence head on data the generator has not
+seen improves selection; the control arm tests it. (2) Training the head on several poses that share
+one trunk representation forces it to read the pose rather than the representation; the cache makes
+that a one-line change, since 5 poses already share each cached `z`.
+
 ---
 
 ## 1. What we propose to train on
