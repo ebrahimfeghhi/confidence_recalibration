@@ -286,9 +286,12 @@ def verify(a):
             for k, (dq, ip) in got.items():
                 if not finite(dq) or not finite(ip):
                     bad_scores.append((ifc, seed, k, dq, ip))
-        why = check_npz(os.path.join(a.e, "trunks", pdb, f"free_{seed}.npz"), a.nsample)
-        if why:
-            bad_cache.append((pdb, seed, why))
+        # ONLY WHEN THE FOLD WROTE A CACHE. The training fold deliberately writes none, and a
+        # verifier that reported 9,660 missing npz would bury the failures that matter.
+        if a.trunks:
+            why = check_npz(os.path.join(a.e, "trunks", pdb, f"free_{seed}.npz"), a.nsample)
+            if why:
+                bad_cache.append((pdb, seed, why))
 
     print(f"expected units {len(units)} over {len(pdbs)} structures"
           + (f" ({len(skips)} skipped by decision)" if skips else "") + "; "
@@ -383,6 +386,9 @@ def main():
     ap.add_argument("--py", required=True)
     ap.add_argument("--code", required=True)
     ap.add_argument("--timeout", type=int, default=1800)
+    ap.add_argument("--trunks", action=argparse.BooleanOptionalAction, default=True,
+                    help="check the confidence-head caches. --no-trunks for a fold run with "
+                         "SAVE_TRUNKS=0, which stores poses and scores only")
     a = ap.parse_args()
     sys.exit(verify(a) if a.mode == "verify" else rescore(a))
 

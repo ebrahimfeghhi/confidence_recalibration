@@ -32,6 +32,8 @@ INPUTS
                     Default extra_training/msa_work/mmcif_msa.
     --seq-index:    seq_to_pdb_index.json. Default <msa-root>/../pdb_seqs/seq_to_pdb_index.json.
     --out-dir:      where the jsons go. Default extra_training/val_jobs.
+    --fold-dir:     where pool.csv and chain_roles.csv go. Default extra_training/val_fold.
+    --refs-dir:     where the staged reference cifs go. Default extra_training/val_refs.
     --require-msa:  fail if any chain has no MSA directory. Default on; --no-require-msa to survey.
 
 OUTPUTS
@@ -169,9 +171,15 @@ def _chains(row, min_len=5):
     return out
 
 
-def representatives(val_csv, reps=1, min_len=5, splits=None, excluded=None):
+def representatives(val_csv, reps=1, min_len=5, splits=None, excluded=None, instances=None):
     """in: the validation-cluster csv, structures to take per cluster.
     out: [(cluster, pdb, [sequences])], up to `reps` per cluster
+
+    WITH `instances`, NOTHING IS CHOSEN HERE. The caller supplies exact INSTANCE ids and this builds
+    those and only those, failing if any is absent or ineligible. That exists because a reviewed
+    split names specific structures: handing this function a cluster list instead would let it pick
+    its own representatives -- it takes the cluster MEDIAN by token count, not the smallest -- and
+    the folded set would silently differ from the one that was reviewed.
 
     Structures are sorted by token count and `reps` evenly spaced picks are taken, so one rep is the
     cluster median and two span its size range rather than both being tiny partial constructs. Ties
@@ -190,6 +198,21 @@ def representatives(val_csv, reps=1, min_len=5, splits=None, excluded=None):
     rows = rows[rows.chains.apply(len) >= 2]
 
     picks, skipped = [], sorted(want - set(rows.ab_ag_cluster))
+
+    if instances is not None:
+        want_inst = {str(i) for i in instances}
+        have = rows[rows.instance.isin(want_inst)]
+        missing = sorted(want_inst - set(have.instance))
+        if missing:
+            raise SystemExit(
+                f"STOP: {len(missing)} requested instance(s) are not eligible or not present: "
+                f"{missing[:5]}. An instance is dropped here if its cluster is outside "
+                f"--val-clusters, if phase A's polypeptide-antigen filter excludes it, or if it "
+                f"resolves to fewer than two chains of >= {min_len} residues.")
+        for r in have.drop_duplicates("instance").itertuples(index=False):
+            picks.append((r.ab_ag_cluster, str(r.PDB_ID)[-4:].lower(), r.chains, r.instance))
+        return picks, sorted(want - set(have.ab_ag_cluster))
+
     for cl, grp in rows.groupby("ab_ag_cluster"):
         g = (grp.drop_duplicates("PDB_ID").sort_values(["ntok", "PDB_ID"]).reset_index(drop=True))
         k = min(reps, len(g))
@@ -213,6 +236,17 @@ def main():
     ap.add_argument("--msa-root", default=MSA_ROOT)
     ap.add_argument("--seq-index", default=None)
     ap.add_argument("--out-dir", default=OUT)
+    # pool.csv / chain_roles.csv land here. Separate from --out-dir because the jsons and the
+    # scoring tables are read by different consumers (folder.py vs scorer.py), and a second job
+    # set -- the training pool -- must not overwrite the validation set's tables.
+    ap.add_argument("--fold-dir", default=f"{REPO}/extra_training/val_fold")
+    # the staged reference cifs paths.DATASETS[...].ref(pdb) resolves. Parameterised for the same
+    # reason as --fold-dir: a second job set gets its own store rather than sharing one.
+    ap.add_argument("--refs-dir", default=f"{REPO}/extra_training/val_refs")
+    # a two-column csv (cluster, instance) naming exactly what to build. Mutually exclusive with
+    # --reps in effect: when given, no selection happens here.
+    ap.add_argument("--instances", default=None,
+                    help="csv with an `instance` column: build exactly these, or fail")
     ap.add_argument("--reps", type=int, default=2,
                     help="structures per cluster; median of validation clusters has only 2")
     ap.add_argument("--min-len", type=int, default=5,
@@ -226,6 +260,8 @@ def main():
                     help="SAbDab2's own chain-role assignment, for the auth chain names")
     ap.add_argument("--require-msa", action=argparse.BooleanOptionalAction, default=True)
     a = ap.parse_args()
+    # before anything is written: relabel_unique() stages into refs_dir well before the copy loop
+    os.makedirs(a.refs_dir, exist_ok=True)
 
     seq_index_path = a.seq_index or os.path.join(
         os.path.dirname(a.msa_root.rstrip("/")), "pdb_seqs", "seq_to_pdb_index.json")
@@ -268,7 +304,16 @@ def main():
             depo_of.setdefault(str(r.PDB_ID)[-4:].lower(), r.PDBdepo[:10])
 
     unresolved, ambiguous, relabelled = [], [], []
-    picks, skipped = representatives(a.val_clusters, a.reps, a.min_len, a.splits, a.excluded)
+    inst = None
+    if a.instances:
+        with open(a.instances) as fh:
+            inst = [r["instance"] for r in csv.DictReader(fh) if r.get("instance")]
+        if not inst:
+            raise SystemExit(f"STOP: no `instance` column values in {a.instances}")
+        print(f"explicit instances: {len(inst)} requested from {a.instances}")
+    picks, skipped = representatives(a.val_clusters, a.reps, a.min_len, a.splits, a.excluded, inst)
+    if inst is not None and len(picks) != len(inst):
+        raise SystemExit(f"STOP: asked for {len(inst)} instances, built {len(picks)}")
     print(f"structures picked: {len(picks)} from {len(set(c for c, *_ in picks))} clusters"
           + (f"   SKIPPED (fewer than 2 chains): {skipped}" if skipped else ""))
 
@@ -297,7 +342,7 @@ def main():
             # names cannot bridge the two files. Instead the staged reference gets unique labels
             # assigned here, and pool.csv is written to match -- both sides come from this function,
             # so they cannot disagree.
-            src_cif = relabel_unique(src_cif, f"{REPO}/extra_training/val_refs/{pdb}.relabelled.cif")
+            src_cif = relabel_unique(src_cif, os.path.join(a.refs_dir, f"{pdb}.relabelled.cif"))
             a2l, shared_lbl = ref_auth_to_label(src_cif)
             if shared_lbl:
                 raise SystemExit(f"STOP: {pdb} still has shared reference labels after relabelling: "
@@ -347,8 +392,8 @@ def main():
         src = src_cif
         ref_ok = os.path.exists(src)
         if ref_ok:
-            os.makedirs(f"{REPO}/extra_training/val_refs", exist_ok=True)
-            dst = f"{REPO}/extra_training/val_refs/{pdb}.cif"
+            os.makedirs(a.refs_dir, exist_ok=True)
+            dst = os.path.join(a.refs_dir, f"{pdb}.cif")
             # ALWAYS RE-STAGE. The old `if not os.path.exists(dst)` meant a file left by an earlier
             # run was never replaced -- which silently defeated the relabelling above: 8evg's
             # corrected reference was written, and then the stale copy with the degenerate labels was
@@ -380,16 +425,16 @@ def main():
     # pool.csv is what folder.py's interfaces_by_pdb() reads to decide which interfaces a target=*
     # unit is scored on. Without it the fold runs and scores NOTHING, and paths.py already points
     # sabdab_val's pool_csv here.
-    os.makedirs(f"{REPO}/extra_training/val_fold", exist_ok=True)
+    os.makedirs(a.fold_dir, exist_ok=True)
     # lineterminator="\n". csv.writer defaults to CRLF, and a shell reading the file with
     # `IFS=, read -r pdb c1 c2` keeps the \r in the last field -- producing interfaces like
     # "6mnq_AB\r", which scorer.py rejects because the chain pair is then three characters. Every
     # consumer here is POSIX, so LF is the right output and no reader needs to strip anything.
-    with open(f"{REPO}/extra_training/val_fold/pool.csv", "w", newline="") as fh:
+    with open(os.path.join(a.fold_dir, "pool.csv"), "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["pdb", "chain1", "chain2"], lineterminator="\n")
         w.writeheader()
         w.writerows(pool)
-    with open(f"{REPO}/extra_training/val_fold/chain_roles.csv", "w", newline="") as fh:
+    with open(os.path.join(a.fold_dir, "chain_roles.csv"), "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["pdb", "model_chain", "ref_chain", "auth_chain", "role"],
                            lineterminator="\n")
         w.writeheader()

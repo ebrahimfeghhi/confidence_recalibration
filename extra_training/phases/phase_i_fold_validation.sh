@@ -55,12 +55,26 @@ R=/home/ebrahim/tts_abag
 P=/home/ebrahim/Protenix
 PY=$P/.venv/bin/python
 C=$R/diffusion_commit_clean_v2
-E=$R/extra_training/val_fold
-J=$R/extra_training/val_jobs
+# THE FOLD IS PARAMETERISED, because there are two of them: the 50-cluster validation fold and the
+# 483-cluster training fold whose poses the confidence head is finetuned on. Everything that
+# distinguishes them -- output dir, job dir, reference store, dataset entry, seeds, tmux prefix,
+# whether the trunk cache is written -- is an env override with the validation fold as the default,
+# so the validation run's command line is unchanged.
+E=${FOLD_DIR:-$R/extra_training/val_fold}
+J=${JOBS_DIR:-$R/extra_training/val_jobs}
+REFS=${REFS_DIR:-$R/extra_training/val_refs}
+DATASET=${DATASET:-sabdab_val}
+# tmux session prefix. Two folds must not share it: kill_sessions matches on the prefix, so a
+# training run tearing down its workers would otherwise kill the validation run's as well.
+SESS=${SESS:-vf}
+# SAVE_TRUNKS=0 keeps poses, DockQ and ipTM and drops the ~250 MB/unit confidence-head cache. The
+# cache exists to replay the head offline; a fold whose poses are only training data does not need
+# it, and 483 structures x 20 seeds would be about 2.4 TB.
+SAVE_TRUNKS=${SAVE_TRUNKS:-1}
 MSA=$R/extra_training/msa_work/mmcif_msa
 PH=$R/extra_training/phases
 PXM=$R/experimental_data/protenix/pxm2025/free_extra10
-LOG=$R/extra_training/phase_i.log
+LOG=${PHASE_I_LOG:-$R/extra_training/phase_i.log}
 GPUS="${GPUS:-0 1}"
 # folder.py resolves a job as <jobs>/<pdb>-final-updated.json, so the pdb id is the basename with
 # that suffix removed -- not just ".json".
@@ -76,7 +90,8 @@ say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 die() { say "STOP: $*"; exit 1; }
 
 case "$MODE" in smoke|run|verify|rescore) ;; *) die "usage: phase_i_fold_validation.sh smoke|run|verify|rescore" ;; esac
-mkdir -p "$E" "$E/trunks" "$E/poses"
+mkdir -p "$E" "$E/poses"
+[ "$SAVE_TRUNKS" = 1 ] && mkdir -p "$E/trunks"
 
 # ---------------------------------------------------------------- inputs, checked before any GPU
 # EVERY INPUT VERIFIED BEFORE 16 HOURS OF GPU IS COMMITTED, and by content rather than by count. A
@@ -114,10 +129,10 @@ check_inputs() {
     # ModuleNotFoundError from any cwd, died on the `die` beneath it, and smoke never reached the
     # line. Smoke would pass and the full run would fail instantly. Both roots are added: $R for
     # paths.py, $C for the modules it pulls in.
-    SCORER=$($PY -c "import sys; sys.path[:0]=['$R','$C']; import paths; print(paths.DATASETS['sabdab_val'].scorer)" 2>&1)
+    SCORER=$($PY -c "import sys; sys.path[:0]=['$R','$C']; import paths; print(paths.DATASETS['$DATASET'].scorer)" 2>&1)
     case "$SCORER" in
-        ost|pxm) say "  scorer for dataset sabdab_val: $SCORER (from paths.py)" ;;
-        *) die "cannot resolve the scorer for dataset sabdab_val from paths.py: $SCORER" ;;
+        ost|pxm) say "  scorer for dataset $DATASET: $SCORER (from paths.py)" ;;
+        *) die "cannot resolve the scorer for dataset $DATASET from paths.py: $SCORER" ;;
     esac
     NTMPL=$(find "$MSA" -name hmmsearch.a3m 2>/dev/null | wc -l)
     say "inputs OK: $NJOB jsons, $NIF interfaces over $NPDB structures, $NTMPL hmmsearch.a3m, no dangling paths"
@@ -194,11 +209,13 @@ run_workers() {
     # a second worker only loads the model onto another card and then finds nothing to claim.
     local queue=$1 tag=$2 gpus=${3:-$GPUS} g last tick alive n
     for g in $gpus; do
-        tmux new-session -d -s vf_${tag}_$g "cd $P && CUDA_VISIBLE_DEVICES=$g \
-          LAYERNORM_TYPE=openfold \
-          TRUNK_DUMP_DIR=$E/trunks PROTENIX_DUMP_TRUNK_BF16=1 PROTENIX_DUMP_CONF_INPUTS=1 \
+        local dump=""
+        [ "$SAVE_TRUNKS" = 1 ] && dump="TRUNK_DUMP_DIR=$E/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
+          PROTENIX_DUMP_CONF_INPUTS=1"
+        tmux new-session -d -s ${SESS}_${tag}_$g "cd $P && CUDA_VISIBLE_DEVICES=$g \
+          LAYERNORM_TYPE=openfold $dump \
           $PY $C/folder.py --queue $queue --out $E/poses --csv $E/results.csv \
-          --claim-dir $E/claims --dataset sabdab_val --ncycle 10 --nsample "$NSAMPLE" \
+          --claim-dir $E/claims --dataset $DATASET --ncycle 10 --nsample "$NSAMPLE" \
           --dtype bf16 --overlap-scoring >> $E/w$g.log 2>&1"
         say "  launched $tag worker on GPU $g"
     done
@@ -210,7 +227,7 @@ run_workers() {
     last=-1; tick=0; stall=0
     while :; do
         alive=0
-        for g in $gpus; do tmux has-session -t vf_${tag}_$g 2>/dev/null && alive=1; done
+        for g in $gpus; do tmux has-session -t ${SESS}_${tag}_$g 2>/dev/null && alive=1; done
         [ "$alive" -eq 0 ] && break
         tick=$((tick+1)); stall=$((stall+1))
         n=$(done_units)
@@ -222,14 +239,14 @@ run_workers() {
             say "  BOUND HIT: $tick min elapsed, $stall min since the last unit"
             say "  (limits: MAX_WAIT_MIN=${MAX_WAIT_MIN:-2400}, STALL_MIN=${STALL_MIN:-90})"
             for g in $gpus; do
-                tmux has-session -t vf_${tag}_$g 2>/dev/null || continue
+                tmux has-session -t ${SESS}_${tag}_$g 2>/dev/null || continue
                 # BY PID, never by pattern: a pattern kill would match this script.
-                for pid in $(tmux list-panes -t vf_${tag}_$g -F '#{pane_pid}' 2>/dev/null); do
+                for pid in $(tmux list-panes -t ${SESS}_${tag}_$g -F '#{pane_pid}' 2>/dev/null); do
                     for child in $(pgrep -P "$pid" 2>/dev/null) "$pid"; do
                         say "    kill PID $child (stalled $tag worker on GPU $g)"; kill "$child" 2>/dev/null
                     done
                 done
-                sleep 5; tmux kill-session -t vf_${tag}_$g 2>/dev/null
+                sleep 5; tmux kill-session -t ${SESS}_${tag}_$g 2>/dev/null
             done
             break
         fi
@@ -274,8 +291,8 @@ resume_pxm() {
     # workers, so an interrupted run put BOTH workloads on the same cards -- two folds per GPU,
     # competing for memory, with neither job aware of the other.
     say "=== stopping validation workers before restoring PXM ==="
-    kill_sessions vf_val_
-    kill_sessions vf_smoke_
+    kill_sessions ${SESS}_val_
+    kill_sessions ${SESS}_smoke_
     say "=== restoring the PXM sweep ==="
     $PY $C/reconcile_stale_claims.py $PXM --dataset pxm2025 2>&1 | tail -1 | tee -a "$LOG"
     # ONLY WHAT WAS RUNNING BEFORE. Starting a worker on a card that had none is not a restore, it is
@@ -327,7 +344,7 @@ if [ "$MODE" = "smoke" ]; then
     run_workers "$SQ" smoke "$SMOKE_GPU"
 
     NCIF=$(find $E/poses -name '*.cif' 2>/dev/null | wc -l)
-    NTRUNK=$(find $E/trunks -name '*.npz' 2>/dev/null | wc -l)
+    NTRUNK=$(find $E/trunks -name '*.npz' 2>/dev/null | wc -l)   # 0 by design when SAVE_TRUNKS=0
     # NUMERIC dockq AND numeric iptm on at least one interface: proves the scorer ran, that OST
     # produced a score rather than discarding it (the --rigid-scores crash we have hit before), and
     # that the ipTM we will compare against after recalibration is actually being recorded.
@@ -339,7 +356,11 @@ if [ "$MODE" = "smoke" ]; then
     NCONF=$(find $E/poses -name '*summary_confidence_sample_*.json' 2>/dev/null | wc -l)
     say "  cifs $NCIF   trunk npz $NTRUNK   numeric dockq $NDOCKQ   numeric iptm $NIPTM   conf json $NCONF"
     [ "$NCIF"   -ge 1 ] || die "no pose cif"
-    [ "$NTRUNK" -ge 1 ] || die "no trunk npz -- TRUNK_DUMP_DIR did not fire"
+    if [ "$SAVE_TRUNKS" = 1 ]; then
+        [ "$NTRUNK" -ge 1 ] || die "no trunk npz -- TRUNK_DUMP_DIR did not fire"
+    else
+        [ "$NTRUNK" -eq 0 ] || die "SAVE_TRUNKS=0 but $NTRUNK npz were written -- the dump env leaked"
+    fi
     [ "$NDOCKQ" -ge 1 ] || die "no numeric DockQ -- scoring or the reference cif is wrong"
     [ "$NIPTM"  -ge 1 ] || die "no numeric ipTM"
     [ "$NCONF"  -ge 1 ] || die "no summary_confidence json -- per-interface ipTM would be lost"
@@ -350,6 +371,11 @@ if [ "$MODE" = "smoke" ]; then
     # EXIT STATUS, NOT A GREP OVER THE LOG. The validator was piped through tee without pipefail
     # and then grepped for NPZ_OK across the whole appended log, so a FAILING run passed as soon as
     # any earlier run had printed that marker. Its output is captured, shown, and its status checked.
+    if [ "$SAVE_TRUNKS" != 1 ]; then
+        touch "$E/SMOKE_OK"
+        say "=== smoke OK: pose, DockQ, ipTM, confidence json (SAVE_TRUNKS=0, no trunk cache) ==="
+        exit 0
+    fi
     NPZOUT=$($PY - "$E" "$NSAMPLE" <<'PYEOF' 2>&1
 
 import glob, sys, numpy as np
@@ -435,9 +461,10 @@ fi
 # results.csv and made the recovered rows incomparable to the rest.
 
 check_py() {
-    $PY $PH/phase_i_check.py "$1" --e "$E" --jobs "$J" --refs "$R/extra_training/val_refs" \
+    $PY $PH/phase_i_check.py "$1" --e "$E" --jobs "$J" --refs "$REFS" \
         --suffix="$JOB_SUFFIX" --seeds "$SEEDS" --seed0 "$SEED0" --nsample "$NSAMPLE" \
-        --scorer "$SCORER" --py "$PY" --code "$C" 2>&1 | tee -a "$LOG"
+        --scorer "$SCORER" --py "$PY" --code "$C" \
+        $([ "$SAVE_TRUNKS" = 1 ] || echo --no-trunks) 2>&1 | tee -a "$LOG"
     return "${PIPESTATUS[0]}"
 }
 
