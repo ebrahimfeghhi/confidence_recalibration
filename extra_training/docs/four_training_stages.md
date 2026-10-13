@@ -246,7 +246,60 @@ against labels computed from the mini-rollout pose versus the permuted ground tr
 FT3 saves the cost of constructing and evaluating them, not just their contribution — which is most
 of why it is ~13 s/step against FT2's ~44.
 
-## 8. What this means for our re-run
+## 8. Optimisation settings
+
+Nothing below is stage-specific: Protenix ships one optimiser block for every stage
+(`configs_base.py:72-95`). `train_crop_size`, `diffusion_batch_size`, the loss weights and
+`train_confidence_only` in section 1 are the only settings its stage table varies.
+
+| setting | config default | key |
+|---|---|---|
+| learning rate | 0.0018 | `lr` |
+| scheduler | `af3` | `lr_scheduler` |
+| warmup steps | 10 | `warmup_steps` |
+| decay | x0.95 every 50,000 steps | `af3_lr_scheduler.decay_factor`, `decay_every_n_steps` |
+| lr floor | 0.1x | `min_lr_ratio` |
+| max steps | no default, required | `max_steps` |
+| gradient clip | 10 | `grad_clip_norm` |
+| Adam beta1 / beta2 | 0.9 / 0.95 | `adam.beta1`, `adam.beta2` |
+| weight decay | 1e-8, plain Adam | `adam.weight_decay`, `adam.use_adamw = False` |
+| EMA | off | `ema_decay = -1.0` |
+| gradient accumulation | 1 | `iters_to_accumulate` |
+| seed | 42 | `seed` |
+
+The two demo scripts override some of these (`train_demo.sh`, `finetune_demo.sh`, identical on this
+block): `lr 0.001`, `warmup_steps 2000`, `max_steps 100000`, `ema_decay 0.999`, `eval_interval 400`,
+`log_interval 400`, `checkpoint_interval 400`, `dtype bf16`.
+
+**Unpublished for FT3.** The repo gives no learning rate, step count or data mix for stage 3
+specifically. `max_steps` is `RequiredValue(int)` with no default (`configs_base.py:77`), and
+neither demo script sets `train_confidence_only`, so there is no FT3 command to copy.
+
+### FT3-relevant model settings
+
+| setting | value | file |
+|---|---|---|
+| `N_cycle` (protenix-v2) | 10, drawn uniformly 1-10 per train step | `configs_model_type.py:56`, `protenix.py:1842` |
+| `N_step_mini_rollout` | 20 | `configs_base.py:183` |
+| `N_sample_mini_rollout` | 1 | `configs_base.py:184` |
+| `confidence_embedding_drop_rate` | 0.0 | `configs_base.py:251` |
+| confidence `n_blocks` | 4 | `configs_base.py:341-354` |
+| confidence `stop_gradient` | True | `configs_base.py:341-354` |
+| confidence `pairformer_dropout` | 0.0 | `configs_base.py:341-354` |
+
+### Cost, from Protenix's table
+
+| stage | s/step (A100-80G) | peak GPU memory |
+|---|---|---|
+| initial training | ~12 | ~34 GB |
+| fine-tune 1 | ~30 | ~35 GB |
+| fine-tune 2 | ~44 | ~48 GB |
+| **fine-tune 3** | **~13** | **~24 GB** |
+
+`diffusion_batch_size = 32` is listed for FT3 but has no effect: the forward returns at
+`protenix.py:1750` before `sample_diffusion_training`, the only reader of it.
+
+## 9. What this means for our re-run
 
 | fact | consequence for us |
 |---|---|
@@ -257,7 +310,7 @@ of why it is ~13 s/step against FT2's ~44.
 | ipTM is a TM-kernel reduction of PAE (§5) | we cannot recalibrate ipTM directly; we change PAE and ipTM follows |
 | labels need ground truth and frames (§6) | every training structure needs a reference cif with resolvable frames, which is what phase G stages |
 
-## 9. Pointers
+## 10. Pointers
 
 | | |
 |---|---|
