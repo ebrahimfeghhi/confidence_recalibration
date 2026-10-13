@@ -95,11 +95,16 @@ def main():
     os.makedirs(err, exist_ok=True)
     train, _test = get_datasets(cfg, err)
     print(f"datapoints: {len(train)}")
-    feat, label, label_full = train[a.index]
-    for nm, d in (("features", feat), ("labels", label), ("label_full", label_full)):
+    # dataset.py:590 returns a DICT -- input_feature_dict / label_dict / label_full_dict / basic --
+    # not the (features, labels, label_full) tuple that process_one's inner helper returns at :894.
+    item = train[a.index]
+    print(f"item keys: {sorted(item)}")
+    print(f"basic: { {k: v for k, v in item['basic'].items() if not hasattr(v, '__len__') or isinstance(v, str)} }")
+    for nm in ("input_feature_dict", "label_dict", "label_full_dict"):
+        d = item[nm]
         ks = sorted(d) if isinstance(d, dict) else []
-        print(f"{nm}: {len(ks)} keys")
-        for k in ks[:40]:
+        print(f"\n{nm}: {len(ks)} keys")
+        for k in ks:
             v = d[k]
             print(f"   {k:34s} {tuple(getattr(v, 'shape', ()))} {getattr(v, 'dtype', type(v).__name__)}")
 
