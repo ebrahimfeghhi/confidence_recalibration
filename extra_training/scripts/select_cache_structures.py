@@ -2,7 +2,12 @@
 """Freeze the structure list for the FT3 training cache.
 
 Selection, in order (see docs/cached_training.md):
-  1. training clusters (results/train_clusters.csv -- the 483 left after the validation split)
+  0. EXCLUDE every cluster in the live validation split. results/train_clusters.csv is STALE: it was
+     built against the ORIGINAL 50 phase-B validation clusters, and the 2026-10-13 redesign moved
+     validation to 40 clusters, 22 of which that file still lists as training. Without this step the
+     selection contained 44 structures from validation clusters, 28 of them structures actually
+     folded into the validation set. Never trust train_clusters.csv alone.
+  1. training clusters (results/train_clusters.csv, minus step 0)
   2. keep clusters holding >=1 post-2021-09-30 structure                     -> 224 clusters
   3. keep only the post-cutoff structures in them                            -> 1,594
   4. cap at --cap structures per (ab_cluster, agclusters) pairing            -> 666 at cap 2
@@ -42,12 +47,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--split", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
     ap.add_argument("--train-clusters", default=f"{ROOT}/results/train_clusters.csv")
+    ap.add_argument("--val-clusters", default=f"{ROOT}/results/val_split_proposal_clusters.csv",
+                    help="the LIVE validation split; its clusters are removed from training")
     ap.add_argument("--seq-index", default=f"{ROOT}/msa_work/pdb_seqs/seq_to_pdb_index.json")
     ap.add_argument("--cap", type=int, default=2, help="structures per (ab, ag) pairing")
     ap.add_argument("--out", default=f"{ROOT}/results/cache_train_structures.csv")
     a = ap.parse_args()
 
     train = {r["cluster"] for r in csv.DictReader(open(a.train_clusters))}
+    val = {str(r["cluster"]) for r in csv.DictReader(open(a.val_clusters))}
+    leaked = train & val
+    train -= val
+    print(f"train clusters {len(train) + len(leaked)} -> {len(train)} after removing "
+          f"{len(leaked)} that are in the live validation split")
     rows = [r for r in csv.DictReader(open(a.split))
             if str(r["ab_ag_cluster"]) in train and (r["PDBdepo"] or "")[:10] > CUT]
     if not rows:
@@ -84,6 +96,7 @@ def main():
         w.writeheader()
         w.writerows(picked)
 
+    assert not ({r["cluster"] for r in picked} & val), "validation cluster survived the filter"
     pdbs = {r["pdb"] for r in picked}
     blocked = [r for r in picked if not r["msa_ok"]]
     need = {s for r in blocked for s in chain_seqs(byinst[r["instance"]]) if s not in idx}

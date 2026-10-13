@@ -10,15 +10,8 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 1014,8vgl,pdb_00008vgl_E_F,1397,P510/P510,1030,4,1
 1014,8vgm,pdb_00008vgm_E_F,1397,P510/P510,1031,4,1
 1017,9nk9,pdb_00009nk9_A_+,3854,E92,128,2,1
-103,7url,pdb_00007url_A1_A2,126,,245,2,0
-103,9n97,pdb_00009n97_A1_A2,126,,254,2,0
-103,8v8f,pdb_00008v8f_C1_C2,126,E170,249,3,1
 1034,7yk4,pdb_00007yk4_H_L,1436,,428,2,0
 1034,8ag1,pdb_00008ag1_h_l,2867,,431,2,0
-105,8thn,pdb_00008thn_A_B,128,,431,2,1
-105,7sqw,pdb_00007sqw_A_B,128,P3/,534,3,1
-1055,9rye,pdb_00009rye_C_+,1463,P275,699,2,1
-1055,9ryf,pdb_00009ryf_C_+,1463,P275,699,2,1
 1070,7u0b,pdb_00007u0b_H_L,1484,,433,2,0
 1070,9msc,pdb_00009msc_A_B,1485,P220/,699,3,1
 1070,8tfe,pdb_00008tfe_C_D,2928,,432,2,0
@@ -27,18 +20,11 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 1070,9ms9,pdb_00009ms9_H_L,3342,,432,2,0
 1070,9mnq,pdb_00009mnq_H_L,3562,/P220,605,3,1
 1070,9o3d,pdb_00009o3d_A_B,3821,/P220/,697,3,1
-1103,9lqu,pdb_00009lqu_C_+,1533,,129,1,0
-1103,9lqw,pdb_00009lqw_C_+,1533,,129,1,0
-1103,8xqj,pdb_00008xqj_A_+,1533,P99,606,2,1
-1103,8z74,pdb_00008z74_A_+,1533,P99,607,2,1
-1108,9nr6,pdb_00009nr6_E1_E2,1545,P61,602,3,1
-1118,8apy,pdb_00008apy_C_+,1560,P428/,333,2,1
 1139,9eth,pdb_00009eth_H_L,1596,/P241,634,3,1
 1139,9eti,pdb_00009eti_H_L,1596,P241,641,3,1
 1144,8k4q,pdb_00008k4q_B_+,3200,P226,332,2,1
 1148,9b70,pdb_00009b70_G_+,1613,P583,489,2,1
 1148,9b71,pdb_00009b71_G_+,1613,P583,489,2,1
-1150,7r58,pdb_00007r58_H_L,2200,P269/,638,3,1
 1234,8cn9,pdb_00008cn9_Q_P,2724,,426,2,0
 1234,8ol9,pdb_00008ol9_B_A,3102,P340,674,3,1
 1242,7xtp,pdb_00007xtp_C_+,1773,P190,351,2,1
@@ -50,7 +36,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 1271,9mq0,pdb_00009mq0_H_L,3701,P158,443,3,1
 1271,9mpz,pdb_00009mpz_H_L,3732,P158/P254,668,4,1
 1271,9wph,pdb_00009wph_H_L,4060,P254,455,3,1
-1299,7zra,pdb_00007zra_E_+,2681,P179/P179,524,3,1
 1341,9bir,pdb_00009bir_B_+,1969,,123,1,1
 1341,9bis,pdb_00009bis_B_+,1969,,123,1,1
 1350,9osx,pdb_00009osx_B_C,1986,P361,560,3,1
@@ -71,7 +56,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 1486,7sjm,pdb_00007sjm_H_L,2235,,433,2,1
 1486,7sjn,pdb_00007sjn_D_E,2235,,223,2,0
 1486,7sjp,pdb_00007sjp_H_L,2235,/E201,444,3,1
-1507,7tzh,pdb_00007tzh_C1_C2,2274,,230,2,0
 1520,7u8c,pdb_00007u8c_H_L,2296,E116,444,3,1
 1520,9z3b,pdb_00009z3b_B_A,3751,E116,460,3,1
 1520,9p4c,pdb_00009p4c_H_L,3867,E116,444,3,1
@@ -161,7 +145,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 1798,9nz5,pdb_00009nz5_F_E,2883,P72,698,3,1
 1798,8w2e,pdb_00008w2e_D_C,2883,P72/P72,947,4,1
 1798,9ctu,pdb_00009ctu_D_C,2883,P72/P72,893,4,1
-1799,7zmk,pdb_00007zmk_B_C,2845,P391,691,3,1
 1820,8cz5,pdb_00008cz5_H_L,2890,P333,768,3,1
 1828,7yru,pdb_00007yru_H_L,2901,P358,539,3,1
 1834,8tui,pdb_00008tui_H_L,2909,P313,694,3,1
@@ -209,7 +192,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 2017,8v9d,pdb_00008v9d_I_J,3218,P486/P486,1139,4,1
 2017,8v91,pdb_00008v91_J_I,3309,P486/P486,1074,4,1
 2047,8tco,pdb_00008tco_E_D,3264,P26/,500,3,1
-2065,8og0,pdb_00008og0_H_L,3286,E66,432,3,1
 2070,8vba,pdb_00008vba_H_L,3292,P62//,1786,3,1
 2083,9j3n,pdb_00009j3n_B_+,3312,P85,707,2,1
 2083,9j3o,pdb_00009j3o_B_+,3312,P85,707,2,1
@@ -249,11 +231,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 2154,9r0b,pdb_00009r0b_C_+,3434,P550//,453,2,1
 2154,9r0j,pdb_00009r0j_C_+,3434,P550//,453,2,1
 2156,9gvn,pdb_00009gvn_C_D,3439,P191/P191/,666,4,1
-2173,9ima,pdb_00009ima_C_D,3470,P272,787,3,1
-2184,9bx5,pdb_00009bx5_H_L,3488,,426,2,0
-2184,9b88,pdb_00009b88_A_B,3488,///,433,2,0
-2184,9bx7,pdb_00009bx7_H_L,3488,///E86,446,3,1
-2184,9cfd,pdb_00009cfd_H_L,3488,//E86,443,3,1
 2188,9b2w,pdb_00009b2w_B_C,3495,,440,2,0
 2188,9yq6,pdb_00009yq6_B_C,3495,P492/P492,1108,4,1
 2188,9zb5,pdb_00009zb5_C_E,4094,P492,702,3,1
@@ -261,7 +238,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 2193,9g13,pdb_00009g13_G_+,3505,E135,139,2,1
 2209,9f18,pdb_00009f18_H_L,3541,,441,2,0
 2209,9f1i,pdb_00009f1i_H_L,3541,///E131,451,3,1
-2225,9c7x,pdb_00009c7x_A_B,3570,E130,455,3,1
 2228,9clp,pdb_00009clp_H_L,3576,P206,656,3,1
 223,8iqs,pdb_00008iqs_H_L,287,,338,2,0
 223,9dq5,pdb_00009dq5_H_L,287,,431,2,0
@@ -296,7 +272,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 2311,9dh2,pdb_00009dh2_K_L,3733,P207,565,3,1
 2312,9e76,pdb_00009e76_S_+,3735,P436/P436,445,3,1
 2312,9e7l,pdb_00009e7l_Q_+,4047,P436/P436,439,3,1
-2313,9lme,pdb_00009lme_C_+,3737,P199////,342,2,1
 2318,9og1,pdb_00009og1_B_C,3748,P490,644,3,1
 2318,9qt3,pdb_00009qt3_B_C,3800,,432,2,1
 2318,9og2,pdb_00009og2_B_C,3839,P490,641,3,1
@@ -322,10 +297,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 239,8vgn,pdb_00008vgn_A_B,309,,437,2,1
 239,8vgo,pdb_00008vgo_A_B,309,,438,2,0
 2392,9nsd,pdb_00009nsd_C_+,3889,P451,398,2,1
-2403,8tbq,pdb_00008tbq_H_L,3914,/P225,596,3,1
-2417,8pjp,pdb_00008pjp_C_+,3937,P235/,286,2,1
-2417,8pij,pdb_00008pij_B_+,3940,P235//,288,2,1
-2417,8piz,pdb_00008piz_B_+,3940,P235//,288,2,1
 2435,9jqy,pdb_00009jqy_H_L,3961,P539,950,3,1
 2435,9jqz,pdb_00009jqz_H_L,3961,P539,950,3,1
 2438,8hsc,pdb_00008hsc_F_E,3968,,227,2,0
@@ -345,9 +316,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 252,9lsi,pdb_00009lsi_C1_D2,324,P522,678,3,1
 252,9lsj,pdb_00009lsj_D1_E2,324,P522/P522,1123,4,1
 2525,9p1v,pdb_00009p1v_H_L,4118,P440/,1277,3,1
-2529,9y7l,pdb_00009y7l_B_C,4125,,443,2,1
-2529,9y7m,pdb_00009y7m_B_C,4125,,443,2,1
-2529,9y7n,pdb_00009y7n_B_C,4125,E190,706,3,1
 2533,12qj,pdb_000012qj_B_C,4133,P543,630,3,1
 2547,9yxv,pdb_00009yxv_H_L,4151,P513/R2/,530,3,1
 2552,12py,pdb_000012py_H_L,4161,,432,2,0
@@ -369,10 +337,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 273,7xw6,pdb_00007xw6_Y_L,382,,232,2,0
 293,9z2h,pdb_00009z2h_HH_LL,3893,E3,456,3,1
 298,7ssc,pdb_00007ssc_H_L,2201,E87,448,3,1
-299,8z39,pdb_00008z39_H_L,386,P402,596,3,1
-299,8z2v,pdb_00008z2v_H_L,386,P402/,593,3,1
-299,8yyz,pdb_00008yyz_H_L,386,P402//,596,3,1
-299,8z3a,pdb_00008z3a_H_L,386,P402//,593,3,1
 32,9i5n,pdb_00009i5n_B_A,3693,P454/,368,3,1
 321,9ea9,pdb_00009ea9_C_+,549,,117,1,1
 326,9lsi,pdb_00009lsi_D1_C2,424,P347,1137,3,1
@@ -385,10 +349,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 355,7xk9,pdb_00007xk9_B_+,646,,120,1,1
 355,7xka,pdb_00007xka_B_+,646,,120,1,1
 368,7ued,pdb_00007ued_H_L,479,,432,2,0
-4,8t58,pdb_00008t58_A_+,228,,125,1,0
-4,8t6i,pdb_00008t6i_A_+,228,,127,1,0
-4,9fgy,pdb_00009fgy_C_+,228,/P367,255,2,1
-4,8gq1,pdb_00008gq1_H_L,4,/P367,539,3,1
 412,9lbw,pdb_00009lbw_H_L,3481,P103/P103,600,4,1
 412,8zre,pdb_00008zre_H_L,3555,P103,377,3,1
 416,8ipc,pdb_00008ipc_H_L,880,,427,2,0
@@ -486,9 +446,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 6,8hry,pdb_00008hry_H_L,3009,P256/E20,831,4,1
 6,8rqf,pdb_00008rqf_H_L,3041,P256/E20,831,4,1
 6,8hrx,pdb_00008hrx_H_L,3076,P256/E20,829,4,1
-605,7su1,pdb_00007su1_H_L,1144,,428,2,0
-605,9dq3,pdb_00009dq3_H_L,1144,,429,2,0
-605,7su0,pdb_00007su0_H_L,1144,/P57,551,3,1
 611,9gu0,pdb_00009gu0_F_C,818,,403,2,0
 611,9gu1,pdb_00009gu1_F_C,818,,424,2,0
 64,9mi6,pdb_00009mi6_H_L,1251,P307/P328,806,4,1
@@ -597,7 +554,6 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,msa_ok
 654,9ixa,pdb_00009ixa_H_L,3602,P142/P288,1282,4,1
 654,9bbn,pdb_00009bbn_S_T,3667,P142/P483,925,4,1
 654,8dwy,pdb_00008dwy_H_L,873,P142,645,3,1
-655,9cn2,pdb_00009cn2_B1_B2,3675,P196,454,3,1
 662,8w9h,pdb_00008w9h_B_A,1025,,433,2,0
 662,8w9j,pdb_00008w9j_B_A,1025,P534,637,3,1
 677,8pul,pdb_00008pul_A_B,1344,/,441,2,0
