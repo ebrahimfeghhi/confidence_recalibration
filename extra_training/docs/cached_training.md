@@ -17,17 +17,40 @@ generator was never trained on, and serve it from a precomputed cache.
 | | proposed |
 |---|---|
 | training set | post-cutoff structures in clusters holding ≥1 of them, redundancy-filtered |
-| structures | 663 (cap ≤2 per antibody/antigen pairing) |
+| structures | **665** (cap ≤2 per antibody–antigen pairing) |
+| clusters represented | **224 of 224** |
 | seeds per structure | **10** |
 | each seed | one fold at `N_cycle=10`, 200 diffusion steps, `N_sample=5` poses |
+| cached units | 6,650 (one `z_trunk` each) |
+| poses cached | 33,250 (5 per unit, sharing that unit's `z_trunk`) |
 | cached per unit | `z_trunk`, `s_trunk`, `s_inputs`, the 5 poses, feature masks |
-| storage | **1,542 GB** of 2,040 GB free |
-| build cost | 6,630 folds ≈ 15 h on 3 GPUs |
+| storage | **~1,542 GB** of 2,040 GB free, leaving ~500 GB |
+| build cost | 6,650 folds ≈ **15 h** on 3 GPUs |
 | training cost after build | ~1 h per run, versus ~19 h uncached |
-| control arm | the 924 excluded pre-cutoff structures, same recipe |
 
-The alternative split of the same budget — all 1,594 structures at 5 seeds, 1,509 GB — is question 2
-in §6 and is genuinely open.
+### Why this split of the budget
+
+Equal-cost alternatives, all within reach of 2,040 GB:
+
+| design | storage |
+|---|---|
+| **665 structures × 10 seeds** | **1,542 GB** |
+| 1,594 structures × 5 seeds | 1,509 GB |
+| 1,594 structures × 6 seeds | 1,811 GB |
+
+Spending on seeds rather than structures, because seed is the axis the variance lives on: 87% of
+ipTM variance is between seeds of the same interface, and the hard training examples — confident
+representation, wrong pose — are produced by depth, not breadth (§3). The redundancy filter costs
+almost nothing in return: 665 structures still contain all 567 distinct antibody–antigen pairings,
+so what is discarded is duplicate crystal forms.
+
+Ten seeds also reaches the thin tail that matters: 41 of 292 PXM interfaces find an acceptable pose
+in ≤5 of 100 seeds (§3). At 5 seeds per structure roughly half of those cases would never appear in
+the cache at all.
+
+**Seeds are incrementally addable.** Each seed is an independent fold, so extending 10 → 15 later
+appends folds without rebuilding anything. The same is true of structures. What cannot be revised
+after the build is rollout length, `N_cycle` and `N_sample`.
 
 **What this is for.** Two claims. (1) Calibrating the confidence head on data the generator has not
 seen improves selection; the control arm tests it. (2) Training the head on several poses that share
@@ -70,14 +93,33 @@ filter below instead caps structures per (antibody cluster, antigen cluster) pai
 
 | cap per (ab, ag) pair | structures | median tokens |
 |---|---|---|
-| ≤1 | 566 | 534 |
-| ≤2 | 663 | 524 |
-| ≤3 | 702 | 514 |
+| ≤1 | 567 | 534 |
+| ≤2 | **665** | 524 |
+| ≤3 | 704 | 514 |
 | uncapped | 1,594 | 572 |
 
 567 is the number of distinct antibody–antigen pairings with any post-cutoff structure, so ≤1 keeps
-one example of each. ≤2 adds 97 structures; ≤3 adds 39 more. The remaining 890 up to 1,594 are
+one example of each. ≤2 adds 98 structures; ≤3 adds 39 more. The remaining 890 up to 1,594 are
 duplicate crystal forms of pairings already represented.
+
+(Storage figures elsewhere are computed over the 663 of 665 that carry a token count in
+`abag_split.csv`; two have none, so their size is unknown rather than zero.)
+
+**Every cluster survives the filter**, since a cluster qualifies only by holding a post-cutoff
+structure, which is itself a pairing. Structures kept per cluster at cap ≤2:
+
+| structures kept | clusters |
+|---|---|
+| 1 | 110 |
+| 2 | 52 |
+| 3 | 24 |
+| 4 | 11 |
+| 5 | 6 |
+| 6 | 6 |
+| 7–93 | 15 |
+
+Half the clusters contribute one structure. The 93 is the cluster holding 108 distinct antibody
+clusters — the case a flat per-cluster cap would have destroyed.
 
 ---
 
@@ -195,9 +237,9 @@ is `z_trunk` (measured: 94.7 MB of 97.5 MB at N=430).
 
 | filter | structures | 5 seeds | 10 seeds |
 |---|---|---|---|
-| ≤1 per (ab, ag) | 566 | 681 GB | 1,362 GB |
-| ≤2 | 663 | 771 GB | **1,542 GB** |
-| ≤3 | 702 | 801 GB | 1,601 GB |
+| ≤1 per (ab, ag) | 567 | 681 GB | 1,362 GB |
+| ≤2 | **665** | 771 GB | **1,542 GB — proposed** |
+| ≤3 | 704 | 801 GB | 1,601 GB |
 
 ### Size is not concentrated in a tail
 
@@ -224,7 +266,7 @@ At the measured 442 folds/h on 3 GPUs:
 
 | design | folds | build time |
 |---|---|---|
-| 663 structures × 10 seeds | 6,630 | ~15 h |
+| **665 structures × 10 seeds (proposed)** | **6,650** | **~15 h** |
 | 1,594 × 5 seeds | 7,970 | ~18 h |
 | 1,594 × 10 seeds | 15,940 | ~36 h |
 
@@ -259,10 +301,10 @@ This is everything `run_confidence_head` consumes, so rescoring needs no trunk a
    it pays for itself on the second run. Which regime should we plan for?
 
 2. **Given 2,040 GB, what is the better split of the budget:** all 1,594 structures at 5 seeds
-   (1,509 GB), or 663 redundancy-filtered structures at 10 seeds (1,542 GB)? Same cost. The first
-   buys target diversity, the second buys seed diversity per target. §3 argues the failure mode is
-   within-target and between-seed; §1 argues generalisation is a cluster property and we have only
-   224 clusters either way.
+   (1,509 GB), or 665 redundancy-filtered structures at 10 seeds (1,542 GB)? Same cost. We propose
+   the second (§0). The first buys target diversity, the second buys seed diversity per target. §3
+   argues the failure mode is within-target and between-seed; §1 argues generalisation is a cluster
+   property and we have only 224 clusters either way.
 
 3. **How many seeds per structure is enough?** This is measurable before spending anything: the
    validation cache is 53 structures × 100 seeds, so the fraction of a structure's error distribution
