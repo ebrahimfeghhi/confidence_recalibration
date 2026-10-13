@@ -60,6 +60,9 @@ def main():
     ap.add_argument("--cluster-file", default=None)
     ap.add_argument("--n-cpu", type=int, default=32)
     ap.add_argument("--run", action="store_true", help="actually invoke prepare_training_data.py")
+    ap.add_argument("--skipped", default=f"{ROOT}/train_prep/skipped.csv",
+                    help="structures Protenix's parser cannot build, with the reason. A failure not "
+                         "already listed here is a STOP; one that is listed is skipped.")
     a = ap.parse_args()
 
     sel = list(csv.DictReader(open(a.selection)))
@@ -125,12 +128,28 @@ def main():
     rc = subprocess.call(cmd, env=env)
     if rc != 0:
         raise SystemExit(f"STOP: prepare_training_data.py exited {rc}")
-    n_pkl = len([f for f in os.listdir(a.bio_dir) if f.endswith(".pkl.gz")])
+    built = {f[:-7] for f in os.listdir(a.bio_dir) if f.endswith(".pkl.gz")}
     n_rows = sum(1 for _ in open(a.out_csv)) - 1 if os.path.exists(a.out_csv) else 0
-    print(f"bioassembly pickles: {n_pkl} of {len(paths)} cifs")
+    print(f"bioassembly pickles: {len(built)} of {len(paths)} cifs")
     print(f"indices rows: {n_rows}")
-    if n_pkl < len(paths):
-        raise SystemExit(f"STOP: {len(paths) - n_pkl} cif(s) produced no bioassembly dict")
+
+    # SKIP WITH A RECORDED REASON, never accommodate. A structure Protenix's parser cannot build is
+    # dropped and written down; nothing about the run is relaxed to make it fit. A failure that is
+    # NOT already in the skip file stops the phase, so a new one cannot join the old ones silently.
+    known = {}
+    if os.path.exists(a.skipped):
+        known = {r["pdb"]: r.get("reason", "") for r in csv.DictReader(open(a.skipped))}
+    failed = sorted({os.path.basename(p)[:-4] for p in paths} - built)
+    new = [f for f in failed if f not in known]
+    if new:
+        raise SystemExit(
+            f"STOP: {len(new)} cif(s) produced no bioassembly dict and are not in {a.skipped}: "
+            f"{new[:10]}\nRun each one alone to get its traceback, then add it with a reason.")
+    if failed:
+        for f in failed:
+            print(f"  SKIPPED {f}: {known[f]}")
+        print(f"{len(failed)} structure(s) skipped with a recorded reason; "
+              f"{len(built)} prepared")
 
 
 if __name__ == "__main__":
