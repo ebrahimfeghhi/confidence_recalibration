@@ -74,3 +74,58 @@ pool grows from 78 to 86 interfaces.
 disagree with the pool on how often a seed finds an acceptable pose, at p<0.001 and in both
 directions. These are max-over-seeds statistics, which is exactly what such a disagreement moves.
 See each benchmark's `free_pool/INDEX.md`.
+
+## Queued: both benchmarks to 100 usable seeds
+
+Not launched. Runs after the 40-cluster validation fold and its 13 second representatives.
+
+| | folds | on 3 GPUs | poses |
+|---|---|---|---|
+| PXM-2025 | 290 (29 already done) | 1.5 h | ~1 GiB |
+| FoldBench | 1,554 | 8.9 h | ~4 GiB |
+
+### Why FoldBench costs 6x what PXM does, and what was decided
+
+FoldBench's usable depth is 60 seeds (the 50-seed pool plus `extra10`), because its 151-200 block is
+`suspect` in the pooled table. Three policies were priced:
+
+| policy | folds | on 3 GPUs |
+|---|---|---|
+| (a) ignore the suspect block, fold 40 fresh seeds for all 104 structures | 4,161 | 35.7 h |
+| (b) credit the suspect block entirely | 1,192 | 6.3 h |
+| **(c) credit it except the 10 disagreeing complexes, which refold** | **1,554** | **8.9 h** |
+
+**(c) was chosen.** The 10 are `8up2 7x8p 8vyl 8oni 7zoz 8be3 8urf 8che 8byu 9fww` -- the complexes
+whose suspect block disagrees with the pool at p<0.001 on how often a seed finds an acceptable pose,
+in both directions (`8up2_AC` 48/50 -> 23/50, `8vyl_AF` 15/50 -> 0/50). For the other 94 the paired
+mean DockQ matches to 0.007, so crediting them is sound; (a) would spend 27 extra GPU-hours
+re-deriving seeds we already have, and (b) would carry the disagreement into coverage counts, which
+are max-over-seeds statistics and therefore exactly what it moves.
+
+### How to launch
+
+    cd diffusion_commit_clean_v2
+    # foldbench queue already written by:
+    python3 build_topup_queue.py --dataset foldbench --credit-suspect-except-flagged --seed0 600000 --apply
+    # -> experimental_data/protenix/foldbench/free_top100/queue.tsv, seeds 600000-600039, 1554 folds
+
+    # then one worker per card, e.g.
+    tmux new-session -d -s fb_top100_0 "cd ~/Protenix && CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold \
+      ~/Protenix/.venv/bin/python ~/tts_abag/diffusion_commit_clean_v2/folder.py \
+      --queue <arm>/queue.tsv --out <arm>/poses --csv <arm>/results.csv --claim-dir <arm>/claims \
+      --dataset foldbench --ncycle 10 --nsample 5 --dtype bf16 --overlap-scoring >> <arm>/w0.log 2>&1"
+
+Workers share one queue through the claim directory, so three on one queue is the normal pattern.
+
+**PXM resumes its existing arm, it is not regenerated.** `pxm2025/free_top100/queue.tsv` already
+holds the right 290 folds at seeds 300601+ with 29 done; running the generator for pxm would allocate
+310000+ and discard that work.
+
+**FoldBench folds template-free.** `paths.DATASETS['foldbench'].free_templates = False`, matching the
+pool its seeds join; `--dataset foldbench` enforces it. PXM folds with templates. Mixing the two
+within a benchmark's pool would be a settings inconsistency of exactly the kind the `tier` column
+exists to catch.
+
+After both finish: rerun `build_free_pool.py --apply`, confirm every interface reaches 100 usable
+seeds, and regenerate the tables above with `analysis/seed_depth_split.py --boots 30` -- for FoldBench
+at `--universe 100` rather than 60.
