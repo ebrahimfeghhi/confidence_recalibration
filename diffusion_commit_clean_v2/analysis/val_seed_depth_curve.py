@@ -27,7 +27,9 @@ CLASSES, per interface, for a given draw of k seeds:
 WEIGHTING is the frozen convention: fractions are computed within each cluster, then averaged over
 clusters with equal weight, so a cluster contributing two representatives counts once.
 
-DRAWS. k=1 enumerates all --universe single-seed draws exactly; there are only 100 of them, so
+DRAWS. A draw is ONE subset of k seeds per interface, classified once; the three class fractions are
+then read off those labels, so they sum to 100 by construction. Sampling separately per class would
+make a row three unrelated draws. k=1 enumerates all --universe single-seed draws exactly; there are only 100 of them, so
 sampling would be strictly worse than counting. k=--universe has exactly one possible draw and
 therefore zero spread by construction. In between, --boots draws without replacement under a fixed
 seed. The band is +-1 sd ACROSS DRAWS -- the spread of the estimate at that depth, not a confidence
@@ -150,9 +152,14 @@ def compare_arms(a, byclust, kind, dropped):
     nif = {arm: sum(len(byclust[g]) for g in gs) for arm, gs in groups.items()}
     depths = [int(x) for x in a.depths.split(",") if 0 < int(x) <= a.universe]
 
-    def frac(gs, pick):
-        return st.mean([st.mean([1.0 if classify(sd, pick(sd)) == a.compare_arms else 0.0
-                                 for sd in byclust[g]]) for g in gs])
+    def draw_labels(pick):
+        """ONE SAMPLING PER DRAW, shared by every arm -- `all` and `all new` must see the same
+        subset of seeds for an interface they both contain, or the lines are not comparable."""
+        return {g: [classify(sd, pick(sd)) for sd in byclust[g]] for g in byclust}
+
+    def frac(gs, labels):
+        return st.mean([st.mean([1.0 if x == a.compare_arms else 0.0 for x in labels[g]])
+                        for g in gs])
 
     series, table = {}, []
     for k in depths:
@@ -163,8 +170,9 @@ def compare_arms(a, byclust, kind, dropped):
         else:
             picks = [(lambda sd, _=_: rng.sample(list(sd), k)) for _ in range(a.boots)]
         row = {"seeds": k, "draws": len(picks)}
+        labelled = [draw_labels(p) for p in picks]
         for arm, gs in groups.items():
-            v = [frac(gs, p) for p in picks]
+            v = [frac(gs, lab) for lab in labelled]
             series.setdefault(arm, []).append((st.mean(v), st.stdev(v) if len(v) > 1 else 0.0))
             row[arm] = st.mean(v)
             row[arm + " sd"] = st.stdev(v) if len(v) > 1 else 0.0
@@ -258,11 +266,13 @@ def main():
         return "acceptable" if chosen >= a.thresh else "decoy"
 
     def fracs(pick):
-        out = {}
-        for cls in CLASSES:
-            out[cls] = st.mean([
-                st.mean([1.0 if classify(sd, pick(sd)) == cls else 0.0 for sd in byclust[c]])
-                for c in clusters])
+        """ONE SAMPLING PER DRAW. A draw is one k-subset per interface, classified once; the three
+        fractions are then read off those labels. Scoring each class against its own fresh sample
+        would make a row three unrelated draws, and the three percentages would not sum to 100."""
+        labels = {c: [classify(sd, pick(sd)) for sd in byclust[c]] for c in clusters}
+        out = {cls: st.mean([st.mean([1.0 if x == cls else 0.0 for x in labels[c]])
+                             for c in clusters]) for cls in CLASSES}
+        assert abs(sum(out.values()) - 1.0) < 1e-9, out
         return out
 
     depths = [int(x) for x in a.depths.split(",") if 0 < int(x) <= a.universe]
