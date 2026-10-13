@@ -35,6 +35,30 @@ def job_tokens(r):
     return n
 
 
+def eligible(r):
+    """A training job must be an ANTIBODY plus at least one POLYPEPTIDE ANTIGEN.
+
+    phase_a_define_train_set.py:263 applies exactly this filter when it builds the pool, and
+    phases C and G apply it again when they emit sequences. This selector read abag_split.csv
+    directly and applied neither, so the first frozen list carried 186 rows with no polypeptide
+    antigen at all (175 SUGAR, 121 HAPTEN, 63 ION, 19 RNA among the types present), 29 jobs of a
+    single chain, and 143 with no antigen cluster recorded. A hapten-only or sugar-only row is not
+    an antibody-antigen complex for this purpose: there is no antigen chain to fold, so the fold
+    produces no interface and the confidence head has no interface to be calibrated on.
+    """
+    has_ab = bool((r["Hseq"] or "").strip()) or bool((r["Lseq"] or "").strip())
+    types = str(r["agtypes"]).split("/")
+    seqs = str(r["agexpectedseqs"]).split("/")
+    if len(types) != len(seqs):
+        return False, "agtypes/agexpectedseqs length mismatch"
+    poly = [s for t, s in zip(types, seqs) if t in POLY and s and s.strip().upper() != "NAN"]
+    if not has_ab:
+        return False, "no antibody chain"
+    if not poly:
+        return False, f"no polypeptide antigen (types={'/'.join(t for t in types if t)})"
+    return True, ""
+
+
 def chain_seqs(r):
     out = [s for s in (r["Hseq"], r["Lseq"]) if s]
     types = str(r["agtypes"]).split("/")
@@ -84,7 +108,12 @@ def main():
 
     cand = collections.defaultdict(set)
     byinst = {}
+    dropped = collections.Counter()
     for r in rows:
+        ok, why = eligible(r)
+        if not ok:
+            dropped[why.split(" (")[0]] += 1
+            continue
         key = (str(r["ab_cluster"]), str(r["agclusters"]), r["PDB_ID"][-4:].lower(), r["INSTANCE"])
         cand[str(r["ab_ag_cluster"])].add(key)
         byinst[r["INSTANCE"]] = r
@@ -120,6 +149,7 @@ def main():
     pdbs = {r["pdb"] for r in picked}
     blocked = [r for r in picked if not r["msa_ok"]]
     need = {s for r in blocked for s in chain_seqs(byinst[r["instance"]]) if s not in idx}
+    print(f"eligibility: dropped {sum(dropped.values())} row(s) -- {dict(dropped)}")
     print(f"rows {len(picked)}  unique structures {len(pdbs)}  clusters {len({r['cluster'] for r in picked})}")
     print(f"MSA ready {len(picked) - len(blocked)}  blocked {len(blocked)}  distinct sequences to search {len(need)}")
     print(f"tokens: median {sorted(r['tokens'] for r in picked)[len(picked)//2]}  max {max(r['tokens'] for r in picked)}")

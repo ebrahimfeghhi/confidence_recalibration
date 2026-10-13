@@ -17,15 +17,15 @@ generator was never trained on, and serve it from a precomputed cache.
 | | proposed |
 |---|---|
 | training set | post-cutoff structures in clusters holding ≥1 of them, redundancy-filtered |
-| structures | **695** (cap ≤2 per antibody–antigen pairing); 555 are MSA-ready today |
-| clusters represented | **207** (every training cluster holding a post-cutoff structure) |
+| structures | **536** (antibody + polypeptide antigen, cap ≤2 per pairing); all MSA-ready |
+| clusters represented | **193** |
 | seeds per structure | **10** |
 | each seed | one fold at `N_cycle=10`, 200 diffusion steps, `N_sample=5` poses |
-| cached units | 6,950 (one `z_trunk` each) |
-| poses cached | 34,750 (5 per unit, sharing that unit's `z_trunk`) |
+| cached units | 5,360 (one `z_trunk` each) |
+| poses cached | 26,800 (5 per unit, sharing that unit's `z_trunk`) |
 | cached per unit | `z_trunk`, `s_trunk`, `s_inputs`, the 5 poses, feature masks |
-| storage | **1,703 GB** of 2,039 GB free (1,609 GB for the 555 ready now) |
-| build cost | 6,950 folds ≈ **15.7 h** on 3 GPUs (12.6 h for the 555) |
+| storage | **1,695 GB** of 2,039 GB free — MEASURED, not z-only (ratio 1.0255 over 55 complete cache files) |
+| build cost | 5,360 folds ≈ **12.1 h** on 3 GPUs |
 | training cost after build | ~1 h per run, versus ~19 h uncached |
 
 ### Why this split of the budget
@@ -34,7 +34,7 @@ Equal-cost alternatives, all within reach of 2,040 GB:
 
 | design | storage |
 |---|---|
-| **695 structures × 10 seeds** | **1,703 GB** |
+| **536 structures × 10 seeds** | **1,695 GB** |
 | 1,594 structures × 5 seeds | 1,509 GB |
 | 1,594 structures × 6 seeds | 1,811 GB |
 
@@ -59,6 +59,21 @@ that a one-line change, since 5 poses already share each cached `z`.
 
 ---
 
+## 0a. NOT READY TO BUILD — three open findings
+
+Review round 3 (`reviews/round3_2026-10-13_cache.md`) found three things that must be settled first.
+The design below stands; the cache contents and the selection do not yet.
+
+| | finding | blocks |
+|---|---|---|
+| **high** | the cache stores confidence-head INPUTS only. The loss also needs ground-truth coordinates in model atom order, `coordinate_mask`, `pae_rep_atom_mask`, `frame_atom_index`, `has_frame`, and the PER-POSE symmetric permutation of the label (`protenix.py:1712-1720`). None is in the npz. | the build |
+| **high** | backward-pass memory is untested above ~1,000 tokens. 77 of 536 structures exceed it and carry 45% of the bytes (765 GB at 10 seeds); the largest is 2,941 tokens, where one N×N×256 activation is 4.4 GB. | caching those 77 |
+| medium | deduplication is per PDB id, which discards 201 input-distinct jobs across 143 structures; and the two representatives per pairing are taken in alphabetical order, with no diversity criterion. | the selection |
+
+Before any of it is generated: a **numerical replay** — one cached unit through the loss, reproducing
+the uncached path's loss on the same structure and seed to within floating point. That is what makes
+this precomputation rather than a different experiment.
+
 ## 0b. The structures, and how they were chosen
 
 The list is frozen and in the repo: **`extra_training/results/cache_train_structures.csv`**, one row
@@ -73,9 +88,10 @@ and MSA readiness. It is regenerated deterministically by
 | SAbDab2 ML Dataset v0.2.0, antibody–antigen rows | `data/zenodo_splits/splits_final/abag_split.csv` | 15,810 instances |
 | minus clusters holding any of our 227 benchmark complexes, minus 4 more on antigen homology | `phase_a_define_train_set.training_clusters()` | **533 clusters** |
 | minus the live validation split (40 clusters) | `results/val_split_proposal_clusters.csv` | **493 clusters** / 2,506 structures |
-| keep clusters holding ≥1 post-2021-09-30 structure | `PDBdepo > 2021-09-30` | 207 clusters |
+| require an antibody chain AND ≥1 polypeptide antigen | `phase_a:263`'s filter | drops 548 rows |
+| keep clusters holding ≥1 post-2021-09-30 structure | `PDBdepo > 2021-09-30` | 193 clusters |
 | keep only the post-cutoff structures in them | | 1,594 → see cap |
-| cap 2 structures per (antibody cluster, antigen cluster) pairing | `ab_cluster` × `agclusters` | **695 structures / 207 clusters** |
+| cap 2 structures per (antibody cluster, antigen cluster) pairing | `ab_cluster` × `agclusters` | **536 structures / 193 clusters** |
 
 One row per structure: a PDB appearing under two `ab_ag_cluster`s is emitted once.
 
