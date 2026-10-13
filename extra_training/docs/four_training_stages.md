@@ -1,6 +1,9 @@
-# FT3: how Protenix trains its confidence head
+# Protenix's four training stages
 
-Code-anchored explainer for the stage we are replicating. Every claim cites a file and line in
+Code-anchored explainer for how Protenix is trained, with the detail concentrated on **FT3**, the
+stage we re-run. Sections 1 and 2 cover initial training, fine-tune 1 and fine-tune 2 -- what they
+share per step, what differs, and why that determines what FT3's poses look like. Sections 3 onward
+are FT3 itself. Every claim cites a file and line in
 `~/Protenix` as of 2026-10-12. Read this before changing anything in `phases/`.
 
 **Notation.** `N_token` tokens (one per residue, or per atom for ligands), `N_atom` atoms,
