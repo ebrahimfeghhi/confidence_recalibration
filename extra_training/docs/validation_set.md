@@ -386,6 +386,28 @@ get a different antigen, 6 do not (their cluster offers only the same antigen).
 | 2184 | `9cfd` | `9bx7` | 446 | 9.9 | **yes** |
 | 2417 | `8pjp` | `8piz` | 288 | 4.1 | no |
 
+### Anchoring (two bugs found in review, fixed)
+
+The picker is anchored to the **frozen 40 first instances by INSTANCE id**, read from
+`results/val_split_proposal.csv`, and it requires exactly one per cluster. Two bugs made that
+necessary:
+
+1. **The first representative's antigen came from the first row encountered for its PDB_ID.** One
+   PDB entry can hold several antibody-antigen instances with different antigens, so the comparison
+   could use an antigen the fold never saw -- labelling an identical antigen "different" and passing
+   over a genuinely different one. Antigens are now resolved by INSTANCE, and only the
+   `agexpectedseqs` entries whose `agtypes` is polypeptide are compared, which is what phase G folds.
+2. **`{cluster: pdb}` from a 53-row manifest keeps whichever row comes last.** Re-running after the
+   expansion would silently promote each second representative to first and lose the original. The
+   picker now refuses any `--first` file with more than one instance per cluster, and requires every
+   frozen instance to be present in the built manifest.
+
+Checked after fixing: on this data the first bug was **inert** -- 0 of the 40 first representatives
+sit in a PDB whose other instances carry a different polypeptide antigen -- so the 13 clusters and
+all 13 labels are unchanged. The fix removes the dependence on that. The guard fires correctly when
+fed the 53-row file, the output is byte-identical on a re-run, and the 40 first instances still match
+the built manifest exactly.
+
 ### Cost
 
 | | |
