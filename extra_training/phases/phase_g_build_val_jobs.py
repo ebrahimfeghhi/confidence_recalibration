@@ -286,7 +286,7 @@ def main():
     # THE AUTH CHAIN NAMES, from SAbDab2's own role assignment, keyed by instance. agchains is
     # '/'-joined in the same order as agtypes and agexpectedseqs, so ag<i> is agchains[i].
     sp = pd.read_csv(a.splits, low_memory=False,
-                     usecols=["INSTANCE", "Hchain", "Lchain", "agchains"])
+                     usecols=["INSTANCE", "PDB_ID", "Hchain", "Lchain", "agchains", "agtypes"])
     auth_names = {}
     for r in sp.itertuples(index=False):
         d = {}
@@ -295,7 +295,17 @@ def main():
         if isinstance(r.Lchain, str) and r.Lchain.strip():
             d["L"] = r.Lchain.strip()
         if isinstance(r.agchains, str):
-            for i, c in enumerate(r.agchains.split("/")):
+            # ag<i> IS POSITIONAL, the same convention as agtypes and agexpectedseqs, and the index
+            # has to mean the same thing in both places or an antigen is given another antigen's auth
+            # chain name. Measured over all 10,395 rows carrying both fields: zero disagreements, so
+            # this is a guard against future data rather than a fix for current data.
+            agt = str(r.agtypes).split("/") if isinstance(getattr(r, "agtypes", None), str) else None
+            parts = r.agchains.split("/")
+            if agt is not None and len(parts) != len(agt):
+                raise SystemExit(
+                    f"STOP: {r.PDB_ID} lists {len(agt)} antigen types but {len(parts)} antigen "
+                    "chain names; ag<i> is positional in both, so the chain names cannot be trusted.")
+            for i, c in enumerate(parts):
                 if c.strip():
                     d[f"ag{i}"] = c.strip()
         auth_names[str(r.INSTANCE)] = d
@@ -323,7 +333,13 @@ def main():
           + (f"   SKIPPED (fewer than 2 chains): {skipped}" if skipped else ""))
 
     os.makedirs(a.out_dir, exist_ok=True)
+    # GATE THEN WRITE. The job jsons, pool.csv, chain_roles.csv and manifest.csv used to be written
+    # inside and just after the build loop, with five gates below them -- so any gate that fired left
+    # a partial set on disk: jsons for a selection that was rejected, a pool.csv naming interfaces
+    # from it, and a manifest describing a run that never happened. phase I globs *-final-updated.json
+    # and would fold them. Everything is now accumulated and written only after every gate has passed.
     rows, missing, pool, roles = [], 0, [], []
+    pending_jobs = []
     for cl, pdb, chains, inst in picks:
         seqs, ok = [], True
         # Chain letters follow the json order, so enumerate(chains) gives A, B, C... Interfaces are
@@ -424,32 +440,15 @@ def main():
             # Writing <pdb>.json meant zero matches: the fold would have died at runner
             # initialisation, before folding anything -- and phase I's input check globs THESE files,
             # so it validated them happily and could not see the mismatch.
-            with open(f"{a.out_dir}/{pdb}-final-updated.json", "w") as fh:
-                json.dump([{"name": pdb, "sequences": seqs}], fh, indent=2)
+            pending_jobs.append((f"{a.out_dir}/{pdb}-final-updated.json",
+                                 [{"name": pdb, "sequences": seqs}]))
 
-    # pool.csv is what folder.py's interfaces_by_pdb() reads to decide which interfaces a target=*
-    # unit is scored on. Without it the fold runs and scores NOTHING, and paths.py already points
-    # sabdab_val's pool_csv here.
-    os.makedirs(a.fold_dir, exist_ok=True)
-    # lineterminator="\n". csv.writer defaults to CRLF, and a shell reading the file with
-    # `IFS=, read -r pdb c1 c2` keeps the \r in the last field -- producing interfaces like
-    # "6mnq_AB\r", which scorer.py rejects because the chain pair is then three characters. Every
-    # consumer here is POSIX, so LF is the right output and no reader needs to strip anything.
-    with open(os.path.join(a.fold_dir, "pool.csv"), "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["pdb", "chain1", "chain2"], lineterminator="\n")
-        w.writeheader()
-        w.writerows(pool)
-    with open(os.path.join(a.fold_dir, "chain_roles.csv"), "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=["pdb", "model_chain", "ref_chain", "auth_chain", "role"],
-                           lineterminator="\n")
-        w.writeheader()
-        w.writerows(roles)
-    print(f"pool.csv: {len(pool)} interfaces over {len(set(r['pdb'] for r in pool))} structures")
-
-    with open(f"{a.out_dir}/manifest.csv", "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\n")
-        w.writeheader()
-        w.writerows(rows)
+    # FIRST GATE, because everything below indexes rows: list(rows[0]) in the manifest writer threw
+    # IndexError 53 lines before the guard written to explain this case.
+    if not rows:
+        raise SystemExit(
+            "STOP: no structure survived. Nothing was picked, or every pick was excluded for an "
+            "ambiguous reference labelling or an unresolvable chain. Check the messages above.")
 
     if relabelled:
         print(f"  relabelled {len(relabelled)} reference(s) whose label_asym_id was shared by "
@@ -500,11 +499,6 @@ def main():
         raise SystemExit(f"STOP: {len(miss_cl)} validation cluster(s) contributed no structure: "
                          f"{miss_cl[:10]}")
 
-    if not rows:
-        raise SystemExit(
-            "STOP: no structure survived. Nothing was picked, or every pick was excluded for an "
-            "ambiguous reference labelling or an unresolvable chain. Check the messages above.")
-
     tok = sorted(r["n_tokens"] for r in rows)
     npost = sum(1 for r in rows if r["post_cutoff"])
     print(f"tokens: min {tok[0]} median {tok[len(tok)//2]} max {tok[-1]}")
@@ -515,7 +509,35 @@ def main():
           f"   without a reference cif: {sum(1 for r in rows if not r['ref_ok'])}")
     if missing and a.require_msa:
         raise SystemExit(f"{missing} clusters are missing MSA directories -- not folding a partial set")
-    print(f"wrote {a.out_dir}/manifest.csv")
+
+    # EVERY GATE HAS PASSED; now write.
+    # pool.csv is what folder.py's interfaces_by_pdb() reads to decide which interfaces a target=*
+    # unit is scored on. Without it the fold runs and scores NOTHING, and paths.py already points
+    # sabdab_val's pool_csv here.
+    os.makedirs(a.fold_dir, exist_ok=True)
+    # lineterminator="\n". csv.writer defaults to CRLF, and a shell reading the file with
+    # `IFS=, read -r pdb c1 c2` keeps the \r in the last field -- producing interfaces like
+    # "6mnq_AB\r", which scorer.py rejects because the chain pair is then three characters. Every
+    # consumer here is POSIX, so LF is the right output and no reader needs to strip anything.
+    with open(os.path.join(a.fold_dir, "pool.csv"), "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["pdb", "chain1", "chain2"], lineterminator="\n")
+        w.writeheader()
+        w.writerows(pool)
+    with open(os.path.join(a.fold_dir, "chain_roles.csv"), "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["pdb", "model_chain", "ref_chain", "auth_chain", "role"],
+                           lineterminator="\n")
+        w.writeheader()
+        w.writerows(roles)
+    print(f"pool.csv: {len(pool)} interfaces over {len(set(r['pdb'] for r in pool))} structures")
+
+    with open(f"{a.out_dir}/manifest.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(rows[0]), lineterminator="\n")
+        w.writeheader()
+        w.writerows(rows)
+    for path, payload in pending_jobs:
+        with open(path, "w") as fh:
+            json.dump(payload, fh, indent=2)
+    print(f"wrote {len(pending_jobs)} job json(s) and {a.out_dir}/manifest.csv")
 
 
 if __name__ == "__main__":

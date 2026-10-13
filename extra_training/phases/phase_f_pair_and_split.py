@@ -203,7 +203,7 @@ def run(cmd, log, label, cores, timeout):
     return rc
 
 
-def taxid_coverage(d, names=None, every=97):
+def taxid_coverage(d, names=None, nsample=200):
     """in: a directory of a3m, optionally the names belonging to one batch.
     out: (hit records seen, hit records carrying a taxid, files sampled)
 
@@ -214,21 +214,38 @@ def taxid_coverage(d, names=None, every=97):
 
     PER BATCH when `names` is given. The batches are searched separately and step3 runs once per
     batch, so a failure confined to one of them averages away in a pooled figure.
+
+    THE SAMPLE IS A TARGET COUNT, NOT A FIXED STRIDE. `files[::97]` was a constant stride, so the
+    sample size scaled with the batch: 5,305 files gave 55, but 235 gave 3 and 11 gave ONE. A single
+    file decided whether a batch passed. The stride is now derived from the batch size to sample up
+    to `nsample` files spread evenly, which is what phase D's TAX_SAMPLE already does.
+
+    A SAMPLE WITH NO HITS WIDENS TO THE WHOLE BATCH rather than returning zero, because the caller
+    cannot distinguish "sampled the quiet files" from "this batch retrieved nothing" and skipped its
+    gate on the first reading of either.
     """
     import re
     tagged_re = re.compile(r"^>UniRef100_.+_[0-9]+/")
     files = sorted(f for f in os.listdir(d) if f.endswith(".a3m"))
     if names is not None:
         files = [f for f in files if f[:-4] in names]
-    sample = files[::every] if every > 1 else files
-    seen = tagged = 0
-    for fn in sample:
-        with open(os.path.join(d, fn)) as fh:
-            for line in fh:
-                if line.startswith(">UniRef100"):
-                    seen += 1
-                    if tagged_re.match(line):
-                        tagged += 1
+    def scan(fs):
+        seen = tagged = 0
+        for fn in fs:
+            with open(os.path.join(d, fn)) as fh:
+                for line in fh:
+                    if line.startswith(">UniRef100"):
+                        seen += 1
+                        if tagged_re.match(line):
+                            tagged += 1
+        return seen, tagged
+
+    step = max(1, len(files) // max(1, nsample))
+    sample = files[::step][:nsample]
+    seen, tagged = scan(sample)
+    if seen == 0 and len(sample) < len(files):
+        sample = files
+        seen, tagged = scan(sample)
     return seen, tagged, len(sample)
 
 
@@ -296,7 +313,11 @@ def main():
                     help="accept step3/step4 outputs that predate this run. Off by default: a step "
                          "that exits 0 after crashing part-way leaves some chains stale, and a "
                          "directory-wide count cannot tell those from this run's output.")
-    ap.add_argument("--min-pairing-frac", type=float, default=0.50,
+    # 0.90, NOT 0.50. The floor is the fraction of chains of 20+ residues whose pairing.a3m is
+    # non-empty, and it sat at 0.50 while the depth gates in phases D and E both used 90%. Measured
+    # on the completed run: 5,304 of 5,304 long chains (100.0%), and 245 of 245 short ones. A floor
+    # at half would have passed a run where every second antibody chain lost its paired MSA.
+    ap.add_argument("--min-pairing-frac", type=float, default=0.90,
                     help="fraction of chains of 20+ residues that must have a NON-EMPTY pairing.a3m. "
                          "This phase exists to produce pairing, so its completion criterion has to "
                          "test pairing. All-empty is the failure it must catch.")
@@ -441,6 +462,12 @@ def main():
         bs, bt, nf = taxid_coverage(a.taxid_dir, bn)
         bpct = 100 * bt // bs if bs else -1
         print(f"  {lbl}: {nf} files sampled, {bs} UniRef hit records, {bt} carry a taxid ({bpct}%)")
+        if bs == 0 and nf:
+            # NOT A PASS. `if bs and ...` treated an empty sample as nothing to check; after the
+            # widening above, zero hit records across EVERY file in the batch means step3's search
+            # returned nothing, which is the failure phase D dies on rather than a quiet batch.
+            sys.exit(f"STOP: batch {lbl} has no UniRef hit records in any of its {nf} a3m files. "
+                     "step3 produced no alignments to pair, so nothing in this batch can be paired.")
         if bs and bpct < a.min_tagged_frac * 100:
             sys.exit(f"STOP: in batch {lbl} only {bpct}% of UniRef hit records carry a taxid "
                      f"(want >= {a.min_tagged_frac:.0%}). Every untagged hit is a sequence that "

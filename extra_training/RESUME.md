@@ -55,7 +55,7 @@ Check `run_free_extra10.sh` for the exact worker invocation rather than reconstr
 ## 2. The MSA database build — RUNNING, resumable
 
 **`uniref30_2302` is downloading** into `tools/colabfold/db/` via
-`extra_training/scripts/phase1_uniref.sh`, launched in tmux session `msa_p1`, logging to
+`extra_training/scripts/archive/phase1_uniref.sh`, launched in tmux session `msa_p1`, logging to
 `tools/colabfold/phase1.log`.
 
 The restart will almost certainly interrupt either the download or the index build that follows.
@@ -63,7 +63,7 @@ The restart will almost certainly interrupt either the download or the index bui
 
 ```bash
 cd /home/ebrahim/tts_abag/tools/colabfold
-cp /home/ebrahim/tts_abag/extra_training/scripts/phase1_uniref.sh .   # if missing
+cp /home/ebrahim/tts_abag/extra_training/scripts/archive/phase1_uniref.sh .   # if missing
 tmux new-session -d -s msa_p1 "bash phase1_uniref.sh > phase1.log 2>&1"
 ```
 

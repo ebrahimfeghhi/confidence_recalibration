@@ -1,0 +1,16 @@
+# Reviews
+
+One file per round: the reviewer's comments, then the response to each — confirmed, not confirmed, or
+deferred — with the evidence used to decide and the commit that fixed it.
+
+The point is that a finding stops living in a stale document. Anything still open at the end of a
+round is listed in that round's **Open** section with a severity, and moves into the next round or
+into a fix.
+
+| round | date | scope | file |
+|---|---|---|---|
+| phase A–C | 2026-10-11 | phases A, B, C | [response_2026-10-11.md](response_2026-10-11.md) |
+| phase D request | 2026-10-11 | what was asked of the reviewer | [request_phase_d.md](request_phase_d.md) |
+| phase D | 2026-10-11 | phase D | [response_phase_d.md](response_phase_d.md) |
+| round 1 | 2026-10-13 | all of `extra_training`, self-review | [round1_2026-10-13_self.md](round1_2026-10-13_self.md) |
+| round 2 | 2026-10-13 | external reviewer on round 1's output | [round2_2026-10-13_reviewer.md](round2_2026-10-13_reviewer.md) |

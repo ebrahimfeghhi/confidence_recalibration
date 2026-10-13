@@ -211,8 +211,8 @@ before/after on the same poses with the same scorer, so any scorer offset cancel
 | `extra_training/phases/phase_a_define_train_set.py` | benchmark exclusion, by id and by antigen homology |
 | `extra_training/phases/phase_c_extract_msa_queries.py` | the unique-sequence query fastas |
 | `extra_training/phases/phase_c_extract_msa_queries.py --short-vs` | the 5–19 residue antigen chains the first pass skipped |
-| `extra_training/scripts/phase1_uniref.sh`, `phase1_index.sh`, `phase1_search_idx.sh` | UniRef30 build, index and first search |
-| `extra_training/scripts/phase1b_short.sh` | second UniRef pass for the short antigen chains |
+| `extra_training/scripts/archive/phase1_uniref.sh`, `archive/phase1_index.sh`, `archive/phase1_search_idx.sh` | UniRef30 build, index and first search |
+| `extra_training/scripts/archive/phase1b_short.sh` | second UniRef pass for the short antigen chains |
 | `extra_training/scripts/phase2_envdb.sh` | environmental database, `download` / `build` modes |
 | `extra_training/phases/phase_f_pair_and_split.py` | per-query a3m headers and `step4`'s index files |
 | `extra_training/phases/phase_b_define_val_clusters.py` | the date-binned, cluster-held-out validation split |

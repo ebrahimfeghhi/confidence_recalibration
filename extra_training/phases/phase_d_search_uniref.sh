@@ -359,7 +359,21 @@ tpct = 100 * len(found) // len(hits) if hits else -1
 print(f"{len(sample)} {long_tot} {long_hit} {lpct} {short_tot} {short_hit} {len(hits)} {len(found)} {tpct}")
 PYCOV
 )
+# A CRASHED VALIDATOR IS NOT A CLEAN BATCH. COV was consumed without checking the exit code, so a
+# traceback left it empty, `set --` produced no positional parameters, every ${n:-default} supplied
+# a zero, and both gates below are guarded by `[ "$LTOT" -gt 0 ]` -- which is false at zero. The
+# batch then passed without a single check having run. phase_e_search_envdb.sh:271-281 already
+# escalates on exactly this; phase D did not. The field count is checked too: a validator that
+# prints a partial line is as uninformative as one that prints nothing.
+RC=$?
+if [ "$RC" -ne 0 ] || [ -z "$COV" ]; then
+    die "the coverage validator exited $RC (output: ${COV:-<empty>}). Its checks did not run, so
+     nothing about this batch has been verified -- depth and taxid coverage are both unknown."
+fi
 set -- $COV
+if [ "$#" -ne 9 ]; then
+    die "the coverage validator returned $# fields, expected 9: $COV"
+fi
 NS=${1:-0}; LTOT=${2:-0}; LHIT=${3:-0}; LPCT=${4:--1}; STOT=${5:-0}; SHIT=${6:-0}
 NHITS=${7:-0}; NFOUND=${8:-0}; TPCT=${9:--1}
 say "  sampled $NS alignments"
