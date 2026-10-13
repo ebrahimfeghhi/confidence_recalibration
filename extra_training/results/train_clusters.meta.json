@@ -1,0 +1,7 @@
+{
+  "written": "2026-10-13T15:17:16",
+  "val_file": "/home/ebrahim/tts_abag/extra_training/results/val_split_proposal_clusters.csv",
+  "val_sha256": "e2277cd0a77f4d940fb57d8d72e000e87f1df2170599abac989f4a36cc1383f6",
+  "n_val": 40,
+  "n_train": 493
+}

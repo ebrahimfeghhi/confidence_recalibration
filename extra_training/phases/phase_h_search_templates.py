@@ -213,6 +213,20 @@ def filter_a3m(path, cutoff, rel):
             if (m.get("cutoff") == cutoff and m.get("version") == FILTER_VERSION
                     and m.get("sha256") == _sha(path)):
                 return None            # already filtered at this cutoff, and the file is unchanged
+            # A STRICTER EXISTING FILTER IS NEVER LOOSENED. Template directories are keyed by
+            # SEQUENCE, so one directory serves every structure using that chain, and query_cutoffs()
+            # only sees the jobs of the CURRENT invocation. Run phase H on a job set that excludes the
+            # oldest user of a directory and the recomputed cutoff is later than the one already
+            # applied; re-filtering from the raw file would hand that older structure templates from
+            # its own era. Keeping the stricter filter is correct for every user -- the newer query
+            # merely sees fewer templates -- and phase_i_inputs.py accepts any marker at least as
+            # strict as the job set requires (it fails only on `got > need`).
+            old = m.get("cutoff")
+            if (isinstance(old, str) and old < cutoff and m.get("version") == FILTER_VERSION
+                    and m.get("sha256") == _sha(path)):
+                print(f"  NOTE keeping stricter cutoff {old} on {os.path.basename(path)} "
+                      f"(this job set would have applied {cutoff})")
+                return None
         except Exception:                                       # noqa: BLE001
             pass
     kept_lines, kept, dropped, undated = [], 0, 0, 0

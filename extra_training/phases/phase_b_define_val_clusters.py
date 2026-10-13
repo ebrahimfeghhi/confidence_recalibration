@@ -77,6 +77,17 @@ def cluster_table(splits=None, excluded=None):
             .reset_index().rename(columns={"ab_ag_cluster": "cluster"}))
 
 
+LIVE_VAL = f"{REPO}/extra_training/results/val_split_proposal_clusters.csv"
+LEGACY_VAL = f"{REPO}/extra_training/results/val_clusters.csv"
+# THE LIVE VALIDATION SPLIT IS val_split_proposal_clusters.csv, 40 clusters, drawn 2026-10-13 by
+# scripts/propose_val_split.py. val_clusters.csv is the ORIGINAL 50-cluster phase-B draw and is
+# LEGACY: 22 of the live 40 are not in it, so using it as the validation list leaves those 22 in the
+# training pool. That is exactly what happened -- the FT3 cache selection picked up 28 structures
+# that had been folded as validation. Anything that needs "the validation clusters" takes LIVE_VAL.
+# Clusters held out for the old split and not in the live one are training data again (32 of them);
+# the pool is pool - LIVE_VAL, nothing else.
+
+
 def write_training(keep, krows, out, excluded):
     """write train_clusters.csv, after asserting it shares nothing with the exclusion list
 
@@ -104,6 +115,20 @@ def write_training(keep, krows, out, excluded):
         fh.write("cluster\n")
         for c in sorted(keep):
             fh.write(f"{c}\n")
+    # PROVENANCE, so a consumer can tell this file is stale instead of trusting it. train_clusters.csv
+    # outlived the validation split it was subtracted from once already; a plain csv carries nothing
+    # that would have shown it. The sidecar names the validation file and hashes its contents.
+    import hashlib as _h, json as _j
+    meta = {
+        "written": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "val_file": os.path.abspath(out),
+        "val_sha256": _h.sha256(open(out, "rb").read()).hexdigest(),
+        "n_val": sum(1 for _ in open(out)) - 1,
+        "n_train": len(keep),
+    }
+    with open(tc.replace(".csv", ".meta.json"), "w") as fh:
+        _j.dump(meta, fh, indent=2)
+        fh.write("\n")
     print(f"wrote {tc}: {len(keep)} training clusters ({krows.PDB_ID.nunique()} structures), "
           f"validation removed, disjoint from {len(ex)} excluded clusters")
     return tc
@@ -126,7 +151,7 @@ def train_minus_val(splits=None, excluded=None, val_csv=None):
     Any training-index builder must take its cluster list from here, not from
     phase_a_define_train_set.training_clusters(), which returns the pool INCLUDING validation.
     """
-    val_csv = val_csv or f"{REPO}/extra_training/results/val_clusters.csv"
+    val_csv = val_csv or LIVE_VAL
     if not os.path.exists(val_csv):
         raise SystemExit(
             f"STOP: {val_csv} does not exist.\n"
@@ -172,7 +197,9 @@ def main():
                     help="accept any draw holding at least this share of the pool's structures")
     ap.add_argument("--frac-hi", type=float, default=0.12,
                     help="...and at most this share. See the band comment in main().")
-    ap.add_argument("--out", default=f"{REPO}/extra_training/results/val_clusters.csv")
+    ap.add_argument("--out", default=LIVE_VAL,
+                    help="the validation split to hold out; defaults to the LIVE 40-cluster file. "
+                         "val_clusters.csv is the legacy 50-cluster draw -- see LIVE_VAL above.")
     a = ap.parse_args()
 
     # THE PINNED SPLIT IS NOT OVERWRITTEN. results/val_clusters.csv was drawn from a 557-cluster

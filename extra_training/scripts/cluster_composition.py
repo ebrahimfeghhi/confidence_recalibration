@@ -14,6 +14,7 @@ structures gives a weaker test: a "new" structure there is a fresh crystal of a 
 trained on.
 """
 import csv
+import os
 import collections
 import sys
 
@@ -24,10 +25,19 @@ CUT = "2021-09-30"
 
 def main():
     train = {r["cluster"] for r in csv.DictReader(open(f"{REPO}/results/train_clusters.csv"))}
-    val = {r["cluster"] for r in csv.DictReader(open(f"{REPO}/results/val_clusters.csv"))}
+    # LIVE split, not val_clusters.csv: that file is the legacy 50-cluster draw and 22 of the live
+    # 40 clusters are absent from it, so composition computed against it describes a split we no
+    # longer use. See phase_b_define_val_clusters.LIVE_VAL.
+    val = {str(r["cluster"]) for r in
+           csv.DictReader(open(f"{REPO}/results/val_split_proposal_clusters.csv"))}
     pool = train | val
-    vman = list(csv.DictReader(open(f"{REPO}/val_jobs/manifest.csv")))
-    skips = {r["pdb"] for r in csv.DictReader(open(f"{REPO}/val_fold/skipped.csv"))}
+    # THE LIVE FOLD, val2_*, not val_*. val_jobs/manifest.csv is the 77-job manifest of the
+    # SUPERSEDED 50-cluster run; reading it labelled only the 22 clusters common to both as being
+    # folded, while 18 live validation clusters showed as "val" and the rest of the live set was
+    # invisible. val2_fold has no skipped.csv (nothing was skipped), so its absence is not an error.
+    vman = list(csv.DictReader(open(f"{REPO}/val2_jobs/manifest.csv")))
+    sk = f"{REPO}/val2_fold/skipped.csv"
+    skips = ({r["pdb"] for r in csv.DictReader(open(sk))} if os.path.exists(sk) else set())
     folding = {m["cluster"] for m in vman if m["pdb"] not in skips}
 
     pre, post, inst = (collections.defaultdict(set), collections.defaultdict(set),

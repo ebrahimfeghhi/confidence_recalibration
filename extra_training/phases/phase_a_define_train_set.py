@@ -57,7 +57,8 @@ FUNCTIONS
     chains_of():     an mmCIF -> {chain: one-letter polymer sequence}
     classify():      chain sequences -> antibody chains (with variable-domain bounds) and the rest
     train_tables():  the candidate clusters -> their antigen seqs by type, and their antibody seqs
-    cdr_identity():  two CDR-H3 loops -> (identity over the shorter, coverage)
+    cdr_identity():  two CDR-H3 loops -> (identity over the shorter, coverage), or (None, None)
+                     when the alignment cannot be computed -- undetermined, NOT "unrelated"
     cdr_hits():      CDR-H3 queries vs targets, every pair -> {cluster: (query, identity)}
     search():        query/target fastas and a threshold -> {cluster: (query, identity)}
     main():          build, search, report
@@ -388,7 +389,7 @@ def classify(records, hmm, evalue, threads, workdir):
     return ab, rest
 
 
-def cdrh3_of(records, hmmerpath=HMMER312, hmms=ANARCI_HMMS):
+def cdrh3_of(records, hmmerpath=HMMER312, hmms=ANARCI_HMMS, min_numbered_pct=50.0):
     """in: [(name, seq)] chains, the HMMER 3.1b2 bin dir, the pressed HMM dir.
     out: {name: cdrh3} for every chain ANARCI numbers as a HEAVY domain
 
@@ -401,13 +402,22 @@ def cdrh3_of(records, hmmerpath=HMMER312, hmms=ANARCI_HMMS):
     m = importlib.import_module("anarci.anarci")
     m.HMM_path = hmms
     out = {}
+    # COVERAGE IS COUNTED, because this check's failure mode is silence. ANARCI parses hmmscan's text
+    # with Biopython's Hmmer3TextParser, which cannot read HMMER 3.4 (the system version): coordinates
+    # come back None, every hit is dropped, and run_anarci returns NO DOMAINS rather than raising. A
+    # per-record `continue` then turns a totally broken numbering into "no CDR-H3 leakage found",
+    # which is indistinguishable in the output from a clean result. So the three failure counts are
+    # tallied and checked against min_numbered_pct before returning.
+    n_err = n_unnumbered = 0
     for name, seq in records:
         try:
             _s, numbered, details, _h = m.run_anarci(
                 [(name, seq)], scheme="imgt", hmmerpath=hmmerpath)
         except Exception:                               # noqa: BLE001
+            n_err += 1
             continue
         if not numbered or not numbered[0]:
+            n_unnumbered += 1
             continue
         for dom, det in zip(numbered[0], details[0] or []):
             if (det or {}).get("chain_type") != "H":
@@ -417,11 +427,29 @@ def cdrh3_of(records, hmmerpath=HMMER312, hmms=ANARCI_HMMS):
             if len(cdr) >= 3:
                 out[name] = cdr
             break
+    n = len(records)
+    numbered_ok = n - n_err - n_unnumbered
+    if n and 100.0 * numbered_ok / n < min_numbered_pct:
+        raise SystemExit(
+            f"STOP: ANARCI numbered only {numbered_ok} of {n} chains "
+            f"({100.0 * numbered_ok / n:.0f}%, floor {min_numbered_pct}%): "
+            f"{n_err} raised, {n_unnumbered} returned no domain.\n"
+            "A CDR-H3 leakage check cannot report 'no leakage' on chains it never numbered. The usual "
+            "cause is the HMMER version: ANARCI needs 3.1b2 and fails SILENTLY on 3.4. Check "
+            f"hmmerpath={hmmerpath} and that the HMMs at {hmms} were pressed with the same version.")
+    if n and not out:
+        raise SystemExit(
+            f"STOP: ANARCI numbered {numbered_ok} of {n} chains but found NO heavy domain among them. "
+            "CDR-H3 exclusion would compare nothing against nothing. Verify the input really is "
+            "antibody chains before treating an empty exclusion list as a result.")
+    print(f"  cdrh3_of: {len(out)} heavy CDR-H3s from {n} chains "
+          f"({numbered_ok} numbered, {n_err} errored, {n_unnumbered} no domain)")
     return out
 
 
 def cdr_identity(q, t):
-    """in: two CDR-H3 loops.  out: (identity over the shorter loop, coverage)
+    """in: two CDR-H3 loops.  out: (identity over the shorter loop, coverage), or (None, None)
+    when the pair cannot be aligned -- the caller must treat that as undetermined, never as clean.
 
     GAPPED, via Biopython's PairwiseAligner. The previous version slid the shorter loop along the
     longer one ungapped, which cannot see an internal insertion: a 14-residue loop against the same
@@ -440,10 +468,14 @@ def cdr_identity(q, t):
     from Bio import Align
     al = Align.PairwiseAligner(mode="local", match_score=1, mismatch_score=-1,
                                open_gap_score=-1, extend_gap_score=-1)
+    # FAILURE IS NOT "UNRELATED". Returning 0.0 here made an alignment that could not be computed
+    # indistinguishable from one that found no similarity, in a function whose whole job is to catch
+    # leakage -- the error value WAS the safe value. None means "undetermined" and the caller counts
+    # it rather than silently treating the pair as clean.
     try:
         aln = al.align(q.upper(), t.upper())[0]
     except Exception:                                       # noqa: BLE001
-        return 0.0, 0.0
+        return None, None
     a, b = str(aln[0]), str(aln[1])
     matches = sum(1 for x, y in zip(a, b) if x == y and x != "-")
     short = min(len(q), len(t))
@@ -465,14 +497,22 @@ def cdr_hits(queries, targets, ident, cov):
     and the artifact has to reproduce.
     """
     best = {}
+    undetermined = 0
     for qn, q in queries.items():
         for tn, t in targets:
             cl = tn.split("|")[0]
             fid, c = cdr_identity(q, t)
+            if fid is None:
+                undetermined += 1
+                continue
             if fid < ident or c < cov:
                 continue
             if cl not in best or (fid, best[cl][0]) > (best[cl][1], qn):
                 best[cl] = (qn, fid)
+    if undetermined:
+        # LOUD, not swallowed: an unalignable pair is a pair this check did not examine.
+        print(f"  WARNING {undetermined} CDR-H3 pair(s) could not be aligned and were NOT checked "
+              "for homology; they are neither excluded nor cleared")
     return best
 
 

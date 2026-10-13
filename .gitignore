@@ -177,3 +177,6 @@ extra_training/*.log
 
 # runtime state of the E-to-I chain: one word naming the current stage, not code
 extra_training/*.state
+extra_training/train_jobs/
+extra_training/val_jobs/
+extra_training/val2_jobs/
