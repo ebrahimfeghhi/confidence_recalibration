@@ -352,3 +352,76 @@ second review used to catch an earlier miscount.
 
 **The holders watch `val_fold/HOLD_STOP`, not `val2_fold/HOLD_STOP`** -- they were started before the
 changeover and that is the path baked into their command line.
+
+## Queued: second representatives for the 13 clusters that have one
+
+**Not launched.** Runs after the 40-cluster fold completes. This adds depth *within* clusters; the
+independent validation coverage stays **40 clusters**, which is what any claim should quote.
+
+Only 13 of the 40 can take a second structure. 21 clusters genuinely contain a single post-cutoff
+structure, and 6 contain more but the extras fail the polypeptide-antigen or 150-token filters. That
+is a property of the PDB, not of the sampling: 71% of all clusters with post-cutoff structures have
+exactly one.
+
+### Selection rule, fixed in advance and blind to predictions
+
+Among a cluster's other eligible post-cutoff structures, prefer one whose **antigen sequence differs
+from the first representative's**, then the smallest by token count. Antigen identity and token count
+are properties of the input and the reference; no DockQ, ipTM or any prediction enters. 7 of the 13
+get a different antigen, 6 do not (their cluster offers only the same antigen).
+
+| cluster | first | second | tokens | GiB @100 | different antigen |
+|---|---|---|---|---|---|
+| 4 | `9fgy` | `8gq1` | 539 | 14.4 | no |
+| 13 | `9mmj` | `9mz6` | 463 | 10.6 | **yes** |
+| 234 | `7shy` | `7si0` | 481 | 11.5 | no |
+| 299 | `8z3a` | `8z2v` | 593 | 17.4 | no |
+| 682 | `7qu2` | `7qu1` | 619 | 19.0 | **yes** |
+| 1055 | `9ryf` | `9rye` | 699 | 24.2 | no |
+| 1103 | `8xqj` | `8z74` | 607 | 18.3 | no |
+| 1720 | `7y8j` | `22gi` | 430 | 9.2 | **yes** |
+| 1833 | `8t04` | `8t06` | 448 | 10.0 | **yes** |
+| 2103 | `9egn` | `9eg6` | 347 | 6.0 | **yes** |
+| 2157 | `9fvb` | `9fve` | 426 | 9.0 | **yes** |
+| 2184 | `9cfd` | `9bx7` | 446 | 9.9 | **yes** |
+| 2417 | `8pjp` | `8piz` | 288 | 4.1 | no |
+
+### Cost
+
+| | |
+|---|---|
+| cache | **164 GiB** at 100 seeds |
+| GPU | 11 GPU-h, about **3.8 h** on three cards |
+| quota after | ~900 GB once the 40-cluster fold lands, + 164 GiB -> about **1,065 GB of 1,536 (69%)** |
+
+Three of the chosen seconds -- `8t06`, `9eg6`, `9fve` -- are among the six second structures whose
+trunk caches were deleted during the changeover. Their poses survive but a pose is only replayable
+with the cache written beside it, so these three refold from seed 400000 rather than resuming at 20
+seeds. That costs roughly 25 GiB and 1 GPU-h more than it would have. Recorded because the deletion
+list was built before this expansion was planned; nothing else in the 127 GiB is wanted back.
+
+### How to launch it
+
+Append the 13 instances to a manifest and build them by **explicit instance**, never `--reps 2` --
+phase G's own second pick is the cluster median by token count, which is both unreviewed and the
+expensive end.
+
+    # 1. write results/val_split_second_reps.csv with cluster + instance columns
+    # 2. phase G, explicit instances, into the SAME val2 dirs so the fold is one set
+    python3 phases/phase_g_build_val_jobs.py --instances results/val_split_second_reps.csv \
+        --val-clusters results/val_split_proposal_clusters.csv \
+        --msa-root  $PWD/msa_work/mmcif_msa --excluded results/excluded_homolog_clusters.csv \
+        --seq-index $PWD/msa_work/pdb_seqs/seq_to_pdb_index.json \
+        --out-dir $PWD/val2_jobs --fold-dir $PWD/val2_fold --refs-dir $PWD/val2_refs
+    # 3. phase H on val2_jobs, then phase_i_inputs.py, then smoke, then run
+
+Two gates that must not be skipped. Phase G's `--instances` rebuilds `val2_fold/pool.csv` for the
+**whole** job set, so re-run it with all 53 instances, not just the 13, or the 40 already folded lose
+their interface definitions. And re-run `phase_i_inputs.py`: adding structures changes the cutoff the
+job set requires, and a template directory filtered for the old set can be too permissive for the new
+one.
+
+### Reporting convention, fixed before training
+
+Average the representatives **within** each cluster first, then weight the 40 clusters equally. A
+cluster with two structures must not count twice. All-new and mixed arms stay reported separately.
