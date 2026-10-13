@@ -60,6 +60,48 @@ Cluster 1867 matters beyond its 79 GiB: its second structure `9dzf` is 2,289 tok
 100 seeds, so the cluster the rules reject most firmly is the most expensive thing in the fold now
 running.
 
+## Retained-plus-sampled versus a fully redrawn set
+
+The control for reuse: retaining audited clusters saves refolding them, but could carry phase B's
+selection bias forward. A fully redrawn 40 under the *same* rules is the comparison. Reproduce with
+`propose_val_split.py --compare`.
+
+| axis | retain 18 + sample 22 | fully redrawn 40 |
+|---|---|---|
+| clusters | 40 | 40 |
+| all-new / mixed | 24 / 16 | 24 / 16 |
+| complex size min/median/max (tokens) | 231 / 482 / 799 | 239 / 524 / 837 |
+| cluster population, median post-cutoff structures | 1 | 1 |
+| post-cutoff structures withheld | 66 | 72 |
+| pre-cutoff structures withheld | **210** | **132** |
+| cache at 100 seeds | 550 GiB | 573 GiB |
+| already folded | 18 | 3 |
+
+They agree on composition, cluster population, complex size and cache. Two differences matter:
+
+- **Reuse withholds 78 more pre-cutoff structures** (210 vs 132). Phase B stratified on deposition
+  date, so the retained clusters skew older and carry more pre-cutoff relatives -- cluster 13 alone
+  holds 41. This is the one axis where reuse is worse. It is the cheaper half of the training data,
+  since those are the structures Protenix already fits, but it is a real cost and not zero.
+- **Reuse starts with 18 of 40 already folded** against 3, which is the compute saving that motivates
+  it at all.
+
+So reuse is defensible but not free, and the trade is: 78 pre-cutoff training structures for 15
+clusters that do not need refolding.
+
+### Seed depth
+
+| seed depth | cache |
+|---|---|
+| 100 | 550 GiB |
+| 90 | 495 GiB |
+| 80 | 440 GiB |
+| 60 | 330 GiB |
+
+Uniform depth is the lever to pull before dropping clusters. The 10-to-100 seed curve on PXM-2025 is
+flat in `acceptable` past 50 seeds (132.6 +- 2.2 at 50, 134.0 at 100), so 80 costs little and saves
+110 GiB.
+
 ## The selected set
 
 40 clusters: 24 all-new, 16 mixed. 18 retained, 22 sampled. Tokens 231/482/799 (min/median/max).
@@ -154,6 +196,7 @@ seed are `N^2 x 512`. An estimate at 128 channels is half the truth.
 
     cd extra_training && python3 scripts/propose_val_split.py
 
-Flags: `--tok-cap`, `--post-cap`, `--n-allnew`, `--n-mixed`, `--seeds`, `--seed`, `--allow-short`,
+Flags: `--tok-cap`, `--post-cap`, `--n-allnew`, `--n-mixed`, `--seeds`, `--seed`, `--compare`,
+`--allow-short`,
 `--out`.
 

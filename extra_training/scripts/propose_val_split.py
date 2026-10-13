@@ -45,6 +45,8 @@ def main():
     ap.add_argument("--out", default=f"{REPO}/results/val_split_proposal.csv")
     # a short set silently passing review is the failure this guards: the stratified picker returns
     # fewer than asked when a stratum is empty, and the summary would simply read "37 clusters".
+    ap.add_argument("--compare", action="store_true",
+                    help="also draw a fully redrawn set under the same rules and tabulate both")
     ap.add_argument("--allow-short", action="store_true",
                     help="permit fewer clusters than requested instead of failing")
     a = ap.parse_args()
@@ -191,6 +193,39 @@ def main():
         raise SystemExit(f"STOP: asked for {a.n_allnew} all-new + {a.n_mixed} mixed, got "
                          f"{got_an} + {got_mx}. Too few candidates survive R1/R2, or a token "
                          f"stratum is empty. Loosen the caps or pass --allow-short deliberately.")
+    # THE COMPARISON THE DESIGN TURNS ON. Retaining audited clusters saves refolding them, but it
+    # could also carry a selection bias forward. A fully redrawn set under the same rules is the
+    # control: if the two agree on every axis, reuse is a compute saving and nothing more.
+    if a.compare:
+        rng2 = random.Random(a.seed + 1)
+        allc = {k: v for k, v in passing.items()}
+        fresh = (stratified(allc, "all new", a.n_allnew, set())
+                 + stratified(allc, "mixed", a.n_mixed, set()))
+        print()
+        print("| axis | retain + sample | fully redrawn |")
+        print("|---|---|---|")
+        def axes(sel_):
+            tkl = sorted(v["tokens"] for v in sel_)
+            return {
+                "clusters": len(sel_),
+                "all-new / mixed": f"{sum(1 for v in sel_ if v['kind']=='all new')} / "
+                                   f"{sum(1 for v in sel_ if v['kind']=='mixed')}",
+                "complex size min/median/max (tokens)": f"{tkl[0]} / {tkl[len(tkl)//2]} / {tkl[-1]}",
+                "cluster population, median post-cutoff structures":
+                    sorted(v["post_held"] for v in sel_)[len(sel_)//2],
+                "post-cutoff structures withheld": sum(v["post_held"] for v in sel_),
+                "pre-cutoff structures withheld": sum(v["pre_held"] for v in sel_),
+                f"cache at {a.seeds} seeds (GiB)": round(sum(v["gib"] for v in sel_)),
+                "already folded": sum(1 for v in sel_ if v["folded"]),
+            }
+        A, B = axes(sel), axes(fresh)
+        for k in A:
+            print(f"| {k} | {A[k]} | {B[k]} |")
+        print()
+        print(f"| seed depth | cache (GiB) |\n|---|---|")
+        for d in (100, 90, 80, 60):
+            print(f"| {d} | {sum(v['gib'] for v in sel) * d / a.seeds:.0f} |")
+
     cols = ["cluster", "kind", "origin", "pdb", "instance", "tokens", "token_source", "deposited",
             "gib", "post_held", "pre_held", "folded"]
     with open(a.out, "w", newline="") as fh:
