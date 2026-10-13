@@ -18,20 +18,23 @@ two clusters, which is why rows (668) exceed unique structures (666).
 
 Writes results/cache_train_structures.csv and prints the coverage gates. Nothing is folded here.
 """
-import argparse, collections, csv, hashlib, json, os
+import argparse, collections, csv, hashlib, json, os, sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import phase_a_define_train_set as A          # noqa: E402
 
 CUT = "2021-09-30"
-POLY = ("PROTEIN", "PEPTIDE")
+POLY = A.POLY
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def job_tokens(r):
+    """Token count of the job: antibody chains plus every polypeptide antigen."""
     n = len(r["Hseq"] or "") + len(r["Lseq"] or "")
-    types = str(r["agtypes"]).split("/")
-    seqs = str(r["agexpectedseqs"]).split("/")
-    for i, t in enumerate(types):
-        if t in POLY and i < len(seqs) and seqs[i]:
-            n += len(seqs[i])
+    for t, q in A.antigen_chains(r["PDB_ID"], r["agtypes"], r["agexpectedseqs"]):
+        if t in POLY and q:
+            n += len(q)
     return n
 
 
@@ -95,11 +98,17 @@ def input_key(r):
 
 
 def chain_seqs(r):
+    """Every chain sequence the fold needs an MSA for.
+
+    THROUGH A.antigen_chains, which RAISES on a length disagreement, because this list decides
+    `msa_ok`. The private copy here paired with `i < len(seqs)`, i.e. the silent truncation phase A
+    refuses: a short sequence field dropped trailing antigens, `all(s in idx for s in ss)` then
+    passed over a chain that was never checked, and the structure was marked MSA-ready with an
+    antigen that has no MSA. The fold would fail later with nothing pointing back here.
+    """
     out = [s for s in (r["Hseq"], r["Lseq"]) if s]
-    types = str(r["agtypes"]).split("/")
-    seqs = str(r["agexpectedseqs"]).split("/")
-    return out + [seqs[i] for i, t in enumerate(types)
-                  if t in POLY and i < len(seqs) and seqs[i]]
+    return out + [q for t, q in A.antigen_chains(r["PDB_ID"], r["agtypes"], r["agexpectedseqs"])
+                  if t in POLY and q]
 
 
 def main():
@@ -205,13 +214,25 @@ def main():
                 })
     print(f"duplicate-input candidates passed over: {collapsed}")
 
+    # GATE THEN WRITE, and never with `assert`. This check is the only thing standing between the
+    # cache and training on the validation set -- the failure it exists for already happened once,
+    # putting 28 folded validation structures into an earlier selection. It used to sit BELOW the
+    # writer, so a contaminated list reached disk before firing, and `assert` is stripped entirely
+    # by `python -O`, which would have removed it. Same pattern phase G was restructured for.
+    leaked_cl = sorted({r["cluster"] for r in picked} & val)
+    if leaked_cl:
+        raise SystemExit(f"STOP: {len(leaked_cl)} validation cluster(s) survived the filter and "
+                         f"would be trained on: {leaked_cl[:10]}")
+    if not picked:
+        raise SystemExit("STOP: no structure was selected. Nothing is eligible, or the cap and the "
+                         "per-pdb filter removed everything -- writing a header-only selection "
+                         "would make the next phase prepare an empty cache.")
+
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with open(a.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(picked[0]), lineterminator="\n")
         w.writeheader()
         w.writerows(picked)
-
-    assert not ({r["cluster"] for r in picked} & val), "validation cluster survived the filter"
     pdbs = {r["pdb"] for r in picked}
     blocked = [r for r in picked if not r["msa_ok"]]
     need = {s for r in blocked for s in chain_seqs(byinst[r["instance"]]) if s not in idx}

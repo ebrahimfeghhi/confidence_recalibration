@@ -182,3 +182,4 @@ extra_training/val_jobs/
 extra_training/val2_jobs/
 extra_training/train_prep/
 extra_training/data/rcsb_training_cifs/
+extra_training/train_refs/
