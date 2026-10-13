@@ -38,7 +38,81 @@ Two facts worth stating plainly because they are easy to get backwards:
   derived from the PAE head (§5), so the signal we are recalibrating is the one with the least
   training history.
 
-## 2. What `train_confidence_only = True` actually changes
+## 2. The three stages before it
+
+FT3 is a finetune *of* something, and what the first three stages do determines what its poses look
+like. All three share one training loop (`protenix.py:1847` `main_train_loop`) and differ only in
+crop size, batch size and which loss weights are nonzero.
+
+### What every stage does per step
+
+**A random number of recycles.** `protenix.py:1842`, train mode only:
+
+    nc_rng = np.random.RandomState(current_step)
+    N_cycle = nc_rng.randint(1, self.N_cycle + 1)
+
+So a step sees anywhere from 1 to `N_cycle` trunk passes, drawn uniformly and seeded by the step
+number. We infer at a fixed `N_cycle = 10`, which is the *top* of that range -- the model is trained
+across depths and we use it at the deepest.
+
+**A crop, by one of three methods.** `train_crop_size` with `method_weights = [0.2, 0.4, 0.4]` over
+`["ContiguousCropping", "SpatialCropping", "SpatialInterfaceCropping"]`
+(`data_pipeline.py:251,265-267`). So 80% of crops are spatial and 40% are centred on an interface.
+The default base config is 256 tokens (`configs_base.py:58`); the stages raise it to 384, 640, 768.
+
+**Diffusion training on noised ground truth, not on a rollout.**
+`generator.py:289` `sample_diffusion_training`: the ground truth is randomly rotated and translated
+into `N_sample` copies (`diffusion_batch_size`, 48 then 32), each gets independent noise at a level
+drawn from a log-normal (`p_mean = -1.2`, `p_std = 1.5`, `sigma_data = 16.0`), and the denoiser is
+asked to recover it in **one** step. This is a denoising objective, not a trajectory: the model never
+unrolls 200 steps during training.
+
+**The confidence head, on a separate 20-step mini-rollout.** Described in section 4; it runs in every
+stage, which is why `alpha_confidence = 1e-4` throughout.
+
+### What changes between them
+
+| | initial | FT1 | FT2 |
+|---|---|---|---|
+| `train_crop_size` | 384 | 640 | 768 |
+| `diffusion_batch_size` | 48 | 32 | 32 |
+| `smooth_lddt` | **1.0** | 0 | 0 |
+| `alpha_bond` | 0 | **1.0** | **1.0** |
+| `alpha_diffusion` | 4.0 | 4.0 | 4.0 |
+| `alpha_distogram` | 0.03 | 0.03 | 0.03 |
+| s/step (A100-80G) | ~12 | ~30 | ~44 |
+
+The crop is the cost: 384 to 768 tokens is 4x the pair tensor, and the throughput drops by 3.7x
+across the three.
+
+### The losses, and what each is for
+
+| loss | where | what it penalises |
+|---|---|---|
+| **diffusion (MSE)** | `loss.py:1063` | weighted squared error after a weighted rigid alignment to the augmented ground truth. Not uniform: `weight_mse = 1/3` with 5.0 for DNA, 5.0 for RNA and 10.0 for ligand atoms, so a ligand atom counts 30x a protein atom |
+| **smooth lDDT** | `loss.py:63` | a differentiable lDDT over atom pairs within 15 A (30 A for nucleic). Active ONLY in initial training |
+| **bond** | `loss.py:299` | AF3's Formula 5, bonded-atom distance error. Switched on for FT1 and FT2, off again in FT3 |
+| **distogram** | `loss.py:515` | cross-entropy over 64 bins from 2.3125 to 21.6875 A, read off the trunk's pair representation. The only loss that trains the trunk directly rather than through the diffusion module |
+| **confidence** (pLDDT, PDE, resolved) | section 6 | weighted `1e-4` in every stage |
+
+So the shape of the schedule is: learn geometry at a small crop with a soft structural prior
+(smooth lDDT), then grow the crop and swap that prior for explicit bond geometry, then freeze
+everything and fit confidence.
+
+### Why this matters for our FT3
+
+- **Our poses come from a 200-step inference rollout at `N_cycle = 10`, `N_sample = 5`.** Nothing in
+  training ever produced such a pose: the diffusion objective is single-step denoising, and the
+  confidence head's training poses come from a 20-step mini-rollout with one sample. Our pose
+  distribution is therefore *out of distribution* for the head we are re-fitting, which is the
+  argument for re-fitting it.
+- **Training crops to 768 tokens; we fold whole complexes.** 37 of our 40 validation structures are
+  under 768 tokens, so only 3 exceed what FT2's crop ever covered -- but a confidence head fitted on
+  crops has never seen the pair geometry of a complete assembly, cropped or not.
+- **The trunk we freeze was trained with 1-to-10 recycles and we always use 10.** The cached
+  `z_trunk` is a depth-10 representation, which is at the edge of what training sampled.
+
+## 3. What `train_confidence_only = True` actually changes
 
 Three distinct things, in three different files.
 
@@ -63,7 +137,7 @@ Net effect: nothing that produces a pose receives a gradient. A given seed produ
 poses before and after FT3 — which is why the cached trunk tensors in `val_fold/trunks/` are a valid
 substitute for re-folding, and why an FT3 result is a controlled A/B on fixed poses.
 
-## 3. Where the poses the head is trained on come from: the mini-rollout
+## 4. Where the poses the head is trained on come from: the mini-rollout
 
 The head cannot be trained on ground-truth coordinates — at inference it only ever sees sampled ones.
 So each training step generates poses on the fly, called the mini-rollout
@@ -85,7 +159,7 @@ generator's own output distribution*. Our pose distribution differs from Proteni
 MSAs, templates, `N_cycle = 10`, `N_sample = 5` at 200 diffusion steps — which is the entire premise
 for re-running this stage on our poses.
 
-## 4. The confidence head itself
+## 5. The confidence head itself
 
 `protenix/model/modules/confidence.py`, config at `configs_base.py:341-354`: `n_blocks = 4`,
 `pairformer_dropout = 0.0`, distance bins from 3.25 Å to 52.0 Å in 1.25 Å steps,
@@ -125,7 +199,7 @@ pose and stacks afterwards; `N_sample` PAE maps at once would be 11.6 GB in bf16
 Note `pde` is explicitly symmetrised and `pae` is not — PAE is directional, the error in j's position
 when the structure is aligned on i's frame.
 
-## 5. How ipTM comes out of the PAE head
+## 6. How ipTM comes out of the PAE head
 
 `protenix/model/sample_confidence.py`. `calculate_ptm` at `:423`:
 
@@ -150,7 +224,7 @@ So the chain of dependence is: pose → distance map → pose-conditioned pairfo
 softmax → TM kernel → per-chain-pair ipTM. Recalibrating ipTM means changing the PAE head, which
 means FT3.
 
-## 6. The losses
+## 7. The losses
 
 `loss.py:1442` `ProtenixLoss` assembles the weights; `:1464-1467` is the table in §1 made concrete.
 
@@ -169,7 +243,7 @@ against labels computed from the mini-rollout pose versus the permuted ground tr
 FT3 saves the cost of constructing and evaluating them, not just their contribution — which is most
 of why it is ~13 s/step against FT2's ~44.
 
-## 7. What this means for our re-run
+## 8. What this means for our re-run
 
 | fact | consequence for us |
 |---|---|
@@ -180,7 +254,7 @@ of why it is ~13 s/step against FT2's ~44.
 | ipTM is a TM-kernel reduction of PAE (§5) | we cannot recalibrate ipTM directly; we change PAE and ipTM follows |
 | labels need ground truth and frames (§6) | every training structure needs a reference cif with resolvable frames, which is what phase G stages |
 
-## 8. Pointers
+## 9. Pointers
 
 | | |
 |---|---|
