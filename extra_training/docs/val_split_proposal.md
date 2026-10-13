@@ -257,8 +257,20 @@ tensor, a numeric DockQ, a numeric ipTM and a summary-confidence json.
     DATASET=sabdab_val2 SESS=vf2 PHASE_I_LOG=$PWD/run_val2.log \
     GPUS='0 1 3' SEEDS=100 bash phases/phase_i_fold_validation.sh run
 
-4,000 units (40 x 100), 1,780 already done after the migration, so **~2,220 to fold**: 28 GPU-h,
-about 9.3 h on three cards. GPU holders stay up; they exit on `val2_fold/HOLD_STOP`.
+4,000 units (40 x 100). The migration brings **920** finished units -- 7 structures at 100 seeds and
+11 at 20 -- so **3,080 remain to fold**: 28 GPU-h, about 9.3 h on three cards. (An earlier draft said
+"1,780 done, 2,220 to fold". That was prose arithmetic contradicting the estimator that produced the
+28 GPU-h, which was computed from 3,080 units. 920/3,080 is the measured split, recomputed over the
+retained structures only and the 400000-400099 range.)
+
+The smoke step picks an unfolded unit by `phases/pick_unfolded_unit.py` and asserts against that unit
+by name. Its default -- the first active structure at SEED0 -- is a completed retained unit after the
+migration, which `folder.py` skips; the assertions used to count artifacts anywhere under the fold
+directory and would have passed on migrated data. They are now scoped to the chosen unit: new cif
+count strictly greater than before, a `results.csv` row for that pdb and seed, a summary-confidence
+json, and the npz validator opens `<pdb>/free_<seed>.npz` rather than whichever sorts first. The
+helper exits non-zero if every expected unit is already folded, so `SMOKE_OK` cannot be written
+without a fold having happened.
 
 ### Cost and risk
 

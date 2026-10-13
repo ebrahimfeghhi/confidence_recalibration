@@ -338,13 +338,40 @@ if [ "$MODE" = "smoke" ]; then
         sleep 5
         $PY $C/reconcile_stale_claims.py $PXM --dataset pxm2025 2>&1 | tail -1 | tee -a "$LOG"
     fi
+    # AN UNFOLDED UNIT, NOT THE FIRST ONE. The first active structure at SEED0 may already be
+    # complete -- after a migration most retained structures are -- and folder.py skips a unit
+    # already in results.csv. The worker would exit having folded NOTHING while the assertions
+    # below, which counted artifacts anywhere under $E, passed on the migrated data. A smoke test
+    # that cannot fail is worse than none. So: pick the first (pdb, seed) in range with no run.json
+    # and assert against THAT unit by name.
     SQ=$E/queue_smoke.tsv
-    printf 'free\t%s\t*\tfree\t%d\n' "$(active_pdbs | head -1)" "$SEED0" > $SQ
-    say "queue: $(cat $SQ)"
+    SMOKE_UNIT=$($PY $PH/pick_unfolded_unit.py --fold "$E" --seed0 "$SEED0" --seeds "$SEEDS" \
+                 --pdbs $(active_pdbs | tr '\n' ' ')) \
+      || die "could not find an unfolded unit to smoke: $SMOKE_UNIT"
+    SMOKE_PDB=${SMOKE_UNIT%% *}; SMOKE_SEED=${SMOKE_UNIT##* }
+    printf 'free\t%s\t*\tfree\t%s\n' "$SMOKE_PDB" "$SMOKE_SEED" > $SQ
+    say "queue: $(cat $SQ)   -- chosen because it has no run.json yet"
+    # what exists for THIS unit before the worker runs, so the assertions measure the worker
+    SMOKE_DIR_GLOB="$E/poses/$SMOKE_PDB/$SMOKE_SEED-*"
+    PRE_CIF=$(find $SMOKE_DIR_GLOB -name '*.cif' 2>/dev/null | wc -l)
+    say "  before: $PRE_CIF cif for $SMOKE_PDB/$SMOKE_SEED"
     run_workers "$SQ" smoke "$SMOKE_GPU"
 
     NCIF=$(find $E/poses -name '*.cif' 2>/dev/null | wc -l)
-    NTRUNK=$(find $E/trunks -name '*.npz' 2>/dev/null | wc -l)   # 0 by design when SAVE_TRUNKS=0
+    # SCOPED TO THE SMOKE UNIT. Counting over all of $E passes on migrated or earlier data.
+    NCIF_UNIT=$(find $SMOKE_DIR_GLOB -name '*.cif' 2>/dev/null | wc -l)
+    [ "$NCIF_UNIT" -gt "$PRE_CIF" ] || die "the smoke worker produced no NEW pose for
+     $SMOKE_PDB/$SMOKE_SEED (before $PRE_CIF cif, after $NCIF_UNIT). folder.py skips a unit already
+     in results.csv, so the chosen unit was not actually unfolded."
+    NDQ_UNIT=$(awk -F, -v p="$SMOKE_PDB" -v s="$SMOKE_SEED" \
+               'NR>1 && $2==s && index($1,p)==1 {n++} END{print n+0}' "$E/results.csv")
+    [ "$NDQ_UNIT" -ge 1 ] || die "no results.csv row for $SMOKE_PDB seed $SMOKE_SEED -- it folded
+     but did not score"
+    NCONF_UNIT=$(find $SMOKE_DIR_GLOB -name '*summary_confidence_sample_*.json' 2>/dev/null | wc -l)
+    [ "$NCONF_UNIT" -ge 1 ] || die "no summary_confidence json for $SMOKE_PDB/$SMOKE_SEED"
+    say "  smoke unit $SMOKE_PDB/$SMOKE_SEED: +$((NCIF_UNIT-PRE_CIF)) new cif, $NDQ_UNIT score rows,"\
+        "$NCONF_UNIT conf json"
+    NTRUNK=$(find $E/trunks/$SMOKE_PDB -name "free_$SMOKE_SEED.npz" 2>/dev/null | wc -l)
     # NUMERIC dockq AND numeric iptm on at least one interface: proves the scorer ran, that OST
     # produced a score rather than discarding it (the --rigid-scores crash we have hit before), and
     # that the ipTM we will compare against after recalibration is actually being recorded.
@@ -376,12 +403,15 @@ if [ "$MODE" = "smoke" ]; then
         say "=== smoke OK: pose, DockQ, ipTM, confidence json (SAVE_TRUNKS=0, no trunk cache) ==="
         exit 0
     fi
-    NPZOUT=$($PY - "$E" "$NSAMPLE" <<'PYEOF' 2>&1
+    NPZOUT=$($PY - "$E" "$NSAMPLE" "$SMOKE_PDB/free_$SMOKE_SEED.npz" <<'PYEOF' 2>&1
 
 import glob, sys, numpy as np
 root, nsample = sys.argv[1], int(sys.argv[2])
-f = sorted(glob.glob(f"{root}/trunks/*/*.npz"))
-assert f, "no npz found"
+# THIS unit's npz when the caller names one. Opening whichever npz sorts first would validate
+# migrated data and say nothing about the fold that just ran.
+want = sys.argv[3] if len(sys.argv) > 3 else ""
+f = sorted(glob.glob(f"{root}/trunks/{want}")) if want else sorted(glob.glob(f"{root}/trunks/*/*.npz"))
+assert f, f"no npz found for {want or 'any unit'}"
 d = np.load(f[0], allow_pickle=True)
 # ALL SIX FEATURE TENSORS, not the two that happened to be listed. The dump writes
 # distogram_rep_atom_mask, atom_to_token_idx, atom_to_tokatom_idx, asym_id, has_frame and is_ligand;
