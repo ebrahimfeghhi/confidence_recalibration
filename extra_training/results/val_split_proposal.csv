@@ -1,0 +1,41 @@
+cluster,kind,origin,pdb,tokens,deposited,gb,post_held,pre_held,folded
+1855,all new,retained,8y31,782,2024-01-28,30.3,2,0,True
+1389,all new,retained,7t2p,765,2021-12-06,29.0,1,0,True
+1461,all new,sampled,pdb_00007t82,725,2021-12-15,26.1,1,0,False
+1738,all new,sampled,pdb_00007yix,707,2022-07-18,24.8,1,0,False
+2243,all new,sampled,pdb_00009mla,586,2024-12-18,17.0,1,0,False
+1877,all new,retained,8omz,564,2023-03-31,15.8,1,0,True
+2393,all new,retained,9qrv,550,2025-04-04,15.0,1,0,True
+2124,all new,retained,9e6k,546,2024-10-30,14.8,1,0,True
+2347,all new,sampled,pdb_00009vnp,528,2025-06-30,13.8,1,0,False
+1360,all new,sampled,pdb_00007qia,518,2021-12-14,13.3,1,0,False
+2381,all new,retained,9q1l,482,2025-08-14,11.5,1,0,True
+1369,all new,retained,7q4q,452,2021-11-01,10.1,1,0,True
+1944,all new,sampled,pdb_00009eot,452,2024-03-15,10.1,3,0,False
+1833,all new,retained,8t04,448,2023-05-31,10.0,4,0,True
+2312,all new,sampled,pdb_00009e7l,432,2024-11-02,9.3,2,0,False
+2111,all new,retained,9mfg,424,2024-12-09,8.9,2,0,True
+2157,all new,retained,9fvb,424,2024-06-26,8.9,3,0,True
+2377,all new,sampled,pdb_00009ulp,390,2025-04-20,7.5,1,0,False
+2593,all new,sampled,pdb_00009tuy,337,2026-01-10,5.6,1,0,False
+2596,all new,retained,29tj,250,2026-04-07,3.1,1,0,True
+2340,all new,sampled,pdb_00009yc3,245,2025-09-18,3.0,1,0,False
+1720,all new,retained,7y8j,243,2022-06-24,2.9,4,0,True
+2103,all new,retained,9egn,231,2024-11-21,2.6,2,0,True
+1968,all new,sampled,pdb_00008r9w,226,2023-11-30,2.5,2,0,False
+1332,mixed,retained,8df1,799,2022-06-21,31.7,1,1,True
+1055,mixed,sampled,pdb_00009ryf,692,2025-07-15,23.7,2,5,False
+1139,mixed,sampled,pdb_00009eth,624,2024-03-26,19.3,2,1,False
+682,mixed,retained,7qu2,600,2022-01-17,17.9,5,2,True
+926,mixed,sampled,pdb_00007xy8,532,2022-06-01,14.0,3,2,False
+34,mixed,sampled,pdb_00009fkd,500,2024-06-03,12.4,1,6,False
+234,mixed,retained,7shy,482,2021-10-11,11.5,3,14,True
+13,mixed,retained,9mmj,463,2024-12-20,10.6,5,41,True
+978,mixed,sampled,pdb_00007y3j,447,2022-06-11,9.9,2,4,False
+239,mixed,sampled,pdb_00008vgn,437,2023-12-27,9.5,2,6,False
+584,mixed,sampled,pdb_00009avo,428,2024-03-04,9.1,2,6,False
+605,mixed,sampled,pdb_00009dq4,425,2024-09-23,9.0,4,12,False
+993,mixed,sampled,pdb_00009pav,414,2025-06-25,8.5,4,6,False
+938,mixed,sampled,pdb_00007u9p,321,2022-03-11,5.1,2,1,False
+778,mixed,sampled,pdb_00009ezh,239,2024-04-12,2.8,5,4,False
+593,mixed,sampled,pdb_00008h3c,222,2022-10-08,2.4,2,2,False
