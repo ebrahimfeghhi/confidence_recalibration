@@ -59,6 +59,28 @@ def eligible(r):
     return True, ""
 
 
+def ag_key(v):
+    """Normalise SAbDab2's agclusters into a stable key.
+
+    The field is '/'-joined PER ANTIGEN CHAIN, with an empty slot for every non-polypeptide antigen,
+    so one antigen appears as "P220", "P220/", "/P220" and "/P220/" depending on what else is bound,
+    and a repeated chain as "P162/P162". Those are the SAME antigen and were four different cap keys,
+    so the cap did not bind and a pairing could keep more than --cap structures. Measured on the
+    previous selection: 325 raw keys collapse to 243.
+    """
+    return "/".join(sorted({x.strip() for x in str(v).split("/")
+                            if x.strip() and x.strip().lower() != "nan"}))
+
+
+def resolution_of(r):
+    """Lower is better; an unparseable or absent resolution sorts last."""
+    try:
+        x = float(str(r.get("resolution", "")).strip())
+        return x if x > 0 else 99.0
+    except (TypeError, ValueError):
+        return 99.0
+
+
 def input_key(r):
     """What makes two jobs the same FOLD: the antibody chains and the polypeptide antigens.
 
@@ -134,56 +156,54 @@ def main():
     idx = json.load(open(a.seq_index))
     picked = []
     seen_pdb = set()
-    seen_input = set()
     collapsed = 0
     for cl in sorted(cand):
-        seen, taken = collections.Counter(), set()
-        # DIVERSITY, NOT ALPHABETICAL ORDER. The candidates for a pairing were taken in sorted order,
-        # so the two kept structures were whichever sorted first by antibody cluster id -- no
-        # criterion at all. They are now ordered so that the second pick is the one whose INPUT
-        # differs most from the first: a different antigen sequence first, then a different antibody,
-        # then the smallest. The ordering is still deterministic, so the list is reproducible.
-        ordered = sorted(cand[cl])
-        first_inp = {}
-        def rank(key):
-            ab, ag, pdb, inst = key
-            inp = input_key(byinst[inst])
-            f = first_inp.get((ab, ag))
-            if f is None:
-                return (0, job_tokens(byinst[inst]), pdb)
-            return (0 if inp[2] != f[2] else 1 if inp[:2] != f[:2] else 2,
-                    job_tokens(byinst[inst]), pdb)
-        for ab, ag, pdb, inst in ordered:
-            if (ab, ag) not in first_inp:
-                first_inp[(ab, ag)] = input_key(byinst[inst])
-        for ab, ag, pdb, inst in sorted(ordered, key=rank):
-            inp = input_key(byinst[inst])
-            # DEDUPLICATE ON THE INPUT, NOT THE PDB ID -- but the fold's unit key IS the pdb
-            # (folder.py:784 opens f"{jobs}/{pdb}-final-updated.json"), so two input-distinct
-            # instances of one entry cannot both be folded without a per-instance job name. 143 of
-            # the selected structures have such instances and 201 distinct jobs are lost to this.
-            # Recorded here rather than hidden: `collapsed` counts them, and recovering them is a
-            # change to the job-naming convention, not to this selection.
-            if pdb in taken or pdb in seen_pdb:
-                if inp not in seen_input:
-                    collapsed += 1
-                continue
-            if seen[(ab, ag)] >= a.cap:
-                continue
-            seen_pdb.add(pdb)
-            seen_input.add(inp)
-            seen[(ab, ag)] += 1
-            taken.add(pdb)
-            r = byinst[inst]
-            ss = chain_seqs(r)
-            picked.append({
-                "cluster": cl, "pdb": pdb, "instance": inst,
-                "ab_cluster": ab, "agclusters": ag,
-                "tokens": job_tokens(r), "n_chains": len(ss),
-                "msa_ok": int(bool(ss) and all(s in idx for s in ss)),
-            })
-    print(f"input-distinct instances collapsed by the per-pdb unit key: {collapsed} "
-          "(recovering them needs a per-instance job name; see the comment in the loop)")
+        # ONE PASS PER PAIRING, so the second pick is chosen against the structure actually taken
+        # first. The previous version ranked candidates against `first_inp`, the first in SORTED
+        # order, which is not the one the loop ends up taking once pdbs already used elsewhere are
+        # skipped -- so a pairing could take two structures with IDENTICAL input while a genuinely
+        # different one went unpicked. Measured on that selection: 28 of 69 two-pick pairings held
+        # duplicate inputs (9b70/9b71, 7tmz/7u9f, 9cz7/9cza, 8hbv/8hbw among them).
+        bypair = collections.defaultdict(list)
+        for ab, ag, pdb, inst in sorted(cand[cl]):
+            bypair[(ab, ag_key(ag))].append((pdb, inst))
+        for pair in sorted(bypair):
+            taken_inputs = []
+            for _ in range(a.cap):
+                best = None
+                for pdb, inst in bypair[pair]:
+                    if pdb in seen_pdb:
+                        continue
+                    r = byinst[inst]
+                    inp = input_key(r)
+                    # NEVER A DUPLICATE INPUT. A second structure identical in antibody and antigen
+                    # sequence to one already taken adds a crystal form, not a training example.
+                    if inp in taken_inputs:
+                        collapsed += 1
+                        continue
+                    # WELL-RESOLVED NATIVE INTERFACES FIRST, then difference from what is already
+                    # taken, then size. Resolution leads because a 3.5 A interface teaches the head
+                    # a contact map the crystal barely determines.
+                    diff = 0 if not taken_inputs else (
+                        0 if all(inp[2] != t[2] for t in taken_inputs) else
+                        1 if all(inp[:2] != t[:2] for t in taken_inputs) else 2)
+                    k = (diff, resolution_of(r), job_tokens(r), pdb)
+                    if best is None or k < best[0]:
+                        best = (k, pdb, inst, r, inp)
+                if best is None:
+                    break
+                _k, pdb, inst, r, inp = best
+                seen_pdb.add(pdb)
+                taken_inputs.append(inp)
+                ss = chain_seqs(r)
+                picked.append({
+                    "cluster": cl, "pdb": pdb, "instance": inst,
+                    "ab_cluster": pair[0], "agclusters": pair[1],
+                    "tokens": job_tokens(r), "n_chains": len(ss),
+                    "resolution": f"{resolution_of(r):.2f}", "method": r.get("method", ""),
+                    "msa_ok": int(bool(ss) and all(x in idx for x in ss)),
+                })
+    print(f"duplicate-input candidates passed over: {collapsed}")
 
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with open(a.out, "w", newline="") as fh:
