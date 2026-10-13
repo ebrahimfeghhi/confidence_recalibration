@@ -3,13 +3,16 @@
 The SAbDab2 antibody–antigen pool restricted to the 533 clusters that survived the homology audit
 against FoldBench and PXM-2025.
 
-**Current state, as of 2026-10-12.** Validation is **21 clusters / 28 structures / 54 scored
-interfaces** -- the post-cutoff structures only. Every table below that says "50 validation
-clusters" describes the ORIGINAL phase B draw, which is still what `results/val_clusters.csv`
-contains: 50 clusters chosen without regard to deposition date. 26 of those 50 hold no post-cutoff
-structure at all and now contribute nothing, and 3 more hold one that was never folded, so 21 are
-live. See "Pending" at the bottom. The exact clusters and structures are in
-[`cluster_composition.md`](cluster_composition.md).
+**Current state, 2026-10-13.** Validation is **40 clusters / 53 structures / 91 scored interfaces at
+100 seeds**, folded and verified as dataset `sabdab_val2`. How those clusters were chosen, and the
+result, is in [`validation_set.md`](validation_set.md) -- the canonical file. Per-cluster era
+composition for the whole pool is in [`cluster_composition.md`](cluster_composition.md).
+
+This file describes the POOL the split was drawn from, not the split. Two earlier validation sets
+appear below for context and both are superseded: phase B's draw of 50 clusters (chosen without
+regard to deposition date, still what `results/val_clusters.csv` contains) and the 21-cluster
+post-cutoff subset of it that was folded on 2026-10-12. The 21-cluster fold remains reproducible
+under `val_fold` / `sabdab_val`.
 
 | cutoff | clusters | structures | instances |
 |---|---|---|---|
@@ -50,15 +53,17 @@ instance at 20 seeds is about 17 days on two GPUs against 2.3 days for one per c
 
 | | clusters | structures folded | seeds | interfaces |
 |---|---|---|---|---|
-| validation, phase B draw (`val_jobs/`, `--reps 2`) | 50 | 77 | — | 157 |
-| validation, LIVE (post-cutoff only) | **21** | **28** | 100 | **54** |
+| **validation, LIVE (`val2_jobs/`)** | **40** | **53** | **100** | **91** |
+| validation, superseded: the 21-cluster subset (`val_jobs/`) | 21 | 28 | 30 | 54 |
+| validation, superseded: phase B's draw (`val_jobs/`, `--reps 2`) | 50 | 77 | 20-30 | 157 |
 | training (`train_jobs/`, `--reps 1`) | 483 | 483 | not folded yet | 922 |
 
 Of the 77 folded validation structures, 49 are pre-cutoff and 28 post. Of the 483 training
 structures, 314 are pre-cutoff and 169 post.
 
-So the post-cutoff validation depth is a sampling choice, not a data limit: 163 post-cutoff
-structures exist in the validation clusters and 28 are folded.
+So validation depth is a sampling choice, not a data limit. The live set takes 53 structures from
+40 clusters; 13 of those clusters contribute a second representative and the other 27 have only one
+eligible post-cutoff structure in the PDB.
 
 ## Provenance
 
@@ -71,11 +76,15 @@ structures exist in the validation clusters and 28 are folded.
 
 ## The validation set
 
-Superseded by **[`validation_set.md`](validation_set.md)**, which is the single file for how the
-validation set was chosen and what it contains. In short: validation is now **40 post-cutoff
-clusters** (24 all-new, 16 mixed), one named representative each, 100 seeds, folding as dataset
-`sabdab_val2` since 2026-10-12. The earlier 21-cluster set remains reproducible under `val_fold` /
-`sabdab_val`.
+See **[`validation_set.md`](validation_set.md)**, the single file for how it was chosen and what it
+contains: 40 clusters (24 all-new, 16 mixed), 53 structures, 100 seeds, dataset `sabdab_val2`, folded
+and verified 2026-10-13. Result, cluster-averaged then weighted equally across clusters:
+
+| arm | clusters | decoy | acceptable | no acceptable | coverage | regret |
+|---|---|---|---|---|---|---|
+| all new | 24 | 21% | 59% | 20% | 80% | 0.165 |
+| mixed | 16 | 11% | 83% | 6% | 94% | 0.116 |
+| all 40 | 40 | 17% | 69% | 15% | 85% | 0.145 |
 
 Everything the split implies for the training side is there too: the 493 non-selected clusters,
 whole-cluster disjointness, and why a selected cluster's pre-cutoff structures must also stay out of
