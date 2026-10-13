@@ -69,35 +69,14 @@ structures exist in the validation clusters and 28 are folded.
 | fold queues | `train_jobs/manifest.csv`, `val_jobs/manifest.csv` (both carry per-structure `deposited` and `post_cutoff`) |
 | how the clusters were chosen | `phases/README.md`, `phases/phase_a_define_train_set.py`, `phases/phase_b_define_val_clusters.py` |
 
-## Pending: the post-cutoff-only validation split (decided 2026-10-12, partly unexecuted)
+## The validation set
 
-Validation was restricted to post-cutoff structures, because a pre-cutoff structure is in the pool
-Protenix sampled from and cannot test generalisation. The 49 pre-cutoff structures are recorded in
-`val_fold/skipped.csv` with their deposition dates, and their trunk caches were deleted (240 GB);
-their poses and scores remain.
+Superseded by **[`validation_set.md`](validation_set.md)**, which is the single file for how the
+validation set was chosen and what it contains. In short: validation is now **40 post-cutoff
+clusters** (24 all-new, 16 mixed), one named representative each, 100 seeds, folding as dataset
+`sabdab_val2` since 2026-10-12. The earlier 21-cluster set remains reproducible under `val_fold` /
+`sabdab_val`.
 
-**Currently folding:** 28 structures over 21 clusters, 55 interfaces, to 100 seeds.
-
-Two changes follow from the decision and are NOT yet done:
-
-1. **Add three clusters to validation.** 24 of the 50 validation clusters hold a post-cutoff
-   structure; we folded one for only 21. Clusters **47, 371 and 766** hold 46, 6 and 54 post-cutoff
-   structures respectively, and phase G happened to pick pre-cutoff representatives. Adding one
-   structure each gives 24 clusters / 31 structures — every eligible cluster covered.
-   Their MSAs already exist (candidates with MSAs: `7ugq 9bio 9mic 8say` for 47, `9djw 8z8m 9bn7`
-   for 371, `7t0w 7t0z 9fg3 9ffy` for 766), so only phase G and phase H are needed, then ~3 GPU-h.
-   **Deferred for disk**: the running job lands near 1,348 GB of 1,536 (88%), leaving 34 GB under the
-   90% stop threshold. Do it after freeing space. Prefer the SMALLEST post-cutoff structure in each
-   cluster — the trunk cache scales as N², so the representative's size dominates the cost.
-
-2. **Move 26 clusters from validation to training.** 26 of the 50 validation clusters contain no
-   post-cutoff structure anywhere in the pool, so they can never contribute to a post-cutoff
-   validation set; held out, they are only lost training data. Moving them gives **509 training
-   clusters / 24 validation clusters**, still 533, with zero train/val overlap and zero intersection
-   with the 34 exclusions.
-
-   **Whole clusters only.** The pre-cutoff structures of the 24 clusters that STAY in validation must
-   not go into training: training on a 2015 structure of a system validated on its 2023 structure is
-   cluster-level leakage, which is what the 533-cluster audit exists to prevent. Of the 49 skipped
-   structures, the 20 belonging to the 26 moving clusters could become training poses; the other 29
-   can serve neither purpose.
+Everything the split implies for the training side is there too: the 493 non-selected clusters,
+whole-cluster disjointness, and why a selected cluster's pre-cutoff structures must also stay out of
+training.
