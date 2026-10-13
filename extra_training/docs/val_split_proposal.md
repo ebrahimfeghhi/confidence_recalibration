@@ -200,3 +200,83 @@ Flags: `--tok-cap`, `--post-cap`, `--n-allnew`, `--n-mixed`, `--seeds`, `--seed`
 `--allow-short`,
 `--out`.
 
+
+## Execution plan (written 2026-10-12, not yet run)
+
+Prerequisites are **complete**. Everything below is CPU- or filesystem-work except the last step, and
+nothing in it has been executed. Seed depth is fixed at **100**.
+
+### What is already done, and verified
+
+| check | result |
+|---|---|
+| 40 jobs built from the exact `instance` ids | 40/40, phase G chose nothing (`--instances`) |
+| priced from the built jobs | token counts match the proposal **exactly**; 550 GiB at 100 seeds |
+| R1 after repricing | 0 violations (max 799 tokens) |
+| per-chain MSA coverage | 40/40 jobs complete, 0 missing |
+| templates, date-filtered | phase H on `val2_jobs`: 40/40 jsons, 0 problems, cutoff = the 2021-09-30 cap for all 40 |
+| pre-GPU input gate | `phase_i_inputs.py --jobs val2_jobs` passes: every path resolves, every template at or below the required cutoff, version and hash match |
+| proposal to manifest | 40/40 clusters; the 18 retained structures are byte-identical choices to the live fold's |
+| train/val disjointness | 40 val + 493 train = 533, zero overlap, zero intersection with the 34 exclusions |
+| cross-cluster PDB ids | 3 entries span a selected and a training cluster. All are co-crystals of two unrelated antibody-antigen systems; the selected cluster's antigen shares 1% similarity with the training cluster's closest. None is a folded representative |
+| `paths.py` | `sabdab_val2` added: `val2_fold`, `val2_jobs`, `val2_refs`, scorer `ost`, seeds 400000-400099 |
+
+New directories, deliberately separate from `val_fold`/`val_jobs`/`val_refs`: overwriting
+`sabdab_val`'s `pool.csv` would make the 21-cluster numbers unreproducible.
+
+### Steps
+
+**1. Stop the fold in flight, by PID.** Kill the `vf_run100` orchestrator, then check for orphaned
+`vf_val_*` sessions and kill those by PID too -- the trap has been observed NOT to fire -- then
+`reconcile_stale_claims.py val_fold --dataset sabdab_val` to release claims held mid-fold.
+
+**2. Migrate the 18 structures the new split retains**, `val_fold` -> `val2_fold`: their
+`poses/<pdb>/` and `trunks/<pdb>/` directories, and their rows from `results.csv`. Without this
+`folder.py` reads an empty `val2_fold/results.csv` and refolds all 40, discarding 132 GiB of cache
+and ~9 GPU-h. 7 of the 18 are already at 100/100 seeds; the other 11 are at 20/100 and resume.
+
+| | structures | trunks | poses |
+|---|---|---|---|
+| migrate | 18 | 132 GiB | 1.7 GiB |
+
+**3. Delete what the new split drops**: 10 structures, **119 GiB of trunks**. Four are clusters the
+audit rejected (`9dzh` and `9dzf` from cluster 1867, `9p4f` from 2611, `9hvw` from 764) and six are
+second structures of retained clusters (`8ebp`, `7yi6`, `9ghj`, `8t06`, `9fve`, `9eg6`). `9dzf` alone
+is 50.6 GiB at the 20 seeds it reached, and would have been 244 GiB at 100.
+
+Poses are kept, not deleted: 0.8 GiB, and a refold does not reproduce them.
+
+**4. Verify before any GPU.** `phase_i_inputs.py --jobs val2_jobs` again after the moves, then the
+smoke gate -- one unit end to end, asserting a pose, a per-fold npz with every confidence-head
+tensor, a numeric DockQ, a numeric ipTM and a summary-confidence json.
+
+**5. Launch.**
+
+    cd extra_training
+    FOLD_DIR=$PWD/val2_fold JOBS_DIR=$PWD/val2_jobs REFS_DIR=$PWD/val2_refs \
+    DATASET=sabdab_val2 SESS=vf2 PHASE_I_LOG=$PWD/run_val2.log \
+    GPUS='0 1 3' SEEDS=100 bash phases/phase_i_fold_validation.sh run
+
+4,000 units (40 x 100), 1,780 already done after the migration, so **~2,220 to fold**: 28 GPU-h,
+about 9.3 h on three cards. GPU holders stay up; they exit on `val2_fold/HOLD_STOP`.
+
+### Cost and risk
+
+| | |
+|---|---|
+| final cache | 550 GiB (590 GB decimal) |
+| quota after | ~1,000 GiB of 1,536, about 65% |
+| GPU | ~9.3 h on GPUs 0, 1, 3 |
+| irreversible | step 3's 119 GiB of trunks. A refold cannot reproduce them -- repeating a seed does not reproduce its poses -- but every structure deleted is one the audit excluded, and their poses and scores are kept |
+
+### Known loose ends
+
+- **22 of 40 structures have never been folded**, so their fold time is modelled, not measured.
+- **The `9dzf` second-structure rule is not enforced in code.** The split is one structure per
+  cluster by construction; nothing stops a later `--reps 2` run from reintroducing a second.
+- **Phase H on a subset relaxes a shared chain directory's cutoff.** Running it on `val2_jobs`
+  rewrote `c1332_7cj2_ag0_787a8b` from pre-cutoff `7cj2`'s strict date to the 2021-09-30 cap, because
+  `val2` contains only post-cutoff `8df1`. Harmless here -- `8df1`'s 100 seeds all completed at
+  17:22, five minutes before the rewrite, and `7cj2` is in `skipped.csv` and never folded -- but any
+  future refold of a pre-cutoff structure must re-run phase H first, and `phase_i_inputs.py` is the
+  gate that catches it.

@@ -222,6 +222,20 @@ DATASETS = {
         chain_roles=EXTRA_TRAINING / "train_fold" / "chain_roles.csv",
         matrices=POSE_DOCKQ_MATRICES / "sabdab_train_crystal",
         pool_seeds=tuple(str(500000 + i) for i in range(20))),
+    # The REDESIGNED validation split: 40 post-cutoff clusters, one named representative each,
+    # chosen by scripts/propose_val_split.py and reviewed as extra_training/docs/val_split_proposal.md.
+    # Separate from sabdab_val because the two coexist during the changeover -- sabdab_val's fold is
+    # what the 21-cluster set was measured on, and overwriting its pool.csv would make those numbers
+    # unreproducible.
+    "sabdab_val2": Dataset(
+        name="sabdab_val2", data=EXTRA_TRAINING, free=EXTRA_TRAINING / "val2_fold",
+        jobs=EXTRA_TRAINING / "val2_jobs",
+        ref=lambda pdb: f"{EXTRA_TRAINING}/val2_refs/{pdb}.cif", scorer="ost",
+        pool_csv=EXTRA_TRAINING / "val2_fold" / "pool.csv",
+        chain_maps=EXTRA_TRAINING / "val2_fold" / "chain_maps.csv",
+        chain_roles=EXTRA_TRAINING / "val2_fold" / "chain_roles.csv",
+        matrices=POSE_DOCKQ_MATRICES / "sabdab_val2_crystal",
+        pool_seeds=tuple(str(400000 + i) for i in range(100))),
 }
 DATASET_NAMES = tuple(DATASETS)
 
