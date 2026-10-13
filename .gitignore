@@ -180,3 +180,5 @@ extra_training/*.state
 extra_training/train_jobs/
 extra_training/val_jobs/
 extra_training/val2_jobs/
+extra_training/train_prep/
+extra_training/data/rcsb_training_cifs/

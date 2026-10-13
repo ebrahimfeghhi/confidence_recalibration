@@ -17,15 +17,15 @@ generator was never trained on, and serve it from a precomputed cache.
 | | proposed |
 |---|---|
 | training set | post-cutoff structures in clusters holding ≥1 of them, redundancy-filtered |
-| structures | **536** (antibody + polypeptide antigen, cap ≤2 per pairing); all MSA-ready |
+| structures | **535** (antibody + polypeptide antigen, cap ≤2 per pairing); all MSA-ready |
 | clusters represented | **193** |
 | seeds per structure | **10** |
 | each seed | one fold at `N_cycle=10`, 200 diffusion steps, `N_sample=5` poses |
-| cached units | 5,360 (one `z_trunk` each) |
-| poses cached | 26,800 (5 per unit, sharing that unit's `z_trunk`) |
+| cached units | 5,350 at 10 seeds; **2,675 in the first build at 5** |
+| poses cached | 5 per unit, sharing that unit's `z_trunk` |
 | cached per unit | `z_trunk`, `s_trunk`, `s_inputs`, the 5 poses, feature masks |
-| storage | **1,695 GB** of 2,039 GB free — MEASURED, not z-only (ratio 1.0255 over 55 complete cache files) |
-| build cost | 5,360 folds ≈ **12.1 h** on 3 GPUs |
+| storage | **848 GB** at 5 seeds, 1,695 GB at 10, of 2,039 free — MEASURED, not z-only (ratio 1.0255 over 55 complete cache files) |
+| build cost | 2,675 folds ≈ **6 h** at 5 seeds; 12.1 h at 10 |
 | training cost after build | ~1 h per run, versus ~19 h uncached |
 
 ### Why this split of the budget
@@ -59,20 +59,33 @@ that a one-line change, since 5 poses already share each cached `z`.
 
 ---
 
-## 0a. NOT READY TO BUILD — three open findings
+## 0a. The build plan, and what is ready
 
-Review round 3 (`reviews/round3_2026-10-13_cache.md`) found three things that must be settled first.
-The design below stands; the cache contents and the selection do not yet.
+Ordered so nothing expensive precedes the thing that could invalidate it. **Working assumption,
+pending the memory test: everything fits**, so no token cap is applied yet.
 
-| | finding | blocks |
-|---|---|---|
-| **high** | the cache stores confidence-head INPUTS only. The loss also needs ground-truth coordinates in model atom order, `coordinate_mask`, `pae_rep_atom_mask`, `frame_atom_index`, `has_frame`, and the PER-POSE symmetric permutation of the label (`protenix.py:1712-1720`). None is in the npz. | the build |
-| **high** | backward-pass memory is untested above ~1,000 tokens. 77 of 536 structures exceed it and carry 45% of the bytes (765 GB at 10 seeds); the largest is 2,941 tokens, where one N×N×256 activation is 4.4 GB. | caching those 77 |
-| medium | deduplication is per PDB id, which discards 201 input-distinct jobs across 143 structures; and the two representatives per pairing are taken in alphabetical order, with no diversity criterion. | the selection |
+| step | where | cost | state |
+|---|---|---|---|
+| 0. fix the selection: polypeptide-antigen eligibility, input-tuple dedup accounting, diversity-ordered representatives | CPU | minutes | **done** — 535 structures / 193 clusters, all MSA-ready |
+| 1. build Protenix training format: whole RCSB mmCIFs → bioassembly pickles + indices csv | CPU | ~1 h | **running** (`phases/phase_j_prepare_training_data.py`) |
+| 2. memory test: forward+backward through the confidence head at 500 / 1,000 / 1,500 / 2,000 / 2,941 tokens | 1 GPU | ~1 h | queued behind the FoldBench fold |
+| 3. one cached unit WITH labels, then a numerical replay against the uncached loss | 1 GPU | minutes | not written |
+| 4. build the cache, 535 × **5 seeds**, smallest first | 3 GPUs | ~6 h | not queued |
+| 5. extend to 10 seeds | 3 GPUs | ~6 h | only if a 5-seed run moves the head |
 
-Before any of it is generated: a **numerical replay** — one cached unit through the loss, reproducing
-the uncached path's loss on the same structure and seed to within floating point. That is what makes
-this precomputation rather than a different experiment.
+Step 1 is the prerequisite review round 3 exposed: `label_dict` — ground-truth coordinates in the
+model's atom order, the coordinate and representative-atom masks, and the frames the PAE loss aligns
+on — is built from the bioassembly dict. Without it there is no loss, so a cache of confidence-head
+inputs cannot be trained against.
+
+**Why 5 seeds first.** The open questions are whether the cache is *correct*, not whether it is deep
+enough. 5 seeds is 848 GB against 1,695, leaves 1.2 TB of room to be wrong in, and halves the time to
+the first real answer. Seeds append without rebuilding.
+
+**Two things the prep found that the plan had wrong.** SAbDab2's per-instance cifs are trimmed and
+carry no `pdbx_struct_assembly` block, so Protenix's parser raises on all 535 — the entries have to
+come from RCSB. And the instance id, not `<pdb>_<Hchain>_<Lchain>`, is SAbDab2's file stem: 110 of
+535 are single-domain antibodies whose light chain is written `+`.
 
 ## 0b. The structures, and how they were chosen
 
@@ -134,6 +147,22 @@ N². Seeds and structures can both be appended later without rebuilding; rollout
 `N_sample` cannot.
 
 ---
+
+## 0c. Still open
+
+
+
+Review round 3 (`reviews/round3_2026-10-13_cache.md`). The design stands; these gate the build.
+
+| | finding | blocks |
+|---|---|---|
+| **high** | the cache stores confidence-head INPUTS only. The loss also needs ground-truth coordinates in model atom order, `coordinate_mask`, `pae_rep_atom_mask`, `frame_atom_index`, `has_frame`, and the PER-POSE symmetric permutation of the label (`protenix.py:1712-1720`). None is in the npz. | the build |
+| **high** | backward-pass memory is untested above ~1,000 tokens. 77 of 535 structures exceed it and carry 45% of the bytes; the largest is 2,941 tokens, where one N×N×256 activation is 4.4 GB. **Assumed to fit for now**; step 2 settles it. | caching those 77 |
+| medium | deduplication is per PDB id because the fold's unit key is the pdb (`folder.py:784`), which collapses **225** input-distinct instances. Recovering them needs a per-instance job name, not a change to the selection. Representatives are now ordered by input difference rather than alphabetically. | the selection |
+
+Before any of it is generated: a **numerical replay** — one cached unit through the loss, reproducing
+the uncached path's loss on the same structure and seed to within floating point. That is what makes
+this precomputation rather than a different experiment.
 
 ## 1. What we propose to train on
 

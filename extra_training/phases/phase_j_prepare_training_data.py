@@ -1,0 +1,137 @@
+#!/usr/bin/env python
+"""PHASE J, step 1 -- turn the selected training structures into Protenix's training format.
+
+WHAT THIS PRODUCES
+    <bio-dir>/<pdb_id>.pkl.gz   one gzipped bioassembly dict per structure
+    <out-csv>                   the indices csv: one row per sampleable chain / interface
+
+WHY IT IS NEEDED, and it is not only about the dataloader. Protenix's trainer reads these, but the
+decisive reason is the LOSS: label_dict -- ground-truth coordinates in the model's atom order, the
+coordinate and representative-atom masks, and the frames the PAE loss aligns on -- is built from the
+bioassembly dict. A cache of confidence-head INPUTS cannot be trained against without it, which is
+review round 3's finding 6.
+
+THE CIFS COME FROM RCSB, NOT FROM SAbDab2. SAbDab2's per-instance cifs are trimmed: they carry no
+`pdbx_struct_assembly` block, and Protenix's parser reads it first (parser.py:170), so all 535 raise
+KeyError and produce no bioassembly dict. Verified on a full RCSB entry, which parses in ~4 s. So one
+whole mmCIF per PDB ENTRY is fetched, and prepare_training_data enumerates every chain and interface
+in it -- which also means the per-instance selection below decides what we FOLD, while the entry
+decides what the loss can be built for.
+
+THE SAbDab2 INSTANCE ID IS STILL THE KEY for folding. SAbDab2 ships one cif per antibody-antigen
+instance and the INSTANCE column IS the file stem: pdb_00008jqn_H_L -> pdb_00008jqn_H_L.cif. The
+chain letters are CASE SENSITIVE (8jqn has both _H_L and _h_l, different complexes), and a
+single-domain antibody has no light chain, which SAbDab2 writes as "+": pdb_00009nk9_A_+.cif. 110 of
+535 selected structures are such nanobodies, so rebuilding the name from Hchain and Lchain -- which
+gives "<pdb>_A_" for those -- resolved none of them. Using the instance id as given avoids inventing
+a naming convention that the data already states.
+
+THE CLUSTER FILE is RCSB's clusters-by-entity-40.txt format: one line per cluster, whitespace
+separated <PDBID>_<entity_id>. It drives the weighted sampler, which weights a datapoint by
+1/cluster_size. Our selection already caps 2 structures per (antibody cluster, antigen cluster)
+pairing, so the redundancy that weighting exists to damp is largely gone; passing no cluster file
+gives every datapoint cluster_size 1, i.e. uniform weights over an already-deduplicated set. Pass
+--cluster-file to use RCSB's instead. This choice is recorded rather than defaulted silently.
+
+USAGE
+    phase_j_prepare_training_data.py                 # resolve and gate only, write the file list
+    phase_j_prepare_training_data.py --run --n-cpu 64  # then invoke prepare_training_data.py
+"""
+import argparse
+import csv
+import os
+import subprocess
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROTENIX = "/home/ebrahim/Protenix"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--selection", default=f"{ROOT}/results/cache_train_structures.csv")
+    ap.add_argument("--splits", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
+    ap.add_argument("--cif-dir", default=f"{ROOT}/data/rcsb_training_cifs",
+                    help="whole RCSB mmCIFs, one per PDB entry; fetched here if absent")
+    ap.add_argument("--no-fetch", action="store_true", help="fail instead of downloading")
+    ap.add_argument("--out-csv", default=f"{ROOT}/train_prep/indices.csv")
+    ap.add_argument("--bio-dir", default=f"{ROOT}/train_prep/bioassembly")
+    ap.add_argument("--file-list", default=f"{ROOT}/train_prep/cifs.txt")
+    ap.add_argument("--cluster-file", default=None)
+    ap.add_argument("--n-cpu", type=int, default=32)
+    ap.add_argument("--run", action="store_true", help="actually invoke prepare_training_data.py")
+    a = ap.parse_args()
+
+    sel = list(csv.DictReader(open(a.selection)))
+    if not sel:
+        raise SystemExit(f"STOP: {a.selection} is empty")
+    src = {r["INSTANCE"]: r for r in csv.DictReader(open(a.splits))}
+
+    import urllib.request
+    os.makedirs(a.cif_dir, exist_ok=True)
+    pdbs = sorted({r["pdb"] for r in sel})
+    paths, missing, fetched = [], [], 0
+    for pdb in pdbs:
+        dst = os.path.join(a.cif_dir, f"{pdb}.cif")
+        if not os.path.exists(dst) or os.path.getsize(dst) < 1000:
+            if a.no_fetch:
+                missing.append((pdb, "", "absent and --no-fetch given"))
+                continue
+            # .part THEN RENAME: a truncated cif parses without complaint and yields a short chain
+            # set, which would silently cost interfaces in the label the loss is built from.
+            tmp = dst + ".part"
+            try:
+                urllib.request.urlretrieve(f"https://files.rcsb.org/download/{pdb.upper()}.cif", tmp)
+                os.replace(tmp, dst)
+                fetched += 1
+            except Exception as e:                      # noqa: BLE001
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+                missing.append((pdb, "", f"download failed: {type(e).__name__}"))
+                continue
+        paths.append(dst)
+    if fetched:
+        print(f"fetched {fetched} mmCIF(s) from RCSB into {a.cif_dir}")
+
+    # A MISSING CIF IS A STOP, not a skip. Every structure in the frozen selection is one the cache
+    # is costed for; silently preparing 500 of 535 would make the cache disagree with the manifest
+    # that describes it, and nothing downstream re-checks the count.
+    if missing:
+        for pdb, _inst, why in missing[:10]:
+            print(f"  MISSING {pdb}: {why}")
+        raise SystemExit(f"STOP: {len(missing)} of {len(pdbs)} selected entries have no mmCIF.")
+
+    dup = len(paths) - len(set(paths))
+    if dup:
+        raise SystemExit(f"STOP: {dup} selected rows resolve to the SAME cif; the per-instance "
+                         "naming should make that impossible, so the selection is inconsistent.")
+
+    os.makedirs(os.path.dirname(a.file_list), exist_ok=True)
+    os.makedirs(a.bio_dir, exist_ok=True)
+    with open(a.file_list, "w") as fh:
+        fh.write("\n".join(paths) + "\n")
+    print(f"resolved {len(paths)} mmCIF(s) for {len(sel)} selected rows "
+          f"({len(pdbs)} distinct entries) -> {a.file_list}")
+
+    cmd = [f"{PROTENIX}/.venv/bin/python", f"{PROTENIX}/scripts/prepare_training_data.py",
+           "-i", a.file_list, "-o", a.out_csv, "-b", a.bio_dir, "-n", str(a.n_cpu)]
+    if a.cluster_file:
+        cmd += ["-c", a.cluster_file]
+    print("  " + " ".join(cmd))
+    if not a.run:
+        print("dry run: pass --run to execute")
+        return
+    env = dict(os.environ, PYTHONPATH=f"{PROTENIX}:{os.environ.get('PYTHONPATH', '')}")
+    rc = subprocess.call(cmd, env=env)
+    if rc != 0:
+        raise SystemExit(f"STOP: prepare_training_data.py exited {rc}")
+    n_pkl = len([f for f in os.listdir(a.bio_dir) if f.endswith(".pkl.gz")])
+    n_rows = sum(1 for _ in open(a.out_csv)) - 1 if os.path.exists(a.out_csv) else 0
+    print(f"bioassembly pickles: {n_pkl} of {len(paths)} cifs")
+    print(f"indices rows: {n_rows}")
+    if n_pkl < len(paths):
+        raise SystemExit(f"STOP: {len(paths) - n_pkl} cif(s) produced no bioassembly dict")
+
+
+if __name__ == "__main__":
+    main()

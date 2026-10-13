@@ -59,6 +59,19 @@ def eligible(r):
     return True, ""
 
 
+def input_key(r):
+    """What makes two jobs the same FOLD: the antibody chains and the polypeptide antigens.
+
+    Two rows of one PDB entry can be different complexes -- a different antibody, or the same
+    antibody against a different antigen chain -- and deduplicating on the PDB id treats them as one.
+    """
+    types = str(r["agtypes"]).split("/")
+    seqs = str(r["agexpectedseqs"]).split("/")
+    poly = tuple(sorted(x.strip().upper() for t, x in zip(types, seqs)
+                        if t in POLY and x and x.strip().upper() != "NAN"))
+    return ((r["Hseq"] or "").strip().upper(), (r["Lseq"] or "").strip().upper(), poly)
+
+
 def chain_seqs(r):
     out = [s for s in (r["Hseq"], r["Lseq"]) if s]
     types = str(r["agtypes"]).split("/")
@@ -120,14 +133,45 @@ def main():
 
     idx = json.load(open(a.seq_index))
     picked = []
-    seen_pdb = set()        # ONE ROW PER STRUCTURE: 9lsi and 9lsj sit in two ab_ag_clusters each,
-                            # and a per-row fold queue would fold them twice for no extra signal.
+    seen_pdb = set()
+    seen_input = set()
+    collapsed = 0
     for cl in sorted(cand):
         seen, taken = collections.Counter(), set()
-        for ab, ag, pdb, inst in sorted(cand[cl]):
-            if pdb in taken or pdb in seen_pdb or seen[(ab, ag)] >= a.cap:
+        # DIVERSITY, NOT ALPHABETICAL ORDER. The candidates for a pairing were taken in sorted order,
+        # so the two kept structures were whichever sorted first by antibody cluster id -- no
+        # criterion at all. They are now ordered so that the second pick is the one whose INPUT
+        # differs most from the first: a different antigen sequence first, then a different antibody,
+        # then the smallest. The ordering is still deterministic, so the list is reproducible.
+        ordered = sorted(cand[cl])
+        first_inp = {}
+        def rank(key):
+            ab, ag, pdb, inst = key
+            inp = input_key(byinst[inst])
+            f = first_inp.get((ab, ag))
+            if f is None:
+                return (0, job_tokens(byinst[inst]), pdb)
+            return (0 if inp[2] != f[2] else 1 if inp[:2] != f[:2] else 2,
+                    job_tokens(byinst[inst]), pdb)
+        for ab, ag, pdb, inst in ordered:
+            if (ab, ag) not in first_inp:
+                first_inp[(ab, ag)] = input_key(byinst[inst])
+        for ab, ag, pdb, inst in sorted(ordered, key=rank):
+            inp = input_key(byinst[inst])
+            # DEDUPLICATE ON THE INPUT, NOT THE PDB ID -- but the fold's unit key IS the pdb
+            # (folder.py:784 opens f"{jobs}/{pdb}-final-updated.json"), so two input-distinct
+            # instances of one entry cannot both be folded without a per-instance job name. 143 of
+            # the selected structures have such instances and 201 distinct jobs are lost to this.
+            # Recorded here rather than hidden: `collapsed` counts them, and recovering them is a
+            # change to the job-naming convention, not to this selection.
+            if pdb in taken or pdb in seen_pdb:
+                if inp not in seen_input:
+                    collapsed += 1
+                continue
+            if seen[(ab, ag)] >= a.cap:
                 continue
             seen_pdb.add(pdb)
+            seen_input.add(inp)
             seen[(ab, ag)] += 1
             taken.add(pdb)
             r = byinst[inst]
@@ -138,6 +182,8 @@ def main():
                 "tokens": job_tokens(r), "n_chains": len(ss),
                 "msa_ok": int(bool(ss) and all(s in idx for s in ss)),
             })
+    print(f"input-distinct instances collapsed by the per-pdb unit key: {collapsed} "
+          "(recovering them needs a per-instance job name; see the comment in the loop)")
 
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with open(a.out, "w", newline="") as fh:
