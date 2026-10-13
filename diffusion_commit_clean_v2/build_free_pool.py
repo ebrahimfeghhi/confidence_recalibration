@@ -70,6 +70,7 @@ PX = f"{REPO}/experimental_data/protenix/pxm2025"
 #   determinism experiment and belong to that analysis, not to a baseline.
 BLOCKS = {
     "foldbench": [
+        ("top100",      f"{FB}/free_top100",      "topup",   None),
         ("extra10",     f"{FB}/free_extra10",     "topup",   None),
         # SUSPECT, not topup. 16 interfaces over 10 complexes disagree with the pool on how
         # often a seed finds an acceptable pose, at p<0.001, in BOTH directions -- 8up2_AC goes
@@ -82,6 +83,7 @@ BLOCKS = {
         ("other_seeds", f"{FB}/free_other_seeds", "suspect", None),
     ],
     "pxm2025": [
+        ("top100",   f"{PX}/free_top100",  "topup", None),
         ("extra10",  f"{PX}/free_extra10", "topup", None),
         ("free100",  f"{PX}/free",         "topup", {"free100"}),
         ("free149",  f"{PX}/free",         "topup", {"free"}),
