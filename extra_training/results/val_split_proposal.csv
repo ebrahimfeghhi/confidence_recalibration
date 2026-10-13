@@ -1,41 +1,41 @@
-cluster,kind,origin,pdb,tokens,deposited,gb,post_held,pre_held,folded
-1855,all new,retained,8y31,782,2024-01-28,30.3,2,0,True
-1389,all new,retained,7t2p,765,2021-12-06,29.0,1,0,True
-1461,all new,sampled,pdb_00007t82,725,2021-12-15,26.1,1,0,False
-1738,all new,sampled,pdb_00007yix,707,2022-07-18,24.8,1,0,False
-2243,all new,sampled,pdb_00009mla,586,2024-12-18,17.0,1,0,False
-1877,all new,retained,8omz,564,2023-03-31,15.8,1,0,True
-2393,all new,retained,9qrv,550,2025-04-04,15.0,1,0,True
-2124,all new,retained,9e6k,546,2024-10-30,14.8,1,0,True
-2347,all new,sampled,pdb_00009vnp,528,2025-06-30,13.8,1,0,False
-1360,all new,sampled,pdb_00007qia,518,2021-12-14,13.3,1,0,False
-2381,all new,retained,9q1l,482,2025-08-14,11.5,1,0,True
-1369,all new,retained,7q4q,452,2021-11-01,10.1,1,0,True
-1944,all new,sampled,pdb_00009eot,452,2024-03-15,10.1,3,0,False
-1833,all new,retained,8t04,448,2023-05-31,10.0,4,0,True
-2312,all new,sampled,pdb_00009e7l,432,2024-11-02,9.3,2,0,False
-2111,all new,retained,9mfg,424,2024-12-09,8.9,2,0,True
-2157,all new,retained,9fvb,424,2024-06-26,8.9,3,0,True
-2377,all new,sampled,pdb_00009ulp,390,2025-04-20,7.5,1,0,False
-2593,all new,sampled,pdb_00009tuy,337,2026-01-10,5.6,1,0,False
-2596,all new,retained,29tj,250,2026-04-07,3.1,1,0,True
-2340,all new,sampled,pdb_00009yc3,245,2025-09-18,3.0,1,0,False
-1720,all new,retained,7y8j,243,2022-06-24,2.9,4,0,True
-2103,all new,retained,9egn,231,2024-11-21,2.6,2,0,True
-1968,all new,sampled,pdb_00008r9w,226,2023-11-30,2.5,2,0,False
-1332,mixed,retained,8df1,799,2022-06-21,31.7,1,1,True
-1055,mixed,sampled,pdb_00009ryf,692,2025-07-15,23.7,2,5,False
-1139,mixed,sampled,pdb_00009eth,624,2024-03-26,19.3,2,1,False
-682,mixed,retained,7qu2,600,2022-01-17,17.9,5,2,True
-926,mixed,sampled,pdb_00007xy8,532,2022-06-01,14.0,3,2,False
-34,mixed,sampled,pdb_00009fkd,500,2024-06-03,12.4,1,6,False
-234,mixed,retained,7shy,482,2021-10-11,11.5,3,14,True
-13,mixed,retained,9mmj,463,2024-12-20,10.6,5,41,True
-978,mixed,sampled,pdb_00007y3j,447,2022-06-11,9.9,2,4,False
-239,mixed,sampled,pdb_00008vgn,437,2023-12-27,9.5,2,6,False
-584,mixed,sampled,pdb_00009avo,428,2024-03-04,9.1,2,6,False
-605,mixed,sampled,pdb_00009dq4,425,2024-09-23,9.0,4,12,False
-993,mixed,sampled,pdb_00009pav,414,2025-06-25,8.5,4,6,False
-938,mixed,sampled,pdb_00007u9p,321,2022-03-11,5.1,2,1,False
-778,mixed,sampled,pdb_00009ezh,239,2024-04-12,2.8,5,4,False
-593,mixed,sampled,pdb_00008h3c,222,2022-10-08,2.4,2,2,False
+cluster,kind,origin,pdb,instance,tokens,token_source,deposited,gib,post_held,pre_held,folded
+2173,all new,sampled,pdb_00009ima,pdb_00009ima_C_D,787,phase-G formula on abag_split,2024-07-02,30.7,1,0,False
+1855,all new,retained,8y31,pdb_00008y31_B_A,782,job json,2024-01-28,30.3,1,0,True
+1389,all new,retained,7t2p,pdb_00007t2p_H_L,765,job json,2021-12-06,29.0,1,0,True
+2529,all new,sampled,pdb_00009y7n,pdb_00009y7n_B_C,706,phase-G formula on abag_split,2025-09-10,24.7,1,0,False
+1799,all new,sampled,pdb_00007zmk,pdb_00007zmk_V_W,690,phase-G formula on abag_split,2022-04-19,23.6,1,0,False
+1108,all new,sampled,pdb_00009nr6,pdb_00009nr6_F1_F2,602,phase-G formula on abag_split,2025-03-14,18.0,1,0,False
+1877,all new,retained,8omz,pdb_00008omz_B_+,564,job json,2023-03-31,15.8,1,0,True
+2403,all new,sampled,pdb_00008tbq,pdb_00008tbq_A_B,553,phase-G formula on abag_split,2023-06-29,15.2,1,0,False
+2393,all new,retained,9qrv,pdb_00009qrv_H_L,550,job json,2025-04-04,15.0,1,0,True
+2124,all new,retained,9e6k,pdb_00009e6k_H_L,546,job json,2024-10-30,14.8,1,0,True
+2381,all new,retained,9q1l,pdb_00009q1l_D_E,482,job json,2025-08-14,11.5,1,0,True
+2225,all new,sampled,pdb_00009c7x,pdb_00009c7x_A_B,455,phase-G formula on abag_split,2024-06-11,10.3,1,0,False
+1369,all new,retained,7q4q,pdb_00007q4q_B_A,452,job json,2021-11-01,10.1,1,0,True
+1833,all new,retained,8t04,pdb_00008t04_C_D,448,job json,2023-05-31,10.0,4,0,True
+1882,all new,retained,8t05,pdb_00008t05_C_D,448,job json,2023-05-31,10.0,1,0,True
+2184,all new,sampled,pdb_00009cfd,pdb_00009cfd_H_L,443,phase-G formula on abag_split,2024-06-27,9.7,2,0,False
+1507,all new,sampled,pdb_00007tzh,pdb_00007tzh_A1_A2,426,phase-G formula on abag_split,2022-02-15,9.0,1,0,False
+2111,all new,retained,9mfg,pdb_00009mfg_F_+,424,job json,2024-12-09,8.9,1,0,True
+2157,all new,retained,9fvb,pdb_00009fvb_H_+,424,job json,2024-06-26,8.9,3,0,True
+2313,all new,sampled,pdb_00009lme,pdb_00009lme_F_+,342,phase-G formula on abag_split,2025-01-18,5.8,1,0,False
+2417,all new,sampled,pdb_00008pjp,pdb_00008pjp_C_+,286,phase-G formula on abag_split,2023-06-23,4.1,3,0,False
+2596,all new,retained,29tj,pdb_000029tj_B1_B2,250,job json,2026-04-07,3.1,1,0,True
+1720,all new,retained,7y8j,pdb_00007y8j_H_L,243,job json,2022-06-24,2.9,3,0,True
+2103,all new,retained,9egn,pdb_00009egn_B_+,231,job json,2024-11-21,2.6,2,0,True
+1332,mixed,retained,8df1,pdb_00008df1_O_P,799,job json,2022-06-21,31.7,1,1,True
+1055,mixed,sampled,pdb_00009ryf,pdb_00009ryf_C_+,699,phase-G formula on abag_split,2025-07-15,24.2,2,5,False
+1150,mixed,sampled,pdb_00007r58,pdb_00007r58_H_L,638,phase-G formula on abag_split,2022-02-10,20.2,1,2,False
+1103,mixed,sampled,pdb_00008xqj,pdb_00008xqj_B_+,606,phase-G formula on abag_split,2024-01-05,18.2,3,1,False
+682,mixed,retained,7qu2,pdb_00007qu2_A_B,600,job json,2022-01-17,17.9,5,2,True
+299,mixed,sampled,pdb_00008z3a,pdb_00008z3a_H_L,593,phase-G formula on abag_split,2024-04-15,17.4,4,1,False
+605,mixed,sampled,pdb_00007su0,pdb_00007su0_I_M,547,phase-G formula on abag_split,2021-11-15,14.8,1,6,False
+105,mixed,sampled,pdb_00007sqw,pdb_00007sqw_A_B,534,phase-G formula on abag_split,2021-11-07,14.1,1,62,False
+1299,mixed,sampled,pdb_00007zra,pdb_00007zra_E_+,524,phase-G formula on abag_split,2022-05-04,13.6,1,2,False
+234,mixed,retained,7shy,pdb_00007shy_I_J,482,job json,2021-10-11,11.5,3,4,True
+13,mixed,retained,9mmj,pdb_00009mmj_B_A,463,job json,2024-12-20,10.6,3,36,True
+655,mixed,sampled,pdb_00009cn2,pdb_00009cn2_B1_B2,454,phase-G formula on abag_split,2024-07-15,10.2,1,3,False
+2065,mixed,sampled,pdb_00008og0,pdb_00008og0_H_L,432,phase-G formula on abag_split,2023-03-17,9.3,1,1,False
+1118,mixed,sampled,pdb_00008apy,pdb_00008apy_C_+,333,phase-G formula on abag_split,2022-08-10,5.5,1,2,False
+4,mixed,sampled,pdb_00009fgy,pdb_00009fgy_C_+,255,phase-G formula on abag_split,2024-05-26,3.2,2,81,False
+103,mixed,sampled,pdb_00008v8f,pdb_00008v8f_C1_C2,249,phase-G formula on abag_split,2023-12-05,3.1,1,1,False

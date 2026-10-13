@@ -12,8 +12,11 @@ RULES, applied identically to retained and newly sampled clusters:
       those are the ones Protenix already fits.
   R3  composition target --n-allnew all-new + --n-mixed mixed. "All new" means no structure in the
       cluster predates 2021-09-30, so no relative of it can have been in Protenix's training pool.
-  R4  no two clusters whose representatives share a deposition date and token count -- same study,
-      different cluster id, which is redundancy the cluster id does not catch.
+  R4  REPORTED, NOT ENFORCED. Clusters whose representatives share a deposition date and token
+      count are flagged for review. An earlier version DROPPED one of each such pair, which was
+      wrong: 8t04 (cluster 1833) and 8t05 (cluster 1882) share 2023-05-31 and 448 tokens yet differ
+      in heavy chain, light chain AND antigen sequence -- distinct systems, not duplicates. A drop
+      now requires identical folded input, which the cluster id already enforces within a cluster.
 
 SELECTION IS BLIND TO PREDICTION SCORES. The representative is the smallest post-cutoff structure in
 the cluster by token count; token count is a property of the input, not of any prediction. Sampling
@@ -40,60 +43,87 @@ def main():
     ap.add_argument("--seeds", type=int, default=100, help="seed depth, for the cache estimate")
     ap.add_argument("--seed", type=int, default=20261012)
     ap.add_argument("--out", default=f"{REPO}/results/val_split_proposal.csv")
+    # a short set silently passing review is the failure this guards: the stratified picker returns
+    # fewer than asked when a stratum is empty, and the summary would simply read "37 clusters".
+    ap.add_argument("--allow-short", action="store_true",
+                    help="permit fewer clusters than requested instead of failing")
     a = ap.parse_args()
 
     train = {r["cluster"] for r in csv.DictReader(open(f"{REPO}/results/train_clusters.csv"))}
     val = {r["cluster"] for r in csv.DictReader(open(f"{REPO}/results/val_clusters.csv"))}
     pool = train | val
 
-    def seqlen(r):
-        return (len(r["Hseq"] or "") + len(r["Lseq"] or "")
-                + sum(len(s) for s in (r["agresolvedseqs"] or "").split("/") if s))
+    # PHASE A'S ELIGIBILITY, not "every row in the cluster". phase_a_define_train_set.py:118,262
+    # keeps only rows with a polypeptide antigen; without it a hapten-only pairing can be chosen as
+    # a cluster's representative, and Protenix would be asked to fold a complex that is not an
+    # antibody-protein complex at all.
+    POLY = ("PROTEIN", "PEPTIDE")
+
+    def is_poly(r):
+        return any(t in POLY for t in str(r["agtypes"]).split("/"))
+
+    # PHASE G'S OWN TOKEN COUNT. phase_g_build_val_jobs.py:154-165 folds Hseq, Lseq and the
+    # agEXPECTEDseqs entries whose agtypes is polypeptide. agresolvedseqs -- what this used before --
+    # is the resolved subsequence and is SHORTER, so it under-prices the fold; the error is squared
+    # in cache bytes.
+    def job_tokens(r):
+        n = len(r["Hseq"] or "") + len(r["Lseq"] or "")
+        types = str(r["agtypes"]).split("/")
+        seqs = str(r["agexpectedseqs"]).split("/")
+        for i, t in enumerate(types):
+            if t in POLY and i < len(seqs) and seqs[i]:
+                n += len(seqs[i])
+        return n
 
     pre, post, best = (collections.defaultdict(set), collections.defaultdict(set), {})
     for r in csv.DictReader(open(SPLIT)):
         c = str(r["ab_ag_cluster"])
         if c not in pool:
             continue
+        if not is_poly(r):
+            continue
         newer = (r["PDBdepo"] or "")[:10] > CUT
         (post if newer else pre)[c].add(r["PDB_ID"])
         if newer:
-            t = seqlen(r)
+            t = job_tokens(r)
             # 150 tokens is the floor below which a "complex" is a peptide stub
             if t >= 150 and (c not in best or t < best[c][0]):
-                best[c] = (t, r["PDB_ID"], (r["PDBdepo"] or "")[:10])
+                best[c] = (t, r["PDB_ID"], (r["PDBdepo"] or "")[:10], r["INSTANCE"])
 
     # REAL token counts where we have them: the proxy underestimates assemblies with repeated
     # chains by up to 2x (9dzf: 1081 proxy vs 2289 real), and that error is 4x in cache bytes.
     real = collections.defaultdict(list)
     for m in csv.DictReader(open(f"{REPO}/val_jobs/manifest.csv")):
         if m["post_cutoff"] == "True":
-            real[m["cluster"]].append((int(m["n_tokens"]), m["pdb"], m["deposited"]))
+            real[m["cluster"]].append((int(m["n_tokens"]), m["pdb"], m["deposited"],
+                                       m["instance"]))
     folded = {c: min(v) for c, v in real.items()}
 
     gb = lambda t: t * t * 512 / 1024**3 * a.seeds * 1.04     # z_trunk + ~4% other tensors
 
     cand = {}
-    for c, (t, p, dep) in best.items():
-        if c in folded:                      # prefer the measured value over the proxy
-            t, p, dep = folded[c]
-        cand[c] = dict(cluster=c, kind="all new" if not pre[c] else "mixed", pdb=p, tokens=t,
-                       deposited=dep, gb=gb(t), post_held=len(post[c]), pre_held=len(pre[c]),
-                       folded=c in folded)
+    for c, (t, p, dep, inst) in best.items():
+        src = "job json"
+        if c in folded:                      # the built job's own count beats any estimate
+            t, p, dep, inst = folded[c]
+        else:
+            src = "phase-G formula on abag_split"
+        cand[c] = dict(cluster=c, kind="all new" if not pre[c] else "mixed", pdb=p, instance=inst,
+                       tokens=t, deposited=dep, gib=gb(t), post_held=len(post[c]),
+                       pre_held=len(pre[c]), folded=c in folded, token_source=src)
 
     passing = {c: v for c, v in cand.items()
                if v["tokens"] <= a.tok_cap and v["post_held"] <= a.post_cap}
 
-    # R4 within the candidate set: same deposition date and token count means same study
-    seen, dropped_r4 = {}, []
+    # R4 REPORTED. Shared date and size is evidence of a shared study, which bears on how
+    # independent two clusters are -- it is not evidence that the folded inputs are duplicates.
+    seen, flagged = {}, []
     for c, v in sorted(passing.items(), key=lambda kv: (kv[1]["deposited"], kv[1]["tokens"], kv[0])):
         k = (v["deposited"], v["tokens"])
         if k in seen:
-            dropped_r4.append((c, seen[k]))
+            flagged.append((c, seen[k], v["deposited"], v["tokens"]))
         else:
             seen[k] = c
-    for c, _ in dropped_r4:
-        passing.pop(c, None)
 
     rng = random.Random(a.seed)
 
@@ -125,9 +155,10 @@ def main():
     print(f"eligible after R1 (tok<={a.tok_cap}) and R2 (post<={a.post_cap}): "
           f"{sum(1 for v in passing.values() if v['kind']=='all new')} all-new, "
           f"{sum(1 for v in passing.values() if v['kind']=='mixed')} mixed")
-    if dropped_r4:
-        print(f"R4 dropped {len(dropped_r4)}: " +
-              ", ".join(f"cluster {c} (duplicate of {k})" for c, k in dropped_r4))
+    if flagged:
+        print(f"R4 FLAGGED for review (shared study, nothing dropped):")
+        for c, k, d, t in flagged:
+            print(f"   clusters {c} and {k}: both {d}, both {t} tokens -- check dependence")
     if rejected:
         print("already-folded clusters REJECTED by the rules:")
         for v in sorted(rejected, key=lambda v: -v["tokens"]):
@@ -135,7 +166,7 @@ def main():
             if v["tokens"] > a.tok_cap: why.append(f"R1 {v['tokens']} tok")
             if v["post_held"] > a.post_cap: why.append(f"R2 withholds {v['post_held']}")
             print(f"   cluster {v['cluster']:>5} {v['pdb']} -- {', '.join(why)} "
-                  f"({v['gb']:.0f} GB saved)")
+                  f"({v['gib']:.0f} GiB saved)")
     tk = sorted(v["tokens"] for v in sel)
     print()
     print(f"SELECTED {len(sel)} clusters: {sum(1 for v in sel if v['kind']=='all new')} all-new, "
@@ -143,18 +174,30 @@ def main():
           f"{sum(1 for v in sel if v['origin']=='retained')} retained, "
           f"{sum(1 for v in sel if v['origin']=='sampled')} sampled")
     print(f"   tokens min/median/max {tk[0]}/{tk[len(tk)//2]}/{tk[-1]}")
-    print(f"   cache at {a.seeds} seeds: {sum(v['gb'] for v in sel):.0f} GB")
+    gib = sum(v["gib"] for v in sel)
+    print(f"   cache at {a.seeds} seeds: {gib:.0f} GiB = {gib*1024**3/1e9:.0f} GB decimal")
+    nest = sum(1 for v in sel if v["token_source"] != "job json")
+    print(f"   token counts: {len(sel)-nest} from built job jsons, {nest} from the phase-G formula "
+          f"(must be re-priced from a real job json before folding)")
     print(f"   withholds {sum(v['post_held'] for v in sel)} post-cutoff and "
           f"{sum(v['pre_held'] for v in sel)} pre-cutoff structures from training")
     print(f"   already folded: {sum(1 for v in sel if v['folded'])} of {len(sel)}")
 
-    cols = ["cluster", "kind", "origin", "pdb", "tokens", "deposited", "gb", "post_held",
-            "pre_held", "folded"]
+    # FAIL rather than quietly deliver a short set
+    want = a.n_allnew + a.n_mixed
+    got_an = sum(1 for v in sel if v["kind"] == "all new")
+    got_mx = len(sel) - got_an
+    if (got_an, got_mx) != (a.n_allnew, a.n_mixed) and not a.allow_short:
+        raise SystemExit(f"STOP: asked for {a.n_allnew} all-new + {a.n_mixed} mixed, got "
+                         f"{got_an} + {got_mx}. Too few candidates survive R1/R2, or a token "
+                         f"stratum is empty. Loosen the caps or pass --allow-short deliberately.")
+    cols = ["cluster", "kind", "origin", "pdb", "instance", "tokens", "token_source", "deposited",
+            "gib", "post_held", "pre_held", "folded"]
     with open(a.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, lineterminator="\n", extrasaction="ignore")
         w.writeheader()
         for v in sorted(sel, key=lambda v: (v["kind"], -v["tokens"])):
-            w.writerow({**v, "gb": round(v["gb"], 1)})
+            w.writerow({**v, "gib": round(v["gib"], 1)})
     print(f"\nwrote {a.out}")
 
 
