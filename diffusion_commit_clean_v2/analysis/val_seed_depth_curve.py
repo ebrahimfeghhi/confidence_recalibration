@@ -179,7 +179,7 @@ def compare_arms(a, byclust, kind, dropped):
         for r in table:
             w.writerow({k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()})
 
-    fig, ax = plt.subplots(figsize=(7.6, 4.8), dpi=200)
+    fig, ax = plt.subplots(figsize=(8.9, 4.8), dpi=200)
     for arm, pts in series.items():
         ys = [100 * m for m, _ in pts]
         es = [100 * e for _, e in pts]
@@ -197,7 +197,9 @@ def compare_arms(a, byclust, kind, dropped):
     ax.set_title(f"{a.label or a.dataset}: {a.compare_arms} vs seed depth, by arm", fontsize=11)
     ax.set_ylim(0, 100)
     ax.grid(alpha=0.25, lw=0.5)
-    ax.legend(frameon=False, fontsize=9)
+    # OUTSIDE THE AXES. An inside legend sat on top of the curves at every placement tried, because
+    # the three lines between them occupy most of the panel.
+    ax.legend(frameon=False, fontsize=9, loc="upper left", bbox_to_anchor=(1.01, 1.0))
     fig.text(0.005, 0.015,
              f"x: seeds drawn per interface.  y: % of interfaces classed {a.compare_arms!r}, every "
              f"interface weighted equally.\n"
@@ -205,7 +207,7 @@ def compare_arms(a, byclust, kind, dropped):
              f"k={a.universe} has one possible draw; otherwise {a.boots} draws without replacement.  "
              f"mixed = the cluster also holds pre-2021-09-30 structures.",
              fontsize=6.5, color="#555", va="bottom")
-    fig.tight_layout(rect=(0, 0.075, 1, 1))
+    fig.tight_layout(rect=(0, 0.075, 0.995, 1))
     fig.savefig(a.out + ".png")
     fig.savefig(a.out + ".pdf")
     print(f"\nwrote {a.out}.png / .pdf / .csv")
@@ -294,7 +296,7 @@ def main():
         for r in table:
             w.writerow({k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()})
 
-    fig, ax = plt.subplots(figsize=(7.6, 4.8), dpi=200)
+    fig, ax = plt.subplots(figsize=(8.9, 4.8), dpi=200)
     xs = [r["seeds"] for r in table]
     for cls in CLASSES:
         ys = [100 * r[cls] for r in table]
@@ -319,7 +321,7 @@ def main():
     ax.set_title(f"{name}, {arm}: {shown}", fontsize=11)
     ax.set_ylim(0, 100)
     ax.grid(alpha=0.25, lw=0.5)
-    ax.legend(frameon=False, fontsize=9, loc="center right")
+    ax.legend(frameon=False, fontsize=9, loc="upper left", bbox_to_anchor=(1.01, 1.0))
     fig.text(0.005, 0.015,
              f"x: seeds drawn per interface.  y: % of interfaces in each class, "
              + ("averaged within cluster then over clusters equally.\n"
@@ -327,7 +329,7 @@ def main():
              f"band = ±1 sd over draws.  k=1 enumerates all {a.universe} single-seed draws; "
              f"k={a.universe} has one possible draw; otherwise {a.boots} draws without replacement.",
              fontsize=6.5, color="#555", va="bottom")
-    fig.tight_layout(rect=(0, 0.075, 1, 1))
+    fig.tight_layout(rect=(0, 0.075, 0.995, 1))
     fig.savefig(a.out + ".png")
     fig.savefig(a.out + ".pdf")
     print(f"\nwrote {a.out}.png / .pdf / .csv")
