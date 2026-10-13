@@ -128,6 +128,89 @@ def load(dataset, jobs_manifest, split_csv, universe, weighting, arm_source):
     return byclust, kind, dropped
 
 
+ARM_COLOURS = {"all": "#3b3b3b", "all new": "#1f6fb4", "mixed": "#a05195"}
+
+
+def compare_arms(a, byclust, kind, dropped):
+    """One class, one line per arm. The complement of the default view: there, one arm carries three
+    class lines; here, one class carries three arm lines, which is what comparing arms needs."""
+    rng = random.Random(a.seed)
+
+    def classify(sd, seeds):
+        poses = [p for s in seeds for p in sd[s]]
+        oracle = max(p[0] for p in poses)
+        chosen = max(poses, key=lambda p: p[1])[0]
+        if oracle < a.thresh:
+            return "no acceptable"
+        return "acceptable" if chosen >= a.thresh else "decoy"
+
+    arms = ["all", "all new", "mixed"]
+    groups = {arm: sorted(g for g in byclust if arm == "all" or kind.get(g) == arm) for arm in arms}
+    groups = {k: v for k, v in groups.items() if v}
+    nif = {arm: sum(len(byclust[g]) for g in gs) for arm, gs in groups.items()}
+    depths = [int(x) for x in a.depths.split(",") if 0 < int(x) <= a.universe]
+
+    def frac(gs, pick):
+        return st.mean([st.mean([1.0 if classify(sd, pick(sd)) == a.compare_arms else 0.0
+                                 for sd in byclust[g]]) for g in gs])
+
+    series, table = {}, []
+    for k in depths:
+        if k == 1:
+            picks = [(lambda sd, i=i: [sorted(sd)[i]]) for i in range(a.universe)]
+        elif k >= a.universe:
+            picks = [lambda sd: list(sd)]
+        else:
+            picks = [(lambda sd, _=_: rng.sample(list(sd), k)) for _ in range(a.boots)]
+        row = {"seeds": k, "draws": len(picks)}
+        for arm, gs in groups.items():
+            v = [frac(gs, p) for p in picks]
+            series.setdefault(arm, []).append((st.mean(v), st.stdev(v) if len(v) > 1 else 0.0))
+            row[arm] = st.mean(v)
+            row[arm + " sd"] = st.stdev(v) if len(v) > 1 else 0.0
+        table.append(row)
+        print(f"  {k:3d} seeds ({len(picks):3d} draws): " + "  ".join(
+            f"{arm} {100*row[arm]:.1f}+-{100*row[arm+' sd']:.1f}%" for arm in groups))
+
+    os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+    with open(a.out + ".csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=list(table[0]), lineterminator="\n")
+        w.writeheader()
+        for r in table:
+            w.writerow({k: (round(v, 4) if isinstance(v, float) else v) for k, v in r.items()})
+
+    fig, ax = plt.subplots(figsize=(7.6, 4.8), dpi=200)
+    for arm, pts in series.items():
+        ys = [100 * m for m, _ in pts]
+        es = [100 * e for _, e in pts]
+        ax.plot(depths, ys, "-o", color=ARM_COLOURS[arm], ms=4, lw=1.8, zorder=3,
+                label=f"{arm} ({nif[arm]} interfaces)")
+        ax.fill_between(depths, [y - e for y, e in zip(ys, es)], [y + e for y, e in zip(ys, es)],
+                        color=ARM_COLOURS[arm], alpha=0.16, lw=0, zorder=2)
+    ax.set_xscale("log")
+    label_at = {1, 5, 10, 20, 30, 50, 100}
+    ax.xaxis.set_major_locator(FixedLocator(depths))
+    ax.xaxis.set_major_formatter(FixedFormatter([str(x) if x in label_at else "" for x in depths]))
+    ax.xaxis.set_minor_locator(FixedLocator([]))
+    ax.set_xlabel("seeds per interface (log scale)")
+    ax.set_ylabel(f"% of interfaces: {a.compare_arms}")
+    ax.set_title(f"{a.label or a.dataset}: {a.compare_arms} vs seed depth, by arm", fontsize=11)
+    ax.set_ylim(0, 100)
+    ax.grid(alpha=0.25, lw=0.5)
+    ax.legend(frameon=False, fontsize=9)
+    fig.text(0.005, 0.015,
+             f"x: seeds drawn per interface.  y: % of interfaces classed {a.compare_arms!r}, every "
+             f"interface weighted equally.\n"
+             f"band = ±1 sd over draws.  k=1 enumerates all {a.universe} single-seed draws; "
+             f"k={a.universe} has one possible draw; otherwise {a.boots} draws without replacement.  "
+             f"mixed = the cluster also holds pre-2021-09-30 structures.",
+             fontsize=6.5, color="#555", va="bottom")
+    fig.tight_layout(rect=(0, 0.075, 1, 1))
+    fig.savefig(a.out + ".png")
+    fig.savefig(a.out + ".pdf")
+    print(f"\nwrote {a.out}.png / .pdf / .csv")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dataset", default="sabdab_val2")
@@ -148,11 +231,16 @@ def main():
     ap.add_argument("--arm-source", default="split-csv", choices=["split-csv", "sabdab"],
                     help="where `all new` vs `mixed` comes from")
     ap.add_argument("--label", default=None, help="overrides the title's dataset name")
+    ap.add_argument("--compare-arms", default=None, choices=list(CLASSES),
+                    help="instead of one arm with three class lines, plot ONE class with a line per "
+                         "arm (all / all new / mixed), which is the view for comparing arms directly")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
     byclust, kind, dropped = load(a.dataset, a.jobs_manifest, a.split_csv, a.universe,
                                   a.weighting, a.arm_source)
+    if a.compare_arms:
+        return compare_arms(a, byclust, kind, dropped)
     clusters = sorted(c for c in byclust if a.arm == "all" or kind.get(c) == a.arm)
     if not clusters:
         raise SystemExit(f"STOP: no clusters match arm {a.arm!r}")
