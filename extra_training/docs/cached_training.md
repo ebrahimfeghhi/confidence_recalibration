@@ -17,15 +17,15 @@ generator was never trained on, and serve it from a precomputed cache.
 | | proposed |
 |---|---|
 | training set | post-cutoff structures in clusters holding ≥1 of them, redundancy-filtered |
-| structures | **665** (cap ≤2 per antibody–antigen pairing) |
-| clusters represented | **224 of 224** |
+| structures | **695** (cap ≤2 per antibody–antigen pairing); 555 are MSA-ready today |
+| clusters represented | **207** (every training cluster holding a post-cutoff structure) |
 | seeds per structure | **10** |
 | each seed | one fold at `N_cycle=10`, 200 diffusion steps, `N_sample=5` poses |
-| cached units | 6,650 (one `z_trunk` each) |
-| poses cached | 33,250 (5 per unit, sharing that unit's `z_trunk`) |
+| cached units | 6,950 (one `z_trunk` each) |
+| poses cached | 34,750 (5 per unit, sharing that unit's `z_trunk`) |
 | cached per unit | `z_trunk`, `s_trunk`, `s_inputs`, the 5 poses, feature masks |
-| storage | **~1,542 GB** of 2,040 GB free, leaving ~500 GB |
-| build cost | 6,650 folds ≈ **15 h** on 3 GPUs |
+| storage | **1,703 GB** of 2,039 GB free (1,609 GB for the 555 ready now) |
+| build cost | 6,950 folds ≈ **15.7 h** on 3 GPUs (12.6 h for the 555) |
 | training cost after build | ~1 h per run, versus ~19 h uncached |
 
 ### Why this split of the budget
@@ -34,14 +34,14 @@ Equal-cost alternatives, all within reach of 2,040 GB:
 
 | design | storage |
 |---|---|
-| **665 structures × 10 seeds** | **1,542 GB** |
+| **695 structures × 10 seeds** | **1,703 GB** |
 | 1,594 structures × 5 seeds | 1,509 GB |
 | 1,594 structures × 6 seeds | 1,811 GB |
 
 Spending on seeds rather than structures, because seed is the axis the variance lives on: 87% of
 ipTM variance is between seeds of the same interface, and the hard training examples — confident
 representation, wrong pose — are produced by depth, not breadth (§3). The redundancy filter costs
-almost nothing in return: 665 structures still contain all 567 distinct antibody–antigen pairings,
+almost nothing in return: the cap keeps every distinct antibody–antigen pairing,
 so what is discarded is duplicate crystal forms.
 
 Ten seeds also reaches the thin tail that matters: 41 of 292 PXM interfaces find an acceptable pose
@@ -56,6 +56,66 @@ after the build is rollout length, `N_cycle` and `N_sample`.
 seen improves selection; the control arm tests it. (2) Training the head on several poses that share
 one trunk representation forces it to read the pose rather than the representation; the cache makes
 that a one-line change, since 5 poses already share each cached `z`.
+
+---
+
+## 0b. The structures, and how they were chosen
+
+The list is frozen and in the repo: **`extra_training/results/cache_train_structures.csv`**, one row
+per structure with its cluster, instance, antibody cluster, antigen cluster, token count, chain count
+and MSA readiness. It is regenerated deterministically by
+**`extra_training/scripts/select_cache_structures.py`** — same inputs, same list.
+
+### The funnel
+
+| step | source | result |
+|---|---|---|
+| SAbDab2 ML Dataset v0.2.0, antibody–antigen rows | `data/zenodo_splits/splits_final/abag_split.csv` | 15,810 instances |
+| minus clusters holding any of our 227 benchmark complexes, minus 4 more on antigen homology | `phase_a_define_train_set.training_clusters()` | **533 clusters** |
+| minus the live validation split (40 clusters) | `results/val_split_proposal_clusters.csv` | **493 clusters** / 2,506 structures |
+| keep clusters holding ≥1 post-2021-09-30 structure | `PDBdepo > 2021-09-30` | 207 clusters |
+| keep only the post-cutoff structures in them | | 1,594 → see cap |
+| cap 2 structures per (antibody cluster, antigen cluster) pairing | `ab_cluster` × `agclusters` | **695 structures / 207 clusters** |
+
+One row per structure: a PDB appearing under two `ab_ag_cluster`s is emitted once.
+
+### Two things a reviewer should check first
+
+**No validation leakage.** `train_clusters.csv` was built against the ORIGINAL 50-cluster phase-B
+split and never regenerated when validation moved to 40 clusters on 2026-10-13; 22 of the live 40
+were still listed as training. The first version of this selection therefore held 44 structures from
+validation clusters, 28 of them structures actually folded into the validation set. Fixed: the
+selector subtracts the live split before anything else and asserts none survives, phase B now writes
+`train_clusters.meta.json` naming and hashing the validation file it subtracted, and the selector
+refuses to run if that hash does not match. Verified on the current list: 0 validation clusters, 0
+validation structures.
+
+**Why the cap is per pairing, not per cluster.** `ab_ag_cluster`s are merged transitively, so size
+does not measure redundancy: one cluster holds 1,029 structures of about 5 antibodies, another holds
+183 structures spanning 108 distinct antibodies. A flat per-cluster cap would be free in the first and
+destroy the second. Capping per (antibody, antigen) pairing keeps every distinct pairing.
+
+### What is cached per structure
+
+10 seeds. Each seed is one fold at `N_cycle=10`, 200 diffusion steps, `N_sample=5`, saving
+`z_trunk`, `s_trunk`, `s_inputs`, the 5 poses and the feature masks — everything
+`run_confidence_head` consumes, so a training step needs no trunk pass and no rollout.
+
+### Cost, by MSA readiness
+
+140 of the 695 have at least one antibody chain with no MSA; recovering them needs uniref30 and
+colabfold_envdb re-downloaded (~1 TB transient, 8–13 h), since those were deleted under the old quota.
+
+| set | structures | clusters | folds at 10 seeds | storage | build at 442 folds/h |
+|---|---|---|---|---|---|
+| MSA-ready now | 555 | 194 | 5,550 | **1,609 GB** | 12.6 h |
+| blocked on MSA | 140 | 58 | 1,400 | 94 GB | 3.2 h |
+| **all selected** | **695** | **207** | **6,950** | **1,703 GB** | **15.7 h** |
+
+Free quota is 2,039 GB, so the whole set fits. The blocked 140 are small — 94 GB for 20% of the
+structures — because their median is 425 tokens against 625 for the ready ones, and `z_trunk` goes as
+N². Seeds and structures can both be appended later without rebuilding; rollout length, `N_cycle` and
+`N_sample` cannot.
 
 ---
 

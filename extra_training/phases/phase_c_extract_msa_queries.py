@@ -128,15 +128,8 @@ def poly_antigens(row):
     agtypes and agexpectedseqs are '/'-joined in the same chain order. A length disagreement between
     them would make zip() silently drop the trailing chains, so it is an error rather than a shrug.
     """
-    types = str(row.agtypes).split("/")
-    seqs = str(row.agexpectedseqs).split("/")
-    if len(types) != len(seqs):
-        raise SystemExit(
-            f"STOP: {row.PDB_ID} lists {len(types)} antigen types but {len(seqs)} antigen "
-            f"sequences ({types} vs {len(seqs)} seqs). They are positional; zipping them would "
-            "silently drop chains.")
     out = []
-    for i, (t, p) in enumerate(zip(types, seqs)):
+    for i, (t, p) in enumerate(A.antigen_chains(row.PDB_ID, row.agtypes, row.agexpectedseqs)):
         q = p.strip().upper()
         if t.strip().upper() in A.POLY and q and q != "NAN":
             out.append((f"ag{i}", q))

@@ -163,12 +163,7 @@ def _chains(row, min_len=5):
     # the job json, where Protenix would fold it as a protein. agtypes is '/'-joined in the same
     # order, and a length disagreement between the two fields means the positional pairing is not
     # safe, so it is an error rather than a silent truncation by zip().
-    types = str(row.agtypes).split("/")
-    seqs = str(row.agexpectedseqs).split("/")
-    if len(types) != len(seqs):
-        raise SystemExit(f"STOP: {row.PDB_ID} lists {len(types)} antigen types but {len(seqs)} "
-                         "antigen sequences; they are positional and must correspond.")
-    for i, (t, p) in enumerate(zip(types, seqs)):
+    for i, (t, p) in enumerate(A.antigen_chains(row.PDB_ID, row.agtypes, row.agexpectedseqs)):
         q = p.strip().upper()
         if len(q) >= min_len and q != "NAN" and t.strip().upper() in A.POLY:
             out.append((f"ag{i}", q))
@@ -224,11 +219,17 @@ def representatives(val_csv, reps=1, min_len=5, splits=None, excluded=None, inst
         # round((i+0.5)*len/k), lands on the LARGEST structure whenever k=2: indices 1 and 2 for a
         # cluster of 3, 1 and 4 for a cluster of 5. The largest structure is the memory worst case,
         # which is exactly what picking the median avoided at reps=1, and phase I's only backstop for
-        # an OOM is a round that completes nothing. Scaling by (len-1) instead keeps both picks away
-        # from the extreme: 0 and 1 for a cluster of 3, 1 and 3 for a cluster of 5.
+        # an OOM is a round that completes nothing. Scaling by (len-1) keeps the picks away from the
+        # extreme for every length EXCEPT 3, where it does not and the comment used to claim it did:
+        # (0+0.5)*2/2 = 0.5 and (1+0.5)*2/2 = 1.5, and Python rounds half to EVEN, so those are 0 and
+        # 2 -- the smallest and the largest, the pair this arithmetic exists to avoid. Verified over
+        # lengths 1-9: 3 is the only length where the maximum index is selected. So the top index is
+        # excluded explicitly whenever there is a structure to spare (k < len and len >= 3), which
+        # turns a cluster of 3 into 0 and 1 and leaves every other length unchanged.
         span = max(1, len(g) - 1)
         idx = [int(round((i + 0.5) * span / k)) for i in range(k)]
-        for i in sorted(set(min(j, len(g) - 1) for j in idx)):
+        top = len(g) - 2 if (k < len(g) and len(g) >= 3) else len(g) - 1
+        for i in sorted(set(min(j, top) for j in idx)):
             r = g.iloc[i]
             picks.append((cl, str(r.PDB_ID)[-4:].lower(), r.chains, r.instance))
     return picks, skipped

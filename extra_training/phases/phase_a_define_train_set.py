@@ -118,6 +118,30 @@ def _anarci_allhmm():
 ALLHMM = _anarci_allhmm()
 POLY = ("PROTEIN", "PEPTIDE")
 
+
+def antigen_chains(pdb_id, types_field, seqs_field):
+    """in: a row's agtypes and ONE of its '/'-joined sequence fields (resolved or expected).
+    out: [(type, sequence)] paired positionally.
+
+    THE ONE PLACE THIS PAIRING IS VALIDATED. agtypes, agresolvedseqs and agexpectedseqs are
+    '/'-joined in the same chain order, so they pair by position and by nothing else. A bare
+    zip() over them truncates to the shorter without a word, and this pairing feeds an EXCLUSION
+    filter, so both failure modes are unsafe: a short sequence field drops trailing antigens from
+    the query set, and a benchmark chain identical to a dropped one then has nothing to match
+    against, leaving its cluster in training; a reordered pairing routes a PROTEIN antigen into the
+    PEPTIDE bucket, where it is searched at 0.80 identity instead of 0.40 and a 55% homolog is
+    missed. Phases C and G each grew their own copy of this check and phase A, the only reader of
+    agresolvedseqs in the repo, had none. All three now call this.
+    """
+    types = str(types_field).split("/")
+    seqs = str(seqs_field).split("/")
+    if len(types) != len(seqs):
+        raise SystemExit(
+            f"STOP: {pdb_id} lists {len(types)} antigen types but {len(seqs)} antigen sequences "
+            f"({types} vs {len(seqs)} seqs). They are positional; zipping them would silently drop "
+            "chains from a leakage filter.")
+    return list(zip(types, seqs))
+
 # THE EVALUATION SETS, named explicitly. Never paths.DATASET_NAMES: that tuple also carries
 # sabdab_val, which is DERIVED from this pool. Sweeping it in here would exclude the validation
 # clusters from the pool they are drawn from, and in phase C it would file 79 validation structures
@@ -542,10 +566,8 @@ def train_tables(splits, drop_clusters):
     s = s[s.agtypes.apply(lambda v: any(t in POLY for t in str(v).split("/")))]
     prot, pep, ab, cdr = [], [], [], []
     for i, r in enumerate(s.itertuples(index=False)):
-        types = str(r.agtypes).split("/")
         for which in (r.agresolvedseqs, r.agexpectedseqs):
-            parts = str(which).split("/")
-            for t, p in zip(types, parts):
+            for t, p in antigen_chains(r.PDB_ID, r.agtypes, which):
                 p = p.strip().upper()
                 if len(p) < 5 or p == "NAN":
                     continue
