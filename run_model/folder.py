@@ -802,10 +802,24 @@ def saved_run_dir(out, pdb, seed, tag=None, donor=None):
             continue
         if str(meta.get("seed")) != str(seed):
             continue                       # a renamed directory must not be able to lie about it
-        if tag is not None and meta.get("arm") not in (None, tag):
+        # UNKNOWN PROVENANCE IS NOT A MATCH. `meta.get("arm") not in (None, tag)` accepted a run
+        # whose arm was absent, and `meta.get("donor_pose", donor)` compared the requested donor
+        # against ITSELF whenever the key was missing -- which is always, because write_run_json
+        # records `templates: [{source_pose, md5}]` and never a `donor_pose` key at all. So the
+        # donor check could not fail, and a run saved with one template satisfied a request for a
+        # different one. Both fields must be PRESENT and must agree.
+        if tag is not None and meta.get("arm") != tag:
             continue
-        if donor is not None and str(meta.get("donor_pose", donor)) != str(donor):
-            continue
+        if donor is not None:
+            if "templates" not in meta:
+                continue                   # written by an older driver: provenance unknown
+            tm = meta["templates"] or []
+            recorded = [str(t.get("source_pose")) for t in tm if isinstance(t, dict)]
+            if str(donor) in ("-1", "", "None"):
+                if recorded:
+                    continue               # a free unit requested; this run used templates
+            elif recorded != [str(donor)]:
+                continue                   # a different template, or more than one
         hits.append(d)
     if len(hits) > 1:
         print(f"  {pdb} seed {seed} {tag}: {len(hits)} saved runs match; refusing to guess "

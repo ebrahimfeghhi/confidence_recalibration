@@ -75,7 +75,12 @@ def main():
                          "mapping and cannot be read as a refold list.")
 
     om = [r for r in rows if r["kind"] == "omission"]
-    lk = [r for r in rows if r["kind"].startswith("linker")]
+    lk = [r for r in rows if r["kind"] == "linker"]
+    # UNRESOLVED IS NOT AN EXCLUSION. `startswith("linker")` swept up the uncertain "linker?" class,
+    # so a run nobody had judged left the refold list without a decision being taken. Unresolved runs
+    # go in NEITHER list and are reported loudly, because a mixed run can hold both domain residues
+    # and tether and needs splitting at the domain bound first.
+    un = [r for r in rows if r["kind"] in ("unresolved", "ambiguous", "linker?")]
     out = summarise(om)
 
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
@@ -106,6 +111,13 @@ def main():
         for r in lk:
             print(f"   {r['pdb']} {r['role']} native {r['native_from']}-{r['native_to']}: "
                   f"{r['sequence']}")
+    if un:
+        print(f"\nUNRESOLVED -- in NEITHER list, needs a residue-level boundary decision: {len(un)}")
+        for r in un:
+            print(f"   {r['pdb']} {r['role']} native {r['native_from']}-{r['native_to']} "
+                  f"[{r['kind']}]: {r['sequence']}")
+        print("   Split these at the intended domain bound, then re-run; until then they are not "
+              "refolded and not excluded.")
 
 
 if __name__ == "__main__":

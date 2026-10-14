@@ -428,7 +428,14 @@ def native_polymer(st):
     sub2seq = {}
     for e in st.entities:
         if e.entity_type == gemmi.EntityType.Polymer:
-            seq = gemmi.one_letter_code(list(e.full_sequence)).upper()
+            # res_code(), NOT gemmi.one_letter_code. This file spells MSE as M on purpose, to match
+            # the fold input; one_letter_code spells it X. Using the raw helper here REGRESSED a bug
+            # this file had already fixed: 8rwf's antigen has a resolved MSE at native position 97
+            # (auth 304), the native sequence said X where the query says M, so the position looked
+            # unmatched -- the writer masked a resolved residue and the refold list gained a false
+            # entry, "8rwf ag0:97-97 X". Restoring that X would have corrupted an input that already
+            # carries the intended methionine. ONE normalisation, used by every alignment here.
+            seq = "".join(res_code(nm) for nm in e.full_sequence)
             for sb in e.subchains:
                 sub2seq[sb] = seq
     out = {}
@@ -448,7 +455,7 @@ def native_polymer(st):
 def place_by_native_position(native_seq, expected, native_of_index, span):
     """observed residue index -> position in `expected`, via NATIVE POLYMER POSITIONS.
 
-    WHY NOT LETTERS. The previous version aligned the OBSERVED residue letters against `expected`.
+    WHY NOT LETTERS. The first version aligned the OBSERVED residue letters against `expected`.
     Letters are not unique -- there are twenty -- so a residue can land in a plausible slot while
     belonging somewhere else: 8h3c's heavy role needed 117 residues, native 119-133 are unresolved,
     the span reached past the gap and took auth 134, and the matcher placed that THR at expected
@@ -456,25 +463,46 @@ def place_by_native_position(native_seq, expected, native_of_index, span):
 
     WHY THIS IS SOUND. The entity's full sequence and `expected` are both COMPLETE -- neither has
     holes punched in it by unresolved density -- so aligning those two is a different and far more
-    reliable problem than aligning what happens to be observed. That gives native -> expected once,
-    after which each observed residue's own `label_seq` names its slot with no guessing, an
-    unresolved native position simply has no residue and becomes a gap rather than an invitation to
-    pull one in from next door, and a residue whose native position falls outside the span of this
-    role cannot be placed at all.
+    reliable problem. That gives native -> expected once, after which each observed residue's own
+    `label_seq` names its slot with no guessing.
 
-    Returns (pos, outside, missing_native) where `pos` is observed index -> 0-based expected
-    position, `outside` are observed indices whose native position is not in this role's mapped
-    span, and `missing_native` are native positions inside the span that `expected` does not
-    contain -- the internal omissions a corrected query has to restore.
+    DIFFERENCES ARE CLASSIFIED, NOT LUMPED. The previous version took difflib's MATCHING BLOCKS and
+    called every unmatched native position between the first and last block "missing". Matching
+    blocks skip mismatches, so a SUBSTITUTION looked identical to a DELETION: native ACDEFGH against
+    query ACYEFGH reported native D at position 3 as missing, when the query has a residue there and
+    simply a different one. Acting on that would insert the native residue while keeping the query's,
+    lengthening the chain by one. Opcodes distinguish the cases outright:
+
+      equal       -> placed 1:1
+      replace 1:1 -> a SUBSTITUTION: the query has a slot, so the residue is placed there. The
+                     coordinates are what the label needs; the letter differs because the
+                     crystallised construct differs from the query.
+      replace n:m -> AMBIGUOUS, reported and not guessed at
+      delete      -> native residues with no query slot at all: the genuine OMISSION, and the only
+                     thing a corrected query should restore
+      insert      -> query positions this structure has no residue for: a mask, not a defect
+
+    Returns (pos, outside, deletions, substitutions, ambiguous) with 1-based native positions.
     """
     import difflib
     sm = difflib.SequenceMatcher(None, native_seq, expected, autojunk=False)
-    n2e = {}
-    for b in sm.get_matching_blocks():
-        for k in range(b.size):
-            n2e[b.a + k + 1] = b.b + k          # 1-based native -> 0-based expected
+    n2e, subs, dels, ambig = {}, [], [], []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                n2e[i1 + k + 1] = j1 + k
+        elif tag == "replace":
+            if (i2 - i1) == (j2 - j1):
+                for k in range(i2 - i1):
+                    n2e[i1 + k + 1] = j1 + k
+                    subs.append(i1 + k + 1)
+            else:
+                ambig.append((i1 + 1, i2, j1 + 1, j2))
+        elif tag == "delete":
+            dels.extend(range(i1 + 1, i2 + 1))
+        # "insert": expected positions with no native residue -> nothing to place, a mask
     if not n2e:
-        return {}, list(range(len(native_of_index))), []
+        return {}, list(native_of_index), [], [], ambig
     lo_n, hi_n = min(n2e), max(n2e)
     pos, outside = {}, []
     for idx, np_ in native_of_index.items():
@@ -485,8 +513,10 @@ def place_by_native_position(native_seq, expected, native_of_index, span):
             outside.append(idx)
         else:
             pos[idx] = e
-    missing_native = [n for n in range(lo_n + 1, hi_n) if n not in n2e]
-    return pos, outside, missing_native
+    # only deletions INSIDE the mapped span are internal; outside it they are terminal truncation --
+    # a signal peptide, a tag, or a constant region past the domain, none of which were folded
+    dels_in = [d for d in dels if lo_n < d < hi_n]
+    return pos, outside, dels_in, subs, ambig
 
 
 def drop_geometrically_impossible(res, pos, max_ca=4.5):
@@ -584,8 +614,14 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
         _nseq, _npos = _nat
         # observed index within this role's span -> its native position
         _idx2nat = {i - lo: np_ for np_, i in _npos.items() if lo <= i < hi}
-        pos, _outside, _missing_native = place_by_native_position(
+        pos, _outside, _missing_native, _subs, _ambig = place_by_native_position(
             _nseq, exp, _idx2nat, span=(0, len(res)))
+        if _ambig:
+            native_gaps.append(dict(
+                pdb=st.name, role=role, src_chain=cname, native_from=_ambig[0][0],
+                native_to=_ambig[0][1], n_missing=0, sequence="", kind="ambiguous",
+                roles_on_chain=sum(1 for (_r2, c2, _l2, _h2) in keep if c2 == cname),
+                outside_span=len(_outside), expected_len=len(exp), native_len=len(_nseq)))
         # CLASSIFY EACH MISSING RUN; DO NOT RESTORE ANYTHING AUTOMATICALLY. Two different things
         # produce a native position the query lacks, and they call for opposite actions:
         #
@@ -613,13 +649,27 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
             return [(a2, b2) for a2, b2 in out]
 
         def _classify(a2, b2):
+            """omission | linker | unresolved. NOTHING is acted on without a decision.
+
+            A run can be MIXED: 8dpl's excluded 115-136 begins TVSSGTGG..., and ...WGQGTALTVSS is the
+            canonical end of a VH, so the first residues are domain and the rest are tether. Calling
+            the whole run "linker" would leave a genuine domain omission uncorrected; calling it
+            "omission" would splice a tether into an antibody. Where the boundary is not clean, the
+            run is `unresolved` -- excluded from the refold list AND from the linker exclusions, and
+            reported, so it is a decision someone takes rather than a default.
+            """
             seg = _nseq[a2 - 1:b2]
             gs = sum(1 for ch2 in seg if ch2 in "GS")
             shared = any(c2 == cname and r2 != role for (r2, c2, _l2, _h2) in keep)
-            if shared and len(seg) >= 5 and gs / len(seg) >= 0.7:
-                return "linker"          # GS-rich, on a chain carrying another role: a tether
+            # the tether itself is almost pure G/S; a run that is only PART GS-rich is mixed
+            tail = seg.lstrip("ACDEFHIKLMNPQRTVWY")      # drop a leading non-GS stretch
+            if shared and len(seg) >= 5:
+                if gs / len(seg) >= 0.9:
+                    return "linker"                      # effectively all tether
+                if len(tail) >= 5 and sum(1 for c3 in tail if c3 in "GS") / len(tail) >= 0.9:
+                    return "unresolved"                  # domain residues THEN tether: mixed
             if gs / max(1, len(seg)) >= 0.8 and len(seg) >= 8:
-                return "linker?"         # GS-rich but the chain carries one role: flag, do not act
+                return "unresolved"      # GS-rich on a chain carrying one role: no tether expected
             return "omission"
 
         # RECORDED, NOT INFERRED. The native positions this role's query omits are what a corrected
