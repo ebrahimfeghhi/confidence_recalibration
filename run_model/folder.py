@@ -402,7 +402,7 @@ def claim_is_live(path):
         return True          # unreadable owner: do not steal on a guess
 
 
-def reconcile_claims(claim_dir, csv_path, pool_ifaces):
+def reconcile_claims(claim_dir, csv_path, pool_ifaces, nsample=5):
     """in:  claim dir, the results csv, {pdb: interfaces} to know what "finished" means
     out: removes claim dirs whose unit was never scored; returns nothing
 
@@ -422,15 +422,30 @@ def reconcile_claims(claim_dir, csv_path, pool_ifaces):
     # the tag. Keying on (pdb, seed) alone works for free folds, whose seeds are unique, but every
     # templated fold shares one seed -- so one scored fold made every dead claim of its complex look
     # scored, and a fold killed mid-run was skipped forever (4 stranded in the 2026-09-25 arm).
-    scored = collections.defaultdict(set)
+    # PER SAMPLE, NOT PER INTERFACE. This recorded only WHICH interfaces appear, so a dead claim
+    # whose scoring died after one pose looked finished and was retained forever -- the same
+    # one-row-means-done fault that iface_scored fixed on the folding side, left in place on the
+    # recovery side, which is precisely where a partial unit has to be noticed.
+    per_sample = collections.defaultdict(set)
     for r in csv.DictReader(open(csv_path)):
-        scored[(r["iface"].split("_")[0], r["arm"], r["seed"])].add(r["iface"])
+        try:
+            k = int(r["sample"])
+            if not (math.isfinite(float(r["dockq"])) and math.isfinite(float(r["iptm"]))):
+                continue
+        except (TypeError, ValueError, KeyError):
+            continue
+        per_sample[(r["iface"].split("_")[0], r["arm"], r["seed"], r["iface"])].add(k)
+
+    def finished(pdb, tag, seed, want):
+        return all(per_sample.get((pdb, tag, seed, i), set()) >= set(range(nsample))
+                   for i in want)
+
     released = 0
     for c in os.listdir(claim_dir):
         parts = c.split("_")
         pdb, tag, seed = parts[0], parts[-2], parts[-1]
         want = pool_ifaces.get(pdb)
-        if want and not want <= scored.get((pdb, tag, seed), set()):
+        if want and not finished(pdb, tag, seed, want):
             if claim_is_live(f"{claim_dir}/{c}"):
                 continue
             try:
@@ -716,15 +731,34 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
         out = spawn(cmd)
         err = out.stderr or err
         if out.stdout.strip():
-            with open(ctx.A.csv, "a") as fh:      # flushed per interface, not at the end
-                fh.write(out.stdout)
-            # RECORD WHICH SAMPLES LANDED, from the rows actually written. Marking the whole
-            # interface done on any output is what let one scored pose stand in for five.
+            key = (iface, str(seed), tag)
+            have = ctx.rows_done[key]
+            # ONLY THE MISSING SAMPLES. The scorer always scores the whole interface, so a retry of a
+            # partly-scored unit re-emitted rows for samples the csv already had -- duplicating them
+            # and double-weighting that pose in every average. Rows are filtered here, by sample, and
+            # a row whose scores are not finite numbers is not a score and is dropped.
+            fresh = []
             for line in out.stdout.strip().splitlines():
                 f = line.split(",")
-                if len(f) >= 6 and f[5].strip().isdigit():
-                    ctx.rows_done[(iface, str(seed), tag)].add(int(f[5]))
-            got += 1
+                if len(f) < 8 or not f[5].strip().isdigit():
+                    continue
+                k = int(f[5])
+                if k in have:
+                    continue
+                try:
+                    if not (math.isfinite(float(f[6])) and math.isfinite(float(f[7]))):
+                        continue
+                except ValueError:
+                    continue
+                fresh.append((k, line))
+            if fresh:
+                with open(ctx.A.csv, "a") as fh:  # flushed per interface, not at the end
+                    fh.write("\n".join(l for _k, l in fresh) + "\n")
+                for k, _l in fresh:
+                    have.add(k)
+                got += 1
+            elif have:
+                print(f"    {iface} seed {seed}: already scored, nothing appended", flush=True)
     return got, err
 
 
@@ -741,6 +775,41 @@ def spawn(cmd):
                 raise
             print(f"      scorer failed to start ({e}); retry {attempt}/{SPAWN_TRIES - 1}", flush=True)
             time.sleep(2)
+
+
+def saved_run_dir(out, pdb, seed):
+    """The ONE finished run directory of (pdb, seed) under --out, or None.
+
+    Finished means it holds run.json. A worker that died mid-fold leaves a directory without one, and
+    a seed can have several, so anything other than exactly one finished directory is no answer.
+    """
+    dirs = [d for d in glob.glob(f"{out}/{pdb}/{seed}-*")
+            if os.path.exists(os.path.join(d, "run.json"))
+            and glob.glob(f"{d}/**/*_sample_*.cif", recursive=True)]
+    return dirs[0] if len(dirs) == 1 else None
+
+
+def rescore_saved(ctx, pdb, target, tag, seed, want):
+    """Score the POSES ALREADY ON DISK for an incomplete unit. Returns interfaces newly scored.
+
+    WHY THIS EXISTS. A unit whose scoring died partway cannot be repaired by folding again: the
+    trunk guard refuses ("trunk file already exists"), and lifting that guard would be worse --
+    folds are not reproducible on this hardware, so a second fold of the same seed is a DIFFERENT
+    pose, and its scores joined to the first run's trunk would be an identity error. The poses from
+    the first run are still there, so the fix is to score those. score_fold already appends only the
+    samples the csv is missing, so this is safe to run repeatedly.
+    """
+    rd = saved_run_dir(ctx.A.out, pdb, seed)
+    if rd is None:
+        return None
+    got, err = score_fold(ctx, pdb, target, tag, seed, rd, ".", want, [])
+    if got:
+        print(f"  RESCORED from saved poses {pdb} {tag} seed {seed}: {got} interface(s) "
+              f"recovered from {os.path.basename(rd)}", flush=True)
+    elif err:
+        print(f"  rescore of {pdb} {tag} seed {seed} produced nothing: "
+              f"{(err or '').strip().splitlines()[-1][:120] if err else ''}", flush=True)
+    return got
 
 
 def _move_new(src, dst):
@@ -819,6 +888,18 @@ def run_unit(ctx, unit):
         return "skipped"
     if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
         return "skipped"
+    # PARTLY SCORED, POSES STILL ON DISK -> RESCORE, DO NOT REFOLD. Without this the unit reaches the
+    # trunk guard, fails with "trunk file already exists", and stays partial for good; and refolding
+    # it would mix a DIFFERENT pose's scores with the first run's trunk, since folds do not
+    # reproduce here. Only fires when some sample is already scored, so a fresh unit is untouched.
+    partly = any(ctx.rows_done.get((i, str(seed), tag)) for i in want)
+    if partly and saved_run_dir(A.out, pdb, seed):
+        rescore_saved(ctx, pdb, target, tag, seed, want)
+        if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
+            return "rescored"
+        print(f"  {pdb} {tag} seed {seed}: still incomplete after rescoring the saved poses; "
+              "the poses themselves may be missing samples", flush=True)
+        return "failed"
 
     claim = f"{A.claim_dir}/{pdb}_{target}_{tag}_{seed}".replace("*", "all") if A.claim_dir else None
     if claim:
@@ -969,13 +1050,20 @@ def finish_unit(ctx, kind, pdb, target, tag, seed, rdir, name, want, poses, dt, 
             print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- {e}", flush=True)
             return "failed"
         result = "ran"
-        if got or all(iface_scored(ctx.rows_done, i, seed, tag, ctx.A.nsample)
-                      for i in want):
+        # COMPLETE MEANS EVERY INTERFACE AND EVERY SAMPLE. `got or ...` treated any positive number
+        # of newly scored interfaces as success, so a unit that scored 1 of 5 poses on 1 of 3
+        # interfaces returned "ran" and KEPT its claim -- never retried, silently partial.
+        complete = all(iface_scored(ctx.rows_done, i, seed, tag, ctx.A.nsample) for i in want)
+        if complete:
             # print pdb too: target is "*" for a free fold
             print(f"  {kind} {pdb} {target} {tag} seed {seed}: {got}/{len(want)} interfaces "
                   f"in {dt:.0f}s", flush=True)
         else:
-            print(f"  {pdb} {target} {tag} seed {seed}: SCORING produced no rows", flush=True)
+            missing = [i for i in want
+                       if not iface_scored(ctx.rows_done, i, seed, tag, ctx.A.nsample)]
+            print(f"  {pdb} {target} {tag} seed {seed}: SCORING INCOMPLETE -- "
+                  f"{len(missing)} of {len(want)} interface(s) short of "
+                  f"{ctx.A.nsample} samples: {missing[:3]}", flush=True)
             for line in (err or "").strip().splitlines()[-3:]:
                 print(f"      {line}", flush=True)
             release()

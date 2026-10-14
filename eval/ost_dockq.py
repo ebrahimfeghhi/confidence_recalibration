@@ -82,6 +82,11 @@ def usable(out, need=()):
         return False
     if not isinstance(d, dict):
         return False
+    # A VALID-BUT-EMPTY OBJECT IS NOT A RESULT. `{}` parses, so it passed and was cached forever as
+    # "scored", turning a crashed OST run into a silent exclusion from the evaluated population.
+    # What parse() reads is `dockq_interfaces`; without it there is nothing to read.
+    if "dockq_interfaces" not in d:
+        return False
     return all(k in d for k in need)
 
 

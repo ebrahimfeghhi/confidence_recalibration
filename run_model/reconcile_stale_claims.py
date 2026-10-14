@@ -38,18 +38,24 @@ import paths   # noqa: E402
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("usage: reconcile_stale_claims.py <experiment-dir> [--dataset NAME]")
+        raise SystemExit("usage: reconcile_stale_claims.py <experiment-dir> "
+                         "[--dataset NAME] [--nsample N]")
     exp = sys.argv[1].rstrip("/")
     dataset = "foldbench"
     if "--dataset" in sys.argv:
         dataset = sys.argv[sys.argv.index("--dataset") + 1]
+    # POSES A UNIT MUST HAVE SCORED to count as finished. Completeness here has to mean the same
+    # thing it means in folder.iface_scored, or a partly-scored dead claim is retained forever.
+    nsample = 5
+    if "--nsample" in sys.argv:
+        nsample = int(sys.argv[sys.argv.index("--nsample") + 1])
     cdir, csvp = f"{exp}/claims", f"{exp}/results.csv"
     if not os.path.isdir(cdir) or not os.path.exists(csvp):
         print("stale claims: 0 (no claims dir or no results.csv)")
         return
     before = set(os.listdir(cdir))
     ifaces = folder.interfaces_by_pdb(str(paths.DATASETS[dataset].pool_csv))
-    folder.reconcile_claims(cdir, csvp, ifaces)
+    folder.reconcile_claims(cdir, csvp, ifaces, nsample=nsample)
     freed = sorted(before - set(os.listdir(cdir)))
     if freed:
         print(f"stale claims RELEASED: {len(freed)} -- " + ", ".join(freed[:12])

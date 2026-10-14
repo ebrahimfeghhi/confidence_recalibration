@@ -293,16 +293,41 @@ def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
     ])
 
 
-def stale(out, want):
-    """True when `out` cannot be reused: absent, unreadable, or built from different inputs."""
+# Every array a cached unit must carry for the replay and the loss to read it. A payload missing one
+# of these is not reusable however good its fingerprint looks.
+REQUIRED = ("fingerprint", "schema", "label_coordinate", "label_coordinate_mask", "sample_index")
+
+
+def stale(out, want, n_pose=None):
+    """True when `out` cannot be reused: absent, unreadable, incomplete, or built from other inputs.
+
+    THE FINGERPRINT ALONE IS NOT INTEGRITY. This checked only that the `fingerprint` member matched,
+    so an npz holding nothing BUT a correct fingerprint was considered a usable label -- and a
+    truncated write that happened to keep that member would be reused forever. The required arrays
+    must be present, agree with each other on the pose count, and carry no non-finite coordinate.
+    """
     if not os.path.exists(out):
         return True
     try:
         with np.load(out, allow_pickle=False) as z:
-            got = str(z["fingerprint"]) if "fingerprint" in z.files else ""
+            if any(k not in z.files for k in REQUIRED):
+                return True
+            if str(z["fingerprint"]) != want:
+                return True
+            if int(z["schema"]) != SCHEMA:
+                return True
+            lc, lm, ks = z["label_coordinate"], z["label_coordinate_mask"], z["sample_index"]
+            if lc.ndim != 3 or lc.shape[:2] != lm.shape[:2] or lc.shape[0] != ks.shape[0]:
+                return True
+            if n_pose is not None and lc.shape[0] != n_pose:
+                return True
+            if not np.isfinite(lc[lm.astype(bool)]).all():
+                return True
+            if len(set(int(v) for v in ks)) != len(ks):
+                return True
     except Exception:                                   # truncated or not an npz
         return True
-    return got != want
+    return False
 
 
 def main():
@@ -377,10 +402,26 @@ def main():
         units = units[:a.limit]
     print(f"{len(units)} cached unit(s) to label")
     # ONE FINGERPRINT OF THE CODE AND THE LOSS CONFIG, shared by every unit of this run.
+    # THE EXTERNAL CODE IS PART OF THE LABEL. Hashing only our three local scripts left out what
+    # actually derives the label: Protenix's mmCIF parser, its training dataset and the symmetric
+    # permutation. A change there -- including the local patch we carry -- would not have
+    # invalidated a single cached label.
+    _PX = os.environ.get("PROTENIX_ROOT", os.path.expanduser("~/Protenix"))
+    _ext = [os.path.join(_PX, x) for x in (
+        "protenix/data/core/parser.py", "protenix/data/core/filter.py",
+        "protenix/data/pipeline/dataset.py", "protenix/utils/permutation/permutation.py",
+        "protenix/model/loss.py")]
+    _local = [os.path.join(HERE, f) for f in
+              ("phase_j_build_cache.py", "phase_j_dataset.py", "phase_j_job_cifs.py")]
+    _patch = os.path.join(os.path.dirname(os.path.dirname(ROOT)), "run_model",
+                          "protenix_local.patch")
     code_fp = hashlib.sha256(b"".join(
-        open(os.path.join(HERE, f), "rb").read() for f in
-        ("phase_j_build_cache.py", "phase_j_dataset.py", "phase_j_job_cifs.py")
-        if os.path.exists(os.path.join(HERE, f)))).hexdigest()[:16]
+        open(f, "rb").read() for f in _local + _ext + [_patch]
+        if os.path.exists(f))).hexdigest()[:16]
+    _absent = [f for f in _ext if not os.path.exists(f)]
+    if _absent:
+        print(f"WARNING: {len(_absent)} external file(s) absent from the code fingerprint: "
+              f"{[os.path.basename(f) for f in _absent]}")
     # THE LOSS WEIGHTS ARE PART OF THE LABEL'S PROVENANCE: alpha_pae ships as 0.0, so a label built
     # under the stock weights is not the label a run with the PAE loss enabled should reuse.
     try:
@@ -404,7 +445,7 @@ def main():
         # REUSE ONLY WHAT WAS BUILT FROM THESE INPUTS. `os.path.exists(out)` let a label written
         # before an upstream fix survive it untouched.
         fprint = unit_fingerprint(a, pdb, up, code_fp, loss_fp)
-        if not a.overwrite and not stale(out, fprint):
+        if not a.overwrite and not stale(out, fprint, n_pose=None):
             reused += 1
             continue
         try:

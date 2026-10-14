@@ -45,7 +45,10 @@ def usable(out):
     """
     try:
         with open(out) as fh:
-            return isinstance(json.load(fh), dict)
+            d = json.load(fh)
+        # A VALID-BUT-EMPTY OBJECT IS NOT A RESULT. `{}` parses and was accepted, so a crashed pxm
+        # run cached as "scored" and became a silent exclusion. parse() reads `interface`.
+        return isinstance(d, dict) and "interface" in d
     except (OSError, ValueError):
         try:
             os.replace(out, f"{out}.invalid")
