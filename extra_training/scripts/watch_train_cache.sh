@@ -37,7 +37,10 @@ say "watching the training cache: $TOTAL folds, 501 structures x 10 seeds"
 last=0; stalled=0
 while :; do
     n=$(find $E/poses -name run.json 2>/dev/null | wc -l)
-    alive=$(tmux ls 2>/dev/null | grep -c '^tcache_')
+    # COUNT THE WORKERS, NOT THE WATCHER. '^tcache_' also matches tcache_watch, this script's own
+    # session, so a dead worker still left 3 and the relaunch below never fired -- the remediation
+    # would have been silently disabled for exactly the failure it exists for.
+    alive=$(tmux ls 2>/dev/null | grep -cE '^tcache_[013]:')
     q=$(quota -s 2>/dev/null | awk 'NR==3{print $2}')
     if [ "$n" -ge "$TOTAL" ] || { [ "$alive" -eq 0 ] && [ "$n" -gt 0 ]; }; then
         say "training cache finished or workers exited: $n/$TOTAL folds, quota $q"
