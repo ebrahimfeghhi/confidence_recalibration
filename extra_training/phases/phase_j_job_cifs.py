@@ -36,8 +36,38 @@ POLY = A.POLY
 
 
 def chain_seqs(st):
+    """{chain: one-letter sequence}, with SELENOMETHIONINE spelled M.
+
+    MEASURED, NOT ASSUMED, AND NARROW ON PURPOSE. `gemmi.one_letter_code` (0.7.5) returns X for every
+    modified residue; 27 residues over 10 of the 501 structures render that way (PCA 8, SEP 9, TPO 5,
+    MSE 3, DAL 1, MEA 1). Resolving ALL of them to their parent residue made things WORSE, because
+    SAbDab2 is not consistent either:
+
+      | structure | SAbDab2's sequence says | the entry's residue |
+      |---|---|---|
+      | 8rwf ag0 pos 88 | M | MSE |
+      | 9p4c H pos 0, 9og1 H pos 0 | X | PCA |
+
+    So mapping every modified residue to its parent fixed 8rwf (coverage 0.994 -> 1.000, one
+    selenomethionine recovered) and BROKE five structures whose N-terminal pyroglutamate SAbDab2
+    spells X: the chain said E, the query said X, the span started one residue late and 40 atoms were
+    lost across the set. MSE alone is the case where the two conventions disagree in the direction
+    that costs us a residue -- it is the one modified residue sequence tooling normally normalises --
+    so MSE alone is mapped. Everything else keeps gemmi's X, which is what SAbDab2 writes.
+    """
+    return {ch.name: "".join(res_code(r.name) for r in ch) for ch in st[0]}
+
+
+def res_code(name):
+    """One letter for one residue name. ONE DEFINITION, used by every alignment in this file.
+
+    It was two: chain_seqs spelled MSE as M while write_job_cif's per-chain alignment called
+    gemmi.one_letter_code directly and spelled it X. So 8rwf's chain aligned to SAbDab2's sequence at
+    coverage 1.000 and then lost that same residue when the kept chain was positioned in the fold's
+    expected sequence -- a residue dropped between two alignments that disagreed about one letter.
+    """
     import gemmi
-    return {ch.name: gemmi.one_letter_code([r.name for r in ch]).upper() for ch in st[0]}
+    return "M" if name == "MSE" else gemmi.one_letter_code([name]).upper()
 
 
 def assign_chains(roles, seqs, floor=0.85):
@@ -392,7 +422,7 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
         exp = expected[role].upper()
         src = st[0][cname]
         res = [src[i].clone() for i in range(lo, hi)]
-        obs = gemmi.one_letter_code([r.name for r in res]).upper()
+        obs = "".join(res_code(r.name) for r in res)
         # POSITION EVERY KEPT RESIDUE IN THE EXPECTED SEQUENCE. One alignment per output chain, and
         # anything that cannot be placed is reported rather than renumbered silently.
         sm = difflib.SequenceMatcher(None, exp, obs, autojunk=False)
@@ -553,6 +583,33 @@ def main():
         want = sorted((sq["proteinChain"]["sequence"] or "").strip().upper()
                       for task in json.load(open(jj)) for sq in task["sequences"]
                       if "proteinChain" in sq)
+        # THE CHAIN DECOMPOSITION, CHECKED ON THE FILE AS WRITTEN. Review round 5's J1: splitting a
+        # single-chain construct left its two auth chains sharing ONE subchain and one fused entity,
+        # so two roles sat under one label_asym and every chain-pair quantity the confidence head
+        # produces was computed over the wrong decomposition. 18 of 501 structures are such
+        # constructs (two roles on one source chain), so this is not a rare path.
+        #
+        # READ WITHOUT setup_entities(). It MERGES entities that share a sequence, which is exactly
+        # what a homodimeric antigen has -- 8dpl and 8f6x each carry their antigen twice -- so a
+        # check run after it reported those two as sharing an entity when the file on disk gives them
+        # their own (Cp -> 3, Dp -> 4). One entity per identical sequence would in fact be correct
+        # mmCIF; two auth chains under one SUBCHAIN is the defect, and that is what is checked here.
+        raw = gemmi.read_structure(out)
+        sub2chain = collections.defaultdict(set)
+        for ch in raw[0]:
+            for rr in ch:
+                sub2chain[rr.subchain].add(ch.name)
+        shared = {sb: sorted(c) for sb, c in sub2chain.items() if len(c) > 1}
+        multi = {ch.name: sorted({rr.subchain for rr in ch}) for ch in raw[0]
+                 if len({rr.subchain for rr in ch}) != 1}
+        in_two = collections.Counter(sb for e in raw.entities for sb in e.subchains)
+        dup = {sb: n for sb, n in in_two.items() if n > 1}
+        if shared or multi or dup:
+            bad.append((r["pdb"], r["instance"],
+                        f"the written cif's chain decomposition is wrong: subchains shared by two "
+                        f"auth chains {shared}, chains without exactly one subchain {multi}, "
+                        f"subchains claimed by two entities {dup}"))
+            continue
         back = gemmi.read_structure(out)
         back.setup_entities()
         got = sorted(gemmi.one_letter_code(list(e.full_sequence)).upper()

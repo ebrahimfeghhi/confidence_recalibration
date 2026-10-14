@@ -164,22 +164,17 @@ def check_alignment(npz_feat, ds_feat, pdb):
                          + "; ".join(bad))
 
 
-def label_atom_set(cif_path):
-    """The job cif's heavy-atom coordinates, rounded, as a set -- the label's independent witness."""
+def label_atom_coords(cif_path):
+    """The job cif's heavy-atom coordinates as an [N, 3] array -- the label's independent witness."""
     import gemmi
     st = gemmi.read_structure(cif_path)
     st.setup_entities()
     st.remove_hydrogens()
-    # PYTHON FLOATS, ROUNDED, ON BOTH SIDES. The first version rounded the cif's float64 positions
-    # and the label's float32 ones separately and compared the resulting numpy scalars: np.float32
-    # and np.float64 of the same 3-decimal number are different values, so all 3,417 atoms looked
-    # missing. The cif stores 3 decimals, the float32 round-trip error is ~1e-5 A at these
-    # magnitudes, so rounding both to 3 decimals in float64 recovers the deposited value exactly.
-    return {tuple(round(float(v), 3) for v in (a.pos.x, a.pos.y, a.pos.z))
-            for ch in st[0] for r in ch for a in r}
+    return np.array([[a.pos.x, a.pos.y, a.pos.z] for ch in st[0] for r in ch for a in r],
+                    dtype=np.float64)
 
 
-def check_label(lc, lm, atoms, pdb, unit):
+def check_label(lc, lm, atoms, pdb, unit, tol=0.01):
     """Two invariants a correct per-pose label must satisfy, checked rather than assumed.
 
     WHY THIS EXISTS. The replay compares a cached FT3 loss to an uncached one, and the reviewer's
@@ -190,9 +185,17 @@ def check_label(lc, lm, atoms, pdb, unit):
        and symmetric atoms are relabelled to match the pose -- so it reorders coordinates and can
        never introduce or move one. If the sorted set of resolved label coordinates differs between
        two poses of the same structure, something other than a permutation happened.
-    2. THE LABEL IS THE DEPOSITED STRUCTURE. Every resolved label coordinate must be an atom of the
-       job cif the label was built from. This is what catches a label that is internally consistent
-       but describes the wrong molecule -- the failure mode the chain-resolution bugs produced.
+    2. THE LABEL IS THE DEPOSITED STRUCTURE. Every resolved label coordinate must lie within
+       `tol` of an atom of the job cif the label was built from. This is what catches a label that is
+       internally consistent but describes the wrong molecule -- the failure mode the
+       chain-resolution bugs produced; a wrong copy is Angstroms away, not microns.
+
+       NEAREST-NEIGHBOUR, NOT AN EXACT SET MATCH. The first version rounded both sides to three
+       decimals and compared sets, which fails whenever the true value sits near a 0.0005 boundary:
+       the label is float32 of a 3-decimal cif value, so at |x| ~ 80 A the round-trip error is ~1e-4
+       and a coordinate of -80.7395 rounds down on one side and up on the other. It passed on 12qa
+       and reported 34 of 8rwf's 2,153 atoms as missing -- every one of them 0.001 A from a real atom,
+       spread over 32 unrelated residues. Measured, not reasoned: that was rounding, not a bad label.
     """
     key = lambda v: np.sort(np.ascontiguousarray(v, dtype=np.float32)
                             .view([("x", "f4"), ("y", "f4"), ("z", "f4")]).ravel(),
@@ -203,11 +206,14 @@ def check_label(lc, lm, atoms, pdb, unit):
         if v.shape != ref.shape or not np.array_equal(v, ref):
             raise ValueError(f"{pdb}/{unit}: pose {i}'s label is not a permutation of pose 0's "
                              f"({v.shape[0]} vs {ref.shape[0]} resolved atoms)")
-    got = {tuple(round(float(v), 3) for v in t) for t in ref}
-    missing = got - atoms
-    if missing:
-        raise ValueError(f"{pdb}/{unit}: {len(missing)} of {len(got)} resolved label atoms are not "
-                         "atoms of the job cif the label was built from")
+    from scipy.spatial import cKDTree
+    pts = np.array([[float(v) for v in t] for t in ref], dtype=np.float64)
+    d, _i = cKDTree(atoms).query(pts, k=1)
+    far = int((d > tol).sum())
+    if far:
+        raise ValueError(f"{pdb}/{unit}: {far} of {len(pts)} resolved label atoms are more than "
+                         f"{tol} A from any atom of the job cif the label was built from "
+                         f"(worst {d.max():.3f} A)")
 
 
 def main():
@@ -301,7 +307,7 @@ def main():
                 lm.append(ld["coordinate_mask"].detach().cpu().numpy().astype(np.uint8))
 
             if pdb not in cif_atoms:
-                cif_atoms[pdb] = label_atom_set(os.path.join(a.mmcif_dir, f"{pdb}.cif"))
+                cif_atoms[pdb] = label_atom_coords(os.path.join(a.mmcif_dir, f"{pdb}.cif"))
             check_label(lc, lm, cif_atoms[pdb], pdb, arm_seed)
             payload = {"label_coordinate": np.stack(lc), "label_coordinate_mask": np.stack(lm),
                        "sample_index": ks, "pdb": pdb, "unit": arm_seed,

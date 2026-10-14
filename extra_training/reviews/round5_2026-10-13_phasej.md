@@ -4,14 +4,14 @@ Reviewer's pass at `ee69ca5`. Verdicts below are what I reproduced on this box.
 
 | # | finding | verdict | status |
 |---|---|---|---|
-| J1 | splitting a chain leaves two auth chains sharing a subchain and entity | **CONFIRMED** | fixing |
-| J2 | sequence matching can pick an antigen copy that does not contact the chosen antibody | **NOT YET MEASURED** | open |
-| J3 | resolved-first trimming can shorten the label's sequence frame | **PARTLY CONFIRMED** | fixing with J1 |
+| J1 | splitting a chain leaves two auth chains sharing a subchain and entity | **CONFIRMED** | **closed round 8** |
+| J2 | sequence matching can pick an antigen copy that does not contact the chosen antibody | **CONFIRMED, 71 of 501** | **closed round 6** |
+| J3 | resolved-first trimming can shorten the label's sequence frame | **PARTLY CONFIRMED** | **closed round 8** |
 | J4 | defaults point at whole-entry cifs, and a missing one is downloaded | **CONFIRMED** | fixed |
 | J5 | `rank_bad` never incremented; pose identity cannot come from scores | **CONFIRMED** | fixed |
-| I1 | phase I can report COMPLETE when a job is absent from pool.csv | reported, not yet reproduced here | open |
-| I2 | the cache validator accepts NaN coordinates and a bad trunk shape | reported, not yet reproduced here | open |
-| DE1 | phases D/E leave READY markers after a failure, no trap | open since round 2 | open |
+| I1 | phase I can report COMPLETE when a job is absent from pool.csv | **reproduced round 8 on a synthetic tree** | **closed round 8** |
+| I2 | the cache validator accepts NaN coordinates and a bad trunk shape | **reproduced round 8, 8 controls** | **closed round 8** |
+| DE1 | phases D/E leave READY markers after a failure, no trap | open since round 2 | **closed round 7** |
 
 ---
 
