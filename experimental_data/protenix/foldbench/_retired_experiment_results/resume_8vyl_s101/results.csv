@@ -1,0 +1,11 @@
+iface,seed,arm,donor_pose,tmpl_chains,sample,dockq,iptm
+8vyl_AF,101,free,-1,,0,0.0080,0.2497
+8vyl_AF,101,free,-1,,1,0.0130,0.2189
+8vyl_AF,101,free,-1,,2,0.0130,0.2172
+8vyl_AF,101,free,-1,,3,0.0120,0.2099
+8vyl_AF,101,free,-1,,4,0.0080,0.2385
+8vyl_CF,101,free,-1,,0,0.0060,0.2086
+8vyl_CF,101,free,-1,,1,0.0120,0.2369
+8vyl_CF,101,free,-1,,2,0.0120,0.2352
+8vyl_CF,101,free,-1,,3,0.0110,0.2300
+8vyl_CF,101,free,-1,,4,0.0060,0.1980
