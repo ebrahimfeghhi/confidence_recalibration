@@ -106,9 +106,150 @@ def assign_chains(roles, seqs, floor=0.85):
     return pairs, bad
 
 
+def _heavy(ch):
+    import numpy as np
+    return np.array([[a.pos.x, a.pos.y, a.pos.z] for r in ch for a in r
+                     if a.element.name != "H"], dtype=float)
+
+
+def _min_dist(A, B):
+    import numpy as np
+    if not len(A) or not len(B):
+        return float("inf")
+    m = float("inf")
+    for i in range(0, len(A), 512):
+        m = min(m, float(np.sqrt(((A[i:i + 512, None, :] - B[None, :, :]) ** 2).sum(-1)).min()))
+    return m
+
+
+def prefer_contacting(pairs, st, seqs, cutoff=5.0, ident_floor=0.9):
+    """Re-point each antigen role at a copy that actually TOUCHES the chosen antibody.
+
+    THE SEQUENCE CANNOT TELL TWO COPIES APART. A crystal routinely holds several copies of the
+    complex, so picking chains by sequence with an alphabetical tie-break can take the antibody from
+    one copy and the antigen from another: same sequences, different assembly, no contact. Measured
+    over the 501 selected structures, 71 ended up with NO antigen chain within 5 A of the antibody,
+    and in all 25 of those sampled another copy of that antigen DID contact. The label would have
+    described a complex that does not exist in that crystal while every sequence check passed.
+
+    Only the CHAIN changes, never the sequence, so the fold's job json and every pose already
+    produced are unaffected -- this is a label-side correction.
+    """
+    ab = [c for role, c, _lo, _hi in pairs if role in ("H", "L")]
+    if not ab:
+        return pairs, []
+    abX = [_heavy(st[0][c]) for c in ab]
+    taken = {c for _r, c, _l, _h in pairs}
+    out, moved = [], []
+    for role, c, lo, hi in pairs:
+        if not role.startswith("ag"):
+            out.append((role, c, lo, hi))
+            continue
+        if min(_min_dist(_heavy(st[0][c]), X) for X in abX) <= cutoff:
+            out.append((role, c, lo, hi))
+            continue
+        import difflib
+        q = seqs[c]
+        best = None
+        for cand, cq in seqs.items():
+            if cand in taken or cand in ab:
+                continue
+            sm = difflib.SequenceMatcher(None, q, cq, autojunk=False)
+            ident = sum(b.size for b in sm.get_matching_blocks()) / max(1, min(len(q), len(cq)))
+            if ident < ident_floor:
+                continue
+            d = min(_min_dist(_heavy(st[0][cand]), X) for X in abX)
+            if d <= cutoff and (best is None or d < best[0]):
+                best = (d, cand)
+        if best is None:
+            out.append((role, c, lo, hi))
+            continue
+        # re-align the replacement, since its span is its own
+        import difflib as _dl
+        sm = _dl.SequenceMatcher(None, q, seqs[best[1]], autojunk=False)
+        blocks = [b for b in sm.get_matching_blocks() if b.size]
+        nlo, nhi = min(b.b for b in blocks), max(b.b + b.size for b in blocks)
+        taken.discard(c); taken.add(best[1])
+        out.append((role, best[1], nlo, nhi))
+        moved.append((role, c, best[1], round(best[0], 2)))
+    return out, moved
+
+
+def named_chains(row, seqs):
+    """SAbDab2's OWN chain assignment for this instance, when every name resolves in the entry.
+
+    THIS IS TRIED FIRST, and it is the correct source. An INSTANCE is a specific antibody-antigen
+    pairing, and Hchain / Lchain / agchains name the chains of THAT pairing -- so they contact by
+    construction. Resolving by sequence instead cannot tell two copies of a complex apart, and a
+    crystal routinely holds several: picking the antibody from one copy and the antigen from another
+    gives identical sequences, a different assembly, and no contact at all.
+
+    Measured, which is why this function exists: resolving everything by sequence left 71 of 501
+    structures with NO antigen chain within 5 A of the antibody. For 67 of those, SAbDab2's own named
+    chains contact at 2.3-2.8 A. The names were right and were being discarded -- sequence matching
+    was adopted globally to rescue 32 structures whose names do not resolve, and it took the other
+    469 with it.
+
+    Returns None when any name is absent, so the caller falls back to sequence resolution.
+    """
+    out = []
+    for role, key in (("H", "Hchain"), ("L", "Lchain")):
+        v = (row[key] or "").strip()
+        if v:
+            out.append((role, v))
+    types = str(row["agtypes"]).split("/")
+    names = [c.strip() for c in str(row["agchains"]).split("/")]
+    if len(types) != len(names):
+        return None
+    out += [(f"ag{i}", c) for i, (c, t) in enumerate(zip(names, types)) if c and t in POLY]
+    if not out or any(c not in seqs for _r, c in out):
+        return None
+    if len({c for _r, c in out}) != len(out):
+        return None            # two roles on one named chain: let sequence resolution split it
+    return out
+
+
+def spans_for(named, row, seqs):
+    """Align each role's EXPECTED sequence to its named chain, giving (role, chain, lo, hi)."""
+    import difflib
+    exp = {"H": (row["Hseq"] or "").strip().upper(), "L": (row["Lseq"] or "").strip().upper()}
+    types = str(row["agtypes"]).split("/")
+    e = str(row["agexpectedseqs"]).split("/")
+    r_ = str(row["agresolvedseqs"]).split("/")
+    for i, t in enumerate(types):
+        if t in POLY:
+            for arr in (r_, e):
+                q = arr[i].strip().upper() if i < len(arr) else ""
+                if q:
+                    exp[f"ag{i}"] = q
+                    break
+    out = []
+    for role, c in named:
+        q = exp.get(role, "")
+        if not q:
+            return None
+        sm = difflib.SequenceMatcher(None, q, seqs[c], autojunk=False)
+        blocks = [b for b in sm.get_matching_blocks() if b.size]
+        if not blocks or sum(b.size for b in blocks) / len(q) < 0.85:
+            return None        # the named chain does not carry this role's sequence
+        lo, hi = min(b.b for b in blocks), max(b.b + b.size for b in blocks)
+        if hi - lo > 1.5 * len(q) + 10:
+            big = max(blocks, key=lambda b: b.size)
+            lo, hi = big.b, big.b + big.size
+        out.append((role, c, lo, hi))
+    return out
+
+
 def job_chains(row, seqs):
     """in: a splits row and {chain: sequence} from the entry.
-    out: ([(role, chain)], [unresolved roles]) -- the chains the fold actually contains."""
+    out: ([(role, chain, lo, hi)], [unresolved roles]) -- the chains the fold actually contains.
+
+    NAMES FIRST, sequence as the fallback. See named_chains() for why."""
+    nm = named_chains(row, seqs)
+    if nm:
+        sp = spans_for(nm, row, seqs)
+        if sp:
+            return sp, []
     want = [("H", (row["Hseq"] or "").strip().upper()),
             ("L", (row["Lseq"] or "").strip().upper())]
     types = str(row["agtypes"]).split("/")

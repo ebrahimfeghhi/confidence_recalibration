@@ -23,21 +23,34 @@ sys.path.insert(0, os.path.join(ROOT, "phases"))
 import phase_j_job_cifs as J          # noqa: E402
 
 
-def min_dist(st, a_chains, b_chain, cutoff):
-    """Smallest heavy-atom distance between any of `a_chains` and `b_chain`, capped at a search box."""
-    import gemmi
-    ns = gemmi.NeighborSearch(st, max(cutoff, 5.0)).populate()
-    best = 1e9
-    want = set(a_chains)
-    for res in st[0][b_chain]:
-        for atom in res:
-            if atom.element == gemmi.Element("H"):
-                continue
-            for m in ns.find_atoms(atom.pos, '\0', radius=cutoff):
-                cra = m.to_cra(st[0])
-                if cra.chain.name in want and cra.atom.element != gemmi.Element("H"):
-                    d = cra.atom.pos.dist(atom.pos)
-                    best = min(best, d)
+def min_dist(st, a_chains, b_chain):
+    """Smallest heavy-atom distance between any of `a_chains` and `b_chain`, within the deposited
+    coordinates only.
+
+    BRUTE FORCE, NOT NeighborSearch. gemmi's neighbour search returns SYMMETRY IMAGES, and
+    `cra.atom.pos` is the original atom's position, not the image's -- so a contact made through a
+    crystal neighbour was reported as the distance to its far-away original. That produced 118 A for
+    7udh where the true separation is 20.8 A, and a handful of impossible-looking 100+ A readings.
+    The question here is whether the antigen we selected touches the antibody we selected IN THE
+    ASYMMETRIC UNIT, so symmetry mates are exactly what must NOT count.
+    """
+    import numpy as np
+    def coords(name):
+        return np.array([[a.pos.x, a.pos.y, a.pos.z] for r in st[0][name] for a in r
+                         if a.element.name != "H"], dtype=float)
+    b = coords(b_chain)
+    if not len(b):
+        return float("nan")
+    best = float("inf")
+    for nm in a_chains:
+        a = coords(nm)
+        if not len(a):
+            continue
+        # chunked, so a 5,000 x 5,000 pair never materialises as one array
+        for i in range(0, len(b), 512):
+            blk = b[i:i + 512]
+            d = np.sqrt(((blk[:, None, :] - a[None, :, :]) ** 2).sum(-1)).min()
+            best = min(best, float(d))
     return best
 
 
@@ -75,9 +88,9 @@ def main():
         for role, nm in zip(roles, names):
             if not role.startswith("ag"):
                 continue
-            d = min_dist(job, ab, nm, 12.0)
+            d = min_dist(job, ab, nm)
             rows.append({"pdb": r["pdb"], "role": role, "chain": nm,
-                         "min_dist_to_antibody": round(d, 2) if d < 1e8 else "",
+                         "min_dist_to_antibody": round(d, 2) if d == d and d < 1e8 else "",
                          "contacts": int(d <= a.cutoff)})
         if n % 100 == 0:
             print(f"  {n}/{len(sel)}")

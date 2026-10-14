@@ -17,3 +17,4 @@ into a fix.
 | round 3 | 2026-10-13 | the cache design | [round3_2026-10-13_cache.md](round3_2026-10-13_cache.md) |
 | round 4 | 2026-10-13 | structure selection; go-ahead given | [round4_2026-10-13_selection.md](round4_2026-10-13_selection.md) |
 | round 5 | 2026-10-13 | phase J label preparation, phase I checkers | [round5_2026-10-13_phasej.md](round5_2026-10-13_phasej.md) |
+| round 6 | 2026-10-13 | J2 — the wrong antigen copy, 71 of 501 | [round6_2026-10-13_antigen_copies.md](round6_2026-10-13_antigen_copies.md) |
