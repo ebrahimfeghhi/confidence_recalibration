@@ -137,6 +137,21 @@ if [ ! -s "$DB/uniref30_2302_db_seq" ]; then
     # discipline already exists elsewhere in the repo: phase2_envdb.sh removes COLABDB_READY before
     # building. Track exactly what we touched; never remove a marker that was already there.
     CREATED=""
+    # ON ANY EXIT, PUT THE MARKERS BACK THE WAY THEY WERE. The removal used to sit only at the end
+    # of the happy path, so every `die` between here and there -- a truncated tarball, a missing
+    # _db_taxonomy, an index shorter than its own index file, the env-database guard -- left
+    # PDB_READY / PDB100_READY / PDB_MMCIF_READY / COLABDB_READY on disk. A later bare
+    # setup_databases.sh call, which is how the template step runs, then SKIPS those databases and
+    # reports success, so a retry silently builds on a database that was never built. An EXIT trap
+    # cannot be forgotten on a path added later; `rm -f` over an empty CREATED is a no-op, so the
+    # happy path runs it too. Never removes a marker that was already there.
+    restore_markers() {
+        local m
+        for m in $CREATED; do rm -f "$DB/$m"; done
+        [ -n "$CREATED" ] && say "  removed the markers this run created:$CREATED"
+        CREATED=""
+    }
+    trap restore_markers EXIT
     for m in COLABDB_READY PDB_READY PDB100_READY PDB_MMCIF_READY; do
         if [ ! -e "$DB/$m" ]; then
             touch "$DB/$m"; CREATED="$CREATED $m"
@@ -171,8 +186,7 @@ if [ ! -s "$DB/uniref30_2302_db_seq" ]; then
         die "setup_databases.sh also extracted the env database; the two do not both fit"
     fi
     rm -f "$DB/uniref30_2302.tar.gz"
-    for m in $CREATED; do rm -f "$DB/$m"; done
-    [ -n "$CREATED" ] && say "  removed the markers this run created:$CREATED"
+    restore_markers
     say "uniref30 ready: $(du -sh --apparent-size "$DB/uniref30_2302_db_seq" | cut -f1) of members"
 fi
 

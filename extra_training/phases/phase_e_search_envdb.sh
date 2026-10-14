@@ -120,7 +120,22 @@ if [ ! -s "$DB/${CFDB}_db_seq" ]; then
     # POSITIVE MARKER CONTROL, and the markers we create are removed again. A missing READY marker
     # makes setup_databases.sh build that database too; a marker left behind makes a later bare call
     # skip its own downloads and report success.
+    #
+    # ON ANY EXIT, PUT THEM BACK. The removal used to sit only at the end of the happy path, so a
+    # `die` between here and there -- a missing _db_seq, the uniref30 guard -- left the markers on
+    # disk and a retry's bare setup_databases.sh skipped those databases and reported success. An
+    # EXIT trap cannot be forgotten on a path added later, and `rm -f` over an empty CREATED is a
+    # no-op so the happy path runs the same code. COLABDB_READY is NOT in CREATED: it is removed on
+    # purpose below and re-touched only once the data files check out, which is the safe direction
+    # for a retry.
     CREATED=""
+    restore_markers() {
+        local m
+        for m in $CREATED; do rm -f "${DB:?}/${m:?}"; done
+        [ -n "$CREATED" ] && say "  removed the markers this run created:$CREATED"
+        CREATED=""
+    }
+    trap restore_markers EXIT
     for m in UNIREF30_READY PDB_READY PDB100_READY PDB_MMCIF_READY; do
         if [ ! -e "$DB/$m" ]; then touch "$DB/$m"; CREATED="$CREATED $m"; fi
     done
@@ -138,8 +153,7 @@ if [ ! -s "$DB/${CFDB}_db_seq" ]; then
     [ -s "$DB/uniref30_2302_db_seq" ] && die "setup_databases.sh also extracted uniref30 -- the two
      databases do not both fit"
     touch "$DB/COLABDB_READY"
-    for m in $CREATED; do rm -f "${DB:?}/${m:?}"; done
-    [ -n "$CREATED" ] && say "  removed the markers this run created:$CREATED"
+    restore_markers
     [ "${KEEP_TARBALL:-0}" = "1" ] || rm -f "${TAR:?}"
     rm -f "${DB:?}"/"${CFDB:?}"_*.tsv "${DB:?}"/"${CFDB:?}".tsv
 fi
