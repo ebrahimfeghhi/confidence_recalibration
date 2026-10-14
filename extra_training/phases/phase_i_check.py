@@ -121,7 +121,7 @@ def check_npz(path, nsample):
                 "ci_contact_probs", "ci_N_cycle", "ci_z_dtype", "ci_s_dtype",
                 "ci_s_inputs_dtype", "rng_py", "rng_torch"] + [f"ci_feat_{k}" for k in (
                     "distogram_rep_atom_mask", "atom_to_token_idx", "atom_to_tokatom_idx",
-                    "asym_id", "has_frame", "is_ligand")]
+                    "asym_id", "has_frame", "is_ligand")] + ["dtype"]
         missing = [k for k in need if k not in d.files]
         if missing:
             return f"missing {missing[:4]}"
@@ -132,6 +132,40 @@ def check_npz(path, nsample):
             return f"ci_coordinate holds {sh[0] if sh else 0} poses, expected {nsample}"
         if str(d["dtype"]) != "bf16":
             return f"dtype {d['dtype']}, expected bf16"
+        # THE TENSORS MUST BE USABLE, not merely present. A cache passing the key list can still hold
+        # NaN coordinates or a z_trunk of the wrong rank, and both read as a clean verify while an
+        # offline replay on them produces nonsense.
+        z, st_, si = d["z_trunk"], d["s_trunk"], d["ci_s_inputs"]
+        if z.ndim != 3 or z.shape[0] != z.shape[1]:
+            return f"z_trunk shape {tuple(z.shape)}, expected [N, N, c]"
+        n_tok = z.shape[0]
+        if st_.ndim != 2 or st_.shape[0] != n_tok:
+            return f"s_trunk shape {tuple(st_.shape)}, expected [{n_tok}, c]"
+        if si.ndim != 2 or si.shape[0] != n_tok:
+            return f"ci_s_inputs shape {tuple(si.shape)}, expected [{n_tok}, c]"
+        xyz = d["ci_coordinate"]
+        if xyz.ndim < 2 or xyz.shape[-1] != 3:
+            return f"ci_coordinate shape {tuple(xyz.shape)}, expected [..., n_atom, 3]"
+        n_atom = xyz.shape[-2]
+        # ATOM AND TOKEN MAPPINGS MUST AGREE WITH THOSE SHAPES, or the confidence head would gather
+        # from the wrong rows and the cache would silently describe a different molecule.
+        for k, n in (("ci_feat_atom_to_token_idx", n_atom),
+                     ("ci_feat_atom_to_tokatom_idx", n_atom),
+                     ("ci_feat_distogram_rep_atom_mask", n_atom),
+                     ("ci_feat_is_ligand", n_atom),
+                     ("ci_feat_asym_id", n_tok),
+                     ("ci_feat_has_frame", n_tok)):
+            a = d[k]
+            if a.shape[0] != n:
+                return f"{k} has {a.shape[0]} entries, expected {n}"
+        a2t = d["ci_feat_atom_to_token_idx"]
+        if len(a2t) and (int(a2t.max()) >= n_tok or int(a2t.min()) < 0):
+            return (f"atom_to_token_idx ranges {int(a2t.min())}..{int(a2t.max())}, outside "
+                    f"[0, {n_tok - 1}]")
+        # FINITENESS LAST, because it is the most expensive and the cheapest checks should fire first.
+        for k in ("ci_coordinate", "ci_s_inputs", "ci_s_trunk_f32", "ci_contact_probs"):
+            if not np.isfinite(d[k]).all():
+                return f"{k} holds NaN or inf"
     except Exception as e:                                      # noqa: BLE001
         return f"unreadable: {type(e).__name__}"
     return ""
@@ -262,13 +296,29 @@ def verify(a):
         pdbs = [p for p in pdbs if p not in skips]
         units = [(p, sd) for p, sd in units if p not in skips]
 
+    # EVERY ACTIVE JOB MUST BE IN pool.csv. The per-unit loop below iterates pool.get(pdb, ()), so a
+    # structure absent from pool.csv has an EMPTY interface list, every pose and score check is
+    # skipped for it, and verify reports COMPLETE on a structure it never looked at. pool.csv is what
+    # names the interfaces to score, so a job missing from it is a fold that scores nothing.
+    unpooled = [p for p in pdbs if not pool.get(p)]
+    if unpooled:
+        print(f"FAIL {len(unpooled)} job(s) have no interfaces in pool.csv: {unpooled[:10]}. Their "
+              "poses and scores would not be checked at all, and the fold scores nothing for them.")
+        return 1
+
     unfolded, no_rows, bad_scores, bad_cache = [], [], [], []
-    no_pose, no_contact = [], []
+    no_pose, no_contact, short_poses = [], [], []
     for pdb, seed in units:
         d = run_dir_for(a.e, pdb, seed)
         if d is None:
             unfolded.append((pdb, seed))
             continue
+        # POSE FILES ARE CHECKED INDEPENDENTLY OF pool.csv. The interface loop below can only see
+        # what pool.csv names; a unit that produced too few poses would otherwise be invisible
+        # whenever its interfaces happen to be scored from the poses that do exist.
+        n_cif = len(glob.glob(os.path.join(d, "predictions", "*_sample_*.cif")))
+        if n_cif != a.nsample:
+            short_poses.append((pdb, seed, n_cif))
         # EXACT SAMPLE COVERAGE, not "a row exists". One of nsample samples scored is not a scored
         # unit, and a blank or NaN score is not a score.
         for ifc in sorted(pool.get(pdb, ())):
@@ -297,6 +347,7 @@ def verify(a):
           + (f" ({len(skips)} skipped by decision)" if skips else "") + "; "
           f"interfaces per structure {sum(len(v) for v in pool.values())} total")
     print(f"  unfolded units                     : {len(unfolded)}")
+    print(f"  units with != {a.nsample} pose files            : {len(short_poses)}")
     print(f"  poses absent (unrecoverable)       : {len(no_pose)}")
     print(f"  poses never scored (rescore fixes) : {len(no_rows)}")
     print(f"  rows with a non-finite score       : {len(bad_scores)}")
@@ -305,11 +356,14 @@ def verify(a):
     # scorer.py treats that as a real condition and so does this. It is printed because a large
     # number of them is informative about the target, not about the pipeline.
     print(f"  (scored, no contact at that interface, which is a result not a fault: {len(no_contact)})")
-    for lbl, items in (("unfolded", unfolded), ("no pose", no_pose), ("unscored", no_rows),
-                       ("non-finite", bad_scores), ("cache", bad_cache)):
+    for lbl, items in (("unfolded", unfolded), ("short poses", short_poses), ("no pose", no_pose),
+                       ("unscored", no_rows), ("non-finite", bad_scores), ("cache", bad_cache)):
         for x in items[:3]:
             print(f"     {lbl}: {x}")
-    rc = 1 if (unfolded or no_pose or no_rows or bad_scores or bad_cache) else 0
+    # short_poses COUNTS TOWARDS THE VERDICT. A unit that wrote fewer poses than asked for is an
+    # incomplete fold whether or not pool.csv happens to name an interface that the surviving poses
+    # can be scored at.
+    rc = 1 if (unfolded or short_poses or no_pose or no_rows or bad_scores or bad_cache) else 0
     print("COMPLETE: every expected unit folded, every pose scored at every interface, "
           "every cache replayable" if rc == 0 else "INCOMPLETE")
     return rc
