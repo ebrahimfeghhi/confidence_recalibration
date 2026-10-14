@@ -33,6 +33,7 @@ indices, and the loss-side feature arrays the trunk npz does not carry. Nothing 
 pose is touched.
 """
 import argparse
+import collections
 import copy
 import functools
 import glob
@@ -272,6 +273,32 @@ def sha(path, n=1 << 20):
     return h.hexdigest()[:16]
 
 
+@functools.lru_cache(maxsize=1)
+def _indices_by_pdb(path):
+    """{pdb_id: sha256 of that structure's OWN rows} from an indices csv.
+
+    PER STRUCTURE, NOT PER FILE. The fingerprint hashed the whole job_indices.csv, which covers all
+    501 structures at once -- so regenerating the indices for the 142 structures on the refold list
+    would have changed that one file and invalidated EVERY label, including the 7,450 units of the
+    375 + 37 structures the refold does not touch. Those would have rebuilt for no reason, hours of
+    CPU to arrive at identical arrays. A structure's label depends on ITS rows, so that is what is
+    hashed.
+    """
+    import csv as _csv
+    rows = collections.defaultdict(list)
+    with open(path) as fh:
+        rdr = _csv.reader(fh)
+        header = next(rdr, None)
+        try:
+            col = header.index("pdb_id")
+        except (AttributeError, ValueError):
+            return {}
+        for r in rdr:
+            if len(r) > col:
+                rows[r[col].strip().strip('"')].append(",".join(r))
+    return {k: hashlib.sha256("\n".join(v).encode()).hexdigest()[:16] for k, v in rows.items()}
+
+
 def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
     """What this unit's label was built FROM, as one short string.
 
@@ -288,7 +315,7 @@ def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
         f"loss={loss_fp}",
         f"cif={sha(os.path.join(a.mmcif_dir, f'{pdb}.cif'))}",
         f"bio={sha(os.path.join(a.bio_dir, f'{pdb}.pkl.gz'))}",
-        f"idx={sha(a.indices)}",
+        f"idx={_indices_by_pdb(a.indices).get(pdb, 'absent')}",
         f"trunk={sha(trunk_p)}",
     ])
 
