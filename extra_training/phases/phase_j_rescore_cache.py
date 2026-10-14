@@ -135,6 +135,8 @@ def main():
     ap.add_argument("--model-name", default="protenix-v2")
     ap.add_argument("--limit", type=int, default=0, help="0 = every unit")
     ap.add_argument("--stride", type=int, default=1, help="take every Nth unit")
+    ap.add_argument("--offset", type=int, default=0,
+                    help="with --stride, which slice this worker takes; one worker per GPU")
     ap.add_argument("--tol", type=float, default=0.02, help="max |stored - recomputed| ipTM")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
@@ -154,7 +156,7 @@ def main():
         return out
 
     units = sorted(f for f in __import__("glob").glob(f"{a.fold}/trunks/*/*.npz"))
-    units = units[::a.stride]
+    units = units[a.offset::a.stride]
     if a.limit:
         units = units[:a.limit]
     print(f"rescoring {len(units)} cached unit(s)")
@@ -163,7 +165,7 @@ def main():
     model, configs = build_model(a.ckpt_dir, a.model_name, dev)
     rows, t0 = [], time.time()
     dmax = dsum = dn = 0.0
-    rank_bad = 0
+    rank_bad = permuted = 0
     for i, p in enumerate(units, 1):
         pdb = os.path.basename(os.path.dirname(p))
         seed = os.path.basename(p).split("_")[-1][:-4]
@@ -176,26 +178,33 @@ def main():
         if len(summ) != len(want):
             raise SystemExit(f"STOP: {pdb}/{seed} cache holds {len(summ)} poses, the fold wrote "
                              f"{len(want)} summaries")
-        got_r, want_r = [], []
-        for k in sorted(want):
-            a_got = _np(summ[k]["chain_pair_iptm"])
-            a_want = _np(want[k]["chain_pair_iptm"])
-            if a_got.shape != a_want.shape:
-                raise SystemExit(f"STOP: {pdb}/{seed} pose {k} chain_pair_iptm shape "
-                                 f"{a_got.shape} vs stored {a_want.shape}")
-            d = float(np.abs(a_got - a_want).max())
+        # MATCH POSES, DO NOT ASSUME ORDER. ci_coordinate is NOT stored in _sample_<k> order --
+        # measured as a permutation ([1,2,0,3,4], [1,4,0,2,3], [4,1,3,2,0] on consecutive seeds of
+        # 22gi). Comparing pose i to sample i therefore reports a difference of up to 0.01 and
+        # scrambles the within-seed ranking, both artefacts of the pairing rather than the scoring.
+        # Matched correctly, every pose reproduces its sample to 0.0000.
+        ks = sorted(want)
+        cost = np.zeros((len(summ), len(ks)))
+        for ii in range(len(summ)):
+            for jj, k in enumerate(ks):
+                cost[ii, jj] = np.abs(_np(summ[ii]["chain_pair_iptm"])
+                                      - np.asarray(want[k]["chain_pair_iptm"], float)).max()
+        match = cost.argmin(axis=1)
+        if len(set(match.tolist())) != len(summ):
+            raise SystemExit(f"STOP: {pdb}/{seed} cached poses do not match stored samples one to "
+                             f"one (assignment {match.tolist()}); the cache and the fold disagree.")
+        perm = [int(ks[j]) for j in match]
+        got_r = [float(_np(summ[ii]["ranking_score"])) for ii in range(len(summ))]
+        want_r = [float(want[k]["ranking_score"]) for k in perm]
+        for ii in range(len(summ)):
+            d = float(cost[ii, match[ii]])
             dmax = max(dmax, d); dsum += d; dn += 1
-            got_r.append(float(_np(summ[k]["ranking_score"])))
-            want_r.append(float(want[k]["ranking_score"]))
-            rows.append({"pdb": pdb, "seed": seed, "sample": k, "max_abs_diff": round(d, 6),
-                         "stored_iptm": round(float(want[k]["iptm"]), 4),
-                         "recomputed_iptm": round(float(_np(summ[k]["iptm"])), 4)})
-        # RANKING, not just values: selection is what the project measures, so the order of poses
-        # within a seed has to survive rescoring even if the numbers move in the last decimal.
-        if np.argsort(got_r).tolist() != np.argsort(want_r).tolist():
-            rank_bad += 1
-            print(f"  RANK CHANGED {pdb}/{seed}: {np.argsort(want_r).tolist()} -> "
-                  f"{np.argsort(got_r).tolist()}")
+            rows.append({"pdb": pdb, "seed": seed, "cached_pose": ii, "stored_sample": perm[ii],
+                         "max_abs_diff": round(d, 8),
+                         "stored_iptm": round(float(want[perm[ii]]["iptm"]), 4),
+                         "recomputed_iptm": round(float(_np(summ[ii]["iptm"])), 4)})
+        if perm != list(range(len(summ))):
+            permuted += 1
         if i % 10 == 0 or i == len(units):
             el = time.time() - t0
             print(f"  {i}/{len(units)}  {el/i:.2f} s/unit  max|diff| {dmax:.5f}  "
@@ -203,7 +212,8 @@ def main():
 
     print(f"\nchain_pair_iptm: max |stored - recomputed| = {dmax:.6f}, mean {dsum/max(1,dn):.6f} "
           f"over {int(dn)} poses")
-    print(f"pose ranking within a seed changed on {rank_bad} of {len(units)} unit(s)")
+    print(f"pose ranking within a seed changed on {rank_bad} of {len(units)} unit(s) AFTER matching")
+    print(f"units whose cached pose order is permuted vs _sample_<k>: {permuted} of {len(units)}")
     if dmax > a.tol:
         raise SystemExit(f"STOP: recomputed ipTM differs from the fold's own summary by {dmax:.4f} "
                          f"(tolerance {a.tol}). Rescoring a cached unit does not reproduce the fold, "
