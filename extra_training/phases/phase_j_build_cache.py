@@ -295,6 +295,10 @@ def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
 
 # Every array a cached unit must carry for the replay and the loss to read it. A payload missing one
 # of these is not reusable however good its fingerprint looks.
+#
+# THE lf_* ARRAYS ARE PART OF THIS. They were left out, so an npz holding only the five structural
+# members passed reuse and was then REFUSED by the replay -- the gate that runs later caught what the
+# gate that decides reuse did not, which is the wrong way round.
 REQUIRED = ("fingerprint", "schema", "label_coordinate", "label_coordinate_mask", "sample_index")
 
 
@@ -316,10 +320,17 @@ def stale(out, want, n_pose=None):
                 return True
             if int(z["schema"]) != SCHEMA:
                 return True
+            if any(f"lf_{k}" not in z.files for k in LOSS_FEATS):
+                return True
             lc, lm, ks = z["label_coordinate"], z["label_coordinate_mask"], z["sample_index"]
             if lc.ndim != 3 or lc.shape[:2] != lm.shape[:2] or lc.shape[0] != ks.shape[0]:
                 return True
             if n_pose is not None and lc.shape[0] != n_pose:
+                return True
+            # resolution has to be a single finite number inside the loss window, or the confidence
+            # terms are silently zero for every pose of this unit
+            rr = np.asarray(z["lf_resolution"]).reshape(-1)
+            if rr.size < 1 or not np.isfinite(rr[0]):
                 return True
             if not np.isfinite(lc[lm.astype(bool)]).all():
                 return True
@@ -413,8 +424,10 @@ def main():
         "protenix/model/loss.py")]
     _local = [os.path.join(HERE, f) for f in
               ("phase_j_build_cache.py", "phase_j_dataset.py", "phase_j_job_cifs.py")]
-    _patch = os.path.join(os.path.dirname(os.path.dirname(ROOT)), "run_model",
-                          "protenix_local.patch")
+    # THE REPO ROOT IS ROOT's PARENT, not its grandparent. One level too high resolved outside the
+    # checkout, the file never existed, and the patch was silently dropped from the fingerprint --
+    # the very thing it was added to cover.
+    _patch = os.path.join(os.path.dirname(ROOT), "run_model", "protenix_local.patch")
     code_fp = hashlib.sha256(b"".join(
         open(f, "rb").read() for f in _local + _ext + [_patch]
         if os.path.exists(f))).hexdigest()[:16]
@@ -445,7 +458,14 @@ def main():
         # REUSE ONLY WHAT WAS BUILT FROM THESE INPUTS. `os.path.exists(out)` let a label written
         # before an upstream fix survive it untouched.
         fprint = unit_fingerprint(a, pdb, up, code_fp, loss_fp)
-        if not a.overwrite and not stale(out, fprint, n_pose=None):
+        # THE TRUNK'S POSE COUNT, so a label that does not describe this unit's poses is not reused.
+        try:
+            with np.load(up, allow_pickle=False) as _z:
+                _np_pose = int(np.asarray(_z["ci_coordinate"]).shape[0]) \
+                    if "ci_coordinate" in _z.files else None
+        except Exception:
+            _np_pose = None
+        if not a.overwrite and not stale(out, fprint, n_pose=_np_pose):
             reused += 1
             continue
         try:

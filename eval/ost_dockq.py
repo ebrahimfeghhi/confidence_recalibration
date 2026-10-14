@@ -28,6 +28,7 @@ Usage from the shell:
 """
 import argparse
 import json
+import math
 import os
 import subprocess
 
@@ -85,7 +86,17 @@ def usable(out, need=()):
     # A VALID-BUT-EMPTY OBJECT IS NOT A RESULT. `{}` parses, so it passed and was cached forever as
     # "scored", turning a crashed OST run into a silent exclusion from the evaluated population.
     # What parse() reads is `dockq_interfaces`; without it there is nothing to read.
-    if "dockq_interfaces" not in d:
+    # A KEY IS NOT A SCORE. {"dockq_interfaces": [["A","B","A","B"]]} carries no dockq values, so
+    # parse() returns DockQ None, the scorer emits no row, and the file stays reusable forever -- a
+    # failed run cached as a result. An interface list must come with a finite DockQ for each entry.
+    ifc, dq = d.get("dockq_interfaces"), d.get("dockq")
+    if ifc is None:
+        return False
+    if len(ifc) == 0:
+        return True                 # a legitimate "this pair has no interface" outcome
+    if not isinstance(dq, list) or len(dq) < len(ifc):
+        return False
+    if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in dq[:len(ifc)]):
         return False
     return all(k in d for k in need)
 

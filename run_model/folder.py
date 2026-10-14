@@ -777,19 +777,44 @@ def spawn(cmd):
             time.sleep(2)
 
 
-def saved_run_dir(out, pdb, seed):
-    """The ONE finished run directory of (pdb, seed) under --out, or None.
+def saved_run_dir(out, pdb, seed, tag=None, donor=None):
+    """The ONE finished run directory of the REQUESTED unit under --out, or None.
 
-    Finished means it holds run.json. A worker that died mid-fold leaves a directory without one, and
-    a seed can have several, so anything other than exactly one finished directory is no answer.
+    Finished means it holds run.json AND some poses. A worker that died mid-fold leaves a directory
+    without run.json, and a seed can have several, so anything but exactly one match is no answer.
+
+    MATCHED ON THE UNIT, NOT JUST (pdb, seed). Keying on the complex and seed alone recovered a
+    saved run belonging to a DIFFERENT arm: every templated fold of a complex shares one seed, so a
+    run dumped for arm "br03" satisfied a request for "free". run.json records arm and donor_pose,
+    so the requested arm and template are required to match when they are known.
     """
-    dirs = [d for d in glob.glob(f"{out}/{pdb}/{seed}-*")
-            if os.path.exists(os.path.join(d, "run.json"))
-            and glob.glob(f"{d}/**/*_sample_*.cif", recursive=True)]
-    return dirs[0] if len(dirs) == 1 else None
+    hits = []
+    for d in sorted(glob.glob(f"{out}/{pdb}/{seed}-*")):
+        rj = os.path.join(d, "run.json")
+        if not os.path.exists(rj):
+            continue
+        if not glob.glob(f"{d}/**/*_sample_*.cif", recursive=True):
+            continue
+        try:
+            with open(rj) as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if str(meta.get("seed")) != str(seed):
+            continue                       # a renamed directory must not be able to lie about it
+        if tag is not None and meta.get("arm") not in (None, tag):
+            continue
+        if donor is not None and str(meta.get("donor_pose", donor)) != str(donor):
+            continue
+        hits.append(d)
+    if len(hits) > 1:
+        print(f"  {pdb} seed {seed} {tag}: {len(hits)} saved runs match; refusing to guess "
+              f"({[os.path.basename(h) for h in hits]})", flush=True)
+        return None
+    return hits[0] if hits else None
 
 
-def rescore_saved(ctx, pdb, target, tag, seed, want):
+def rescore_saved(ctx, pdb, target, tag, seed, want, rd=None, poses=()):
     """Score the POSES ALREADY ON DISK for an incomplete unit. Returns interfaces newly scored.
 
     WHY THIS EXISTS. A unit whose scoring died partway cannot be repaired by folding again: the
@@ -799,10 +824,13 @@ def rescore_saved(ctx, pdb, target, tag, seed, want):
     the first run are still there, so the fix is to score those. score_fold already appends only the
     samples the csv is missing, so this is safe to run repeatedly.
     """
-    rd = saved_run_dir(ctx.A.out, pdb, seed)
+    if rd is None:
+        rd = saved_run_dir(ctx.A.out, pdb, seed, tag=tag)
     if rd is None:
         return None
-    got, err = score_fold(ctx, pdb, target, tag, seed, rd, ".", want, [])
+    # THE UNIT'S OWN PROVENANCE. Passing [] recorded donor_pose -1 and no template chains for every
+    # recovered unit, so a templated fold's rows claimed to be free folds.
+    got, err = score_fold(ctx, pdb, target, tag, seed, rd, ".", want, list(poses))
     if got:
         print(f"  RESCORED from saved poses {pdb} {tag} seed {seed}: {got} interface(s) "
               f"recovered from {os.path.basename(rd)}", flush=True)
@@ -888,19 +916,6 @@ def run_unit(ctx, unit):
         return "skipped"
     if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
         return "skipped"
-    # PARTLY SCORED, POSES STILL ON DISK -> RESCORE, DO NOT REFOLD. Without this the unit reaches the
-    # trunk guard, fails with "trunk file already exists", and stays partial for good; and refolding
-    # it would mix a DIFFERENT pose's scores with the first run's trunk, since folds do not
-    # reproduce here. Only fires when some sample is already scored, so a fresh unit is untouched.
-    partly = any(ctx.rows_done.get((i, str(seed), tag)) for i in want)
-    if partly and saved_run_dir(A.out, pdb, seed):
-        rescore_saved(ctx, pdb, target, tag, seed, want)
-        if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
-            return "rescored"
-        print(f"  {pdb} {tag} seed {seed}: still incomplete after rescoring the saved poses; "
-              "the poses themselves may be missing samples", flush=True)
-        return "failed"
-
     claim = f"{A.claim_dir}/{pdb}_{target}_{tag}_{seed}".replace("*", "all") if A.claim_dir else None
     if claim:
         try:
@@ -918,6 +933,35 @@ def run_unit(ctx, unit):
                 shutil.rmtree(claim)      # the claim holds an owner file, so rmdir would fail
             except OSError:
                 pass
+
+    # SAVED POSES, INCOMPLETE SCORES -> RESCORE, DO NOT REFOLD.
+    #
+    # UNDER THE CLAIM, NOT BEFORE IT. This ran before the claim was taken, so two workers both
+    # entered recovery on the same unit and both appended the same missing samples -- their
+    # rows_done are per-process and cannot see each other -- and a restarted worker could enter
+    # recovery while the original was still scoring. The claim is exclusive (mkdir), so taking it
+    # first makes recovery single-writer, and the completion state is re-read from the csv here
+    # rather than trusted from process start.
+    #
+    # ANY INCOMPLETE SAVED RUN, INCLUDING ZERO ROWS. The previous version required some sample to be
+    # scored already, which excluded the commonest interruption of all: inference finishes, scoring
+    # dies before its first row. Those units then fell through to the folding path and hit the trunk
+    # guard, so a complete set of poses sat on disk unscorable.
+    if A.claim_dir:
+        ctx.rows_done, ctx.units_done = open_csv(A.csv)
+    if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
+        release()
+        return "skipped"                  # another worker finished it while we queued
+    rd = saved_run_dir(A.out, pdb, seed, tag=tag, donor=donor)
+    if rd is not None:
+        rescore_saved(ctx, pdb, target, tag, seed, want, rd, poses)
+        if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
+            release()
+            return "rescored"
+        print(f"  {pdb} {tag} seed {seed}: still incomplete after rescoring {os.path.basename(rd)}; "
+              "the saved poses themselves may be short", flush=True)
+        release()
+        return "failed"
 
     ctx.point_templates_at(kind not in ("free", "posez"))
     if kind in ("free", "posez"):

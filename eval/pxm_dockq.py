@@ -24,6 +24,7 @@ Usage from the shell:
 """
 import argparse
 import json
+import math
 import os
 import subprocess
 
@@ -48,7 +49,20 @@ def usable(out):
             d = json.load(fh)
         # A VALID-BUT-EMPTY OBJECT IS NOT A RESULT. `{}` parses and was accepted, so a crashed pxm
         # run cached as "scored" and became a silent exclusion. parse() reads `interface`.
-        return isinstance(d, dict) and "interface" in d
+        # A KEY IS NOT A SCORE, as in ost_dockq.usable: each interface record must carry a finite
+        # dockq, and an empty interface map is a legitimate no-interface outcome.
+        if not isinstance(d, dict) or "interface" not in d:
+            return False
+        ifc = d.get("interface") or {}
+        if not isinstance(ifc, dict):
+            return False
+        for v in ifc.values():
+            if not isinstance(v, dict):
+                return False
+            x = v.get("dockq")
+            if not isinstance(x, (int, float)) or not math.isfinite(x):
+                return False
+        return True
     except (OSError, ValueError):
         try:
             os.replace(out, f"{out}.invalid")

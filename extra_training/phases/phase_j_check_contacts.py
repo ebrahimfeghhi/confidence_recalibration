@@ -43,6 +43,11 @@ def min_dist(st, a_chains, b_chain):
     ASYMMETRIC UNIT, so symmetry mates are exactly what must NOT count.
     """
     import numpy as np
+    # POLYMER MEMBERSHIP FROM THE ENTITY RECORDS, shared with phase_j_job_cifs.polymer_subchains.
+    # `het_flag != "H"` excluded MODIFIED polymer residues too -- MSE above all -- while
+    # `not is_water()` admitted calcium, sugars and cryoprotectant.
+    import phase_j_job_cifs as _JC
+    _poly = _JC.polymer_subchains(st)
     def coords(name):
         # POLYMER ATOMS ONLY -- NOT WATERS. This excluded hydrogens and nothing else, so a bridging
         # water counted as a contact. 7stz read 4.68 A with "1 contact" and that single contact was
@@ -50,7 +55,7 @@ def min_dist(st, a_chains, b_chain):
         # 5 A, i.e. the antigen copy we selected does not touch the antibody at all. A contact has to
         # be between the molecules the label describes, so solvent and other heteroatoms are out.
         return np.array([[a.pos.x, a.pos.y, a.pos.z] for r in st[0][name]
-                         if not r.is_water() and r.het_flag != "H"
+                         if r.subchain in _poly
                          for a in r if a.element.name != "H"], dtype=float)
     b = coords(b_chain)
     if not len(b):

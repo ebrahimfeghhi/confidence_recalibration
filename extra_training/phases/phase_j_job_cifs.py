@@ -136,10 +136,35 @@ def assign_chains(roles, seqs, floor=0.85):
     return pairs, bad
 
 
-def _heavy(ch):
+def polymer_subchains(st):
+    """{subchain id} of every POLYMER entity, so polymer membership is read from the file's own
+    entity records rather than guessed from `het_flag`.
+
+    WHY NOT het_flag. Excluding every HETATM residue also excludes MODIFIED POLYMER residues --
+    selenomethionine is the common one, and this project already had to unify MSE handling once.
+    Keeping only `not is_water()` goes the other way and admits calcium, sugars and cryoprotectant:
+    7stz chain C read 565 "observed residues" that way, of which 25 were CA, BMA, MAN, NAG, PG4 and
+    EDO, and its 4.68 A "contact" with the antibody was a water. Entity type is the only
+    unambiguous answer.
+    """
+    import gemmi
+    out = set()
+    for e in st.entities:
+        if e.entity_type == gemmi.EntityType.Polymer:
+            out.update(e.subchains)
+    return out
+
+
+def _heavy(ch, polymer=None):
+    """Heavy-atom coordinates of a chain's POLYMER residues.
+
+    `polymer` is the subchain set from polymer_subchains(); without it every non-hydrogen atom is
+    taken, which is what let solvent and ions count as contacts.
+    """
     import numpy as np
-    return np.array([[a.pos.x, a.pos.y, a.pos.z] for r in ch for a in r
-                     if a.element.name != "H"], dtype=float)
+    return np.array([[a.pos.x, a.pos.y, a.pos.z] for r in ch
+                     if polymer is None or r.subchain in polymer
+                     for a in r if a.element.name != "H"], dtype=float)
 
 
 def _min_dist(A, B):
@@ -188,9 +213,10 @@ def pick_contacting_copies(pairs, row, seqs, st, cutoff=5.0, ident_floor=0.9):
     # NOTHING TO FIX unless an antigen is out of contact. A structure whose sequence-resolved pick
     # already touches is left exactly as it is.
     hv = {}
+    _poly = polymer_subchains(st)
     def heavy(c):
         if c not in hv:
-            hv[c] = _heavy(st[0][c])
+            hv[c] = _heavy(st[0][c], _poly)
         return hv[c]
     if all(min(_min_dist(heavy(g), heavy(x)) for x in ab) <= cutoff for g in ags):
         return pairs, []
