@@ -91,7 +91,7 @@ CLUSTERING_DIR = _path("CLUSTERING_DIR", REPO_ROOT / "archive" / "diffusion_comm
 # pose-to-pose DockQ matrices: ONE ROOT, one subdirectory per (dataset, frame). See its README.md.
 # A dataset's crystal-frame set is complete -- every interface of the pool has an npz -- so these are
 # read, never rebuilt. Dataset.matrices points at the right one for that dataset.
-POSE_DOCKQ_MATRICES = _path("POSE_DOCKQ_MATRICES", DATA_DIR / "pose_dockq_matrices")
+POSE_DOCKQ_MATRICES = _path("POSE_DOCKQ_MATRICES", REPO_ROOT / "archive" / "pose_dockq_matrices")
 # confidence-head finetune project root; everything for it lives here
 EXTRA_TRAINING = _path("EXTRA_TRAINING", REPO_ROOT / "extra_training")
 # The three names that used to live here -- XTAL_MATRICES, ANCHOR_MATRICES, SPUR_MATRICES -- pointed at
