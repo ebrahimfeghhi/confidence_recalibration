@@ -354,11 +354,13 @@ def main():
     # trunk file, so a fold that died partway looks complete. The queue is the contract.
     queue = f"{a.fold}/queue.tsv"
     if os.path.exists(queue) and not (a.only or a.limit or a.stride != 1):
+        # queue.tsv columns are: mode, pdb, target, tag, SEED. Reading the seed from f[0] took the
+        # mode instead, so every queued unit looked absent and the note fired on all 501.
         want_units = set()
         for line in open(queue):
             f = line.split()
-            if len(f) >= 2:
-                want_units.add((f[1].strip().lower(), f[0].strip()))
+            if len(f) >= 5:
+                want_units.add((f[1].strip().lower(), f[4].strip()))
         have = {(os.path.basename(os.path.dirname(u)).lower(),
                  os.path.basename(u)[:-4].split("_")[-1]) for u in units}
         gap = want_units - have

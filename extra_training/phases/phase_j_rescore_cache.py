@@ -208,18 +208,28 @@ def main():
         # identity, so that is used whenever the poses are available and the assignment is kept only
         # for units whose cifs are gone.
         perm, how = None, "scores (Hungarian on chain_pair_iptm)"
-        try:
-            import phase_j_build_cache as _BC
-            cifs = _BC.sample_cifs(seed_dir, pdb)
-            if len(cifs) == len(summ):
-                perm = [int(v) for v in _BC.sample_indices(x[0].detach().cpu().numpy()
-                                                           if hasattr(x, "detach") else np.asarray(x),
-                                                           cifs, 0.01, 0.5)]
-                how = "coordinates (identity, from the sample cifs)"
-        except Exception as e:                            # noqa: BLE001 -- fall back and say so
-            print(f"  note: coordinate identity unavailable for {pdb}/{seed} ({str(e)[:70]}); "
-                  "falling back to score matching")
-            perm = None
+        import phase_j_build_cache as _BC
+        cifs = _BC.sample_cifs(seed_dir, pdb)
+        if cifs:
+            # THE WHOLE SAMPLE AXIS. This passed x[0], one pose of shape [N_atom, 3], where
+            # sample_indices wants [N_sample, N_atom, 3]; len(poses) then counted ATOMS, the helper
+            # raised "N cached poses but 5 sample cifs" every time, and a broad except fell back to
+            # the score matching this was meant to replace -- so coordinate identity never once
+            # governed the check it was added for.
+            px = x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
+            if px.ndim != 3:
+                raise SystemExit(f"STOP: {pdb}/{seed} ci_coordinate has shape {px.shape}, expected "
+                                 "[N_sample, N_atom, 3]")
+            if len(cifs) != px.shape[0]:
+                raise SystemExit(f"STOP: {pdb}/{seed} has {px.shape[0]} cached pose(s) but "
+                                 f"{len(cifs)} sample cif(s)")
+            # AND IT IS NOT ALLOWED TO FAIL QUIETLY. With the cifs present, a failed coordinate match
+            # is a real disagreement about which pose is which; falling back to scores would hide it.
+            perm = [int(v) for v in _BC.sample_indices(px, cifs, 0.01, 0.5)]
+            how = "coordinates (identity, from the sample cifs)"
+        else:
+            print(f"  note: no sample cifs for {pdb}/{seed}; falling back to score matching, which "
+                  "cannot establish identity")
         if perm is None:
             from scipy.optimize import linear_sum_assignment
             rows_i, cols_j = linear_sum_assignment(cost)
@@ -239,15 +249,26 @@ def main():
                          "max_abs_diff": round(d, 8),
                          "stored_iptm": round(float(want[perm[ii]]["iptm"]), 4),
                          "recomputed_iptm": round(float(_np(summ[ii]["iptm"])), 4)})
-        # RANK THE STATISTIC THE PROJECT SELECTS ON. This compared global `ranking_score`, while
-        # every selection we report uses PER-INTERFACE pair ipTM, so the check answered a different
-        # question from the one the endpoint asks. Both are reported; the per-interface one decides.
-        got_p = [float(np.asarray(_np(summ[ii]["chain_pair_iptm"])).max()) for ii in range(len(summ))]
-        want_p = [float(np.asarray(want[k]["chain_pair_iptm"], dtype=float).max()) for k in perm]
-        if np.argsort(got_p).tolist() != np.argsort(want_p).tolist():
+        # EVERY CHAIN PAIR SEPARATELY, not the matrix maximum. `.max()` over the whole
+        # chain_pair_iptm matrix is not the ranking of any interface: the largest entry can be an
+        # intrachain or unrelated pair, so a target pair can change order while the maxima are
+        # identical. Requiring the ordering to hold for EVERY pair is strictly stronger than naming
+        # one interface and needs no interface list.
+        G = np.stack([np.asarray(_np(summ[ii]["chain_pair_iptm"]), dtype=float)
+                      for ii in range(len(summ))])
+        W = np.stack([np.asarray(want[k]["chain_pair_iptm"], dtype=float) for k in perm])
+        if G.shape != W.shape:
+            raise SystemExit(f"STOP: {pdb}/{seed} chain_pair_iptm {G.shape} vs stored {W.shape}")
+        flat_g = G.reshape(G.shape[0], -1)
+        flat_w = W.reshape(W.shape[0], -1)
+        changed = [c for c in range(flat_g.shape[1])
+                   if np.argsort(flat_g[:, c]).tolist() != np.argsort(flat_w[:, c]).tolist()]
+        if changed:
             rank_bad += 1
-            print(f"  PAIR-IPTM RANK CHANGED {pdb}/{seed}: "
-                  f"{np.argsort(want_p).tolist()} -> {np.argsort(got_p).tolist()}")
+            print(f"  PAIR-IPTM RANK CHANGED {pdb}/{seed} on {len(changed)} of "
+                  f"{flat_g.shape[1]} chain pair(s), e.g. pair {changed[0]}: "
+                  f"{np.argsort(flat_w[:, changed[0]]).tolist()} -> "
+                  f"{np.argsort(flat_g[:, changed[0]]).tolist()}")
         elif np.argsort(got_r).tolist() != np.argsort(want_r).tolist():
             print(f"  note: global ranking_score order changed for {pdb}/{seed} "
                   f"({np.argsort(want_r).tolist()} -> {np.argsort(got_r).tolist()}) while the "

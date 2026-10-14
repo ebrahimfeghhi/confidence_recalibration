@@ -44,8 +44,14 @@ def min_dist(st, a_chains, b_chain):
     """
     import numpy as np
     def coords(name):
-        return np.array([[a.pos.x, a.pos.y, a.pos.z] for r in st[0][name] for a in r
-                         if a.element.name != "H"], dtype=float)
+        # POLYMER ATOMS ONLY -- NOT WATERS. This excluded hydrogens and nothing else, so a bridging
+        # water counted as a contact. 7stz read 4.68 A with "1 contact" and that single contact was
+        # HOH C:763; the nearest POLYMER atom of the same chain is 5.81 A away with nothing inside
+        # 5 A, i.e. the antigen copy we selected does not touch the antibody at all. A contact has to
+        # be between the molecules the label describes, so solvent and other heteroatoms are out.
+        return np.array([[a.pos.x, a.pos.y, a.pos.z] for r in st[0][name]
+                         if not r.is_water() and r.het_flag != "H"
+                         for a in r if a.element.name != "H"], dtype=float)
     b = coords(b_chain)
     if not len(b):
         return float("nan")

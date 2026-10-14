@@ -17,7 +17,7 @@ generator was never trained on, and serve it from a precomputed cache.
 | | proposed |
 |---|---|
 | training set | post-cutoff structures in clusters holding ≥1 of them, redundancy-filtered |
-| structures | **535** (antibody + polypeptide antigen, cap ≤2 per pairing); all MSA-ready |
+| structures | **501** (antibody + polypeptide antigen, cap ≤2 per pairing); all MSA-ready |
 | clusters represented | **193** |
 | seeds per structure | **10** |
 | each seed | one fold at `N_cycle=10`, 200 diffusion steps, `N_sample=5` poses |
@@ -34,15 +34,30 @@ Equal-cost alternatives, all within reach of 2,040 GB:
 
 | design | storage |
 |---|---|
-| **536 structures × 10 seeds** | **1,695 GB** |
+| **501 structures × 10 seeds** | **1,585 GB** |
 | 1,594 structures × 5 seeds | 1,509 GB |
 | 1,594 structures × 6 seeds | 1,811 GB |
 
 Spending on seeds rather than structures, because seed is the axis the variance lives on: 87% of
 ipTM variance is between seeds of the same interface, and the hard training examples — confident
 representation, wrong pose — are produced by depth, not breadth (§3). The redundancy filter costs
-almost nothing in return: the cap keeps every distinct antibody–antigen pairing,
-so what is discarded is duplicate crystal forms.
+almost nothing in return: the cap keeps every distinct antibody–antigen pairing, so what is
+discarded is duplicate crystal forms. Measured by re-running the selector at several caps:
+
+| cap | structures selected |
+|---|---|
+| 1 | 452 |
+| **2 (live)** | **501** |
+| 3 | 518 |
+| none | 718 |
+
+The cap is the funnel's largest single cut: it removes 217 of the 718 eligible structures, and
+almost all of that comes from two pairings. Uncapped, 391 of 444 pairings contribute ONE structure,
+while `(ab 1302, ag P17)` contributes 99 and `(ab 211, ag P17)` contributes 84 -- 183 structures, a
+quarter of the eligible set, on two heavily-crystallised combinations against one antigen family.
+Nineteen pairings sit above the cap and would have contributed 259 structures; the cap keeps 38 of
+them. Without it, a quarter of training would have been spent on two complexes while the confidence
+head looked well calibrated.
 
 Ten seeds also reaches the thin tail that matters: 41 of 292 PXM interfaces find an acceptable pose
 in ≤5 of 100 seeds (§3). At 5 seeds per structure roughly half of those cases would never appear in
@@ -66,10 +81,11 @@ every length, so no token cap is applied and no memory test is run first.
 
 | step | where | cost | state |
 |---|---|---|---|
-| 0. fix the selection: polypeptide-antigen eligibility, input-tuple dedup accounting, diversity-ordered representatives | CPU | minutes | **done** — 535 structures / 193 clusters, all MSA-ready |
-| 1. build Protenix training format: whole RCSB mmCIFs → bioassembly pickles + indices csv | CPU | ~1 h | **running** (`phases/phase_j_prepare_training_data.py`) |
-| 2. one cached unit WITH labels, then a numerical replay against the uncached loss | 1 GPU | minutes | not written |
-| 3. build the cache, 535 structures × **10 seeds**, smallest first | 3 GPUs | ~12 h | queued behind the FoldBench fold |
+| 0. fix the selection: polypeptide-antigen eligibility, input-tuple dedup accounting, diversity-ordered representatives | CPU | minutes | **done** — 501 structures / 193 clusters, all MSA-ready |
+| 1. build Protenix training format: per-JOB mmCIFs → bioassembly pickles + indices csv | CPU | ~1 min | **done** — 501 pickles, 3,111 indices rows (`phases/phase_j_prepare_training_data.py`) |
+| 2. one cached unit WITH labels, then a numerical replay against the uncached loss | 1 GPU | minutes | **written** (`phase_j_build_cache.py`, `phase_j_replay.py`); build_cache run, replay NOT yet run -- needs a free card |
+| 3. build the cache, 501 structures × **10 seeds**, smallest first | 3 GPUs | ~12 h | **running** since 2026-10-13 6:27 PM PT |
+| 4. the confidence-head training loop | 1 GPU | - | **not written** -- the largest remaining gap |
 
 **No memory test.** Everything is assumed to fit. The exposure if it does not: the 77 structures over
 1,000 tokens carry 45% of the bytes, so a backward pass that OOMs at those lengths would leave ~765 GB
@@ -87,9 +103,53 @@ reversible in the sense that stopping early still leaves a usable cache — but 
 so the numerical replay in step 2 has to pass before any of it is generated.
 
 **Two things the prep found that the plan had wrong.** SAbDab2's per-instance cifs are trimmed and
-carry no `pdbx_struct_assembly` block, so Protenix's parser raises on all 535 — the entries have to
+carry no `pdbx_struct_assembly` block, so Protenix's parser raises on all 501 — the entries have to
 come from RCSB. And the instance id, not `<pdb>_<Hchain>_<Lchain>`, is SAbDab2's file stem: 110 of
-535 are single-domain antibodies whose light chain is written `+`.
+501 are single-domain antibodies whose light chain is written `+`.
+
+## 0a. The label repair of 2026-10-14, and what it did NOT fix
+
+`phase_j_job_cifs.py` now vetoes a residue placement the geometry refuses
+(`drop_geometrically_impossible`, 4.5 A between label_seq-consecutive CA atoms). Rebuilt over all
+501 structures:
+
+| measure | before | after |
+|---|---|---|
+| structures whose label misses a chain | 106 | 2 |
+| chains with a >10 A consecutive CA break (chain DELETED by `filter.py:146`) | 104 | 0 |
+| chains with a 4.5-10 A break (kept, wrong residue, SILENT) | 45 | 0 |
+| max consecutive CA-CA distance | 38.1 A | 4.4 A |
+| indices rows | 2,762 | 3,111 |
+
+The 4.5 A threshold is measured: of 310,599 consecutive CA-CA distances over all 501 job cifs,
+308,955 (99.47%) fall in 3.5-4.0 A and the 4.0-4.5 A band holds SIX.
+
+**What this does not establish.** "Max 4.4 A" is the invariant the deletion enforces, so it is
+evidence that breaks were removed, not an independent check of residue identity. Two distinct causes
+produce a break and the veto cannot tell them apart:
+
+| cause | example | the veto's action |
+|---|---|---|
+| a residue imported from PAST the domain boundary | `8h3c`: the heavy query is 117 residues, native 119-133 are unresolved, so the span reached auth 134 -- a THR sitting with the LIGHT domain 32 A away | correct: removes a residue that does not belong |
+| the FOLD INPUT omits an internal native segment | `11zw`: the 214-residue heavy query omits native 159-165 (`SKSTSGG`), so native 158 and 166 become query 134 and 135, 10.78 A apart | **wrong: removes a genuine heavy-chain residue** |
+
+Measured across every fold input: **119 of 501 structures** have at least one query omitting an
+internal segment of its native entity, 908 residues over 136 queries (worst `9p1m`, 27 residues in 4
+gaps). For those the model folded a construct missing real internal residues, and no label-side
+repair can add them back -- the poses themselves describe a molecule with two residues covalently
+adjacent that are not. This is an open input-audit question, not closed by the veto.
+
+**The two remaining chain losses are a wrong COPY, not a weak contact.** Both lose their antigen to
+`remove_dissociation`, and in both a near-identical contacting copy exists that was not selected:
+
+| structure | selected copy | nearest polymer atom | contacting alternative |
+|---|---|---|---|
+| `7stz` (antibody I/M, 590-res antigen query) | `C`, 565 observed, 95.8% coverage | **5.81 A, 0 atoms within 5 A** | `D`, 440 observed (74.6%), **2.41 A, 100 atoms within 5 A** -- rejected by the 85% coverage floor |
+| `8gpu` (antibody C/D, 398-res antigen query) | `E`, 392 observed, 98.5% | **5.02 A, 0 atoms within 5 A** | `B`, 388 observed (97.5%), **2.43 A, 105 atoms within 5 A** |
+
+`7stz` previously read 4.68 A with "1 contact" because the contact helper counted every non-hydrogen
+atom including SOLVENT, and that contact was `HOH C:763`. Excluding waters and other heteroatoms, the
+non-contacting count over all 501 structures is **11 antigen chains, not 9**.
 
 ## 0b. The structures, and how they were chosen
 
@@ -108,7 +168,7 @@ and MSA readiness. It is regenerated deterministically by
 | require an antibody chain AND ≥1 polypeptide antigen | `phase_a:263`'s filter | drops 548 rows |
 | keep clusters holding ≥1 post-2021-09-30 structure | `PDBdepo > 2021-09-30` | 193 clusters |
 | keep only the post-cutoff structures in them | | 1,594 → see cap |
-| cap 2 structures per (antibody cluster, antigen cluster) pairing | `ab_cluster` × `agclusters` | **536 structures / 193 clusters** |
+| cap 2 structures per (antibody cluster, antigen cluster) pairing | `ab_cluster` × `agclusters` | **501 structures / 193 clusters** |
 
 One row per structure: a PDB appearing under two `ab_ag_cluster`s is emitted once.
 
@@ -161,7 +221,7 @@ Review round 3. The design stands; these gate the build.
 | | finding | blocks |
 |---|---|---|
 | **closed 12:15 AM ET** | the cache stores confidence-head INPUTS only. The loss also needs ground-truth coordinates in model atom order, `coordinate_mask`, `pae_rep_atom_mask`, `frame_atom_index`, `has_frame`, and the PER-POSE symmetric permutation of the label (`protenix.py:1712-1720`). None is in the npz. | was: the build |
-| accepted | backward-pass memory above ~1,000 tokens is untested and will not be tested first. 77 of 535 structures exceed it and carry 45% of the bytes; the largest is 2,941 tokens, where one N×N×256 activation is 4.4 GB. Building smallest-first bounds the loss if it does OOM. | nothing; accepted risk |
+| accepted | backward-pass memory above ~1,000 tokens is untested and will not be tested first. 77 of 501 structures exceed it and carry 45% of the bytes; the largest is 2,941 tokens, where one N×N×256 activation is 4.4 GB. Building smallest-first bounds the loss if it does OOM. | nothing; accepted risk |
 | medium | deduplication is per PDB id because the fold's unit key is the pdb (`folder.py:784`), which collapses **225** input-distinct instances. Recovering them needs a per-instance job name, not a change to the selection. Representatives are now ordered by input difference rather than alphabetically. | the selection |
 
 ### Measured 2026-10-13, 12:15 AM ET: the label side is built, and two config faults zeroed the loss
@@ -439,10 +499,10 @@ At the measured 442 folds/h on 3 GPUs:
 
 | quantity | value | source |
 |---|---|---|
-| fold throughput, 3 GPUs | 442 folds/h sustained, 160/h including gaps | mtimes of 5,300 `run.json` in `val2_fold/poses` |
-| cached unit size at N=430 | 97.5 MB, of which `z_trunk` 94.7 MB | `val2_fold/trunks/22gi/free_400053.npz` |
+| fold throughput, 3 GPUs | 442 folds/h sustained, 160/h including gaps | mtimes of 5,300 `run.json` in `validation/fold/poses` |
+| cached unit size at N=430 | 97.5 MB, of which `z_trunk` 94.7 MB | `validation/fold/trunks/22gi/free_400053.npz` |
 | npz read throughput | 1.0–3.1 GB/s | timed loads, 4 files |
-| validation cache total | 704 GB, 5,300 units | `du -sh val2_fold/trunks` |
+| validation cache total | 704 GB, 5,300 units | `du -sh validation/fold/trunks` |
 | quota | 3,072 GB limit, 1,032 GB used | `quota -s` |
 | `/home` capacity | 14 TB, 4.8 TB free | `df -h` |
 | confidence head size | 19.8 M params, 4.3% of 464 M | parameter count of `protenix-v2.pt` |

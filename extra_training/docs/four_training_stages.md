@@ -137,7 +137,7 @@ So the run fails loudly rather than silently training the generator.
 `sample_diffusion_training` entirely.
 
 Net effect: nothing that produces a pose receives a gradient. A given seed produces bit-identical
-poses before and after FT3 — which is why the cached trunk tensors in `val2_fold/trunks/` are a valid
+poses before and after FT3 — which is why the cached trunk tensors in `validation/fold/trunks/` are a valid
 substitute for re-folding, and why an FT3 result is a controlled A/B on fixed poses.
 
 ## 4. Where the poses the head is trained on come from: the mini-rollout
@@ -303,7 +303,7 @@ neither demo script sets `train_confidence_only`, so there is no FT3 command to 
 
 | fact | consequence for us |
 |---|---|
-| trunk frozen and detached twice (§2) | a seed's poses are bit-identical before and after; the cached `z_trunk`/`s_trunk` in `val2_fold/trunks/` can replay the head offline |
+| trunk frozen and detached twice (§2) | a seed's poses are bit-identical before and after; the cached `z_trunk`/`s_trunk` in `validation/fold/trunks/` can replay the head offline |
 | head sees one pose at a time (§4) | per-pose rescoring is the natural inference-time operation |
 | trained on mini-rollout poses, 1 per step, 20 steps (§3) | Protenix's head was fitted to a *different* pose distribution than our 200-step, `N_sample = 5`, `N_cycle = 10` folds |
 | PAE trains only in FT3 (§1) | ipTM has the least training history of the four heads |

@@ -12,7 +12,7 @@ This file describes the POOL the split was drawn from, not the split. Two earlie
 appear below for context and both are superseded: phase B's draw of 50 clusters (chosen without
 regard to deposition date, still what `train_val_splits/val_clusters.csv` contains) and the 21-cluster
 post-cutoff subset of it that was folded on 2026-10-12. The 21-cluster fold remains reproducible
-under `val2_fold` / `sabdab_val2`.
+under `validation/fold` / `sabdab_val2`.
 
 | cutoff | clusters | structures | instances |
 |---|---|---|---|
@@ -53,10 +53,10 @@ instance at 20 seeds is about 17 days on two GPUs against 2.3 days for one per c
 
 | | clusters | structures folded | seeds | interfaces |
 |---|---|---|---|---|
-| **validation, LIVE (`val2_jobs/`)** | **40** | **53** | **100** | **91** |
+| **validation, LIVE (`validation/jobs/`)** | **40** | **53** | **100** | **91** |
 | validation, superseded: the 21-cluster subset (`val_jobs/`) | 21 | 28 | 30 | 54 |
 | validation, superseded: phase B's draw (`val_jobs/`, `--reps 2`) | 50 | 77 | 20-30 | 157 |
-| training (`train_jobs/`, `--reps 1`) | 483 | 483 | not folded yet | 922 |
+| training (`training/jobs/`, `--reps 1`) | 483 | 483 | not folded yet | 922 |
 
 Of the 77 folded validation structures, 49 are pre-cutoff and 28 post. Of the 483 training
 structures, 314 are pre-cutoff and 169 post.
@@ -71,7 +71,7 @@ eligible post-cutoff structure in the PDB.
 |---|---|
 | pool table | `data/zenodo_splits/splits_final/abag_split.csv` (15,810 instances) |
 | cluster lists | `train_val_splits/train_clusters.csv`, `train_val_splits/val_clusters.csv`, `train_val_splits/excluded_homolog_clusters.csv` |
-| fold queues | `train_jobs/manifest.csv`, `val_jobs/manifest.csv` (both carry per-structure `deposited` and `post_cutoff`) |
+| fold queues | `training/jobs/manifest.csv`, `validation/jobs/manifest.csv` (both carry per-structure `deposited` and `post_cutoff`) |
 | how the clusters were chosen | `phases/README.md`, `phases/phase_a_define_train_set.py`, `phases/phase_b_define_val_clusters.py` |
 
 ## The validation set
