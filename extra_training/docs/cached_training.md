@@ -156,7 +156,7 @@ N². Seeds and structures can both be appended later without rebuilding; rollout
 
 
 
-Review round 3 (`reviews/round3_2026-10-13_cache.md`). The design stands; these gate the build.
+Review round 3. The design stands; these gate the build.
 
 | | finding | blocks |
 |---|---|---|
@@ -167,7 +167,7 @@ Review round 3 (`reviews/round3_2026-10-13_cache.md`). The design stands; these 
 ### Measured 2026-10-13, 12:15 AM ET: the label side is built, and two config faults zeroed the loss
 
 `phases/phase_j_build_cache.py` writes the per-pose label; `phases/phase_j_replay.py` gates training
-on it. Numbers and provenance in `reviews/round7_2026-10-13_cache_gate.md`.
+on it.
 
 | | measured |
 |---|---|
