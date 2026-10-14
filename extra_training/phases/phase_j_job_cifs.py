@@ -361,7 +361,8 @@ def job_chains(row, seqs, st=None):
     return out, bad
 
 
-def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15):
+def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
+                  resolution=None, method=None):
     """in: the entry structure, [(role, chain, lo, hi)], {role: expected sequence}, output path.
 
     THE LABEL'S FRAME IS THE FOLD'S EXPECTED SEQUENCE. Each output chain gets its own entity whose
@@ -447,7 +448,34 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15):
     asm.oligomeric_details = f"{len(chains)}-mer"
     out.assemblies.append(asm)
     os.makedirs(os.path.dirname(out_cif), exist_ok=True)
-    out.make_mmcif_document().write_file(out_cif)
+    doc = out.make_mmcif_document()
+    # THE RESOLUTION, OR THE CONFIDENCE LOSS IS SILENTLY ZERO. The job cif is built from scratch and
+    # carried none of the entry's experimental metadata, so Protenix's parser fell through to its
+    # -1.0 default (data/core/parser.py:182-208) and every prepared row read resolution -1.0.
+    # loss.py:1735-1752 then compares -1.0 against loss.resolution [0.1, 4.0], sets
+    # has_valid_resolution to 0, and ZEROES plddt / pde / pae / resolved -- the four terms FT3
+    # trains. The loss would have been exactly 0.000000 on every structure in the set, with no error
+    # anywhere. Found by phase_j_replay.py.
+    #
+    # The item depends on the method, which is what the parser looks for in order: refine for
+    # crystallography, em_3d_reconstruction for cryo-EM. The value is SAbDab2's own, not invented;
+    # when there is none the field is left out and the parser's -1.0 stands, which is Protenix's own
+    # handling of a method without a resolution (phase_j_build_cache.py then refuses the unit rather
+    # than training it at zero loss).
+    if resolution is not None:
+        try:
+            r = float(resolution)
+        except (TypeError, ValueError):
+            r = -1.0
+        if r > 0:
+            blk = doc.sole_block()
+            if str(method).upper() == "EM":
+                blk.set_pair("_em_3d_reconstruction.resolution", f"{r:.2f}")
+                blk.set_pair("_em_3d_reconstruction.entry_id", out.name or "job")
+            else:
+                blk.set_pair("_refine.ls_d_res_high", f"{r:.2f}")
+                blk.set_pair("_refine.entry_id", out.name or "job")
+    doc.write_file(out_cif)
     return report, None
 
 
@@ -501,7 +529,8 @@ def main():
                 exp_of[f"ag{i2}"] = _exp[i2].strip().upper()
         out = os.path.join(a.out_dir, f"{r['pdb']}.cif")
         expected = exp_of
-        info, why = write_job_cif(st, pairs, exp_of, out, a.max_unplaced_frac)
+        info, why = write_job_cif(st, pairs, exp_of, out, a.max_unplaced_frac,
+                                  resolution=row.get("resolution"), method=row.get("method"))
         if info:
             for role, src_c, out_c, kept, expn, unp in info:
                 unplaced_rows.append({"pdb": r["pdb"], "role": role, "src_chain": src_c,

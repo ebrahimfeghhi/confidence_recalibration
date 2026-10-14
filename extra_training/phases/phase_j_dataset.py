@@ -12,7 +12,7 @@ prepared data, the MSA store and the template store all wire together before any
 
 CROP IS OFF. Protenix's FT3 crops to 768 tokens before the trunk; we fold whole complexes at
 inference and the validation cache this will be compared against is uncropped, so `train_crop_size`
-is set past the largest JOB -- 3,144 tokens measured over train_prep/job_indices.csv, hence 3,400.
+is set past the largest JOB -- 2,941 tokens measured over train_prep/job_indices.csv, hence 3,400.
 A crop is resampled per draw, so any structure that crossed the limit would be non-replayable. This
 is a deliberate deviation from the stage we are re-running, recorded in docs/cached_training.md.
 """
@@ -88,9 +88,10 @@ def main():
     ap.add_argument("--mmcif-dir", default=f"{ROOT}/train_prep/job_cifs")
     ap.add_argument("--msa-root", default=f"{ROOT}/msa_work/mmcif_msa")
     ap.add_argument("--seq-index", default=f"{ROOT}/msa_work/pdb_seqs/seq_to_pdb_index.json")
-    # PAST THE LARGEST JOB, measured, not guessed. The job-level bioassemblies run to 3,144 tokens
-    # (train_prep/job_indices.csv), so 3,072 would have cropped exactly one structure -- and a crop is
-    # resampled per draw, which would make that unit non-replayable.
+    # PAST THE LARGEST JOB, measured, not guessed. The job-level bioassemblies run to 2,941 tokens
+    # (train_prep/job_indices.csv, 2,762 rows over 501 structures, re-measured after the
+    # chain-resolution and resolution fixes), so a crop never fires -- and a crop is resampled per
+    # draw, which would make the unit it fired on non-replayable.
     ap.add_argument("--crop-size", type=int, default=3400, help="past the largest job = no crop")
     ap.add_argument("--index", type=int, default=0, help="which datapoint to materialise")
     a = ap.parse_args()
