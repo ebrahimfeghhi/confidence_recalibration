@@ -64,7 +64,7 @@ def min_dist(st, a_chains, b_chain):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--selection", default=f"{ROOT}/splits/cache_train_structures.csv")
+    ap.add_argument("--selection", default=f"{ROOT}/train_val_splits/cache_train_structures.csv")
     ap.add_argument("--splits", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
     ap.add_argument("--job-cifs", default=f"{ROOT}/train_prep/job_cifs")
     ap.add_argument("--src-dir", default=f"{ROOT}/data/rcsb_training_cifs")

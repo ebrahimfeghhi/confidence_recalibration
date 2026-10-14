@@ -53,7 +53,7 @@ def poly_parts(r):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--first", default=f"{REPO}/splits/val_split_proposal.csv",
+    ap.add_argument("--first", default=f"{REPO}/train_val_splits/val_split_proposal.csv",
                     help="the frozen split: one row per cluster with cluster and instance")
     ap.add_argument("--manifest", default=f"{REPO}/val2_jobs/manifest.csv",
                     help="checked only -- every frozen first instance must appear here")

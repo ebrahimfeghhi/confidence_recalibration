@@ -22,7 +22,7 @@ SUMMARY
 
 INPUTS
     --splits:   SAbDab2 abag_split.csv. Default under extra_training/data.
-    --excluded:    the homology-exclusion csv phase A writes. Default under extra_training/splits.
+    --excluded:    the homology-exclusion csv phase A writes. Default under extra_training/train_val_splits.
     --out-dir:     where the per-source fastas go. Default extra_training/msa_queries.
     --min-len:     skip sequences shorter than this. Default 20.
     --which:       train, bench, or both. Default both.

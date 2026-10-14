@@ -1,4 +1,4 @@
-# splits
+# train_val_splits
 
 Which clusters train, which validate, and what was excluded. Written by phases A, B and J0; read by
 the later phases rather than recomputed.

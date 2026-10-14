@@ -46,7 +46,7 @@ def main():
     ap.add_argument("--n-mixed", type=int, default=16)
     ap.add_argument("--seeds", type=int, default=100, help="seed depth, for the cache estimate")
     ap.add_argument("--seed", type=int, default=20261012)
-    ap.add_argument("--out", default=f"{REPO}/splits/val_split_proposal.csv")
+    ap.add_argument("--out", default=f"{REPO}/train_val_splits/val_split_proposal.csv")
     # a short set silently passing review is the failure this guards: the stratified picker returns
     # fewer than asked when a stratum is empty, and the summary would simply read "37 clusters".
     ap.add_argument("--compare", action="store_true",

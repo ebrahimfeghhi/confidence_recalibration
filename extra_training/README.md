@@ -339,7 +339,7 @@ SAbDab2's own annotation: CDR-H3 for their first row comes back `VRRAFDSDVGFAS`,
 ```bash
 cd diffusion_commit_clean_v2
 /home/ebrahim/Protenix/.venv/bin/python extra_training/phases/phase_a_define_train_set.py \
-    --out ../extra_training/splits/excluded_homolog_clusters.csv
+    --out ../extra_training/train_val_splits/excluded_homolog_clusters.csv
 ```
 
 Add `--no-fetch` to use the cached RCSB cifs rather than re-downloading. Thresholds are

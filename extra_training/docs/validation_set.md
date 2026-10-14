@@ -428,7 +428,7 @@ get a different antigen, 6 do not (their cluster offers only the same antigen).
 ### Anchoring (two bugs found in review, fixed)
 
 The picker is anchored to the **frozen 40 first instances by INSTANCE id**, read from
-`splits/val_split_proposal.csv`, and it requires exactly one per cluster. Two bugs made that
+`train_val_splits/val_split_proposal.csv`, and it requires exactly one per cluster. Two bugs made that
 necessary:
 
 1. **The first representative's antigen came from the first row encountered for its PDB_ID.** One

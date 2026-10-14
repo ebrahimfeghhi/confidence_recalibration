@@ -27,12 +27,12 @@ CUT = "2021-09-30"
 
 
 def main():
-    train = {r["cluster"] for r in csv.DictReader(open(f"{REPO}/splits/train_clusters.csv"))}
+    train = {r["cluster"] for r in csv.DictReader(open(f"{REPO}/train_val_splits/train_clusters.csv"))}
     # LIVE split, not val_clusters.csv: that file is the legacy 50-cluster draw and 22 of the live
     # 40 clusters are absent from it, so composition computed against it describes a split we no
     # longer use. See phase_b_define_val_clusters.LIVE_VAL.
     val = {str(r["cluster"]) for r in
-           csv.DictReader(open(f"{REPO}/splits/val_split_proposal_clusters.csv"))}
+           csv.DictReader(open(f"{REPO}/train_val_splits/val_split_proposal_clusters.csv"))}
     pool = train | val
     # THE LIVE FOLD, val2_*, not val_*. val_jobs/manifest.csv is the 77-job manifest of the
     # SUPERSEDED 50-cluster run; reading it labelled only the 22 clusters common to both as being

@@ -6,8 +6,8 @@ inputs, outputs and gates in its own docstring. The plain-language account of wh
 
 | phase | script | writes |
 |---|---|---|
-| A | `phase_a_define_train_set.py` | `splits/excluded_homolog_clusters.csv`; exports `training_clusters()` |
-| B | `phase_b_define_val_clusters.py` | `splits/val_clusters.csv`; exports `train_minus_val()` |
+| A | `phase_a_define_train_set.py` | `train_val_splits/excluded_homolog_clusters.csv`; exports `training_clusters()` |
+| B | `phase_b_define_val_clusters.py` | `train_val_splits/val_clusters.csv`; exports `train_minus_val()` |
 | C | `phase_c_extract_msa_queries.py` | `msa_work/query.fasta`, `msa_work/query_short.fasta`, `msa_queries/*` |
 | D | `phase_d_search_uniref.sh` | `<out-dir>/*.a3m`, `uniref.a3m`, `uniref_tax.m8`, `query.searched.fasta` per batch |
 | E | `phase_e_search_envdb.sh` | the same a3m, deepened against colabfold_envdb |
@@ -51,8 +51,8 @@ produced. All byte-identical:
 
 | artifact | result |
 |---|---|
-| `splits/excluded_homolog_clusters.csv` | identical |
-| `splits/val_clusters.csv` | identical |
+| `train_val_splits/excluded_homolog_clusters.csv` | identical |
+| `train_val_splits/val_clusters.csv` | identical |
 | `msa_queries/{train,bench}.fasta`, `manifest.csv`, `complexes{_all.fasta,.csv}` | identical |
 | `msa_work/query.fasta` | identical to the `cat`-produced original |
 | `msa_work/query_short.fasta` | identical |
@@ -229,7 +229,7 @@ their structures predate Protenix's 2021-09-30 cutoff against 64% — so they ar
 likely to sit inside the model's training data. Rank correlation between cluster size and date is 0.04.
 Post-cutoff coverage is identical either way, 17 of 50 clusters, which the date binning guarantees.
 
-`target` therefore remains the default and `splits/val_clusters.csv` is unchanged: it is an extreme
+`target` therefore remains the default and `train_val_splits/val_clusters.csv` is unchanged: it is an extreme
 draw on cluster size, in a direction not shown to flatter the result, and it buys 7 more folded
 structures. `--select band` is implemented and documented so the alternative is available once
 per-cluster DockQ exists to measure the two against each other.
@@ -798,7 +798,7 @@ reason. `--cov-mode 1`, coverage of the target, catches containment:
 Six clusters instead of four, so the pool is **561 → 555**. A training cluster whose antigen matches a
 benchmark antigen at identity 1.000 is precisely what this filter exists to remove.
 
-**`splits/val_clusters.csv` was drawn from the 557-cluster pool and is kept.** Re-running phase B
+**`train_val_splits/val_clusters.csv` was drawn from the 557-cluster pool and is kept.** Re-running phase B
 against 555 clusters changes 45 of the 50 — a different draw, not a better one — and re-drawing a
 validation split after the fact is what phase B's own docstring warns against. The existing split
 remains valid on the stronger test: **every one of its 50 clusters is still in the 555-cluster pool**,
@@ -830,7 +830,7 @@ pretrained weights. Currently **30 of 79** folded structures are post-cutoff.
 
 **The split is fixed before any DockQ is examined.** `phase_b_define_val_clusters.py` refuses to
 overwrite an existing `val_clusters.csv` without `--force`, so a plain re-run cannot silently redraw
-it. A re-run instead regenerates `splits/train_clusters.csv` from the pinned split, which doubles as
+it. A re-run instead regenerates `train_val_splits/train_clusters.csv` from the pinned split, which doubles as
 the check that all 50 validation clusters are still in the pool.
 
 ## Final numbers, after the all-227 leakage check
@@ -1002,7 +1002,7 @@ by design, so that when it fires the response is to look rather than to silently
 once, on 7st5, we looked, and the cause was a classification assumption that has now been fixed
 structurally. On the second run it reports nothing.
 
-The validation split needed no redraw: `splits/val_clusters.csv` and `splits/train_clusters.csv`
+The validation split needed no redraw: `train_val_splits/val_clusters.csv` and `train_val_splits/train_clusters.csv`
 are unchanged, and the 50 drawn clusters are all still in the pool. Phase B's `--prune` was kept in
 the chain (`run_e_to_i.sh` stage 3a) anyway, so that if a later leakage check does hit a drawn
 cluster, the split is reconciled before phase G builds jobs from it rather than after folding.

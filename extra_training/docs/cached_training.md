@@ -93,7 +93,7 @@ come from RCSB. And the instance id, not `<pdb>_<Hchain>_<Lchain>`, is SAbDab2's
 
 ## 0b. The structures, and how they were chosen
 
-The list is frozen and in the repo: **`extra_training/splits/cache_train_structures.csv`**, one row
+The list is frozen and in the repo: **`extra_training/train_val_splits/cache_train_structures.csv`**, one row
 per structure with its cluster, instance, antibody cluster, antigen cluster, token count, chain count
 and MSA readiness. It is regenerated deterministically by
 **`extra_training/phases/phase_j0_select_structures.py`** — same inputs, same list.
@@ -104,7 +104,7 @@ and MSA readiness. It is regenerated deterministically by
 |---|---|---|
 | SAbDab2 ML Dataset v0.2.0, antibody–antigen rows | `data/zenodo_splits/splits_final/abag_split.csv` | 15,810 instances |
 | minus clusters holding any of our 227 benchmark complexes, minus 4 more on antigen homology | `phase_a_define_train_set.training_clusters()` | **533 clusters** |
-| minus the live validation split (40 clusters) | `splits/val_split_proposal_clusters.csv` | **493 clusters** / 2,506 structures |
+| minus the live validation split (40 clusters) | `train_val_splits/val_split_proposal_clusters.csv` | **493 clusters** / 2,506 structures |
 | require an antibody chain AND ≥1 polypeptide antigen | `phase_a:263`'s filter | drops 548 rows |
 | keep clusters holding ≥1 post-2021-09-30 structure | `PDBdepo > 2021-09-30` | 193 clusters |
 | keep only the post-cutoff structures in them | | 1,594 → see cap |
