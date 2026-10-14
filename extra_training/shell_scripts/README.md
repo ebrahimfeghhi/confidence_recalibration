@@ -1,4 +1,4 @@
-# scripts
+# shell_scripts
 
 Watchers and utilities around the phase pipeline. The pipeline itself is in `phases/`.
 

@@ -80,7 +80,7 @@ say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 die() { say "STOP: $*"; exit 1; }
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-. "$HERE/../scripts/lib_fetch.sh"      # fetch_tarball: completeness from the server, not a constant
+. "$HERE/../shell_scripts/lib_fetch.sh"      # fetch_tarball: completeness from the server, not a constant
 
 # ---------------------------------------------------------------- 0. the patch, checked not assumed
 # EVERYTHING BELOW DEPENDS ON THIS, so it is a gate rather than a comment telling the operator to
@@ -199,7 +199,7 @@ fi
 # index-free run failed with exit 1 and `uniref_tax.m8 not produced`, and the index looked mandatory.
 # It is not: creating the _db_seq sidecars as symlinks makes an index-free run produce taxids, and on
 # mini_swissprot the two routes gave IDENTICAL assignments -- 610 targets each, 610 shared, 0
-# disagreeing, none unique to either (scripts/verify_minidb.sh).
+# disagreeing, none unique to either (shell_scripts/verify_minidb.sh).
 #
 # WHY THE INDEX IS STILL BUILT BY DEFAULT. The mini database's _db and _db_seq differ 4.5x in size
 # (127,203 against 573,661 entries), so the key-space concern was exercised -- but the real uniref30

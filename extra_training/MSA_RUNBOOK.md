@@ -150,7 +150,7 @@ fastas into one query file so both sets go through an identical search.
 
 ### Step C — phase 1, uniref30_2302 (peak ~367 GB)
 
-`bash $REPO/extra_training/scripts/archive/phase1_uniref.sh` (copy it next to `setup_databases.sh` first, since it `cd`s to its own directory) — downloads with `curl -C -` and retries (the upstream
+`bash $REPO/extra_training/shell_scripts/archive/phase1_uniref.sh` (copy it next to `setup_databases.sh` first, since it `cd`s to its own directory) — downloads with `curl -C -` and retries (the upstream
 downloader has no resume flag), then pre-creates the other stages' marker files so
 `setup_databases.sh` builds uniref30 only, and runs the search:
 

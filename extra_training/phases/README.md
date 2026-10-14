@@ -16,15 +16,15 @@ inputs, outputs and gates in its own docstring. The plain-language account of wh
 | H | `phase_h_search_templates.py` | `mmcif_msa/<chain>/hmmsearch.a3m` |
 | I | `phase_i_fold_validation.sh` | `val_fold/{poses,trunks,results.csv}` — the deliverable |
 
-All nine phases are here. `extra_training/scripts/` now holds only what is not a phase: the three
+All nine phases are here. `extra_training/shell_scripts/` now holds only what is not a phase: the three
 watchers, the shared download helper, the two orchestrators, and the superseded scripts kept until
 their replacements have each run once.
 
-`extra_training/scripts/overnight.sh` is the orchestrator: it verifies phases A–D's artifacts and then
+`extra_training/shell_scripts/overnight.sh` is the orchestrator: it verifies phases A–D's artifacts and then
 calls E, F, G and H in order. Each phase owns its own gates, so the orchestrator's job is order and
 escalation, not re-checking — which took it from 230 lines to 129.
 
-**The end state** is one script per phase here, with `extra_training/scripts/` holding only what is
+**The end state** is one script per phase here, with `extra_training/shell_scripts/` holding only what is
 not a phase: the three watchers (`quota_guard.sh`, `gpu_guard.sh`, `health.sh`) and the shared
 download helper `lib_fetch.sh`.
 
@@ -483,7 +483,7 @@ equals an unstaged one empirically as well as by code reading.
 
 ### Phase D verification, 2026-10-11 — both review experiments run
 
-`scripts/verify_minidb.sh` runs both on the 280 MB `mini_swissprot` database, which
+`shell_scripts/verify_minidb.sh` runs both on the 280 MB `mini_swissprot` database, which
 `DEBUG_MINI_DB=1` extracts twice, once as each of the two databases, so the whole staged search fits
 in 2.5 GB of its own directory. 45 seconds end to end.
 
