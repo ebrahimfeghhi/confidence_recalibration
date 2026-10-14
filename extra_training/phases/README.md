@@ -1006,3 +1006,40 @@ The validation split needed no redraw: `results/val_clusters.csv` and `results/t
 are unchanged, and the 50 drawn clusters are all still in the pool. Phase B's `--prune` was kept in
 the chain (`run_e_to_i.sh` stage 3a) anyway, so that if a later leakage check does hit a drawn
 cluster, the split is reconciled before phase G builds jobs from it rather than after folding.
+
+## Layout, after the 2026-10-13 cleanup
+
+`phases/` holds every step that produces a committed artifact. `scripts/` holds what is not a phase:
+the orchestrators that chain phases together, the watchers and guards, and three helpers phases D and
+E call.
+
+| phase | produces |
+|---|---|
+| `phase_a_define_train_set.py` | the pool, after benchmark-homology exclusion |
+| `phase_b_define_val_clusters.py` | `train_clusters.csv` + its provenance sidecar |
+| `phase_b2_propose_val_split.py` | `val_split_proposal.csv` — the LIVE 40-cluster validation split |
+| `phase_b3_pick_second_reps.py` | `val_split_second_reps.csv` |
+| `phase_c` … `phase_f` | MSA queries, uniref and envdb searches, pairing |
+| `phase_g_build_val_jobs.py` | job jsons, `pool.csv`, `chain_roles.csv`, `manifest.csv` |
+| `phase_h_search_templates.py` | `hmmsearch.a3m`, date-filtered with a marker |
+| `phase_i_inputs.py`, `phase_i_check.py`, `phase_i_fold_validation.sh` | the input gate, the fold, the verifier |
+| `phase_j0_select_structures.py` | `cache_train_structures.csv` — the FT3 cache selection |
+| `phase_j_job_cifs.py` | per-job mmCIFs: the antibody and its polypeptide antigen only |
+| `phase_j_prepare_training_data.py` | bioassembly dicts + indices csv, the label source |
+| `phase_j_dataset.py` | Protenix's training dataset wired to our prepared data |
+| `phase_j_rescore_cache.py` | rescores a cached fold and checks it reproduces the stored scores |
+
+`scripts/`: `run_e_to_i.sh`, `overnight.sh`, `see_it_through.sh`, `val_fold.sh` orchestrate;
+`watch_train_cache.sh`, `gpu_guard.sh`, `quota_guard.sh`, `health.sh` watch and remediate;
+`lib_fetch.sh`, `phase2_envdb.sh`, `verify_minidb.sh` are called by phases D and E;
+`cluster_composition.py` generates `docs/cluster_composition.md` and is a report, not a step.
+
+Three scripts moved here on 2026-10-13 because they write committed artifacts and nothing but a doc
+referenced them, and their hardcoded `REPO = "/home/ebrahim/..."` roots were replaced with
+`__file__`-relative ones so they can run in a review clone or against a scratch directory.
+`gpu_sequencer.sh` and `watch_e_to_i.sh` were deleted: both had served their purpose and neither was
+called by anything.
+
+`diffusion_commit_clean_v2/` is still a live dependency, not dead code: the fold driver
+(`folder.py`), the claim reconciler, `paths.py`, the pooled-table builders and `analysis/` all run
+from there. Moving them is a separate job that touches every arm in `experimental_data/`.

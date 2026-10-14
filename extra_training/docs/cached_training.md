@@ -96,7 +96,7 @@ come from RCSB. And the instance id, not `<pdb>_<Hchain>_<Lchain>`, is SAbDab2's
 The list is frozen and in the repo: **`extra_training/results/cache_train_structures.csv`**, one row
 per structure with its cluster, instance, antibody cluster, antigen cluster, token count, chain count
 and MSA readiness. It is regenerated deterministically by
-**`extra_training/scripts/select_cache_structures.py`** — same inputs, same list.
+**`extra_training/phases/phase_j0_select_structures.py`** — same inputs, same list.
 
 ### The funnel
 

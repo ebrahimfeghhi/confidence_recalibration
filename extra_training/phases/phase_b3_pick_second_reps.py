@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """Choose the second representative for each validation cluster that has one.
 
-    ./pick_second_reps.py                       # dry run
-    ./pick_second_reps.py --out ../results/val_split_second_reps.csv
+    ./phase_b3_pick_second_reps.py                       # dry run
+    ./phase_b3_pick_second_reps.py --out ../results/val_split_second_reps.csv
 
 RULE, fixed in advance and blind to predictions: among a cluster's other eligible post-cutoff
 structures, prefer one whose POLYPEPTIDE ANTIGEN SEQUENCES DIFFER from the first representative's,
@@ -25,11 +25,15 @@ and every one must be present in the built manifest. Antigens are resolved by IN
 agexpectedseqs entries whose agtypes is polypeptide are compared -- those are what phase G folds.
 """
 import argparse
+import os
 import collections
 import csv
 import sys
 
-REPO = "/home/ebrahim/tts_abag/extra_training"
+# __file__-RELATIVE, like the phases. A hardcoded absolute root cannot run in a review
+# clone or against a scratch directory, which is how phase G's refactor was proved
+# byte-identical.
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 POLY = ("PROTEIN", "PEPTIDE")
 CUT = "2021-09-30"
 

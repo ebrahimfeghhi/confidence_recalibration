@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Propose a 40-cluster post-cutoff validation split, auditing the existing 21 under the new rules.
 
-    ./propose_val_split.py --out ../results/val_split_proposal.csv
+    ./phase_b2_propose_val_split.py --out ../results/val_split_proposal.csv
 
 RULES, applied identically to retained and newly sampled clusters:
   R1  the representative's token count <= --tok-cap (default 1000). Cache cost grows as N^2:
@@ -27,9 +27,13 @@ THE EXISTING 21 GET NO PRIVILEGE. They came from phase B's frozen draw (date-str
 pre-folding, no oracle), which makes them admissible candidates -- but phase B never controlled
 token count, cluster population or redundancy, so each is re-tested here and retained only on merit.
 """
-import argparse, collections, csv, os, random, sys
+import argparse
+import os, collections, csv, os, random, sys
 
-REPO = "/home/ebrahim/tts_abag/extra_training"
+# __file__-RELATIVE, like the phases. A hardcoded absolute root cannot run in a review
+# clone or against a scratch directory, which is how phase G's refactor was proved
+# byte-identical.
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPLIT = f"{REPO}/data/zenodo_splits/splits_final/abag_split.csv"
 CUT = "2021-09-30"
 
