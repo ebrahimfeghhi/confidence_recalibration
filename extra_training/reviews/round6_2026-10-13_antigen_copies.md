@@ -4,7 +4,8 @@ Review round 5's finding J2: "sequence matching can select the wrong native comp
 identical antigen copies, it can choose an antigen that does not contact the selected antibody."
 
 **Confirmed: it affected 71 of 501 structures.** Root cause was discarding SAbDab2's own chain
-assignment in favour of sequence matching. Fixed; 71 -> 6, and no refolding needed.
+assignment in favour of sequence matching. Fixed in three steps (names-first, then the two bugs in
+the round 6 follow-up below); 71 -> 1, and no refolding needed.
 
 ## What was measured
 
@@ -82,10 +83,71 @@ whose aligned spans carried residues the fold's sequence does not contain.
 of an antigen has the same sequence. The 5,010-fold training cache running since 6:27 PM PT is
 unaffected; this was label-side throughout.
 
-## Open
+## Round 6 follow-up: the six, and the two bugs behind them
 
-- **Six structures still have no contacting antigen**: 7stz, 8cz8, 8gpu, 8h3c, 8yj7, 9djw. Three
-  exceed 20 Å and want looking at individually rather than by threshold; three sit at 5.0–6.3 Å.
-- The remaining chains at 5–10 Å. Some are second copies of a homodimeric antigen adjacent to the one that
-  binds (8vgl, 8vgm at 5.9 and 7.0 Å), which is legitimate. Whether a 5 Å heavy-atom cutoff is the
-  right threshold, versus a buried-surface or interface-residue criterion, has not been examined.
+The reviewer asked for the six remaining structures to be inspected individually rather than filtered
+by threshold. Two of the six were further bugs of the same family; the other four were already fine
+and only looked otherwise because the checker was reading a stale file.
+
+### The checker was measuring the wrong file
+
+`phase_j_check_contacts.py` recomputed the chain assignment but measured distances **in the job cif
+on disk**, which the job-cif writer had produced from the PREVIOUS assignment. The job cif renames
+chains `A, B, C...` in role order, so after a resolution fix the roles printed were the new ones and
+the distance was the old one: 9djw's antigen moved from chain `4` to chain `x` and the report still
+said 37.28 Å. It now measures on the ENTRY coordinates, which hold the same atoms and keep the chain
+names, and separately asserts that the job cif on disk was written from the chains being reported
+(`write_job_cif` logs the role -> src chain mapping to `unplaced_residues.csv`). The report also
+prints the SOURCE chain and whether it came from SAbDab2's name or from sequence — `chain D` named
+nothing in the entry and could not be chased.
+
+### Bug 1 — a trailing copy index on a single-chain construct (8h3c)
+
+SAbDab2 numbers the two domains of a single-chain construct `B1`/`B2`, `A1`/`A2`, `D1`/`D2`. Both are
+chain `B`, `A`, `D` in the entry, carrying VH and VL on disjoint stretches. Taking the names
+literally left both roles unresolved, so sequence matching placed them — and 8h3c has **five copies
+of the scFv** (chains A–E, 223 residues each, every one matching both roles at 100% coverage), so VH
+and VL could come from different copies. `role_names()` now retries a name without its trailing digit
+when the full name is absent and the stripped one is present, and `job_chains()` lets two roles share
+one chain when their spans do not overlap. A genuinely numeric antigen chain (`4`, `12`) is untouched
+because its full name does resolve.
+
+### Bug 2 — nothing anchored an all-sequence structure to one copy (9djw)
+
+9djw is a 60-chain VNAR assembly whose chains are named `0`–`7`, `A`–`Z`, `a`–`z`, while SAbDab2 names
+two-character chains (`AG` for the antibody, `AE` for the antigen). Neither name exists in the entry,
+so BOTH roles fell to sequence: the antigen matched exactly one chain and the antibody matched three,
+and the pair that came out sat 37.3 Å apart. `pick_contacting_copies()` now fills the
+sequence-resolved roles fewest-candidates-first, each taking the candidate closest to what is already
+placed, so the single-candidate role anchors the rest. **Roles resolved by name are never moved**, so
+this cannot undo the names-first fix. Greedy, not exhaustive: 9dc3 has 60 candidates for each of two
+roles, and any contacting copy pair is an equally valid label.
+
+### Where it ended
+
+| | sequence-first | names-first | + round 6 |
+|---|---|---|---|
+| antigen chains checked | 627 | 627 | 627 |
+| contacting within 5 Å | 509 | 608 | **618** |
+| chains not contacting | 118 | 19 | **9** |
+| structures with NO contacting antigen | 71 of 501 | 4 | **1** |
+| chains resolved by sequence rather than name | 1,535 of 1,535 | 57 of 1,535 | **7 of 1,535** |
+| residues dropped as unplaced | 108 across 17 | 2 across 2 | **1 across 1** |
+
+All nine remaining non-contacting chains are **SAbDab2's own named chain**, at 5.02–6.78 Å: 8vy9 6.78,
+9md4 6.27, 8jgb 6.11, 9q7b 5.97, 9o4o 5.32, 8vgm 5.31, 8zyx 5.25, 9e3h 5.23, 8gpu 5.02. Eight of the
+nine are a second antigen chain in a structure whose other antigen contacts. The ninth, **8gpu**, is
+the only structure with no antigen inside the cutoff, and it misses by 0.02 Å.
+
+No structure is dropped and nothing needs refolding: the fold consumes sequences, and every copy of an
+antigen has the same sequence.
+
+## Still open
+
+- **Whether 5 Å heavy-atom is the right cutoff.** Nine chains now sit 5.02–6.78 Å, and at that range
+  a buried-surface-area or interface-residue criterion would likely call most of them contacts.
+  Nothing downstream currently reads `contacts`, so this is a question about the audit, not the data.
+- **Regression examples.** The reviewer asked for these. Four structures now stand as the cases each
+  bug was found on and should be fixtures: 8h3c (copy index on an scFv, 5 copies), 9djw (two-character
+  names, 60 chains), 9dc3 (60 candidates for each of two roles), 7wur (names resolve, 2.21 Å) — with
+  the resolved role -> chain mapping asserted.

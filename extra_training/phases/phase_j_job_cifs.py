@@ -122,56 +122,78 @@ def _min_dist(A, B):
     return m
 
 
-def prefer_contacting(pairs, st, seqs, cutoff=5.0, ident_floor=0.9):
-    """Re-point each antigen role at a copy that actually TOUCHES the chosen antibody.
+def pick_contacting_copies(pairs, row, seqs, st, cutoff=5.0, ident_floor=0.9):
+    """Re-point the SEQUENCE-RESOLVED roles at a copy of the complex that actually touches.
 
-    THE SEQUENCE CANNOT TELL TWO COPIES APART. A crystal routinely holds several copies of the
-    complex, so picking chains by sequence with an alphabetical tie-break can take the antibody from
-    one copy and the antigen from another: same sequences, different assembly, no contact. Measured
-    over the 501 selected structures, 71 ended up with NO antigen chain within 5 A of the antibody,
-    and in all 25 of those sampled another copy of that antigen DID contact. The label would have
-    described a complex that does not exist in that crystal while every sequence check passed.
+    THE SEQUENCE CANNOT TELL TWO COPIES APART. A crystal routinely holds several copies of the same
+    complex, so a role resolved by sequence with an alphabetical tie-break can take the antibody from
+    one copy and the antigen from another: same sequences, different assembly, no contact. 9djw is
+    the measured case -- SAbDab2 names two-character chains (`AG`, `AE`) that the entry does not
+    have, so BOTH roles fell to sequence, the antigen matched exactly one chain and the heavy chain
+    matched three, and the pair that came out sat 37.3 A apart.
+
+    ROLES RESOLVED BY NAME ARE NEVER MOVED. SAbDab2's own assignment is authoritative (see
+    named_chains): an INSTANCE is a specific pairing and its named chains contact by construction.
+    Only chains that sequence matching guessed are candidates for replacement, so this cannot undo
+    the names-first fix.
+
+    HOW. Fixed = the named chains. Each free role's candidates are the chains at >= `ident_floor`
+    identity to the sequence it resolved to, ordered so the current pick comes first; roles are
+    filled fewest-candidates-first, each taking the candidate closest to what is already placed. With
+    one candidate the role anchors the rest, which is exactly 9djw. Greedy, not exhaustive: 9dc3 has
+    60 candidates for each of two roles and the product is not enumerable, while any contacting copy
+    pair is an equally valid label.
 
     Only the CHAIN changes, never the sequence, so the fold's job json and every pose already
     produced are unaffected -- this is a label-side correction.
     """
-    ab = [c for role, c, _lo, _hi in pairs if role in ("H", "L")]
-    if not ab:
+    names = role_names(row, seqs)
+    free = [t for t in pairs if names.get(t[0]) != t[1]]
+    if not free:
         return pairs, []
-    abX = [_heavy(st[0][c]) for c in ab]
-    taken = {c for _r, c, _l, _h in pairs}
-    out, moved = [], []
-    for role, c, lo, hi in pairs:
-        if not role.startswith("ag"):
-            out.append((role, c, lo, hi))
-            continue
-        if min(_min_dist(_heavy(st[0][c]), X) for X in abX) <= cutoff:
-            out.append((role, c, lo, hi))
-            continue
-        import difflib
+    ab = [c for role, c, _lo, _hi in pairs if role in ("H", "L")]
+    ags = [c for role, c, _lo, _hi in pairs if role.startswith("ag")]
+    if not ab or not ags:
+        return pairs, []
+    # NOTHING TO FIX unless an antigen is out of contact. A structure whose sequence-resolved pick
+    # already touches is left exactly as it is.
+    hv = {}
+    def heavy(c):
+        if c not in hv:
+            hv[c] = _heavy(st[0][c])
+        return hv[c]
+    if all(min(_min_dist(heavy(g), heavy(x)) for x in ab) <= cutoff for g in ags):
+        return pairs, []
+
+    import difflib
+    fixed = {t[0]: t for t in pairs if names.get(t[0]) == t[1]}
+    cands = {}
+    for role, c, lo, hi in free:
         q = seqs[c]
-        best = None
+        out = [c]
         for cand, cq in seqs.items():
-            if cand in taken or cand in ab:
+            if cand == c or not cq:
                 continue
             sm = difflib.SequenceMatcher(None, q, cq, autojunk=False)
-            ident = sum(b.size for b in sm.get_matching_blocks()) / max(1, min(len(q), len(cq)))
-            if ident < ident_floor:
-                continue
-            d = min(_min_dist(_heavy(st[0][cand]), X) for X in abX)
-            if d <= cutoff and (best is None or d < best[0]):
-                best = (d, cand)
-        if best is None:
-            out.append((role, c, lo, hi))
-            continue
-        # re-align the replacement, since its span is its own
-        import difflib as _dl
-        sm = _dl.SequenceMatcher(None, q, seqs[best[1]], autojunk=False)
-        blocks = [b for b in sm.get_matching_blocks() if b.size]
-        nlo, nhi = min(b.b for b in blocks), max(b.b + b.size for b in blocks)
-        taken.discard(c); taken.add(best[1])
-        out.append((role, best[1], nlo, nhi))
-        moved.append((role, c, best[1], round(best[0], 2)))
+            if sum(b.size for b in sm.get_matching_blocks()) / max(1, min(len(q), len(cq))) >= ident_floor:
+                out.append(cand)
+        cands[role] = out
+    placed = dict(fixed)
+    for role, c, lo, hi in sorted(free, key=lambda t: len(cands[t[0]])):
+        taken = {t[1] for t in placed.values()}
+        pool = [x for x in cands[role] if x not in taken] or [c]
+        if len(pool) == 1 or not placed:
+            best = pool[0]
+        else:
+            ref = [heavy(t[1]) for t in placed.values()]
+            best = min(pool, key=lambda x: min(_min_dist(heavy(x), R) for R in ref))
+        # RE-ALIGN through the same matcher the first pass used, so the span is this chain's own.
+        sp = assign_chains([(role, dict(role_sequences(row))[role])], {best: seqs[best]})[0]
+        placed[role] = sp[0] if sp else (role, best, lo, hi)
+    order = [k for k, _q in role_sequences(row)]
+    out = sorted(placed.values(), key=lambda t: order.index(t[0]))
+    moved = [(t[0], o[1], t[1]) for o, t in zip(sorted(pairs, key=lambda t: order.index(t[0])), out)
+             if o[1] != t[1]]
     return out, moved
 
 
@@ -240,16 +262,8 @@ def spans_for(named, row, seqs):
     return out
 
 
-def job_chains(row, seqs):
-    """in: a splits row and {chain: sequence} from the entry.
-    out: ([(role, chain, lo, hi)], [unresolved roles]) -- the chains the fold actually contains.
-
-    NAMES FIRST, sequence as the fallback. See named_chains() for why."""
-    nm = named_chains(row, seqs)
-    if nm:
-        sp = spans_for(nm, row, seqs)
-        if sp:
-            return sp, []
+def role_sequences(row):
+    """[(role, the sequence SAbDab2 gives for it)] for H, L and every polypeptide antigen."""
     want = [("H", (row["Hseq"] or "").strip().upper()),
             ("L", (row["Lseq"] or "").strip().upper())]
     types = str(row["agtypes"]).split("/")
@@ -267,7 +281,84 @@ def job_chains(row, seqs):
             if q:
                 want.append((f"ag{i}", q))
                 break
-    return assign_chains([(k, q) for k, q in want if q], seqs)
+    return [(k, q) for k, q in want if q]
+
+
+def role_names(row, seqs=None):
+    """{role: the chain SAbDab2 names for it}, for the roles it names.
+
+    WITH `seqs`, A NAME THE ENTRY DOES NOT HAVE IS RETRIED WITHOUT ITS TRAILING COPY INDEX.
+    SAbDab2 numbers the two domains of a single-chain construct `B1`/`B2`, `A1`/`A2`, `D1`/`D2` --
+    both are chain `B`, `A`, `D` in the entry, carrying VH and VL on disjoint stretches. Taking those
+    names literally left both roles unresolved, so sequence matching placed them, and with five
+    copies of the scFv in the entry (8h3c) it could take VH from one copy and VL from another. The
+    index is only stripped when the full name is absent and the stripped one is present, so a
+    genuinely numeric antigen chain (`4`, `12`) is untouched.
+    """
+    out = {}
+    for role, key in (("H", "Hchain"), ("L", "Lchain")):
+        v = (row[key] or "").strip()
+        if v:
+            out[role] = v
+    types = str(row["agtypes"]).split("/")
+    names = [c.strip() for c in str(row["agchains"]).split("/")]
+    if len(types) == len(names):
+        for i, (c, t) in enumerate(zip(names, types)):
+            if c and t in POLY:
+                out[f"ag{i}"] = c
+    if seqs is not None:
+        for role, v in list(out.items()):
+            if v not in seqs and len(v) > 1 and v[-1].isdigit() and v[:-1] in seqs:
+                out[role] = v[:-1]
+    return out
+
+
+def job_chains(row, seqs, st=None):
+    """in: a splits row, {chain: sequence} from the entry, and optionally the entry structure.
+    out: ([(role, chain, lo, hi)], [unresolved roles]) -- the chains the fold actually contains.
+
+    PER ROLE, names first. SAbDab2's own chain assignment is the correct source (see named_chains);
+    sequence resolution is the fallback for a role whose name does not resolve.
+
+    THE FALLBACK IS PER ROLE, NOT ALL-OR-NOTHING. A single unresolvable name -- usually an antigen
+    the entry numbers differently -- used to send EVERY role back to sequence matching, so a heavy
+    chain that SAbDab2 had named correctly could be reassigned to another copy. The roles whose names
+    do resolve are kept and their chains are reserved; only the rest go to sequence.
+    """
+    want = role_sequences(row)
+    names = role_names(row, seqs)
+    resolved, spans, leftover = [], collections.defaultdict(list), []
+    for role, q in want:
+        c = names.get(role)
+        if c is None or c not in seqs:
+            leftover.append((role, q))
+            continue
+        sp = spans_for([(role, c)], row, seqs)
+        if not sp:
+            leftover.append((role, q))      # the named chain does not carry this role's sequence
+            continue
+        _r, _c, lo, hi = sp[0]
+        # TWO ROLES MAY SHARE A CHAIN IF THEIR SPANS ARE DISJOINT -- an scFv puts VH and VL on one
+        # chain. Overlapping spans are two roles claiming the same residues, which is a mistake.
+        if any(not (hi <= plo or phi <= lo) for plo, phi in spans[c]):
+            leftover.append((role, q))
+            continue
+        resolved.append(sp[0])
+        spans[c].append((lo, hi))
+    taken = {c for c in spans}
+    if not leftover:
+        return resolved, []
+    # SEQUENCE ONLY FOR WHAT IS LEFT, over the chains the named roles did not claim.
+    rest = {c: q for c, q in seqs.items() if c not in taken}
+    more, bad = assign_chains(leftover, rest)
+    out = resolved + more
+    # keep the caller's role order stable
+    order = [k for k, _q in want]
+    out.sort(key=lambda t: order.index(t[0]))
+    # WITH COORDINATES, make the sequence-resolved roles come from ONE copy of the complex.
+    if st is not None and not bad:
+        out, _moved = pick_contacting_copies(out, row, seqs, st)
+    return out, bad
 
 
 def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15):
@@ -394,7 +485,7 @@ def main():
         # ONE MODEL. An NMR entry carries many; the fold predicts one structure.
         while len(st) > 1:
             del st[1]
-        pairs, unresolved = job_chains(row, chain_seqs(st))
+        pairs, unresolved = job_chains(row, chain_seqs(st), st)
         if unresolved:
             bad.append((r["pdb"], r["instance"],
                         f"no chain matches the {unresolved} sequence(s) at 85% identity"))
