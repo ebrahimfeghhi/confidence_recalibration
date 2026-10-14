@@ -5,7 +5,7 @@ Single source of truth for every absolute path the run / eval / plot / analysis
 scripts depend on. Each value defaults to a location under $HOME and can be
 overridden with an environment variable of the same name, e.g.
 
-    FOLDBENCH_DIR=/data/FoldBench python eval/eval_ost_foldbench.py ...
+    FOLDBENCH_DIR=/data/FoldBench python archive/eval_ost_foldbench.py ...
 
 Scripts import this module via a small repo-root bootstrap (they walk up parent
 dirs until they find this file, add the repo root to sys.path, then
@@ -137,10 +137,6 @@ FREE_DIR = _path("FREE_DIR", PXM2025_DATA / "free")
 # Protenix run (poses in POSES_FOLDBENCH, OST scores in FOLDBENCH_OST_CSV).
 FOLDBENCH_DATA = _path("FOLDBENCH_DATA", DATA_DIR / "protenix" / "foldbench")
 POSES_FOLDBENCH = _path("POSES_FOLDBENCH", REPO_ROOT / "poses" / "predictions_template")
-FOLDBENCH_OST_CSV = _path(
-    "FOLDBENCH_OST_CSV",
-    REPO_ROOT / "archive" / "esmfold2_era" / "results" / "csv_files" / "dockq_ost_protenix_full.csv",
-)
 
 
 @dataclass(frozen=True)
