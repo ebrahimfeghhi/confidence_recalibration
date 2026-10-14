@@ -83,19 +83,38 @@ def from_block(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pooled", default=f"{ROOT}/free_pool/results.csv")
-    ap.add_argument("--top100b", default=f"{ROOT}/free_top100b/results.csv")
+    ap.add_argument("--top100b", default=f"{ROOT}/foldbench_baseline_remaining_folds/results.csv")
     ap.add_argument("--out", default=f"{ROOT}/foldbench_baseline_results.csv")
+    ap.add_argument("--queue", default=None,
+                    help="also write the folds still missing to reach --target, as a folder.py queue")
+    ap.add_argument("--target", type=int, default=100, help="seeds per structure to reach")
+    ap.add_argument("--seed0", type=int, default=602000,
+                    help="first seed to allocate; must be clear of every seed already in the table")
     a = ap.parse_args()
 
-    have = from_pooled(a.pooled)
-    if os.path.exists(a.top100b):
-        have["top100b"] = from_block(a.top100b)
-    rows = []
-    for blk, note in BLOCKS:
-        for r in sorted(have.get(blk, []), key=lambda t: (t["iface"], int(t["seed"]),
-                                                          int(t["sample"]))):
-            rows.append({**r, "metadata": note})
-        print(f"  {blk:9s} {len(have.get(blk, [])):6d} rows   {note}")
+    # THE BLOCK DIRECTORIES ARE GONE. They were deleted once this table replaced them, so a rebuild
+    # from source is no longer possible and the table itself is the input. That is a one-way door and
+    # it should look like one: if the sources are absent the script reads what it wrote last time,
+    # and says so, rather than failing or quietly producing an empty table.
+    if os.path.exists(a.pooled):
+        have = from_pooled(a.pooled)
+        if os.path.exists(a.top100b):
+            have["top100b"] = from_block(a.top100b)
+        rows = []
+        for blk, note in BLOCKS:
+            for r in sorted(have.get(blk, []), key=lambda t: (t["iface"], int(t["seed"]),
+                                                              int(t["sample"]))):
+                rows.append({**r, "metadata": note})
+            print(f"  {blk:9s} {len(have.get(blk, [])):6d} rows   {note}")
+        write = True
+    elif os.path.exists(a.out):
+        rows = list(csv.DictReader(open(a.out)))
+        print(f"the per-block sources are gone; reading the existing table instead")
+        print(f"  {a.out}: {len(rows)} rows")
+        write = False
+    else:
+        raise SystemExit(f"STOP: neither the block sources ({a.pooled}) nor an existing table "
+                         f"({a.out}) is present; there is nothing to build from.")
 
     # ONE ROW PER (interface, seed, sample). This is an assertion about the inputs, not a dedupe:
     # the blocks hold disjoint seeds, so a collision means something upstream changed.
@@ -111,15 +130,49 @@ def main():
         per[r["iface"]][r["seed"]] += 1
     nsample = collections.Counter(n for c in per.values() for n in c.values())
 
-    with open(a.out, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=FIELDS, lineterminator="\n")
-        w.writeheader(); w.writerows(rows)
+    if write:
+        with open(a.out, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=FIELDS, lineterminator="\n")
+            w.writeheader(); w.writerows(rows)
+        print(f"\nwrote {a.out}")
     ifaces = {r["iface"] for r in rows}
     depth = sorted(len(c) for c in per.values())
-    print(f"\nwrote {a.out}")
     print(f"  {len(rows)} rows, {len(ifaces)} interfaces, no duplicated (interface, seed, sample)")
     print(f"  seeds per interface: min {depth[0]}, median {depth[len(depth)//2]}, max {depth[-1]}")
     print(f"  samples per (interface, seed): {dict(nsample)}")
+
+    # THE REMAINING FOLDS, derived from the table rather than from a directory listing. A fold is per
+    # (STRUCTURE, SEED) -- every interface of a complex comes out of one fold -- so the deficit is
+    # counted per structure, not per interface. Counting per interface double-counts a complex with
+    # two of them and asks for folds that already exist.
+    if a.queue:
+        per_pdb = collections.defaultdict(set)
+        for r in rows:
+            per_pdb[r["pdb"]].add(int(r["seed"]))
+        used = set().union(*per_pdb.values()) if per_pdb else set()
+        if a.seed0 <= max(used, default=-1):
+            raise SystemExit(f"STOP: --seed0 {a.seed0} is at or below the highest seed already in "
+                             f"the table ({max(used)}). Allocating from there would reuse seeds.")
+        lines, short = [], {}
+        for pdb in sorted(per_pdb):
+            need = a.target - len(per_pdb[pdb])
+            if need <= 0:
+                continue
+            short[pdb] = need
+            # SKIP ANY SEED THE STRUCTURE ALREADY HAS, even above seed0, so a re-run of this builder
+            # can never issue a fold that exists.
+            seed, issued = a.seed0, 0
+            while issued < need:
+                if seed not in per_pdb[pdb]:
+                    lines.append(f"free\t{pdb}\t*\tfree\t{seed}")
+                    issued += 1
+                seed += 1
+        with open(a.queue, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        print(f"\nwrote {a.queue}")
+        print(f"  {len(lines)} folds over {len(short)} structure(s) below {a.target} seeds")
+        print(f"  seeds allocated from {a.seed0}; highest already in use {max(used)}")
+        print(f"  deficit per structure: {sorted(set(short.values()))}")
 
 
 if __name__ == "__main__":

@@ -6,12 +6,12 @@
 # worker that died are released by reconcile_stale_claims.py, which runs before the relaunch.
 #
 # HANDS OFF rather than releasing the GPUs: when the queue is exhausted the FoldBench completion
-# top-off (free_top100b, 2,607 folds, 135 already done) starts on the same three cards, so they are
+# top-off (foldbench_baseline_remaining_folds, 612 folds) starts on the same three cards, so they are
 # never idle. It is claim-based too, so restarting it costs nothing.
 set -u
 R=/home/ebrahim/tts_abag
 E=$R/extra_training/train_fold
-B=$R/experimental_data/protenix/foldbench/free_top100b
+B=$R/experimental_data/protenix/foldbench/foldbench_baseline_remaining_folds
 LOG=$E/watcher.log
 GPUS="0 1 3"
 TOTAL=$(wc -l < $E/queue.tsv)
