@@ -219,7 +219,7 @@ before/after on the same poses with the same scorer, so any scorer offset cancel
 | `extra_training/phases/phase_g_build_val_jobs.py` | job jsons, `pool.csv`, `chain_roles.csv`, staged references |
 | `extra_training/phases/phase_h_search_templates.py` | templates for every validation chain |
 | `extra_training/scripts/overnight.sh` | the gated preparation chain |
-| `extra_training/scripts/val_fold.sh` | smoke test and the validation fold |
+| `extra_training/phases/phase_i_fold_validation.sh` | smoke test and the validation fold |
 | `extra_training/scripts/see_it_through.sh` | drives preparation → smoke → fold → hand back the GPUs |
 
 Every stage gates on **content**, never on an exit code: `setup_databases.sh` touches its READY

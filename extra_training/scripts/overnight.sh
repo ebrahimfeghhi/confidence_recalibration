@@ -134,5 +134,5 @@ NTMPL=$(find $W/mmcif_msa -name hmmsearch.a3m 2>/dev/null | wc -l)
 say "stage 8 OK: $NTMPL hmmsearch.a3m"
 
 say "=== PREP COMPLETE. Folding is NOT started automatically. ==="
-say "  bash $S/val_fold.sh smoke     then     bash $S/val_fold.sh run"
+say "  bash $R/extra_training/phases/phase_i_fold_validation.sh smoke     then     ... run"
 say "PXM sweep still running; quota $(quota -s 2>/dev/null | awk '/nvme/{print $2" of "$4}')"

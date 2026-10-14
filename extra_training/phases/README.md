@@ -1029,7 +1029,7 @@ E call.
 | `phase_j_dataset.py` | Protenix's training dataset wired to our prepared data |
 | `phase_j_rescore_cache.py` | rescores a cached fold and checks it reproduces the stored scores |
 
-`scripts/`: `run_e_to_i.sh`, `overnight.sh`, `see_it_through.sh`, `val_fold.sh` orchestrate;
+`scripts/`: `run_e_to_i.sh`, `overnight.sh`, `see_it_through.sh` orchestrate;
 `watch_train_cache.sh`, `gpu_guard.sh`, `quota_guard.sh`, `health.sh` watch and remediate;
 `lib_fetch.sh`, `phase2_envdb.sh`, `verify_minidb.sh` are called by phases D and E;
 `cluster_composition.py` generates `docs/cluster_composition.md` and is a report, not a step.
