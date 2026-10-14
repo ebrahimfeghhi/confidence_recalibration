@@ -151,6 +151,21 @@ def main():
         print(f"{len(failed)} structure(s) skipped with a recorded reason; "
               f"{len(built)} prepared")
 
+    # THE PREPARED SET MUST BE THE SELECTION. train_prep/ outlived a selection once already: it was
+    # built at 535 rows, the selection was then rewritten to 501, and the directory kept 58
+    # structures no longer selected while 25 selected ones had no prepared input at all -- a cache
+    # built from it would have been both short and contaminated, with nothing comparing the two.
+    want = {r["pdb"] for r in sel} - set(known)
+    extra, short = sorted(built - want), sorted(want - built)
+    if short:
+        raise SystemExit(f"STOP: {len(short)} selected structure(s) have no bioassembly dict: "
+                         f"{short[:10]}")
+    if extra:
+        print(f"  {len(extra)} prepared structure(s) are no longer selected: {extra[:6]}")
+        for f in extra:
+            os.remove(os.path.join(a.bio_dir, f + ".pkl.gz"))
+        print(f"  removed them; {len(built) - len(extra)} remain, matching the selection")
+
 
 if __name__ == "__main__":
     main()

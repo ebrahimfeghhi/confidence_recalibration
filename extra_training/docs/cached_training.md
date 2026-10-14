@@ -164,6 +164,31 @@ Review round 3 (`reviews/round3_2026-10-13_cache.md`). The design stands; these 
 | accepted | backward-pass memory above ~1,000 tokens is untested and will not be tested first. 77 of 535 structures exceed it and carry 45% of the bytes; the largest is 2,941 tokens, where one N×N×256 activation is 4.4 GB. Building smallest-first bounds the loss if it does OOM. | nothing; accepted risk |
 | medium | deduplication is per PDB id because the fold's unit key is the pdb (`folder.py:784`), which collapses **225** input-distinct instances. Recovering them needs a per-instance job name, not a change to the selection. Representatives are now ordered by input difference rather than alphabetically. | the selection |
 
+### Measured 2026-10-13: the rescoring path is exact, and the cached pose order is permuted
+
+Rescoring cached units with the UNCHANGED head, compared against the summary_confidence jsons the
+fold itself wrote (`phases/phase_j_rescore_cache.py`):
+
+| | |
+|---|---|
+| `chain_pair_iptm`, cached pose *i* vs stored sample *i* | max 0.0097, mean 0.0026 |
+| cached pose *i* vs its BEST-matching stored sample | **0.0000** |
+| speed | **0.15 s/unit**, so 5,300 units ≈ 13 min on one card |
+
+Every cached pose matches exactly one stored sample to the last digit, so the confidence head
+reproduces the fold exactly from the cache. But the match is a **permutation**: `[1,2,0,3,4]`,
+`[1,4,0,2,3]` and `[4,1,3,2,0]` for three consecutive seeds of 22gi. The npz stores
+`ci_coordinate` in an order that is NOT the `_sample_<k>` numbering, and carries no index to say so.
+
+Consequences, both load-bearing:
+
+- Anything joining cached poses to per-sample DockQ or ipTM **by index** pairs the wrong pose with
+  the wrong score. That includes the per-pose label and symmetric permutation this cache must carry.
+- The mapping is recoverable exactly, and on CPU: the fold also wrote `*_sample_<k>.cif`, so matching
+  coordinates recovers the index without a GPU.
+
+The training cache writer must store the sample index with each pose rather than relying on order.
+
 Before any of it is generated: a **numerical replay** — one cached unit through the loss, reproducing
 the uncached path's loss on the same structure and seed to within floating point. That is what makes
 this precomputation rather than a different experiment.
