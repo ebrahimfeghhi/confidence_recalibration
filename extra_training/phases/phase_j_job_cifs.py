@@ -417,6 +417,78 @@ def job_chains(row, seqs, st=None):
     return out, bad
 
 
+def native_polymer(st):
+    """{chain name: (entity sequence, {native position -> residue index in the chain})}.
+
+    The native position is `label_seq_id`: the residue's index in its ENTITY sequence. It is the only
+    numbering that survives unresolved density -- auth numbering skips, restarts and carries
+    insertion codes -- so it is what every placement here is keyed on.
+    """
+    import gemmi
+    sub2seq = {}
+    for e in st.entities:
+        if e.entity_type == gemmi.EntityType.Polymer:
+            seq = gemmi.one_letter_code(list(e.full_sequence)).upper()
+            for sb in e.subchains:
+                sub2seq[sb] = seq
+    out = {}
+    for ch in st[0]:
+        seq, pos = None, {}
+        for i, r in enumerate(ch):
+            if r.subchain not in sub2seq:
+                continue                     # ions, sugars, solvent: not polymer
+            seq = seq or sub2seq[r.subchain]
+            if r.label_seq is not None and r.label_seq > 0:
+                pos[int(r.label_seq)] = i
+        if seq:
+            out[ch.name] = (seq, pos)
+    return out
+
+
+def place_by_native_position(native_seq, expected, native_of_index, span):
+    """observed residue index -> position in `expected`, via NATIVE POLYMER POSITIONS.
+
+    WHY NOT LETTERS. The previous version aligned the OBSERVED residue letters against `expected`.
+    Letters are not unique -- there are twenty -- so a residue can land in a plausible slot while
+    belonging somewhere else: 8h3c's heavy role needed 117 residues, native 119-133 are unresolved,
+    the span reached past the gap and took auth 134, and the matcher placed that THR at expected
+    position 117 because the real 117 is absent. It sits with the LIGHT domain, 32 A away.
+
+    WHY THIS IS SOUND. The entity's full sequence and `expected` are both COMPLETE -- neither has
+    holes punched in it by unresolved density -- so aligning those two is a different and far more
+    reliable problem than aligning what happens to be observed. That gives native -> expected once,
+    after which each observed residue's own `label_seq` names its slot with no guessing, an
+    unresolved native position simply has no residue and becomes a gap rather than an invitation to
+    pull one in from next door, and a residue whose native position falls outside the span of this
+    role cannot be placed at all.
+
+    Returns (pos, outside, missing_native) where `pos` is observed index -> 0-based expected
+    position, `outside` are observed indices whose native position is not in this role's mapped
+    span, and `missing_native` are native positions inside the span that `expected` does not
+    contain -- the internal omissions a corrected query has to restore.
+    """
+    import difflib
+    sm = difflib.SequenceMatcher(None, native_seq, expected, autojunk=False)
+    n2e = {}
+    for b in sm.get_matching_blocks():
+        for k in range(b.size):
+            n2e[b.a + k + 1] = b.b + k          # 1-based native -> 0-based expected
+    if not n2e:
+        return {}, list(range(len(native_of_index))), []
+    lo_n, hi_n = min(n2e), max(n2e)
+    pos, outside = {}, []
+    for idx, np_ in native_of_index.items():
+        if span is not None and not (span[0] <= idx < span[1]):
+            continue
+        e = n2e.get(np_)
+        if e is None:
+            outside.append(idx)
+        else:
+            pos[idx] = e
+    missing_native = [n for n in range(lo_n + 1, hi_n) if n not in n2e]
+    return pos, outside, missing_native
+
+
 def drop_geometrically_impossible(res, pos, max_ca=4.5):
     """Remove placements that the geometry says cannot be that residue.
 
@@ -499,19 +571,65 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
     out.resolution = st.resolution
     model = gemmi.Model("1")
     names = iter("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
-    ents, chains, report = [], [], []
+    ents, chains, report, native_gaps = [], [], [], []
     for n, (role, cname, lo, hi) in enumerate(keep):
         exp = expected[role].upper()
         src = st[0][cname]
         res = [src[i].clone() for i in range(lo, hi)]
-        obs = "".join(res_code(r.name) for r in res)
-        # POSITION EVERY KEPT RESIDUE IN THE EXPECTED SEQUENCE. One alignment per output chain, and
-        # anything that cannot be placed is reported rather than renumbered silently.
-        sm = difflib.SequenceMatcher(None, exp, obs, autojunk=False)
-        pos = {}
-        for b in sm.get_matching_blocks():
-            for k in range(b.size):
-                pos[b.b + k] = b.a + k
+        # POSITION EVERY KEPT RESIDUE THROUGH ITS NATIVE POLYMER POSITION, not by letter. See
+        # place_by_native_position for why the letter alignment was unsound and what it cost.
+        _nat = native_polymer(st).get(cname)
+        if _nat is None:
+            return None, f"{role}: chain {cname} has no polymer entity in the deposited file"
+        _nseq, _npos = _nat
+        # observed index within this role's span -> its native position
+        _idx2nat = {i - lo: np_ for np_, i in _npos.items() if lo <= i < hi}
+        pos, _outside, _missing_native = place_by_native_position(
+            _nseq, exp, _idx2nat, span=(0, len(res)))
+        # CLASSIFY EACH MISSING RUN; DO NOT RESTORE ANYTHING AUTOMATICALLY. Two different things
+        # produce a native position the query lacks, and they call for opposite actions:
+        #
+        #   a GENUINE OMISSION -- a real piece of this domain that the query dropped because it was
+        #     unresolved. 11zw's heavy query omits native 159-165, SKSTSGG. It must be restored, and
+        #     until it is, the fold joins two residues 10.78 A apart as neighbours.
+        #   an INTER-DOMAIN LINKER -- the synthetic tether of a single-chain construct, which belongs
+        #     to NEITHER role. 8h3c's heavy query "omits" native 119-133, GGGGSGGGGSGGGGS. Restoring
+        #     that would splice a linker into an antibody domain.
+        #
+        # A FIRST ATTEMPT AT THIS WAS WRONG and is worth recording: I tried "the run lies between the
+        # two roles' spans". It does not. The linker is UNRESOLVED, so it appears in neither span,
+        # and 8h3c's heavy span runs native 5-151 with the linker sitting inside it. The spans are
+        # contiguous at 151|152 and the test found nothing.
+        #
+        # So the run is CLASSIFIED and REPORTED, not acted on. `kind` is a judgement a reviewer can
+        # overrule from the csv, and nothing is spliced into a sequence on the strength of it.
+        def _runs(xs):
+            out = []
+            for x in sorted(xs):
+                if out and x == out[-1][1] + 1:
+                    out[-1][1] = x
+                else:
+                    out.append([x, x])
+            return [(a2, b2) for a2, b2 in out]
+
+        def _classify(a2, b2):
+            seg = _nseq[a2 - 1:b2]
+            gs = sum(1 for ch2 in seg if ch2 in "GS")
+            shared = any(c2 == cname and r2 != role for (r2, c2, _l2, _h2) in keep)
+            if shared and len(seg) >= 5 and gs / len(seg) >= 0.7:
+                return "linker"          # GS-rich, on a chain carrying another role: a tether
+            if gs / max(1, len(seg)) >= 0.8 and len(seg) >= 8:
+                return "linker?"         # GS-rich but the chain carries one role: flag, do not act
+            return "omission"
+
+        # RECORDED, NOT INFERRED. The native positions this role's query omits are what a corrected
+        # query must restore, and they are reported per role rather than rediscovered later.
+        for _a, _b in _runs(_missing_native):
+            native_gaps.append(dict(
+                pdb=st.name, role=role, src_chain=cname, native_from=_a, native_to=_b,
+                n_missing=_b - _a + 1, sequence=_nseq[_a - 1:_b], kind=_classify(_a, _b),
+                roles_on_chain=sum(1 for (_r2, c2, _l2, _h2) in keep if c2 == cname),
+                outside_span=len(_outside), expected_len=len(exp), native_len=len(_nseq)))
         # UNPLACED RESIDUES ARE REPORTED, AND A LARGE LOSS FAILS. An observed residue that does not
         # align to the fold's sequence cannot belong in the label -- the label's frame IS that
         # sequence -- so dropping it is correct wherever it sits. Two causes, both measured:
@@ -593,7 +711,7 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
                 blk.set_pair("_refine.ls_d_res_high", f"{r:.2f}")
                 blk.set_pair("_refine.entry_id", out.name or "job")
     doc.write_file(out_cif)
-    return report, None
+    return (report, native_gaps), None
 
 
 def main():
@@ -605,6 +723,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--only", default="", help="comma-separated pdb ids, for testing one path "
                                               "without rewriting every job cif")
+    ap.add_argument("--native-gaps", default=f"{ROOT}/training/prep/native_gaps.csv",
+                    help="roles whose folded query omits internal native residues -- the refold list")
     ap.add_argument("--unplaced", default=f"{ROOT}/training/prep/unplaced_residues.csv",
                     help="per-chain record of observed residues dropped because they are not in the "
                          "fold's sequence; written every run, reviewed, never silent")
@@ -628,6 +748,10 @@ def main():
         sel = sel[:a.limit]
     import gemmi
     ok, bad, unplaced_rows = 0, [], []
+    # NATIVE POSITIONS A ROLE'S QUERY OMITS, one row per role that has any. THIS IS THE REFOLD LIST:
+    # a query missing an INTERNAL native stretch folded a molecule whose residues are covalently
+    # adjacent when they are not, and no label-side repair can add those tokens back.
+    native_gap_rows = []
     for r in sel:
         row = src[r["instance"]]
         st = gemmi.read_structure(os.path.join(a.src_dir, f"{r['pdb']}.cif"))
@@ -656,10 +780,15 @@ def main():
         info, why = write_job_cif(st, pairs, exp_of, out, a.max_unplaced_frac,
                                   resolution=row.get("resolution"), method=row.get("method"))
         if info:
-            for role, src_c, out_c, kept, expn, unp, mis in info:
+            rep, gaps = info
+            for role, src_c, out_c, kept, expn, unp, mis in rep:
                 unplaced_rows.append({"pdb": r["pdb"], "role": role, "src_chain": src_c,
                                       "out_chain": out_c, "kept": kept, "expected": expn,
                                       "unplaced": unp, "misplaced": mis})
+            for g in gaps:
+                g["pdb"] = r["pdb"]
+                if g["n_missing"]:
+                    native_gap_rows.append(g)
         if why:
             bad.append((r["pdb"], r["instance"], why))
             continue
@@ -738,6 +867,23 @@ def main():
                            lineterminator="\n")
         w.writeheader()
         w.writerows(unplaced_rows)
+
+    # THE REFOLD LIST. Written every run, so it cannot drift from the cifs this run produced.
+    with open(a.native_gaps, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["pdb", "role", "src_chain", "native_from", "native_to",
+                                           "n_missing", "sequence", "kind", "roles_on_chain",
+                                           "outside_span", "expected_len", "native_len"],
+                           lineterminator="\n")
+        w.writeheader(); w.writerows(native_gap_rows)
+    import collections as _c
+    _k = _c.Counter(g["kind"] for g in native_gap_rows)
+    _om = [g for g in native_gap_rows if g["kind"] == "omission"]
+    print(f"internal native runs missing from a folded query: {len(native_gap_rows)} over "
+          f"{len({g['pdb'] for g in native_gap_rows})} structure(s) -> {a.native_gaps}")
+    for _kk, _vv in _k.most_common():
+        print(f"   {_vv:5d}  {_kk}")
+    print(f"  GENUINE OMISSIONS -> the refold list: {len(_om)} run(s) over "
+          f"{len({g['pdb'] for g in _om})} structure(s), {sum(g['n_missing'] for g in _om)} residues")
     nz = [r for r in unplaced_rows if r["unplaced"]]
     mz = [r for r in unplaced_rows if r.get("misplaced")]
     print(f"wrote {ok} job cif(s) to {a.out_dir}")

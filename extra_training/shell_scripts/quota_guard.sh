@@ -16,8 +16,14 @@ set -u
 # the repo root, derived from this file so a rename of the checkout needs no edit here
 R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 LOG="${LOG:-$R/extra_training/quota_guard.log}"
+# ABSOLUTE GB, not a percentage. The threshold is a decision about how much headroom a fold needs
+# to finish its current write, which is a number of gigabytes, not a fraction of whatever the quota
+# happens to be -- and "90%" could not express the 3,000 GB asked for on 2026-10-14. A percentage is
+# still accepted and still honoured, whichever triggers first.
+STOP_GB="${STOP_GB:-3000}"
+WARN_GB="${WARN_GB:-2700}"
 WARN_PCT="${WARN_PCT:-80}"
-STOP_PCT="${STOP_PCT:-90}"
+STOP_PCT="${STOP_PCT:-99}"
 INTERVAL="${INTERVAL:-60}"
 # Processes this guard is allowed to stop, matched on the command line. Deliberately narrow.
 GUARDED_RE="${GUARDED_RE:-phase1_uniref|setup_databases.sh|tsv2exprofiledb|createindex|indexdb|colabfold_search}"
@@ -34,19 +40,34 @@ used_pct() {
         }'
 }
 
-log "quota guard started (warn ${WARN_PCT}%, stop ${STOP_PCT}%, every ${INTERVAL}s)"
+used_gb() {
+    # the used column, normalised to GB. quota(1) prints 1886G, or 1886M / 1.8T on other volumes.
+    quota -s 2>/dev/null | awk '
+        /nvme/ {
+            u=$2
+            unit=substr(u, length(u), 1)
+            gsub(/[^0-9.]/,"",u)
+            if (unit == "T") u = u * 1024
+            else if (unit == "M") u = u / 1024
+            else if (unit == "K") u = u / 1048576
+            printf "%d", u
+        }'
+}
+
+log "quota guard started (stop at ${STOP_GB} GB or ${STOP_PCT}%, warn at ${WARN_GB} GB or ${WARN_PCT}%, every ${INTERVAL}s)"
 log "guarded pattern: ${GUARDED_RE}"
 
 stopped=0
 while true; do
     pct=$(used_pct)
-    if [ -z "$pct" ]; then
+    gb=$(used_gb)
+    if [ -z "$pct" ] || [ -z "$gb" ]; then
         log "WARN could not read quota"
         sleep "$INTERVAL"; continue
     fi
 
-    if [ "$pct" -ge "$STOP_PCT" ] && [ "$stopped" -eq 0 ]; then
-        log "ESCALATE quota at ${pct}% >= ${STOP_PCT}% -- stopping the MSA build"
+    if { [ "$gb" -ge "$STOP_GB" ] || [ "$pct" -ge "$STOP_PCT" ]; } && [ "$stopped" -eq 0 ]; then
+        log "ESCALATE quota at ${gb} GB (${pct}%) >= ${STOP_GB} GB / ${STOP_PCT}% -- stopping the MSA build"
         # Kill by explicit PID, never by pattern: a pattern kill matches this script too.
         pids=$(ps -eo pid=,args= | grep -E "$GUARDED_RE" | grep -v grep | grep -v quota_guard | awk '{print $1}')
         if [ -z "$pids" ]; then
@@ -66,11 +87,11 @@ while true; do
         # name the biggest offenders so the fix is obvious
         du -sh $R/tools/colabfold/db 2>/dev/null >> "$LOG"
         ls -S $R/tools/colabfold/db 2>/dev/null | head -5 | sed 's/^/    /' >> "$LOG"
-    elif [ "$pct" -ge "$WARN_PCT" ]; then
-        log "WARN quota at ${pct}%"
+    elif [ "$gb" -ge "$WARN_GB" ] || [ "$pct" -ge "$WARN_PCT" ]; then
+        log "WARN quota at ${gb} GB (${pct}%)"
     else
         # quiet unless something changed, so the log stays readable over a long run
-        if [ $(( 10#$(date +%M) % 15 )) -eq 0 ]; then log "ok quota at ${pct}%"; fi
+        if [ $(( 10#$(date +%M) % 15 )) -eq 0 ]; then log "ok quota at ${gb} GB (${pct}%)"; fi
         stopped=0
     fi
     sleep "$INTERVAL"
