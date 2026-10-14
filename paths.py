@@ -133,10 +133,10 @@ FREE_DIR = _path("FREE_DIR", PXM2025_DATA / "free")
 # stale docstrings -- reusing that name would have revived the ambiguity.
 
 # FoldBench, run the same way. Its experiments live under experimental_data/protenix/foldbench/; its
-# inputs there are built once by diffusion_commit_clean_v2/foldbench_setup.py from the FoldBench 50-seed
-# Protenix run (poses in POSES_FOLDBENCH, OST scores in FOLDBENCH_OST_CSV).
+# inputs there are built once by archive/diffusion_commit_clean_v2/foldbench_setup.py from the
+# FoldBench 50-seed Protenix run, whose poses were deleted 2026-10-14; its scores are in
+# foldbench_baseline_results.csv.
 FOLDBENCH_DATA = _path("FOLDBENCH_DATA", DATA_DIR / "protenix" / "foldbench")
-POSES_FOLDBENCH = _path("POSES_FOLDBENCH", REPO_ROOT / "poses" / "predictions_template")
 
 
 @dataclass(frozen=True)

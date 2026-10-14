@@ -162,7 +162,14 @@ self_distill_dropout/**/*.log
 extra_training/SAbDab2_data/**
 extra_training/msa_out/
 extra_training/building_msa/queries/*.a3m
-tools/
+# tools/ holds downloaded binaries and databases -- 5.3 GB. The LAYOUT is worth seeing, so track the
+# small text that explains each tool and ignore everything with weight.
+tools/**/*
+!tools/*/
+!tools/**/*.sh
+!tools/**/*.md
+!tools/**/.gitkeep
+tools/**/*.tar.gz
 envs/
 extra_training/building_msa/work/**
 extra_training/validation/fold/**
