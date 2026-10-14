@@ -54,7 +54,7 @@ MODE="${1:-}"
 R=/home/ebrahim/tts_abag
 P=/home/ebrahim/Protenix
 PY=$P/.venv/bin/python
-C=$R/diffusion_commit_clean_v2
+C=$R/run_model
 # THE FOLD IS PARAMETERISED, because there are two of them: the 50-cluster validation fold and the
 # 483-cluster training fold whose poses the confidence head is finetuned on. Everything that
 # distinguishes them -- output dir, job dir, reference store, dataset entry, seeds, tmux prefix,

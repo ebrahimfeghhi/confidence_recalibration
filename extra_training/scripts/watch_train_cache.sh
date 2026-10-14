@@ -21,14 +21,14 @@ launch_train() {   # $1 = gpu
     tmux new-session -d -s tcache_$1 "cd /home/ebrahim/Protenix && CUDA_VISIBLE_DEVICES=$1 \
       LAYERNORM_TYPE=openfold TRUNK_DUMP_DIR=$E/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
       PROTENIX_DUMP_CONF_INPUTS=1 \
-      $R/../Protenix/.venv/bin/python $R/diffusion_commit_clean_v2/folder.py --queue $E/queue.tsv \
+      $R/../Protenix/.venv/bin/python $R/run_model/folder.py --queue $E/queue.tsv \
       --out $E/poses --csv $E/results.csv --claim-dir $E/claims --dataset sabdab_train \
       --ncycle 10 --nsample 5 --dtype bf16 --overlap-scoring >> $E/w$1.log 2>&1"
 }
 launch_fb() {      # $1 = gpu
     tmux new-session -d -s fbtop_$1 "cd /home/ebrahim/Protenix && CUDA_VISIBLE_DEVICES=$1 \
       LAYERNORM_TYPE=openfold \
-      /home/ebrahim/Protenix/.venv/bin/python $R/diffusion_commit_clean_v2/folder.py \
+      /home/ebrahim/Protenix/.venv/bin/python $R/run_model/folder.py \
       --queue $B/queue.tsv --out $B/poses --csv $B/results.csv --claim-dir $B/claims \
       --dataset foldbench --ncycle 10 --nsample 5 --dtype bf16 --overlap-scoring >> $B/w$1.log 2>&1"
 }
@@ -55,7 +55,7 @@ while :; do
     # RELAUNCH a missing worker, after releasing whatever it had claimed.
     if [ "$alive" -lt 3 ]; then
         say "only $alive/3 workers alive at $n/$TOTAL -- reconciling and relaunching"
-        /home/ebrahim/Protenix/.venv/bin/python $R/diffusion_commit_clean_v2/reconcile_stale_claims.py \
+        /home/ebrahim/Protenix/.venv/bin/python $R/run_model/reconcile_stale_claims.py \
             $E --dataset sabdab_train >> $LOG 2>&1
         for g in $GPUS; do
             tmux has-session -t tcache_$g 2>/dev/null || { launch_train $g; say "  relaunched GPU $g"; }

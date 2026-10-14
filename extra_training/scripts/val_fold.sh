@@ -28,7 +28,12 @@ MODE="${1:-}"
 R=/home/ebrahim/tts_abag
 P=/home/ebrahim/Protenix
 PY=$P/.venv/bin/python
-C=$R/diffusion_commit_clean_v2
+# TWO DIRECTORIES, NOT ONE. The fold worker and its helpers moved to run_model/; the block watchers
+# did not. $C was used for both, so flipping it alone would have left line ~173's
+# $C/watch_free_extra10.sh pointing at a file that is not there -- and a watcher that fails to start
+# is exactly the kind of break nothing reports.
+C=$R/run_model                      # folder.py, scorer.py, reconcile_stale_claims.py, call_folder.py
+V2=$R/diffusion_commit_clean_v2     # the block watchers and queue builders, which stayed
 E=$R/extra_training/val_fold
 PXM=$R/experimental_data/protenix/pxm2025/free_extra10
 LOG=$R/extra_training/val_fold.log
@@ -170,5 +175,5 @@ for g in $GPUS; do
       --overlap-scoring >> $PXM/w$g.log 2>&1"
     say "  relaunched pxm worker on GPU $g"
 done
-tmux new-session -d -s fx_watch "bash $C/watch_free_extra10.sh" && say "  restarted fx_watch"
+tmux new-session -d -s fx_watch "bash $V2/watch_free_extra10.sh" && say "  restarted fx_watch"
 say "=== done ==="

@@ -92,7 +92,7 @@ are max-over-seeds statistics and therefore exactly what it moves.
 
     # then one worker per card, e.g.
     tmux new-session -d -s fb_top100_0 "cd ~/Protenix && CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold \
-      ~/Protenix/.venv/bin/python ~/tts_abag/diffusion_commit_clean_v2/folder.py \
+      ~/Protenix/.venv/bin/python ~/tts_abag/run_model/folder.py \
       --queue <arm>/queue.tsv --out <arm>/poses --csv <arm>/results.csv --claim-dir <arm>/claims \
       --dataset foldbench --ncycle 10 --nsample 5 --dtype bf16 --overlap-scoring >> <arm>/w0.log 2>&1"
 
