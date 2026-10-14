@@ -189,10 +189,16 @@ def main():
             for jj, k in enumerate(ks):
                 cost[ii, jj] = np.abs(_np(summ[ii]["chain_pair_iptm"])
                                       - np.asarray(want[k]["chain_pair_iptm"], float)).max()
-        match = cost.argmin(axis=1)
-        if len(set(match.tolist())) != len(summ):
-            raise SystemExit(f"STOP: {pdb}/{seed} cached poses do not match stored samples one to "
-                             f"one (assignment {match.tolist()}); the cache and the fold disagree.")
+        # OPTIMAL ASSIGNMENT, not a per-row argmin. Two poses can score IDENTICALLY -- 9fve/400073
+        # has samples 3 and 4 with the same chain_pair_iptm to five decimals, so poses 0 and 3 each
+        # match both at cost 0.00000 while differing by 89.6 A in coordinates. A row-wise argmin then
+        # assigns both to the same sample and looks like a cache/fold disagreement. The poses are
+        # simply indistinguishable BY THIS STATISTIC; the assignment below resolves the tie, and the
+        # residual cost is what says whether the cache reproduces the fold.
+        from scipy.optimize import linear_sum_assignment
+        rows_i, cols_j = linear_sum_assignment(cost)
+        match = np.empty(len(summ), dtype=int)
+        match[rows_i] = cols_j
         perm = [int(ks[j]) for j in match]
         got_r = [float(_np(summ[ii]["ranking_score"])) for ii in range(len(summ))]
         want_r = [float(want[k]["ranking_score"]) for k in perm]
