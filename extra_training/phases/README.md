@@ -1032,7 +1032,7 @@ E call.
 `scripts/`: `run_e_to_i.sh`, `overnight.sh`, `see_it_through.sh` orchestrate;
 `watch_train_cache.sh`, `gpu_guard.sh`, `quota_guard.sh`, `health.sh` watch and remediate;
 `lib_fetch.sh`, `phase2_envdb.sh`, `verify_minidb.sh` are called by phases D and E;
-`cluster_composition.py` generates `docs/cluster_composition.md` and is a report, not a step.
+(`cluster_composition.py` and its report were deleted 2026-10-14; the live split came from phase B2.)
 
 Three scripts moved here on 2026-10-13 because they write committed artifacts and nothing but a doc
 referenced them, and their hardcoded `REPO = "/home/ebrahim/..."` roots were replaced with

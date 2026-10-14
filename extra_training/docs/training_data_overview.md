@@ -6,7 +6,7 @@ against FoldBench and PXM-2025.
 **Current state, 2026-10-13.** Validation is **40 clusters / 53 structures / 91 scored interfaces at
 100 seeds**, folded and verified as dataset `sabdab_val2`. How those clusters were chosen, and the
 result, is in [`validation_set.md`](validation_set.md) -- the canonical file. Per-cluster era
-composition for the whole pool is in [`cluster_composition.md`](cluster_composition.md).
+composition for the whole pool is in `cluster_composition.md` (deleted).
 
 This file describes the POOL the split was drawn from, not the split. Two earlier validation sets
 appear below for context and both are superseded: phase B's draw of 50 clusters (chosen without

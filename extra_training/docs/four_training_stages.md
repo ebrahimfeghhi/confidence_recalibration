@@ -321,4 +321,4 @@ neither demo script sets `train_confidence_only`, so there is no FT3 command to 
 | ipTM | `~/Protenix/protenix/model/sample_confidence.py:423`, `:474`, `:333` |
 | losses | `~/Protenix/protenix/model/loss.py:813`, `:1442`, `:1464-1467` |
 | our pose cache | `phases/phase_i_fold_validation.sh`, the npz validator in its smoke block |
-| our data | [`training_data_overview.md`](training_data_overview.md), [`cluster_composition.md`](cluster_composition.md) |
+| our data | [`training_data_overview.md`](training_data_overview.md), `cluster_composition.md` (deleted) |
