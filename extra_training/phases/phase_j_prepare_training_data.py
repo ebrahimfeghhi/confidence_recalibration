@@ -49,7 +49,7 @@ PROTENIX = "/home/ebrahim/Protenix"
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--selection", default=f"{ROOT}/results/cache_train_structures.csv")
+    ap.add_argument("--selection", default=f"{ROOT}/splits/cache_train_structures.csv")
     ap.add_argument("--splits", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
     # JOB CIFS BY DEFAULT, not whole entries. A whole entry builds the deposited assembly -- every
     # copy, every chain -- which is NOT what we fold, so a label built from it cannot be compared to

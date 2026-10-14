@@ -93,7 +93,7 @@ SPLITS = f"{REPO}/extra_training/data/zenodo_splits/splits_final/abag_split.csv"
 # writing the round-3 exclusions to a NEW file left phases B and G defaulting to a stale 24-cluster
 # version while the current search had found 28 -- and four known benchmark leaks (947, 2238, 2483,
 # 2557) stayed in the committed training list. One path, written by default, read by everyone.
-EXCLUDED = f"{REPO}/extra_training/results/excluded_homolog_clusters.csv"
+EXCLUDED = f"{REPO}/extra_training/splits/excluded_homolog_clusters.csv"
 CIFDIR = f"{REPO}/extra_training/data/rcsb_unlisted"
 MMSEQS = f"{REPO}/tools/mmseqs/bin/mmseqs"
 def _anarci_allhmm():

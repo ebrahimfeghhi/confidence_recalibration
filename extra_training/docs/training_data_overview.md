@@ -10,7 +10,7 @@ composition for the whole pool is in [`cluster_composition.md`](cluster_composit
 
 This file describes the POOL the split was drawn from, not the split. Two earlier validation sets
 appear below for context and both are superseded: phase B's draw of 50 clusters (chosen without
-regard to deposition date, still what `results/val_clusters.csv` contains) and the 21-cluster
+regard to deposition date, still what `splits/val_clusters.csv` contains) and the 21-cluster
 post-cutoff subset of it that was folded on 2026-10-12. The 21-cluster fold remains reproducible
 under `val2_fold` / `sabdab_val2`.
 
@@ -70,7 +70,7 @@ eligible post-cutoff structure in the PDB.
 | | |
 |---|---|
 | pool table | `data/zenodo_splits/splits_final/abag_split.csv` (15,810 instances) |
-| cluster lists | `results/train_clusters.csv`, `results/val_clusters.csv`, `results/excluded_homolog_clusters.csv` |
+| cluster lists | `splits/train_clusters.csv`, `splits/val_clusters.csv`, `splits/excluded_homolog_clusters.csv` |
 | fold queues | `train_jobs/manifest.csv`, `val_jobs/manifest.csv` (both carry per-structure `deposited` and `post_cutoff`) |
 | how the clusters were chosen | `phases/README.md`, `phases/phase_a_define_train_set.py`, `phases/phase_b_define_val_clusters.py` |
 

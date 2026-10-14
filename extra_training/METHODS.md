@@ -286,7 +286,7 @@ reason. `--cov-mode 1`, coverage of the target, catches containment:
 Six clusters instead of four, so the pool is **561 → 555**. A training cluster whose antigen matches a
 benchmark antigen at identity 1.000 is precisely what this filter exists to remove.
 
-**`results/val_clusters.csv` was drawn from the 557-cluster pool and is kept.** Re-running phase B
+**`splits/val_clusters.csv` was drawn from the 557-cluster pool and is kept.** Re-running phase B
 against 555 clusters changes 45 of the 50 — a different draw, not a better one — and re-drawing a
 validation split after the fact is what phase B's own docstring warns against. The existing split
 remains valid on the stronger test: **every one of its 50 clusters is still in the 555-cluster pool**,

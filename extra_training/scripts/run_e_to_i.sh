@@ -153,7 +153,7 @@ say "stage 3a: reconciling the validation split with phase A's widened leakage s
 # second file left B and G defaulting to a stale 24-cluster copy, and four known benchmark leaks
 # survived in the committed training list. This is now the canonical path phase A writes by default,
 # and it is passed explicitly here so the chain does not depend on a module default either.
-AOUT=$R/extra_training/results/excluded_homolog_clusters.csv
+AOUT=$R/extra_training/splits/excluded_homolog_clusters.csv
 [ -s "$AOUT" ] || die "no exclusion artifact at $AOUT -- run phase A before the chain"
 $PY $PH/phase_b_define_val_clusters.py --prune --excluded "$AOUT" >> $W/phase_b.log 2>&1 \
     && say "stage 3a OK: split reconciled against $(basename $AOUT)" \

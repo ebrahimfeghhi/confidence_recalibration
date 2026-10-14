@@ -511,7 +511,7 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--selection", default=f"{ROOT}/results/cache_train_structures.csv")
+    ap.add_argument("--selection", default=f"{ROOT}/splits/cache_train_structures.csv")
     ap.add_argument("--splits", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
     ap.add_argument("--src-dir", default=f"{ROOT}/data/rcsb_training_cifs")
     ap.add_argument("--out-dir", default=f"{ROOT}/train_prep/job_cifs")
