@@ -111,7 +111,12 @@ PXM2025_DATA = _path("PXM2025_DATA", DATA_DIR / "protenix" / "pxm2025")
 PXM2025_DIR = _path("PXM2025_DIR", PXM2025_DATA)
 PXM2025_JOBS = _path("PXM2025_JOBS", PXM2025_DIR / "jsons")
 PXM2025_CIF = _path("PXM2025_CIF", PXM2025_DIR / "cif")
-PXM2025_POOL_CSV = _path("PXM2025_POOL_CSV", PXM2025_DIR / "dockq_pxm2025.csv")
+# THE INTERFACE REGISTRY, not a results table -- folder.py reads only pdb/chain1/chain2 from it.
+# dockq_pxm2025.csv used to carry that list as a side effect of being the scores, which is why the
+# scores could not be deleted. pxm2025_interfaces.csv is the 292 folded interfaces, one row each,
+# derived from pxm2025_baseline_results.csv. chain_roles.csv and interfaces.csv both list 314 and so
+# are NOT substitutes: 22 of theirs were never folded.
+PXM2025_POOL_CSV = _path("PXM2025_POOL_CSV", PXM2025_DIR / "pxm2025_interfaces.csv")
 PXM2025_CHAIN_ROLES = _path("PXM2025_CHAIN_ROLES", PXM2025_DIR / "chain_roles.csv")
 
 

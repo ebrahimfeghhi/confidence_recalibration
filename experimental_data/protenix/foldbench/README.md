@@ -9,6 +9,3 @@ Free-fold results for the FoldBench antibody–antigen benchmark: 104 complexes,
 | `chain_maps.csv` | per `(pdb, seed, sample)`, how the model's chain letters map onto the reference's — the two are not the same and scoring has to translate. |
 | `ost_json` | the raw OpenStructure output behind each DockQ number, one JSON per pose per interface (48,120 files), kept so a disputed score can be re-examined rather than re-folded. |
 | `foldbench_baseline_remaining_folds/` | the 612 folds still needed to bring all 104 complexes to 100 seeds, as a `folder.py` queue; the training-cache watcher launches it when its own queue drains. |
-| `setup_audit.md` | the one-off audit of how this benchmark's inputs were built. |
-| `setup.log` | the log of that setup run. |
-| `rebalance.log` | the GPU-allocation watcher's log from the October arm scheduling. |

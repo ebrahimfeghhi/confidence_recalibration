@@ -183,3 +183,19 @@ extra_training/val2_jobs/
 extra_training/train_prep/
 extra_training/data/rcsb_training_cifs/
 extra_training/train_refs/
+
+# BENCHMARK LAYOUT VISIBLE, BULK NOT. The input directories under experimental_data/protenix/ hold
+# MSAs, templates, reference cifs and per-pose jsons -- gigabytes that do not belong in the repo, but
+# whose EXISTENCE is part of understanding the benchmark. So: ignore everything inside those
+# directories at ANY depth, and re-allow only the .gitkeep that makes the directory itself visible.
+#
+# AT ANY DEPTH is the point. A first attempt globbed one level (`protenix/*/*/*.json`) and let 263
+# files through from prep/<pdb>/msa/, which sit three levels down. `dir/**` catches all of them.
+experimental_data/protenix/*/cif/**
+experimental_data/protenix/*/jsons/**
+experimental_data/protenix/*/jsons_test/**
+experimental_data/protenix/*/prep/**
+experimental_data/protenix/*/pxm_json/**
+experimental_data/protenix/*/templates/**
+experimental_data/protenix/*/ost_json/**
+!experimental_data/protenix/*/*/.gitkeep
