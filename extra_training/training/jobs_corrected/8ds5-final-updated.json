@@ -1,0 +1,34 @@
+[
+ {
+  "name": "8ds5",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "EIQLVQSGAEVKKPGASVKVSCKASGYTFTNYGMNWVKQAPGQGLKWMGWINTNTGEPTYAEEFKGRFTFTLDTSISTAYMELSSLRSEDTAVYYCAREGDAMDYWGQGTTVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEPK",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c772_8ds5_H_8a0003/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c772_8ds5_H_8a0003/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c772_8ds5_H_8a0003/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "EIVLTQSPATLSLSPGERATLSCSASSSVSYMHWYQQKPGQAPKRWIYDTSKLASGVPARFSGSGSGTDYSLTISSLEPEDFAVYYCQQWNSYPFTFGQGTKLEIKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRGE",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c772_8ds5_L_6b7ba5/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c772_8ds5_L_6b7ba5/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c772_8ds5_L_6b7ba5/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "TPAPKSCPERHYWAQGKLCCQMCEPGTFLVKDCDQHRKAAQCDPCIPGVSFSPDHHTRPHCESCRHCNSGLLVRNCTITANAECACRNGWQCRDKECTECDPLPNPSLTARSSQALSPHPQPTHLPYVSEMLEARTAGHMQTLADFRQLPARTLSTHHHHHHHH",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c772_8ds5_ag0_2fd885/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c772_8ds5_ag0_2fd885/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c772_8ds5_ag0_2fd885/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

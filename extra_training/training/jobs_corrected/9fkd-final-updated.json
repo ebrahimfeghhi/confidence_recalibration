@@ -1,0 +1,34 @@
+[
+ {
+  "name": "9fkd",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "GQIQLVQSGPELKKPGETVKISCKASGYAFTNYGVNWVKEAPGKELKWMGWINIYTGEPTYVDDFKGRFAFSLETSASTAYLEINNLKNEDTATYFCTRGDYVNWYFDVWGAGTTVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEPKSCD",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c34_9fkd_H_6b81b0/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c34_9fkd_H_6b81b0/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c34_9fkd_H_6b81b0/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "GDVVMTQIPLSLPVSLGEQASISCRSSQSLIHSNGNTYLHWYLQKPGQSPKLLMYKVSNRFYGVPDRFSGSGSGTDFTLKISRVEAEDLGIYFCSQSSHVPPTFGGGTKLEIKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRGEC",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c34_9fkd_L_823ad8/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c34_9fkd_L_823ad8/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c34_9fkd_L_823ad8/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "DEKAKTAETLIWQLFGKAMQQSDPNEAEKLLKKAEELAKKANDPRLEQVVRQHQVVVRFLVGGSHHHHHH",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c34_9fkd_ag1_dee177/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c34_9fkd_ag1_dee177/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c34_9fkd_ag1_dee177/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

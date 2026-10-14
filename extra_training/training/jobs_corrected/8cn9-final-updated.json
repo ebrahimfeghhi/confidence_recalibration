@@ -1,0 +1,34 @@
+[
+ {
+  "name": "8cn9",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "QVQLQESGPGLVKPSQTLSLTCTVSGYSISSDSAWSWIRQPPGKGLEWIGYIQYSGSTNYNPSLKSRVTISRDTSKNQFSLKLSSVTAADTAVYYCARSVNYYGNSFAVGYWGQGTLVTVSSASTKGPSVFPLAPCSRSTSESTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTKTYTCNVDHKPSNTKVDK",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1234_8cn9_H_99a197/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1234_8cn9_H_99a197/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1234_8cn9_H_99a197/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "EIVLTQSPATLSLSPGERATLSCRASQGISDYLHWYQQKPGEAPRLLIKYTSQPATGIPARFSGSGSGTDFTLTISSLEPEDFAVYYCQNGHSFPLTFGQGTKLEIKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRGE",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1234_8cn9_L_ab2c37/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1234_8cn9_L_ab2c37/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1234_8cn9_L_ab2c37/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "DGDQCASSPCQNGGSCKDQLQSYICFCLPAFEGRNCETHKDDQLICVNENGGCEQYCSDHTGTKRSCRCHEGYSLLADGVSCTPTVEYPCGKIPILEKRNASKPQGR",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1234_8cn9_ag1_ed90b2/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1234_8cn9_ag1_ed90b2/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1234_8cn9_ag1_ed90b2/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

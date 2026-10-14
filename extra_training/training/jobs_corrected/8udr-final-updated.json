@@ -1,0 +1,34 @@
+[
+ {
+  "name": "8udr",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "VQLQQSGPGLVKPSQTLSLTCAISGDSVSSNSVAWNWIRQSPSRGLEWLGRTYYRSKWYSDYAVSVKSRITINPDTSKNQFSLQLTSMTPEDTAVYYCAREGVTMGPGAFDIWGQGTMVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVE",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8udr_H_b0b58a/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8udr_H_b0b58a/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8udr_H_b0b58a/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "ALTQPPSVSGSPGQSVTISCTGSSSDVGHYNRVSWYQQSPGTAPKLMIYDVSNRPSGAFSRFSGSRSGNTASLTISGLQPEDEADYYCSSHRTGYTVEVFGTGTKVTVLGQPKAAPSVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADSSPVKAGVETTTPSKQSNNKYAASSYLSLTPEQWKSHRSYSCQVTHEGSTVEKTVAPTE",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8udr_L_1f0e25/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8udr_L_1f0e25/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8udr_L_1f0e25/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "GSHSMRYFFTSVSRPGRGEPRFIAVGYVDDTQFVRFDSDAASQRMEPRAPWIEQEGPEYWDQETRNVKAQSQTDRVDLGTLRGYYNQSEAGSHTIQIMYGCDVGSDGRFLRGYRQDAYDGKDYIALNEDLRSWTAADMAAQITKRKWEAAHEAEQLRAYLDGTCVEWLRRYLENGKETLQRTDPPKTHMTHHPISDHEATLRCWALGFYPAEITLTWQRDGEDQTQDTELVETRPAGDGTFQKWAAVVVPSGEEQRYTCHVQHEGLPKPLTLRWE",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8vra_ag0_3275bf/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8vra_ag0_3275bf/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8vra_ag0_3275bf/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

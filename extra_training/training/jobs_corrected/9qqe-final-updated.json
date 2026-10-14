@@ -1,0 +1,43 @@
+[
+ {
+  "name": "9qqe",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "QLVESGGGLVKPGGSLRLSCAASGFAFANHTMNWVRQAPGKGLEWVSSISISSTYIYYADSVKGRFSISRDNAKNSLYLQMNSLKAEDTAVYYCARDRPPLRIVGIWDYWGQGILVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEPK",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9qqe_H_6e0fc6/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9qqe_H_6e0fc6/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9qqe_H_6e0fc6/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "SVLTQPPSASGTPGQRVTISCSGSSANIGSNIVDWYQHLPGTAPKLLIYSDNQRPSGVPDRFSGSKSGTSASLAISGLQSEDEADYYCVAWDDSRYGYVFGTGTRVTVLGQPKAAPSVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADSSPVKAGVETTTPSKQSNNKYAASSYLSLTPEQWKSHRSYSCQVTHEG",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9qqe_L_29f612/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9qqe_L_29f612/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9qqe_L_29f612/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "GSHSMRYFFTSVSRPGRGEPRFIAVGYVDDTQFVRFDSDAASQRMEPRAPWIEQEGPEYWDGETRKVKAHSQTHRVDLGTLRGYYNQSEAGSHTVQRMYGCDVGSDWRFLRGYHQYAYDGKDYIALKEDLRSWTAADMAAQTTKHKWEAAHVAEQLRAYLEGTCVEWLRRYLENGKETLQRTDAPKTHMTHHAVSDHEATLRCWALSFYPAEITLTWQRDGEDQTQDTELVETRPAGDGTFQKWAAVVVPSGQEQRYTCHVQHEGLPKPLTLRWE",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8eb2_ag0_bfc5a3/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8eb2_ag0_bfc5a3/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_8eb2_ag0_bfc5a3/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "VLHDDLLEA",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9qqe_ag1_63e29a/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9qqe_ag1_63e29a/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9qqe_ag1_63e29a/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

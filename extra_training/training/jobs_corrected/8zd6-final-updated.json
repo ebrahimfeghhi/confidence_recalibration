@@ -1,0 +1,34 @@
+[
+ {
+  "name": "8zd6",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "QLQQSGAELVRPGALVKLSCKASGFNIKDYYMYWVKQRPEQGLEWIGWIDPENDNTIYDPKFQGKASISADTSSNTAYLQLSSLTSEDTAVYYCGGGPLYAMDYWGQGTSVTVCSGSDYEFLKSWTVEDIQKRLLALDPMMEQEIEEIRQKYQSKRQPI",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd6_H_4e3c19/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd6_H_4e3c19/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd6_H_4e3c19/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "DIKMTQSPSSMYASLGERVTITCKASQDIKSYLSWYQQKPWKSPKTLIYYATRLADGVPSRFSGSGSGQDYSLTISSLESDDTATYYCLQHRERPLTVGAGTKLELKGSDYEFLKSWTVEDIQKRLLALDPMMEQEIEEIRQKYQCKRQPILDAIEA",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd6_L_2a07dd/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd6_L_2a07dd/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd6_L_2a07dd/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "MEMKAVCVLKGQGPVEGTIHFVQKGSGPVVVSGTITGLTKGEHGFHVHQFGDNTQGCTSAGPHFNPLSKKHGGPKDQERHVGDLGNVTAGKDGVAIVSIEDSLIALSGDYSIIGRTMVVHEKRDDLGKGDNEESTQTGNAGSRLACGVIGIAQ",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_ag0_722775/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_ag0_722775/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_ag0_722775/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

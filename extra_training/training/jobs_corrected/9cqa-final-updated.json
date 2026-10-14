@@ -1,0 +1,34 @@
+[
+ {
+  "name": "9cqa",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "QVHLVQSGVEVKKPGASVRVSCKASGYTFATYGITWVRQAPGRGLEWVGWITPYNDRTSYAQIFHGRVTMTTDTSTNTAYMELRSLRSDDTAMYYCARNHCNFYHDFWSGLDYWGQGTLVSVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEP",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c860_9cqa_H_4bc03b/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c860_9cqa_H_4bc03b/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c860_9cqa_H_4bc03b/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "SFELTQPPSVSVSPGQTARITCSGDALPKQYVYWYQQKPGQAPVLVIYKTTERPSGIPERFSDSSSGTTVTLTISAAQAEDEADYYCQSVDSSGTYVFGIGTKVTVLGRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRG",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c860_9cqa_L_5f0cab/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c860_9cqa_L_5f0cab/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c860_9cqa_L_5f0cab/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "MGSKPNNDFHFEVFNFVPCSICSNNPTCWAICKRIPNKKPGKKHHHHHH",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c860_6uvo_ag0_cf606f/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c860_6uvo_ag0_cf606f/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c860_6uvo_ag0_cf606f/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

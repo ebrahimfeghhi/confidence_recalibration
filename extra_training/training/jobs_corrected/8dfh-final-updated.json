@@ -1,0 +1,34 @@
+[
+ {
+  "name": "8dfh",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "QVQVVESGGGVVQPGGSLRLSCLASGFTFSDFGFHWVRQSPGKGLEWVTYTRYDGRNEYGESVKGRFTISRDNAKNTVYLQMNTLRLEDTAIYYCGRSGAKWASEPMDVWGGGTTVIVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEP",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c140_8dfh_H_832b72/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c140_8dfh_H_832b72/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c140_8dfh_H_832b72/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "VLTQPPSASGTPGQRVTISCSGSKSNIGSYYVYWYQQVPGTAPKLLIHRNNQRPSGVPDRFSGSKSGTSASLAISGLRSEDEADYHCSVWDDNLNGLVFGGGTKLTVLGQPKANPTVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADGSPVKAGVETTKPSKQSNNKYAASSYLSLTPEQWKSHRSYSCQVTHEGSTVEKTVAPT",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c140_8dfh_L_693fca/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c140_8dfh_L_693fca/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c140_8dfh_L_693fca/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "ETGNIAQHQCVKKQCPENSGCFRHLDEREECKCLLNYKQEGDKCVENPNPACNENNGGCDADATCTEEDSGSSRKKITCECTKPDSYPLFDGIFCSGTKHHHHHH",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c140_8dfg_ag0_f08364/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c140_8dfg_ag0_f08364/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c140_8dfg_ag0_f08364/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

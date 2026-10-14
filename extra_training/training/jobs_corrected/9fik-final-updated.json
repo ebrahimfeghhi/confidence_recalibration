@@ -1,0 +1,34 @@
+[
+ {
+  "name": "9fik",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "EVQLVESGGGLVKPGGSLRLSCAASGFTFSNAWMNWVRQAPGKGLEWVGRIKSKTDGGTTDYAAPVKGRFTISRDDSKNTLYLQMNSLKTEDTAVYYCTTSGGLLYGSPSFGDYYGYWMDYWGQGTTVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPKS",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c791_9fik_H_cc558a/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c791_9fik_H_cc558a/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c791_9fik_H_cc558a/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "QSVLTQPPSVSVAPGQTARITCGGSSVGRKSVHWYQQSPGQAPVLVVYDDSDRPSGIPERFSGSNSGDTATLTISRVEVGDEADYYCQVWDIDSDHVVFGGGTKVTVLGQPKAAPSVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADSSPVKAGVETTTPSKQSNNKYAASSYLSLTPEQWKSHRSYSCQVTHEGSTVEKTVAP",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c791_9fik_L_9f891d/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c791_9fik_L_9f891d/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c791_9fik_L_9f891d/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "YAEHKSHRGEYSVCDSESLWVTDKSSAIDIRGHQVTVLGEIKTGNSPVKQYFYETRCKEARPVKNGCRGIDDKHWNSQCKTSQTYVRALTSENNKLVGWRWIRIDTSCVCALSRKIGRTE",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c791_9fik_ag0_8e0365/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c791_9fik_ag0_8e0365/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c791_9fik_ag0_8e0365/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

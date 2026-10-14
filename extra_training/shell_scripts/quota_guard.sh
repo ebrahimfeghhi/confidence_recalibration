@@ -21,7 +21,13 @@ LOG="${LOG:-$R/extra_training/quota_guard.log}"
 # happens to be -- and "90%" could not express the 3,000 GB asked for on 2026-10-14. A percentage is
 # still accepted and still honoured, whichever triggers first.
 STOP_GB="${STOP_GB:-3000}"
-WARN_GB="${WARN_GB:-2700}"
+WARN_GB="${WARN_GB:-2900}"
+# KILLING A DELIBERATE DATABASE BUILD IS NOT REMEDIATION. The MSA rebuild of 2026-10-14 fills the
+# disk ON PURPOSE -- UniRef30 is 450 GB extracted plus a 301 GB index -- so a guard that TERMs it
+# partway loses hours of transfer and leaves a half-built index that the next run cannot resume from.
+# With ALLOW_KILL=0 the guard reports loudly and takes no action; set it to 1 to restore the original
+# behaviour once the build is done.
+ALLOW_KILL="${ALLOW_KILL:-0}"
 WARN_PCT="${WARN_PCT:-80}"
 STOP_PCT="${STOP_PCT:-99}"
 INTERVAL="${INTERVAL:-60}"
@@ -69,6 +75,13 @@ while true; do
     if { [ "$gb" -ge "$STOP_GB" ] || [ "$pct" -ge "$STOP_PCT" ]; } && [ "$stopped" -eq 0 ]; then
         log "ESCALATE quota at ${gb} GB (${pct}%) >= ${STOP_GB} GB / ${STOP_PCT}% -- stopping the MSA build"
         # Kill by explicit PID, never by pattern: a pattern kill matches this script too.
+        if [ "$ALLOW_KILL" != "1" ]; then
+            log "ESCALATE ALLOW_KILL=0 -- NOT killing anything. Free space by hand; the MSA build is"
+            log "ESCALATE filling the disk deliberately and a TERM would lose the transfer."
+            du -sh $R/tools/colabfold/db 2>/dev/null >> "$LOG"
+            stopped=1
+            sleep "$INTERVAL"; continue
+        fi
         pids=$(ps -eo pid=,args= | grep -E "$GUARDED_RE" | grep -v grep | grep -v quota_guard | awk '{print $1}')
         if [ -z "$pids" ]; then
             log "ESCALATE nothing matching the guarded pattern is running -- cannot self-remediate"

@@ -1,0 +1,34 @@
+[
+ {
+  "name": "8zd5",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "EVQLQQSGAELVRPGALVKLSCKASGFNIKDYYMYWVKQRPEQGLEWIGWIDPENDNTIYDPKFQGKASISADTSSNTAYLQLSSLTSEDTAVYYCGGGPLYAMDYWGQGTSVTVCSGSDYEFLKSWTVEDIQKRLLALDPMMEQEIEEIRQKYQSKRQPI",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_H_5df644/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_H_5df644/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_H_5df644/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "DIKMTQSPSSMYASLGERVTITCKASQDIKSYLSWYQQKPWKSPKTLIYYATRLADGVPSRFSGSGSGQDYSLTISSLESDDTATYYCLQHRERPLTVGAGTKLELKGSDYEFLKSWTVEDIQKRLLALDPMMEQEIEEIRQKYQCKRQPILDAIEA",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_L_7a5d74/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_L_7a5d74/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_L_7a5d74/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "MEMKAVCVLKGQGPVEGTIHFVQKGSGPVVVSGTITGLTKGEHGFHVHQFGDNTQGCTSAGPHFNPLSKKHGGPKDQERHVGDLGNVTAGKDGVAIVSIEDSLIALSGDYSIIGRTMVVHEKRDDLGKGDNEESTQTGNAGSRLACGVIGIAQ",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_ag0_722775/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_ag0_722775/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1570_8zd5_ag0_722775/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

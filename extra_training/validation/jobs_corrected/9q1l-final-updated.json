@@ -1,0 +1,34 @@
+[
+ {
+  "name": "9q1l",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "QVQLLESGPGLVKPSQTLSLTCTVSGDSLSSGSYFWSWIRQPAGKGLEWIGHMHSSGSSNYNPSLKSRVTISVDTSKRQFSLKLRSVTATDTAVYYCARADCSTTSCYTYHIWGQGTMVIVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEPKSC",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2381_9q1l_H_798b23/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2381_9q1l_H_798b23/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2381_9q1l_H_798b23/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "DIQMTQSPPSLSASVGVRVTITCQASQDISNYLNWYQQKPGKAPKLLIYAASNLETGVPSRFSGSGSGTDFTFTITSLQPEDVATYYCQQYDTVPLTFGQGTRLEIKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRGEC",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2381_9q1l_L_e7e318/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2381_9q1l_L_e7e318/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2381_9q1l_L_e7e318/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "GMRDPREQYRQCQEYCRRQGQGQRQQQQCQIRCEERLEEDQRSQEER",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2381_9q1l_ag0_58a648/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2381_9q1l_ag0_58a648/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2381_9q1l_ag0_58a648/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

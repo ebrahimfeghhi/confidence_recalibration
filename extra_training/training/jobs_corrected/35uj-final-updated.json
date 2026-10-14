@@ -1,0 +1,34 @@
+[
+ {
+  "name": "35uj",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "VLLQQSGPELVKPGASVKIPCKASGYTFTDYNLDWVKQSHGKSLEWIGDINPINGATLYNQKFKGKATLTVDQSSSTAYMELRSLTSEDTAVYYCSIYYGDYDAMDYWGQGASVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEP",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c430_35uj_H_d08189/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c430_35uj_H_d08189/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c430_35uj_H_d08189/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "DIVMTQSHKFMSTSVGDRVSITCKASQDVHTAVAWYQQKPGQSPRLLIYWASTRHTGVPDRFTGCGSGTDYTLTISSVQAEDLALYYCQQHYTTPYTFGGGTKLEMKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRG",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c430_35uj_L_57f25c/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c430_35uj_L_57f25c/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c430_35uj_L_57f25c/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "ALQKEKPDFCFLEEDPGICRGYITRYFYNNQSKQCERFKYGGCLGNMNNFETLEECKNTCEDGGGSGGGLN",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c430_35uh_ag0_dd131b/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c430_35uh_ag0_dd131b/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c430_35uh_ag0_dd131b/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

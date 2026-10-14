@@ -1,0 +1,34 @@
+[
+ {
+  "name": "9jqz",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "EIQLQQSGPELVKPGASVKVSCKASGFPFSTYNIYWVIQSHGKSLEWIGYIDPYNGGTSYNQKFRGKATLTVDKSSSTAYMHLNSLTSEDSAVYYCARRWYTYDGDWFAYWGQGTLVTVSAAKTTAPSVYPLAPVCGDTTGSSVTLGCLVKGYFPEPVTLTWNSGSLSSGVHTFPAVLQSDLYTLSSSVTVTSSTWPSQSITCNVAHPASSTKVDKKI",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2435_9jqz_H_8cf51c/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2435_9jqz_H_8cf51c/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2435_9jqz_H_8cf51c/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "DIKMTQSPSSMYVSLGERVTITCKASQDINRYLSWFQQKPGKSPKTLIYRANRMLDGVPSRFSGSGSGQDYSLTISSLEYEDMGNYYCLQYDEFPFTFGSGTKLEIKRADAAPTVSIFPPSSEQLTSGGASVVCFLNNFYPKDINVKWKIDGSERQNGVLNSWTDQDSKDSTYSMSSTLTLTKDEYERHNSYTCEATHKTSTSPIV",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2435_9jqz_L_3792f8/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2435_9jqz_L_3792f8/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2435_9jqz_L_3792f8/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "ASVIKPEMKIKLRMEGAVNGHKFVIEGEGIGKPYEGTQTLDLTVEEGAPLPFSYDILTPAFQYGNRAFTKYPEDIPDYFKQAFPEGYSWERSMTYEDQGICIATSDITMEGDCFFYEIRFDGTNFPPNGPVMQKKTLKWEPSTEKMYVEDGVLKGDVEMALLLEGGGHYRCDFKTTYKAKKDVRLPDAHEVDHRIEILSHDKDYNKVRLYEHAEARYSGGGSGGGGSAPGVQSSASLSPDRLNSPVTIPAVMFIFGVVGNLVAIVVLCKSRKEQKETTFYTLVCGLLVTDLLGTLLVSPVTIATYMKGQWPGGQPLCEYSTFILLFFSLSRLSIICAMSVERYLAINHAYFYSHYVDKRLAGLTLFAVYASNVLFCALPNMGLGSSRLQYPDTWCFIDWTTQVTAHAAYSYMYAGFSSFLILATVLCNVLVCGALLRMHRQFFRRIAGAEIQMVILLIATSLVVLICSIPLVVRVFVNQLYQPSLEREVSKNPDLQAIRIASVNPILDPWIYILLRKTVLSKAIEKIKCLFCRIGGSRRERSGQHCSDS",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2435_9jqz_ag0_91a74b/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2435_9jqz_ag0_91a74b/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c2435_9jqz_ag0_91a74b/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

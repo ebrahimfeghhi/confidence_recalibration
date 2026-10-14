@@ -1,0 +1,34 @@
+[
+ {
+  "name": "7w71",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "QVQLQQSRAELARPGASVKMSCKASGYTFTTYTMQWVKQRPGQALEWIGYINPGSGYAKNNQKFKDKATLTADKSSSTAYMQLSSLTSDDSAVYYCARSGSFFDYWGQGTTLTVSSAKTTPPSVYPLAPGSAAQTNSMVTLGCLVKGYFPEPVTVTWNSGSLSSGVHTFPAVLQSDLYTLSSSVTVPSSTWPSETVTCNVAHPASSTKVDKKIVPRD",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1617_7w71_H_1a71c2/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1617_7w71_H_1a71c2/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1617_7w71_H_1a71c2/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "DIVLTQSPAILSVTPGDSVSLSCRASQSVSSNLHWYQQRSHESPRLLITYAFQSISGIPSRFSGNGSGTDFTLNINSVETEDFGMYFCQQSNSWPYTFGGGTKLEIKRADAAPTVSIFPPSSEQLTSGGASVVCFLNNFYPKDINVKWKIDGSERQNGVLNSWTDQDSKDSTYSMSSTLTLTKDEYERHNSYTCEATHKTSTSPIVKSFNRN",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1617_7w71_L_d1ead1/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1617_7w71_L_d1ead1/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1617_7w71_L_d1ead1/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "GSGPQIEPVLENVQPNSAASKAGLQAGDRIVKVDGQPLTQWVTFVMLVRDNPGKSLALEIERQGSPLSLTLIPESKPGNGKAIGFVGIEPKVI",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1617_7w71_ag0_4b903f/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1617_7w71_ag0_4b903f/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1617_7w71_ag0_4b903f/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

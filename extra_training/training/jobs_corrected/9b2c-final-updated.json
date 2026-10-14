@@ -1,0 +1,34 @@
+[
+ {
+  "name": "9b2c",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "EVQLVESGGGLVQPGGSLRLSCAASGFTFSHYTMNWVRQAPGRGLEWVSSITTSSNFIYYADSVKGRFTISRDNTKNSLYLQMNSLSAEDTAVYFCARGGWELSYFDFWGQGTLVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKRVEP",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1887_9b2c_H_52aa1d/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1887_9b2c_H_52aa1d/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1887_9b2c_H_52aa1d/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "IVMTQSPLSLPVTLGQPASISCRSSQSLVYSDGNTFLNWFQQRPGQSPRRLIYKVSNRDSGVPDRFSGSGSGTDFTLRISRVEAEDVGFYYCMQGTHWPPTFGPGTKVEIKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRG",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1887_9b2c_L_c13fb9/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1887_9b2c_L_c13fb9/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1887_9b2c_L_c13fb9/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "MGILPSPGMPALLSLVSLLSVLLMGCVAETGTPELEVVQLNISAHMDFGEARLDSVTINGNTSYCVTKPYFRLETNFMCTGCTMNLRTDTCSFDLSAVNNGMSFSQFCLSTESGACEMKIIVTYVWNYLLRQRLYVTAVEGQTHTGLVPRGSGGSHHHHHHHH",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1887_9b2c_ag0_01a706/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1887_9b2c_ag0_01a706/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1887_9b2c_ag0_01a706/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

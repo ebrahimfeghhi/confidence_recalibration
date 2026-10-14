@@ -1,0 +1,34 @@
+[
+ {
+  "name": "9d72",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "QVTLKESGPGMLQPSKTLSLTCSFSGFSLSTSGLVVNWIRQPSGKSLEWLAAIDWDGDEYYNPSPKSRLTVSKDTSNTQVFLKITSVDTVDTATYYCARSRRYGRYSGAFDYWGLGVMVTVSSAETTAPSVYPLAPGTALKSNSMVTLGCLVKGYFPEPVTVTWNSGALSSGVHTFPAVLQSGLYTLTSSVTVPSSTWSSQAVTCNVAHPASSTKVDKKIVP",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9d72_H_e83ec9/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9d72_H_e83ec9/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9d72_H_e83ec9/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "DIQMTQSPSSMSASLGDKVTINCLASEDIGNYLSWYQQRPGKSPKLMIYGVTNLEDGVPSRFSGSRSGSDYSLTINSLGYDDEGIYHCHEYYEYPFTFGSGTKLEIKRADAAPTVSIFPPSTEQLATGGASVVCLMNNFYPRDISVKWKIDGTERRDGVLDSVTDQDSKDSTYSMSSTLSLTKADYESHNLYTCEVVHKTSSSPVVKSFNRNE",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9d72_L_e6abcb/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9d72_L_e6abcb/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9d72_L_e6abcb/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "IQKTPQIQVYSRHPPENGKPNILNCYVTQFHPPHIEIQMLKNGKKIPKVEMSDMSFSKDWSFYILAHTEFTPTETDTYACRVKHASMAEPKTVYWDRD",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9d72_ag0_4dc1ba/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9d72_ag0_4dc1ba/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c64_9d72_ag0_4dc1ba/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

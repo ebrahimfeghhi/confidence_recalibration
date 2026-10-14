@@ -65,6 +65,11 @@ def main():
     a = ap.parse_args()
 
     rows = list(csv.DictReader(open(a.gaps)))
+    # n_missing is 0 for an ambiguous row by construction; it is still a record that must survive.
+    for r in rows:
+        r.setdefault("n_missing", "0")
+        if not str(r["n_missing"]).strip():
+            r["n_missing"] = "0"
     if not rows:
         raise SystemExit(f"STOP: {a.gaps} has no rows. Run phase_j_job_cifs.py --native-gaps first; "
                          "an empty report and a missing one must not look the same.")

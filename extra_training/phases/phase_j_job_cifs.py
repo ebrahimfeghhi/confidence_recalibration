@@ -482,7 +482,9 @@ def place_by_native_position(native_seq, expected, native_of_index, span):
                      thing a corrected query should restore
       insert      -> query positions this structure has no residue for: a mask, not a defect
 
-    Returns (pos, outside, deletions, substitutions, ambiguous) with 1-based native positions.
+    Returns (pos, outside, deletions, substitutions, ambiguous, n2e). `n2e` is the FULL native ->
+    expected map over both resolved and unresolved positions, which is what a corrected query has to
+    be built from; `pos` covers only the residues that are actually observed.
     """
     import difflib
     sm = difflib.SequenceMatcher(None, native_seq, expected, autojunk=False)
@@ -502,7 +504,7 @@ def place_by_native_position(native_seq, expected, native_of_index, span):
             dels.extend(range(i1 + 1, i2 + 1))
         # "insert": expected positions with no native residue -> nothing to place, a mask
     if not n2e:
-        return {}, list(native_of_index), [], [], ambig
+        return {}, list(native_of_index), [], [], ambig, {}
     lo_n, hi_n = min(n2e), max(n2e)
     pos, outside = {}, []
     for idx, np_ in native_of_index.items():
@@ -516,7 +518,7 @@ def place_by_native_position(native_seq, expected, native_of_index, span):
     # only deletions INSIDE the mapped span are internal; outside it they are terminal truncation --
     # a signal peptide, a tag, or a constant region past the domain, none of which were folded
     dels_in = [d for d in dels if lo_n < d < hi_n]
-    return pos, outside, dels_in, subs, ambig
+    return pos, outside, dels_in, subs, ambig, n2e
 
 
 def drop_geometrically_impossible(res, pos, max_ca=4.5):
@@ -614,7 +616,7 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
         _nseq, _npos = _nat
         # observed index within this role's span -> its native position
         _idx2nat = {i - lo: np_ for np_, i in _npos.items() if lo <= i < hi}
-        pos, _outside, _missing_native, _subs, _ambig = place_by_native_position(
+        pos, _outside, _missing_native, _subs, _ambig, _n2e_full = place_by_native_position(
             _nseq, exp, _idx2nat, span=(0, len(res)))
         if _ambig:
             native_gaps.append(dict(
@@ -674,12 +676,51 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
 
         # RECORDED, NOT INFERRED. The native positions this role's query omits are what a corrected
         # query must restore, and they are reported per role rather than rediscovered later.
-        for _a, _b in _runs(_missing_native):
+        _classified = [(_a, _b, _classify(_a, _b)) for _a, _b in _runs(_missing_native)]
+        # THE CORRECTED QUERY, built here because this is where the native<->query map lives.
+        #
+        # RESTORE ONLY `omission` RUNS. A linker belongs to neither role and an `unresolved` run has
+        # not been judged, so both are left out -- the corrected query is then identical to the
+        # current one across those stretches, which is the conservative choice and keeps the decision
+        # open. SUBSTITUTIONS KEEP THE QUERY'S RESIDUE: where native and query differ 1:1 the
+        # construct really does carry the query's residue, and the native letter is not an
+        # improvement on it. That is why this walks the map rather than the native sequence.
+        _restore = {x for _a, _b, k in _classified if k == "omission" for x in range(_a, _b + 1)}
+        _corrected = None
+        if _restore:
+            # THE FULL MAP, NOT THE OBSERVED PLACEMENTS. This was built from `pos`, which holds only
+            # residues that are actually RESOLVED -- so every unresolved query position was missing
+            # from the walk and the corrected sequence came out short by exactly that many. 8cn9's
+            # heavy query is 216 with 2 internal natives to restore, and the walk produced fewer than
+            # 218. The length assertion below caught it on 28 of 173 runs rather than letting a short
+            # sequence reach a fold, which is the only reason this was visible at all.
+            _n2e = dict(_n2e_full)
+            _lo_n, _hi_n = min(_n2e), max(_n2e)
+            _seen, _out_seq = set(), []
+            for _np in range(_lo_n, _hi_n + 1):
+                _e = _n2e.get(_np)
+                if _e is not None:
+                    if _e not in _seen:            # one query position is emitted once
+                        _out_seq.append(exp[_e])
+                        _seen.add(_e)
+                elif _np in _restore:
+                    _out_seq.append(_nseq[_np - 1])
+            # anything of the query before the first or after the last MAPPED native position is
+            # still part of the fold input and must not be dropped by the rebuild
+            _head = exp[:min(_seen)] if _seen else ""
+            _tail = exp[max(_seen) + 1:] if _seen else ""
+            _corrected = _head + "".join(_out_seq) + _tail
+            if len(_corrected) != len(exp) + len(_restore):
+                _corrected = None                  # the walk did not account for every residue
+                print(f"    {st.name} {role}: corrected query rejected -- length does not equal "
+                      f"{len(exp)} + {len(_restore)}; left for review", flush=True)
+        for _a, _b, _kind in _classified:
             native_gaps.append(dict(
                 pdb=st.name, role=role, src_chain=cname, native_from=_a, native_to=_b,
-                n_missing=_b - _a + 1, sequence=_nseq[_a - 1:_b], kind=_classify(_a, _b),
+                n_missing=_b - _a + 1, sequence=_nseq[_a - 1:_b], kind=_kind,
                 roles_on_chain=sum(1 for (_r2, c2, _l2, _h2) in keep if c2 == cname),
-                outside_span=len(_outside), expected_len=len(exp), native_len=len(_nseq)))
+                outside_span=len(_outside), expected_len=len(exp), native_len=len(_nseq),
+                old_query=exp, corrected_query=_corrected or ""))
         # UNPLACED RESIDUES ARE REPORTED, AND A LARGE LOSS FAILS. An observed residue that does not
         # align to the fold's sequence cannot belong in the label -- the label's frame IS that
         # sequence -- so dropping it is correct wherever it sits. Two causes, both measured:
@@ -773,6 +814,10 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--only", default="", help="comma-separated pdb ids, for testing one path "
                                               "without rewriting every job cif")
+    ap.add_argument("--corrected-queries", default=None, metavar="GAPS_CSV",
+                    help="a previous --native-gaps csv; its corrected_query per (pdb, role) replaces "
+                         "the splits row's sequence as the LABEL FRAME, for rebuilding the label of "
+                         "a refolded unit. Only `omission` rows are used.")
     ap.add_argument("--native-gaps", default=f"{ROOT}/training/prep/native_gaps.csv",
                     help="roles whose folded query omits internal native residues -- the refold list")
     ap.add_argument("--unplaced", default=f"{ROOT}/training/prep/unplaced_residues.csv",
@@ -786,6 +831,14 @@ def main():
                     help="structures whose chains cannot be resolved, with the reason. A failure "
                          "not already listed here is a STOP.")
     a = ap.parse_args()
+
+    _corrected_frames = collections.defaultdict(dict)
+    if a.corrected_queries:
+        for _r in csv.DictReader(open(a.corrected_queries)):
+            if _r.get("kind") == "omission" and _r.get("corrected_query"):
+                _corrected_frames[_r["pdb"]][_r["role"]] = _r["corrected_query"]
+        print(f"corrected label frames for {len(_corrected_frames)} structure(s) from "
+              f"{a.corrected_queries}")
 
     sel = list(csv.DictReader(open(a.selection)))
     src = {r["INSTANCE"]: r for r in csv.DictReader(open(a.splits))}
@@ -826,6 +879,14 @@ def main():
             if t2 in POLY and i2 < len(_exp) and _exp[i2].strip():
                 exp_of[f"ag{i2}"] = _exp[i2].strip().upper()
         out = os.path.join(a.out_dir, f"{r['pdb']}.cif")
+        # THE CORRECTED FRAME, when one exists. A label's frame IS the sequence that was folded, so
+        # a refolded unit must be labelled against its CORRECTED query, not the splits row's original.
+        # Only `omission` runs contribute, so a structure whose role carries an unresolved or
+        # ambiguous run keeps its original frame and stays out of the refold.
+        if _corrected_frames:
+            for _role, _cq in _corrected_frames.get(r["pdb"], {}).items():
+                if _role in exp_of:
+                    exp_of[_role] = _cq.strip().upper()
         expected = exp_of
         info, why = write_job_cif(st, pairs, exp_of, out, a.max_unplaced_frac,
                                   resolution=row.get("resolution"), method=row.get("method"))
@@ -835,10 +896,14 @@ def main():
                 unplaced_rows.append({"pdb": r["pdb"], "role": role, "src_chain": src_c,
                                       "out_chain": out_c, "kept": kept, "expected": expn,
                                       "unplaced": unp, "misplaced": mis})
+            # EVERY ROW IS KEPT. Filtering on n_missing discarded exactly the AMBIGUOUS rows, which
+            # carry 0 by construction -- an n:m replace has no single count of missing residues -- so
+            # the one class that most needs a human decision never reached the report. write_job_cif
+            # emits a row per classified run and nothing for a role with no runs, so there are no
+            # empty rows for this filter to have been protecting against.
             for g in gaps:
                 g["pdb"] = r["pdb"]
-                if g["n_missing"]:
-                    native_gap_rows.append(g)
+                native_gap_rows.append(g)
         if why:
             bad.append((r["pdb"], r["instance"], why))
             continue
@@ -922,7 +987,8 @@ def main():
     with open(a.native_gaps, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["pdb", "role", "src_chain", "native_from", "native_to",
                                            "n_missing", "sequence", "kind", "roles_on_chain",
-                                           "outside_span", "expected_len", "native_len"],
+                                           "outside_span", "expected_len", "native_len",
+                                           "old_query", "corrected_query"],
                            lineterminator="\n")
         w.writeheader(); w.writerows(native_gap_rows)
     import collections as _c

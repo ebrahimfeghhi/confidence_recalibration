@@ -1,0 +1,2 @@
+pdb,tokens,reason
+9mx1,2941,"protenix-v2 refuses n_token > 2560 (runner/inference.py:399, raised to avoid OOM). The largest structure in the selection and the only one over the cap. The training crop was set to 3400 to accommodate it; nobody checked it against the INFERENCE limit. Skipped, not reduced -- N_sample and N_cycle are unchanged. Training pool is therefore 500 structures, not 501."

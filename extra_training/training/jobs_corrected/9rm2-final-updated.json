@@ -1,0 +1,34 @@
+[
+ {
+  "name": "9rm2",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "QVQLQQWGAGLLKPSETLSLTCAVYRGSFSAYYWTWFRQPPGKGLEWIGEINHRGYTNYNPSLRGRVSISVDTSKKQFSLKLRSVNAADTAVYYCATLRSTSGWHDYFDYWGQGTLVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEPKS",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1366_9rm2_H_8770b1/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1366_9rm2_H_8770b1/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1366_9rm2_H_8770b1/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "EIVLTQSPGTLSLSPGERATLSCRASQSVSSSYLAWYQQTPGQAPRLLIYGASSRATGIPDRFSGSGSGTDFTLTISRLEPEDFVVYFCLQYGSSPLTFGPGTKVDIKRTVAAPSVFIFPPSDEQLKSGTASVVCLLNNFYPREAKVQWKVDNALQSGNSQESVTEQDSKDSTYSLSSTLTLSKADYEKHKVYACEVTHQGLSSPVTKSFNRGEC",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1366_9rm2_L_a9f1e1/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1366_9rm2_L_a9f1e1/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1366_9rm2_L_a9f1e1/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "MAPTKRKGECPGAAPKKPKEPVQVPKLLIKGGVEVLEVKTGVDAITEVECFLNPEMGDPDENLRGFSLKLSAENDFSSDSPERKMLPCYSTARIPLPNLNEDLTSGNLLMWEAVTVQTEVIGITSMLNLHAGSQKVHEHGGGKPIQGSNFHFFAVGGDPLEMQGVLMNYRTKYPDGTITPKNPTAQSQVMNTDHKAYLDKNNAYPVECWVPDPSRNENTRYFGTFTGGENVPPVLHVTNTATTVLLDEQGVGPLCKADSLYVSAADICGLFTNSSGTQQWRGLARYFKIRLRKRSVKNPY",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1366_9rm2_ag2_d1d42d/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1366_9rm2_ag2_d1d42d/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1366_9rm2_ag2_d1d42d/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]

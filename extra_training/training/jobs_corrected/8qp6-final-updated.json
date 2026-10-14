@@ -1,0 +1,34 @@
+[
+ {
+  "name": "8qp6",
+  "sequences": [
+   {
+    "proteinChain": {
+     "sequence": "VQLLEQSGAEVKRPGASVKVSCKASGYTFTSYAIHWVRQAPGQRLEWMGWINPGNGNAKYSQRFQGRVIISRDTSATTSYMELSSLTSEDTAVYSCARDRGFDLLTGHYLGLDPWGQGTLVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVEPK",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c561_8qp6_H_5e1058/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c561_8qp6_H_5e1058/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c561_8qp6_H_5e1058/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "LTLTQPASASATPGQRVTISCSGSSSNIGGNTVNWYQHLPGAAPKLLIHNNDLRPSGVPDRFSGSKSGTSASLAVSGLQSEDEADYFCAAWDDGLNGWVFGGGTKLTVLGQPKAAPSVTLFPPSSEELQANKATLVCLISDFYPGAVTVAWKADSSPVKAGVETTTPSKQSNNKYAASSYLSLTPEQWKSHKSYSCQVTHEGSTVEKTVAPTE",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c561_8qp6_L_5a31a0/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c561_8qp6_L_5a31a0/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c561_8qp6_L_5a31a0/hmmsearch.a3m"
+    }
+   },
+   {
+    "proteinChain": {
+     "sequence": "MGSREVATPHRAAWLAMMLGIDASKVKGTGPGGVITVEDVKRWAEETAKATAGSENLYFQ",
+     "count": 1,
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c561_8qp6_ag0_cf276f/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c561_8qp6_ag0_cf276f/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c561_8qp6_ag0_cf276f/hmmsearch.a3m"
+    }
+   }
+  ]
+ }
+]
