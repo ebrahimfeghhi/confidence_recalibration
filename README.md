@@ -53,7 +53,7 @@ analysis rests on:
 
 - `msa_encoder.enabled = **false**` in the ESMFold2-Fast checkpoint. Base `biohub/ESMFold2` has it
   **true** (already cached).
-- [`run/esm/run_foldbench_abag.py`](run/esm/run_foldbench_abag.py) never passes an MSA — and at
+- [`archive/run/esm/run_foldbench_abag.py`](archive/run/esm/run_foldbench_abag.py) never passes an MSA — and at
   `:46-48` it explicitly *filters out* the MSA-bearing JSONs.
 - Protenix uses MSAs (10k–16k sequences).
 
@@ -115,7 +115,8 @@ Full detail, including the verification numbers: [`docs/dockq_ground_truth_and_g
 
 ```
 paths.py            # single source of truth for every absolute path
-run/
+archive/run/        # SUPERSEDED launchers, kept for provenance. Nothing imports them; the Protenix
+                    # one predates the claim-based worker and cannot share a queue or resume.
   esm/              # ESMFold2-Fast inference (needs the esm venv)
     run_foldbench_abag.py            # fold all complexes for a set of seeds
     run_foldbench_abag_parallel.py   # fan the above out across GPUs
@@ -142,8 +143,8 @@ so you can invoke them from anywhere; just use the right interpreter.
 
 | Stage | Interpreter / env | Why |
 |-------|-------------------|-----|
-| `run/esm/*` | `~/esm/.venv/bin/python` (`paths.ESM_PYTHON`) | imports the `esm` package |
-| `run/protenix/run_benchmark_parallel.py` | `~/Protenix/.venv/bin/python` + `~/checkpoint` | calls Protenix `runner/inference.py` |
+| `archive/run/esm/*` | `~/esm/.venv/bin/python` (`paths.ESM_PYTHON`) | imports the `esm` package |
+| `archive/run/protenix/run_benchmark_parallel.py` | `~/Protenix/.venv/bin/python` + `~/checkpoint` | calls Protenix `runner/inference.py` |
 | `eval/eval_ost_foldbench.py` | python with `tqdm` + `biotite` (else falls back to a `PROTENIX_PYTHON` subprocess); needs the `foldbench` conda env's **OST** binary (`paths.OST_BIN`) | runs `ost compare-structures` |
 | `plot/*` | any python with numpy/matplotlib | pure post-processing |
 | `steer/experiments/*` | `~/esm/.venv/bin/python` | imports the steering engine (`steer/core`) + `esm` |
@@ -154,7 +155,7 @@ so you can invoke them from anywhere; just use the right interpreter.
 cd ~/tts_abag
 
 # 1) RUN — 50 seeds across 3 GPUs, 10% mask + 30% dropout (TTS settings)
-~/esm/.venv/bin/python run/esm/run_foldbench_abag_parallel.py \
+~/esm/.venv/bin/python archive/run/esm/run_foldbench_abag_parallel.py \
     --run_name esmfold2fast_tts --gpus 0 1 2 \
     --seeds $(seq 0 49) --lm_mask_pct 0.1 --lm_dropout 0.3
 # writes to paths.ESM_PREDICTIONS/esmfold2fast_tts/<complex>/seed_N/predictions/
@@ -176,7 +177,7 @@ ESM — each GPU runs all structures for its share of seeds, one checkpoint load
 GPU, resume-aware):
 
 ```bash
-~/Protenix/.venv/bin/python run/protenix/run_benchmark_parallel.py \
+~/Protenix/.venv/bin/python archive/run/protenix/run_benchmark_parallel.py \
     --gpus 0 1 3 4 --seeds $(seq 101 110)
 # add --dry_run to preview per-GPU seeds, structure counts, and commands first
 ```
