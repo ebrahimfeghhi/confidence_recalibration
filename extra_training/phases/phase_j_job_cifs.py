@@ -129,7 +129,7 @@ def job_chains(row, seqs):
     return assign_chains([(k, q) for k, q in want if q], seqs)
 
 
-def write_job_cif(st, keep, expected, out_cif):
+def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15):
     """in: the entry structure, [(role, chain, lo, hi)], {role: expected sequence}, output path.
 
     THE LABEL'S FRAME IS THE FOLD'S EXPECTED SEQUENCE. Each output chain gets its own entity whose
@@ -167,7 +167,23 @@ def write_job_cif(st, keep, expected, out_cif):
         for b in sm.get_matching_blocks():
             for k in range(b.size):
                 pos[b.b + k] = b.a + k
+        # UNPLACED RESIDUES ARE REPORTED, AND A LARGE LOSS FAILS. An observed residue that does not
+        # align to the fold's sequence cannot belong in the label -- the label's frame IS that
+        # sequence -- so dropping it is correct wherever it sits. Two causes, both measured:
+        #   - TERMINAL OVERHANG: SAbDab2's Hseq is the variable domain while the crystal chain runs
+        #     into the constant region. 9p1m observes 215 residues against an expected 193, the extra
+        #     22 being CH1 (...SVFPLAPSGTAALGC...).
+        #   - SHORT INSERTIONS at the variable/constant junction, where the crystallised construct
+        #     differs from the expected sequence: 8fg0 observes SVFPLAPS(SK)GTAALG, 9hud (AQT).
+        # Neither is in the folded system. What was wrong before is that this happened SILENTLY --
+        # 17 of 501 structures lost residues, up to 49. Now every loss is written to --unplaced and a
+        # chain losing more than --max-unplaced-frac of its observed residues stops the phase, since
+        # that is no longer a junction artefact.
         unplaced = [i for i in range(len(res)) if i not in pos]
+        if unplaced and len(unplaced) > max_unplaced_frac * len(res):
+            return None, (f"{role}: {len(unplaced)} of {len(res)} observed residues do not align to "
+                          f"the fold's sequence ({100*len(unplaced)/len(res):.0f}%, limit "
+                          f"{100*max_unplaced_frac:.0f}%) -- too much to be a junction artefact")
         new_name = next(names)
         ch = gemmi.Chain(new_name)
         for i, r in enumerate(res):
@@ -210,6 +226,11 @@ def main():
     ap.add_argument("--src-dir", default=f"{ROOT}/data/rcsb_training_cifs")
     ap.add_argument("--out-dir", default=f"{ROOT}/train_prep/job_cifs")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--unplaced", default=f"{ROOT}/train_prep/unplaced_residues.csv",
+                    help="per-chain record of observed residues dropped because they are not in the "
+                         "fold's sequence; written every run, reviewed, never silent")
+    ap.add_argument("--max-unplaced-frac", type=float, default=0.15,
+                    help="a chain losing more than this fraction of its observed residues STOPS")
     ap.add_argument("--jobs-dir", default=f"{ROOT}/train_jobs",
                     help="the fold's job jsons; the written cif's sequences are asserted against them")
     ap.add_argument("--skipped", default=f"{ROOT}/train_prep/skipped_job_cifs.csv",
@@ -222,7 +243,7 @@ def main():
     if a.limit:
         sel = sel[:a.limit]
     import gemmi
-    ok, bad = 0, []
+    ok, bad, unplaced_rows = 0, [], []
     for r in sel:
         row = src[r["instance"]]
         st = gemmi.read_structure(os.path.join(a.src_dir, f"{r['pdb']}.cif"))
@@ -248,27 +269,66 @@ def main():
                 exp_of[f"ag{i2}"] = _exp[i2].strip().upper()
         out = os.path.join(a.out_dir, f"{r['pdb']}.cif")
         expected = exp_of
-        info, why = write_job_cif(st, pairs, exp_of, out)
+        info, why = write_job_cif(st, pairs, exp_of, out, a.max_unplaced_frac)
+        if info:
+            for role, src_c, out_c, kept, expn, unp in info:
+                unplaced_rows.append({"pdb": r["pdb"], "role": role, "src_chain": src_c,
+                                      "out_chain": out_c, "kept": kept, "expected": expn,
+                                      "unplaced": unp})
         if why:
             bad.append((r["pdb"], r["instance"], why))
             continue
         # ASSERT AGAINST THE FOLD INPUT. The label's frame has to be the sequences the fold was
         # actually given, so the entity sequences of the written cif are compared to the job json
         # phase G produced. Anything else means the label describes a different molecule.
+        # READ THE WRITTEN FILE BACK. Comparing the expected-sequence dict we just built proves
+        # nothing about what landed on disk; and skipping the check when the job json is absent made
+        # the only assertion optional. Both are now mandatory and read the output.
         jj = os.path.join(a.jobs_dir, f"{r['pdb']}-final-updated.json")
-        if os.path.exists(jj):
-            want = sorted((sq["proteinChain"]["sequence"] or "").strip().upper()
-                          for task in json.load(open(jj)) for sq in task["sequences"]
-                          if "proteinChain" in sq)
-            got = sorted(expected[role].upper() for role, *_ in pairs)
-            if want != got:
+        if not os.path.exists(jj):
+            bad.append((r["pdb"], r["instance"],
+                        f"no job json at {jj}; the label cannot be checked against the fold input"))
+            continue
+        want = sorted((sq["proteinChain"]["sequence"] or "").strip().upper()
+                      for task in json.load(open(jj)) for sq in task["sequences"]
+                      if "proteinChain" in sq)
+        back = gemmi.read_structure(out)
+        back.setup_entities()
+        got = sorted(gemmi.one_letter_code(list(e.full_sequence)).upper()
+                     for e in back.entities
+                     for _ in e.subchains if e.entity_type == gemmi.EntityType.Polymer)
+        if want != got:
+            bad.append((r["pdb"], r["instance"],
+                        f"the written cif's entity sequences do not match the job json: "
+                        f"{len(got)} vs {len(want)} chains, lengths {[len(x) for x in got]} "
+                        f"vs {[len(x) for x in want]}"))
+            continue
+        # and every residue must sit at a position its entity sequence actually has
+        for ch in back[0]:
+            ent = next((e for e in back.entities if ch[0].subchain in e.subchains), None)
+            if ent is None:
+                bad.append((r["pdb"], r["instance"], f"chain {ch.name} has no entity"))
+                break
+            n = len(ent.full_sequence)
+            off = [rr.label_seq for rr in ch if not (1 <= (rr.label_seq or 0) <= n)]
+            if off:
                 bad.append((r["pdb"], r["instance"],
-                            f"job json has {len(want)} chain sequences, the cif was built for "
-                            f"{len(got)}; lengths {[len(x) for x in want]} vs {[len(x) for x in got]}"))
-                continue
-        ok += 1
+                            f"chain {ch.name} has {len(off)} residue(s) outside its entity "
+                            f"sequence of {n}: label_seq {off[:5]}"))
+                break
+        else:
+            ok += 1
+        continue
 
+    with open(a.unplaced, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=["pdb", "role", "src_chain", "out_chain", "kept",
+                                           "expected", "unplaced"], lineterminator="\n")
+        w.writeheader()
+        w.writerows(unplaced_rows)
+    nz = [r for r in unplaced_rows if r["unplaced"]]
     print(f"wrote {ok} job cif(s) to {a.out_dir}")
+    print(f"dropped residues not in the fold's sequence: {sum(r['unplaced'] for r in nz)} across "
+          f"{len({r['pdb'] for r in nz})} structure(s) -> {a.unplaced}")
     # SKIP WITH A RECORDED REASON. SAbDab2 names some antibody chains with a trailing index --
     # E1/E2, H1/H2, A1/C2 -- where the cif has a single auth chain E, H, A. Those are single-chain
     # constructs whose VH and VL SAbDab2 splits into segments, so the crystal has one chain where
