@@ -107,7 +107,7 @@ def main():
     # REAL token counts where we have them: the proxy underestimates assemblies with repeated
     # chains by up to 2x (9dzf: 1081 proxy vs 2289 real), and that error is 4x in cache bytes.
     real = collections.defaultdict(list)
-    for m in csv.DictReader(open(f"{REPO}/val_jobs/manifest.csv")):
+    for m in csv.DictReader(open(f"{REPO}/extra_training/validation/jobs/manifest.csv")):
         if m["post_cutoff"] == "True":
             real[m["cluster"]].append((int(m["n_tokens"]), m["pdb"], m["deposited"],
                                        m["instance"]))

@@ -37,13 +37,15 @@ import copy
 import functools
 import glob
 import json
+import hashlib
 import os
 import sys
 import time
 
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
 sys.path.insert(0, "/home/ebrahim/Protenix")
 sys.path.insert(0, os.path.join(ROOT, "phases"))
 print = functools.partial(print, flush=True)
@@ -253,6 +255,56 @@ def check_label(lc, lm, atoms, pdb, unit, tol=0.01):
                          f"(worst {d.max():.3f} A)")
 
 
+SCHEMA = 2        # bump whenever the payload's meaning changes, so old labels stop being reused
+
+
+def sha(path, n=1 << 20):
+    """sha256 of a file, or "" if it is absent."""
+    if not os.path.exists(path):
+        return ""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            b = fh.read(n)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()[:16]
+
+
+def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
+    """What this unit's label was built FROM, as one short string.
+
+    WHY A LABEL MUST CARRY ONE. Reuse used to be `os.path.exists(out)`, decided before any check ran,
+    and the payload recorded no inputs. So fixing the chain selection or the entity preparation did
+    not invalidate a single label already on disk: the next run skipped them all and training would
+    have mixed labels built from the old job cifs with labels built from the new ones, with nothing
+    able to tell which was which. The job cif in particular is the file the whole label is derived
+    from, and it is exactly what the 2026-10-14 geometry fix rewrites.
+    """
+    return "|".join([
+        f"schema={SCHEMA}",
+        f"code={code_fp}",
+        f"loss={loss_fp}",
+        f"cif={sha(os.path.join(a.mmcif_dir, f'{pdb}.cif'))}",
+        f"bio={sha(os.path.join(a.bio_dir, f'{pdb}.pkl.gz'))}",
+        f"idx={sha(a.indices)}",
+        f"trunk={sha(trunk_p)}",
+    ])
+
+
+def stale(out, want):
+    """True when `out` cannot be reused: absent, unreadable, or built from different inputs."""
+    if not os.path.exists(out):
+        return True
+    try:
+        with np.load(out, allow_pickle=False) as z:
+            got = str(z["fingerprint"]) if "fingerprint" in z.files else ""
+    except Exception:                                   # truncated or not an npz
+        return True
+    return got != want
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", default=f"{ROOT}/training/fold")
@@ -282,7 +334,7 @@ def main():
 
     cfg = DS.build_configs(a.crop_size, a.indices, a.bio_dir, a.mmcif_dir, a.msa_root,
                            a.seq_index, a.msa_root)
-    err = os.path.join(ROOT, "train_prep", "dataset_errors")
+    err = os.path.join(ROOT, "training", "prep", "dataset_errors")
     os.makedirs(err, exist_ok=True)
     train, _ = get_datasets(cfg, err)
     global RES_MIN, RES_MAX
@@ -292,16 +344,54 @@ def main():
     print(f"dataset: {len(train)} datapoints over {len(byp)} structures")
 
     units = sorted(glob.glob(f"{a.fold}/trunks/*/*.npz"))
+    # AN EMPTY DISCOVERY IS A FAILURE. Globbing whatever trunks exist means a wrong --fold prints
+    # "0 cached unit(s) to label", writes an empty report and exits 0 -- a zero-work run that reads
+    # as success.
+    if not units:
+        raise SystemExit(f"STOP: no trunk npz under {a.fold}/trunks. Wrong --fold, or the fold has "
+                         "not written any unit yet.")
+    # THE EXPECTED SET IS EXPLICIT, NOT WHATEVER IS ON DISK. Discovery cannot see a unit that has no
+    # trunk file, so a fold that died partway looks complete. The queue is the contract.
+    queue = f"{a.fold}/queue.tsv"
+    if os.path.exists(queue) and not (a.only or a.limit or a.stride != 1):
+        want_units = set()
+        for line in open(queue):
+            f = line.split()
+            if len(f) >= 2:
+                want_units.add((f[1].strip().lower(), f[0].strip()))
+        have = {(os.path.basename(os.path.dirname(u)).lower(),
+                 os.path.basename(u)[:-4].split("_")[-1]) for u in units}
+        gap = want_units - have
+        if gap:
+            print(f"NOTE: {len(gap)} of {len(want_units)} queued unit(s) have no trunk yet, "
+                  f"e.g. {sorted(gap)[:3]} -- this run labels {len(have)} of them")
     if a.only:
         keep = {x.strip().lower() for x in a.only.split(",") if x.strip()}
         units = [u for u in units if os.path.basename(os.path.dirname(u)).lower() in keep]
+        if not units:
+            raise SystemExit(f"STOP: --only {a.only} matched no unit under {a.fold}/trunks")
     units = units[a.offset::a.stride]
     if a.limit:
         units = units[:a.limit]
     print(f"{len(units)} cached unit(s) to label")
+    # ONE FINGERPRINT OF THE CODE AND THE LOSS CONFIG, shared by every unit of this run.
+    code_fp = hashlib.sha256(b"".join(
+        open(os.path.join(HERE, f), "rb").read() for f in
+        ("phase_j_build_cache.py", "phase_j_dataset.py", "phase_j_job_cifs.py")
+        if os.path.exists(os.path.join(HERE, f)))).hexdigest()[:16]
+    # THE LOSS WEIGHTS ARE PART OF THE LABEL'S PROVENANCE: alpha_pae ships as 0.0, so a label built
+    # under the stock weights is not the label a run with the PAE loss enabled should reuse.
+    try:
+        w = cfg.loss.weight
+        loss_fp = hashlib.sha256(repr(sorted(
+            (k, float(getattr(w, k))) for k in dir(w)
+            if not k.startswith("_") and isinstance(getattr(w, k), (int, float))
+        )).encode()).hexdigest()[:16]
+    except Exception:
+        loss_fp = "n/a"
 
     os.makedirs(a.out_dir, exist_ok=True)
-    rows, skipped, t0 = [], [], time.time()
+    rows, skipped, t0, reused = [], [], time.time(), 0
     # THE DATASET ITEM IS BUILT ONCE PER STRUCTURE, not once per unit: every seed of a structure
     # shares the same label, and building it is the expensive half.
     cached_item, cif_atoms = {}, {}
@@ -309,7 +399,11 @@ def main():
         pdb = os.path.basename(os.path.dirname(up))
         arm_seed = os.path.basename(up)[:-4]
         out = os.path.join(a.out_dir, pdb, f"{arm_seed}.npz")
-        if os.path.exists(out) and not a.overwrite:
+        # REUSE ONLY WHAT WAS BUILT FROM THESE INPUTS. `os.path.exists(out)` let a label written
+        # before an upstream fix survive it untouched.
+        fprint = unit_fingerprint(a, pdb, up, code_fp, loss_fp)
+        if not a.overwrite and not stale(out, fprint):
+            reused += 1
             continue
         try:
             if pdb not in byp:
@@ -343,7 +437,8 @@ def main():
             if pdb not in cif_atoms:
                 cif_atoms[pdb] = label_atom_coords(os.path.join(a.mmcif_dir, f"{pdb}.cif"))
             check_label(lc, lm, cif_atoms[pdb], pdb, arm_seed)
-            payload = {"label_coordinate": np.stack(lc), "label_coordinate_mask": np.stack(lm),
+            payload = {"fingerprint": np.array(fprint), "schema": np.array(SCHEMA),
+                       "label_coordinate": np.stack(lc), "label_coordinate_mask": np.stack(lm),
                        "sample_index": ks, "pdb": pdb, "unit": arm_seed,
                        "dataset_index": byp[pdb][0], "n_pose": len(poses)}
             # THE RESOLUTION GATE, CHECKED RATHER THAN DISCOVERED. loss.py:1735-1752 compares
@@ -381,7 +476,8 @@ def main():
             print(f"  {n}/{len(units)}  built {len(rows)}  skipped {len(skipped)}  "
                   f"{el/n:.2f} s/unit")
 
-    print(f"\nbuilt {len(rows)} label set(s), skipped {len(skipped)}")
+    print(f"\nbuilt {len(rows)} label set(s), reused {reused} already matching their inputs, "
+          f"skipped {len(skipped)}")
     if a.report:
         import csv
         with open(a.report, "w", newline="") as fh:

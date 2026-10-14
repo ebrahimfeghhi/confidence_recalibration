@@ -391,6 +391,62 @@ def job_chains(row, seqs, st=None):
     return out, bad
 
 
+def drop_geometrically_impossible(res, pos, max_ca=4.5):
+    """Remove placements that the geometry says cannot be that residue.
+
+    WHY A LETTER MATCH IS NOT A PLACEMENT. The alignment above positions each observed residue by
+    SEQUENCE, which is right, but a residue from past the domain boundary can still align: it only
+    has to carry the same amino acid as the expected position, and the expected position itself is
+    often unresolved. 8h3c is the clean case -- splitting its single-chain construct gave the heavy
+    domain auth residues 2..118, then the span reached past the unresolved stretch 119..133 and took
+    auth 134, a THR, which the matcher placed at expected position 117 because the real residue 117
+    is absent. Residue 134 sits with the LIGHT domain, 32 A away.
+
+    WHAT THAT COST. Protenix then applies AF3's filter (filter.py:146): two residues whose label_seq
+    differ by one and whose CA atoms are more than 10 A apart make the chain physically impossible,
+    so the WHOLE CHAIN is deleted. 104 of 501 structures lost a chain from the label this way and
+    were refused by the cache builder; 34 more carried a 4.5-10 A break, which the filter passes, so
+    they would have trained against a wrong residue SILENTLY. The same parser on the original RCSB
+    entry drops no chain, so the break is ours, not upstream.
+
+    THE THRESHOLD IS MEASURED, NOT CHOSEN. Over all 501 job cifs, 308,955 of 310,599 consecutive
+    CA-CA distances (99.47%) fall in 3.5-4.0 A, the physical value; the 4.0-4.5 A band holds SIX
+    pairs. 4.5 A sits in an empty valley, far from anything real.
+
+    The offender is removed, not renumbered, and is counted as unplaced so the caller's
+    --max-unplaced-frac stop applies. Greedy by violation count, because one bad residue can break
+    continuity on both sides.
+    """
+    def ca(i):
+        for a in res[i]:
+            if a.name == "CA":
+                return a.pos
+        return None
+
+    dropped = []
+    while True:
+        placed = sorted(((pos[i], i) for i in pos), key=lambda t: t[0])
+        viol = collections.Counter()
+        for (s1, i1), (s2, i2) in zip(placed, placed[1:]):
+            if s2 - s1 != 1:
+                continue
+            a, b = ca(i1), ca(i2)
+            if a is None or b is None:
+                continue
+            if a.dist(b) > max_ca:
+                viol[i1] += 1
+                viol[i2] += 1
+        if not viol:
+            return dropped
+        # the worst offender; a tie goes to the one nearer a terminus, which is where a span
+        # overruns its domain
+        n = len(placed)
+        rank = {i: min(k, n - 1 - k) for k, (_s, i) in enumerate(placed)}
+        worst = min(viol, key=lambda i: (-viol[i], rank[i]))
+        del pos[worst]
+        dropped.append(worst)
+
+
 def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
                   resolution=None, method=None):
     """in: the entry structure, [(role, chain, lo, hi)], {role: expected sequence}, output path.
@@ -442,6 +498,10 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
         # 17 of 501 structures lost residues, up to 49. Now every loss is written to --unplaced and a
         # chain losing more than --max-unplaced-frac of its observed residues stops the phase, since
         # that is no longer a junction artefact.
+        # GEOMETRY VETOES A LETTER MATCH. See drop_geometrically_impossible: a residue from past the
+        # domain boundary can align by sequence and still be 32 A from its neighbour, which costs
+        # the whole chain downstream.
+        misplaced = drop_geometrically_impossible(res, pos)
         unplaced = [i for i in range(len(res)) if i not in pos]
         if unplaced and len(unplaced) > max_unplaced_frac * len(res):
             return None, (f"{role}: {len(unplaced)} of {len(res)} observed residues do not align to "
@@ -464,7 +524,8 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
         ent.full_sequence = gemmi.expand_one_letter_sequence(exp, gemmi.ResidueKind.AA)
         ents.append(ent)
         chains.append(new_name)
-        report.append((role, cname, new_name, len(ch), len(exp), len(unplaced)))
+        report.append((role, cname, new_name, len(ch), len(exp), len(unplaced),
+                       len(misplaced)))
     out.add_model(model)
     out.entities = gemmi.EntityList()
     for e in ents:
@@ -516,6 +577,8 @@ def main():
     ap.add_argument("--src-dir", default=f"{ROOT}/SAbDab2_data/rcsb_training_cifs")
     ap.add_argument("--out-dir", default=f"{ROOT}/training/prep/job_cifs")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--only", default="", help="comma-separated pdb ids, for testing one path "
+                                              "without rewriting every job cif")
     ap.add_argument("--unplaced", default=f"{ROOT}/training/prep/unplaced_residues.csv",
                     help="per-chain record of observed residues dropped because they are not in the "
                          "fold's sequence; written every run, reviewed, never silent")
@@ -530,6 +593,11 @@ def main():
 
     sel = list(csv.DictReader(open(a.selection)))
     src = {r["INSTANCE"]: r for r in csv.DictReader(open(a.splits))}
+    if a.only:
+        keep_ids = {x.strip().lower() for x in a.only.split(",") if x.strip()}
+        sel = [r for r in sel if r["pdb"].lower() in keep_ids]
+        if not sel:
+            raise SystemExit(f"STOP: --only {a.only} matched no row of {a.selection}")
     if a.limit:
         sel = sel[:a.limit]
     import gemmi
@@ -562,10 +630,10 @@ def main():
         info, why = write_job_cif(st, pairs, exp_of, out, a.max_unplaced_frac,
                                   resolution=row.get("resolution"), method=row.get("method"))
         if info:
-            for role, src_c, out_c, kept, expn, unp in info:
+            for role, src_c, out_c, kept, expn, unp, mis in info:
                 unplaced_rows.append({"pdb": r["pdb"], "role": role, "src_chain": src_c,
                                       "out_chain": out_c, "kept": kept, "expected": expn,
-                                      "unplaced": unp})
+                                      "unplaced": unp, "misplaced": mis})
         if why:
             bad.append((r["pdb"], r["instance"], why))
             continue
@@ -640,13 +708,19 @@ def main():
 
     with open(a.unplaced, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["pdb", "role", "src_chain", "out_chain", "kept",
-                                           "expected", "unplaced"], lineterminator="\n")
+                                           "expected", "unplaced", "misplaced"],
+                           lineterminator="\n")
         w.writeheader()
         w.writerows(unplaced_rows)
     nz = [r for r in unplaced_rows if r["unplaced"]]
+    mz = [r for r in unplaced_rows if r.get("misplaced")]
     print(f"wrote {ok} job cif(s) to {a.out_dir}")
     print(f"dropped residues not in the fold's sequence: {sum(r['unplaced'] for r in nz)} across "
           f"{len({r['pdb'] for r in nz})} structure(s) -> {a.unplaced}")
+    # THE GEOMETRIC VETO, COUNTED SEPARATELY. These aligned by sequence and were removed because the
+    # geometry says they are not that residue; see drop_geometrically_impossible.
+    print(f"of those, vetoed by geometry: {sum(r['misplaced'] for r in mz)} residue(s) across "
+          f"{len({r['pdb'] for r in mz})} structure(s)")
     # SKIP WITH A RECORDED REASON. SAbDab2 names some antibody chains with a trailing index --
     # E1/E2, H1/H2, A1/C2 -- where the cif has a single auth chain E, H, A. Those are single-chain
     # constructs whose VH and VL SAbDab2 splits into segments, so the crystal has one chain where

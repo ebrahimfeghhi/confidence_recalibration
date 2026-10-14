@@ -75,6 +75,72 @@ def git_sha() -> str:
 # commit made hours later.
 LOADED_SHA = git_sha()
 
+PROTENIX = os.environ.get("PROTENIX_ROOT", os.path.expanduser("~/Protenix"))
+
+
+def _sha256(path: str, n: int = 1 << 20) -> str:
+    if not path or not os.path.exists(path):
+        return ""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            b = fh.read(n)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def external_provenance() -> dict:
+    """What identifies the MODEL that produced a fold, which this repository's sha does not.
+
+    WHY OUR OWN SHA IS NOT ENOUGH. The trunk, the diffusion module and the confidence head all live
+    in an external Protenix checkout with local dump hooks applied to it, and the weights are a file
+    on disk. None of that is reconstructable from this repository, so two caches built under the same
+    `git_sha` can come from different inference regimes -- and the head is being calibrated on the
+    representation distribution those regimes produce. The pxm2025 pool is the standing example of
+    what that costs: its exact configuration is unrecoverable.
+
+    Recorded: the external commit, whether its tree is dirty, the diff of the local modifications
+    (hashed, with the patch kept beside the run), the checkpoint's sha256, and the interpreter.
+    Captured once at import, like LOADED_SHA, because the checkout can change under a long run.
+    """
+    def run(*cmd):
+        try:
+            return subprocess.run(cmd, cwd=PROTENIX, capture_output=True,
+                                  text=True, timeout=30).stdout.strip()
+        except Exception:
+            return ""
+    diff = run("git", "diff", "HEAD")
+    ckpt = os.environ.get("PROTENIX_CKPT", "")
+    if not ckpt:
+        for c in (os.path.expanduser("~/checkpoint/protenix-v2.pt"),):
+            if os.path.exists(c):
+                ckpt = c
+                break
+    return {
+        "protenix_root": PROTENIX,
+        "protenix_sha": run("git", "rev-parse", "--short", "HEAD") or "unknown",
+        "protenix_dirty": bool(run("git", "status", "--porcelain")),
+        "protenix_diff_sha256": hashlib.sha256(diff.encode()).hexdigest()[:16] if diff else "",
+        "protenix_diff_bytes": len(diff),
+        "checkpoint": ckpt,
+        "checkpoint_sha256": _sha256(ckpt)[:16],
+        "python": sys.version.split()[0],
+        "torch": _torch_version(),
+    }
+
+
+def _torch_version() -> str:
+    try:
+        import torch
+        return f"{torch.__version__}+cuda{torch.version.cuda}"
+    except Exception:
+        return ""
+
+
+EXTERNAL = external_provenance()
+
 
 def write_run_json(rdir: str, **fields) -> str:
     """Record everything needed to tell this fold apart from another run of the same seed.
@@ -91,6 +157,8 @@ def write_run_json(rdir: str, **fields) -> str:
         "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
         "layernorm_type": os.environ.get("LAYERNORM_TYPE"),
         "git_sha": LOADED_SHA,
+        # THE EXTERNAL MODEL, not just our code. See external_provenance().
+        **EXTERNAL,
         "argv": " ".join(sys.argv[1:]),
         **fields,
     }

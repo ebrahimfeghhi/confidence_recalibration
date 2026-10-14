@@ -102,7 +102,7 @@ DATASETS = {
     # our own folds: one `iface` column, 10 seeds, every row counts
     "train": dict(results=f"{ROOT}/training/fold/results.csv", iptm="iptm",
                   iface=lambda r: r["iface"].strip(), keep=None, seeds=10),
-    "val2": dict(results=f"{ROOT}/val2_fold/results.csv", iptm="iptm",
+    "val2": dict(results=f"{ROOT}/validation/fold/results.csv", iptm="iptm",
                  iface=lambda r: r["iface"].strip(), keep=None, seeds=100),
     # the benchmarks: pdb + chain pair, and a tier/block that decides what counts
     # THE SINGLE BASELINE TABLE, not the old per-block pool. foldbench_baseline_results.csv already
@@ -112,10 +112,15 @@ DATASETS = {
                               "foldbench_baseline_results.csv", iptm="pair_iptm",
                       iface=lambda r: r["iface"],
                       keep=None, seeds=None),
+    # PXM's merged baseline table carries no `tier` column, so a counting rule cannot apply to it.
+    # Left as keep="rule", `--counting pool` asked for `tier == "pool"`, matched NOTHING, and the
+    # script reported a curve over zero interfaces instead of failing -- the silent zero-work run the
+    # review warns about. Like FoldBench's table, this one already embodies the counting decision and
+    # records provenance per row in `metadata`.
     "pxm2025": dict(results=f"{_REPO}/experimental_data/protenix/pxm2025/"
-                            "free_pool/results.csv", iptm="pair_iptm",
+                            "pxm2025_baseline_results.csv", iptm="pair_iptm",
                     iface=lambda r: f"{r['pdb']}_{r['chain1']}{r['chain2']}",
-                    keep="rule", seeds=None),
+                    keep=None, seeds=None),
 }
 
 # FoldBench's `matched` block (seeds 151-200) is tier `suspect`: for some complexes it disagrees with
@@ -205,11 +210,20 @@ def main():
     path = a.results or spec["results"]
     keep = COUNTING[a.counting] if spec["keep"] == "rule" else None
     data, nrow, dropped = load(path, spec["iface"], spec["iptm"], keep)
+    # AN EMPTY POPULATION IS A FAILURE, NOT A RESULT. A stale default or a counting rule that matches
+    # no row used to print a curve over zero interfaces, which reads as a finding.
+    if not data:
+        raise SystemExit(f"STOP: {path} yielded no usable rows"
+                         + (f" under counting rule '{a.counting}'" if keep else "")
+                         + f" ({nrow} kept, {dropped} dropped). Check the path and the rule.")
     depth = {i: len(sd) for i, sd in data.items()}
     kmax = a.seeds or spec["seeds"] or (min(depth.values()) if depth else 0)
     need = a.min_seeds if a.min_seeds is not None else kmax
 
     full = {i: s for i, s in data.items() if len(s) >= need}
+    if not full:
+        raise SystemExit(f"STOP: no interface of {path} has the {need} seeds asked for; the deepest "
+                         f"has {max(depth.values())}. Lower --min-seeds or --seeds deliberately.")
     npose = sum(len(v) for s in full.values() for v in s.values())
     rule = f", counting rule '{a.counting}'" if keep else ""
     print(f"{path}{rule}")

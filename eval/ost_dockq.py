@@ -60,7 +60,29 @@ def invoke(model, ref, out, extra=None, chain_map=None, timeout=TIMEOUT):
         r = subprocess.run(cmd, capture_output=True, timeout=timeout, env=ENV)
     except Exception:        # TimeoutExpired / OSError -- let the caller decide about a fallback
         return False
-    return r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0
+    return r.returncode == 0 and os.path.exists(out) and usable(out)
+
+
+def usable(out, need=()):
+    """True only when `out` is a json document that actually parses and carries what we read from it.
+
+    SIZE IS NOT VALIDITY. Both reuse paths accepted any non-empty file, so a truncated or half-written
+    json -- a file containing the single character "{" passes `getsize() > 0` -- was reused forever as
+    a cached result, and a scoring failure became a silent exclusion from the evaluated population.
+    A file that does not parse is deleted so the next call rescores rather than inheriting it.
+    """
+    try:
+        with open(out) as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        try:
+            os.replace(out, f"{out}.invalid")      # kept for inspection, out of the reuse path
+        except OSError:
+            pass
+        return False
+    if not isinstance(d, dict):
+        return False
+    return all(k in d for k in need)
 
 
 def run(model, ref, out, extra=None, chain_map=None, timeout=TIMEOUT):
@@ -73,7 +95,7 @@ def run(model, ref, out, extra=None, chain_map=None, timeout=TIMEOUT):
     THE RETRY: OST's automatic chain mapper crashes on some multi-chain natives (8ts0). Falling back
     to an explicit identity map rescues those, and is a no-op when the auto mapper would have worked.
     """
-    if os.path.exists(out) and os.path.getsize(out) > 0:
+    if os.path.exists(out) and usable(out):
         return True
     if invoke(model, ref, out, extra=extra, chain_map=chain_map, timeout=timeout):
         return True

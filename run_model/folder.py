@@ -118,6 +118,7 @@ import functools
 import glob
 import hashlib
 import json
+import math
 import logging
 import os
 import re
@@ -453,13 +454,23 @@ def report(csv_path):
     import statistics as st
     arms = collections.defaultdict(list)
     for r in csv.DictReader(open(csv_path)):
-        arms[(r["iface"], r["seed"], r["arm"])].append((float(r["iptm"]), float(r["dockq"])))
+        arms[(r["iface"], r["seed"], r["arm"])].append(
+            (float(r["iptm"]), int(r["sample"]), float(r["dockq"])))
     rows = []
     for (iface, seed, arm), v in sorted(arms.items()):
-        ip = [x for x, _ in v]
-        dq = [d for _, d in v]
-        # selected = the pose this arm's own confidence picks; max(dq) is the oracle, for headroom
-        rows.append([iface, seed, arm, len(v), st.mean(ip), max(v)[1], max(dq)])
+        ip = [x for x, _, _ in v]
+        dq = [d for _, _, d in v]
+        # THE TIE RULE IS POSE IDENTITY, NEVER DOCKQ. `max(v)[1]` over (iptm, dockq) tuples made an
+        # ipTM tie select the higher GROUND TRUTH, so the printed "selected" was part oracle. Ties
+        # are not hypothetical: the committed FoldBench table has 274 (interface, seed) groups whose
+        # top pair_iptm is tied across different DockQ, PXM2025 has 598, and the scorer rounds
+        # confidence to four decimals, which is what manufactures them. Breaking the tie on the
+        # lowest sample index is deterministic and cannot see the label. This matches
+        # three_classes() in extra_training/analysis/train_seed_depth_curve.py, which is what every
+        # REPORTED number uses and which already keyed on identity -- so this printer was the only
+        # place the oracle rule survived, and no published figure came from it.
+        best = min(v, key=lambda t: (-t[0], t[1]))
+        rows.append([iface, seed, arm, len(v), st.mean(ip), best[2], max(dq)])
     print(table(["interface", "seed", "arm", "poses", "arm ipTM", "selected DockQ", "best DockQ"],
                 rows, align="l l l r r r r",
                 dec={"arm ipTM": 3, "selected DockQ": 3, "best DockQ": 3}))
@@ -620,23 +631,44 @@ def interfaces_by_pdb(pool_csv):
 def open_csv(csv_path):
     """in: results csv path.  out: (rows_done, units_done); creates the file if absent.
 
-    rows_done  {(iface, seed, arm)}        -- stops a retried unit appending duplicate rows
+    rows_done  {(iface, seed, arm)} -> {sample index}   -- which POSES of that arm are scored
     units_done {(pdb, seed, donor)} -> [set of pinned chains]
                identity by CONTENT: the same complex, seed and template is the same fold whatever
                tag it was given. Keying on the tag instead is what once let two interfaces of one
                complex swap donors.
+
+    COMPLETION IS PER SAMPLE, NOT PER ARM. This used to be a set of (iface, seed, arm), so ANY one
+    row marked that arm finished: a unit whose scoring died after sample 0 was skipped forever and
+    restarting a worker could not repair it. The depth curves would then silently average a 1-pose
+    draw against 5-pose draws. A row with a non-finite or unparseable score is not a score, so it is
+    dropped from the completion state and the sample is scored again.
     """
     if not os.path.exists(csv_path):
         os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
         with open(csv_path, "w") as fh:
             fh.write("iface,seed,arm,donor_pose,tmpl_chains,sample,dockq,iptm\n")
-    rows_done, units_done = set(), collections.defaultdict(list)
+    rows_done, units_done = collections.defaultdict(set), collections.defaultdict(list)
     for r in csv.DictReader(open(csv_path)):
-        rows_done.add((r["iface"], r["seed"], r["arm"]))
+        try:
+            dq, ip, k = float(r["dockq"]), float(r["iptm"]), int(r["sample"])
+        except (TypeError, ValueError, KeyError):
+            continue                                  # not a score; the sample is still to do
+        if not (math.isfinite(dq) and math.isfinite(ip)):
+            continue
+        rows_done[(r["iface"], r["seed"], r["arm"])].add(k)
         pdb = r["iface"].split("_")[0]
         chains = frozenset(c for grp in r.get("tmpl_chains", "").split() for c in grp.split("+") if c)
         units_done[(pdb, r["seed"], r.get("donor_pose", "-1"))].append(chains)
     return rows_done, units_done
+
+
+def iface_scored(rows_done, iface, seed, arm, n_sample):
+    """True only when EVERY expected pose of this interface/seed/arm carries a finite score.
+
+    The expected set is explicit -- {0 .. n_sample-1} -- so a missing middle sample is as visible as
+    a missing last one.
+    """
+    return rows_done.get((iface, str(seed), arm), set()) >= set(range(n_sample))
 
 
 def unit_already_folded(units_done, pdb, seed, donor, chains):
@@ -676,7 +708,8 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
     """
     donor, chains = provenance(ctx.A, target, tag, poses)
     got, err = 0, ""
-    for iface in [i for i in want if (i, str(seed), tag) not in ctx.rows_done]:
+    for iface in [i for i in want
+                  if not iface_scored(ctx.rows_done, i, seed, tag, ctx.A.nsample)]:
         cmd = [PY, f"{DC}/scorer.py", "--dir", f"{rdir}/{name}", "--iface", iface, "--seed", str(seed),
                "--arm", tag, "--donor", donor, "--chains", chains, "--ref", ctx.ref(pdb),
                "--scorer", ctx.scorer]
@@ -685,7 +718,12 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
         if out.stdout.strip():
             with open(ctx.A.csv, "a") as fh:      # flushed per interface, not at the end
                 fh.write(out.stdout)
-            ctx.rows_done.add((iface, str(seed), tag))
+            # RECORD WHICH SAMPLES LANDED, from the rows actually written. Marking the whole
+            # interface done on any output is what let one scored pose stand in for five.
+            for line in out.stdout.strip().splitlines():
+                f = line.split(",")
+                if len(f) >= 6 and f[5].strip().isdigit():
+                    ctx.rows_done[(iface, str(seed), tag)].add(int(f[5]))
             got += 1
     return got, err
 
@@ -779,7 +817,7 @@ def run_unit(ctx, unit):
     # required pair instead of the full chain set will not match and would refold
     if A.skip_by_template and unit_already_folded(ctx.units_done, pdb, seed, donor, chain_set):
         return "skipped"
-    if all((i, str(seed), tag) in ctx.rows_done for i in want):
+    if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
         return "skipped"
 
     claim = f"{A.claim_dir}/{pdb}_{target}_{tag}_{seed}".replace("*", "all") if A.claim_dir else None
@@ -931,7 +969,8 @@ def finish_unit(ctx, kind, pdb, target, tag, seed, rdir, name, want, poses, dt, 
             print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- {e}", flush=True)
             return "failed"
         result = "ran"
-        if got or all((i, str(seed), tag) in ctx.rows_done for i in want):
+        if got or all(iface_scored(ctx.rows_done, i, seed, tag, ctx.A.nsample)
+                      for i in want):
             # print pdb too: target is "*" for a free fold
             print(f"  {kind} {pdb} {target} {tag} seed {seed}: {got}/{len(want)} interfaces "
                   f"in {dt:.0f}s", flush=True)

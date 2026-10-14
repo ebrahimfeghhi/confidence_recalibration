@@ -36,9 +36,27 @@ PXM = os.environ.get(
 TIMEOUT = int(os.environ.get("PXM_TIMEOUT", "300"))
 
 
+def usable(out):
+    """True only when `out` parses as a json object.
+
+    SIZE IS NOT VALIDITY: a file holding the single character "{" satisfies `getsize() > 0` and was
+    reused as a cached score forever, turning a scoring failure into a silent exclusion. An
+    unparseable file is moved aside so the next call rescores instead of inheriting it.
+    """
+    try:
+        with open(out) as fh:
+            return isinstance(json.load(fh), dict)
+    except (OSError, ValueError):
+        try:
+            os.replace(out, f"{out}.invalid")
+        except OSError:
+            pass
+        return False
+
+
 def run(model, ref, out, timeout=TIMEOUT):
-    """Invoke pxm unless `out` already holds a non-empty result."""
-    if os.path.exists(out) and os.path.getsize(out) > 0:
+    """Invoke pxm unless `out` already holds a result that parses."""
+    if os.path.exists(out) and usable(out):
         return True
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     try:
@@ -46,7 +64,7 @@ def run(model, ref, out, timeout=TIMEOUT):
                        capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return False
-    return os.path.exists(out) and os.path.getsize(out) > 0
+    return os.path.exists(out) and usable(out)
 
 
 def _chain_index(name):

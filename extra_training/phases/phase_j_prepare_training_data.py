@@ -167,7 +167,7 @@ def main():
         print(f"{len(failed)} structure(s) skipped with a recorded reason; "
               f"{len(built)} prepared")
 
-    # THE PREPARED SET MUST BE THE SELECTION. train_prep/ outlived a selection once already: it was
+    # THE PREPARED SET MUST BE THE SELECTION. training/prep/ outlived a selection once already: it was
     # built at 535 rows, the selection was then rewritten to 501, and the directory kept 58
     # structures no longer selected while 25 selected ones had no prepared input at all -- a cache
     # built from it would have been both short and contaminated, with nothing comparing the two.

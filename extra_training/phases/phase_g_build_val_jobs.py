@@ -33,7 +33,7 @@ INPUTS
     --msa-root:     directory holding mmcif_msa_template/ and seq_to_pdb_index.json.
                     Default extra_training/building_msa/work/mmcif_msa.
     --seq-index:    seq_to_pdb_index.json. Default <msa-root>/../pdb_seqs/seq_to_pdb_index.json.
-    --out-dir:      where the jsons go. Default extra_training/val_jobs.
+    --out-dir:      where the jsons go. Default extra_training/validation/jobs.
     --fold-dir:     where pool.csv and chain_roles.csv go. Default extra_training/val_fold.
     --refs-dir:     where the staged reference cifs go. Default extra_training/val_refs.
     --require-msa:  fail if any chain has no MSA directory. Default on; --no-require-msa to survey.
@@ -68,7 +68,7 @@ import phase_a_define_train_set as A  # noqa: E402
 # jobs for a split we no longer use, and 22 of the live 40 clusters are not in it.
 VAL = f"{REPO}/extra_training/train_val_splits/val_split_proposal_clusters.csv"
 MSA_ROOT = f"{REPO}/extra_training/building_msa/work/mmcif_msa"
-OUT = f"{REPO}/extra_training/val_jobs"
+OUT = f"{REPO}/extra_training/validation/jobs"
 
 
 def ref_auth_to_label(cif):

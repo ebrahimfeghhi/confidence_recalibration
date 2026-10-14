@@ -34,6 +34,7 @@ import copy
 import functools
 import glob
 import json
+import math
 import os
 import sys
 
@@ -80,6 +81,10 @@ def main():
     ap.add_argument("--loss-tol", type=float, default=1e-5,
                     help="max |stored - live| on any loss term")
     ap.add_argument("--pose", type=int, default=-1, help="-1 = every pose in the unit")
+    ap.add_argument("--perturb", default="", metavar="FEATURE",
+                    help="damage this cached loss feature on purpose; the run is then REQUIRED to "
+                         "fail, which is how the gate's sensitivity is demonstrated rather than "
+                         "assumed. One of phase_j_build_cache.LOSS_FEATS.")
     ap.add_argument("--alpha-pae", type=float, default=1.0,
                     help="FT3's value; the shipped default is 0, which cannot train ipTM")
     a = ap.parse_args()
@@ -136,7 +141,7 @@ def main():
     cfg = DS.build_configs(a.crop_size, a.indices, a.bio_dir, a.mmcif_dir, a.msa_root,
                            a.seq_index, a.msa_root)
     cfg.train_confidence_only = True
-    err = os.path.join(ROOT, "train_prep", "dataset_errors")
+    err = os.path.join(ROOT, "training", "prep", "dataset_errors")
     train, _ = get_datasets(cfg, err)
     byp = BC.merged_lookup(train)
     if pdb not in byp:
@@ -158,12 +163,49 @@ def main():
     # THE FEATURE DICT THE LOSS READS. The head-side arrays come from the npz (they are the ones the
     # pose was scored with, and check_alignment has just proved they equal the dataset's); the
     # loss-side arrays come from the dataset item, which is where the label came from.
-    feat = to_dev({k: (v if torch.is_tensor(v) else torch.as_tensor(np.asarray(v)))
-                   for k, v in feat_ds.items() if torch.is_tensor(v) or
-                   isinstance(v, (np.ndarray, int, float))})
+    feat_live = to_dev({k: (v if torch.is_tensor(v) else torch.as_tensor(np.asarray(v)))
+                        for k, v in feat_ds.items() if torch.is_tensor(v) or
+                        isinstance(v, (np.ndarray, int, float))})
     for k, v in feat_ds.items():
-        if k not in feat:
-            feat[k] = v                       # lists the permutation needs, e.g. atom_perm_list
+        if k not in feat_live:
+            feat_live[k] = v                  # lists the permutation needs, e.g. atom_perm_list
+
+    # THE CACHE SIDE READS THE STORED lf_* ARRAYS. Until now both sides of the comparison were built
+    # from feat_live and only `coordinate` / `coordinate_mask` were switched, so the stored loss
+    # features -- resolution, the frames the PAE loss aligns on, the representative-atom masks --
+    # were NEVER EXERCISED. A cached resolution of -1.0 against a valid live one is exactly the
+    # failure this gate exists to catch (it zeroes every confidence term, and we have already hit it
+    # once), and it would have passed. The cache-side dict therefore starts from the live one, so
+    # that anything the loss reads but the cache does not store is identical by construction, and
+    # then every lf_* key is OVERWRITTEN from the npz.
+    feat_cache = dict(feat_live)
+    missing = [k for k in BC.LOSS_FEATS if f"lf_{k}" not in lab]
+    if missing:
+        raise SystemExit(f"STOP: the label npz stores no lf_ array for {missing}; it was written by "
+                         "an older phase_j_build_cache.py and cannot be replayed. Rebuild it.")
+    for k in BC.LOSS_FEATS:
+        v = np.asarray(lab[f"lf_{k}"])
+        ref = feat_live.get(k)
+        t = torch.as_tensor(v)
+        if torch.is_tensor(ref):
+            if tuple(ref.shape) != tuple(t.shape):
+                raise SystemExit(f"STOP: cached lf_{k} has shape {tuple(t.shape)}, the live feature "
+                                 f"{tuple(ref.shape)} -- the cache describes a different system")
+            t = t.to(dtype=ref.dtype)
+        feat_cache[k] = t.to(dev)
+    print(f"  cache-side loss features taken from the npz: {', '.join(BC.LOSS_FEATS)}")
+
+    # A DELIBERATE CORRUPTION, so that a pass means something. --perturb damages one cached loss
+    # feature; the run is then REQUIRED to fail. Without this the gate's own sensitivity is assumed.
+    if a.perturb:
+        k = a.perturb
+        if k not in feat_cache:
+            raise SystemExit(f"STOP: --perturb {k} is not a loss feature; pick one of "
+                             f"{', '.join(BC.LOSS_FEATS)}")
+        v = feat_cache[k]
+        feat_cache[k] = (torch.zeros_like(v) if k != "resolution"
+                         else torch.full_like(v, -1.0))
+        print(f"  PERTURBED cached {k} -- this run MUST fail")
 
     feat_head, s_inputs, s_trunk, zt, _x, nc = RC.load_unit(trunk_p, dev)
     poses_t = torch.as_tensor(poses, dtype=torch.float32, device=dev)
@@ -198,12 +240,30 @@ def main():
         pred = {"plddt": plddt.float(), "pae": pae.float(), "pde": pde.float(),
                 "resolved": resolved.float(), "coordinate_mini": x}
         got = {}
-        for tag, cm in (("cache", (c_cache, m_cache)), ("live", (c_live, m_live))):
+        for tag, cm, ft in (("cache", (c_cache, m_cache), feat_cache),
+                            ("live", (c_live, m_live), feat_live)):
             ld = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in ld_live.items()}
             ld["coordinate"] = torch.as_tensor(cm[0], dtype=torch.float32, device=dev)
             ld["coordinate_mask"] = torch.as_tensor(cm[1].astype(np.float32), device=dev)
-            _cum, met = loss_fn.calculate_losses(feat, pred, ld, mode="train")
-            got[tag] = {k: float(met[k]) for k in TERMS if k in met}
+            _cum, met = loss_fn.calculate_losses(ft, pred, ld, mode="train")
+            # EVERY TERM IS REQUIRED. `{k: ... for k in TERMS if k in met}` silently compared
+            # whatever happened to be present, so a term the loss stopped producing -- the exact
+            # symptom of a gated-off confidence loss -- read as agreement.
+            absent = [k for k in TERMS if k not in met]
+            if absent:
+                raise SystemExit(f"STOP: the {tag} loss produced no {absent}; every term of "
+                                 f"{TERMS} must be present or the comparison is vacuous")
+            got[tag] = {}
+            for k in TERMS:
+                fv = float(met[k])
+                if not math.isfinite(fv):
+                    raise SystemExit(f"STOP: the {tag} {k} is {fv}, not a finite number")
+                got[tag][k] = fv
+        # A ZERO TOTAL IS THE GATED-OFF LOSS, not agreement between two zeroes.
+        if got["cache"]["loss"] == 0.0 and got["live"]["loss"] == 0.0:
+            raise SystemExit("STOP: both losses are exactly 0.0 -- the confidence terms are gated "
+                             "off (resolution outside the loss window, or every weight zero), so "
+                             "this comparison proves nothing")
         for k in got["cache"]:
             d = abs(got["cache"][k] - got["live"][k])
             if d > worst_term:
@@ -230,13 +290,26 @@ def main():
     ld["coordinate_mask"] = torch.as_tensor(lab["label_coordinate_mask"][0].astype(np.float32),
                                             device=dev)
     cum, _met = loss_fn.calculate_losses(
-        feat, {"plddt": plddt.float(), "pae": pae.float(), "pde": pde.float(),
-               "resolved": resolved.float(), "coordinate_mini": x}, ld, mode="train")
+        feat_cache, {"plddt": plddt.float(), "pae": pae.float(), "pde": pde.float(),
+                     "resolved": resolved.float(), "coordinate_mini": x}, ld, mode="train")
+    if not torch.isfinite(cum):
+        raise SystemExit(f"STOP: the cached loss is {float(cum)}, not a finite number")
+    if float(cum) == 0.0:
+        raise SystemExit("STOP: the cached loss is exactly 0.0, so the backward pass below would "
+                         "prove nothing about where the gradient goes")
     cum.backward()
     inside = outside = 0
     outside_names = []
+    nonfinite = []
     for n, p in model.named_parameters():
-        if p.grad is None or not bool(p.grad.abs().sum() > 0):
+        if p.grad is None:
+            continue
+        # A NON-FINITE GRADIENT IS NOT A GRADIENT. `grad.abs().sum() > 0` is True for a NaN sum, so
+        # a head full of NaNs counted as "reached the confidence head" and the gate passed.
+        if not bool(torch.isfinite(p.grad).all()):
+            nonfinite.append(n)
+            continue
+        if not bool(p.grad.abs().sum() > 0):
             continue
         if n.startswith(pref):
             inside += 1
@@ -267,6 +340,19 @@ def main():
         fail.append("no confidence-head parameter received a gradient")
     if outside:
         fail.append(f"{outside} parameter(s) outside the confidence head received a gradient")
+    if nonfinite:
+        fail.append(f"{len(nonfinite)} parameter(s) have a non-finite gradient, "
+                    f"e.g. {', '.join(nonfinite[:3])}")
+    # THE PERTURBATION RUN INVERTS THE VERDICT. --perturb damaged a cached loss feature on purpose,
+    # so a run that still agrees has proved the comparison is blind to that feature.
+    if a.perturb:
+        if fail:
+            print(f"\nPASS (perturbation): damaging cached {a.perturb} was caught -- "
+                  + "; ".join(fail))
+            return 0
+        raise SystemExit(f"STOP: cached {a.perturb} was damaged on purpose and the replay still "
+                         "agreed. The comparison does not read that feature, so a clean pass means "
+                         "nothing.")
     if fail:
         raise SystemExit("STOP: " + "; ".join(fail) + ". The cache does not stand in for the "
                          "uncached FT3 path, so training on it would not be training FT3.")

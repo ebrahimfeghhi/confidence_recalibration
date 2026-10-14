@@ -129,7 +129,7 @@ def confidence(model, configs, feat, s_inputs, s, z, x, n_cycle):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fold", default=f"{ROOT}/val2_fold")
+    ap.add_argument("--fold", default=f"{ROOT}/validation/fold")
     ap.add_argument("--results", default=None, help="defaults to <fold>/results.csv")
     ap.add_argument("--ckpt-dir", default="/home/ebrahim/checkpoint")
     ap.add_argument("--model-name", default="protenix-v2")
@@ -150,7 +150,11 @@ def main():
 
     def stored_for(pdb, seed_dir):
         out = {}
-        for f in sorted(_glob.glob(f"{seed_dir}/predictions/*summary_confidence_sample_*.json")):
+        # BOTH ON-DISK LAYOUTS, as in phase_j_build_cache.sample_cifs: a handful of units kept
+        # Protenix's native <unit>/<job>/seed_*/predictions tree instead of the flattened one.
+        pats = [f"{seed_dir}/predictions/*summary_confidence_sample_*.json",
+                f"{seed_dir}/*/seed_*/predictions/*summary_confidence_sample_*.json"]
+        for f in sorted({g for pat in pats for g in _glob.glob(pat)}):
             k = int(f.split("sample_")[-1].split(".")[0])
             out[k] = json.load(open(f))
         return out
@@ -169,10 +173,12 @@ def main():
     for i, p in enumerate(units, 1):
         pdb = os.path.basename(os.path.dirname(p))
         seed = os.path.basename(p).split("_")[-1][:-4]
-        seed_dirs = _glob.glob(f"{a.fold}/poses/{pdb}/{seed}-*")
-        if not seed_dirs:
-            raise SystemExit(f"STOP: no pose directory for {pdb}/{seed}")
-        want = stored_for(pdb, seed_dirs[0])
+        # EXACTLY ONE FINISHED DIRECTORY. glob(...)[0] took whichever the filesystem listed first,
+        # and a worker that died mid-unit leaves its claim directory behind -- so this could read an
+        # abandoned, empty one. Shared with the cache builder so the two cannot disagree.
+        import phase_j_build_cache as _BCd
+        seed_dir = _BCd.seed_dir(a.fold, pdb, seed)
+        want = stored_for(pdb, seed_dir)
         feat, s_inputs, s_trunk, z, x, nc = load_unit(p, dev)
         summ = confidence(model, configs, feat, s_inputs, s_trunk, z, x, nc)
         if len(summ) != len(want):
@@ -195,11 +201,35 @@ def main():
         # assigns both to the same sample and looks like a cache/fold disagreement. The poses are
         # simply indistinguishable BY THIS STATISTIC; the assignment below resolves the tie, and the
         # residual cost is what says whether the cache reproduces the fold.
-        from scipy.optimize import linear_sum_assignment
-        rows_i, cols_j = linear_sum_assignment(cost)
-        match = np.empty(len(summ), dtype=int)
-        match[rows_i] = cols_j
-        perm = [int(ks[j]) for j in match]
+        # IDENTITY FIRST, SCORES ONLY AS A FALLBACK. Matching on chain_pair_iptm cannot establish
+        # which pose is which -- a whole-pose permutation of the confidence outputs would still pair
+        # up perfectly, because the pairing follows the very statistic being checked. The cache
+        # builder derives the mapping from COORDINATES against the `_sample_<k>.cif` files, which is
+        # identity, so that is used whenever the poses are available and the assignment is kept only
+        # for units whose cifs are gone.
+        perm, how = None, "scores (Hungarian on chain_pair_iptm)"
+        try:
+            import phase_j_build_cache as _BC
+            cifs = _BC.sample_cifs(seed_dir, pdb)
+            if len(cifs) == len(summ):
+                perm = [int(v) for v in _BC.sample_indices(x[0].detach().cpu().numpy()
+                                                           if hasattr(x, "detach") else np.asarray(x),
+                                                           cifs, 0.01, 0.5)]
+                how = "coordinates (identity, from the sample cifs)"
+        except Exception as e:                            # noqa: BLE001 -- fall back and say so
+            print(f"  note: coordinate identity unavailable for {pdb}/{seed} ({str(e)[:70]}); "
+                  "falling back to score matching")
+            perm = None
+        if perm is None:
+            from scipy.optimize import linear_sum_assignment
+            rows_i, cols_j = linear_sum_assignment(cost)
+            match = np.empty(len(summ), dtype=int)
+            match[rows_i] = cols_j
+            perm = [int(ks[j]) for j in match]
+        else:
+            match = np.array([ks.index(k) for k in perm], dtype=int)
+        if i == 1:
+            print(f"  pose identity established by: {how}")
         got_r = [float(_np(summ[ii]["ranking_score"])) for ii in range(len(summ))]
         want_r = [float(want[k]["ranking_score"]) for k in perm]
         for ii in range(len(summ)):
@@ -209,13 +239,19 @@ def main():
                          "max_abs_diff": round(d, 8),
                          "stored_iptm": round(float(want[perm[ii]]["iptm"]), 4),
                          "recomputed_iptm": round(float(_np(summ[ii]["iptm"])), 4)})
-        # THE RANKING CHECK MUST ACTUALLY RUN. got_r/want_r were computed and never compared, so
-        # rank_bad stayed 0 and the summary line reported "0 of N changed" unconditionally -- a
-        # vacuous pass reported as a verification result.
-        if np.argsort(got_r).tolist() != np.argsort(want_r).tolist():
+        # RANK THE STATISTIC THE PROJECT SELECTS ON. This compared global `ranking_score`, while
+        # every selection we report uses PER-INTERFACE pair ipTM, so the check answered a different
+        # question from the one the endpoint asks. Both are reported; the per-interface one decides.
+        got_p = [float(np.asarray(_np(summ[ii]["chain_pair_iptm"])).max()) for ii in range(len(summ))]
+        want_p = [float(np.asarray(want[k]["chain_pair_iptm"], dtype=float).max()) for k in perm]
+        if np.argsort(got_p).tolist() != np.argsort(want_p).tolist():
             rank_bad += 1
-            print(f"  RANK CHANGED {pdb}/{seed} after matching: "
-                  f"{np.argsort(want_r).tolist()} -> {np.argsort(got_r).tolist()}")
+            print(f"  PAIR-IPTM RANK CHANGED {pdb}/{seed}: "
+                  f"{np.argsort(want_p).tolist()} -> {np.argsort(got_p).tolist()}")
+        elif np.argsort(got_r).tolist() != np.argsort(want_r).tolist():
+            print(f"  note: global ranking_score order changed for {pdb}/{seed} "
+                  f"({np.argsort(want_r).tolist()} -> {np.argsort(got_r).tolist()}) while the "
+                  "per-interface pair ipTM order held; the endpoint uses the latter")
         if perm != list(range(len(summ))):
             permuted += 1
         if i % 10 == 0 or i == len(units):
@@ -226,10 +262,11 @@ def main():
     print(f"\nchain_pair_iptm: max |stored - recomputed| = {dmax:.6f}, mean {dsum/max(1,dn):.6f} "
           f"over {int(dn)} poses")
     print(f"pose ranking within a seed changed on {rank_bad} of {len(units)} unit(s) AFTER matching")
-    print("NOTE: poses are matched by confidence SCORES, which cannot establish identity -- distinct "
-          "poses can share them (9fve/400073). This verifies that the cache reproduces the fold's "
-          "scores; it does NOT license joining cached poses to DockQ or to labels by this mapping. "
-          "The cache writer records the sample index instead.")
+    print("NOTE: poses are matched by COORDINATES against the sample cifs wherever those exist, "
+          "which is identity; the Hungarian assignment on chain_pair_iptm remains only as a "
+          "fallback for units whose cifs are gone, and cannot establish identity on its own, since "
+          "distinct poses can share scores (9fve/400073). The line above reports the ranking of "
+          "per-interface pair ipTM, which is the statistic every selection we report uses.")
     print(f"units whose cached pose order is permuted vs _sample_<k>: {permuted} of {len(units)}")
     # A RANKING CHANGE IS A FAILURE. It was counted and printed but the script still exited 0, so a
     # caller chaining on success saw a pass. Selection is what this project measures: if rescoring a

@@ -1,0 +1,555 @@
+diff --git a/protenix/model/modules/confidence.py b/protenix/model/modules/confidence.py
+index 6f995ab..f929d1b 100644
+--- a/protenix/model/modules/confidence.py
++++ b/protenix/model/modules/confidence.py
+@@ -12,6 +12,7 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import os
+ from typing import Optional, Union
+ 
+ import torch
+@@ -226,7 +227,9 @@ class ConfidenceHead(nn.Module):
+                 inplace_safe=inplace_safe,
+                 chunk_size=chunk_size,
+             )
+-            if z_trunk.shape[-2] > 2000 and (not self.training):
++            # PROTENIX_CONF_OFFLOAD_TOKENS lowers the 2000-token threshold: many samples per fold
++            # (N_sample=50) overflow the GPU on mid-sized complexes when every pae/pde map stays on it
++            if z_trunk.shape[-2] > int(os.environ.get("PROTENIX_CONF_OFFLOAD_TOKENS", 2000)) and (not self.training):
+                 # cpu offload pae_preds/pde_preds
+                 pae_pred = pae_pred.cpu()
+                 pde_pred = pde_pred.cpu()
+diff --git a/protenix/model/protenix.py b/protenix/model/protenix.py
+index f20d822..9528543 100644
+--- a/protenix/model/protenix.py
++++ b/protenix/model/protenix.py
+@@ -45,7 +45,80 @@ from protenix.model.modules.pairformer import (
+ )
+ from protenix.model.modules.primitives import LinearNoBias
+ from protenix.model.triangular.layers import LayerNorm
+-from protenix.model.utils import simple_merge_dict_list
++from protenix.model.utils import one_hot, simple_merge_dict_list
++
++# Donor-pose -> z injection, cache of representative-atom coordinates keyed by (cif, n_atom).
++# Reading the cif once per process matters: the periodic mode re-injects every recycle.
++_POSE_Z_CACHE: dict = {}
++
++
++def pose_z_delta(model, input_feature_dict, z, cif_path, gain=1.0):
++    """A donor pose's distance embedding, in the confidence head's own basis, ready to add to z.
++
++    WHY THIS IS NOT A TEMPLATE. The template path hands a pose in as `template_distogram` plus unit
++    vectors, squeezes it to 64 channels, runs a 2-block pairformer, and AVERAGES it with every other
++    template -- so one self-pose beside Protenix's 4 real PDB hits contributes a fifth of the
++    template term, and cross-chain features are zeroed by default (`multichain_mask`), which deletes
++    the dock. This function instead reuses the two projections the CONFIDENCE HEAD applies to a pose:
++    a 39-bin one-hot of the pairwise distance (3.25-52 A, 1.25 A steps) and the raw scalar distance.
++    Both were trained to be ADDED ONTO z_trunk -- the confidence head's starting pair rep is
++    z_trunk + z_init -- so they already speak the trunk's channel basis, undiluted, with the
++    inter-chain block intact.
++
++    WHAT IS NOT GUARANTEED. The trunk's own pairformer blocks were never trained with such a term in
++    their input; only the confidence head's 4 blocks were. The encoder is in the right basis, the
++    consumer is off-distribution. `gain` exists so that can be swept rather than assumed, and
++    PROTENIX_POSE_Z_DEBUG reports |delta| against |z| so the magnitude is measured, not hoped for.
++
++    ATOM ORDER. A Protenix-written prediction cif lists atoms in the model's own order, so its
++    coordinates index `x_pred_coords` directly and `distogram_rep_atom_mask` selects the same
++    representative atom per token that the confidence head uses. The assert below is load-bearing:
++    a donor from a different complex would otherwise inject silent garbage.
++    """
++    n_atom = int(input_feature_dict["distogram_rep_atom_mask"].shape[0])
++    key = (cif_path, n_atom)
++    rep = _POSE_Z_CACHE.get(key)
++    if rep is None:
++        import gemmi
++        import numpy as _np
++        st = gemmi.read_structure(cif_path)
++        st.setup_entities()
++        xyz = _np.array([[a.pos.x, a.pos.y, a.pos.z]
++                         for ch in st[0] for res in ch for a in res], dtype=_np.float32)
++        mask = input_feature_dict["distogram_rep_atom_mask"].bool().cpu().numpy()
++        assert xyz.shape[0] == mask.shape[0], (
++            f"donor pose {cif_path} has {xyz.shape[0]} atoms, this complex has {mask.shape[0]}")
++        rep = torch.from_numpy(xyz[mask])
++        _POSE_Z_CACHE[key] = rep
++        logger.warning(f"PROTENIX_POSE_Z_CIF: loaded {cif_path} -> {rep.shape[0]} representative "
++                       f"atoms of {mask.shape[0]} total")
++    return pose_z_delta_coords(model, input_feature_dict, z, rep, gain=gain, already_rep=True)
++
++
++def pose_z_delta_coords(model, input_feature_dict, z, coords, gain=1.0, already_rep=False):
++    """Same as pose_z_delta but from COORDINATES in memory, which is what rescoring needs.
++
++    `coords` is [N_atom, 3] over the complex's atoms in model order (a decoded pose straight out of
++    the diffusion head), or [N_token, 3] of representative atoms when `already_rep` is set.
++    """
++    if not already_rep:
++        mask = input_feature_dict["distogram_rep_atom_mask"].bool()
++        assert coords.shape[-2] == mask.shape[0], (
++            f"pose has {coords.shape[-2]} atoms, this complex has {mask.shape[0]}")
++        coords = coords[..., mask, :]
++    rep = coords.to(z.device, torch.float32)
++    conf = model.confidence_head
++    with torch.amp.autocast("cuda", enabled=False):
++        d = torch.cdist(rep, rep)
++        delta = (conf.linear_no_bias_d(
++                     one_hot(x=d, lower_bins=conf.lower_bins, upper_bins=conf.upper_bins))
++                 + conf.linear_no_bias_d_wo_onehot(d.unsqueeze(dim=-1)))
++    delta = gain * delta.to(z.dtype)
++    if os.environ.get("PROTENIX_POSE_Z_DEBUG"):
++        logger.warning(f"POSE_Z: |delta| {float(delta.abs().mean()):.5g}  |z| "
++                       f"{float(z.abs().mean()):.5g}  ratio "
++                       f"{float(delta.abs().mean() / (z.abs().mean() + 1e-12)):.4g}  gain {gain}")
++    return delta
+ from protenix.utils.logger import get_logger
+ from protenix.utils.permutation.permutation import SymmetricPermutation
+ from protenix.utils.torch_utils import autocasting_disable_decorator
+@@ -314,6 +387,138 @@ class Protenix(nn.Module):
+             logger.warning(f"PROTENIX_LOAD_TRUNK: recycling carry-over initialised from {_lt} "
+                            f"(z {tuple(z.shape)}, s {tuple(s.shape)}); N_cycle={N_cycle}")
+ 
++        # REDOCK_MASK_AB_ASYM / REDOCK_MASK_AG_ASYM: zero the ANTIBODY x ANTIGEN blocks of the
++        # recycling carry-over z, leaving every intra-chain block and the heavy-light block intact.
++        # Both orderings (i,j) and (j,i) are zeroed. Unset => stock behaviour, no-op.
++        #
++        # WHAT IT IS FOR. "Redock": keep the blueprint the trunk has built for each chain and erase
++        # only what it concluded about how the two dock, then let further recycles rebuild the
++        # interface. The chains do not need re-folding, so this is far cheaper than a fresh fold.
++        #
++        # WHY ZEROING AND NOT NOISE. The carry-over starts at exactly zero on every fold
++        # (`z = torch.zeros_like(z_init)` above) and enters each cycle as
++        # `z_init + linear_no_bias_z_cycle(layernorm_z_cycle(z))`. Both of those act PER TOKEN PAIR
++        # over the channel axis and never mix pairs, so zeroing a block puts precisely those pairs
++        # into the state they hold at cycle 0 while the rest keep their learned state. Gaussian noise
++        # of comparable size instead puts them in a state the model has never seen: the set of pair
++        # reps encoding a DIFFERENT valid dock is a thin manifold, and a random displacement almost
++        # surely leaves it, so noise corrupts rather than redirects. Caveat for the reader: each pair
++        # is individually in-distribution, but a tensor mixing cycle-0 and cycle-9 pairs is a
++        # combination training never produced -- the pairformer mixes them immediately.
++        # Also note layernorm_z_cycle has a learnable affine, so masked pairs fall back to
++        # `z_init + Linear(LayerNorm(0))`, i.e. the cycle-0 state, NOT to a literal zero contribution.
++        #
++        # WHERE THE DIVERSITY COMES FROM. Nothing here is random. MSAModule re-draws its row subset
++        # on EVERY call (min_size 1, max_size 16384) and it runs once per recycle, so two resumed runs
++        # from the same masked trunk re-dock differently on their own. The mask needs no rate
++        # parameter for that reason.
++        #
++        # NOT the same as mc_dropout, which thins 40% of CHANNELS uniformly over the whole tensor: a
++        # contact belief is spread across all 256 channels and survives that, then LayerNorm rescales
++        # the survivors. Zeroing a pair's full 256 channels erases the belief, and confining it to the
++        # inter-chain blocks protects the folds. Structure, not amount, is the claim -- so the control
++        # to beat is mc_dropout at a matched number of zeroed elements.
++        _mab, _mag = (os.environ.get("REDOCK_MASK_AB_ASYM"), os.environ.get("REDOCK_MASK_AG_ASYM"))
++        if _mab and _mag:
++            _asym = input_feature_dict["asym_id"]
++            while _asym.dim() > 1:
++                _asym = _asym[0]
++            _ab_ids = {int(x) for x in _mab.split(",") if x != ""}
++            _ag_ids = {int(x) for x in _mag.split(",") if x != ""}
++            _ab = torch.zeros_like(_asym, dtype=torch.bool)
++            _ag = torch.zeros_like(_asym, dtype=torch.bool)
++            for _i in _ab_ids:
++                _ab |= _asym == _i
++            for _i in _ag_ids:
++                _ag |= _asym == _i
++            if not _ab.any() or not _ag.any():
++                raise SystemExit(
++                    f"REDOCK_MASK: asym_id has {sorted(set(_asym.tolist()))} but AB={sorted(_ab_ids)} "
++                    f"AG={sorted(_ag_ids)} selected {int(_ab.sum())}/{int(_ag.sum())} tokens -- "
++                    "refusing to run a no-op mask that would look like a null result")
++            # [N_tok, N_tok] pair mask, broadcast over the leading dims and the channel axis
++            _pair = (_ab[:, None] & _ag[None, :]) | (_ag[:, None] & _ab[None, :])
++
++            # REDOCK_MASK_FRAC=f (default 1.0) zeroes only a fraction of the inter-chain block, and
++            # REDOCK_MASK_MODE picks the GRANULARITY of that fraction:
++            #   pairs     zero whole token pairs -- all 256 channels of the selected pairs. Erases
++            #             those pairs' belief outright; the survivors keep theirs intact.
++            #   elements  zero individual (pair, channel) entries across the whole block. A belief is
++            #             spread over all 256 channels, so this THINS every pair rather than erasing
++            #             any -- and LayerNorm then rescales what survives, partly undoing it.
++            # At f=1.0 the two modes are identical (the whole block goes), which is what the first
++            # 8-target run did -- so that run is MODE-independent and comparable to both.
++            #
++            # WHY SWEEP f AT ALL. f=1.0 collapsed 8w5f to DockQ 0.023 with near-zero spread: the model
++            # was left with no dock to refine and never rebuilt one in 1-3 recycles. f<1 leaves a
++            # partial hypothesis, which is the "masking may simply be too strong" hypothesis stated as
++            # a measurement. The two modes answer different halves of it: `pairs` keeps some beliefs
++            # whole, `elements` keeps all beliefs but degrades each.
++            #
++            # The mask is drawn fresh per process. REDOCK_MASK_SEED makes it reproducible; without it
++            # torch's current stream is used, and either way the realised fraction is LOGGED, because
++            # a silently-wrong fraction would read as a weak effect rather than a bug.
++            _frac = float(os.environ.get("REDOCK_MASK_FRAC", "1.0"))
++            _mode = os.environ.get("REDOCK_MASK_MODE", "pairs")
++            if _mode not in ("pairs", "elements"):
++                raise SystemExit(f"REDOCK_MASK_MODE must be 'pairs' or 'elements', got {_mode!r}")
++            if not 0.0 < _frac <= 1.0:
++                raise SystemExit(f"REDOCK_MASK_FRAC must be in (0, 1], got {_frac}")
++            _gen = None
++            if os.environ.get("REDOCK_MASK_SEED"):
++                _gen = torch.Generator(device=z.device)
++                _gen.manual_seed(int(os.environ["REDOCK_MASK_SEED"]))
++            _before = float(z.abs().sum())
++            if _frac >= 1.0:
++                _keep = (~_pair).to(z.dtype)
++                while _keep.dim() < z.dim() - 1:
++                    _keep = _keep.unsqueeze(0)
++                z = z * _keep.unsqueeze(-1)
++                _zeroed, _total, _unit = int(_pair.sum()), int(_pair.numel()), "token pairs"
++            elif _mode == "pairs":
++                _sel = (torch.rand(_pair.shape, device=z.device, generator=_gen) < _frac) & _pair
++                _keep = (~_sel).to(z.dtype)
++                while _keep.dim() < z.dim() - 1:
++                    _keep = _keep.unsqueeze(0)
++                z = z * _keep.unsqueeze(-1)
++                _zeroed, _total, _unit = int(_sel.sum()), int(_pair.sum()), "token pairs IN the block"
++            else:   # elements: per (pair, channel), confined to the inter-chain block
++                _blk = _pair.unsqueeze(-1)                       # [N,N,1] broadcast over channels
++                _drop = (torch.rand(z.shape[-3:], device=z.device, generator=_gen) < _frac) & _blk
++                _keep = (~_drop).to(z.dtype)
++                while _keep.dim() < z.dim():
++                    _keep = _keep.unsqueeze(0)
++                z = z * _keep
++                _zeroed = int(_drop.sum())
++                _total = int(_pair.sum()) * z.shape[-1]
++                _unit = "elements IN the block"
++            # REDOCK_MASK_S=1 also blanks the single rep on the ANTIBODY+ANTIGEN tokens. Off by
++            # default: the dock may also be encoded in s, and if z-only masking changes nothing that
++            # is the first thing to try -- but it erases far more than the interface, so it is a
++            # separate arm, not the default.
++            if os.environ.get("REDOCK_MASK_S") == "1":
++                _tok = (_ab | _ag).to(s.dtype)
++                _keep_s = (1.0 - _tok)
++                while _keep_s.dim() < s.dim() - 1:
++                    _keep_s = _keep_s.unsqueeze(0)
++                s = s * _keep_s.unsqueeze(-1)
++            logger.warning(
++                f"REDOCK_MASK: mode={_mode} frac={_frac} -- zeroed {_zeroed} of {_total} {_unit} "
++                f"({100.0 * _zeroed / max(1, _total):.1f}% realised); block is "
++                f"{int(_pair.sum())} of {_pair.numel()} token pairs "
++                f"({100.0 * int(_pair.sum()) / _pair.numel():.1f}% of z) across AB asym "
++                f"{sorted(_ab_ids)} ({int(_ab.sum())} tok) x AG asym {sorted(_ag_ids)} "
++                f"({int(_ag.sum())} tok); |z| {_before:.1f} -> {float(z.abs().sum()):.1f}; "
++                f"mask_s={os.environ.get('REDOCK_MASK_S', '0')} "
++                f"seed={os.environ.get('REDOCK_MASK_SEED', 'stream')}")
++
++        # PER-POSE RESCORING needs to replay ONE recycle after the trunk has finished and the poses
++        # have been decoded, which happens outside this function. z_init and s_init are computed
++        # once here and are loop-invariant, so stashing them is enough to make that replay faithful;
++        # everything else the replay needs (input_feature_dict, s_inputs, the modules) is already in
++        # scope at the call site. Set unconditionally and cheaply -- they are references, not copies.
++        self._pz_z_init, self._pz_s_init = z_init, s_init
++
+         # Line 7-13 recycling
+         for cycle_no in range(N_cycle):
+             # PROTENIX_MSA_FROM_CYCLE=k: skip the MSA module for cycles 0..k-1, so the trunk
+@@ -421,6 +626,26 @@ class Protenix(nn.Module):
+                     if _confornet is not None:
+                         z = _confornet(z)
+ 
++                # DONOR POSE -> z, VIA THE CONFIDENCE HEAD'S DISTANCE EMBEDDING (see pose_z_delta).
++                #   PROTENIX_POSE_Z_CIF=<cif>     the donor pose. Unset => strict no-op.
++                #   PROTENIX_POSE_Z_CYCLES=0      which recycles to inject at: a comma list, or `all`.
++                #                                 `0` = inject once before any recycling has happened
++                #                                 and let the remaining cycles metabolise it; `all` =
++                #                                 re-assert the pose at every recycle.
++                #   PROTENIX_POSE_Z_GAIN=1.0      scale on the added term.
++                # Injected HERE, immediately before the final pairformer of each cycle, which is both
++                # ConforNet's PAIR_PRE point and the position the confidence head adds its own
++                # distance term at -- into z, just before a pairformer reads it.
++                _pz_cif = os.environ.get("PROTENIX_POSE_Z_CIF")
++                if _pz_cif:
++                    _pz_spec = os.environ.get("PROTENIX_POSE_Z_CYCLES", "0").strip()
++                    _pz_hit = (_pz_spec == "all"
++                               or cycle_no in {int(x) for x in _pz_spec.split(",") if x.strip()})
++                    if _pz_hit:
++                        z = z + pose_z_delta(
++                            self, input_feature_dict, z, _pz_cif,
++                            gain=float(os.environ.get("PROTENIX_POSE_Z_GAIN", "1.0")))
++
+                 s, z = self.pairformer_stack(
+                     s,
+                     z,
+@@ -741,6 +966,54 @@ class Protenix(nn.Module):
+             sample_diffusion
+         )(**_configs, **kwargs)
+ 
++    def pose_extra_cycle(self, input_feature_dict, s_inputs, s, z, pose_coords, gain=1.0,
++                         inplace_safe=False, chunk_size=None):
++        """One more trunk recycle, with `pose_coords` injected into z. out: (s_new, z_new).
++
++        WHY THIS EXISTS. Within a fold all five diffusion samples share one z, and ipTM is carried by
++        z -- measured within-fold pair_iptm spread is 0.008 while DockQ spans up to 0.68. So ipTM
++        cannot rank poses from one fold. Giving each pose its OWN z, by injecting it and recycling,
++        turns a within-fold question (which ipTM is blind to) into a between-z question (which is the
++        only thing ipTM answers). The confidence head then scores each pose against a z that saw it.
++
++        FAITHFULNESS. This mirrors the non-inplace branch of the recycle loop exactly: recycling
++        carry-over (z_init + linear_no_bias_z_cycle(layernorm_z_cycle(z))), template embedder, MSA
++        module, s carry-over, then the pairformer -- with the pose added immediately before the
++        pairformer, the same point the loop injects at and the point the confidence head uses. It
++        deliberately does NOT reproduce two things: mc_dropout, because a stochastic replay would
++        make the five poses' scores incomparable, which is the entire purpose of this function; and
++        PROTENIX_MSA_FROM_CYCLE / MSA_PHASES, because those schedule information across cycles and
++        this is one appended cycle, not cycle k. Both are asserted off below rather than silently
++        ignored.
++        """
++        assert not os.environ.get("PROTENIX_MSA_PHASES"), \
++            "pose_extra_cycle: PROTENIX_MSA_PHASES schedules MSA across cycles; the replay is one " \
++            "appended cycle and cannot honour it"
++        z_init, s_init = self._pz_z_init, self._pz_s_init
++        z = z_init + self.linear_no_bias_z_cycle(self.layernorm_z_cycle(z))
++        if self.template_embedder.n_blocks > 0:
++            z = z + self.template_embedder(
++                input_feature_dict, z,
++                triangle_multiplicative=self.configs.triangle_multiplicative,
++                triangle_attention=self.configs.triangle_attention,
++                inplace_safe=inplace_safe, chunk_size=chunk_size,
++            )
++        z = self.msa_module(
++            input_feature_dict, z, s_inputs, pair_mask=None,
++            triangle_multiplicative=self.configs.triangle_multiplicative,
++            triangle_attention=self.configs.triangle_attention,
++            inplace_safe=inplace_safe, chunk_size=chunk_size,
++        )
++        s = s_init + self.linear_no_bias_s(self.layernorm_s(s))
++        z = z + pose_z_delta_coords(self, input_feature_dict, z, pose_coords, gain=gain)
++        s, z = self.pairformer_stack(
++            s, z, pair_mask=None,
++            triangle_multiplicative=self.configs.triangle_multiplicative,
++            triangle_attention=self.configs.triangle_attention,
++            inplace_safe=inplace_safe, chunk_size=chunk_size,
++        )
++        return s, z
++
+     def run_confidence_head(self, *args: Any, **kwargs: Any) -> Any:
+         """
+         Runs the confidence head with optional automatic mixed precision (AMP) disabled.
+@@ -1015,24 +1288,68 @@ class Protenix(nn.Module):
+             **sample_confidence.get_bin_params(self.configs.loss.distogram),
+         )  # [N_token, N_token]
+ 
+-        # Confidence logits
+-        (
+-            pred_dict["plddt"],
+-            pred_dict["pae"],
+-            pred_dict["pde"],
+-            pred_dict["resolved"],
+-        ) = self.run_confidence_head(
+-            input_feature_dict=input_feature_dict,
+-            s_inputs=s_inputs,
+-            s_trunk=s,
+-            z_trunk=z,
+-            pair_mask=None,
+-            x_pred_coords=pred_dict["coordinate"],
+-            triangle_multiplicative=self.configs.triangle_multiplicative,
+-            triangle_attention=self.configs.triangle_attention,
+-            inplace_safe=inplace_safe,
+-            chunk_size=chunk_size,
+-        )
++        # PER-POSE RESCORING. PROTENIX_POSE_Z_RESCORE=1: instead of scoring all samples against the
++        # one shared trunk z, give each sample its own z by injecting that sample's pose and running
++        # one more recycle (pose_extra_cycle), then score the sample against it. The logits are
++        # concatenated on the sample axis in the original order, so everything downstream --
++        # compute_full_data_and_summary, chain_pair_iptm, the summary json, scorer.py -- is unchanged
++        # and pair_iptm simply becomes a per-pose quantity instead of a fold-level one.
++        #
++        # COST: one extra recycle plus one extra confidence pass per sample. The confidence head
++        # already loops over samples internally, so only the recycles are genuinely new work.
++        #
++        # The pose also reaches the head its normal way, through x_pred_coords -- so it enters twice,
++        # once into z before the recycle and once inside the head. That is inherent: x_pred_coords is
++        # not optional. PROTENIX_POSE_Z_RESCORE_GAIN scales only the z injection.
++        if os.environ.get("PROTENIX_POSE_Z_RESCORE") == "1":
++            _coords = pred_dict["coordinate"]              # [..., N_sample, N_atom, 3]
++            _ns = _coords.shape[-3]
++            _g = float(os.environ.get("PROTENIX_POSE_Z_RESCORE_GAIN", "1.0"))
++            _parts = []
++            for _i in range(_ns):
++                with torch.no_grad():
++                    _si, _zi = self.pose_extra_cycle(
++                        input_feature_dict, s_inputs, s, z, _coords[..., _i, :, :], gain=_g,
++                        inplace_safe=False, chunk_size=chunk_size)
++                    _parts.append(self.run_confidence_head(
++                        input_feature_dict=input_feature_dict,
++                        s_inputs=s_inputs,
++                        s_trunk=_si,
++                        z_trunk=_zi,
++                        pair_mask=None,
++                        x_pred_coords=_coords[..., _i:_i + 1, :, :],
++                        triangle_multiplicative=self.configs.triangle_multiplicative,
++                        triangle_attention=self.configs.triangle_attention,
++                        inplace_safe=False,
++                        chunk_size=chunk_size,
++                    ))
++                    del _si, _zi
++            pred_dict["plddt"] = torch.cat([q[0] for q in _parts], dim=-3)
++            pred_dict["pae"] = torch.cat([q[1].to(_coords.device) for q in _parts], dim=-4)
++            pred_dict["pde"] = torch.cat([q[2].to(_coords.device) for q in _parts], dim=-4)
++            pred_dict["resolved"] = torch.cat([q[3] for q in _parts], dim=-3)
++            del _parts
++            logger.warning(f"POSE_Z_RESCORE: {_ns} poses each scored against its own z "
++                           f"(one injected recycle per pose, gain {_g})")
++        else:
++            # Confidence logits
++            (
++                pred_dict["plddt"],
++                pred_dict["pae"],
++                pred_dict["pde"],
++                pred_dict["resolved"],
++            ) = self.run_confidence_head(
++                input_feature_dict=input_feature_dict,
++                s_inputs=s_inputs,
++                s_trunk=s,
++                z_trunk=z,
++                pair_mask=None,
++                x_pred_coords=pred_dict["coordinate"],
++                triangle_multiplicative=self.configs.triangle_multiplicative,
++                triangle_attention=self.configs.triangle_attention,
++                inplace_safe=inplace_safe,
++                chunk_size=chunk_size,
++            )
+ 
+         if os.environ.get("PROTENIX_DUMP_TRUNK"):
+             # Trunk carry-over ONLY (z, s) -- the lightweight counterpart to PROTENIX_LOAD_TRUNK.
+@@ -1091,9 +1408,24 @@ class Protenix(nn.Module):
+                             f"(|x|>65504): {int((a > 65504).sum())}, underflow (0<|x|<6.1e-5): "
+                             f"{int(((a > 0) & (a < 6.1e-5)).sum())} | max|x|={float(a.max()):.4g}")
+                         return b.view(torch.uint16).cpu().numpy()
++                    # PROTENIX_DUMP_CONF_INPUTS=1 (2026-10-02, tts_abag/self_distill_dropout): also save what is
++                    # needed to re-run the CONFIDENCE HEAD and its ipTM summary offline -- s_inputs and s (float32),
++                    # the poses in MODEL atom order (float32, model sample order, not the dumper's ranked order),
++                    # contact_probs, the six features the head and summary read, the z/s source dtypes and N_cycle.
++                    _ci = {}
++                    if _os.environ.get("PROTENIX_DUMP_CONF_INPUTS"):
++                        _ci = dict(
++                            ci_s_inputs=_sq(s_inputs), ci_s_trunk_f32=_sq(s),
++                            ci_coordinate=pred_dict["coordinate"].detach().float().cpu().numpy(),
++                            ci_contact_probs=pred_dict.get("per_sample_contact_probs", pred_dict["contact_probs"]).detach().float().cpu().numpy(),
++                            ci_z_dtype=_np.array(str(z.dtype)), ci_s_dtype=_np.array(str(s.dtype)),
++                            ci_s_inputs_dtype=_np.array(str(s_inputs.dtype)), ci_N_cycle=_np.array(int(N_cycle)),
++                            **{f"ci_feat_{k}": input_feature_dict[k].detach().cpu().numpy() for k in (
++                                "distogram_rep_atom_mask", "atom_to_token_idx", "atom_to_tokatom_idx",
++                                "asym_id", "has_frame", "is_ligand")})
+                     _np.savez(_f, z_trunk=_b16(z, "z"), s_trunk=_b16(s, "s"), dtype=_np.array("bf16"),
+                               rng_py=_np.array(_rng["py"]), rng_torch=_rng["torch"],
+-                              **({"rng_cuda": _rng["cuda"]} if "cuda" in _rng else {}))
++                              **({"rng_cuda": _rng["cuda"]} if "cuda" in _rng else {}), **_ci)
+                 else:
+                     _np.savez(_f, z_trunk=_sq(z), s_trunk=_sq(s),
+                               rng_py=_np.array(_rng["py"]), rng_torch=_rng["torch"],
+@@ -1140,6 +1472,89 @@ class Protenix(nn.Module):
+             ),
+         )
+ 
++        if os.environ.get("PROTENIX_CONF_ZDROP") is not None and os.environ.get("PROTENIX_CONF_ZDROP_OUT"):
++            # Self-distillation dropout check (2026-10-02, tts_abag/self_distill_dropout). Re-run the
++            # confidence head on each pose with dropout p applied to z_trunk ONLY -- before the head adds
++            # z_init (s_inputs) and before it embeds the pose distances -- and write each pose's
++            # chain_pair_iptm to a side json. A fresh mask per pose and per repeat. Runs AFTER the clean
++            # summary and the trunk dump, so neither the clean outputs nor the saved RNG state change.
++            # PROTENIX_CONF_ZDROP_REPS repeats (default 1). p=0 must reproduce the clean values.
++            # PROTENIX_CONF_ZDROP_SPECS="drop:0.6,rowcol:0.2,..." (optional) scores several perturbations of
++            # z_trunk in one pass; without it the single spec is drop:<PROTENIX_CONF_ZDROP>. Kinds:
++            #   drop:p    element-wise dropout, rescaled by 1/(1-p) (torch dropout)
++            #   rowcol:p  mask a random fraction p of TOKENS: zero z[i,:,:] and z[:,i,:] (no rescale)
++            #   row:p     zero z[i,:,:] for a random fraction p of tokens (no rescale)
++            #   chan:p    zero a random fraction p of the c_z feature channels (no rescale)
++            try:
++                import json as _json
++                _p = float(os.environ["PROTENIX_CONF_ZDROP"])
++                _reps = int(os.environ.get("PROTENIX_CONF_ZDROP_REPS", "1"))
++                _specs = [x.strip() for x in os.environ.get("PROTENIX_CONF_ZDROP_SPECS", f"drop:{_p}").split(",") if x.strip()]
++                _coords = pred_dict["coordinate"]
++                _ns = _coords.shape[-3]
++
++                def _cpi(summ):
++                    return [[[float(x) for x in row] for row in d["chain_pair_iptm"].reshape(
++                        d["chain_pair_iptm"].shape[-2], -1).tolist()] for d in summ]
++
++                def _perturb(zz, spec):
++                    kind, q = spec.split(":"); q = float(q)
++                    if kind == "drop":
++                        return torch.nn.functional.dropout(zz, p=q, training=True)
++                    n, c = zz.shape[-2], zz.shape[-1]
++                    if kind in ("rowcol", "row"):
++                        keep = (torch.rand(n, device=zz.device) >= q).to(zz.dtype)
++                        m = keep[:, None, None] * (keep[None, :, None] if kind == "rowcol" else 1)
++                        return zz * m
++                    if kind == "chan":
++                        return zz * (torch.rand(c, device=zz.device) >= q).to(zz.dtype)
++                    raise ValueError(f"unknown PROTENIX_CONF_ZDROP spec {spec}")
++
++                _out = {"p": _p, "reps": _reps, "n_sample": int(_ns), "specs": _specs,
++                        "clean": _cpi(pred_dict["summary_confidence"]), "student": [], "labels": []}
++                for _spec, _r in [(sp, r) for sp in _specs for r in range(_reps)]:
++                    _out["labels"].append(f"{_spec}#{_r}")
++                    _parts = []
++                    for _i in range(_ns):
++                        with torch.no_grad():
++                            _zd = _perturb(z, _spec)
++                            _parts.append(self.run_confidence_head(
++                                input_feature_dict=input_feature_dict, s_inputs=s_inputs, s_trunk=s,
++                                z_trunk=_zd, pair_mask=None, x_pred_coords=_coords[..., _i:_i + 1, :, :],
++                                triangle_multiplicative=self.configs.triangle_multiplicative,
++                                triangle_attention=self.configs.triangle_attention,
++                                inplace_safe=False, chunk_size=chunk_size))
++                        del _zd
++                    _pl = torch.cat([q[0] for q in _parts], dim=-3)
++                    _pa = torch.cat([q[1].to(_coords.device) for q in _parts], dim=-4)
++                    _pd = torch.cat([q[2].to(_coords.device) for q in _parts], dim=-4)
++                    del _parts
++                    _summ, _ = autocasting_disable_decorator(True)(
++                        sample_confidence.compute_full_data_and_summary
++                    )(
++                        configs=self.configs, pae_logits=_pa, plddt_logits=_pl, pde_logits=_pd,
++                        contact_probs=pred_dict.get("per_sample_contact_probs", pred_dict["contact_probs"]),
++                        token_asym_id=input_feature_dict["asym_id"],
++                        token_has_frame=input_feature_dict["has_frame"],
++                        atom_coordinate=_coords,
++                        atom_to_token_idx=input_feature_dict["atom_to_token_idx"],
++                        atom_is_polymer=1 - input_feature_dict["is_ligand"],
++                        N_recycle=N_cycle, interested_atom_mask=interested_atom_mask,
++                        return_full_data=True,
++                        mol_id=(input_feature_dict["mol_id"] if mode != "inference" else None),
++                        elements_one_hot=(input_feature_dict["ref_element"] if mode != "inference" else None),
++                    )
++                    _out["student"].append(_cpi(_summ))
++                    del _pl, _pa, _pd, _summ
++                _f = os.environ["PROTENIX_CONF_ZDROP_OUT"]
++                os.makedirs(os.path.dirname(_f) or ".", exist_ok=True)
++                with open(_f, "w") as _fh:
++                    _json.dump(_out, _fh)
++                logger.warning(f"PROTENIX_CONF_ZDROP specs={_specs} reps={_reps}: wrote {_f}")
++            except Exception as _e:
++                logger.error(f"PROTENIX_CONF_ZDROP failed: {_e}")
++                raise
++
+         if os.environ.get("DUMP_FULL"):
+             # Save everything needed to re-run the DIFFUSION head and the CONFIDENCE head offline
+             # from this seed's trunk state. Fires ONCE per forward pass, and a forward pass produces
+@@ -1159,10 +1574,21 @@ class Protenix(nn.Module):
+                 _os.makedirs(_d, exist_ok=True)
+                 _tag = _os.environ.get("DUMP_REPS_TAG", "x")
+ 
++                # DUMP_FULL_FP32=1: store z/s at full precision instead of fp16. Off by default, so
++                # every existing dump and reader is unaffected. fp16 holds ~3 decimal digits, and a
++                # z entry is O(10), so its resolution there is ~0.01 -- fine for comparing reps, but
++                # it quantises a re-run of the diffusion head away from what the fp32 trunk actually
++                # produced, and it previously quantised away small steering edits outright. Set this
++                # whenever the dump is meant to REPRODUCE a head, not just to be looked at. Costs 2x
++                # the file size on z_trunk, which dominates (~[N_token, N_token, 256]).
++                _fp32 = bool(_os.environ.get("DUMP_FULL_FP32"))
++
+                 def _np16(t):
+                     t = t.detach().float()
+                     while t.dim() > 3 and t.shape[0] == 1:
+                         t = t.squeeze(0)
++                    if _fp32:
++                        return t.cpu().numpy()
+                     return t.to(torch.float16).cpu().numpy()
+ 
+                 _feat = {}

@@ -258,7 +258,7 @@ def filter_a3m(path, cutoff, rel):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--jobs-dir", default=f"{_REPO}/extra_training/val_jobs")
+    ap.add_argument("--jobs-dir", default=f"{_REPO}/extra_training/validation/jobs")
     ap.add_argument("--msa-dir", default=f"{_REPO}/extra_training/building_msa/work/mmcif_msa")
     ap.add_argument("--release-dates",
                     default=os.path.expanduser("~/common/release_date_cache.json"),
