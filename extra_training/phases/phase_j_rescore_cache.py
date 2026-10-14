@@ -231,6 +231,14 @@ def main():
           "scores; it does NOT license joining cached poses to DockQ or to labels by this mapping. "
           "The cache writer records the sample index instead.")
     print(f"units whose cached pose order is permuted vs _sample_<k>: {permuted} of {len(units)}")
+    # A RANKING CHANGE IS A FAILURE. It was counted and printed but the script still exited 0, so a
+    # caller chaining on success saw a pass. Selection is what this project measures: if rescoring a
+    # cached unit reorders its poses, the cache cannot stand in for the fold.
+    if rank_bad:
+        raise SystemExit(
+            f"STOP: the within-seed pose ranking changed on {rank_bad} of {len(units)} unit(s) after "
+            "matching. Rescoring the cache does not reproduce the fold's ordering, so a selection "
+            "measured on the cache would not be the selection the fold made.")
     if dmax > a.tol:
         raise SystemExit(f"STOP: recomputed ipTM differs from the fold's own summary by {dmax:.4f} "
                          f"(tolerance {a.tol}). Rescoring a cached unit does not reproduce the fold, "

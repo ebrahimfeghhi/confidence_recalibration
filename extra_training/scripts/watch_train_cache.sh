@@ -42,9 +42,15 @@ while :; do
     # would have been silently disabled for exactly the failure it exists for.
     alive=$(tmux ls 2>/dev/null | grep -cE '^tcache_[013]:')
     q=$(quota -s 2>/dev/null | awk 'NR==3{print $2}')
-    if [ "$n" -ge "$TOTAL" ] || { [ "$alive" -eq 0 ] && [ "$n" -gt 0 ]; }; then
-        say "training cache finished or workers exited: $n/$TOTAL folds, quota $q"
+    # COMPLETION IS THE COUNT, NOT THE ABSENCE OF WORKERS. Treating "every worker exited" as done
+    # handed the cards to FoldBench on an INCOMPLETE cache -- which is what a crash looks like. Only
+    # reaching TOTAL ends the loop; everything else is remediated below.
+    if [ "$n" -ge "$TOTAL" ]; then
+        say "training cache COMPLETE: $n/$TOTAL folds, quota $q"
         break
+    fi
+    if [ "$alive" -eq 0 ]; then
+        say "ALL WORKERS GONE at $n/$TOTAL -- reconciling and restarting, not handing over"
     fi
     # RELAUNCH a missing worker, after releasing whatever it had claimed.
     if [ "$alive" -lt 3 ]; then

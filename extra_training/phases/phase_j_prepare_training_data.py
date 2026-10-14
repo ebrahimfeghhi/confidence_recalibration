@@ -64,9 +64,14 @@ def main():
     ap.add_argument("--fetch", action="store_true",
                     help="download a missing entry from RCSB. Only meaningful with "
                          "--cif-dir data/rcsb_training_cifs.")
-    ap.add_argument("--out-csv", default=f"{ROOT}/train_prep/indices.csv")
-    ap.add_argument("--bio-dir", default=f"{ROOT}/train_prep/bioassembly")
-    ap.add_argument("--file-list", default=f"{ROOT}/train_prep/cifs.txt")
+    # OUTPUTS MATCH THE INPUT. --cif-dir now defaults to the JOB cifs, so the outputs must be the
+    # job-level ones too. Left at indices.csv / bioassembly, a default run read job cifs and wrote
+    # over the whole-entry outputs, while phase_j_dataset.py read job_indices.csv / job_bioassembly
+    # -- which that run never wrote. The two halves would have disagreed silently, the dataset
+    # loading whatever stale job-level files happened to be on disk.
+    ap.add_argument("--out-csv", default=f"{ROOT}/train_prep/job_indices.csv")
+    ap.add_argument("--bio-dir", default=f"{ROOT}/train_prep/job_bioassembly")
+    ap.add_argument("--file-list", default=f"{ROOT}/train_prep/job_cifs.txt")
     ap.add_argument("--cluster-file", default=None)
     ap.add_argument("--n-cpu", type=int, default=32)
     ap.add_argument("--run", action="store_true", help="actually invoke prepare_training_data.py")
