@@ -19,7 +19,7 @@ where one cluster exceeded 15% of the target.
 Restricting validation to post-cutoff structures collapsed that to 21 live clusters: 26 of the 50
 hold no post-cutoff structure at all and 3 hold one that was never folded. That is what prompted the
 redesign. The 21-cluster fold's results (10 decoy / 30 acceptable / 14 no-acceptable at 30 seeds over
-54 interfaces) remain reproducible: its `pool.csv`, poses and scores are untouched under `val_fold`,
+54 interfaces) are NO LONGER reproducible from disk: `val_fold` and the `sabdab_val` dataset entry were deleted 2026-10-14.
 and `sabdab_val` still points at them.
 
 ### Composition of the pool, by era
@@ -252,14 +252,14 @@ Seed depth **100**. Every step below was run; results are recorded inline.
 | cross-cluster PDB ids | 3 entries span a selected and a training cluster. All are co-crystals of two unrelated antibody-antigen systems; the selected cluster's antigen shares 1% similarity with the training cluster's closest. None is a folded representative |
 | `paths.py` | `sabdab_val2` added: `val2_fold`, `val2_jobs`, `val2_refs`, scorer `ost`, seeds 400000-400099 |
 
-New directories, deliberately separate from `val_fold`/`val_jobs`/`val_refs`: overwriting
-`sabdab_val`'s `pool.csv` would make the 21-cluster numbers unreproducible.
+New directories, deliberately separate from the old `val_fold`/`val_jobs`/`val_refs`, which were
+deleted on 2026-10-14 once val2 superseded them.
 
 ### What was done
 
 **1. Stop the fold in flight, by PID.** Kill the `vf_run100` orchestrator, then check for orphaned
 `vf_val_*` sessions and kill those by PID too -- the trap has been observed NOT to fire -- then
-`reconcile_stale_claims.py val_fold --dataset sabdab_val` to release claims held mid-fold.
+`reconcile_stale_claims.py val2_fold --dataset sabdab_val2` to release claims held mid-fold.
 
 **2. Migrate the 18 structures the new split retains**, `val_fold` -> `val2_fold`: their
 `poses/<pdb>/` and `trunks/<pdb>/` directories, and their rows from `results.csv`. Without this
@@ -350,7 +350,7 @@ Step by step, with what each verified:
 The 920 figure matches 7 structures at 100 seeds plus 11 at 20 exactly, which is the arithmetic the
 second review used to catch an earlier miscount.
 
-**The holders watch `val_fold/HOLD_STOP`, not `val2_fold/HOLD_STOP`** -- they were started before the
+**The holders watched `val_fold/HOLD_STOP` during the changeover; `val_fold` is now deleted** -- they were started before the
 changeover and that is the path baked into their command line.
 
 ## Result (2026-10-13, both folds verified)

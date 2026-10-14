@@ -12,7 +12,7 @@ This file describes the POOL the split was drawn from, not the split. Two earlie
 appear below for context and both are superseded: phase B's draw of 50 clusters (chosen without
 regard to deposition date, still what `results/val_clusters.csv` contains) and the 21-cluster
 post-cutoff subset of it that was folded on 2026-10-12. The 21-cluster fold remains reproducible
-under `val_fold` / `sabdab_val`.
+under `val2_fold` / `sabdab_val2`.
 
 | cutoff | clusters | structures | instances |
 |---|---|---|---|
