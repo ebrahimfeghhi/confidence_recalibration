@@ -202,19 +202,6 @@ DATASETS = {
         matrices=POSE_DOCKQ_MATRICES / "foldbench_crystal",
         pool_seeds=tuple(str(101 + i) for i in range(50)), free_templates=False,
         free_pool=FOLDBENCH_DATA / "foldbench_baseline_results.csv"),
-    # The held-out validation set for the confidence-head finetune (extra_training/). 50 SAbDab2
-    # clusters, 2 structures each. Its DockQ references are the chosen SAbDab2 instance cifs, staged
-    # one-per-pdb by build_val_jobs.py so this lookup stays unambiguous when a pdb has several
-    # instances in the cluster. Templates are on, matching the pxm2025 convention.
-    "sabdab_val": Dataset(
-        name="sabdab_val", data=EXTRA_TRAINING, free=EXTRA_TRAINING / "val_fold",
-        jobs=EXTRA_TRAINING / "val_jobs",
-        ref=lambda pdb: f"{EXTRA_TRAINING}/val_refs/{pdb}.cif", scorer="ost",
-        pool_csv=EXTRA_TRAINING / "val_fold" / "pool.csv",
-        chain_maps=EXTRA_TRAINING / "val_fold" / "chain_maps.csv",
-        chain_roles=EXTRA_TRAINING / "val_fold" / "chain_roles.csv",
-        matrices=POSE_DOCKQ_MATRICES / "sabdab_val_crystal",
-        pool_seeds=tuple(str(400000 + i) for i in range(20))),
     # the 483 training clusters, one representative each. Same pipeline as sabdab_val and a
     # DISJOINT cluster set -- these are the poses the confidence head is finetuned ON, so nothing
     # here may share a store with the validation fold it is evaluated against.

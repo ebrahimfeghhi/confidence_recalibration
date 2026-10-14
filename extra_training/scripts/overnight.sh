@@ -20,7 +20,6 @@ set -u
 R=/home/ebrahim/tts_abag
 P=/home/ebrahim/Protenix
 PY=$P/.venv/bin/python
-C=$R/diffusion_commit_clean_v2
 S=$R/extra_training/scripts
 PH=$R/extra_training/phases
 W=$R/extra_training/msa_work
