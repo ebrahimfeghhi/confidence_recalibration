@@ -593,10 +593,27 @@ def check_queue(A, units):
 
 
 def interfaces_by_pdb(pool_csv):
-    """in: the pool csv.  out: {pdb: {interfaces}} -- what a unit with target=* gets scored on."""
+    """in: a csv naming the interfaces.  out: {pdb: {interfaces}} -- what target=* gets scored on.
+
+    TWO SCHEMAS, because this is an interface REGISTRY and the file that happens to carry it differs
+    per dataset. Our folds point it at their pool.csv, which is one row per (interface, seed, sample)
+    and spells the columns chain1/chain2. FoldBench points it at chain_roles.csv, which is one row
+    per interface -- 160 against 39,998 -- and spells them chain_1/chain_2. Reading only the chain
+    columns, either spelling, means the registry can live in whichever file actually is one rather
+    than in whichever file happened to be lying around.
+
+    Scores are not read here and never were: the old caller passed a results table and this function
+    ignored everything but the first three columns, which is why FoldBench's 50-seed results could
+    not be deleted without breaking folding.
+    """
     out = collections.defaultdict(set)
     for r in csv.DictReader(open(pool_csv)):
-        out[r["pdb"]].add(f"{r['pdb']}_{r['chain1']}{r['chain2']}")
+        c1 = r.get("chain1", r.get("chain_1"))
+        c2 = r.get("chain2", r.get("chain_2"))
+        if c1 is None or c2 is None:
+            raise SystemExit(f"STOP: {pool_csv} has neither chain1/chain2 nor chain_1/chain_2; "
+                             f"columns are {list(r)}")
+        out[r["pdb"]].add(f"{r['pdb']}_{c1}{c2}")
     return out
 
 

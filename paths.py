@@ -192,7 +192,11 @@ DATASETS = {
     "foldbench": Dataset(
         name="foldbench", data=FOLDBENCH_DATA, free=FOLDBENCH_DATA / "free", jobs=JSON_DIR,
         ref=lambda pdb: f"{GROUND_TRUTHS}/{pdb}-assembly1.cif", scorer="ost",
-        pool_csv=FOLDBENCH_DATA / "pool.csv", chain_maps=FOLDBENCH_DATA / "chain_maps.csv",
+        # THE INTERFACE REGISTRY, not a results table. folder.py reads only pdb/chain1/chain2 from
+        # this file; FoldBench's 50-seed scores used to carry that list as a side effect, which is
+        # why they could not be deleted. chain_roles.csv is one row per interface -- 160 against
+        # 39,998 -- and says what it is. The scores now live in foldbench_baseline_results.csv.
+        pool_csv=FOLDBENCH_DATA / "chain_roles.csv", chain_maps=FOLDBENCH_DATA / "chain_maps.csv",
         chain_roles=FOLDBENCH_DATA / "chain_roles.csv",
         matrices=POSE_DOCKQ_MATRICES / "foldbench_crystal",
         pool_seeds=tuple(str(101 + i) for i in range(50)), free_templates=False,
