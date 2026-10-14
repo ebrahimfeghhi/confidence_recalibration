@@ -209,6 +209,13 @@ def main():
                          "max_abs_diff": round(d, 8),
                          "stored_iptm": round(float(want[perm[ii]]["iptm"]), 4),
                          "recomputed_iptm": round(float(_np(summ[ii]["iptm"])), 4)})
+        # THE RANKING CHECK MUST ACTUALLY RUN. got_r/want_r were computed and never compared, so
+        # rank_bad stayed 0 and the summary line reported "0 of N changed" unconditionally -- a
+        # vacuous pass reported as a verification result.
+        if np.argsort(got_r).tolist() != np.argsort(want_r).tolist():
+            rank_bad += 1
+            print(f"  RANK CHANGED {pdb}/{seed} after matching: "
+                  f"{np.argsort(want_r).tolist()} -> {np.argsort(got_r).tolist()}")
         if perm != list(range(len(summ))):
             permuted += 1
         if i % 10 == 0 or i == len(units):
@@ -219,6 +226,10 @@ def main():
     print(f"\nchain_pair_iptm: max |stored - recomputed| = {dmax:.6f}, mean {dsum/max(1,dn):.6f} "
           f"over {int(dn)} poses")
     print(f"pose ranking within a seed changed on {rank_bad} of {len(units)} unit(s) AFTER matching")
+    print("NOTE: poses are matched by confidence SCORES, which cannot establish identity -- distinct "
+          "poses can share them (9fve/400073). This verifies that the cache reproduces the fold's "
+          "scores; it does NOT license joining cached poses to DockQ or to labels by this mapping. "
+          "The cache writer records the sample index instead.")
     print(f"units whose cached pose order is permuted vs _sample_<k>: {permuted} of {len(units)}")
     if dmax > a.tol:
         raise SystemExit(f"STOP: recomputed ipTM differs from the fold's own summary by {dmax:.4f} "

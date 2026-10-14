@@ -16,3 +16,4 @@ into a fix.
 | round 2 | 2026-10-13 | external reviewer on round 1's output | [round2_2026-10-13_reviewer.md](round2_2026-10-13_reviewer.md) |
 | round 3 | 2026-10-13 | the cache design | [round3_2026-10-13_cache.md](round3_2026-10-13_cache.md) |
 | round 4 | 2026-10-13 | structure selection; go-ahead given | [round4_2026-10-13_selection.md](round4_2026-10-13_selection.md) |
+| round 5 | 2026-10-13 | phase J label preparation, phase I checkers | [round5_2026-10-13_phasej.md](round5_2026-10-13_phasej.md) |

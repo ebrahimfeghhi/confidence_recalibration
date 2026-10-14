@@ -12,8 +12,9 @@ prepared data, the MSA store and the template store all wire together before any
 
 CROP IS OFF. Protenix's FT3 crops to 768 tokens before the trunk; we fold whole complexes at
 inference and the validation cache this will be compared against is uncropped, so `train_crop_size`
-is set past the largest structure (2,941 tokens). This is a deliberate deviation from the stage we
-are re-running, recorded in docs/cached_training.md, not an oversight.
+is set past the largest JOB -- 3,144 tokens measured over train_prep/job_indices.csv, hence 3,400.
+A crop is resampled per draw, so any structure that crossed the limit would be non-replayable. This
+is a deliberate deviation from the stage we are re-running, recorded in docs/cached_training.md.
 """
 import argparse
 import os
@@ -80,12 +81,17 @@ def build_configs(crop_size, indices, bio_dir, mmcif_dir, msa_root, seq_index, t
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--indices", default=f"{ROOT}/train_prep/indices.csv")
-    ap.add_argument("--bio-dir", default=f"{ROOT}/train_prep/bioassembly")
-    ap.add_argument("--mmcif-dir", default=f"{ROOT}/data/rcsb_training_cifs")
+    ap.add_argument("--indices", default=f"{ROOT}/train_prep/job_indices.csv")
+    ap.add_argument("--bio-dir", default=f"{ROOT}/train_prep/job_bioassembly")
+    # THE JOB CIFS, matching the bioassemblies below. Pointing this at whole entries would describe
+    # a different system from the one the poses come from.
+    ap.add_argument("--mmcif-dir", default=f"{ROOT}/train_prep/job_cifs")
     ap.add_argument("--msa-root", default=f"{ROOT}/msa_work/mmcif_msa")
     ap.add_argument("--seq-index", default=f"{ROOT}/msa_work/pdb_seqs/seq_to_pdb_index.json")
-    ap.add_argument("--crop-size", type=int, default=3072, help="past the largest structure = no crop")
+    # PAST THE LARGEST JOB, measured, not guessed. The job-level bioassemblies run to 3,144 tokens
+    # (train_prep/job_indices.csv), so 3,072 would have cropped exactly one structure -- and a crop is
+    # resampled per draw, which would make that unit non-replayable.
+    ap.add_argument("--crop-size", type=int, default=3400, help="past the largest job = no crop")
     ap.add_argument("--index", type=int, default=0, help="which datapoint to materialise")
     a = ap.parse_args()
     cfg = build_configs(a.crop_size, a.indices, a.bio_dir, a.mmcif_dir, a.msa_root, a.seq_index,

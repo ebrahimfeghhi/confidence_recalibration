@@ -51,9 +51,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--selection", default=f"{ROOT}/results/cache_train_structures.csv")
     ap.add_argument("--splits", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
-    ap.add_argument("--cif-dir", default=f"{ROOT}/data/rcsb_training_cifs",
-                    help="whole RCSB mmCIFs, one per PDB entry; fetched here if absent")
-    ap.add_argument("--no-fetch", action="store_true", help="fail instead of downloading")
+    # JOB CIFS BY DEFAULT, not whole entries. A whole entry builds the deposited assembly -- every
+    # copy, every chain -- which is NOT what we fold, so a label built from it cannot be compared to
+    # a pose. The default pointed at rcsb_training_cifs, so anyone running this without the explicit
+    # flag silently prepared the wrong system.
+    ap.add_argument("--cif-dir", default=f"{ROOT}/train_prep/job_cifs",
+                    help="per-JOB mmCIFs from phase_j_job_cifs.py: the antibody and its polypeptide "
+                         "antigen only. Pass data/rcsb_training_cifs only to prepare whole entries.")
+    # FETCHING IS OFF BY DEFAULT NOW. A missing job cif means phase_j_job_cifs.py has not run for
+    # that structure; downloading the whole entry instead would silently substitute the assembly for
+    # the job, which is the exact mismatch this phase exists to avoid.
+    ap.add_argument("--fetch", action="store_true",
+                    help="download a missing entry from RCSB. Only meaningful with "
+                         "--cif-dir data/rcsb_training_cifs.")
     ap.add_argument("--out-csv", default=f"{ROOT}/train_prep/indices.csv")
     ap.add_argument("--bio-dir", default=f"{ROOT}/train_prep/bioassembly")
     ap.add_argument("--file-list", default=f"{ROOT}/train_prep/cifs.txt")
@@ -77,8 +87,9 @@ def main():
     for pdb in pdbs:
         dst = os.path.join(a.cif_dir, f"{pdb}.cif")
         if not os.path.exists(dst) or os.path.getsize(dst) < 1000:
-            if a.no_fetch:
-                missing.append((pdb, "", "absent and --no-fetch given"))
+            if not a.fetch:
+                missing.append((pdb, "", "absent; run phase_j_job_cifs.py (or pass --fetch "
+                                               "to download a whole entry, which is NOT the job)"))
                 continue
             # .part THEN RENAME: a truncated cif parses without complaint and yields a short chain
             # set, which would silently cost interfaces in the label the loss is built from.
