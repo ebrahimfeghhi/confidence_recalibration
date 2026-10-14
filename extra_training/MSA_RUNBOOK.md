@@ -111,7 +111,7 @@ export REPO=/path/to/tts_abag
 export MMSEQS=$REPO/tools/mmseqs/bin/mmseqs
 export CF=$REPO/envs/colabfold/bin/colabfold_search
 export DB=$REPO/tools/colabfold/db
-export WORK=$REPO/extra_training/msa_work
+export WORK=$REPO/extra_training/building_msa/work
 export COLABFOLD_KEEP_INTERMEDIATES=1
 mkdir -p "$DB" "$WORK"
 ```

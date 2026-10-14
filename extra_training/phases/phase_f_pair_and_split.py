@@ -65,7 +65,7 @@ import sys
 import tempfile
 
 R = "/home/ebrahim/tts_abag"
-W = f"{R}/extra_training/msa_work"
+W = f"{R}/extra_training/building_msa/work"
 P = os.path.realpath(os.environ.get("PROTENIX_DIR", "/home/ebrahim/Protenix"))
 PY = f"{P}/.venv/bin/python"
 DEFAULT_BATCHES = [f"{W}/msa_initial_idx", f"{W}/msa_short_idx", f"{W}/msa_bench_short_idx"]

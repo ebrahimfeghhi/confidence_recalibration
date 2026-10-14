@@ -23,7 +23,7 @@
 # USAGE: bash verify_minidb.sh [n_queries]   (default 5)
 set -u
 R=/home/ebrahim/tts_abag
-W=$R/extra_training/msa_work
+W=$R/extra_training/building_msa/work
 MDB=$W/minidb
 M=$R/tools/mmseqs/bin/mmseqs
 CORES="${CORES:-0-7}"

@@ -117,7 +117,7 @@ def main():
     ap.add_argument("--train-clusters", default=f"{ROOT}/train_val_splits/train_clusters.csv")
     ap.add_argument("--val-clusters", default=f"{ROOT}/train_val_splits/val_split_proposal_clusters.csv",
                     help="the LIVE validation split; its clusters are removed from training")
-    ap.add_argument("--seq-index", default=f"{ROOT}/msa_work/pdb_seqs/seq_to_pdb_index.json")
+    ap.add_argument("--seq-index", default=f"{ROOT}/building_msa/work/pdb_seqs/seq_to_pdb_index.json")
     ap.add_argument("--cap", type=int, default=2, help="structures per (ab, ag) pairing")
     ap.add_argument("--out", default=f"{ROOT}/train_val_splits/cache_train_structures.csv")
     a = ap.parse_args()

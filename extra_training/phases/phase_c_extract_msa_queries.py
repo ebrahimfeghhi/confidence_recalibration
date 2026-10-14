@@ -23,7 +23,7 @@ SUMMARY
 INPUTS
     --splits:   SAbDab2 abag_split.csv. Default under extra_training/data.
     --excluded:    the homology-exclusion csv phase A writes. Default under extra_training/train_val_splits.
-    --out-dir:     where the per-source fastas go. Default extra_training/msa_queries.
+    --out-dir:     where the per-source fastas go. Default extra_training/building_msa/queries.
     --min-len:     skip sequences shorter than this. Default 20.
     --which:       train, bench, or both. Default both.
     --query-fasta: where the concatenated search set goes. Default msa_work/query.fasta.
@@ -110,9 +110,9 @@ sys.path.insert(0, REPO)
 import paths              # noqa: E402
 import phase_a_define_train_set as A  # noqa: E402
 
-OUTDIR = f"{REPO}/extra_training/msa_queries"
-QUERY = f"{REPO}/extra_training/msa_work/query.fasta"
-QUERY_SHORT = f"{REPO}/extra_training/msa_work/query_short.fasta"
+OUTDIR = f"{REPO}/extra_training/building_msa/queries"
+QUERY = f"{REPO}/extra_training/building_msa/work/query.fasta"
+QUERY_SHORT = f"{REPO}/extra_training/building_msa/work/query_short.fasta"
 
 
 def poly_antigens(row):

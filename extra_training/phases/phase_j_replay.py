@@ -72,8 +72,8 @@ def main():
     ap.add_argument("--indices", default=f"{ROOT}/training/prep/job_indices.csv")
     ap.add_argument("--bio-dir", default=f"{ROOT}/training/prep/job_bioassembly")
     ap.add_argument("--mmcif-dir", default=f"{ROOT}/training/prep/job_cifs")
-    ap.add_argument("--msa-root", default=f"{ROOT}/msa_work/mmcif_msa")
-    ap.add_argument("--seq-index", default=f"{ROOT}/msa_work/pdb_seqs/seq_to_pdb_index.json")
+    ap.add_argument("--msa-root", default=f"{ROOT}/building_msa/work/mmcif_msa")
+    ap.add_argument("--seq-index", default=f"{ROOT}/building_msa/work/pdb_seqs/seq_to_pdb_index.json")
     ap.add_argument("--crop-size", type=int, default=3400)
     ap.add_argument("--coord-tol", type=float, default=1e-4,
                     help="max |stored - live| label coordinate, A")

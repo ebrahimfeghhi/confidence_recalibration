@@ -36,7 +36,7 @@
 set -u
 R=/home/ebrahim/tts_abag
 DB=$R/tools/colabfold/db
-W=$R/extra_training/msa_work
+W=$R/extra_training/building_msa/work
 M=$R/tools/mmseqs/bin/mmseqs
 CFDB=colabfold_envdb_202108
 CORES="${CORES:-0-63}"

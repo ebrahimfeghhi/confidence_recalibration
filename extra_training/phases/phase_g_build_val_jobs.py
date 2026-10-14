@@ -31,7 +31,7 @@ INPUTS
                     extra_training/train_val_splits/val_split_proposal_clusters.csv (40 clusters, 2026-10-13).
                     NOT val_clusters.csv, the legacy 50-cluster phase-B draw.
     --msa-root:     directory holding mmcif_msa_template/ and seq_to_pdb_index.json.
-                    Default extra_training/msa_work/mmcif_msa.
+                    Default extra_training/building_msa/work/mmcif_msa.
     --seq-index:    seq_to_pdb_index.json. Default <msa-root>/../pdb_seqs/seq_to_pdb_index.json.
     --out-dir:      where the jsons go. Default extra_training/val_jobs.
     --fold-dir:     where pool.csv and chain_roles.csv go. Default extra_training/val_fold.
@@ -67,7 +67,7 @@ import phase_a_define_train_set as A  # noqa: E402
 # THE LIVE VALIDATION SPLIT. val_clusters.csv is the legacy 50-cluster draw; defaulting to it built
 # jobs for a split we no longer use, and 22 of the live 40 clusters are not in it.
 VAL = f"{REPO}/extra_training/train_val_splits/val_split_proposal_clusters.csv"
-MSA_ROOT = f"{REPO}/extra_training/msa_work/mmcif_msa"
+MSA_ROOT = f"{REPO}/extra_training/building_msa/work/mmcif_msa"
 OUT = f"{REPO}/extra_training/val_jobs"
 
 

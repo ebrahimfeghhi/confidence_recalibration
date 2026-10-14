@@ -71,7 +71,7 @@ SESS=${SESS:-vf}
 # cache exists to replay the head offline; a fold whose poses are only training data does not need
 # it, and 483 structures x 20 seeds would be about 2.4 TB.
 SAVE_TRUNKS=${SAVE_TRUNKS:-1}
-MSA=$R/extra_training/msa_work/mmcif_msa
+MSA=$R/extra_training/building_msa/work/mmcif_msa
 PH=$R/extra_training/phases
 PXM=$R/experimental_data/protenix/pxm2025/free_extra10
 LOG=${PHASE_I_LOG:-$R/extra_training/phase_i.log}

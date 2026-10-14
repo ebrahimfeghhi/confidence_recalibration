@@ -36,7 +36,7 @@ DB=$R/tools/colabfold/db
 # first member is "colabfold_envdb_202108_db".
 TAR=$DB/colabfold_envdb_202108.tar.gz
 URL=https://opendata.mmseqs.org/colabfold/colabfold_envdb_202108.db.tar.gz
-LOG=$R/extra_training/msa_work/phase2_envdb.log
+LOG=$R/extra_training/building_msa/work/phase2_envdb.log
 export PATH="$R/tools/mmseqs/bin:$PATH"
 
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
@@ -66,7 +66,7 @@ rm -f "$DB/COLABDB_READY"
 say "building envdb (tsv2exprofiledb, index-free)"
 cd "$R/tools/colabfold" || die "no tools/colabfold"
 CFDB=colabfold_envdb_202108 MMSEQS_NO_INDEX=1 taskset -c 0-63 \
-    bash setup_databases.sh "$DB" >> "$R/extra_training/msa_work/phase2_setup.log" 2>&1
+    bash setup_databases.sh "$DB" >> "$R/extra_training/building_msa/work/phase2_setup.log" 2>&1
 rc=$?
 say "setup_databases.sh exit $rc (not trusted; checking the files)"
 

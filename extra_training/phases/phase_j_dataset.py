@@ -86,8 +86,8 @@ def main():
     # THE JOB CIFS, matching the bioassemblies below. Pointing this at whole entries would describe
     # a different system from the one the poses come from.
     ap.add_argument("--mmcif-dir", default=f"{ROOT}/training/prep/job_cifs")
-    ap.add_argument("--msa-root", default=f"{ROOT}/msa_work/mmcif_msa")
-    ap.add_argument("--seq-index", default=f"{ROOT}/msa_work/pdb_seqs/seq_to_pdb_index.json")
+    ap.add_argument("--msa-root", default=f"{ROOT}/building_msa/work/mmcif_msa")
+    ap.add_argument("--seq-index", default=f"{ROOT}/building_msa/work/pdb_seqs/seq_to_pdb_index.json")
     # PAST THE LARGEST JOB, measured, not guessed. The job-level bioassemblies run to 2,941 tokens
     # (train_prep/job_indices.csv, 2,762 rows over 501 structures, re-measured after the
     # chain-resolution and resolution fixes), so a crop never fires -- and a crop is resampled per

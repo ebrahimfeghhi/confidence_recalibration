@@ -11,7 +11,7 @@ set -u
 R=/home/ebrahim/tts_abag
 LOG=$R/extra_training/health.log
 PXM=$R/experimental_data/protenix/pxm2025/free_extra10
-W=$R/extra_training/msa_work
+W=$R/extra_training/building_msa/work
 INTERVAL="${INTERVAL:-1800}"
 
 say() { echo "$*" >> "$LOG"; }

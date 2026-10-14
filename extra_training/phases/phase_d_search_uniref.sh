@@ -60,7 +60,7 @@
 set -u
 R=/home/ebrahim/tts_abag
 DB=$R/tools/colabfold/db
-W=$R/extra_training/msa_work
+W=$R/extra_training/building_msa/work
 M=$R/tools/mmseqs/bin/mmseqs
 CORES="${CORES:-0-63}"
 # THREADS DERIVED FROM THE TASKSET, not hardcoded. `--threads 64` under a narrower --cpu-list
