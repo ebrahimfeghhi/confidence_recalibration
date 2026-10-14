@@ -137,7 +137,33 @@ Measured across every fold input: **119 of 501 structures** have at least one qu
 internal segment of its native entity, 908 residues over 136 queries (worst `9p1m`, 27 residues in 4
 gaps). For those the model folded a construct missing real internal residues, and no label-side
 repair can add them back -- the poses themselves describe a molecule with two residues covalently
-adjacent that are not. This is an open input-audit question, not closed by the veto.
+adjacent that are not.
+
+### Does the truncation matter? The benchmarks say yes
+
+Consistency between training and deployment is what matters for calibrating confidence, so the
+question is whether the benchmarks feed sequences the same way. Compared against the DEPOSITED RCSB
+entry in every case -- comparing a benchmark's inputs to its OWN reference cifs reports agreement by
+construction, because those cifs were trimmed to those inputs (FoldBench's reference gives query
+length == reference length on every case it flags, which is the signature of that confound):
+
+| set | queries checked | omitting an internal native segment | residues lost |
+|---|---|---|---|
+| FoldBench | 72, over 25 deposited entries | 2 (2.8%) | 2 |
+| PXM2025 | 80, over 25 deposited entries | 2 (2.5%) | 2 |
+| **our training set** | **1,535** | **136 (8.9%), 119 structures** | **908** |
+
+The two benchmark cases are not even omissions: query length equals deposited entity length (60 vs
+60, 198 vs 198, 124 vs 124), so they are single-residue substitutions in the construct. **Both
+benchmarks feed the full deposited sequence.** Our training inputs do not, for 119 structures, so the
+confidence head would be calibrated on an input distribution it is never deployed on.
+
+**OPEN DECISION: refold those 119 with full sequences.** The omissions are mostly short disordered
+loops -- the per-query histogram peaks at 4-7 residues -- so the effect may be small, but it is a
+real train/deploy mismatch and it is the only remaining reason to spend GPU time. Nothing else about
+the cache depends on it. The residue-mapping repair (previous review's finding 1) is deliberately
+held until this is decided, because refolding with full sequences removes most of the internal gaps
+that repair would have to handle, and doing it twice is wasted work.
 
 **The two remaining chain losses are a wrong COPY, not a weak contact.** Both lose their antigen to
 `remove_dissociation`, and in both a near-identical contacting copy exists that was not selected:
@@ -150,6 +176,18 @@ adjacent that are not. This is an open input-audit question, not closed by the v
 `7stz` previously read 4.68 A with "1 contact" because the contact helper counted every non-hydrogen
 atom including SOLVENT, and that contact was `HOH C:763`. Excluding waters and other heteroatoms, the
 non-contacting count over all 501 structures is **11 antigen chains, not 9**.
+
+**OPEN DECISION: switch these two copies.** `7stz` -> `D`, `8gpu` -> `B`. Held out of the batch of
+fixes deliberately: it changes which molecule two structures train on, so it belongs in a commit of
+its own that can be reverted alone. The mechanism behind `7stz` is the one worth a reviewer's
+attention -- `D` was rejected by an 85% observed-coverage floor despite being the same entity as the
+query, i.e. MISSING COORDINATES were treated as evidence of a wrong molecule. The floor is the thing
+to change, not the chain, and the same floor may be silently rejecting correct copies elsewhere;
+that has not been swept. The other nine non-contacting chains (5.02-6.78 A) have not been checked for
+contacting alternatives either.
+
+Both structures are currently REFUSED by the cache builder -- 20 units, ten seeds each -- so nothing
+trains on a bad label meanwhile.
 
 ## 0b. The structures, and how they were chosen
 
