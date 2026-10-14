@@ -64,7 +64,10 @@ import subprocess
 import sys
 import tempfile
 
-R = "/home/ebrahim/tts_abag"
+# the repo root, from this file, so renaming the checkout needs no edit here
+_REPO = str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent)
+
+R = _REPO
 W = f"{R}/extra_training/building_msa/work"
 P = os.path.realpath(os.environ.get("PROTENIX_DIR", "/home/ebrahim/Protenix"))
 PY = f"{P}/.venv/bin/python"

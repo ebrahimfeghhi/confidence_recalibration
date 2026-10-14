@@ -27,7 +27,8 @@
 # free uniref30, only then extract this one.
 set -u
 MODE="${1:-all}"
-R=/home/ebrahim/tts_abag
+# the repo root, derived from this file so a rename of the checkout needs no edit here
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DB=$R/tools/colabfold/db
 # THE PREBUILT DATABASE, not the .tsv one. setup_databases.sh defaults FAST_PREBUILT_DATABASES=1
 # (line 20), and in that mode it extracts ${CFDB}.tar.gz straight to MMseqs db format and never calls

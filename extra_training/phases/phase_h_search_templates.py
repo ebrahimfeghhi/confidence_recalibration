@@ -93,12 +93,15 @@ import sys
 # pdb_seqres_2022_09_28.fasta to $PROTENIX_ROOT_DIR/search_database/ on first use, and with the
 # variable unset that lands in $HOME -- outside tts_abag, which everything in this project is
 # supposed to stay inside, and on a quota that is not the one we manage.
+# the repo root, from this file, so renaming the checkout needs no edit here
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROTENIX = os.environ.get("PROTENIX_DIR", "/home/ebrahim/Protenix")
-os.environ.setdefault("PROTENIX_ROOT_DIR", "/home/ebrahim/tts_abag/extra_training/protenix_assets")
+os.environ.setdefault("PROTENIX_ROOT_DIR", f"{_REPO}/extra_training/protenix_assets")
 os.makedirs(os.path.join(os.environ["PROTENIX_ROOT_DIR"], "search_database"), exist_ok=True)
 sys.path.insert(0, PROTENIX)
 
 from runner.template_search import update_template_info  # noqa: E402
+
 
 
 def load_release_dates(path):
@@ -255,12 +258,12 @@ def filter_a3m(path, cutoff, rel):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--jobs-dir", default="/home/ebrahim/tts_abag/extra_training/val_jobs")
-    ap.add_argument("--msa-dir", default="/home/ebrahim/tts_abag/extra_training/building_msa/work/mmcif_msa")
+    ap.add_argument("--jobs-dir", default=f"{_REPO}/extra_training/val_jobs")
+    ap.add_argument("--msa-dir", default=f"{_REPO}/extra_training/building_msa/work/mmcif_msa")
     ap.add_argument("--release-dates",
                     default=os.path.expanduser("~/common/release_date_cache.json"),
                     help="Protenix's release_date_cache.json; the featurizer reads the same file")
-    ap.add_argument("--splits", default="/home/ebrahim/tts_abag/extra_training/SAbDab2_data/"
+    ap.add_argument("--splits", default=f"{_REPO}/extra_training/SAbDab2_data/"
                                         "zenodo_splits/splits_final/abag_split.csv",
                     help="fallback deposition dates for structures absent from the cache")
     ap.add_argument("--days-before", type=int, default=60,

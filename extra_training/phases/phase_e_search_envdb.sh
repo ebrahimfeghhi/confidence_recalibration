@@ -34,7 +34,8 @@
 #                    sequence from the env pass. Default 90.
 #     CORES=0-63     taskset range; --threads is derived from it, never hardcoded.
 set -u
-R=/home/ebrahim/tts_abag
+# the repo root, derived from this file so a rename of the checkout needs no edit here
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DB=$R/tools/colabfold/db
 W=$R/extra_training/building_msa/work
 M=$R/tools/mmseqs/bin/mmseqs

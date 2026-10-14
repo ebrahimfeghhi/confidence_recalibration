@@ -58,7 +58,8 @@
 # shifts every key and the kept uniref.a3m could no longer be resumed from. Each batch therefore gets
 # its own output directory, its own uniref.a3m and its own uniref_tax.m8.
 set -u
-R=/home/ebrahim/tts_abag
+# the repo root, derived from this file so a rename of the checkout needs no edit here
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 DB=$R/tools/colabfold/db
 W=$R/extra_training/building_msa/work
 M=$R/tools/mmseqs/bin/mmseqs

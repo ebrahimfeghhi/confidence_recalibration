@@ -13,7 +13,9 @@
 # USAGE: tmux new-session -d -s quota_guard "bash quota_guard.sh"
 set -u
 
-LOG="${LOG:-/home/ebrahim/tts_abag/extra_training/quota_guard.log}"
+# the repo root, derived from this file so a rename of the checkout needs no edit here
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+LOG="${LOG:-$R/extra_training/quota_guard.log}"
 WARN_PCT="${WARN_PCT:-80}"
 STOP_PCT="${STOP_PCT:-90}"
 INTERVAL="${INTERVAL:-60}"
@@ -62,8 +64,8 @@ while true; do
             log "ESCALATE stopped. Free space, then re-run phase1_uniref.sh -- it resumes."
         fi
         # name the biggest offenders so the fix is obvious
-        du -sh /home/ebrahim/tts_abag/tools/colabfold/db 2>/dev/null >> "$LOG"
-        ls -S /home/ebrahim/tts_abag/tools/colabfold/db 2>/dev/null | head -5 | sed 's/^/    /' >> "$LOG"
+        du -sh $R/tools/colabfold/db 2>/dev/null >> "$LOG"
+        ls -S $R/tools/colabfold/db 2>/dev/null | head -5 | sed 's/^/    /' >> "$LOG"
     elif [ "$pct" -ge "$WARN_PCT" ]; then
         log "WARN quota at ${pct}%"
     else

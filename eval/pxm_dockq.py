@@ -27,9 +27,12 @@ import json
 import os
 import subprocess
 
+# the repo root, from this file, so renaming the checkout needs no edit here
+_REPO = str(__import__("pathlib").Path(__file__).resolve().parent.parent)
+
 PXM = os.environ.get(
     "PXM_BIN",
-    "/home/ebrahim/tts_abag/envs/pxmeter/bin/pxm")
+    f"{_REPO}/envs/pxmeter/bin/pxm")
 TIMEOUT = int(os.environ.get("PXM_TIMEOUT", "300"))
 
 

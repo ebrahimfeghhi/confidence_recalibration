@@ -26,8 +26,11 @@ restart.
 import os
 import sys
 
+# the repo root, from this file, so renaming the checkout needs no edit here
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, "/home/ebrahim/tts_abag")
+sys.path.insert(0, _REPO)
 
 import folder  # noqa: E402
 import paths   # noqa: E402

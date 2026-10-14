@@ -35,6 +35,9 @@ import csv
 import math
 import os
 
+# the repo root, from this file, so renaming the checkout needs no edit here
+_REPO = str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent)
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -105,11 +108,11 @@ DATASETS = {
     # THE SINGLE BASELINE TABLE, not the old per-block pool. foldbench_baseline_results.csv already
     # embodies the counting decision -- matched is in, other_seeds is out -- so no `tier` filter
     # applies and `keep` is None. Provenance per row is the `metadata` column.
-    "foldbench": dict(results="/home/ebrahim/tts_abag/experimental_data/protenix/foldbench/"
+    "foldbench": dict(results=f"{_REPO}/experimental_data/protenix/foldbench/"
                               "foldbench_baseline_results.csv", iptm="pair_iptm",
                       iface=lambda r: r["iface"],
                       keep=None, seeds=None),
-    "pxm2025": dict(results="/home/ebrahim/tts_abag/experimental_data/protenix/pxm2025/"
+    "pxm2025": dict(results=f"{_REPO}/experimental_data/protenix/pxm2025/"
                             "free_pool/results.csv", iptm="pair_iptm",
                     iface=lambda r: f"{r['pdb']}_{r['chain1']}{r['chain2']}",
                     keep="rule", seeds=None),

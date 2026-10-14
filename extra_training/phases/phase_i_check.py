@@ -25,6 +25,9 @@ import os
 import subprocess
 import sys
 
+# the repo root, from this file, so renaming the checkout needs no edit here
+_REPO = str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent)
+
 
 def read_pool(path):
     """in: pool.csv.  out: {pdb: {iface}} -- via the csv module, so CRLF cannot leak into a name"""
@@ -179,7 +182,7 @@ def _ost():
     reader of a format we do not own.
     """
     import importlib.util
-    p = "/home/ebrahim/tts_abag/eval/ost_dockq.py"
+    p = f"{_REPO}/eval/ost_dockq.py"
     if not os.path.exists(p):
         return None
     try:

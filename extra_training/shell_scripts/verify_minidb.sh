@@ -22,7 +22,8 @@
 #
 # USAGE: bash verify_minidb.sh [n_queries]   (default 5)
 set -u
-R=/home/ebrahim/tts_abag
+# the repo root, derived from this file so a rename of the checkout needs no edit here
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 W=$R/extra_training/building_msa/work
 MDB=$W/minidb
 M=$R/tools/mmseqs/bin/mmseqs

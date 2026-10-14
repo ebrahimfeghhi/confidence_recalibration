@@ -13,7 +13,9 @@
 # USAGE: tmux new-session -d -s gpu_guard "bash gpu_guard.sh"
 set -u
 
-LOG="${LOG:-/home/ebrahim/tts_abag/extra_training/gpu_guard.log}"
+# the repo root, derived from this file so a rename of the checkout needs no edit here
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+LOG="${LOG:-$R/extra_training/gpu_guard.log}"
 INTERVAL="${INTERVAL:-60}"
 OURS="${OURS:-0,1}"          # the GPUs this project is allowed to use
 

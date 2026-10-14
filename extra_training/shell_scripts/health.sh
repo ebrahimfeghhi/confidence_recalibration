@@ -8,7 +8,8 @@
 #
 # USAGE: tmux new-session -d -s health "bash health.sh"
 set -u
-R=/home/ebrahim/tts_abag
+# the repo root, derived from this file so a rename of the checkout needs no edit here
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 LOG=$R/extra_training/health.log
 PXM=$R/experimental_data/protenix/pxm2025/free_extra10
 W=$R/extra_training/building_msa/work

@@ -9,7 +9,8 @@
 # top-off (foldbench_baseline_remaining_folds, 612 folds) starts on the same three cards, so they are
 # never idle. It is claim-based too, so restarting it costs nothing.
 set -u
-R=/home/ebrahim/tts_abag
+# the repo root, derived from this file so a rename of the checkout needs no edit here
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 E=$R/extra_training/training/fold
 B=$R/experimental_data/protenix/foldbench/foldbench_baseline_remaining_folds
 LOG=$E/watcher.log

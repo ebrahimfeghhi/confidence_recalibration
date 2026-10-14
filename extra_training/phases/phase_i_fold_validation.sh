@@ -51,7 +51,8 @@
 #     MAX_WAIT_MIN=2400  hard ceiling on one round's wall clock.
 set -u
 MODE="${1:-}"
-R=/home/ebrahim/tts_abag
+# the repo root, derived from this file so a rename of the checkout needs no edit here
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 P=/home/ebrahim/Protenix
 PY=$P/.venv/bin/python
 C=$R/run_model
