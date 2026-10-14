@@ -134,7 +134,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import paths     # noqa: E402  every location comes from here, never a literal
 
 sys.path.insert(0, str(paths.PROTENIX_SRC))
-sys.path.insert(0, str(paths.CODE_DIR))
+# runmeta IS THIS WORKER'S OWN HELPER and now sits beside this file, so it is imported from here
+# rather than through paths.CODE_DIR. It used to live in diffusion_commit/, which made that whole
+# tree a runtime dependency of every fold -- archiving it would have killed the next worker relaunch
+# with an ImportError while the already-running workers carried on, which is the worst shape a
+# breakage can take.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import runmeta   # noqa: E402
 
 DC = os.path.dirname(os.path.realpath(__file__))   # scorer.py must be the copy beside this file

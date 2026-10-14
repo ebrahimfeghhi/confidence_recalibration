@@ -83,11 +83,11 @@ STEER_DATA = _path("STEER_DATA", REPO_ROOT / "steer" / "data")
 # diffusion_commit/ and everything the runs read or produce lives in experimental_data/. They are
 # defined HERE rather than in diffusion_commit so there is one source of truth for locations, which
 # is what made the move a one-line edit instead of a grep across a dozen files.
-CODE_DIR = _path("CODE_DIR", REPO_ROOT / "diffusion_commit")
+CODE_DIR = _path("CODE_DIR", REPO_ROOT / "archive" / "diffusion_commit")
 DATA_DIR = _path("DATA_DIR", REPO_ROOT / "experimental_data")
 EVAL_DIR = _path("EVAL_DIR", REPO_ROOT / "eval")
 # dockq_torch lives here; the GPU pose-to-pose DockQ imports it
-CLUSTERING_DIR = _path("CLUSTERING_DIR", REPO_ROOT / "diffusion_commit" / "clustering")
+CLUSTERING_DIR = _path("CLUSTERING_DIR", REPO_ROOT / "archive" / "diffusion_commit" / "clustering")
 # pose-to-pose DockQ matrices: ONE ROOT, one subdirectory per (dataset, frame). See its README.md.
 # A dataset's crystal-frame set is complete -- every interface of the pool has an npz -- so these are
 # read, never rebuilt. Dataset.matrices points at the right one for that dataset.
@@ -249,8 +249,8 @@ def dataset(name):
 # builders read them. Points at the existing data rather than a new location so nothing has to move.
 ANCHOR_DIR = _path("ANCHOR_DIR", DATA_DIR / "archive" / "superseded_2026-09-25" / "anchor_frame")
 # code locations, so scripts do not carry literals for each other's directories
-METRICS_DIR = _path("METRICS_DIR", REPO_ROOT / "diffusion_commit_clean" / "metrics")
-CLEAN_CODE_DIR = _path("CLEAN_CODE_DIR", REPO_ROOT / "diffusion_commit_clean")
+METRICS_DIR = _path("METRICS_DIR", REPO_ROOT / "archive" / "diffusion_commit_clean" / "metrics")
+CLEAN_CODE_DIR = _path("CLEAN_CODE_DIR", REPO_ROOT / "archive" / "diffusion_commit_clean")
 PROTENIX_SRC = _path("PROTENIX_SRC", Path.home() / "Protenix")
 
 # The pool's original 50-75 seeds per complex predate run provenance -- no run id, no run.json, and
