@@ -189,6 +189,68 @@ contacting alternatives either.
 Both structures are currently REFUSED by the cache builder -- 20 units, ten seeds each -- so nothing
 trains on a bad label meanwhile.
 
+## 0a-bis. The refold plan, as agreed 2026-10-14
+
+Not yet executed. Waiting on review of the mapping and the lists before any GPU time.
+
+### What is refolded
+
+| set | structures | seeds | folds | source list |
+|---|---|---|---|---|
+| training | 126 of 501 | 10 | 1,260 | `train_val_splits/refold_internal_omissions.csv` |
+| validation | 16 of 53 | 100 | 1,600 | `train_val_splits/refold_internal_omissions_validation.csv` |
+| | | | **2,860** | |
+
+Validation keeps 100 seeds. The depth is what makes its seed-depth curves meaningful, and cutting it
+for these 16 would leave them incomparable with the other 37.
+
+### Order of work, and why it is this order
+
+1. **The native mapping first.** Already done (`phase_j_job_cifs.place_by_native_position`). It is
+   what decides which missing residues belong inside each role, so corrected sequences cannot be
+   generated without it. Refolding first would have fixed none of the underlying heuristics.
+2. **Corrected queries**, from the runs in the two lists above. "Full sequence" means the complete
+   sequence of the intended ROLE, never the whole deposited entity: expanding an scFv entity into
+   both roles, or pulling in constant regions and purification tags, would change the system.
+3. **MSAs and templates for the corrected queries. THIS IS THE BOTTLENECK, not the GPU time.** A
+   corrected sequence is a NEW sequence -- the alignment is indexed against the query, and inserting
+   residues invalidates it. 163 new sequences (145 training + 18 validation) against the 5,549
+   already searched, so 2.9% more. The original build's 45.7 hours was dominated by downloading a
+   110 GB database that is now on disk, so the marginal rate has to be MEASURED on a handful rather
+   than extrapolated from that figure. CPU work; overlaps the GPU queue.
+4. **Smoke-test ONE structure end-to-end** -- corrected query, MSA, template, fold, label, replay --
+   before queueing 2,860 folds. `11zw` is the case to use: exactly 7 residues (`SKSTSGG`, native
+   159-165) should come back, and the 10.78 A break between native 158 and 166 should disappear.
+5. **Queue the refolds** behind the FoldBench top-off, claim-based like every other arm.
+
+### The corrected folds go in a SEPARATE tree
+
+`training/fold_corrected/`, not `training/fold/`. A refold reuses the same seed, but folds are not
+reproducible on this hardware, so the new pose is a DIFFERENT candidate. In one tree, two poses of
+seed 500003 would coexist and anything joining scores to trunks could pair them wrongly. A separate
+tree makes that impossible rather than merely discouraged, which is also the review's point that a
+same-seed refold is a new candidate pool and cannot be joined to the old one's scores.
+
+### Disk: delete the superseded TRUNKS as each refold lands, keep the POSES
+
+| artifact | size over the refold set | action |
+|---|---|---|
+| old trunks | 381 GB (190.8 training + 190.1 validation) | **deleted** after the corrected unit verifies |
+| old poses | 4.9 GB (2.1 + 2.8) | **kept** |
+
+Trunks are 99% of the bytes, so deleting them alone keeps peak disk roughly flat instead of climbing
+557 GB, and the 3,000 GB stop line is never approached.
+
+The 4.9 GB of poses is kept deliberately. They are the only way to answer what the truncated inputs
+actually cost: the same structures at the same seeds, one folded from a spliced sequence and one from
+the corrected one, is a clean paired comparison on DockQ and on calibration. It falls out of work
+being done anyway and it is the measurement that justifies the refold in the write-up. Deleting them
+makes the question unanswerable.
+
+**ORDERING IS LOAD-BEARING.** Fold the corrected unit, verify it wrote its poses and scored, THEN
+remove the superseded trunk. Never the reverse: deleting first means a fold that dies mid-write loses
+both copies, and a fold dying mid-write is exactly the case that happens.
+
 ## 0b. The structures, and how they were chosen
 
 The list is frozen and in the repo: **`extra_training/train_val_splits/cache_train_structures.csv`**, one row
