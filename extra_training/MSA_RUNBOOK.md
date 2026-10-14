@@ -284,6 +284,6 @@ there. Protenix weights are in `~/checkpoint/`.
 
 ## 7. After this
 
-Fine-tune with Protenix's **FT3** stage unmodified — see `README.md` and `RESUME.md` in this folder.
+Fine-tune with Protenix's **FT3** stage unmodified — see `README.md` in this folder.
 The finetuning procedure itself is deliberately not designed yet; this runbook stops at producing
 data.
