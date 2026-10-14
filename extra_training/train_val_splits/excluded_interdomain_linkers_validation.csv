@@ -1,0 +1,2 @@
+pdb,role,src_chain,native_from,native_to,n_missing,sequence,kind,roles_on_chain,outside_span,expected_len,native_len
+29tj,H,B,123,139,17,TGGSGGGGSGGGGSGGG,linker,2,1,124,289
