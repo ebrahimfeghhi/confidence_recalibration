@@ -196,7 +196,7 @@ DATASETS = {
         chain_roles=FOLDBENCH_DATA / "chain_roles.csv",
         matrices=POSE_DOCKQ_MATRICES / "foldbench_crystal",
         pool_seeds=tuple(str(101 + i) for i in range(50)), free_templates=False,
-        free_pool=FOLDBENCH_DATA / "free_pool" / "results.csv"),
+        free_pool=FOLDBENCH_DATA / "foldbench_baseline_results.csv"),
     # The held-out validation set for the confidence-head finetune (extra_training/). 50 SAbDab2
     # clusters, 2 structures each. Its DockQ references are the chosen SAbDab2 instance cifs, staged
     # one-per-pdb by build_val_jobs.py so this lookup stays unambiguous when a pdb has several
