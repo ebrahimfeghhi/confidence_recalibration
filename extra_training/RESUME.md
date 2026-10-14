@@ -92,7 +92,7 @@ envs/colabfold/bin/python -c "import colabfold.mmseqs.search as m; print(m._emit
 # expect: True False
 ```
 
-If the venv is ever recreated, re-apply `extra_training/patches/colabfold_search_staging.patch`.
+If the venv is ever recreated, re-apply `extra_training/phases/phase_d_colabfold_search_staging.patch`.
 Without patch A there is no paired MSA; without patch B the staged build cannot work at all.
 
 ### Decisions settled (do not revisit)

@@ -75,7 +75,7 @@ envs/colabfold/bin/pip install -q "git+https://github.com/sokrypton/ColabFold"
 ```bash
 S=$REPO/envs/colabfold/lib/python3.12/site-packages/colabfold/mmseqs/search.py
 cp "$S" "$S.orig"
-patch "$S" < $REPO/extra_training/patches/colabfold_search_staging.patch
+patch "$S" < $REPO/extra_training/phases/phase_d_colabfold_search_staging.patch
 $REPO/envs/colabfold/bin/python -c "import colabfold.mmseqs.search as m; print(m._emit_taxid(), m._keep_intermediates())"
 # expect: True False
 ```

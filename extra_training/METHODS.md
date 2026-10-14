@@ -132,7 +132,7 @@ UniRef30, extract the env database, run the env pass for **both** batches, free 
 Peak usage is ~1,220 GB.
 
 Two local patches to the ColabFold copy, both environment-gated, are required and recorded in
-`patches/colabfold_search_staging.patch`: the `convertalis` call that emits `uniref_tax.m8`
+`phases/phase_d_colabfold_search_staging.patch`: the `convertalis` call that emits `uniref_tax.m8`
 (`COLABFOLD_EMIT_TAXID=1`), and retention of `uniref.a3m` and `prof_res` plus dropping UniRef30 from
 the precondition check once `uniref.a3m` exists (`COLABFOLD_KEEP_INTERMEDIATES=1`), which is what
 makes the staged two-database build possible.

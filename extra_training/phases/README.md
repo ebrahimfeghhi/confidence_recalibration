@@ -372,7 +372,7 @@ phase F writes the taxids into the headers and splits each one into `pairing.a3m
 uniref30 (450 GB extracted plus a 301 GB index) and colabfold_envdb (291 GB) do not both fit in the
 1,536 GB quota. So phase D searches uniref30, **keeps** its intermediates, and deletes the database;
 phase E resumes from `uniref.a3m` with uniref30 gone. That resume only works because of
-`patches/colabfold_search_staging.patch` — unpatched, `colabfold_search` refuses to start when
+`phases/phase_d_colabfold_search_staging.patch` — unpatched, `colabfold_search` refuses to start when
 uniref30 is missing. Check it before trusting any of this:
 
 ```
@@ -419,7 +419,7 @@ index-free `msa_initial/`, which had no taxonomy table and could not pair.
 ### Phase D, second review pass
 
 **The patch is now a gate, not a comment.** Everything in phase D depends on
-`patches/colabfold_search_staging.patch`: without it there is no `uniref_tax.m8` (so no paired MSA)
+`phases/phase_d_colabfold_search_staging.patch`: without it there is no `uniref_tax.m8` (so no paired MSA)
 and no resume from `uniref.a3m` (so phase E cannot run once uniref30 is deleted). The header used to
 tell the operator to verify it by hand, which meant an unpatched venv surfaced hours in, after a
 100 GB download and the search. Checked at the top now — the two functions the patch adds must exist

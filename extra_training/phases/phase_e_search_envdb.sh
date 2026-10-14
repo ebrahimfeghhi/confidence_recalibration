@@ -11,7 +11,7 @@
 # result is identical to an unstaged single run -- verified by code (search.py:157 defines one
 # filter_param, :172 and :210 apply it per pass, :231 mergedbs concatenates by key without filtering
 # the union) and by experiment (scripts/verify_minidb.sh: 6 of 6 alignments byte-identical, staged
-# against unstaged). The resume needs patches/colabfold_search_staging.patch, gated below.
+# against unstaged). The resume needs phases/phase_d_colabfold_search_staging.patch, gated below.
 #
 # THE FASTA MUST BE THE ONE PHASE D SEARCHED. search.py:517 rebuilds qdb from the query file on every
 # run and ColabFold keys everything by position, so a fasta that has gained or lost a record since

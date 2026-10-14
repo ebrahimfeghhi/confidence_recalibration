@@ -34,7 +34,7 @@ index; the environmental database is 291 GB; the quota is 1,536 GB and the rest 
 ~550 GB. So the two searches are staged: search uniref30, keep its intermediates, **delete the
 database**, then let phase E search the environmental database resuming from those intermediates.
 
-That requires `patches/colabfold_search_staging.patch` — 67 added lines to
+That requires `phases/phase_d_colabfold_search_staging.patch` — 67 added lines to
 `colabfold/mmseqs/search.py`, in four hunks:
 
 1. `_emit_taxid()` / `_keep_intermediates()`, read from the environment.

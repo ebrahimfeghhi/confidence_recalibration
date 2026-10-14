@@ -14,7 +14,7 @@
 # both sit inside the 1,536 GB quota. So: search uniref30, KEEP its intermediates
 # (COLABFOLD_KEEP_INTERMEDIATES=1), delete the database, and let phase E resume from uniref.a3m
 # without uniref30 on disk. That resume is only possible because of
-# patches/colabfold_search_staging.patch; without it colabfold_search refuses to start when uniref30
+# phases/phase_d_colabfold_search_staging.patch; without it colabfold_search refuses to start when uniref30
 # is missing. Verify the patch is applied before trusting any of this:
 #     envs/colabfold/bin/python -c "import colabfold.mmseqs.search as m; print(m._emit_taxid())"
 #
@@ -100,7 +100,7 @@ check_patch() {
 if ! check_patch; then
     say "the staging patch is not applied to $SEARCHPY"
     say "  without it: no uniref_tax.m8 (no paired MSA), and phase E cannot resume once uniref30 is gone"
-    say "  apply extra_training/patches/colabfold_search_staging.patch to that file, then re-run"
+    say "  apply extra_training/phases/phase_d_colabfold_search_staging.patch to that file, then re-run"
     die "colabfold_search is unpatched"
 fi
 say "staging patch applied"
