@@ -79,7 +79,6 @@ def cluster_table(splits=None, excluded=None):
 
 
 LIVE_VAL = f"{REPO}/extra_training/train_val_splits/val_split_proposal_clusters.csv"
-LEGACY_VAL = f"{REPO}/extra_training/train_val_splits/archive/val_clusters_SUPERSEDED_50cluster.csv"
 # THE LIVE VALIDATION SPLIT IS val_split_proposal_clusters.csv, 40 clusters, drawn 2026-10-13 by
 # phases/phase_b2_propose_val_split.py. val_clusters.csv is the ORIGINAL 50-cluster phase-B draw and is
 # LEGACY: 22 of the live 40 are not in it, so using it as the validation list leaves those 22 in the
