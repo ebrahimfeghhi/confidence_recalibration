@@ -2,7 +2,7 @@
 """PHASE J -- pair every cached pose with its LABEL and with its SAMPLE INDEX.
 
 WHAT A CACHED UNIT IS MISSING. The fold wrote, per (structure, seed), the trunk tensors and the
-N_sample poses the diffusion module produced (`train_fold/trunks/<pdb>/<arm>_<seed>.npz`). The FT3
+N_sample poses the diffusion module produced (`training/fold/trunks/<pdb>/<arm>_<seed>.npz`). The FT3
 loss needs two more things that no fold produces:
 
   1. THE LABEL -- ground-truth coordinates in the model's atom order, the coordinate mask, and the
@@ -79,15 +79,52 @@ def cif_coords(path):
                     dtype=np.float64)
 
 
-def sample_indices(poses, pred_dir, pdb, tol, margin):
+def seed_dir(fold, pdb, seed):
+    """The ONE pose directory of (pdb, seed).
+
+    A WORKER THAT DIED MID-UNIT LEAVES ITS CLAIM DIRECTORY BEHIND, so a seed can have more than one
+    directory and only the finished one holds run.json -- 9dzj has two such leftovers. Taking
+    `glob(...)[0]` picked whichever the filesystem listed first, which is not necessarily the
+    finished one. Exactly one finished directory is required; 0 or 2 is refused rather than guessed.
+    """
+    dirs = [d for d in glob.glob(f"{fold}/poses/{pdb}/{seed}-*")
+            if os.path.exists(os.path.join(d, "run.json"))]
+    if len(dirs) != 1:
+        raise ValueError(f"{len(dirs)} finished pose directories for {pdb} seed {seed} "
+                         f"(need exactly 1): {[os.path.basename(d) for d in dirs]}")
+    return dirs[0]
+
+
+def sample_cifs(unit_dir, pdb):
+    """The `_sample_<k>.cif` files of a unit, in k order, under EITHER on-disk layout.
+
+    TWO LAYOUTS EXIST IN THE SAME FOLD. Almost every unit was flattened to `<unit>/predictions/
+    <pdb>_sample_<k>.cif`, but 9dzj seeds 500000 and 500001 kept Protenix's native tree,
+    `<unit>/<pdb>_<arm>/seed_<seed>/predictions/<pdb>_<arm>_sample_<k>.cif` -- a different directory
+    AND a different basename. Globbing only the flat path found no cifs for them, which
+    sample_indices rejects as a pose/cif count mismatch; the units would have been skipped for a
+    reason that has nothing to do with their data.
+    """
+    pats = [f"{unit_dir}/predictions/{pdb}_sample_*.cif",
+            f"{unit_dir}/predictions/{pdb}_*_sample_*.cif",
+            f"{unit_dir}/*/seed_*/predictions/{pdb}_sample_*.cif",
+            f"{unit_dir}/*/seed_*/predictions/{pdb}_*_sample_*.cif"]
+    hits = {}
+    for pat in pats:
+        for f in glob.glob(pat):
+            if "summary" in os.path.basename(f):
+                continue
+            hits.setdefault(int(f.split("sample_")[-1].split(".")[0]), f)
+    return [hits[k] for k in sorted(hits)]
+
+
+def sample_indices(poses, cifs, tol, margin):
     """pose i -> the k of the `<pdb>_sample_<k>.cif` it was written from.
 
     IDENTITY, NOT SIMILARITY. Each cif is required to match exactly one pose to within `tol`, with
     every other pose further than `margin`; anything else means the join cannot be trusted and the
     unit is refused rather than guessed at.
     """
-    cifs = sorted(glob.glob(os.path.join(pred_dir, f"{pdb}_sample_*.cif")),
-                  key=lambda p: int(p.split("sample_")[-1].split(".")[0]))
     if len(cifs) != len(poses):
         raise ValueError(f"{len(poses)} cached pose(s) but {len(cifs)} sample cif(s)")
     d = np.zeros((len(poses), len(cifs)))
@@ -218,8 +255,8 @@ def check_label(lc, lm, atoms, pdb, unit, tol=0.01):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fold", default=f"{ROOT}/train_fold")
-    ap.add_argument("--out-dir", default=f"{ROOT}/train_fold/labels")
+    ap.add_argument("--fold", default=f"{ROOT}/training/fold")
+    ap.add_argument("--out-dir", default=f"{ROOT}/training/fold/labels")
     ap.add_argument("--indices", default=f"{ROOT}/training/prep/job_indices.csv")
     ap.add_argument("--bio-dir", default=f"{ROOT}/training/prep/job_bioassembly")
     ap.add_argument("--mmcif-dir", default=f"{ROOT}/training/prep/job_cifs")
@@ -287,11 +324,8 @@ def main():
                                                item["label_full_dict"])
             z, feat_npz, poses = load_trunk(up)
             check_alignment(feat_npz, feat_ds, pdb)
-            seed_dirs = glob.glob(f"{a.fold}/poses/{pdb}/{arm_seed.split('_')[-1]}-*")
-            if not seed_dirs:
-                raise ValueError(f"no pose directory for {pdb}/{arm_seed}")
-            pred = os.path.join(seed_dirs[0], "predictions")
-            ks = sample_indices(poses, pred, pdb, a.coord_tol, a.coord_margin)
+            ud = seed_dir(a.fold, pdb, arm_seed.split("_")[-1])
+            ks = sample_indices(poses, sample_cifs(ud, pdb), a.coord_tol, a.coord_margin)
 
             # PER POSE. The chain and atom permutation is chosen to match THIS pose, so a label
             # permuted for one pose is the wrong label for another. permute_label_to_match_mini_

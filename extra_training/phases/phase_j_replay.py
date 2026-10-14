@@ -64,8 +64,8 @@ def head_prefixes(model):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fold", default=f"{ROOT}/train_fold")
-    ap.add_argument("--labels", default=f"{ROOT}/train_fold/labels")
+    ap.add_argument("--fold", default=f"{ROOT}/training/fold")
+    ap.add_argument("--labels", default=f"{ROOT}/training/fold/labels")
     ap.add_argument("--unit", default=None, help="<pdb>/<arm>_<seed>; default the first labelled")
     ap.add_argument("--ckpt-dir", default="/home/ebrahim/checkpoint")
     ap.add_argument("--model-name", default="protenix-v2")

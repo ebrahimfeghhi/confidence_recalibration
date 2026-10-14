@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """DockQ versus seed depth, 1 to 10 seeds, on the FT3 training cache fold.
 
-    ./train_seed_depth_curve.py                      # train_fold/results.csv
+    ./train_seed_depth_curve.py                      # training/fold/results.csv
     ./train_seed_depth_curve.py --thresh 0.23 --csv /tmp/curve.csv
 
 WHAT A ROW IS. A seed depth k. For each interface, a draw is a subset of k of its 10 seeds; the pose
@@ -100,7 +100,7 @@ def weights(poses, key, n_seed, k):
 
 DATASETS = {
     # our own folds: one `iface` column, 10 seeds, every row counts
-    "train": dict(results=f"{ROOT}/train_fold/results.csv", iptm="iptm",
+    "train": dict(results=f"{ROOT}/training/fold/results.csv", iptm="iptm",
                   iface=lambda r: r["iface"].strip(), keep=None, seeds=10),
     "val2": dict(results=f"{ROOT}/val2_fold/results.csv", iptm="iptm",
                  iface=lambda r: r["iface"].strip(), keep=None, seeds=100),
