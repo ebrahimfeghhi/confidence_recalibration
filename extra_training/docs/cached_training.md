@@ -160,11 +160,11 @@ Review round 3 (`reviews/round3_2026-10-13_cache.md`). The design stands; these 
 
 | | finding | blocks |
 |---|---|---|
-| **closed 9:15 PM ET** | the cache stores confidence-head INPUTS only. The loss also needs ground-truth coordinates in model atom order, `coordinate_mask`, `pae_rep_atom_mask`, `frame_atom_index`, `has_frame`, and the PER-POSE symmetric permutation of the label (`protenix.py:1712-1720`). None is in the npz. | was: the build |
+| **closed 12:15 AM ET** | the cache stores confidence-head INPUTS only. The loss also needs ground-truth coordinates in model atom order, `coordinate_mask`, `pae_rep_atom_mask`, `frame_atom_index`, `has_frame`, and the PER-POSE symmetric permutation of the label (`protenix.py:1712-1720`). None is in the npz. | was: the build |
 | accepted | backward-pass memory above ~1,000 tokens is untested and will not be tested first. 77 of 535 structures exceed it and carry 45% of the bytes; the largest is 2,941 tokens, where one N×N×256 activation is 4.4 GB. Building smallest-first bounds the loss if it does OOM. | nothing; accepted risk |
 | medium | deduplication is per PDB id because the fold's unit key is the pdb (`folder.py:784`), which collapses **225** input-distinct instances. Recovering them needs a per-instance job name, not a change to the selection. Representatives are now ordered by input difference rather than alphabetically. | the selection |
 
-### Measured 2026-10-13, 9:15 PM ET: the label side is built, and two config faults zeroed the loss
+### Measured 2026-10-13, 12:15 AM ET: the label side is built, and two config faults zeroed the loss
 
 `phases/phase_j_build_cache.py` writes the per-pose label; `phases/phase_j_replay.py` gates training
 on it. Numbers and provenance in `reviews/round7_2026-10-13_cache_gate.md`.

@@ -123,7 +123,7 @@ an FT3 step". The latter is false by construction and recorded in `docs/cached_t
 ## Open
 
 - The job cifs and the prepared bioassemblies were rebuilt twice this evening (chain fixes, then the
-  resolution). `train_prep/job_indices.csv` is current as of 9:05 PM ET; anything derived from an
+  resolution). `train_prep/job_indices.csv` is current as of 12:05 AM ET; anything derived from an
   earlier copy is stale.
 - The label build has not been run over the whole cache. It should run as the fold produces units,
   not after, so the two finish together.
