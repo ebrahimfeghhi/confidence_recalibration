@@ -3,7 +3,8 @@
 Review round 5's finding J2: "sequence matching can select the wrong native complex ... With several
 identical antigen copies, it can choose an antigen that does not contact the selected antibody."
 
-**Confirmed, and it affects 71 of 501 structures.** Fixed in the selection; no refolding needed.
+**Confirmed: it affected 71 of 501 structures.** Root cause was discarding SAbDab2's own chain
+assignment in favour of sequence matching. Fixed; 71 -> 6, and no refolding needed.
 
 ## What was measured
 
@@ -43,20 +44,48 @@ to the user.
 Symmetry mates are exactly what must not count here: the question is whether the antigen touches the
 antibody in the asymmetric unit.
 
+## The root cause, found after the first write-up
+
+The first fix I wrote was a contact heuristic: re-point a non-contacting antigen at a copy that does
+touch. That treats the symptom. The cause is that **SAbDab2's own chain assignment was being thrown
+away**.
+
+An INSTANCE is a specific antibody-antigen pairing, and `Hchain` / `Lchain` / `agchains` name the
+chains of THAT pairing, so they contact by construction. 32 of 501 structures have names that do not
+resolve in the entry (a trailing copy index, numeric antigen chains, two-character names, a `J000`
+label), and to rescue those I switched to SEQUENCE resolution **globally** -- taking the other 469
+with it. Sequence cannot tell two copies of a complex apart.
+
+The measurement that settles it: for **67 of the 71** failing structures, SAbDab2's own named chains
+contact at **2.3-2.8 A**. Textbook interface distances. The names were right the whole time.
+
+This is exactly what round 5's J2 said -- "use the selected instance's chain assignments where
+possible" -- and I did not do it.
+
 ## The fix
 
-`prefer_contacting()` in `phase_j_job_cifs.py`: after the sequence assignment, any antigen role whose
-chain does not contact the antibody is re-pointed at a chain with ≥90% identity that does, and the
-replacement is re-aligned to its own span. Only the CHAIN changes, never the sequence.
+`named_chains()` resolves the instance's own chain names and `spans_for()` aligns each role's
+expected sequence to its named chain. Sequence resolution is now the FALLBACK, used only when a name
+is absent, duplicated across two roles, or does not carry that role's sequence. 55 of 60 sampled take
+the names.
+
+| | sequence-first | names-first |
+|---|---|---|
+| structures with no contacting antigen | 71 of 501 | **6** |
+| antigen chains not contacting | 118 | **19** |
+| residues dropped as unplaced | 108 across 17 structures | **2 across 2** |
+
+The drop in unplaced residues is independent evidence: sequence matching had been selecting chains
+whose aligned spans carried residues the fold's sequence does not contain.
 
 **Nothing needs refolding.** The fold consumes `train_jobs`, which carries sequences, and every copy
 of an antigen has the same sequence. The 5,010-fold training cache running since 6:27 PM PT is
-unaffected; this is a label-side correction.
+unaffected; this was label-side throughout.
 
 ## Open
 
-- The fix is written but not yet wired into `main()` or re-run over all 501. Until it is, the job
-  cifs on disk still carry the wrong copy for those 71.
-- 28 chains sit at 5–10 Å. Some are second copies of a homodimeric antigen adjacent to the one that
+- **Six structures still have no contacting antigen**: 7stz, 8cz8, 8gpu, 8h3c, 8yj7, 9djw. Three
+  exceed 20 Å and want looking at individually rather than by threshold; three sit at 5.0–6.3 Å.
+- The remaining chains at 5–10 Å. Some are second copies of a homodimeric antigen adjacent to the one that
   binds (8vgl, 8vgm at 5.9 and 7.0 Å), which is legitimate. Whether a 5 Å heavy-atom cutoff is the
   right threshold, versus a buried-surface or interface-residue criterion, has not been examined.
