@@ -24,6 +24,7 @@ requires a polypeptide antigen, and the fold does not include the others either.
 import argparse
 import collections
 import csv
+import json
 import os
 import sys
 
@@ -128,62 +129,78 @@ def job_chains(row, seqs):
     return assign_chains([(k, q) for k, q in want if q], seqs)
 
 
-def write_job_cif(st, keep, out_cif):
-    """Keep `keep` auth chains and write a one-assembly mmCIF. Returns (n_chains, n_residues)."""
+def write_job_cif(st, keep, expected, out_cif):
+    """in: the entry structure, [(role, chain, lo, hi)], {role: expected sequence}, output path.
+
+    THE LABEL'S FRAME IS THE FOLD'S EXPECTED SEQUENCE. Each output chain gets its own entity whose
+    full_sequence is the sequence the fold was given for that role, and every kept residue is placed
+    at its position in that sequence. Unresolved positions then simply have no residue, which is how
+    Protenix's pipeline masks them -- the label covers what the crystal ordered, expressed in the
+    coordinates the pose uses.
+
+    EXPLICIT ENTITIES AND SUBCHAINS, not whatever setup_entities() leaves behind. Trimming and
+    splitting mutate a structure in ways gemmi does not repair: splitting a single-chain construct
+    produced two auth chains sharing one subchain AND one entity whose full_sequence was the
+    259-residue fusion (9vb4, chains D and C both on subchain F, entity 6). Two auth chains under one
+    label_asym is a wrong chain decomposition, and every chain-pair quantity the confidence head
+    produces depends on it. Ordinary chains happened to come out right; accident is not an invariant.
+    """
+    import difflib
     import gemmi
-    # POLYMER ONLY. The fold's job json carries sequences and nothing else, so the pose has no ions,
-    # no ligands and no waters. Left in, they appear in the label as atoms the pose cannot have --
-    # a first test kept 8wnp's ion chains I and J and the indices csv duly listed intra_ions rows.
-    st.remove_ligands_and_waters()
-    # ONE MODEL. An NMR entry carries many; the fold predicts one structure, and a label built from
-    # several superposed models would not correspond to it.
-    by_chain = collections.defaultdict(list)
-    for c, lo, hi in keep:
-        by_chain[c].append((lo, hi))
-    for ch in [c.name for c in st[0]]:
-        if ch not in by_chain:
-            st[0].remove_chain(ch)
-    # ONE CHAIN PER SPAN. The fold's job json lists the heavy and light sequences as separate
-    # proteinChain entries, so a single-chain construct must be SPLIT here or the label would carry
-    # one chain where the pose has two -- which changes asym_id, the frames, and every chain-pair
-    # quantity the confidence head produces.
-    used = {c.name for c in st[0]}
-    for cname, spans in sorted(by_chain.items()):
-        src_ch = st[0][cname]
-        resid = [r.clone() for r in src_ch]
-        spans = sorted(spans)
-        for n, (lo, hi) in enumerate(spans):
-            if n == 0:
-                for i in range(len(src_ch) - 1, -1, -1):
-                    if not (lo <= i < hi):
-                        del src_ch[i]
+    out = gemmi.Structure()
+    out.name = st.name
+    out.spacegroup_hm = st.spacegroup_hm
+    out.cell = st.cell
+    out.resolution = st.resolution
+    model = gemmi.Model("1")
+    names = iter("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+    ents, chains, report = [], [], []
+    for n, (role, cname, lo, hi) in enumerate(keep):
+        exp = expected[role].upper()
+        src = st[0][cname]
+        res = [src[i].clone() for i in range(lo, hi)]
+        obs = gemmi.one_letter_code([r.name for r in res]).upper()
+        # POSITION EVERY KEPT RESIDUE IN THE EXPECTED SEQUENCE. One alignment per output chain, and
+        # anything that cannot be placed is reported rather than renumbered silently.
+        sm = difflib.SequenceMatcher(None, exp, obs, autojunk=False)
+        pos = {}
+        for b in sm.get_matching_blocks():
+            for k in range(b.size):
+                pos[b.b + k] = b.a + k
+        unplaced = [i for i in range(len(res)) if i not in pos]
+        new_name = next(names)
+        ch = gemmi.Chain(new_name)
+        for i, r in enumerate(res):
+            if i not in pos:
                 continue
-            new = next(x for x in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-                       if x not in used)
-            used.add(new)
-            st[0].add_chain(gemmi.Chain(new))
-            for i in range(lo, hi):
-                st[0][new].add_residue(resid[i])
-    st.setup_entities()
-    # A SINGLE ASSEMBLY naming exactly the kept chains. Protenix's parser reads
-    # pdbx_struct_assembly first (parser.py:170) and raises without it; SAbDab2's own trimmed cifs
-    # lack the block, which is why they cannot be used here.
-    # gemmi's Assembly.generators and Gen.operators have no setters, so the containers are mutated
-    # in place; Gen.chains is a plain list property and must be ASSIGNED (appending to the value it
-    # returns is appending to a copy).
+            r.subchain = f"{new_name}p"
+            r.label_seq = pos[i] + 1
+            r.het_flag = "A"
+            ch.add_residue(r)
+        model.add_chain(ch)
+        ent = gemmi.Entity(str(n + 1))
+        ent.entity_type = gemmi.EntityType.Polymer
+        ent.polymer_type = gemmi.PolymerType.PeptideL
+        ent.subchains = [f"{new_name}p"]
+        ent.full_sequence = gemmi.expand_one_letter_sequence(exp, gemmi.ResidueKind.AA)
+        ents.append(ent)
+        chains.append(new_name)
+        report.append((role, cname, new_name, len(ch), len(exp), len(unplaced)))
+    out.add_model(model)
+    out.entities = gemmi.EntityList()
+    for e in ents:
+        out.entities.append(e)
     asm = gemmi.Assembly("1")
     gen = gemmi.Assembly.Gen()
-    gen.chains = [ch.name for ch in st[0]]
+    gen.chains = chains
     gen.operators.append(gemmi.Assembly.Operator())
     asm.generators.append(gen)
     asm.author_determined = True
-    asm.oligomeric_details = f"{len(st[0])}-mer"
-    st.assemblies.clear()
-    st.assemblies.append(asm)
-    nres = sum(len(ch) for ch in st[0])
+    asm.oligomeric_details = f"{len(chains)}-mer"
+    out.assemblies.append(asm)
     os.makedirs(os.path.dirname(out_cif), exist_ok=True)
-    st.make_mmcif_document().write_file(out_cif)
-    return (len(st[0]), nres), None
+    out.make_mmcif_document().write_file(out_cif)
+    return report, None
 
 
 def main():
@@ -193,6 +210,8 @@ def main():
     ap.add_argument("--src-dir", default=f"{ROOT}/data/rcsb_training_cifs")
     ap.add_argument("--out-dir", default=f"{ROOT}/train_prep/job_cifs")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--jobs-dir", default=f"{ROOT}/train_jobs",
+                    help="the fold's job jsons; the written cif's sequences are asserted against them")
     ap.add_argument("--skipped", default=f"{ROOT}/train_prep/skipped_job_cifs.csv",
                     help="structures whose chains cannot be resolved, with the reason. A failure "
                          "not already listed here is a STOP.")
@@ -218,12 +237,35 @@ def main():
             bad.append((r["pdb"], r["instance"],
                         f"no chain matches the {unresolved} sequence(s) at 85% identity"))
             continue
-        keep = [(c, lo, hi) for _role, c, lo, hi in pairs]
+        # THE EXPECTED SEQUENCE PER ROLE is what the fold was given, so it is the frame the label
+        # must be expressed in -- NOT agresolvedseqs, which is only what the crystal ordered.
+        exp_of = {"H": (row["Hseq"] or "").strip().upper(),
+                  "L": (row["Lseq"] or "").strip().upper()}
+        _types = str(row["agtypes"]).split("/")
+        _exp = str(row["agexpectedseqs"]).split("/")
+        for i2, t2 in enumerate(_types):
+            if t2 in POLY and i2 < len(_exp) and _exp[i2].strip():
+                exp_of[f"ag{i2}"] = _exp[i2].strip().upper()
         out = os.path.join(a.out_dir, f"{r['pdb']}.cif")
-        info, why = write_job_cif(st, keep, out)
+        expected = exp_of
+        info, why = write_job_cif(st, pairs, exp_of, out)
         if why:
             bad.append((r["pdb"], r["instance"], why))
             continue
+        # ASSERT AGAINST THE FOLD INPUT. The label's frame has to be the sequences the fold was
+        # actually given, so the entity sequences of the written cif are compared to the job json
+        # phase G produced. Anything else means the label describes a different molecule.
+        jj = os.path.join(a.jobs_dir, f"{r['pdb']}-final-updated.json")
+        if os.path.exists(jj):
+            want = sorted((sq["proteinChain"]["sequence"] or "").strip().upper()
+                          for task in json.load(open(jj)) for sq in task["sequences"]
+                          if "proteinChain" in sq)
+            got = sorted(expected[role].upper() for role, *_ in pairs)
+            if want != got:
+                bad.append((r["pdb"], r["instance"],
+                            f"job json has {len(want)} chain sequences, the cif was built for "
+                            f"{len(got)}; lengths {[len(x) for x in want]} vs {[len(x) for x in got]}"))
+                continue
         ok += 1
 
     print(f"wrote {ok} job cif(s) to {a.out_dir}")
