@@ -160,9 +160,38 @@ Review round 3 (`reviews/round3_2026-10-13_cache.md`). The design stands; these 
 
 | | finding | blocks |
 |---|---|---|
-| **high** | the cache stores confidence-head INPUTS only. The loss also needs ground-truth coordinates in model atom order, `coordinate_mask`, `pae_rep_atom_mask`, `frame_atom_index`, `has_frame`, and the PER-POSE symmetric permutation of the label (`protenix.py:1712-1720`). None is in the npz. | the build |
+| **closed 9:15 PM ET** | the cache stores confidence-head INPUTS only. The loss also needs ground-truth coordinates in model atom order, `coordinate_mask`, `pae_rep_atom_mask`, `frame_atom_index`, `has_frame`, and the PER-POSE symmetric permutation of the label (`protenix.py:1712-1720`). None is in the npz. | was: the build |
 | accepted | backward-pass memory above ~1,000 tokens is untested and will not be tested first. 77 of 535 structures exceed it and carry 45% of the bytes; the largest is 2,941 tokens, where one N×N×256 activation is 4.4 GB. Building smallest-first bounds the loss if it does OOM. | nothing; accepted risk |
 | medium | deduplication is per PDB id because the fold's unit key is the pdb (`folder.py:784`), which collapses **225** input-distinct instances. Recovering them needs a per-instance job name, not a change to the selection. Representatives are now ordered by input difference rather than alphabetically. | the selection |
+
+### Measured 2026-10-13, 9:15 PM ET: the label side is built, and two config faults zeroed the loss
+
+`phases/phase_j_build_cache.py` writes the per-pose label; `phases/phase_j_replay.py` gates training
+on it. Numbers and provenance in `reviews/round7_2026-10-13_cache_gate.md`.
+
+| | measured |
+|---|---|
+| label build | 0.77-0.91 s/unit, one CPU process; ~70 min for 5,010 units |
+| label size | ~170 KB/unit; ~850 MB for the full cache |
+| sample index, 12qa x 10 seeds | a DIFFERENT permutation on all 10 (`4 0 3 1 2`, `1 0 4 3 2`, `1 3 0 2 4`, ...) |
+| label coordinate multiset across 50 poses of 12qa | identical on all 50 |
+| resolved label atoms that are atoms of the job cif | 3,417 of 3,417 |
+| replay: label max abs(stored - live) | 0.00e+00 A, 0 mask differences |
+| replay: loss agreement over plddt/pde/pae/resolved/total | 0.00e+00 |
+| replay: gradient | 165 confidence-head tensors, 0 parameters outside the head |
+
+**Two faults, each a silent no-op.** Both found by the replay, both now checked rather than assumed.
+
+| fault | what it did | fixed by |
+|---|---|---|
+| the job cifs carried no experimental metadata, so Protenix's parser read resolution **-1.0** on all 2,762 rows (`data/core/parser.py:182-208`) | `loss.py:1735-1752` compares -1.0 against `loss.resolution` [0.1, 4.0] and ZEROES plddt, pde, pae, resolved -- the four terms FT3 trains. Total loss was exactly `0.000000`, no error anywhere | writing SAbDab2's own resolution into the job cif as the item the method calls for: `_refine` (219 XRAY), `_em_3d_reconstruction` (282 EM). All 501 in [1.05, 3.5]; rebuilt indices have 0 rows outside the window |
+| `configs_base.py:402` ships `alpha_pae: 0.0` with the comment `# or 1 in finetuning stage 3` | ipTM is computed from the PAE logits, so the one number this project is judged on would not be trained, while the other three terms moved and the total fell. 12qa pose 0: `0.000356` without PAE, `0.000618` with | the replay sets `alpha_pae = 1`, prints the four weights, and refuses any that is zero |
+
+**DEVIATION FROM FT3, recorded deliberately.** FT3 scores a 20-step mini-rollout of the diffusion
+module; our cache holds full inference samples, because that is the distribution the head is deployed
+on. The replay therefore holds the pose FIXED on both sides and answers "is the stored label the
+label the live code derives, and does the loss agree term by term" -- not "is a cached step an FT3
+step", which is false by construction.
 
 ### Measured 2026-10-13: the rescoring path is exact, and the cached pose order is permuted
 
