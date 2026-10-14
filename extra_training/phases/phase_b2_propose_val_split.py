@@ -34,7 +34,7 @@ import os, collections, csv, os, random, sys
 # clone or against a scratch directory, which is how phase G's refactor was proved
 # byte-identical.
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SPLIT = f"{REPO}/data/zenodo_splits/splits_final/abag_split.csv"
+SPLIT = f"{REPO}/SAbDab2_data/zenodo_splits/splits_final/abag_split.csv"
 CUT = "2021-09-30"
 
 

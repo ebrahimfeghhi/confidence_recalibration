@@ -65,11 +65,11 @@ def min_dist(st, a_chains, b_chain):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--selection", default=f"{ROOT}/train_val_splits/cache_train_structures.csv")
-    ap.add_argument("--splits", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
-    ap.add_argument("--job-cifs", default=f"{ROOT}/train_prep/job_cifs")
-    ap.add_argument("--src-dir", default=f"{ROOT}/data/rcsb_training_cifs")
+    ap.add_argument("--splits", default=f"{ROOT}/SAbDab2_data/zenodo_splits/splits_final/abag_split.csv")
+    ap.add_argument("--job-cifs", default=f"{ROOT}/training/prep/job_cifs")
+    ap.add_argument("--src-dir", default=f"{ROOT}/SAbDab2_data/rcsb_training_cifs")
     ap.add_argument("--cutoff", type=float, default=5.0, help="heavy-atom contact distance, A")
-    ap.add_argument("--out", default=f"{ROOT}/train_prep/antigen_contacts.csv")
+    ap.add_argument("--out", default=f"{ROOT}/training/prep/antigen_contacts.csv")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--only", default="", help="comma-separated pdb ids; diagnose a subset")
     a = ap.parse_args()
@@ -84,7 +84,7 @@ def main():
         sel = sel[:a.limit]
     # role -> src chain as actually written, from write_job_cif's own log
     wrote = {}
-    up = f"{ROOT}/train_prep/unplaced_residues.csv"
+    up = f"{ROOT}/training/prep/unplaced_residues.csv"
     if os.path.exists(up):
         for x in csv.DictReader(open(up)):
             wrote.setdefault(x["pdb"], {})[x["role"]] = x["src_chain"]

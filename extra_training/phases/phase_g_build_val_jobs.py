@@ -260,7 +260,7 @@ def main():
                          "MSAs for the 235 such antigen chains the first pass skipped.")
     ap.add_argument("--excluded", default=None,
                     help="phase A's exclusion csv; default phase A's own path")
-    ap.add_argument("--splits", default=f"{REPO}/extra_training/data/zenodo_splits/"
+    ap.add_argument("--splits", default=f"{REPO}/extra_training/SAbDab2_data/zenodo_splits/"
                                         "splits_final/abag_split.csv",
                     help="SAbDab2's own chain-role assignment, for the auth chain names")
     ap.add_argument("--require-msa", action=argparse.BooleanOptionalAction, default=True)
@@ -353,7 +353,7 @@ def main():
         # this same loop, so reading it here saw only files left by a previous run -- every newly
         # picked structure came back "cif offers []" and looked like a data problem when it was an
         # ordering bug.
-        src_cif = f"{REPO}/extra_training/data/training_cifs/{inst}.cif"
+        src_cif = f"{REPO}/extra_training/SAbDab2_data/training_cifs/{inst}.cif"
         a2l, shared_lbl = ref_auth_to_label(src_cif) if os.path.exists(src_cif) else ({}, {})
         if shared_lbl:
             # RELABELLED, NOT EXCLUDED. label_asym_id must be unique per chain instance and in a

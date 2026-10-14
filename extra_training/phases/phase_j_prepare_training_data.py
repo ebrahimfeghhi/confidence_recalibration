@@ -50,12 +50,12 @@ PROTENIX = "/home/ebrahim/Protenix"
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--selection", default=f"{ROOT}/train_val_splits/cache_train_structures.csv")
-    ap.add_argument("--splits", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
+    ap.add_argument("--splits", default=f"{ROOT}/SAbDab2_data/zenodo_splits/splits_final/abag_split.csv")
     # JOB CIFS BY DEFAULT, not whole entries. A whole entry builds the deposited assembly -- every
     # copy, every chain -- which is NOT what we fold, so a label built from it cannot be compared to
     # a pose. The default pointed at rcsb_training_cifs, so anyone running this without the explicit
     # flag silently prepared the wrong system.
-    ap.add_argument("--cif-dir", default=f"{ROOT}/train_prep/job_cifs",
+    ap.add_argument("--cif-dir", default=f"{ROOT}/training/prep/job_cifs",
                     help="per-JOB mmCIFs from phase_j_job_cifs.py: the antibody and its polypeptide "
                          "antigen only. Pass data/rcsb_training_cifs only to prepare whole entries.")
     # FETCHING IS OFF BY DEFAULT NOW. A missing job cif means phase_j_job_cifs.py has not run for
@@ -69,13 +69,13 @@ def main():
     # over the whole-entry outputs, while phase_j_dataset.py read job_indices.csv / job_bioassembly
     # -- which that run never wrote. The two halves would have disagreed silently, the dataset
     # loading whatever stale job-level files happened to be on disk.
-    ap.add_argument("--out-csv", default=f"{ROOT}/train_prep/job_indices.csv")
-    ap.add_argument("--bio-dir", default=f"{ROOT}/train_prep/job_bioassembly")
-    ap.add_argument("--file-list", default=f"{ROOT}/train_prep/job_cifs.txt")
+    ap.add_argument("--out-csv", default=f"{ROOT}/training/prep/job_indices.csv")
+    ap.add_argument("--bio-dir", default=f"{ROOT}/training/prep/job_bioassembly")
+    ap.add_argument("--file-list", default=f"{ROOT}/training/prep/job_cifs.txt")
     ap.add_argument("--cluster-file", default=None)
     ap.add_argument("--n-cpu", type=int, default=32)
     ap.add_argument("--run", action="store_true", help="actually invoke prepare_training_data.py")
-    ap.add_argument("--skipped", default=f"{ROOT}/train_prep/skipped.csv",
+    ap.add_argument("--skipped", default=f"{ROOT}/training/prep/skipped.csv",
                     help="structures Protenix's parser cannot build, with the reason. A failure not "
                          "already listed here is a STOP; one that is listed is skipped.")
     a = ap.parse_args()

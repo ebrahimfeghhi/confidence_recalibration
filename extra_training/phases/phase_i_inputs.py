@@ -48,7 +48,7 @@ def main():
     ap.add_argument("--phases", required=True)
     ap.add_argument("--suffix", default="-final-updated.json")
     ap.add_argument("--release-dates", default=os.path.expanduser("~/common/release_date_cache.json"))
-    ap.add_argument("--splits", default="/home/ebrahim/tts_abag/extra_training/data/"
+    ap.add_argument("--splits", default="/home/ebrahim/tts_abag/extra_training/SAbDab2_data/"
                                         "zenodo_splits/splits_final/abag_split.csv")
     ap.add_argument("--days-before", type=int, default=60)
     ap.add_argument("--global-cap", default="2021-09-30")

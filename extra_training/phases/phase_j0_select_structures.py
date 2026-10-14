@@ -113,7 +113,7 @@ def chain_seqs(r):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--split", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
+    ap.add_argument("--split", default=f"{ROOT}/SAbDab2_data/zenodo_splits/splits_final/abag_split.csv")
     ap.add_argument("--train-clusters", default=f"{ROOT}/train_val_splits/train_clusters.csv")
     ap.add_argument("--val-clusters", default=f"{ROOT}/train_val_splits/val_split_proposal_clusters.csv",
                     help="the LIVE validation split; its clusters are removed from training")

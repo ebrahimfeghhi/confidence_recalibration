@@ -94,7 +94,7 @@ import sys
 # variable unset that lands in $HOME -- outside tts_abag, which everything in this project is
 # supposed to stay inside, and on a quota that is not the one we manage.
 PROTENIX = os.environ.get("PROTENIX_DIR", "/home/ebrahim/Protenix")
-os.environ.setdefault("PROTENIX_ROOT_DIR", "/home/ebrahim/tts_abag/extra_training/protenix_root")
+os.environ.setdefault("PROTENIX_ROOT_DIR", "/home/ebrahim/tts_abag/extra_training/protenix_assets")
 os.makedirs(os.path.join(os.environ["PROTENIX_ROOT_DIR"], "search_database"), exist_ok=True)
 sys.path.insert(0, PROTENIX)
 
@@ -260,7 +260,7 @@ def main():
     ap.add_argument("--release-dates",
                     default=os.path.expanduser("~/common/release_date_cache.json"),
                     help="Protenix's release_date_cache.json; the featurizer reads the same file")
-    ap.add_argument("--splits", default="/home/ebrahim/tts_abag/extra_training/data/"
+    ap.add_argument("--splits", default="/home/ebrahim/tts_abag/extra_training/SAbDab2_data/"
                                         "zenodo_splits/splits_final/abag_split.csv",
                     help="fallback deposition dates for structures absent from the cache")
     ap.add_argument("--days-before", type=int, default=60,

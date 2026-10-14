@@ -512,18 +512,18 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--selection", default=f"{ROOT}/train_val_splits/cache_train_structures.csv")
-    ap.add_argument("--splits", default=f"{ROOT}/data/zenodo_splits/splits_final/abag_split.csv")
-    ap.add_argument("--src-dir", default=f"{ROOT}/data/rcsb_training_cifs")
-    ap.add_argument("--out-dir", default=f"{ROOT}/train_prep/job_cifs")
+    ap.add_argument("--splits", default=f"{ROOT}/SAbDab2_data/zenodo_splits/splits_final/abag_split.csv")
+    ap.add_argument("--src-dir", default=f"{ROOT}/SAbDab2_data/rcsb_training_cifs")
+    ap.add_argument("--out-dir", default=f"{ROOT}/training/prep/job_cifs")
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--unplaced", default=f"{ROOT}/train_prep/unplaced_residues.csv",
+    ap.add_argument("--unplaced", default=f"{ROOT}/training/prep/unplaced_residues.csv",
                     help="per-chain record of observed residues dropped because they are not in the "
                          "fold's sequence; written every run, reviewed, never silent")
     ap.add_argument("--max-unplaced-frac", type=float, default=0.15,
                     help="a chain losing more than this fraction of its observed residues STOPS")
-    ap.add_argument("--jobs-dir", default=f"{ROOT}/train_jobs",
+    ap.add_argument("--jobs-dir", default=f"{ROOT}/training/jobs",
                     help="the fold's job jsons; the written cif's sequences are asserted against them")
-    ap.add_argument("--skipped", default=f"{ROOT}/train_prep/skipped_job_cifs.csv",
+    ap.add_argument("--skipped", default=f"{ROOT}/training/prep/skipped_job_cifs.csv",
                     help="structures whose chains cannot be resolved, with the reason. A failure "
                          "not already listed here is a STOP.")
     a = ap.parse_args()

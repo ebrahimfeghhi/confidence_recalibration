@@ -68,7 +68,7 @@ def build_configs(crop_size, indices, bio_dir, mmcif_dir, msa_root, seq_index, t
     # enable_rna_msa is consulted, so the flag alone does not spare us the file. Our set has no RNA
     # chain by construction, so an empty index is the truthful thing to hand it.
     data["msa"] = {**data["msa"], "enable_rna_msa": False,
-                   "rna_seq_or_filename_to_msadir_jsons": ListValue([f"{ROOT}/train_prep/rna_seq_index_empty.json"]),
+                   "rna_seq_or_filename_to_msadir_jsons": ListValue([f"{ROOT}/training/prep/rna_seq_index_empty.json"]),
                    "prot_seq_or_filename_to_msadir_jsons": ListValue([seq_index]),
                    "prot_msadir_raw_paths": ListValue([msa_root])}
     data["template"] = {**data["template"],
@@ -81,11 +81,11 @@ def build_configs(crop_size, indices, bio_dir, mmcif_dir, msa_root, seq_index, t
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--indices", default=f"{ROOT}/train_prep/job_indices.csv")
-    ap.add_argument("--bio-dir", default=f"{ROOT}/train_prep/job_bioassembly")
+    ap.add_argument("--indices", default=f"{ROOT}/training/prep/job_indices.csv")
+    ap.add_argument("--bio-dir", default=f"{ROOT}/training/prep/job_bioassembly")
     # THE JOB CIFS, matching the bioassemblies below. Pointing this at whole entries would describe
     # a different system from the one the poses come from.
-    ap.add_argument("--mmcif-dir", default=f"{ROOT}/train_prep/job_cifs")
+    ap.add_argument("--mmcif-dir", default=f"{ROOT}/training/prep/job_cifs")
     ap.add_argument("--msa-root", default=f"{ROOT}/msa_work/mmcif_msa")
     ap.add_argument("--seq-index", default=f"{ROOT}/msa_work/pdb_seqs/seq_to_pdb_index.json")
     # PAST THE LARGEST JOB, measured, not guessed. The job-level bioassemblies run to 2,941 tokens

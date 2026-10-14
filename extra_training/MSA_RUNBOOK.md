@@ -100,7 +100,7 @@ unchanged.
 `PROTENIX_ROOT_DIR` so nothing lands outside the project:
 
 ```bash
-export PROTENIX_ROOT_DIR=$REPO/extra_training/protenix_root
+export PROTENIX_ROOT_DIR=$REPO/extra_training/protenix_assets
 mkdir -p $PROTENIX_ROOT_DIR/search_database
 ```
 
@@ -124,7 +124,7 @@ The 4,555 selected instance cifs come out of the SAbDab2 tarball. `training_inst
 committed, derived by `phase_a_define_train_set.py` + `phase_c_extract_msa_queries.py`:
 
 ```bash
-cd $REPO/extra_training/data/zenodo_splits
+cd $REPO/extra_training/SAbDab2_data/zenodo_splits
 awk '{print "splits_final/"$0".cif"}' ../../msa_queries/training_instances.txt > /tmp/members.txt
 mkdir -p ../training_cifs
 tar xzf splits_v0.2.0.tar.gz -T /tmp/members.txt --strip-components=1 -C ../training_cifs
@@ -138,7 +138,7 @@ Benchmark cifs are already on disk — `paths.DATASETS[ds].ref(pdb)`.
 ```bash
 cd $REPO/../Protenix
 python3 scripts/msa/step1-get_prot_seq.py \
-    --cif_dir $REPO/extra_training/data/training_cifs \
+    --cif_dir $REPO/extra_training/SAbDab2_data/training_cifs \
     --out_dir $WORK/pdb_seqs
 ```
 

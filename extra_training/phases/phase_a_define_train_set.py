@@ -87,14 +87,14 @@ sys.path.insert(0, REPO)
 
 import paths  # noqa: E402
 
-SPLITS = f"{REPO}/extra_training/data/zenodo_splits/splits_final/abag_split.csv"
+SPLITS = f"{REPO}/extra_training/SAbDab2_data/zenodo_splits/splits_final/abag_split.csv"
 # Written by this phase's main(); read back by training_clusters() and by phases B and C.
 # THE ONE AUTHORITATIVE EXCLUSION ARTIFACT. Every downstream default resolves to this path, so
 # writing the round-3 exclusions to a NEW file left phases B and G defaulting to a stale 24-cluster
 # version while the current search had found 28 -- and four known benchmark leaks (947, 2238, 2483,
 # 2557) stayed in the committed training list. One path, written by default, read by everyone.
 EXCLUDED = f"{REPO}/extra_training/train_val_splits/excluded_homolog_clusters.csv"
-CIFDIR = f"{REPO}/extra_training/data/rcsb_unlisted"
+CIFDIR = f"{REPO}/extra_training/SAbDab2_data/rcsb_unlisted"
 MMSEQS = f"{REPO}/tools/mmseqs/bin/mmseqs"
 def _anarci_allhmm():
     """out: the path to ANARCI's ALL.hmm, asked of the installed package

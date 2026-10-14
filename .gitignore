@@ -159,27 +159,27 @@ self_distill_dropout/**/trunks/
 self_distill_dropout/**/*.log
 
 # extra_training: large transient data, never committed
-extra_training/data/**
+extra_training/SAbDab2_data/**
 extra_training/msa_out/
 extra_training/msa_queries/*.a3m
 tools/
 envs/
 extra_training/msa_work/**
-extra_training/val2_fold/**
-extra_training/val2_refs/**
-extra_training/protenix_indices/**
+extra_training/validation/fold/**
+extra_training/validation/refs/**
+extra_training/protenix_assets/**
 extra_training/train_fold/**
-extra_training/data/training_cifs/
-extra_training/protenix_root/**
+extra_training/SAbDab2_data/training_cifs/
+
 extra_training/*.log
 
 # runtime state of the E-to-I chain: one word naming the current stage, not code
 extra_training/*.state
-extra_training/train_jobs/**
-extra_training/val2_jobs/**
-extra_training/train_prep/**
-extra_training/data/rcsb_training_cifs/
-extra_training/train_refs/**
+extra_training/training/jobs/**
+extra_training/validation/jobs/**
+extra_training/training/prep/**
+extra_training/SAbDab2_data/rcsb_training_cifs/
+extra_training/training/refs/**
 
 # BENCHMARK LAYOUT VISIBLE, BULK NOT. The input directories under experimental_data/protenix/ hold
 # MSAs, templates, reference cifs and per-pose jsons -- gigabytes that do not belong in the repo, but
@@ -198,3 +198,4 @@ experimental_data/protenix/*/ost_json/**
 !experimental_data/protenix/*/*/.gitkeep
 
 !extra_training/*/.gitkeep
+!extra_training/*/*/.gitkeep

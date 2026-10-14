@@ -57,7 +57,7 @@ def main():
                     help="the frozen split: one row per cluster with cluster and instance")
     ap.add_argument("--manifest", default=f"{REPO}/val2_jobs/manifest.csv",
                     help="checked only -- every frozen first instance must appear here")
-    ap.add_argument("--splits", default=f"{REPO}/data/zenodo_splits/splits_final/abag_split.csv")
+    ap.add_argument("--splits", default=f"{REPO}/SAbDab2_data/zenodo_splits/splits_final/abag_split.csv")
     ap.add_argument("--min-tokens", type=int, default=150)
     ap.add_argument("--seeds", type=int, default=100)
     ap.add_argument("--out", default=None)
