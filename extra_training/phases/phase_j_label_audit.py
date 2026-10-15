@@ -244,6 +244,7 @@ def main():
         # which chain_roles records per role; SAbDab2's file is keyed by ITS label_asym_id, so the
         # roles are paired through chain_roles rather than by assuming the names agree.
         P, Q, pairs, ambig, idmis, cov = [], [], [], [], [], []
+        role_cov = []        # roles a passing group did NOT itself account for
         per_group = []       # per-chain rmsd/maxdev/atoms-over-1A, separating copy mixing from bad atoms
         subs, only_s, only_l = [], 0, 0
         audited = set()
@@ -380,7 +381,27 @@ def main():
                 elif tag == "insert":
                     only_l += j2 - j1
 
+            # PER-ROLE OWNERSHIP, NOT JUST PER GROUP. Marking every member of a passing group as
+            # audited is a false verify, and 8f6x is a live instance rather than a hypothetical: our
+            # label holds two antigen copies (ag0, ag1) against ONE reference chain, so the
+            # concatenation matches one copy in full and the other lands entirely in `insert` --
+            # contributing nothing -- yet both roles were reported audited. A group result cannot
+            # stand in for its members.
+            #
+            # The requirement reuses MIN_COVER and introduces no new constant: a role must own
+            # MIN_COVER of the reference residues it COULD own, which is bounded by its own label
+            # chain and by the reference chain. Checked against the cases that exist:
+            #   10gh  1 role, label 238 (VH+CH1) vs reference 119: can own 119, owns 119  -> pass
+            #   32nz  2 roles, labels 122 + 115 vs fused reference 238: each owns its own  -> pass
+            #   8f6x  2 roles, one owning 429 and one owning 0                 -> the second FAILS
+            # Requiring coverage of the LABEL chain instead would be wrong for the same reason it
+            # was wrong at group level: on 10gh only 119 of our 238 residues can ever be matched.
+            owned = collections.Counter(r for _s, _l, r in corr)
             for role, lk, _named in members:
+                can_own = min(len(lab[lk]), len(sseq))
+                if owned[role] < MIN_COVER * can_own:
+                    role_cov.append(f"{role}:{lk}/{sk}@owns{owned[role]}of{can_own}")
+                    continue
                 audited.add(role)
                 pairs.append(f"{role}={lk}/{sk}" + ("" if _named else "~seq"))
             cov.append(f"{'+'.join(m[0] for m in members)}:{matched}/{denom}")
@@ -416,7 +437,7 @@ def main():
                    rmsd="" if rmsd is None else f"{rmsd:.4f}",
                    maxdev="" if maxdev is None else f"{maxdev:.4f}",
                    n_resid_mismatch=len(idmis), resid_mismatch=";".join(idmis[:6]),
-                   ambiguous=";".join(ambig))
+                   role_uncovered=";".join(role_cov), ambiguous=";".join(ambig))
         # A PASS REQUIRES EVERY ROLE. An unpaired role used to vanish into the coverage string.
         if skipped:
             rec["verdict"] = f"INCOMPLETE ({len(skipped)} role(s) not audited)"
@@ -437,7 +458,7 @@ def main():
     cols = ["pdb", "instance", "verdict", "roles_expected", "roles_audited", "roles_skipped",
             "matched_atoms", "rmsd", "maxdev", "n_subs", "subs", "only_in_sabdab", "only_in_label",
             "n_resid_mismatch", "atoms_over_1A", "shared_chains", "per_chain_rmsd",
-            "pairs", "coverage", "resid_mismatch", "ambiguous"]
+            "pairs", "coverage", "resid_mismatch", "role_uncovered", "ambiguous"]
     with open(a.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()

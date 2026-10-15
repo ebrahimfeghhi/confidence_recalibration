@@ -92,6 +92,32 @@ def damage(src, dst, case):
         start = min(20, max(0, len(ch) - 31))
         for i in range(min(start + 30, len(ch)) - 1, start - 1, -1):
             del ch[i]
+    elif case == "phantom":
+        # THE REVIEWER'S CASE (round 6): one label chain covers the ENTIRE reference chain while a
+        # second chain is also assigned to it and contributes nothing, yet is reported audited.
+        # Built by concatenating chain 2 onto chain 1 and LEAVING chain 2 in place: chain 1 then
+        # matches the fused reference on its own, chain 2 becomes a redundant member of the same
+        # group, and a group-level pass would carry it along. Only a PER-ROLE ownership requirement
+        # rejects it. This case cannot be built on a one-to-one structure, so it is skipped there.
+        if len(chains) < 2:
+            return False
+        a, b = chains[0], chains[1]
+        last = max(r.seqid.num for r in a)
+        for i, r in enumerate(b, start=1):
+            nr = gemmi.Residue()
+            nr.name, nr.seqid = r.name, gemmi.SeqId(last + i, " ")
+            for at in r:
+                nr.add_atom(at)
+            a.add_residue(nr)
+        # AND THEN MAKE CHAIN 2 MATCH NOTHING. Concatenating alone is NOT the reviewer's case and was
+        # measured not to be: the duplicate is sequence-IDENTICAL, so difflib may satisfy the second
+        # role from it instead of from chain 1, and the role then genuinely does account for those
+        # reference residues (32nz: H owned 122, L owned 111, both legitimately). For the redundant
+        # member to contribute NOTHING its sequence must not occur in the reference, so it is
+        # overwritten with poly-TRP -- TRP being rare enough in these chains that stray matches
+        # cannot reach the per-role requirement.
+        for r in b:
+            r.name = "TRP"
     elif case == "shift":
         # translate one chain by 5 A. Sequences and coverage are untouched; the single pooled
         # superposition is what must catch this.
@@ -134,6 +160,9 @@ EXPECT = {
     "swap":         ("anything but ok",       lambda r: r["verdict"] != "ok"),
     "truncate":     ("anything but ok",       lambda r: r["verdict"] != "ok"),
     "shift":        ("COORD MISMATCH",        lambda r: r["verdict"] == "COORD MISMATCH"),
+    # the unaccounted role must be NAMED, not merely counted, or the report cannot be acted on
+    "phantom":      ("anything but ok",       lambda r: r["verdict"] != "ok"
+                                                        and bool(r.get("role_uncovered"))),
 }
 
 
@@ -144,6 +173,9 @@ def main():
         for pdb, kind in TARGETS:
             print(f"\n=== {pdb} -- {kind} ===")
             for case, (want, pred) in EXPECT.items():
+                if case == "phantom" and not kind.startswith("fused"):
+                    print(f"  {case:13s} N/A on a one-to-one structure (no shared group exists)")
+                    continue
                 row = run_case(tmp, pdb, case)
                 if row is None:
                     print(f"  {case:13s} SKIPPED (needs two chains)")
