@@ -715,9 +715,17 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
                 print(f"    {st.name} {role}: corrected query rejected -- length does not equal "
                       f"{len(exp)} + {len(_restore)}; left for review", flush=True)
         for _a, _b, _kind in _classified:
+            # WHERE THE RUN GOES IN *OLD QUERY* COORDINATES, 0-based, insert-before. The a3m remapper
+            # needs this and must NOT rediscover it by aligning the old query to the corrected one:
+            # the whole point of that remapper is that no new alignment is introduced. It is the
+            # expected position just after the last mapped native position before the run.
+            _ins = ""
+            if _n2e_full and _a - 1 in _n2e_full:
+                _ins = _n2e_full[_a - 1] + 1
             native_gaps.append(dict(
                 pdb=st.name, role=role, src_chain=cname, native_from=_a, native_to=_b,
                 n_missing=_b - _a + 1, sequence=_nseq[_a - 1:_b], kind=_kind,
+                query_insert_at=_ins,
                 roles_on_chain=sum(1 for (_r2, c2, _l2, _h2) in keep if c2 == cname),
                 outside_span=len(_outside), expected_len=len(exp), native_len=len(_nseq),
                 old_query=exp, corrected_query=_corrected or ""))
@@ -986,9 +994,9 @@ def main():
     # THE REFOLD LIST. Written every run, so it cannot drift from the cifs this run produced.
     with open(a.native_gaps, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["pdb", "role", "src_chain", "native_from", "native_to",
-                                           "n_missing", "sequence", "kind", "roles_on_chain",
-                                           "outside_span", "expected_len", "native_len",
-                                           "old_query", "corrected_query"],
+                                           "n_missing", "sequence", "kind", "query_insert_at",
+                                           "roles_on_chain", "outside_span", "expected_len",
+                                           "native_len", "old_query", "corrected_query"],
                            lineterminator="\n")
         w.writeheader(); w.writerows(native_gap_rows)
     import collections as _c
