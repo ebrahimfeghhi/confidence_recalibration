@@ -1,5 +1,12 @@
 # train_val_splits
 
+> **SUPERSEDED IN PART, 2026-10-15.** The input/label mismatch this file is built on DOES NOT
+> EXIST. SAbDab2's `Hseq` is defined as the residues that are structurally RESOLVED, so our
+> input already matched the label's coordinate set; 919 of the 935 "missing" residues have no
+> coordinates in their own chain. See **`docs/hseq_correction.md`**. The refold still running
+> is unaffected: it regenerates deleted trunks using the ORIGINAL queries.
+
+
 Which clusters train, which validate, and what was excluded. Written by phases A, B and J0; read by
 the later phases rather than recomputed.
 

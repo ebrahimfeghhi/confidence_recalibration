@@ -1,5 +1,12 @@
 # Where the input/label mismatch comes from, and why SAbDab2's own labels cannot replace RCSB's
 
+> **SUPERSEDED IN PART, 2026-10-15.** The input/label mismatch this file is built on DOES NOT
+> EXIST. SAbDab2's `Hseq` is defined as the residues that are structurally RESOLVED, so our
+> input already matched the label's coordinate set; 919 of the 935 "missing" residues have no
+> coordinates in their own chain. See **`docs/hseq_correction.md`**. The refold still running
+> is unaffected: it regenerates deleted trunks using the ORIGINAL queries.
+
+
 Written 2026-10-15 10:50 AM ET, from a discussion that corrected several of my own claims. Numbers
 measured locally; no external source was consulted, which is this document's main limitation.
 
