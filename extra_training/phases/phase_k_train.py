@@ -107,6 +107,17 @@ def main():
                          "which is as much as can be shuffled while building each structure's "
                          "dataset item once. `none` is deterministic for debugging.")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seeds", default="500000-500009",
+                    help="the seed range the manifest expects per structure, inclusive.")
+    ap.add_argument("--manifest-selection",
+                    default=f"{ROOT}/train_val_splits/cache_train_structures.csv",
+                    help="THE FROZEN POPULATION. The manifest is this times --seeds, not whatever "
+                         "label files happen to exist; a label that was never written must be an "
+                         "error, not a silently smaller training set.")
+    ap.add_argument("--manifest-skip", default="9mx1",
+                    help="comma-separated pdb ids the manifest must NOT expect, each a deliberate "
+                         "documented exclusion. 9mx1 is 2,941 residues against Protenix's "
+                         "2,560-token limit, so it cannot be folded at all.")
     ap.add_argument("--preload-items", type=int, default=0,
                     help="how many STRUCTURE dataset items to hold in memory at once. 0 keeps one, "
                          "which rebuilds every structure every epoch. MEASURED 2026-10-15: an item "
@@ -126,6 +137,14 @@ def main():
                          "SAME initial weights and reports the loss trend, then exits without "
                          "training. This is how --lr is chosen instead of inherited.")
     ap.add_argument("--probe-steps", type=int, default=30)
+    ap.add_argument("--allow-code-drift", action="store_true",
+                    help="accept a label whose fingerprint differs ONLY in the `code` field, with "
+                         "cif, bio, idx, trunk, loss and schema all matching. The data provenance "
+                         "is what determines whether a label is CORRECT; the code hash additionally "
+                         "says it is REPRODUCIBLE, and it covers whole files, so editing a docstring "
+                         "in phase_j_build_cache.py invalidates all 5,000 labels. OFF by default: a "
+                         "drift in any other field, or several fields, is still fatal, and every "
+                         "accepted drift is printed with both hashes.")
     ap.add_argument("--require-replay", default="",
                     help="path to a replay result that must say PASS before training starts. "
                          "Cached training is only FT3 if the cache reproduces it; see "
@@ -186,51 +205,59 @@ def main():
     for n, p in model.named_parameters():
         p.requires_grad_(id(p) in head_ids)
 
-    # ---- THE MANIFEST: every unit's label AND trunk resolved up front, and nothing skipped
-    # SILENTLY SKIPPING A UNIT IS TRAINING ON A SUBSET CHOSEN BY WHICH FILES HAPPENED TO EXIST.
-    # run_unit used to `return` when a trunk or a dataset entry was absent, so a missing input
-    # reduced the training set with no record -- the same class of silent selection this project
-    # keeps finding. Every unit is now resolved here, against every root in --fold, and a unit whose
-    # trunk or dataset entry cannot be found STOPS the run with the list.
+    # ---- THE MANIFEST COMES FROM THE FROZEN SELECTION, NOT FROM WHATEVER FILES EXIST ----
+    # GLOBBING THE LABEL DIRECTORY CANNOT ESTABLISH COMPLETENESS. It did: the manifest was built by
+    # globbing *.npz and then checking that each DISCOVERED label had a trunk, so a label that was
+    # never written simply did not appear and the training set shrank with no error. Review round 8.
+    # The population is now the selection csv times the seed range, minus named exclusions, and a
+    # missing label is fatal.
     roots = [r.strip() for r in a.fold.split(",") if r.strip()]
     for r in roots:
         if not os.path.isdir(r):
             raise SystemExit(f"STOP: --fold root {r} does not exist")
     label_dirs = [x.strip() for x in a.labels.split(",") if x.strip()]
-    labels_found = []
-    for d in label_dirs:
-        labels_found += sorted(glob.glob(os.path.join(d, "*", "*.npz")))
-    if not labels_found:
-        raise SystemExit(f"STOP: no label npz under {label_dirs}; run phase_j_build_cache.py")
+    lo_s, hi_s = (int(x) for x in a.seeds.split("-"))
+    skip = {x.strip().lower() for x in a.manifest_skip.split(",") if x.strip()}
+    with open(a.manifest_selection) as fh:
+        sel_pdbs = [r["pdb"].strip().lower() for r in csv.DictReader(fh)]
+    want = [(p, sd) for p in sel_pdbs if p not in skip for sd in range(lo_s, hi_s + 1)]
+    print(f"manifest: {len(sel_pdbs)} selected structure(s) minus {sorted(skip) or 'none'} "
+          f"x seeds {lo_s}-{hi_s} = {len(want)} intended unit(s), from {a.manifest_selection}")
 
-    manifest, no_trunk = [], []
-    for lp in labels_found:
-        pdb = os.path.basename(os.path.dirname(lp))
-        arm_seed = os.path.basename(lp)[:-4]
-        tp = next((os.path.join(r, "trunks", pdb, f"{arm_seed}.npz") for r in roots
-                   if os.path.exists(os.path.join(r, "trunks", pdb, f"{arm_seed}.npz"))), None)
-        if tp is None:
-            no_trunk.append(f"{pdb}/{arm_seed}")
-            continue
-        manifest.append((pdb, lp, tp))
-    if no_trunk:
-        raise SystemExit(f"STOP: {len(no_trunk)} labelled unit(s) have no trunk under any of "
-                         f"{roots}, e.g. {no_trunk[:5]}. Training would silently drop them.")
+    manifest, no_label, no_trunk = [], [], []
+    for pdb, sd in want:
+        arm_seed = f"free_{sd}"
+        lp = next((os.path.join(d, pdb, f"{arm_seed}.npz") for d in label_dirs
+                   if os.path.exists(os.path.join(d, pdb, f"{arm_seed}.npz"))), None)
+        if lp is None:
+            no_label.append(f"{pdb}/{arm_seed}"); continue
+        cands = [os.path.join(r, "trunks", pdb, f"{arm_seed}.npz") for r in roots
+                 if os.path.exists(os.path.join(r, "trunks", pdb, f"{arm_seed}.npz"))]
+        if not cands:
+            no_trunk.append(f"{pdb}/{arm_seed}"); continue
+        manifest.append((pdb, lp, cands))        # ALL candidates; provenance picks below
+    if no_label or no_trunk:
+        raise SystemExit(
+            f"STOP: the training set is INCOMPLETE.\n"
+            f"  {len(no_label)} intended unit(s) have no label, e.g. {no_label[:5]}\n"
+            f"  {len(no_trunk)} have no trunk under {roots}, e.g. {no_trunk[:5]}\n"
+            f"  Build them, or name a deliberate exclusion in --manifest-skip and record it in "
+            f"docs/build_cache_exclusions.md.")
 
     bypdb = {}
-    for pdb, lp, tp in manifest:
-        bypdb.setdefault(pdb, []).append((lp, tp))
+    for pdb, lp, cands in manifest:
+        bypdb.setdefault(pdb, []).append((lp, cands))
     order = sorted(bypdb)
     rng = random.Random(a.seed)
     if a.shuffle == "structure":
         rng.shuffle(order)
         for pp in order:
             rng.shuffle(bypdb[pp])
-    flat = [(pp, lp, tp) for pp in order for lp, tp in bypdb[pp]]
+    flat = [(pp, lp, cands) for pp in order for lp, cands in bypdb[pp]]
     if a.limit_units:
         flat = flat[:a.limit_units]
-    print(f"manifest: {len(flat)} unit(s) over {len(set(x[0] for x in flat))} structure(s) from "
-          f"{len(roots)} fold root(s), shuffle={a.shuffle}, seed={a.seed}")
+    print(f"  resolved {len(flat)} unit(s) over {len(set(x[0] for x in flat))} structure(s) "
+          f"from {len(roots)} fold root(s), shuffle={a.shuffle}, seed={a.seed}")
 
     cfg = DS.build_configs(a.crop_size, a.indices, a.bio_dir, a.mmcif_dir, a.msa_root,
                            a.seq_index, a.msa_root)
@@ -239,9 +266,14 @@ def main():
     train_ds, _ = get_datasets(cfg, err)
     byp = BC.merged_lookup(train_ds)
     perm = SymmetricPermutation(cfg, error_dir=err)
+    # THE SAME FINGERPRINT CONTEXT build_cache USES, imported rather than reimplemented. A
+    # reimplementation that drifted would reject every label or accept every label; round 8 found
+    # the latter, because `fingerprint` was required to be PRESENT and never compared.
+    code_fp, loss_fp = BC.fingerprint_context(cfg)
+    print(f"fingerprint context: code={code_fp} loss={loss_fp}")
     # EVERY STRUCTURE IN THE MANIFEST MUST HAVE A DATASET ENTRY, asserted here rather than
     # discovered per unit and skipped.
-    nodata = sorted({pdb for pdb, _lp, _tp in flat if pdb not in byp})
+    nodata = sorted({pdb for pdb, _lp, _cands in flat if pdb not in byp})
     if nodata:
         raise SystemExit(f"STOP: {len(nodata)} structure(s) in the manifest have no dataset "
                          f"datapoint: {nodata[:8]}. Their units would be skipped silently.")
@@ -261,6 +293,61 @@ def main():
     # rather than assumed; reported at the end against the number of structures actually visited.
     item_build_s = []
     nonfinite = {"n": 0}
+    code_drift = {"n": 0, "warned": False}
+
+    def resolve_trunk(pdb, lab_p, cands, want_fp_cache={}):
+        """Pick the trunk whose PROVENANCE matches this label, not the first filename that exists.
+
+        THE FIRST MATCHING FILENAME IS NOT THE RIGHT TRUNK. The multi-root lookup took it, so a
+        label built from one root's trunk could be paired with another root's trunk of the same name
+        -- and since the label is a PER-POSE permutation of its own trunk's poses, that pairs a pose
+        with another run's permuted label and trains on it. Review round 8 reproduced exactly that
+        with a fold_regen label and a fold trunk.
+
+        The stored fingerprint names its trunk by content hash, so the trunk is chosen BY it. Two
+        candidates matching is ambiguous and refused rather than resolved arbitrarily.
+        """
+        stored = str(np.asarray(np.load(lab_p, allow_pickle=True)["fingerprint"]))
+        ok = []
+        for tp in cands:
+            key = (pdb, tp)
+            if key not in want_fp_cache:
+                want_fp_cache[key] = BC.unit_fingerprint(a, pdb, tp, code_fp, loss_fp)
+            if want_fp_cache[key] == stored:
+                ok.append(tp)
+        if len(ok) == 1:
+            return ok[0]
+        if not ok:
+            # WHICH FIELD DIFFERS IS THE ACTIONABLE PART. "stale" with no detail cannot be acted on,
+            # and the fields are not equally serious: cif, bio, idx and trunk say the label was
+            # built from DIFFERENT DATA, while code says only that the builder's source has changed.
+            def fields(fp):
+                out = {}
+                for part in fp.split("|"):
+                    if "=" in part:
+                        k, v = part.split("=", 1); out[k] = v
+                return out
+            want_f = fields(want_fp_cache[(pdb, cands[0])])
+            got_f = fields(stored)
+            diff = sorted(k for k in set(want_f) | set(got_f) if want_f.get(k) != got_f.get(k))
+            if diff == ["code"] and a.allow_code_drift:
+                if not code_drift["warned"]:
+                    print(f"  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by "
+                          f"code={got_f.get('code')}, this run is code={want_f.get('code')}. Every "
+                          f"data field matches -- cif, bio, idx, trunk, loss, schema -- so the "
+                          f"labels are correct but not reproducible from this checkout.")
+                    code_drift["warned"] = True
+                code_drift["n"] += 1
+                return cands[0]
+            raise SystemExit(
+                f"STOP: {lab_p} does not match its inputs. No trunk among {cands} reproduces its "
+                f"fingerprint.\n  field(s) differing: {diff}\n"
+                + "".join(f"    {k}: label {got_f.get(k)} vs now {want_f.get(k)}\n" for k in diff)
+                + (f"  Only `code` differs, so the DATA provenance is intact; pass "
+                   f"--allow-code-drift to accept that explicitly.\n" if diff == ["code"] else "")
+                + f"  Otherwise rebuild with phase_j_build_cache.py --only {pdb}.")
+        raise SystemExit(f"STOP: {len(ok)} trunks match {lab_p}'s fingerprint: {ok}. Ambiguous "
+                         f"provenance is refused rather than resolved arbitrarily.")
 
     def run_unit(pdb, lab_p, trunk_p, item_cache):
         """Forward + loss for every pose of one unit. Yields (pose_index, loss_tensor, metrics).
@@ -297,6 +384,17 @@ def main():
         if int(np.asarray(lab["schema"])) != int(BC.SCHEMA):
             raise SystemExit(f"STOP: {lab_p} is schema {int(np.asarray(lab['schema']))}, this code "
                              f"expects {int(BC.SCHEMA)}. Rebuild the cache.")
+        # THE FINGERPRINT IS COMPARED, NOT MERELY PRESENT. resolve_trunk already proved one trunk
+        # reproduces it; this re-asserts against the trunk actually being used, so the two cannot
+        # come apart if resolve_trunk is ever bypassed.
+        _want = BC.unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp)
+        _got = str(np.asarray(lab["fingerprint"]))
+        if _got != _want:
+            _dw = dict(x.split("=", 1) for x in _want.split("|") if "=" in x)
+            _dg = dict(x.split("=", 1) for x in _got.split("|") if "=" in x)
+            _df = sorted(k for k in set(_dw) | set(_dg) if _dw.get(k) != _dg.get(k))
+            if not (_df == ["code"] and a.allow_code_drift):
+                raise SystemExit(f"STOP: {lab_p} fingerprint differs in {_df}. Rebuild it.")
         _missing_lf = [k for k in BC.LOSS_FEATS if f"lf_{k}" not in lab]
         if _missing_lf:
             raise SystemExit(f"STOP: {lab_p} stores no lf_ array for {_missing_lf}. Falling back to "
@@ -424,7 +522,8 @@ def main():
                 frac = a.epochs - (n_epochs - 1)
                 ep_units = ep_units[:max(1, int(len(ep_units) * frac))]
             print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
-            for ui, (pdb, lab_p, trunk_p) in enumerate(ep_units):
+            for ui, (pdb, lab_p, cands) in enumerate(ep_units):
+                trunk_p = resolve_trunk(pdb, lab_p, cands)
                 for i, cum, met in run_unit(pdb, lab_p, trunk_p, item_cache):
                     cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
                     for g in opt.param_groups:
@@ -516,6 +615,10 @@ def main():
     print(f"trajectory -> {traj_p}")
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
     train_loop(steps_cap, a.lr, "train", write_traj=True)
+    if code_drift["n"]:
+        print(f"\nCODE DRIFT ACCEPTED on {code_drift['n']} unit(s) via --allow-code-drift. The "
+              f"labels' data provenance matched in every field; only the builder's source hash "
+              f"differed. This run is NOT reproducible from a clean checkout of that code.")
     if item_build_s:
         import statistics as _st
         print(f"\ndataset items built: {len(item_build_s)}, median {_st.median(item_build_s):.2f}s, "

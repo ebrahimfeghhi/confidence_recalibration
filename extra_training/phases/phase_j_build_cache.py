@@ -368,6 +368,46 @@ def _indices_by_pdb(path):
     return {k: hashlib.sha256("\n".join(v).encode()).hexdigest()[:16] for k, v in rows.items()}
 
 
+def fingerprint_context(cfg, verbose=True):
+    """(code_fp, loss_fp) -- the two parts of a label's provenance that are not per-structure.
+
+    EXTRACTED SO THE TRAINER CAN RECOMPUTE THE SAME FINGERPRINT. It lived inline in main(), so
+    anything else wanting to VERIFY a stored fingerprint had to reimplement it, and a reimplementation
+    that drifted would either reject every label or accept every label -- the latter being what
+    review round 8 found: `fingerprint` was required to be PRESENT and never compared, so a label
+    carrying fingerprint="definitely-stale" passed.
+    """
+    _PX = "/home/ebrahim/Protenix"
+    _ext = [os.path.join(_PX, x) for x in (
+        "protenix/data/core/parser.py", "protenix/data/core/filter.py",
+        "protenix/data/pipeline/dataset.py", "protenix/utils/permutation/permutation.py",
+        "protenix/model/loss.py")]
+    _local = [os.path.join(HERE, f) for f in
+              ("phase_j_build_cache.py", "phase_j_dataset.py", "phase_j_job_cifs.py")]
+    # THE REPO ROOT IS ROOT's PARENT, not its grandparent. One level too high resolved outside the
+    # checkout, the file never existed, and the patch was silently dropped from the fingerprint --
+    # the very thing it was added to cover.
+    _patch = os.path.join(os.path.dirname(ROOT), "run_model", "protenix_local.patch")
+    code_fp = hashlib.sha256(b"".join(
+        open(f, "rb").read() for f in _local + _ext + [_patch]
+        if os.path.exists(f))).hexdigest()[:16]
+    _absent = [f for f in _ext if not os.path.exists(f)]
+    if _absent and verbose:
+        print(f"WARNING: {len(_absent)} external file(s) absent from the code fingerprint: "
+              f"{[os.path.basename(f) for f in _absent]}")
+    # THE LOSS WEIGHTS ARE PART OF THE LABEL'S PROVENANCE: alpha_pae ships as 0.0, so a label built
+    # under the stock weights is not the label a run with the PAE loss enabled should reuse.
+    try:
+        w = cfg.loss.weight
+        loss_fp = hashlib.sha256(repr(sorted(
+            (k, float(getattr(w, k))) for k in dir(w)
+            if not k.startswith("_") and isinstance(getattr(w, k), (int, float))
+        )).encode()).hexdigest()[:16]
+    except Exception:
+        loss_fp = "n/a"
+    return code_fp, loss_fp
+
+
 def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
     """What this unit's label was built FROM, as one short string.
 
@@ -555,33 +595,7 @@ def main():
     # permutation. A change there -- including the local patch we carry -- would not have
     # invalidated a single cached label.
     _PX = os.environ.get("PROTENIX_ROOT", os.path.expanduser("~/Protenix"))
-    _ext = [os.path.join(_PX, x) for x in (
-        "protenix/data/core/parser.py", "protenix/data/core/filter.py",
-        "protenix/data/pipeline/dataset.py", "protenix/utils/permutation/permutation.py",
-        "protenix/model/loss.py")]
-    _local = [os.path.join(HERE, f) for f in
-              ("phase_j_build_cache.py", "phase_j_dataset.py", "phase_j_job_cifs.py")]
-    # THE REPO ROOT IS ROOT's PARENT, not its grandparent. One level too high resolved outside the
-    # checkout, the file never existed, and the patch was silently dropped from the fingerprint --
-    # the very thing it was added to cover.
-    _patch = os.path.join(os.path.dirname(ROOT), "run_model", "protenix_local.patch")
-    code_fp = hashlib.sha256(b"".join(
-        open(f, "rb").read() for f in _local + _ext + [_patch]
-        if os.path.exists(f))).hexdigest()[:16]
-    _absent = [f for f in _ext if not os.path.exists(f)]
-    if _absent:
-        print(f"WARNING: {len(_absent)} external file(s) absent from the code fingerprint: "
-              f"{[os.path.basename(f) for f in _absent]}")
-    # THE LOSS WEIGHTS ARE PART OF THE LABEL'S PROVENANCE: alpha_pae ships as 0.0, so a label built
-    # under the stock weights is not the label a run with the PAE loss enabled should reuse.
-    try:
-        w = cfg.loss.weight
-        loss_fp = hashlib.sha256(repr(sorted(
-            (k, float(getattr(w, k))) for k in dir(w)
-            if not k.startswith("_") and isinstance(getattr(w, k), (int, float))
-        )).encode()).hexdigest()[:16]
-    except Exception:
-        loss_fp = "n/a"
+    code_fp, loss_fp = fingerprint_context(cfg)
 
     # --out-dir FOLLOWS --fold unless given explicitly. Resolved here, after parsing, so the
     # default tracks whatever --fold ended up being.
