@@ -21,7 +21,16 @@ remaining GPU time and is the one stage nothing downstream waits on. Stages 1 an
 
 ---
 
-## CONCERN 1 (open, highest value): 200 of 723 training units have interfaces that never score
+## CONCERN 1 -- SUPERSEDED by `concern1_diagnosis.md`
+
+Diagnosed 2026-10-15 8:10 AM ET. Two causes, not one: 27 of 31 never-scored pairs have ZERO
+reference contacts (the pool is a cross product, review item J2), and 4 are real interfaces that
+were lost. Separately `eval/ost_dockq.py:155` reads OST's interface columns in the wrong order, so
+`results.csv` rows can carry another interface's DockQ -- 454 of 501 structures are exposed to that.
+Two claims below are wrong and are corrected in that document: the claim is RELEASED after SCORING
+INCOMPLETE, and "evaluation-only" was not established. Folds, poses and labels remain unaffected.
+
+### original text, kept for the record: 200 of 723 training units have interfaces that never score
 
 | | training | validation |
 |---|---|---|
