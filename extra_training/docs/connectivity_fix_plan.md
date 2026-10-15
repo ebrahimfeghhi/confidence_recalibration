@@ -133,3 +133,43 @@ and is worth reporting rather than quietly fixing on our side.
 
 It needs one padded MSA, not the 96 GB rebuild, so it is cheap and should precede any decision about
 the other 118 structures.
+
+---
+
+# Review corrections, 2026-10-15 12:20 PM ET. Plan downgraded to a later experiment.
+
+## 1. "Our inputs match benchmark practice" was stated more strongly than the data supports
+
+The measurement matched only about 55% of benchmark queries to a reference chain. The 11% and 19%
+spliced rates are over that matched subset, and I then used the stronger phrasing anyway when
+summarising. What the evidence supports is narrower: **splicing demonstrably occurs in both
+benchmarks**, so correcting only our training inputs would not automatically improve consistency.
+It does NOT establish that our inputs and theirs are equivalently constructed. They are not: FoldBench
+`7yxu`'s heavy query is 228 residues mapping onto native positions 1-223, so it carries residues
+absent from the reference entirely -- tag or construct -- whereas our `Hseq` is resolved-only. Same
+defect, different provenance.
+
+## 2. Gap-padding is NOT harmless just because the restored residues lack labels
+
+My justification was: restored residues are unresolved, so the label carries no coordinates, so the
+model is never graded there, so all-gap MSA columns cost nothing. That does not follow.
+
+Those residues are still TOKENS in the forward pass. They occupy positions, they influence their
+neighbours' predictions, and they enter per-interface ipTM, which is computed over every token of the
+two chains (`sample_confidence.py:536`, `pair_mask` = union of both chains' tokens, no contact
+filter). So feeding them with no evolutionary evidence can degrade the prediction ELSEWHERE in the
+chain, including at the interface we actually score.
+
+This is the same mistake I made in claiming constant-domain residues do not enter ipTM: treating
+"not directly supervised" as "without consequence". Twice now.
+
+## 3. Agreed sequence of work
+
+| | |
+|---|---|
+| now | finish the current cache regeneration with the ORIGINAL queries. Sequence preprocessing stays FIXED for this experiment |
+| before training | complete the label audit, including resolving the 57 roles where `chain_roles.csv` names an auth chain absent from the cif |
+| later | contiguous-sequence refolding as its own EXPERIMENT, measured against this baseline -- not a prerequisite, and not a replacement for this run |
+
+The connectivity issue is documented and real. The evidence does not justify replacing the run with
+a different preprocessing scheme, and the padding route carries a risk I had argued away.
