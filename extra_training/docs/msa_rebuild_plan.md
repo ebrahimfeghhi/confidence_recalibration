@@ -1,8 +1,10 @@
 # Plan: rebuild the MSAs for the 155 corrected queries
 
 **Revision 3, 2026-10-14.** Revision 2 (`e7de1264`, `a2d58b51`) was reviewed and four more defects were found. All four reproduce and are corrected below. One of them DISSOLVES the blocker revision 2 was built around. Nothing in this plan has run.
-found. All four are corrected below, and verifying them turned up a fifth that invalidates half of
-revision 1's approach. Nothing in this plan has run.
+
+Revision history: revision 1 (`89b35118`) was corrected by revision 2 (`e7de1264`, `a2d58b51`) after
+review round 1 found four execution defects; revision 2 is corrected here after review round 2 found
+four more, one of which removes the blocker revision 2 was built around.
 
 ## Why this is needed
 
