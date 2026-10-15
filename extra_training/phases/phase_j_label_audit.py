@@ -162,10 +162,16 @@ def load(path, key="subchain"):
 
 
 def kabsch(P, Q):
-    """ONE rigid transform fitted over every matched atom of the complex. Returns (rmsd, maxdev)."""
+    """ONE rigid transform fitted over every matched atom of the complex.
+
+    Returns (rmsd, maxdev, n_over_1A): the last counts atoms still more than 1 A from their partner
+    after the fit. A mismatch of a few side chains and a mismatch of a whole domain give similar
+    maxdev, and only the count separates them -- 8d53 reports maxdev 10.17 A, which means nothing
+    until one knows whether it is 3 atoms or 3,000.
+    """
     n = len(P)
     if n < 3:
-        return None, None
+        return None, None, None
     cp = [sum(c[i] for c in P) / n for i in range(3)]
     cq = [sum(c[i] for c in Q) / n for i in range(3)]
     p = [[c[i] - cp[i] for i in range(3)] for c in P]
@@ -180,9 +186,10 @@ def kabsch(P, Q):
         pa = np.array(p); qa = np.array(q)
         diff = (pa @ R.T) - qa
         per = np.sqrt((diff ** 2).sum(axis=1))
-        return float(np.sqrt((per ** 2).mean())), float(per.max())
+        return (float(np.sqrt((per ** 2).mean())), float(per.max()),
+                int((per > 1.0).sum()))
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def main():
@@ -237,7 +244,7 @@ def main():
         # which chain_roles records per role; SAbDab2's file is keyed by ITS label_asym_id, so the
         # roles are paired through chain_roles rather than by assuming the names agree.
         P, Q, pairs, ambig, idmis, cov = [], [], [], [], [], []
-        per_group = []       # per-reference-chain rmsd/maxdev, to separate copy mixing from bad atoms
+        per_group = []       # per-chain rmsd/maxdev/atoms-over-1A, separating copy mixing from bad atoms
         subs, only_s, only_l = [], 0, 0
         audited = set()
         expected = sorted(roles.get(pdb, {}))
@@ -392,17 +399,19 @@ def main():
             # with two copies of the complex lets our label's antibody pair to copy 1 and its
             # antigen to copy 2, and each chain then superposes exactly while the pooled fit does
             # not. Without this column a large pooled RMSD cannot be told apart from wrong atoms.
-            _gr, _gm = kabsch(_gP, _gQ) if len(_gP) >= 3 else (None, None)
+            _gr, _gm, _gn = kabsch(_gP, _gQ) if len(_gP) >= 3 else (None, None, None)
             per_group.append(f"{'+'.join(m[0] for m in members)}:"
-                             + ("" if _gr is None else f"{_gr:.3f}/{_gm:.3f}"))
+                             + ("" if _gr is None
+                                else f"{_gr:.3f}/{_gm:.3f}/{_gn}of{len(_gP)}"))
 
-        rmsd, maxdev = kabsch(P, Q) if len(P) >= 3 else (None, None)
+        rmsd, maxdev, n_over = kabsch(P, Q) if len(P) >= 3 else (None, None, None)
         skipped = [r for r in expected if r not in audited]
         rec.update(roles_expected=len(expected), roles_audited=len(audited),
                    roles_skipped=";".join(skipped), n_subs=len(subs), subs=";".join(subs[:6]),
                    only_in_sabdab=only_s, only_in_label=only_l,
                    shared_chains=";".join(f"{k}x{v}" for k, v in sorted(shared.items()) if v > 1),
-                   matched_atoms=len(P), pairs=";".join(pairs), coverage=";".join(cov),
+                   matched_atoms=len(P), atoms_over_1A="" if n_over is None else n_over,
+                   pairs=";".join(pairs), coverage=";".join(cov),
                    per_chain_rmsd=";".join(per_group),
                    rmsd="" if rmsd is None else f"{rmsd:.4f}",
                    maxdev="" if maxdev is None else f"{maxdev:.4f}",
@@ -427,7 +436,7 @@ def main():
 
     cols = ["pdb", "instance", "verdict", "roles_expected", "roles_audited", "roles_skipped",
             "matched_atoms", "rmsd", "maxdev", "n_subs", "subs", "only_in_sabdab", "only_in_label",
-            "n_resid_mismatch", "shared_chains", "per_chain_rmsd",
+            "n_resid_mismatch", "atoms_over_1A", "shared_chains", "per_chain_rmsd",
             "pairs", "coverage", "resid_mismatch", "ambiguous"]
     with open(a.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")

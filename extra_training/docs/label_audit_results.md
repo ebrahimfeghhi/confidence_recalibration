@@ -67,21 +67,39 @@ verdicts and nothing passes by sitting just above the line.
 the shortfall itemised, removing the last threshold from the file. It changes no verdict today, so it
 is a design decision rather than something to settle by tuning.
 
-## The 5 COORD MISMATCH structures
+## The 5 COORD MISMATCH structures: no demonstrated label defect
 
-Sequences match exactly in all five (`n_subs` 0). `per_chain_rmsd` superposes each reference chain on
-its own, alongside the pooled fit the verdict uses, which separates mixed copies from wrong atoms.
+Sequences match exactly in all five (`n_subs` 0). Two further measurements resolve them, both added
+2026-10-15 1:20 PM ET after the user asked whether these structures lack clean labels -- the
+per-chain RMSD alone could NOT answer that, and saying they were "harmless" was ahead of the
+evidence.
 
-| structure | per-chain rmsd (A) | pooled rmsd (A) | pooled max (A) | reading |
-|---|---|---|---|---|
-| `8dpl` | 0.000, 0.020, 0.020 | 28.50 | 68.41 | copies mixed; our atoms are right |
-| `8f6x` | 0.000, 0.443, 0.443 | 34.87 | 71.91 | copies mixed |
-| `8d53` | 0.000, 0.000, 0.000, 0.453 | 0.34 | 10.18 | one antigen chain differs locally |
-| `9djw` | 1.558, 1.596 | 15.77 | 47.02 | both chains differ locally |
-| `8v8f` (val) | 0.254, 0.725 | 0.29 | 4.36 | small local difference |
+**1. Are they real complexes?** `phases/phase_j_check_contacts.py` (review item J2) on the deposited
+coordinates: all 8 antigen chains over the 5 structures contact their antibody, minimum heavy-atom
+distance 2.28-2.94 A, cutoff 5.0 A, 0 not contacting. None is a copy-mix; every label describes a
+complex that exists.
 
-`8dpl` and `8f6x` are harmless. The other three carry real local differences (max 4-13 A) and are 3
-of 554 structures; not yet explained.
+**2. How many atoms actually differ?** A few side chains and a whole domain give similar `maxdev`;
+only a count separates them, so `kabsch` now also returns atoms still over 1 A after the fit
+(`atoms_over_1A`, and the third field of each `per_chain_rmsd` entry).
+
+| structure | atoms >1 A after per-chain fit | pooled rmsd (A) | reading |
+|---|---|---|---|
+| the 497 + 52 `ok` structures | **0, in every one** | 0.0000 | exact; no gray zone below these five |
+| `8dpl` | 0 of 1,698 (H+L), 0 of 759, 0 of 759 | 28.50 | pure copy-frame difference; provably clean |
+| `8d53` | 15 of 6,294 total, all in ag1 (0.24%) | 0.34 | a few side chains in one antigen |
+| `8v8f` (val) | 22 of 1,874 (1.2%) | 0.29 | small local difference |
+| `8f6x` | 0 of 1,722 (H+L), 115 of 3,248 per antigen (3.5%) | 34.87 | copy frame plus a small local difference |
+| `9djw` | 304 of 1,196 (ag0, 25%), 215 of 815 (H, 26%) | 15.77 | a genuinely different conformation |
+
+Columns: atoms are counted after superposing EACH CHAIN on its own; denominators are the atoms
+matched in that chain. The pooled column is the single-transform fit the verdict uses.
+
+**Reading.** "Differs from SAbDab2" is not "our label is wrong" -- both are derived from the same
+RCSB deposit, and where they differ one of the two took a different copy or a different alternate
+conformation. Four of the five are clean or near-clean (<= 1.2% of atoms, mostly side chains).
+`9djw` is the only one worth chasing: a quarter of its atoms sit in a different conformation, which
+is too much to be noise. It is 1 of 554.
 
 ## Proving the audit can fail
 
