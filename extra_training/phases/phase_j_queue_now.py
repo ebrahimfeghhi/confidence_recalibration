@@ -45,11 +45,18 @@ def job_msas_present(jobs_dir, pdb):
         if not pc:
             continue
         n += 1
-        for k in ("pairedMsaPath", "unpairedMsaPath"):
-            p = pc.get(k)
-            if p and not os.path.exists(p):
-                bad += 1
-                break
+        # A CHAIN WITH NO MSA KEY AT ALL IS NOT A PASS. The earlier version only tested paths that
+        # were present, so a proteinChain carrying NEITHER pairedMsaPath nor unpairedMsaPath fell
+        # through the loop with bad == 0 and the structure was reported MSA-complete. That is the
+        # 7ubr / 9czd / 9wsv case: no antibody MSA was ever built for them, which is precisely what
+        # this check exists to catch, and folding them would quietly produce a single-sequence
+        # alignment instead of refusing.
+        paths = [pc.get(k) for k in ("pairedMsaPath", "unpairedMsaPath")]
+        if not any(paths):
+            bad += 1
+            continue
+        if any(p and not os.path.exists(p) for p in paths):
+            bad += 1
     return bad == 0, n, bad
 
 

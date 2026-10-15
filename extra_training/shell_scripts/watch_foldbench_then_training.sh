@@ -23,10 +23,29 @@ B=$R/experimental_data/protenix/foldbench/foldbench_baseline_remaining_folds
 E=$R/extra_training/training/fold
 PY=/home/ebrahim/Protenix/.venv/bin/python
 V=$R/extra_training/validation/fold
+# TRUNK REGENERATION WRITES INTO A FRESH ROOT, NOT BACK INTO THE OLD ONE.
+#
+# folder.py never reaches the folding path for a unit that already has poses or scores: it returns
+# "skipped" at folder.py:931 when every interface is scored, and "rescored" at :968 when
+# saved_run_dir finds a finished pose directory. Neither path runs inference, so neither writes a
+# trunk. Measured against the two queues: 73 of the 733 training units and ALL 300 validation units
+# have poses on disk from the folds whose trunks were deleted, so a same-root run would have left
+# the watcher waiting on 373 trunks that can never appear -- hanging at 660/733 and 0/300 with three
+# idle cards.
+#
+# AND A NEW TRUNK MUST NOT BE PAIRED WITH AN OLD POSE. Repeating a seed does not reproduce its
+# poses; the same seed refolded has gone from DockQ 0.022 to 0.644. A trunk is only meaningful
+# alongside the pose it was computed from, so the regenerated poses and their trunks go in one fresh
+# tree together. phase_j_build_cache.py:84 already refuses a (pdb, seed) with two finished pose
+# directories rather than guessing, so a same-root refold would have failed the cache build for
+# those 8 structures anyway. It takes --fold, so each root is built separately and each is
+# internally consistent.
+EG=$R/extra_training/training/fold_regen
+VG=$R/extra_training/validation/fold_regen
 LOG=$B/watcher.log
 GPUS="0 1 3"
-TR_TOTAL=$(wc -l < $E/queue.tsv)
-VA_TOTAL=$(wc -l < $V/queue_now.tsv)
+TR_TOTAL=$(wc -l < $EG/queue.tsv)
+VA_TOTAL=$(wc -l < $VG/queue.tsv)
 TOTAL=$(wc -l < $B/queue.tsv)
 say(){ echo "[$(date '+%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
@@ -35,16 +54,16 @@ launch_fb(){ tmux new-session -d -s fbtop_$1 "cd /home/ebrahim/Protenix && CUDA_
       --csv $B/results.csv --claim-dir $B/claims --dataset foldbench --ncycle 10 --nsample 5 \
       --dtype bf16 --overlap-scoring >> $B/w$1.log 2>&1"; }
 launch_tr(){ tmux new-session -d -s tcache_$1 "cd /home/ebrahim/Protenix && CUDA_VISIBLE_DEVICES=$1 \
-      LAYERNORM_TYPE=openfold TRUNK_DUMP_DIR=$E/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
-      PROTENIX_DUMP_CONF_INPUTS=1 $PY $R/run_model/folder.py --queue $E/queue.tsv --out $E/poses \
-      --csv $E/results.csv --claim-dir $E/claims --dataset sabdab_train --ncycle 10 --nsample 5 \
-      --dtype bf16 --overlap-scoring >> $E/w$1.log 2>&1"; }
+      LAYERNORM_TYPE=openfold TRUNK_DUMP_DIR=$EG/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
+      PROTENIX_DUMP_CONF_INPUTS=1 $PY $R/run_model/folder.py --queue $EG/queue.tsv --out $EG/poses \
+      --csv $EG/results.csv --claim-dir $EG/claims --dataset sabdab_train --ncycle 10 --nsample 5 \
+      --dtype bf16 --overlap-scoring >> $EG/w$1.log 2>&1"; }
 
 launch_va(){ tmux new-session -d -s vfold_$1 "cd /home/ebrahim/Protenix && CUDA_VISIBLE_DEVICES=$1 \
-      LAYERNORM_TYPE=openfold TRUNK_DUMP_DIR=$V/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
-      PROTENIX_DUMP_CONF_INPUTS=1 $PY $R/run_model/folder.py --queue $V/queue_now.tsv --out $V/poses \
-      --csv $V/results.csv --claim-dir $V/claims --dataset sabdab_val2 --ncycle 10 --nsample 5 \
-      --dtype bf16 --overlap-scoring >> $V/w$1.log 2>&1"; }
+      LAYERNORM_TYPE=openfold TRUNK_DUMP_DIR=$VG/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
+      PROTENIX_DUMP_CONF_INPUTS=1 $PY $R/run_model/folder.py --queue $VG/queue.tsv --out $VG/poses \
+      --csv $VG/results.csv --claim-dir $VG/claims --dataset sabdab_val2 --ncycle 10 --nsample 5 \
+      --dtype bf16 --overlap-scoring >> $VG/w$1.log 2>&1"; }
 
 # DONE IS THE TRUNK COUNT FOR THIS QUEUE'S OWN ROWS, not a pose count and not the absence of
 # workers. The trunk npz is the artefact this phase exists to produce, folder.py refuses to
@@ -79,7 +98,7 @@ done
 say "handing the cards to the training queue: $TR_TOTAL units over 74 structures"
 for g in $GPUS; do tmux kill-session -t fbtop_$g 2>/dev/null; done
 sleep 10
-$PY $R/run_model/reconcile_stale_claims.py $E --dataset sabdab_train --nsample 5 >> "$LOG" 2>&1
+$PY $R/run_model/reconcile_stale_claims.py $EG --dataset sabdab_train --nsample 5 >> "$LOG" 2>&1
 for g in $GPUS; do launch_tr $g; say "  launched tcache_$g"; done
 
 # ---- stage 2: the training queue, then the validation queue --------------------------------------
@@ -106,14 +125,14 @@ watch_stage(){   # $1 label  $2 fold dir  $3 queue  $4 total  $5 session prefix 
     done
 }
 
-watch_stage "training cache" "$E" "$E/queue.tsv" "$TR_TOTAL" tcache sabdab_train
+watch_stage "training cache" "$EG" "$EG/queue.tsv" "$TR_TOTAL" tcache sabdab_train
 
 say "handing the cards to the VALIDATION queue: $VA_TOTAL units over 3 structures"
 for g in $GPUS; do tmux kill-session -t tcache_$g 2>/dev/null; done
 sleep 10
-$PY $R/run_model/reconcile_stale_claims.py $V --dataset sabdab_val2 --nsample 5 >> "$LOG" 2>&1
+$PY $R/run_model/reconcile_stale_claims.py $VG --dataset sabdab_val2 --nsample 5 >> "$LOG" 2>&1
 for g in $GPUS; do launch_va $g; say "  launched vfold_$g"; done
-watch_stage "validation" "$V" "$V/queue_now.tsv" "$VA_TOTAL" vfold sabdab_val2
+watch_stage "validation" "$VG" "$VG/queue.tsv" "$VA_TOTAL" vfold sabdab_val2
 
 say "ALL RUNNABLE WORK DONE. The refolds are NOT queued: 1,180 training and 1,300 validation units"
 say "wait on the corrected MSAs (deferred_refold.csv in each fold dir). GPU holders are untouched."

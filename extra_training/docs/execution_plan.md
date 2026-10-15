@@ -20,12 +20,32 @@ Both built by `phases/phase_j_queue_now.py` (`--apply` writes; without it only c
 
 ## Order of work
 
-| stage | what | units | consumer |
-|---|---|---|---|
-| 1 | FoldBench top-off | 31 of 612 done | `fbtop_0/1/3` |
-| 2 | training cache | 733 | `tcache_0/1/3`, dataset `sabdab_train` |
-| 3 | validation | 300 | `vfold_0/1/3`, dataset `sabdab_val2` |
-| deferred | the refolds | 2,480 | blocked on the corrected MSAs |
+| stage | what | units | consumer | writes to |
+|---|---|---|---|---|
+| 1 | FoldBench top-off | 31 of 612 done | `fbtop_0/1/3` | `foldbench_baseline_remaining_folds/` |
+| 2 | training cache | 733 | `tcache_0/1/3`, `sabdab_train` | `training/fold_regen/` |
+| 3 | validation | 300 | `vfold_0/1/3`, `sabdab_val2` | `validation/fold_regen/` |
+| deferred | the refolds | 2,480 | blocked on the corrected MSAs | -- |
+
+### Why stages 2 and 3 write to a fresh root
+
+`folder.py` never reaches the folding path for a unit that already has poses or scores: it returns
+`"skipped"` at `folder.py:931` when every interface is scored, and `"rescored"` at `:968` when
+`saved_run_dir` finds a finished pose directory. Neither path runs inference, so neither writes a
+trunk -- and the trunk is the artefact this phase exists to produce.
+
+| queue | units with poses/scores already on disk | would hang at |
+|---|---|---|
+| training, 733 | 73 over 8 structures (60 with poses AND scores, 13 poses only) | 660/733 |
+| validation, 300 | 300 over 3 structures (all with poses AND scores) | 0/300 |
+
+Deleting the old poses would not have fixed it: 60 of the 73 also carry score rows, so they would
+still return `"skipped"` on the csv alone. And a new trunk must not be paired with an old pose --
+repeating a seed does not reproduce its poses, one has gone from DockQ 0.022 to 0.644 on a repeat --
+so the regenerated poses and their trunks go into one fresh tree together, and nothing is deleted.
+`phase_j_build_cache.py:84` already refuses a (pdb, seed) with two finished pose directories rather
+than guessing, so a same-root refold would have failed the cache build regardless. It takes
+`--fold`, so each root is built separately and each is internally consistent.
 
 `shell_scripts/watch_foldbench_then_training.sh` drives all three stages unattended and remediates
 each: it relaunches a dead worker after `reconcile_stale_claims.py` and flags a stall every 45 min.
@@ -84,11 +104,22 @@ is intact, so the decision stays reversible either way.
 
 ## Not done
 
-| item | state |
-|---|---|
-| `phase_j_build_cache.py`, `phase_j_replay.py` | not written; the replay gates training on the cache |
-| the confidence-head training loop | does not exist |
-| `phase_i_check.py` | reports COMPLETE when a job is absent from pool.csv; accepts NaN coords and bad trunk shapes |
-| phases D/E | leave READY markers on a die path |
-| J1/J3 entity+subchain rebuild | 9 split single-chain constructs, `reviews/round5_2026-10-13_phasej.md` |
-| 7ubr H, 9czd, 9wsv H/L | no antibody MSA was ever built; drop or build before they can fold |
+Implementation status and validation status are different things and are separated here.
+
+| item | implemented | validated |
+|---|---|---|
+| `phase_j_build_cache.py` | yes, 593 lines | not run over the full cache |
+| `phase_j_replay.py` | yes, 368 lines | not run; it is what gates training on the cache |
+| the confidence-head training loop | no | -- |
+| `phase_i_check.py` | yes | NO: reports COMPLETE when a job is absent from pool.csv, and its cache validator accepts NaN coordinates and bad trunk shapes |
+| phases D/E READY markers | yes | NO: left on a die path, open since review round 2 |
+| J1/J3 entity+subchain rebuild | no | 9 split single-chain constructs, `reviews/round5_2026-10-13_phasej.md` |
+
+CORRECTION, 11:40 PM ET: an earlier revision of this file claimed 7ubr, 9czd and 9wsv had no
+antibody MSA. They do. All three resolve every chain through the path their job carries --
+`c577_9wsx_H_506bac`, `c163_9cza_H_7280af`, `c163_7udh_H_9e04f9`. The claim came from globbing for
+the pdb id in the MSA directory name, which is wrong because a directory is named after whichever
+structure first contributed that sequence; the same mistake also reported seven group-A structures
+as MSA-less. `phase_j_queue_now.py` now checks the job's own paths, and a proteinChain carrying
+neither `pairedMsaPath` nor `unpairedMsaPath` counts as missing rather than passing through the
+loop untested. No group-A structure fails that check: all 74 have every MSA path present.
