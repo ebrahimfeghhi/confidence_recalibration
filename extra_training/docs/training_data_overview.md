@@ -69,10 +69,30 @@ eligible post-cutoff structure in the PDB.
 
 | | |
 |---|---|
+| **source dataset** | **SAbDab2 Machine Learning Dataset v0.2.0**, Oxford Protein Informatics Group. Zenodo record [22019991](https://zenodo.org/records/22019991), concept DOI [10.5281/zenodo.20083994](https://doi.org/10.5281/zenodo.20083994). `splits.tar.gz`, 889,347,536 bytes, md5 `ada2fdd573418877d7eaa87afe92044e`, published 2026-08-20 |
 | pool table | `data/zenodo_splits/splits_final/abag_split.csv` (15,810 instances) |
 | cluster lists | `train_val_splits/train_clusters.csv`, `train_val_splits/val_clusters.csv`, `train_val_splits/excluded_homolog_clusters.csv` |
 | fold queues | `training/jobs/manifest.csv`, `validation/jobs/manifest.csv` (both carry per-structure `deposited` and `post_cutoff`) |
 | how the clusters were chosen | `phases/README.md`, `phases/phase_a_define_train_set.py`, `phases/phase_b_define_val_clusters.py` |
+
+### A NEWER RELEASE EXISTS AND WE ARE NOT ON IT
+
+| version | record | published | `splits.tar.gz` |
+|---|---|---|---|
+| 0.1.0 | 20083995 | 2026-06-15 | 876,381,859 B |
+| **0.2.0 — what this project uses** | **22019991** | **2026-08-20** | 889,347,536 B |
+| 0.3.0 | 23343734 | 2026-10-13 | 958,679,981 B |
+
+Which version we hold is NOT recorded in the data directory itself: there is no README, version file
+or retained tarball under `SAbDab2_data/`, so the md5 above cannot be re-verified against what was
+actually downloaded. The attribution rests on this project's own note plus the file mtimes inside
+the extracted tree, 2026-08-18, two days before v0.2.0 was published -- consistent with the authors
+building the files then uploading.
+
+Not upgrading, and it does not invalidate anything: the authors state "unless otherwise noted,
+splits are backward-compatible, allowing models trained on previously published versions of this
+dataset to be benchmarked on the most recent test split." The v0.3.0 record carries NO changelog or
+release notes, so what changed is unknown. Worth revisiting before the write-up, not mid-run.
 
 ## The validation set
 

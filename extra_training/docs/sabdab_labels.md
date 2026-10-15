@@ -79,14 +79,31 @@ second-order, and testable on the validation split after training.
 ORIGINAL queries, which needs no MSA rebuild and runs immediately, rather than wait on the
 corrected-query path (96 GB re-fetch, ~700 GB envdb, effectively one-shot).
 
+## The trimming is deliberate, and the authors say so
+
+Confirmed from the Zenodo record rather than inferred from our measurements. SAbDab2's own
+description of what each structure file contains:
+
+> "Each structure file contains a single paired-chain or single-chain antibody, **cropped to the
+> variable region**, alongside any antigen chains."
+
+So the 50-72% coverage measured above is the dataset working as designed, not a defect, and the
+constant domain is out of scope for the reference antibody-antigen ML set by the authors' own
+decision. That is the external check this document previously said it lacked.
+
+Version in use: **v0.2.0** (Zenodo 22019991, published 2026-08-20). **v0.3.0** was published
+2026-10-13 (record 23343734) and we are not on it; its record carries no changelog, and the authors
+state splits are backward-compatible across versions, so nothing here is invalidated. See
+`training_data_overview.md` for the full citation and the version table.
+
 ## Open, and not traced
 
 **Why** SAbDab2's sequence table differs from RCSB's SEQRES in those ~25% of cases -- a curation
 choice, a different construct record, or something else -- has never been investigated. That is the
-actual origin of this whole issue. No README or download URL is recorded anywhere under
-`SAbDab2_data/`; the only provenance in the repo is
-`data/zenodo_splits/splits_final/abag_split.csv`, 15,810 instances, i.e. a Zenodo deposit. Whether
-SAbDab2 documents the trimming as deliberate could not be checked offline.
+actual origin of this whole issue. No README or download URL is recorded under `SAbDab2_data/` itself, though
+`cached_training.md` does name the version -- an earlier revision of this file wrongly said no
+provenance existed anywhere. The trimming question IS answered by the Zenodo description, quoted
+above; what remains unanswered is why their sequence TABLE differs from RCSB's SEQRES.
 
 ## Claims of mine that were wrong on the way here
 
