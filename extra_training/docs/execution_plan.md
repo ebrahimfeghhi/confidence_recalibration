@@ -23,12 +23,19 @@ Both built by `phases/phase_j_queue_now.py` (`--apply` writes; without it only c
 Driven by `shell_scripts/watch_train_val_then_foldbench.sh` (tmux `fbwatch`).
 `watch_foldbench_then_training.sh` is SUPERSEDED and must not be run.
 
-| stage | what | units | measured | consumer | writes to |
-|---|---|---|---|---|---|
-| 1 | training cache | 733 | 5.2 h | `tcache_0/1/3`, `sabdab_train` | `training/fold_regen/` |
-| 2 | validation | 300 | 2.6 h | `vfold_0/1/3`, `sabdab_val2` | `validation/fold_regen/` |
-| 3 | FoldBench top-off | 576 of 612 left | ~18.7 h | `fbtop_0/1/3`, `foldbench` | `foldbench_baseline_remaining_folds/` |
-| deferred | the refolds | 2,480 | -- | blocked on the corrected MSAs | -- |
+STATUS 2026-10-15 7:05 AM ET: stages 1 and 2 are COMPLETE. See
+`docs/overnight_2026-10-15_concerns.md` for the result and the four open concerns.
+
+| stage | what | units | done | writes to |
+|---|---|---|---|---|
+| 1 | training cache | 723 | **723/723** in ~5.5 h | `training/fold_regen/` (264 GB) |
+| 2 | validation | 300 | **300/300** | `validation/fold_regen/` (23 GB) |
+| 3 | FoldBench top-off | 612 | 58/612, running | `foldbench_baseline_remaining_folds/` |
+| deferred | the refolds | 2,480 | parked, see concern 3 | -- |
+
+Stage 1's target is 723, not the 733 queued: 9mx1 is 2,941 residues and protenix-v2 refuses
+`n_token > 2560`, so its 10 units were removed to `training/fold_regen/skipped_unfoldable.csv`.
+Left in, the stage could only reach 723 of 733 and would never have confirmed completion.
 
 ### Why this order, and what the first ETA got wrong
 
