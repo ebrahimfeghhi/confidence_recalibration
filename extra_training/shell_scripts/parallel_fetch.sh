@@ -36,6 +36,44 @@ if ls "$D"/p* >/dev/null 2>&1; then
     say "existing parts found; verifying them against the server before resuming"
     bash "$(dirname "${BASH_SOURCE[0]}")/verify_parts.sh" "$URL" "$D" "$TOTAL" "$N"         || { say "STOP: a part holds the wrong data. Delete the parts it named and re-run."; exit 1; }
 fi
+# COUNT WHAT IS ACTUALLY LEFT BEFORE LAUNCHING ANYTHING. The first version launched one connection
+# per INCOMPLETE PART and only redistributed after those finished -- so on a resume with 2 parts left
+# it ran 2 connections and the redistribution loop below was dead code, reached when there was
+# nothing left to redistribute. 6 of 8 connections idle while 10 GiB remained, on a server that
+# throttles per connection. The work has to be sized from the remaining BYTES, not the part count.
+nshort_pre=0
+for i in $(seq 0 $((N-1))); do
+    s=$(( i * CH )); e=$(( s + CH - 1 )); [ "$e" -ge "$TOTAL" ] && e=$(( TOTAL - 1 ))
+    w=$(( e - s + 1 )); h=0; [ -s "$D/p$i" ] && h=$(stat -c %s "$D/p$i")
+    [ "$h" -lt "$w" ] && nshort_pre=$(( nshort_pre + 1 ))
+done
+if [ "$nshort_pre" -gt 0 ] && [ "$nshort_pre" -lt "$N" ]; then
+    say "$nshort_pre of $N part(s) incomplete -- splitting their remaining ranges across all $N"
+    pids=""
+    per=$(( N / nshort_pre )); [ "$per" -lt 1 ] && per=1
+    for i in $(seq 0 $((N-1))); do
+        s=$(( i * CH )); e=$(( s + CH - 1 )); [ "$e" -ge "$TOTAL" ] && e=$(( TOTAL - 1 ))
+        w=$(( e - s + 1 )); h=0; [ -s "$D/p$i" ] && h=$(stat -c %s "$D/p$i")
+        [ "$h" -ge "$w" ] && continue
+        rs=$(( s + h )); left=$(( e - rs + 1 )); sub=$(( (left + per - 1) / per ))
+        for k in $(seq 0 $((per-1))); do
+            a=$(( rs + k * sub )); b=$(( a + sub - 1 )); [ "$b" -gt "$e" ] && b=$e
+            [ "$a" -gt "$e" ] && continue
+            f="$D/p$i.sub$k"; sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
+            [ "$sh" -ge "$sw" ] && continue
+            ( curl -sL --fail --retry 8 --retry-delay 15 -r "$(( a + sh ))-$b" "$URL" >> "$f" ) &
+            pids="$pids $!"
+        done
+    done
+    for pp in $pids; do wait "$pp" || true; done
+    for i in $(seq 0 $((N-1))); do
+        for k in $(seq 0 $((per-1))); do
+            f="$D/p$i.sub$k"
+            [ -s "$f" ] && { cat "$f" >> "$D/p$i" && rm -f "$f"; }
+        done
+    done
+fi
+
 pids=""
 for i in $(seq 0 $((N-1))); do
     s=$(( i * CH )); e=$(( s + CH - 1 )); [ "$e" -ge "$TOTAL" ] && e=$(( TOTAL - 1 ))
@@ -61,6 +99,56 @@ for i in $(seq 0 $((N-1))); do
 done
 fail=0
 for p in $pids; do wait "$p" || fail=1; done
+
+# REDISTRIBUTE, rather than letting finished connections idle. The first version launched one
+# connection per chunk and never reassigned them, so as chunks completed their throughput was simply
+# lost: 8 connections at 41 MB/s decayed to 2 at 2 MB/s with 10 GiB still to fetch, turning four
+# minutes into an hour. The server throttles PER CONNECTION, so the fix is to keep N of them busy.
+#
+# Each incomplete part's REMAINING range is split across the connections the finished parts freed,
+# fetched into sub-files, then appended in order. Every sub-range is absolute, so appending in order
+# reconstructs the part exactly -- the same property that makes the resume correct.
+round=0
+while :; do
+    short=""
+    for i in $(seq 0 $((N-1))); do
+        s=$(( i * CH )); e=$(( s + CH - 1 )); [ "$e" -ge "$TOTAL" ] && e=$(( TOTAL - 1 ))
+        want=$(( e - s + 1 )); have=0; [ -s "$D/p$i" ] && have=$(stat -c %s "$D/p$i")
+        [ "$have" -lt "$want" ] && short="$short $i"
+    done
+    [ -n "$short" ] || break
+    round=$(( round + 1 ))
+    [ "$round" -gt 12 ] && { say "STOP: still short after $round redistribution rounds"; exit 1; }
+    nshort=$(echo $short | wc -w)
+    per=$(( N / nshort )); [ "$per" -lt 1 ] && per=1
+    say "round $round: $nshort part(s) short; $per connection(s) each"
+    pids=""
+    for i in $short; do
+        s=$(( i * CH )); e=$(( s + CH - 1 )); [ "$e" -ge "$TOTAL" ] && e=$(( TOTAL - 1 ))
+        have=0; [ -s "$D/p$i" ] && have=$(stat -c %s "$D/p$i")
+        rs=$(( s + have )); left=$(( e - rs + 1 ))
+        [ "$left" -le 0 ] && continue
+        sub=$(( (left + per - 1) / per ))
+        for k in $(seq 0 $((per-1))); do
+            a=$(( rs + k * sub )); b=$(( a + sub - 1 )); [ "$b" -gt "$e" ] && b=$e
+            [ "$a" -gt "$e" ] && continue
+            f="$D/p$i.sub$k"
+            sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
+            [ "$sh" -ge "$sw" ] && continue
+            ( curl -sL --fail --retry 8 --retry-delay 15 -r "$(( a + sh ))-$b" "$URL" >> "$f" ) &
+            pids="$pids $!"
+        done
+    done
+    for p in $pids; do wait "$p" || fail=1; done
+    # APPEND THE SUB-FILES IN ORDER. Out of order would corrupt the part silently, so the loop is
+    # over k ascending and each sub-file is removed only once appended.
+    for i in $short; do
+        for k in $(seq 0 $((per-1))); do
+            f="$D/p$i.sub$k"
+            [ -s "$f" ] && { cat "$f" >> "$D/p$i" && rm -f "$f"; }
+        done
+    done
+done
 [ "$fail" -eq 0 ] || { say "STOP: a connection failed; re-run to resume"; exit 1; }
 
 for i in $(seq 0 $((N-1))); do
