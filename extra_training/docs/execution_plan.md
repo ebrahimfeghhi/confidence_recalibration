@@ -75,11 +75,28 @@ Controls: a fabricated trunk with no poses is reported `trunk but NO finished po
 rows -- a real pre-existing gap, e.g. `10op_FN` has zero samples on every seed and `7sk4` is
 incomplete on 8 consecutive seeds.
 
-Because of those, the check cannot be a strict AND with no escape: a partially scored unit keeps its
-claim by design and is never retried, so the handoff would hang on it. A stage therefore also ends
-when the completed count has not moved for `STALL_POLLS` (9 polls, 45 min) while all three workers
-are alive, and the stragglers are then NAMED in the log. Claim count is not a liveness signal --
-claims persist after success, 3,323 against 3,097 trunks -- so progress is the completed count.
+### Nothing is torn down without confirmed completion
+
+A stage that does not confirm completion **stops the watcher and leaves its workers running**. The
+return code was previously discarded and `tmux kill-session` ran unconditionally, so a stage that
+gave up killed workers that might each have been mid-fold -- and a killed fold's poses do not
+reproduce, so that is unrecoverable work lost, strictly worse than waiting. Resuming is re-running
+the script. This applies to all three stages, including FoldBench: its loop breaks on a POSE count,
+and `folder.py:1074` writes `run.json` before `finish_unit` scores the unit, deferred to a
+background thread under `--overlap-scoring`, so the count reaches 612 while the last folds are still
+scoring. Stage 1's teardown is gated on `--no-trunk` completeness (FoldBench dumps no trunks).
+
+A flat completed count is also not evidence of an idle worker. Three workers can each be part-way
+through a long fold; measured, the slowest fold here is 1,208 s on FoldBench and 843 s on the
+training cache, none over 2,700 s, but nothing guarantees a larger complex will not exceed the
+window. So the give-up additionally requires that NO worker log has been written inside it -- a log
+written means a fold is running. Claim count cannot serve as the liveness signal: claims persist
+after success, 3,323 against 3,097 trunks.
+
+The escape exists because some units never score completely: `10op_FN` has zero samples on every
+seed, `7sk4` is incomplete on 8 consecutive seeds, and a partially scored unit keeps its claim by
+design so it is never retried. Without an escape the handoff would hang on those -- but the escape
+now only stops supervision, never kills anything.
 
 ## Disk
 

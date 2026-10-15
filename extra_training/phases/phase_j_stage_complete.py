@@ -40,6 +40,13 @@ def main():
     ap.add_argument("--dataset", required=True, choices=paths.DATASET_NAMES)
     ap.add_argument("--nsample", type=int, default=5)
     ap.add_argument("--pool", default="", help="interface registry; default the dataset's")
+    ap.add_argument("--no-trunk", action="store_true",
+                    help="do not require a trunk npz. FoldBench folds dump no trunks, so for that "
+                         "stage complete means poses plus every score row. The ordering problem is "
+                         "the same there: folder.py:1074 writes run.json BEFORE finish_unit scores "
+                         "the unit, and under --overlap-scoring the scoring is deferred to a "
+                         "background thread, so a pose count reaches the queue length while the "
+                         "last folds are still being scored.")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()
 
@@ -65,11 +72,16 @@ def main():
         want = sorted(ifaces.get(pdb, ()))
         scored = bool(want) and all(iface_scored(rows_done, i, seed, arm, a.nsample) for i in want)
 
+        # The trunk requirement is OPTIONAL, the rest is not. Written as one if/elif chain with
+        # `if a.no_trunk: pass` in front, the chain short-circuited on that first branch and skipped
+        # every remaining check: FoldBench came back 0 of 612 complete with 0 in every failure
+        # bucket, which cannot be true of any unit. The trunk test is now a separate statement.
         why = None
-        if not os.path.exists(trunk):
+        if not a.no_trunk and not os.path.exists(trunk):
             no_trunk += 1; why = "no trunk"
         elif len(pdirs) == 0:
-            no_pose += 1; why = "trunk but NO finished pose dir"
+            no_pose += 1
+            why = "NO finished pose dir" if a.no_trunk else "trunk but NO finished pose dir"
         elif len(pdirs) > 1:
             bad_pose += 1; why = f"{len(pdirs)} finished pose dirs (build_cache will refuse)"
         elif not scored:
@@ -79,9 +91,11 @@ def main():
         if why:
             pending.append((pdb, seed, why))
 
-    print(f"{a.fold}: {done}/{n} units COMPLETE (trunk + one finished pose dir + all score rows)")
+    what = "one finished pose dir + all score rows" if a.no_trunk else \
+           "trunk + one finished pose dir + all score rows"
+    print(f"{a.fold}: {done}/{n} units COMPLETE ({what})")
     print(f"  missing trunk                 : {no_trunk}")
-    print(f"  trunk, no finished pose dir   : {no_pose}")
+    print(f"  {'no finished pose dir         ' if a.no_trunk else 'trunk, no finished pose dir  '} : {no_pose}")
     print(f"  more than one pose dir        : {bad_pose}")
     print(f"  poses, scores incomplete      : {unscored}")
     if a.verbose:

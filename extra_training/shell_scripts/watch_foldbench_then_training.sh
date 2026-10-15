@@ -115,6 +115,24 @@ while :; do
     sleep 300
 done
 
+# STAGE 1 HAS THE SAME ORDERING PROBLEM, so its teardown gets the same gate. The loop above breaks
+# on a POSE count, and folder.py:1074 writes run.json before finish_unit scores the unit -- deferred
+# to a background thread under --overlap-scoring -- so the count reaches 612 while the last folds
+# are still scoring. Killing then loses those score rows. Less costly than the training case, where
+# a killed fold loses a trunk that no rescore can rebuild, but the same bug and the same fix.
+# FoldBench dumps no trunks, hence --no-trunk.
+fb_done=0
+for i in $(seq 1 12); do
+    if $PY $R/extra_training/phases/phase_j_stage_complete.py --fold $B --queue $B/queue.tsv \
+         --dataset foldbench --nsample 5 --no-trunk >> "$LOG" 2>&1; then fb_done=1; break; fi
+    say "FoldBench: poses complete but scoring still finishing; waiting (check $i/12)"
+    sleep 120
+done
+if [ "$fb_done" -ne 1 ]; then
+    say "FoldBench did NOT confirm poses+scores complete. LEAVING THE fbtop WORKERS RUNNING."
+    say "No stage switch, nothing killed. Investigate, then re-run this script to resume."
+    exit 1
+fi
 say "handing the cards to the training queue: $TR_TOTAL units over 74 structures"
 for g in $GPUS; do tmux kill-session -t fbtop_$g 2>/dev/null; done
 sleep 10
@@ -141,9 +159,20 @@ watch_stage(){   # $1 label  $2 fold dir  $3 queue  $4 total  $5 session prefix 
         elif [ "$n" -eq "$last" ]; then
             stalled=$((stalled+1))
             [ $((stalled % 3)) -eq 0 ] && say "$1: no newly completed unit for $((stalled*5)) min at $n/$4"
-            if [ "$stalled" -ge "$STALL_POLLS" ]; then
-                say "$1: GIVING UP on the remainder after $((stalled*5)) min with 3 workers alive."
-                say "$1: $n of $4 complete. The units that never completed, and why:"
+            # A STALLED COUNT IS NOT AN IDLE WORKER. The completed count cannot move while three
+            # workers are each part-way through a long fold, and the slowest observed here is 1,208 s
+            # on FoldBench and 843 s on the training cache -- but nothing guarantees a bigger complex
+            # will not exceed the window, and three workers starting long folds together stalls the
+            # count for as long as the longest of them. A worker log written inside the window means
+            # a fold is RUNNING, so the stage is not stalled however flat the count looks.
+            local fresh=0 lf
+            for lf in "$2"/w*.log; do
+                [ -f "$lf" ] || continue
+                [ $(( $(date +%s) - $(stat -c %Y "$lf") )) -lt $(( STALL_POLLS * 300 )) ] && fresh=1
+            done
+            if [ "$stalled" -ge "$STALL_POLLS" ] && [ "$fresh" -eq 0 ]; then
+                say "$1: no completed unit AND no worker log written for $((stalled*5)) min."
+                say "$1: $n of $4 complete. NOT switching stages and NOT killing anything."
                 $PY $R/extra_training/phases/phase_j_stage_complete.py --fold "$2" --queue "$3" \
                     --dataset "$6" --nsample 5 --verbose >> "$LOG" 2>&1
                 return 2
@@ -155,14 +184,27 @@ watch_stage(){   # $1 label  $2 fold dir  $3 queue  $4 total  $5 session prefix 
     done
 }
 
-watch_stage "training cache" "$EG" "$EG/queue.tsv" "$TR_TOTAL" tcache sabdab_train
+# A STAGE THAT DID NOT COMPLETE MUST NOT BE TORN DOWN. The return code was previously discarded
+# and `tmux kill-session -t tcache_$g` ran unconditionally, so a stage that gave up killed workers
+# that might each have been mid-fold -- and a killed fold's poses do not reproduce, so that is
+# unrecoverable work lost, strictly worse than waiting. Logging the unfinished units does not make
+# terminating them safe. The watcher now STOPS and leaves the workers running; stages switch only
+# after confirmed completion, and resuming is just re-running this script.
+if ! watch_stage "training cache" "$EG" "$EG/queue.tsv" "$TR_TOTAL" tcache sabdab_train; then
+    say "training cache did NOT confirm completion. LEAVING THE tcache WORKERS RUNNING."
+    say "No stage switch, nothing killed. Investigate, then re-run this script to resume."
+    exit 1
+fi
 
 say "handing the cards to the VALIDATION queue: $VA_TOTAL units over 3 structures"
 for g in $GPUS; do tmux kill-session -t tcache_$g 2>/dev/null; done
 sleep 10
 $PY $R/run_model/reconcile_stale_claims.py $VG --dataset sabdab_val2 --nsample 5 >> "$LOG" 2>&1
 for g in $GPUS; do launch_va $g; say "  launched vfold_$g"; done
-watch_stage "validation" "$VG" "$VG/queue.tsv" "$VA_TOTAL" vfold sabdab_val2
+if ! watch_stage "validation" "$VG" "$VG/queue.tsv" "$VA_TOTAL" vfold sabdab_val2; then
+    say "validation did NOT confirm completion. LEAVING THE vfold WORKERS RUNNING, nothing killed."
+    exit 1
+fi
 
 say "ALL RUNNABLE WORK DONE. The refolds are NOT queued: 1,180 training and 1,300 validation units"
 say "wait on the corrected MSAs (deferred_refold.csv in each fold dir). GPU holders are untouched."
