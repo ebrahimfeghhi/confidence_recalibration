@@ -229,8 +229,8 @@ pdb,chain1,chain2,ref_contacts_5A,roles
 8dwx,H,M,39,ag0-L
 8dwy,H,M,143,ag0-H
 8dwy,H,N,43,ag0-L
-8dzv,B,D,0,H-ag0
-8dzv,A,D,0,L-ag0
+8dzv,B,D,369,H-ag0
+8dzv,A,D,239,L-ag0
 8e2u,A,C,1302,ag0-H
 8e2u,A,B,449,ag0-L
 8e6j,D,F,549,ag0-H

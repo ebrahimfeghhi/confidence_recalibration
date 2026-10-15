@@ -180,3 +180,57 @@ for and what fails here. Refused rather than guessed.
 constructed. It is NOT the label and cache validation still owed before training:
 `phase_j_replay.py` has never been run, and `phase_i_check.py`'s validator still accepts NaN
 coordinates and bad trunk shapes.
+
+---
+
+# Pool switched to crystal-measured interfaces, 2026-10-15 9:40 AM ET
+
+Approved: base the interface set on the crystal rather than on a cross product.
+
+| pool | was | now | removed |
+|---|---|---|---|
+| training | 1,137 | **1,039** | 98 |
+| validation | 92 | **92** | 0 |
+
+The cross-product originals are kept as `pool.crossproduct.csv` in each fold dir; per-pair contact
+counts are in `train_val_splits/{pool,val_pool}_reference_contacts.csv` and the removed pairs in
+`train_val_splits/{training,validation}_phantom_pairs.csv`.
+
+## A measurement bug found by its own safety check, and corrected
+
+The first attempt removed 100 training pairs and 2 validation pairs. A check for whether any
+ALREADY SCORED row referenced a removed interface came back with **1,100 such rows**, which
+contradicted the claim that phantom pairs never score. The contradiction was real and the
+measurement was wrong:
+
+    8dzv chain C:  12 residues -> 0 after remove_ligands_and_waters()   <-- the ANTIGEN
+    29tj chain P:  10 residues -> 0 after remove_ligands_and_waters()   <-- the ANTIGEN
+
+`gemmi.Structure.remove_ligands_and_waters()` classifies a short peptide antigen as a ligand and
+deletes it, so no contact involving it could be found and the pair looked phantom. Re-measured with
+`remove_waters()` alone:
+
+| | buggy | corrected |
+|---|---|---|
+| training phantoms | 100 | **98** |
+| validation phantoms | 2 | **0** |
+| false phantoms (had contacts all along) | -- | 2: 8dzv A-D and B-D |
+| newly phantom | -- | 0 |
+| **scored rows referencing a removed interface** | **1,100** | **0** |
+
+The last row is the point: the same check that caught the bug now passes, so the 98 are consistent
+with the scoring evidence rather than contradicting it.
+
+## Consequences for earlier claims in this file
+
+| claim | corrected |
+|---|---|
+| 100 phantom pairs over 81 structures | **98** |
+| validation had 2 phantom pairs | **0** -- both were the ligand-removal artefact |
+| "2 structures lose every interface: 8dzv, 8gpu" | **1: 8gpu.** 8dzv has real interfaces, scored up to DockQ 0.970 |
+| 27 of 31 never-scored pairs had zero contacts | still 27; none of those 31 involved a peptide antigen, checked |
+
+## Still true
+
+Structures removed from training by any of this: **0**. The only training structure lost remains
+9mx1, at 2,941 residues against protenix-v2's 2,560 ceiling.
