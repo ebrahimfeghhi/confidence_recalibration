@@ -282,19 +282,42 @@ def check_label(lc, lm, atoms, pdb, unit, tol=0.01, budget_atoms=0):
     # atoms and 7stz loses a whole 540-residue chain whose record claims 0 drops -- neither fits in
     # a budget of a few residues, so both still fail loudly.
     if budget_atoms and far <= budget_atoms:
-        out = []
+        out, masked_counts = [], []
+        tree = cKDTree(atoms)
         for i in range(len(lc)):
             m = lm[i].astype(bool).copy()
-            idx = np.flatnonzero(m)
-            kk = key(lc[i][m])
-            dd, _ = cKDTree(atoms).query(
-                np.array([[float(v) for v in t] for t in kk], dtype=np.float64), k=1)
-            # mark this pose's own worst-offending atoms unresolved. Done per pose by coordinate
-            # match rather than by index, because each pose's label is a permutation of the others.
-            worst = np.argsort(-dd, kind="stable")[:far]
-            m[idx[worst]] = False
+            idx = np.flatnonzero(m)                 # ORIGINAL atom indices of the resolved set
+            # THE QUERY MUST USE THE UNSORTED COORDINATES. This called key(), which SORTS, so `dd`
+            # came back in sorted order while `idx` was in original order -- and `idx[worst]` then
+            # mapped sorted positions onto original indices. Review round 7 reproduced the
+            # consequence: the invalid atom 100 A out was RETAINED and a legitimate atom was masked
+            # instead. The sort is correct for the permutation check above, which compares two sets;
+            # it is wrong here, where a position has to be identified.
+            pts_i = np.ascontiguousarray(lc[i][m], dtype=np.float64)
+            dd, _j = tree.query(pts_i, k=1)
+            bad = np.flatnonzero(dd > tol)          # positions WITHIN the resolved set
+            m[idx[bad]] = False
+            # ASSERT, do not trust. Every atom still marked resolved must now pass the same check
+            # the structure was refused for; if one does not, the masking did not do what it claims
+            # and a label would be trained on regardless.
+            left = np.flatnonzero(m)
+            if left.size:
+                dl, _ = tree.query(np.ascontiguousarray(lc[i][m], dtype=np.float64), k=1)
+                still = int((dl > tol).sum())
+                if still:
+                    raise ValueError(
+                        f"{pdb}/{unit}: after masking, {still} resolved label atom(s) of pose {i} "
+                        f"are STILL more than {tol} A from the job cif (worst {dl.max():.3f} A). "
+                        f"The masking did not remove what it was asked to.")
+            masked_counts.append(int(bad.size))
             out.append(m.astype(np.uint8))
-        return out, far
+        # every pose is a permutation of the same resolved set, so every pose must mask the same
+        # number of atoms; a difference means the per-pose correspondence is not what it claims
+        if len(set(masked_counts)) > 1:
+            raise ValueError(f"{pdb}/{unit}: masking removed {masked_counts} atoms across poses, "
+                             f"but every pose's label is a permutation of the same set, so the "
+                             f"counts must agree.")
+        return out, masked_counts[0] if masked_counts else 0
     raise ValueError(f"{pdb}/{unit}: {far} of {len(pts)} resolved label atoms are more than "
                      f"{tol} A from any atom of the job cif the label was built from "
                      f"(worst {d.max():.3f} A)"
