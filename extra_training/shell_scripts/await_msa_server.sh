@@ -70,6 +70,13 @@ tmux new-session -d -s msa_d "bash $R/extra_training/phases/phase_d_search_unire
 sleep 30
 if tmux has-session -t msa_d 2>/dev/null; then
     say "phase D launched (tmux msa_d); log $W/phase_d_corrected.log"
+    # HOLD THE LOCK FOR THE SEARCH'S LIFETIME, NOT THIS SCRIPT'S. The EXIT trap released it when
+    # this script returned -- about 30 seconds after launching phase D into tmux -- so the lock was
+    # gone while the search ran for hours, and the mirror build could have started underneath it.
+    # Waiting here makes the lock holder's lifetime the SEARCH's lifetime.
+    say "holding $LOCK until phase D finishes"
+    while tmux has-session -t msa_d 2>/dev/null; do sleep 60; done
+    say "phase D's session has gone; releasing the lock"
 else
     say "ESCALATE phase D exited within 30 s -- see $W/phase_d_corrected.outer.log"
     tail -5 "$W/phase_d_corrected.outer.log" >> "$LOG" 2>/dev/null

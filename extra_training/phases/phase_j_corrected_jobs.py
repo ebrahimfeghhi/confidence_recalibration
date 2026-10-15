@@ -36,6 +36,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 ACTIONABLE = "omission"
+# The files that ARE multiple-sequence alignments. hmmsearch.a3m is a template hit list.
+MSA_FILES = ("pairing.a3m", "non_pairing.a3m")
 BLOCKING = ("unresolved", "ambiguous", "linker?")
 
 
@@ -198,7 +200,11 @@ def main():
                     break
                 newp = os.path.join(a.msa_root, sub, base)
                 if not a.allow_missing_msa:
-                    bad = msa_mismatch(newp, new) if base.endswith(".a3m") else None
+                    # ONLY THE MSAs. hmmsearch.a3m also ends in .a3m but is a TEMPLATE file: its
+                    # first row is a PDB hit, not the query, so the validator rejected it and took
+                    # perfectly valid paired/unpaired MSAs down with it. Same trap as in
+                    # phase_j_remap_msa.py, which excludes those files by name for the same reason.
+                    bad = msa_mismatch(newp, new) if base in MSA_FILES else None
                     if not os.path.exists(newp):
                         why = (f"role {role}: {newp} does not exist. The corrected MSAs have not "
                                "been built, so this job cannot be folded yet. Pass "

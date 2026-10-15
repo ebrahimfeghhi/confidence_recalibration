@@ -28,15 +28,35 @@ if [ -s "$OUT" ] && [ "$(stat -c %s "$OUT")" = "$TOTAL" ]; then
 fi
 D="$OUT.parts"; mkdir -p "$D"
 CH=$(( (TOTAL + N - 1) / N ))
+
+# VERIFY WHAT IS ALREADY THERE BEFORE BUILDING ON IT. A chunk from an earlier run may have been
+# fetched with the broken `-C - -r` logic, which produces a plausible byte count of the wrong data,
+# so resuming on top of it would extend a corrupt chunk and every size check would still pass.
+if ls "$D"/p* >/dev/null 2>&1; then
+    say "existing parts found; verifying them against the server before resuming"
+    bash "$(dirname "${BASH_SOURCE[0]}")/verify_parts.sh" "$URL" "$D" "$TOTAL" "$N"         || { say "STOP: a part holds the wrong data. Delete the parts it named and re-run."; exit 1; }
+fi
 pids=""
 for i in $(seq 0 $((N-1))); do
     s=$(( i * CH )); e=$(( s + CH - 1 )); [ "$e" -ge "$TOTAL" ] && e=$(( TOTAL - 1 ))
     want=$(( e - s + 1 ))
     part="$D/p$i"
-    # RESUME PER PART: -C - continues this part from wherever it stopped, so an interrupted run does
-    # not restart 96 GB. The range is absolute, so a resumed part still lands at the right offset.
-    if [ -s "$part" ] && [ "$(stat -c %s "$part")" = "$want" ]; then continue; fi
-    ( curl -sL --fail --retry 8 --retry-delay 15 -C - -r "$s-$e" -o "$part" "$URL" ) &
+    # RESUME BY ABSOLUTE RANGE, NEVER WITH -C -. `curl -C - -r "$s-$e"` is broken for this: on a
+    # partial part curl REWRITES the Range header from the LOCAL file offset, so a part that had
+    # 100 bytes requested "bytes=100-" when it needed "bytes=1124-2047". It would silently fetch the
+    # wrong region of the file, and every size check downstream would still pass because the byte
+    # COUNT comes out right. A fresh part is unaffected, which is why this survived the first run.
+    #
+    # So the offset is computed here -- chunk start plus what the part already holds -- and curl is
+    # given that absolute range with no -C at all, appending to the part.
+    have=0
+    [ -s "$part" ] && have=$(stat -c %s "$part")
+    if [ "$have" -ge "$want" ]; then
+        [ "$have" -eq "$want" ] || { say "STOP: $part is $have bytes, over the $want requested"; exit 1; }
+        continue
+    fi
+    rs=$(( s + have ))
+    ( curl -sL --fail --retry 8 --retry-delay 15 -r "$rs-$e" "$URL" >> "$part" ) &
     pids="$pids $!"
 done
 fail=0
