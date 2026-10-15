@@ -18,7 +18,7 @@ W=$R/extra_training/building_msa/work
 Q=$R/extra_training/building_msa/queries_corrected/query.fasta
 URL=https://opendata.mmseqs.org/colabfold/uniref30_2302.db.tar.gz
 LOG=$W/await_msa_server.log
-INTERVAL="${INTERVAL:-900}"          # 15 min
+INTERVAL="${INTERVAL:-300}"      # 5 min: the canonical host is the simpler path, so catch it early
 MIN_BYTES="${MIN_BYTES:-1000000000}" # a real tarball is hundreds of GB; 1 GB is a generous floor
 say(){ echo "[$(date '+%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
@@ -33,7 +33,7 @@ while :; do
         say "SERVER BACK after $tries check(s): HTTP $code, content-length $len"
         break
     fi
-    [ $((tries % 4)) -eq 1 ] && say "still down: HTTP ${code:-?}, content-length ${len:-?}"
+    [ $((tries % 12)) -eq 1 ] && say "still down: HTTP ${code:-?}, content-length ${len:-?}"
     sleep "$INTERVAL"
 done
 

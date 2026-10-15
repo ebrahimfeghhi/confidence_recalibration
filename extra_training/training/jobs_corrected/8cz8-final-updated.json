@@ -15,9 +15,9 @@
     "proteinChain": {
      "sequence": "DIQMTQSPSSLSASVGDRVTITCRSSQGIGSWLAWYQQKPEKAPQSLIYAASSLQSGVPSRFSGSGSGTDFTLTISNLQPEDFATYYCQQYNSYPLTFGGGTKVEIKGGGS",
      "count": 1,
-     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1685_8cz8_L_8fe038/pairing.a3m",
-     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1685_8cz8_L_8fe038/non_pairing.a3m",
-     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c1685_8cz8_L_8fe038/hmmsearch.a3m"
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa_corrected/c1685_8cz8_L_8fe038/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa_corrected/c1685_8cz8_L_8fe038/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa_corrected/c1685_8cz8_L_8fe038/hmmsearch.a3m"
     }
    },
    {

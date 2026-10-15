@@ -6,9 +6,9 @@
     "proteinChain": {
      "sequence": "EVQLLESGGGLVQPGGSLRLSCAASGFTFSERAMTWVRQAPGKGLEWVSSISGSGVKTYYADSVKGRFTISRDNSKNTLYLQMNSLRAEDTAVYYCAKTPSPKYVGSVFDLWGRGTLVTVSSASTKGPSVFPLAPSSKSTSGGTAALGCLVKDYFPEPVTVSWNSGALTSGVHTFPAVLQSSGLYSLSSVVTVPSSSLGTQTYICNVNHKPSNTKVDKKVE",
      "count": 1,
-     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c938_9pwn_H_13e773/pairing.a3m",
-     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c938_9pwn_H_13e773/non_pairing.a3m",
-     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa/c938_9pwn_H_13e773/hmmsearch.a3m"
+     "pairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa_corrected/c938_9pwn_H_13e773/pairing.a3m",
+     "unpairedMsaPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa_corrected/c938_9pwn_H_13e773/non_pairing.a3m",
+     "templatesPath": "/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa_corrected/c938_9pwn_H_13e773/hmmsearch.a3m"
     }
    },
    {

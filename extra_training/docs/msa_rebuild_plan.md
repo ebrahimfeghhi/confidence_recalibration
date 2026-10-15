@@ -1,6 +1,8 @@
 # Plan: rebuild the MSAs for the 155 corrected queries
 
-**For review.** Nothing here has run. Written 2026-10-14 after `opendata.mmseqs.org` went to HTTP 503.
+**Revision 2, 2026-10-14.** Revision 1 (`89b35118`) was reviewed and four execution defects were
+found. All four are corrected below, and verifying them turned up a fifth that invalidates half of
+revision 1's approach. Nothing in this plan has run.
 
 ## Why this is needed
 
@@ -9,104 +11,178 @@ residues (`train_val_splits/refold_internal_omissions*.csv`). Their corrected qu
 residues longer, and an a3m is one match column per query residue, so the stored alignments no longer
 describe the sequences. 155 unique changed sequences need new MSAs before those 2,850 folds can run.
 
-## The source: GWDG mirror, not a substitute database
+## THE BLOCKER REVISION 1 MISSED: the mirror has no prebuilt envdb
 
-`opendata.mmseqs.org` is 503 on every path. ColabFold's own `setup_databases.sh` offers the same
-releases from `wwwuser.gwdg.de/~compbiol/colabfold/` (the Söding lab's host, reached via two
-redirects to `wwwuser.gwdguser.de`), and both files resolve:
+`opendata.mmseqs.org` is 503 on every path. The GWDG mirror
+(`wwwuser.gwdg.de/~compbiol/colabfold/`, the Söding lab's host) serves the same releases, but only in
+the TSV packaging:
 
-| file | content-length | verified |
+| file | mirror | status |
 |---|---|---|
-| `uniref30_2302.tar.gz` | 102,918,187,842 | HTTP 200; members `uniref30_2302.tsv` (2023-05-15) + `uniref30_2302.md5sum` |
-| `colabfold_envdb_202108.tar.gz` | 117,965,643,010 | HTTP 200 |
+| `uniref30_2302.tar.gz` | 102,918,187,842 bytes | **200** |
+| `colabfold_envdb_202108.tar.gz` | 117,965,643,010 bytes | **200** |
+| `uniref30_2302.db.tar.gz` | — | **404** |
+| `colabfold_envdb_202108.db.tar.gz` | — | **404** |
 
-Versions are `uniref30_2302` and `colabfold_envdb_202108` — **exactly** the releases the existing
-5,549 MSAs were built from. That was the hard constraint: a different release would make these 155
-alignments systematically different from everything they are compared against, and it would not
-announce itself.
+`setup_databases.sh` distributes both packagings of each release and says so itself: `${DB}.db.tar.gz`
+is the "new prebuilt ... don't require calling tsv2exprofiledb", `${DB}.tar.gz` the "old .tsv +
+tsv2exprofiledb" form. Our phases fetch the prebuilt one.
 
-### One real difference: TSV, not prebuilt
+**And the TSV form of envdb is a RECORDED FAILURE in this environment.**
+`phase_e_search_envdb.sh:116-119` exists because of it:
 
-`setup_databases.sh` distributes two packagings of the same release, and says so in its own comments:
+> THE PREBUILT DATABASE. setup_databases.sh defaults FAST_PREBUILT_DATABASES=1, which extracts
+> `${CFDB}.tar.gz` straight to MMseqs format and never calls tsv2exprofiledb. The URL above is the
+> .db.tar.gz for that reason: **the plain .tar.gz is the tsv form, and extracting it once produced
+> 265 GB that converted to nothing and still exited 0.**
 
-    ${DB}.db.tar.gz   "new prebuilt GPU+CPU databases, that don't require calling tsv2exprofiledb"
-    ${DB}.tar.gz      "old .tsv + tsv2exprofiledb databases"
+So the mirror can plausibly supply the uniref30 half and **cannot** supply the envdb half by any path
+this project has got working. Revision 1 presented the mirror as a complete substitute. It is not.
 
-Our `phase_d_search_uniref.sh` fetches the prebuilt one. The mirror has the TSV one, which needs
-`mmseqs tsv2exprofiledb` to become searchable. That is an extra CPU step of hours, not a different
-database — and it is a path this project has already taken: `building_msa/work/phase2_envdb.log`
-reads `building envdb (tsv2exprofiledb, index-free)`, and `tsv2exprofiledb` is in
-`quota_guard.sh`'s watch list.
+### What that leaves
 
-### A checksum check that failed, and why it was the wrong check
+| option | uniref30 | envdb | verdict |
+|---|---|---|---|
+| wait for `opendata.mmseqs.org` | prebuilt | prebuilt | **the only route to a complete MSA**; polled every 5 min |
+| GWDG mirror | TSV + `tsv2exprofiledb`, untested here | TSV, known to produce nothing | incomplete |
+| gap-padding (`phase_j_remap_msa.py`) | n/a | n/a | fallback; no aligned evidence at ~2% of positions |
 
-The archive ships `uniref30_2302.md5sum` for six members, two of which survived the deletion on our
-disk. Comparing them:
+A uniref30-only MSA is NOT a valid substitute: the existing 5,549 were built from both databases, so
+dropping envdb for these 155 makes them systematically shallower than everything they are compared
+against. The envdb pass is what the project's own phase E calls the source of "depth uniref30 cannot
+reach".
 
-| file | ours | the archive's |
+**Therefore: the mirror download is worth starting for uniref30 alone, because it is free while the
+GPUs work and it removes one of the two unknowns. It does not unblock the refold on its own.**
+
+## The four review defects, corrected
+
+### 1. Disk accounting was incoherent
+
+Revision 1 said "~950 GB peak" while also retaining 1,042 GB of databases. Both cannot be true.
+Properly enumerated, uniref30 from the TSV distribution:
+
+| item | GB | present at peak? |
 |---|---|---|
-| `uniref30_2302_db_taxonomy` | `83105388…` | `561357ac…` |
-| `uniref30_2302_db_mapping` | `f0b03428…` | `2b9d4e68…` |
+| archive `uniref30_2302.tar.gz` | 96 | yes, until extraction completes |
+| extracted TSVs (`.tsv`, `_h.tsv`, `_aln.tsv`, `_seq.tsv`) | ~420 | yes |
+| `tsv2exprofiledb` output (`_db_seq`, `_db_aln`, `_db_h`, …) | ~420 | yes, built alongside the TSVs |
+| conversion intermediates | unmeasured | yes |
+| **peak, uniref30 alone** | **~936 + intermediates** | |
+| then: delete archive and TSVs, keep the db | ~420 | |
+| envdb archive + extracted + db, same shape | ~700 | **cannot coexist with uniref30** |
 
-Neither matched, which looked alarming for about a minute. Resolved:
+Against 1,411 GB free, uniref30 alone fits with roughly 475 GB of headroom, and the unmeasured
+conversion intermediates come out of that. Both databases at once do not fit, which is what phase E
+already enforces. The 301 GB search index is NOT built — `MMSEQS_NO_INDEX=1`, as the original run
+used.
 
-* `_db_taxonomy` is byte-identical to the copy inside `uniref30_2302_newtaxonomy.tar.gz`, a separate
-  download `setup_databases.sh` applies specifically to this release to REPLACE the taxonomy. So
-  ours is the new taxonomy and the archive carries the old one. Expected.
-* `_db_mapping` is 2.7 GiB where the tarball's is 5.4 GiB, and inspecting the bytes settles it: ours
-  is BINARY (mmseqs-indexed, matching the `uniref30_2302_db.idx_mapping` symlink that points at it)
-  while both archives ship TSV TEXT (`350950050\t2034991\n`).
+### 2. `FREE_DB=0` throughout contradicts phase E
 
-So our files are build PRODUCTS and the archives ship SOURCE. Source checksums could never match a
-processed artifact; the comparison was badly chosen rather than informative. **The md5sums are still
-the right verification — applied to the extracted source files, which is where they belong.**
+`phase_e_search_envdb.sh:112` refuses to start when uniref30 is still present:
+
+    [ -s "$DB/uniref30_2302_db_seq" ] && die "uniref30 is still on disk; the two databases do not
+     both fit in the quota. Free uniref30 first (phase D's FREE_DB=1 does it)."
+
+So the setting is per phase, not global: **phase D runs with `FREE_DB=1`** so uniref30 is released
+when its search completes, and **phase E runs with `FREE_DB=0`** so envdb survives for phase F to be
+retried without a 118 GB re-download. Revision 1's blanket `FREE_DB=0` would have deadlocked at
+phase E.
+
+The consequence is that the uniref30 resume path matters after all: once phase D frees it, a failure
+in phase E cannot be repaired by re-running phase D without another 96 GB download. That is what the
+staging patch's `uniref.a3m` resume is for, and it has never been exercised twice.
+
+### 3. Phase F and the job paths were missing entirely
+
+Revision 1 went from the searches straight to folding. Two steps sit in between.
+
+**Phase F** (`phase_f_pair_and_split.py`) is what turns raw search output into `pairing.a3m` and
+`non_pairing.a3m` — taxonomy annotation and the paired/unpaired split. Without it there is no MSA in
+the form a job json references.
+
+**The job paths.** `phase_j_corrected_jobs.py` changed only `proteinChain.sequence`, leaving
+`pairedMsaPath`, `unpairedMsaPath` and `templatesPath` pointing into the OLD store. A corrected
+221-residue query would have been folded against a 214-column alignment built for the sequence it
+replaced — a length contradiction that is either rejected or absorbed silently. **Fixed**: those three
+keys are repointed into `mmcif_msa_corrected`, and a job whose corrected-role paths still resolve
+into the old store is refused.
+
+Verified over all 141 corrected jsons:
+
+| | count |
+|---|---|
+| corrected-role paths into the corrected store | 486 |
+| corrected-role paths still in the old store | **0** |
+| unchanged-role paths left in the old store | 825 — correct, those sequences never changed |
+
+That last row is the subtlety: only the corrected chains move. A complex has three chains and
+typically one is corrected; the others' alignments still describe them exactly.
+
+Fixing this exposed two bugs of my own, both recorded in the code: the gate ran AFTER the file was
+written, so a rejected job was already on disk; and it compared paths with a bare `startswith`, which
+matched `mmcif_msa_corrected` against `mmcif_msa` and rejected all 125 structures for pointing at a
+store they had just been moved out of.
+
+### 4. The unchanged-query control is now a required gate, and compares more than depth
+
+**Gate, before step 6.** Take one structure that is NOT being corrected, rebuild its MSA through the
+entire new path, and compare to its stored MSA on:
+
+| compared | pass condition |
+|---|---|
+| hit identities | the set of homolog accessions, not just how many |
+| depth | within a stated tolerance, with any loss attributed |
+| alignment coverage | per-column occupancy profile across the query |
+| taxonomy assignments | the taxid on each retained hit |
+| match columns | every row exactly `len(query)` |
+
+Same release names do not establish identical search results, and the existing uniref MSAs came from
+the PREBUILT database while these would come from the TSV build. If the control does not pass, the
+batch does not run.
 
 ## The plan
 
-| # | step | where | cost | gate |
-|---|---|---|---|---|
-| 1 | fetch `uniref30_2302.tar.gz` from the mirror | `tools/colabfold/db` | ~103 GB transfer | content-length ≥ 1 GB before accepting, then `tar -tzf` must list cleanly |
-| 2 | extract and verify against the bundled `md5sum` | same | ~450 GB on disk | every listed member must match; a mismatch stops the build |
-| 3 | `tsv2exprofiledb` to build the searchable db | same | hours CPU, working space | the data files must exist, not a `READY` marker |
-| 4 | apply `uniref30_2302_newtaxonomy.tar.gz` (already on disk, 1.97 GB) | same | minutes | taxonomy md5 must equal the copy we already have, `83105388…` |
-| 5 | `phase_d_search_uniref.sh` on the 155 corrected queries | `building_msa/work/msa_corrected_idx` | hours | `MIN_LONG_HIT_PCT`, as the original run used |
-| 6 | fetch and build envdb, then `phase_e_search_envdb.sh` | same | ~118 GB + hours | same shape of gate |
-| 7 | regenerate templates for the corrected queries (`phase_h_search_templates.py`) | `mmcif_msa_corrected` | CPU | date filter marker, as before |
-| 8 | smoke-test ONE structure end to end before the batch | — | one fold | `11zw`: 7 residues restored, masked in the label, flanks retained |
-| 9 | queue 2,850 refolds into `training/fold_corrected/` | GPUs | ~19 h | separate tree, so a same-seed refold cannot be joined to the old pool |
+| # | step | cost | gate |
+|---|---|---|---|
+| 1 | fetch `uniref30_2302.tar.gz` from the mirror | 96 GB transfer | content-length ≥ 1 GB, then `tar -tzf` lists cleanly |
+| 2 | extract, verify against the bundled `uniref30_2302.md5sum` | ~420 GB | every listed member matches; a mismatch stops the build |
+| 3 | `tsv2exprofiledb`, `MMSEQS_NO_INDEX=1` | hours CPU | the data files exist, never a `READY` marker |
+| 4 | apply `uniref30_2302_newtaxonomy.tar.gz` (on disk, 1.97 GB) | minutes | taxonomy md5 equals the copy we already hold, `83105388…` |
+| 5 | **CONTROL**: one unchanged query through steps 1-4 + phase D + F, compared as above | hours | all five rows pass |
+| 6 | `phase_d_search_uniref.sh` on the 155 corrected queries, `FREE_DB=1` | hours | `MIN_LONG_HIT_PCT`, as the original used |
+| 7 | **BLOCKED**: envdb. The mirror cannot supply it; needs `opendata.mmseqs.org` | — | — |
+| 8 | `phase_f_pair_and_split.py` into `mmcif_msa_corrected` | CPU | every corrected role has `pairing.a3m` and `non_pairing.a3m` |
+| 9 | `phase_h_search_templates.py` for the corrected queries | CPU | date-filter marker, as before |
+| 10 | re-run `phase_j_corrected_jobs.py` WITHOUT `--allow-missing-msa` | seconds | every corrected-role path must now resolve to a file that exists |
+| 11 | smoke-test `11zw` end to end | one fold | 7 residues restored, masked in the label, flanks retained |
+| 12 | queue 2,850 refolds into `training/fold_corrected/` | ~19 h GPU | separate tree |
 
-`FREE_DB=0` throughout: 1,042 GB of databases fits inside the 1,411 GB free, and keeping UniRef30
-means a failure in the envdb half does not force a 103 GB re-download through a resume path that has
-never been exercised twice.
+Steps 1-6 can start now. Step 7 is the hard blocker and nothing after it can proceed without the
+canonical host. The 141 corrected job jsons already exist, written with `--allow-missing-msa`, so
+their paths are correct and pending; **a fold must not be queued from them until step 10 passes
+without that flag.**
 
-## What runs in parallel, and what is not blocked
+## What is not blocked
 
-The GPUs are on the FoldBench top-off (612 folds) and then 663 training folds of structures that are
-NOT being refolded. Neither waits on any of the above. Steps 1-7 are CPU and network only.
+GPUs: FoldBench top-off (612), then 663 training folds of structures that are not being refolded.
+Neither needs any of the above. `await_msa_server.sh` polls the canonical host every 5 minutes.
 
-`shell_scripts/await_msa_server.sh` keeps checking the canonical host every 15 minutes regardless. If
-`opendata.mmseqs.org` returns before step 3 finishes, the prebuilt database is the simpler path and we
-take it; after that point the mirror build is already done and there is nothing to gain.
-
-## Risks, stated
+## Risks
 
 | risk | mitigation | residual |
 |---|---|---|
-| the mirror serves a different release | version strings match; md5sums verified against extracted source | a repackaged archive with matching names would not be caught by names alone |
-| `tsv2exprofiledb` produces a db that differs from the prebuilt one | it is the path this project already used for envdb | unquantified: the existing uniref MSAs came from the PREBUILT db, so these 155 would come from a differently-built one |
-| disk | 1,411 GB free against a ~950 GB peak; guard warns at 2,900 GB and will not kill the build | an unexpected intermediate could still exhaust it |
-| the resume path if envdb fails | `FREE_DB=0` keeps uniref30, so no re-download | never exercised twice |
+| envdb unavailable | none; it is the blocker | a uniref30-only MSA is NOT an acceptable substitute |
+| `tsv2exprofiledb` differs from the prebuilt db | step 5's control | if it fails we learn the mirror route is unusable for uniref30 too |
+| phase D frees uniref30, then phase E fails | the staging patch's `uniref.a3m` resume | never exercised twice; the fallback is a 96 GB re-download |
+| conversion intermediates exhaust the disk | ~475 GB headroom; guard warns at 2,900 GB and will not kill the build | intermediates unmeasured |
+| the mirror is a repackaged archive | md5sums verified against extracted source | matching names alone would not catch it |
 
-**The second row is the one I would most want a reviewer to push on.** The existing 5,549 uniref MSAs
-were built against the PREBUILT database. Building these 155 from the TSV distribution should give the
-same search results, because it is the same sequence data — but "should" is doing work there, and the
-check that would settle it is to rebuild one UNCHANGED query through the new path and compare its MSA
-to the stored one. That control is cheap and belongs before step 5, not after.
-
-## Rejected alternatives, recorded so they are not re-proposed
+## Rejected, recorded so they are not re-proposed
 
 | approach | why not |
 |---|---|
-| gap-padding (`phase_j_remap_msa.py`) | works and is verified reversible, but gives no aligned evidence at the restored positions. Measured: only 0.2-7.4% of saved homologs carry residues at those loci, so it is near the ceiling of what the saved files can give. Kept as a fallback if the rebuild fails |
-| mmseqs2 realignment against the saved hits as a local database | failed its own control: rebuilding an UNCHANGED query from its own hits lost 17.8% of depth (14,377 → 11,817, 0 gained), stripped per-hit alignment metadata, and produced rows with 215 match columns against a 214-residue query — a malformed a3m |
-| a different or smaller database | version consistency with the other 5,549 MSAs matters more than speed |
+| gap-padding | verified reversible over 30,435 rows, but no aligned evidence at the restored positions. Only 0.2-7.4% of saved homologs carry residues at those loci, so it is near the recoverable ceiling. **Kept as the fallback if the server does not return** |
+| mmseqs2 realignment against saved hits as a local database | failed its control: unchanged query lost 17.8% of depth (14,377 → 11,817, 0 gained), metadata stripped, rows with 215 match columns against a 214-residue query |
+| uniref30 only, skipping envdb | systematically shallower than the 5,549 it would be compared against |
+| a different database release | version consistency matters more than speed |
