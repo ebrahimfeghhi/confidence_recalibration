@@ -26,7 +26,7 @@ which is the finished one -- so a stage that passes here is a stage the cache bu
 watcher that defined "scored" differently from the worker would disagree with it about when to stop,
 which is the class of bug this file exists to close.
 """
-import argparse, glob, os, sys
+import argparse, glob, os, re, sys
 
 sys.path.insert(0, "/home/ebrahim/confidence_recalibration")
 from run_model.folder import interfaces_by_pdb, open_csv, iface_scored   # ONE definition of scored
@@ -47,6 +47,9 @@ def main():
                          "the unit, and under --overlap-scoring the scoring is deferred to a "
                          "background thread, so a pose count reaches the queue length while the "
                          "last folds are still being scored.")
+    ap.add_argument("--strict-scores", action="store_true",
+                    help="require EVERY interface scored. Off by default: see TERMINAL below.")
+    ap.add_argument("--partial-out", default="", help="write the partially scored units to a csv")
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()
 
@@ -60,10 +63,41 @@ def main():
     csv_path = os.path.join(a.fold, "results.csv")
     rows_done, _units = open_csv(csv_path) if os.path.exists(csv_path) else ({}, {})
 
+    # TERMINAL UNITS: the worker tried to score them, could not finish, SAID SO, and moved on.
+    #
+    # Some interfaces simply never score. 8vy9's pool lists AC, AD, BC and BD; every one of its ten
+    # seeds scores AC and writes zero rows for the other three, and the same shape repeats for
+    # 9nw7, 9o4n, 9o4o, 9o55, 9q5m, 9q5v and 9q71 -- 82 units across 8 structures here, and 30 of
+    # 200 sampled units in the previous run (10op_FN has zero samples on every seed). The FOLD is
+    # fine in every case: 8vy9 reports N_asym 4, N_token 705, a 40 s forward pass and a written
+    # trunk. It is the scorer that cannot produce DockQ for those chain pairs.
+    #
+    # A unit like that is never retried -- folder.py keeps its claim by design -- so requiring every
+    # interface would make the stage wait forever for rows nobody will write, never confirm
+    # completion, and never hand the cards to the next stage. That is what this gate was supposed
+    # to prevent, in the opposite direction.
+    #
+    # What the training cache needs is the trunk and the poses it was computed from, and those are
+    # intact. The DockQ scores are this project's evaluation metric, not the training label. So a
+    # unit the worker has finished with counts as done, and the partial ones are COUNTED AND NAMED
+    # rather than quietly folded into the total. --strict-scores restores the old behaviour.
+    term = set()
+    pat = re.compile(r"^\s+(\S+) \S+ (\S+) seed (\d+): SCORING INCOMPLETE")
+    for lf in sorted(glob.glob(os.path.join(a.fold, "w*.log"))):
+        try:
+            with open(lf, errors="replace") as fh:
+                for line in fh:
+                    m = pat.match(line)
+                    if m:
+                        term.add((m.group(1), m.group(2), m.group(3)))
+        except OSError:
+            pass
+
     units = [l.split("\t") for l in open(a.queue).read().splitlines() if l.strip()]
     n = len(units)
-    done = no_trunk = no_pose = bad_pose = unscored = 0
+    done = no_trunk = no_pose = bad_pose = unscored = partial = 0
     pending = []
+    partial_rows = []
     for tag, pdb, _target, arm, seed in units:
         seed = seed.strip()
         trunk = os.path.join(a.fold, "trunks", pdb, f"{tag}_{seed}.npz")
@@ -85,19 +119,36 @@ def main():
         elif len(pdirs) > 1:
             bad_pose += 1; why = f"{len(pdirs)} finished pose dirs (build_cache will refuse)"
         elif not scored:
-            unscored += 1; why = "poses but score rows incomplete"
+            if not a.strict_scores and (pdb, arm, seed) in term:
+                partial += 1          # the worker finished with it; see TERMINAL above
+                done += 1
+                why = None
+                partial_rows.append((pdb, seed, ";".join(
+                    i for i in want if not iface_scored(rows_done, i, seed, arm, a.nsample))))
+            else:
+                unscored += 1; why = "poses but score rows incomplete"
         else:
             done += 1
         if why:
             pending.append((pdb, seed, why))
 
-    what = "one finished pose dir + all score rows" if a.no_trunk else \
-           "trunk + one finished pose dir + all score rows"
+    allsc = "all score rows" if a.strict_scores else "scores done or terminal"
+    what = f"one finished pose dir + {allsc}" if a.no_trunk else \
+           f"trunk + one finished pose dir + {allsc}"
     print(f"{a.fold}: {done}/{n} units COMPLETE ({what})")
     print(f"  missing trunk                 : {no_trunk}")
     print(f"  {'no finished pose dir         ' if a.no_trunk else 'trunk, no finished pose dir  '} : {no_pose}")
     print(f"  more than one pose dir        : {bad_pose}")
     print(f"  poses, scores incomplete      : {unscored}")
+    if partial:
+        print(f"  of the {done} complete, {partial} have PARTIAL scores (worker reported SCORING")
+        print(f"     INCOMPLETE and moved on; trunk and poses intact, some DockQ missing)")
+    if a.partial_out and partial_rows:
+        with open(a.partial_out, "w") as fh:
+            fh.write("pdb,seed,unscored_interfaces\n")
+            for pdb, seed, ifs in sorted(partial_rows):
+                fh.write(f"{pdb},{seed},{ifs}\n")
+        print(f"  wrote {a.partial_out} ({len(partial_rows)} rows)")
     if a.verbose:
         for pdb, seed, why in pending[:40]:
             print(f"     {pdb} {seed}: {why}")
