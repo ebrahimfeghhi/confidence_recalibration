@@ -114,6 +114,10 @@ def main():
                          "500 structures cost ~57 min per epoch to rebuild and ~253 GB to hold. With "
                          "837 GB free that fits, and every epoch after the first saves the 57 min. "
                          "Use 0 for a single-epoch run, where there is nothing to amortise.")
+    ap.add_argument("--max-nonfinite", type=int, default=10,
+                    help="how many non-finite-gradient steps to tolerate before stopping. Each one "
+                         "drops its gradients and takes no step; past this the data or the learning "
+                         "rate is wrong and continuing trains on noise.")
     ap.add_argument("--grad-check-every", type=int, default=25,
                     help="re-assert that no gradient has appeared outside the confidence head")
     ap.add_argument("--save-every", type=int, default=250, help="optimiser steps per checkpoint")
@@ -182,24 +186,51 @@ def main():
     for n, p in model.named_parameters():
         p.requires_grad_(id(p) in head_ids)
 
-    # ---- the units: one (structure, seed) with its poses, grouped by structure
-    units = sorted(glob.glob(os.path.join(a.labels, "*", "*.npz")))
-    if not units:
-        raise SystemExit(f"STOP: no label npz under {a.labels}; run phase_j_build_cache.py")
+    # ---- THE MANIFEST: every unit's label AND trunk resolved up front, and nothing skipped
+    # SILENTLY SKIPPING A UNIT IS TRAINING ON A SUBSET CHOSEN BY WHICH FILES HAPPENED TO EXIST.
+    # run_unit used to `return` when a trunk or a dataset entry was absent, so a missing input
+    # reduced the training set with no record -- the same class of silent selection this project
+    # keeps finding. Every unit is now resolved here, against every root in --fold, and a unit whose
+    # trunk or dataset entry cannot be found STOPS the run with the list.
+    roots = [r.strip() for r in a.fold.split(",") if r.strip()]
+    for r in roots:
+        if not os.path.isdir(r):
+            raise SystemExit(f"STOP: --fold root {r} does not exist")
+    label_dirs = [x.strip() for x in a.labels.split(",") if x.strip()]
+    labels_found = []
+    for d in label_dirs:
+        labels_found += sorted(glob.glob(os.path.join(d, "*", "*.npz")))
+    if not labels_found:
+        raise SystemExit(f"STOP: no label npz under {label_dirs}; run phase_j_build_cache.py")
+
+    manifest, no_trunk = [], []
+    for lp in labels_found:
+        pdb = os.path.basename(os.path.dirname(lp))
+        arm_seed = os.path.basename(lp)[:-4]
+        tp = next((os.path.join(r, "trunks", pdb, f"{arm_seed}.npz") for r in roots
+                   if os.path.exists(os.path.join(r, "trunks", pdb, f"{arm_seed}.npz"))), None)
+        if tp is None:
+            no_trunk.append(f"{pdb}/{arm_seed}")
+            continue
+        manifest.append((pdb, lp, tp))
+    if no_trunk:
+        raise SystemExit(f"STOP: {len(no_trunk)} labelled unit(s) have no trunk under any of "
+                         f"{roots}, e.g. {no_trunk[:5]}. Training would silently drop them.")
+
     bypdb = {}
-    for u in units:
-        bypdb.setdefault(os.path.basename(os.path.dirname(u)), []).append(u)
+    for pdb, lp, tp in manifest:
+        bypdb.setdefault(pdb, []).append((lp, tp))
     order = sorted(bypdb)
     rng = random.Random(a.seed)
     if a.shuffle == "structure":
         rng.shuffle(order)
-        for p in order:
-            rng.shuffle(bypdb[p])
-    flat = [(p, u) for p in order for u in bypdb[p]]
+        for pp in order:
+            rng.shuffle(bypdb[pp])
+    flat = [(pp, lp, tp) for pp in order for lp, tp in bypdb[pp]]
     if a.limit_units:
         flat = flat[:a.limit_units]
-    print(f"units: {len(flat)} over {len(set(p for p, _u in flat))} structure(s), "
-          f"shuffle={a.shuffle}, seed={a.seed}")
+    print(f"manifest: {len(flat)} unit(s) over {len(set(x[0] for x in flat))} structure(s) from "
+          f"{len(roots)} fold root(s), shuffle={a.shuffle}, seed={a.seed}")
 
     cfg = DS.build_configs(a.crop_size, a.indices, a.bio_dir, a.mmcif_dir, a.msa_root,
                            a.seq_index, a.msa_root)
@@ -208,6 +239,12 @@ def main():
     train_ds, _ = get_datasets(cfg, err)
     byp = BC.merged_lookup(train_ds)
     perm = SymmetricPermutation(cfg, error_dir=err)
+    # EVERY STRUCTURE IN THE MANIFEST MUST HAVE A DATASET ENTRY, asserted here rather than
+    # discovered per unit and skipped.
+    nodata = sorted({pdb for pdb, _lp, _tp in flat if pdb not in byp})
+    if nodata:
+        raise SystemExit(f"STOP: {len(nodata)} structure(s) in the manifest have no dataset "
+                         f"datapoint: {nodata[:8]}. Their units would be skipped silently.")
 
     opt = torch.optim.AdamW([p for n, p in model.named_parameters() if n in set(trainable)],
                             lr=a.lr, betas=(0.9, 0.95), weight_decay=0.0)
@@ -219,19 +256,19 @@ def main():
     # be analysable, and a loss curve is the only way to see a learning rate that is wrong.
     traj_p = os.path.join(a.out, "trajectory.csv")
     traj_cols = ["wall_s", "step", "unit_i", "pdb", "unit", "pose", "lr"] + list(TERMS) + \
-                ["grad_norm", "outside_head"]
+                ["grad_norm", "outside_head", "epoch"]
     # the per-structure item build is the cost --preload-items exists to amortise, so it is measured
     # rather than assumed; reported at the end against the number of structures actually visited.
     item_build_s = []
+    nonfinite = {"n": 0}
 
-    def run_unit(pdb, lab_p, item_cache, train_mode=True):
-        """Forward + loss for every pose of one unit. Yields (pose_index, loss_tensor, metrics)."""
+    def run_unit(pdb, lab_p, trunk_p, item_cache):
+        """Forward + loss for every pose of one unit. Yields (pose_index, loss_tensor, metrics).
+
+        Both paths are resolved by the manifest and asserted to exist before the run starts, so
+        there is nothing here to skip.
+        """
         arm_seed = os.path.basename(lab_p)[:-4]
-        trunk_p = os.path.join(a.fold, "trunks", pdb, f"{arm_seed}.npz")
-        if not os.path.exists(trunk_p):
-            return
-        if pdb not in byp:
-            return
         if pdb not in item_cache:
             # EVICT ONLY WHEN THE BUDGET IS REACHED. Holding one item at a time means every structure
             # is rebuilt every epoch, which the numbers above make the dominant cost of a multi-epoch
@@ -246,6 +283,25 @@ def main():
             item_build_s.append(time.time() - _t)
         feat_ds, label_dict, label_full = item_cache[pdb]
         lab = np.load(lab_p, allow_pickle=True)
+        # THE CACHE'S PROVENANCE IS REQUIRED, NOT OPTIONAL. build_cache stores a `fingerprint` of
+        # the job cif, bioassembly, index rows, trunk and code the label was built from, plus a
+        # `schema`. Training read neither, so a label written by older code or from inputs that have
+        # since changed would be trained on with nothing noticing. The lf_* loss features are the
+        # same story: `if kk in lab` silently fell back to the LIVE features, which are not the ones
+        # the label was built against -- exactly the substitution the replay gate exists to detect.
+        for req in ("fingerprint", "schema", "label_coordinate", "label_coordinate_mask",
+                    "sample_index"):
+            if req not in lab:
+                raise SystemExit(f"STOP: {lab_p} has no `{req}`. It was written by an older "
+                                 f"build_cache; rebuild it before training.")
+        if int(np.asarray(lab["schema"])) != int(BC.SCHEMA):
+            raise SystemExit(f"STOP: {lab_p} is schema {int(np.asarray(lab['schema']))}, this code "
+                             f"expects {int(BC.SCHEMA)}. Rebuild the cache.")
+        _missing_lf = [k for k in BC.LOSS_FEATS if f"lf_{k}" not in lab]
+        if _missing_lf:
+            raise SystemExit(f"STOP: {lab_p} stores no lf_ array for {_missing_lf}. Falling back to "
+                             f"the live features would score the label against features it was not "
+                             f"built with. Rebuild the cache.")
         # BOTH LOADERS, as the replay does. load_trunk gives the NUMPY features that
         # check_alignment compares against the dataset's -- it calls np.asarray, so handing it the
         # device tensors raises "can't convert cuda:0 device type tensor to numpy". load_unit gives
@@ -265,10 +321,8 @@ def main():
         # the stored loss features are the ones the label was built with
         feat_cache = dict(feat_live)
         for k in BC.LOSS_FEATS:
-            kk = f"lf_{k}"
-            if kk in lab:
-                v = np.asarray(lab[kk])
-                feat_cache[k] = torch.as_tensor(v).to(dev) if v.dtype != object else lab[kk]
+            v = np.asarray(lab[f"lf_{k}"])          # presence asserted above
+            feat_cache[k] = torch.as_tensor(v).to(dev) if v.dtype != object else lab[f"lf_{k}"]
 
         n_pose = poses.shape[0] if hasattr(poses, "shape") else len(poses)
         for i in range(n_pose):
@@ -304,50 +358,111 @@ def main():
                    if n not in set(trainable) and p.grad is not None
                    and bool(p.grad.abs().sum() > 0))
 
+    def _apply_step(step):
+        """Clip, assert, step. Returns (grad_norm, n_outside_head, ok).
+
+        A FINITE LOSS DOES NOT MEAN FINITE GRADIENTS -- the loss is checked per pose already, and
+        that is not the same assertion. error_if_nonfinite makes clip_grad_norm_ raise rather than
+        hand inf or nan to AdamW, which would silently poison every head parameter through the
+        exponential averages and never recover. The gradients are dropped and the run continues,
+        counted, rather than the step being taken.
+        """
+        params = [pp for n, pp in model.named_parameters() if n in set(trainable)]
+        try:
+            gn = float(torch.nn.utils.clip_grad_norm_(params, 1.0, error_if_nonfinite=True))
+        except RuntimeError as e:
+            nonfinite["n"] += 1
+            print(f"  NON-FINITE GRADIENT at step {step} ({e}); gradients dropped, no step taken "
+                  f"({nonfinite['n']} so far)")
+            opt.zero_grad(set_to_none=True)
+            if nonfinite["n"] > a.max_nonfinite:
+                raise SystemExit(f"STOP: {nonfinite['n']} non-finite gradient(s), over "
+                                 f"--max-nonfinite {a.max_nonfinite}. The learning rate or the data "
+                                 f"is wrong; continuing would train on noise.")
+            return float("nan"), -1, False
+        outside = -1
+        if step % a.grad_check_every == 0:
+            outside = outside_head_grads()
+            if outside:
+                raise SystemExit(
+                    f"STOP: {outside} parameter(s) OUTSIDE the confidence head carry a non-zero "
+                    f"gradient at step {step}. FT3 freezes the trunk; this is not FT3 any more.")
+        opt.step()
+        opt.zero_grad(set_to_none=True)
+        return gn, outside, True
+
     def train_loop(steps_cap, lr, tag, write_traj):
         for g in opt.param_groups:
             g["lr"] = lr
         rows, t0, step, n_in_accum, item_cache = [], time.time(), 0, 0, {}
         opt.zero_grad(set_to_none=True)
-        for ui, (pdb, lab_p) in enumerate(flat):
-            for i, cum, met in run_unit(pdb, lab_p, item_cache):
-                # WARMUP AND THE CAP ARE ON OPTIMISER STEPS, not poses, so --accum does not change
-                # the schedule.
-                cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
-                for g in opt.param_groups:
-                    g["lr"] = cur_lr
-                (cum / a.accum).backward()
-                n_in_accum += 1
-                gn, outside = float("nan"), -1
-                if n_in_accum >= a.accum:
-                    gn = float(torch.nn.utils.clip_grad_norm_(
-                        [p for n, p in model.named_parameters() if n in set(trainable)], 1.0))
-                    if step % a.grad_check_every == 0:
-                        outside = outside_head_grads()
-                        if outside:
-                            raise SystemExit(
-                                f"STOP: {outside} parameter(s) OUTSIDE the confidence head carry a "
-                                f"non-zero gradient at step {step}. FT3 freezes the trunk; this is "
-                                f"not FT3 any more.")
-                    opt.step()
-                    opt.zero_grad(set_to_none=True)
-                    step += 1
-                    n_in_accum = 0
-                    if a.save_every and step % a.save_every == 0 and write_traj:
-                        cp = os.path.join(a.out, f"head_step{step}.pt")
-                        torch.save({n: p.detach().cpu() for n, p in model.named_parameters()
-                                    if n in set(trainable)}, cp)
-                        print(f"  saved {cp}")
-                rows.append({"wall_s": round(time.time() - t0, 1), "step": step, "unit_i": ui,
-                             "pdb": pdb, "unit": os.path.basename(lab_p)[:-4], "pose": i,
-                             "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
-                             **{k: float(met[k]) for k in TERMS}})
-                if write_traj and len(rows) % 20 == 0:
-                    _flush(traj_p, traj_cols, rows); rows = []
-                if steps_cap and step >= steps_cap:
-                    if write_traj:
-                        _flush(traj_p, traj_cols, rows)
-                    return rows
+        # AN EPOCH LOOP, BECAUSE --epochs USED TO DO NOTHING. It scaled steps_cap while the loop
+        # traversed `flat` exactly once, so a request for more steps than the data provides simply
+        # stopped early -- review round 7 asked for 5 optimiser steps and got 2. The data is now
+        # re-traversed, reshuffled each epoch so the order is not identical, until the step cap or
+        # the epoch count is reached.
+        n_epochs = max(1, math.ceil(a.epochs))
+        done = False
+        for ep in range(n_epochs):
+            if done:
+                break
+            ep_units = list(flat)
+            if a.shuffle == "structure" and ep:
+                # reshuffle BY STRUCTURE, keeping each structure's units together, so a preloaded
+                # item is still used for all of them
+                _by = {}
+                for _t in ep_units:
+                    _by.setdefault(_t[0], []).append(_t)
+                _o = list(_by)
+                _r = random.Random(a.seed + ep)
+                _r.shuffle(_o)
+                for _k in _o:
+                    _r.shuffle(_by[_k])
+                ep_units = [t for _k in _o for t in _by[_k]]
+            # a fractional last epoch takes that fraction of the units
+            if ep == n_epochs - 1 and a.epochs < n_epochs:
+                frac = a.epochs - (n_epochs - 1)
+                ep_units = ep_units[:max(1, int(len(ep_units) * frac))]
+            print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
+            for ui, (pdb, lab_p, trunk_p) in enumerate(ep_units):
+                for i, cum, met in run_unit(pdb, lab_p, trunk_p, item_cache):
+                    cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
+                    for g in opt.param_groups:
+                        g["lr"] = cur_lr
+                    (cum / a.accum).backward()
+                    n_in_accum += 1
+                    gn, outside = float("nan"), -1
+                    if n_in_accum >= a.accum:
+                        gn, outside, ok = _apply_step(step)
+                        if not ok:
+                            n_in_accum = 0
+                            continue
+                        step += 1
+                        n_in_accum = 0
+                        if a.save_every and step % a.save_every == 0 and write_traj:
+                            cp = os.path.join(a.out, f"head_step{step}.pt")
+                            torch.save({n: pp.detach().cpu() for n, pp in model.named_parameters()
+                                        if n in set(trainable)}, cp)
+                            print(f"  saved {cp}")
+                    rows.append({"wall_s": round(time.time() - t0, 1), "step": step, "unit_i": ui,
+                                 "pdb": pdb, "unit": os.path.basename(lab_p)[:-4], "pose": i,
+                                 "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
+                                 "epoch": ep + 1,
+                                 **{k: float(met[k]) for k in TERMS}})
+                    if write_traj and len(rows) % 20 == 0:
+                        _flush(traj_p, traj_cols, rows); rows = []
+                    if steps_cap and step >= steps_cap:
+                        done = True
+                        break
+                if done:
+                    break
+        # THE FINAL PARTIAL ACCUMULATION. Poses left in the accumulator when the data runs out used
+        # to be dropped, so the last fraction of an epoch contributed gradients that were computed
+        # and then thrown away.
+        if n_in_accum:
+            print(f"  flushing a partial accumulation of {n_in_accum}/{a.accum} pose(s)")
+            _apply_step(step)
+            step += 1
         if write_traj:
             _flush(traj_p, traj_cols, rows)
         return rows
