@@ -32,6 +32,16 @@ as error. If the coordinate frames differ, ONE rigid transform is fitted over th
 applied to all chains together; never a separate fit per chain, which would mask a chain that has
 been swapped for another copy.
 
+KNOWN LIMITATION: SINGLE-CHAIN CONSTRUCTS PAIR 2-TO-1 AND ARE NOT AUDITED. SAbDab2 keeps an scFv as
+ONE fused chain while our label splits it into two -- 7tzh is sabdab chain C at 230 residues against
+label chains A:125 and B:108, and 8v8f and 9cn2 sum EXACTLY to the fused length. The pairing here is
+one-to-one, so those antibody roles come back unpaired and are reported as AMBIGUOUS CHAIN or "too
+few shared atoms" rather than as verified. Their ANTIGEN roles still audit exactly. Normalising the
+sequence-coverage fallback by the label chain instead of the SAbDab2 chain was tried and made
+matters worse -- it left 7tzh and 8v8f unpaired anyway and regressed 9nr6 -- so the limitation is
+recorded rather than papered over. This is the same class as open review item J1/J3, the 9 split
+single-chain constructs. Auditing them needs an explicit 2-to-1 mode, which is not written.
+
 WHAT COUNTS AS A FAILURE. Coordinates should agree to file-rounding precision, because both files
 hold the same deposited atoms. Residue identity must match exactly. A large RMSD, a large maximum
 deviation, or a residue-identity mismatch means the mapping is wrong somewhere and is reported for

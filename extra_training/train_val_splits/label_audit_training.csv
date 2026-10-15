@@ -66,7 +66,7 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 7xy8,pdb_00007xy8_H_L,ok,3130,0.0000,0.0000,0,H=A/C;L=B/E;ag0=C/A,H:117/117;L:108/108;ag0:181/181,,
 7y1b,pdb_00007y1b_H_L,ok,2609,0.0000,0.0000,0,H=A/B;L=B/C;ag0=C/A,H:117/117;L:108/108;ag0:114/114,,
 7y3j,pdb_00007y3j_H_L,ok,1849,0.0000,0.0000,0,H=A/B;L=B/A;ag0=C/C,H:118/118;L:113/113;ag0:11/11,,
-7yix,pdb_00007yix_C1_C2,AMBIGUOUS CHAIN,3738,0.0000,0.0000,0,ag0=C/A,H:unpaired(A/B);ag0:482/482,,L:B/C@106/225
+7yix,pdb_00007yix_C1_C2,AMBIGUOUS CHAIN,3738,0.0000,0.0000,0,ag0=C/A,ag0:482/482,,H:A/C@119/225;L:B/C@106/225
 7yru,pdb_00007yru_H_L,ok,2353,0.0000,0.0000,0,H=A/B;L=B/C;ag0=C/A,H:121/121;L:108/108;ag0:78/78,,
 7yzj,pdb_00007yzj_H_L,ok,1884,0.0000,0.0000,0,H=A/B;L=B/A;ag0=C/C,H:118/118;L:113/113;ag0:9/9,,
 7z4t,pdb_00007z4t_H_L,ok,2967,0.0000,0.0000,0,H=A/A;L=B/C;ag0=C/B,H:118/118;L:108/108;ag0:151/151,,
@@ -89,7 +89,7 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 8cn9,pdb_00008cn9_L_K,ok,2478,0.0000,0.0000,0,H=A/L;L=B/K;ag0=C/N,H:122/122;L:108/108;ag0:95/95,,
 8cxg,pdb_00008cxg_G_I,ok,5569,0.0000,0.0000,0,H=A/K;L=B/L;ag0=C/I,H:121/121;L:108/108;ag0:501/501,,
 8cz5,pdb_00008cz5_H_L,ok,4131,0.0000,0.0000,0,H=A/B;L=B/C;ag0=C/A,H:122/122;L:108/108;ag0:333/333,,
-8cz8,pdb_00008cz8_B2_B1,AMBIGUOUS CHAIN,1134,0.0000,0.0000,0,ag0=C/B~seq,H:unpaired(A/C);ag0:148/148,,L:B/B@34/148
+8cz8,pdb_00008cz8_B2_B1,AMBIGUOUS CHAIN,1134,0.0000,0.0000,0,ag0=C/B~seq,ag0:148/148,,H:A/F@118/224;L:B/B@34/148
 8d53,pdb_00008d53_D_E,COORD MISMATCH,6294,0.3386,10.1764,0,H=A/E;L=B/F;ag0=C/B;ag1=D/A,H:116/117;L:107/107;ag0:131/132;ag1:443/446,,
 8dcn,pdb_00008dcn_A_B,ok,2811,0.0000,0.0000,0,H=A/A;L=B/B;ag0=C/C,H:120/120;L:113/113;ag0:121/121,,
 8der,pdb_00008der_H_L,ok,4436,0.0000,0.0000,0,H=A/I;L=B/J;ag0=C/H,H:122/122;L:105/105;ag0:344/344,,
@@ -97,7 +97,7 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 8dfh,pdb_00008dfh_H_L,ok,2445,0.0000,0.0000,0,H=A/B;L=B/C;ag0=C/A,H:120/120;L:109/109;ag0:92/92,,
 8dgw,pdb_00008dgw_E_F,ok,1856,0.0000,0.0000,0,H=A/G;L=B/H;ag0=C/L,H:117/117;L:109/109;ag0:20/20,,
 8djg,pdb_00008djg_C_D,ok,2494,0.0000,0.0000,0,H=A/C;L=B/D;ag0=C/E,H:122/122;L:104/104;ag0:98/98,,
-8dpl,pdb_00008dpl_C1_C2,COORD MISMATCH,1518,22.2892,39.1003,0,ag0=C/K~seq;ag1=D/K~seq,H:unpaired(A/A);L:unpaired(B/B);ag0:96/96;ag1:96/96,,
+8dpl,pdb_00008dpl_C1_C2,AMBIGUOUS CHAIN,1518,22.2892,39.1003,0,ag0=C/K~seq;ag1=D/K~seq,ag0:96/96;ag1:96/96,,H:A/F@115/219;L:B/F@105/219
 8ds5,pdb_00008ds5_C_B,ok,2473,0.0000,0.0000,0,H=A/C;L=B/B;ag0=C/A,H:116/116;L:107/107;ag0:96/96,,
 8ds7,pdb_00008ds7_H_L,ok,1864,0.0000,0.0000,0,H=A/B;L=B/A;ag0=C/C,H:117/117;L:113/113;ag0:10/10,,
 8dv6,pdb_00008dv6_H_D,ok,7991,0.0000,0.0000,0,H=A/E;L=B/D;ag0=C/A;ag1=D/B,H:128/128;L:110/110;ag0:405/405;ag1:405/405,,
@@ -139,7 +139,7 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 8gpj,pdb_00008gpj_D_E,ok,2831,0.0000,0.0000,0,H=A/C;L=B/D;ag4=C/H,H:130/130;L:107/107;ag4:128/128,,
 8gpu,pdb_00008gpu_C_D,ok,4718,0.0000,0.0000,0,H=A/H;L=B/I;ag0=C/D,H:116/116;L:112/112;ag0:392/392,,
 8gq5,pdb_00008gq5_a_+,ok,2654,0.0000,0.0000,0,H=A/B;ag0=B/A,H:112/112;ag0:226/226,,
-8h3c,pdb_00008h3c_B1_B2,AMBIGUOUS CHAIN,62,0.0000,0.0000,0,ag0=C/F~seq,H:unpaired(A/A);ag0:10/10,,L:B/B@106/222
+8h3c,pdb_00008h3c_B1_B2,AMBIGUOUS CHAIN,62,0.0000,0.0000,0,ag0=C/F~seq,ag0:10/10,,H:A/B@116/222;L:B/B@106/222
 8h8q,pdb_00008h8q_H_L,ok,1900,0.0000,0.0000,0,H=A/B;L=B/A;ag0=C/C,H:119/119;L:114/114;ag0:15/15,,
 8hbj,pdb_00008hbj_E_+,ok,2597,0.0000,0.0000,0,H=A/A;ag0=B/E,H:119/119;ag0:221/221,,
 8hbv,pdb_00008hbv_B_+,ok,3150,0.0000,0.0000,0,H=A/B;ag0=B/A,H:121/121;ag0:290/290,,
@@ -149,9 +149,9 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 8hs2,pdb_00008hs2_B_C,ok,3979,0.0000,0.0000,0,H=A/A;L=B/B;ag0=C/C,H:123/123;L:107/107;ag0:287/287,,
 8ib1,pdb_00008ib1_B_A,ok,1878,0.0000,0.0000,0,H=A/B;L=B/A;ag0=C/C,H:120/120;L:114/114;ag0:13/13,,
 8iow,pdb_00008iow_H_L,ok,2570,0.0000,0.0000,0,H=A/D;L=B/C;ag0=C/A,H:115/115;L:108/108;ag0:104/104,,
-8iys,pdb_00008iys_E1_E2,AMBIGUOUS CHAIN,5244,0.0000,0.0000,0,ag0=C/A;ag1=D/B,L:unpaired(B/D);ag0:355/355;ag1:332/332,,H:A/C@120/229
+8iys,pdb_00008iys_E1_E2,AMBIGUOUS CHAIN,5244,0.0000,0.0000,0,ag0=C/A;ag1=D/B,ag0:355/355;ag1:332/332,,H:A/C@120/229;L:B/C@110/229
 8ja5,pdb_00008ja5_B_C,ok,5067,0.0000,0.0000,0,H=A/D;L=B/E;ag0=C/F,H:116/116;L:113/113;ag0:417/417,,
-8jgb,pdb_00008jgb_S1_S2,AMBIGUOUS CHAIN,421,0.0000,0.0000,0,ag1=D/B~seq,H:unpaired(A/C);ag1:57/57,,L:B/D@20/336;ag0:C/B@25/57
+8jgb,pdb_00008jgb_S1_S2,AMBIGUOUS CHAIN,421,0.0000,0.0000,0,ag1=D/B~seq,ag1:57/57,,H:A/F@119/230;L:B/D@20/336;ag0:C/B@25/57
 8jhb,pdb_00008jhb_N_+,ok,3989,0.0000,0.0000,0,H=A/D;ag0=B/B;ag1=C/C,H:126/126;ag0:337/337;ag1:57/57,,
 8jhi,pdb_00008jhi_N_+,ok,3990,0.0000,0.0000,0,H=A/D;ag0=B/B;ag1=C/C,H:126/126;ag0:337/337;ag1:57/57,,
 8jkf,pdb_00008jkf_H_L,ok,4551,0.0000,0.0000,0,H=A/A;L=B/B;ag0=C/F,H:114/114;L:106/106;ag0:355/355,,
@@ -173,7 +173,7 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 8ozb,pdb_00008ozb_A_+,ok,1485,0.0000,0.0000,0,H=A/A;ag0=B/D,H:116/116;ag0:76/76,,
 8p12,pdb_00008p12_H_L,ok,4186,0.0000,0.0000,0,H=A/F;L=B/E;ag0=C/C,H:118/118;L:113/113;ag0:316/316,,
 8pnv,pdb_00008pnv_D_+,ok,3223,0.0000,0.0000,0,H=A/D;ag0=B/A;ag1=C/C,H:116/116;ag0:155/155;ag1:155/155,,
-8pww,pdb_00008pww_B1_B2,AMBIGUOUS CHAIN,2535,0.0000,0.0000,0,ag0=C/A,L:unpaired(B/C);ag0:299/299,,H:A/B@119/225
+8pww,pdb_00008pww_B1_B2,AMBIGUOUS CHAIN,2535,0.0000,0.0000,0,ag0=C/A,ag0:299/299,,H:A/B@119/225;L:B/B@107/225
 8qp6,pdb_00008qp6_H_I,ok,1831,0.0000,0.0000,0,H=A/G;L=B/H;ag0=C/C,H:125/125;L:109/109;ag0:15/15,,
 8qz7,pdb_00008qz7_B_+,ok,3552,0.0000,0.0000,0,H=A/B;ag0=B/A,H:124/124;ag0:333/333,,
 8r9x,pdb_00008r9x_H_L,ok,3576,0.0000,0.0000,0,H=A/B;L=B/C;ag0=C/A,H:121/121;L:105/105;ag0:235/235,,
@@ -182,7 +182,7 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 8rmo,pdb_00008rmo_H_L,ok,1836,0.0000,0.0000,0,H=A/B;L=B/C;ag2=C/A,H:116/116;L:113/113;ag2:6/6,,
 8rqf,pdb_00008rqf_H_L,ok,4471,0.0000,0.0000,0,H=A/B;L=B/C;ag0=C/A;ag1=D/E,H:123/123;L:108/108;ag0:301/301;ag1:46/46,,
 8rwf,pdb_00008rwf_C_+,ok,2153,0.0000,0.0000,0,H=A/C;ag0=B/B,H:118/118;ag0:169/169,,
-8s6k,pdb_00008s6k_H1_H2,AMBIGUOUS CHAIN,82,14.5087,24.4613,0,H=A/D~seq;ag3=C/D~seq,H:7/7;ag3:7/7,,L:B/B@107/223
+8s6k,pdb_00008s6k_H1_H2,too few shared atoms,0,,,0,,,,H:A/B@121/223;L:B/B@107/223;ag3:C/B@7/223
 8s6v,pdb_00008s6v_A_B,ok,1850,0.0000,0.0000,0,H=A/A;L=B/B;ag2=C/E,H:117/117;L:114/114;ag2:9/9,,
 8s73,pdb_00008s73_A_B,ok,1784,0.0000,0.0000,0,H=A/A;L=B/B;ag2=C/E,H:117/117;L:108/108;ag2:7/7,,
 8sau,pdb_00008sau_C_D,ok,5412,0.0000,0.0000,0,H=A/C;L=B/D;ag0=C/A,H:126/126;L:110/110;ag0:462/462,,
@@ -248,7 +248,7 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 8y4w,pdb_00008y4w_B_+,ok,5749,0.0000,0.0000,0,H=A/B;ag0=B/A,H:120/120;ag0:612/612,,
 8yaf,pdb_00008yaf_B_+,ok,1959,0.0000,0.0000,0,H=A/B;ag0=B/A,H:114/114;ag0:152/152,,
 8yhz,pdb_00008yhz_H_L,ok,1773,0.0000,0.0000,0,H=A/B;L=B/A;ag0=C/C,H:112/112;L:113/113;ag0:10/10,,
-8yj7,pdb_00008yj7_G1_G2,AMBIGUOUS CHAIN,2196,0.0000,0.0000,0,ag0=C/A,H:unpaired(A/B);ag0:279/279,,L:B/C@104/215
+8yj7,pdb_00008yj7_G1_G2,AMBIGUOUS CHAIN,2196,0.0000,0.0000,0,ag0=C/A,ag0:279/279,,H:A/C@111/215;L:B/C@104/215
 8yj8,pdb_00008yj8_D_+,ok,3134,0.0000,0.0000,0,H=A/D;ag0=B/B,H:124/124;ag0:279/279,,
 8yvj,pdb_00008yvj_A_+,ok,1860,0.0000,0.0000,0,H=A/A;ag0=B/B,H:126/126;ag0:118/118,,
 8yvl,pdb_00008yvl_I_E,ok,7739,0.0000,0.0000,0,H=A/I;L=B/E;ag0=C/A;ag1=D/B,H:123/123;L:107/107;ag0:387/387;ag1:387/387,,
@@ -317,7 +317,7 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 9e7x,pdb_00009e7x_H_L,ok,14801,0.0000,0.0000,0,H=A/G;L=B/H;ag0=C/A;ag1=D/C;ag2=E/F,H:126/126;L:109/109;ag0:548/548;ag1:548/548;ag2:548/548,,
 9e89,pdb_00009e89_H_L,ok,6126,0.0000,0.0000,0,H=A/C;L=B/B;ag0=C/A,H:130/130;L:107/107;ag0:548/548,,
 9ejf,pdb_00009ejf_H_L,ok,4790,0.0000,0.0000,0,H=A/D;L=B/H;ag1=C/A,H:126/126;L:112/112;ag1:383/383,,
-9ejz,pdb_00009ejz_H1_H2,AMBIGUOUS CHAIN,2601,0.0000,0.0000,0,ag0=C/B~seq,L:unpaired(B/C);ag0:339/339,,H:A/B@34/339
+9ejz,pdb_00009ejz_H1_H2,AMBIGUOUS CHAIN,2601,0.0000,0.0000,0,ag0=C/B~seq,ag0:339/339,,H:A/B@34/339;L:B/E@112/233
 9eot,pdb_00009eot_B_+,ok,3532,0.0000,0.0000,0,H=A/B;ag0=B/A,H:123/123;ag0:329/329,,
 9eth,pdb_00009eth_H_L,ok,3291,0.0000,0.0000,0,H=A/A;L=B/B;ag1=C/D,H:119/119;L:109/109;ag1:197/197,,
 9eti,pdb_00009eti_H_L,ok,3310,0.0000,0.0000,0,H=A/A;L=B/B;ag0=C/C,H:119/119;L:109/109;ag0:198/198,,
@@ -467,7 +467,7 @@ pdb,instance,verdict,matched_atoms,rmsd,maxdev,n_resid_mismatch,pairs,coverage,r
 9ulm,pdb_00009ulm_A_B,ok,1900,0.0000,0.0000,0,H=A/A;L=B/B;ag0=C/H,H:119/119;L:113/113;ag0:11/11,,
 9ulp,pdb_00009ulp_D_+,ok,3059,0.0000,0.0000,0,H=A/D;ag0=B/C,H:116/116;ag0:274/274,,
 9uvi,pdb_00009uvi_B_A,ok,2539,0.0000,0.0000,0,H=A/B;L=B/A;ag0=C/C,H:116/116;L:107/107;ag0:99/99,,
-9vaw,pdb_00009vaw_D1_D2,ok,2577,0.0000,0.0000,0,ag0=C/D~seq,H:unpaired(A/B);L:unpaired(B/C);ag0:338/338,,
+9vaw,pdb_00009vaw_D1_D2,AMBIGUOUS CHAIN,2577,0.0000,0.0000,0,ag0=C/D~seq,ag0:338/338,,H:A/F@120/231;L:B/F@111/231
 9vb4,pdb_00009vb4_D1_D2,AMBIGUOUS CHAIN,5377,0.0000,0.0000,0,ag0=C/C~seq;ag1=D/D~seq,ag0:351/351;ag1:338/338,,H:A/C@33/351;L:B/D@21/338
 9vl2,pdb_00009vl2_C_B,ok,3425,0.0000,0.0000,0,H=A/C;L=B/B;ag0=C/A,H:119/119;L:108/108;ag0:214/214,,
 9vnp,pdb_00009vnp_C_A,ok,2594,0.0000,0.0000,0,H=A/C;L=B/B;ag0=C/A,H:120/120;L:113/113;ag0:96/96,,

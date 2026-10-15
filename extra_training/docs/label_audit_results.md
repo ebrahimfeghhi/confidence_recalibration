@@ -69,7 +69,49 @@ one that should have caught it:
 | earlier: 57 roles reported "chain not found" | 42 were the copy-index artefact and 15 were me checking auth names where `label_asym_id` was meant. ALL 57 resolve; there was no mis-map |
 | earlier: resolved positions pooled across chain copies | invented a 935-residue input/label mismatch that does not exist |
 
-## NOT DONE: the validation labels do not exist
+## Validation, built and audited 2026-10-15 1:50 PM ET
+
+| | structures |
+|---|---|
+| **RMSD < 0.01 A -- exact** | **51 of 53** |
+| >= 1.0 A, different copy | **0** |
+| residue-identity mismatches | **0** |
+| atoms compared | 141,881 |
+| not auditable, single-chain construct | 2 (7tzh, 8v8f) |
+
+The validation labels did not exist before this -- `validation/prep/job_cifs` was empty and no
+`job_cifs` directory existed outside training. They are not needed for the validation arm's own
+metrics, which are decoy, coverage and regret from a scalar DockQ per pose that the SAbDab2
+reference supplies. They are built because those structures are expected to become TRAINING data
+once the training setup is settled, and training needs per-atom coordinates across the whole folded
+chain, which SAbDab2's variable-region crop cannot provide.
+
+THE SOURCE DEPOSITS EXISTED NOWHERE PERMANENT. All 53 RCSB cifs were only in a session scratchpad
+that would have been wiped. Copied to `SAbDab2_data/rcsb_validation_cifs` (297 files, 341 MB) before
+anything else was run.
+
+## Reproducibility
+
+    bash phases/phase_j_labels_and_audit.sh training     # build labels, then audit
+    bash phases/phase_j_labels_and_audit.sh validation
+    bash phases/phase_j_labels_and_audit.sh both
+
+The driver exists because the two steps must agree on four paths, and because the validation
+selection is not a file that otherwise exists -- the 53 structures are split across
+`val_split_proposal.csv` (40 first representatives) and `val_split_second_reps.csv` (13 seconds). It
+rebuilds that union fresh each run, into `train_val_splits/val_all_structures.csv`, and stops if any
+structure lacks a SAbDab2 instance id.
+
+## The 4 validation flags are all single-chain constructs
+
+7tzh, 8v8f, 29tj and 9cn2 are scFv instances (`A1_A2`, `C1_C2`, `B1_B2`). SAbDab2 keeps the construct
+as ONE fused chain; our label splits it into two. 8v8f and 9cn2 sum exactly to the fused length --
+236 = 125+111 and 223 = 116+107 -- so nothing is missing, the pairing is simply 2-to-1 and this audit
+pairs one-to-one. Their ANTIGEN roles audit exactly. Same class as open review item J1/J3.
+
+Normalising the sequence-coverage fallback by the label chain rather than the SAbDab2 chain was
+tried, left 7tzh and 8v8f unpaired anyway, and regressed 9nr6 from ok to ambiguous, so it was
+reverted. A proper 2-to-1 mode is not written.
 
 `validation/prep/job_cifs` is absent, and no `job_cifs` directory exists anywhere except the training
 one. The validation label pipeline has never been run, so there is nothing on that side to audit. The
