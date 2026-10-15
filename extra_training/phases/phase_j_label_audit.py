@@ -204,6 +204,14 @@ def main():
     ap.add_argument("--debug-pdb", default="",
                     help="print why each chain group of this pdb was rejected (matched, "
                          "denominator, lengths), which is how the pairing bugs above were found.")
+    ap.add_argument("--dispositioned", default="",
+                    help="csv from phase_j_disposition_mismatches.py. A COORD MISMATCH whose DockQ "
+                         "against SAbDab2 confirms the SAME interface is a frame difference, not a "
+                         "defect, and counts as usable.")
+    ap.add_argument("--same-interface-dockq", type=float, default=0.80,
+                    help="DockQ at or above which two files are agreed to describe the same "
+                         "interface. The measured values are 1.0000 x3 and 0.8550 against 0.0080 for "
+                         "the one real defect, so nothing sits near this line.")
     ap.add_argument("--coverage-hist", action="store_true",
                     help="print the distribution of matched/denominator over every audited chain "
                          "group, which is how MIN_COVER is shown not to be load-bearing. Re-measure "
@@ -497,6 +505,39 @@ def main():
                   f"below_MIN_COVER={sum(1 for x in fr if x < MIN_COVER)}")
             print(f"  lowest 8: {[round(x, 4) for x in fr[:8]]}")
             print(f"  MIN_COVER={MIN_COVER}; a cutoff anywhere below min above changes no verdict")
+    # THE VERDICT IS NOT THE ANSWER, AND REPORTING IT AS ONE WAS MISLEADING. "COORD MISMATCH" says
+    # only that one rigid transform does not superpose the whole complex, which is TRUE and HARMLESS
+    # for an entry whose two files took different copies out of the crystal. Reporting 498 of 501
+    # "ok" alongside "0 defects" made every reader translate between the two, so the disposition --
+    # is this label usable -- is now printed as the headline and the verdict breakdown sits under it.
+    # A structure is PASS when its sequences match exactly, every role is accounted for, and either
+    # the coordinates superpose or the interface is confirmed the same by DockQ (see
+    # phase_j_disposition_mismatches.py, whose verdicts are listed in --dispositioned).
+    disp = {}
+    if a.dispositioned and os.path.exists(a.dispositioned):
+        for r in csv.DictReader(open(a.dispositioned)):
+            if r.get("best_dockq"):
+                disp[r["pdb"]] = float(r["best_dockq"])
+    npass = nfail = 0
+    unresolved = []
+    for r in rows:
+        v = r.get("verdict", "")
+        if v == "ok":
+            npass += 1
+        elif v == "COORD MISMATCH" and disp.get(r["pdb"], -1) >= a.same_interface_dockq:
+            npass += 1
+        else:
+            nfail += 1
+            unresolved.append(f'{r["pdb"]}({v})')
+    print(f"LABELS USABLE: {npass} of {len(rows)}"
+          + (f" -- NOT usable: {', '.join(unresolved)}" if unresolved else " -- 0 defects"))
+    if disp:
+        print(f"  ({npass - sum(1 for r in rows if r.get('verdict') == 'ok')} of those pass on a "
+              f"confirmed-same-interface DockQ >= {a.same_interface_dockq}, not on superposition)")
+    elif any(r.get("verdict") == "COORD MISMATCH" for r in rows):
+        print("  (no --dispositioned given, so COORD MISMATCH rows count as NOT usable; run "
+              "phase_j_disposition_mismatches.py and pass its csv to resolve them)")
+    print(f"verdict breakdown, which describes the COMPARISON and not the label's usability:")
     print(f"audited {len(rows)} structure(s) -> {a.out}")
     for k, v in c.most_common():
         print(f"  {k:<28} {v}")

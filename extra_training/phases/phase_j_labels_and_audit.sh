@@ -62,6 +62,7 @@ run_training() {
     echo "== training audit =="
     $PY -I "$R/phases/phase_j_label_audit.py" --which training \
         --coverage-hist \
+        --dispositioned "$R/train_val_splits/label_mismatch_disposition.csv" \
         --out "$R/train_val_splits/label_audit_training.csv"
 }
 
@@ -84,6 +85,7 @@ run_validation() {
         --labels    "$R/validation/prep/job_cifs" \
         --roles     "$R/validation/fold/chain_roles.csv" \
         --coverage-hist \
+        --dispositioned "$R/train_val_splits/label_mismatch_disposition.csv" \
         --out "$R/train_val_splits/label_audit_validation.csv"
 }
 

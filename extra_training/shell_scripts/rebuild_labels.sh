@@ -1,4 +1,9 @@
 #!/bin/bash
+# SUPERSEDED 2026-10-15 -- DO NOT RUN. This was a ONE-TIME migration for the 2026-10-14 geometry
+# fix, and that migration is applied. The standing, reproducible driver is
+#     bash phases/phase_j_labels_and_audit.sh both
+# which rebuilds the labels AND audits them against SAbDab2 in one pass. Kept for provenance only.
+#
 # Rebuild the label artifacts so the 2026-10-14 geometry fix reaches the data.
 #
 # WHY: phase_j_job_cifs.py now vetoes a residue placement the geometry refuses

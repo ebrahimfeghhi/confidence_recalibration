@@ -11,7 +11,7 @@ being done, because none of them blocks training and the largest one risks the r
 | 1 | one configuration source; reject empty expected populations | **done** (`027ddcac`) |
 | 2 | share the critical contracts; keep phase CLIs thin | open |
 | 3 | separate frozen definitions from generated state | open |
-| 4 | a regression-fixture set | open — **do first** |
+| 4 | a regression-fixture set | **unblocked 2026-10-15**, and started: `phases/phase_j_label_audit_selftest.py` is the first instance -- it builds its fixtures from the repo, damages them in 5 known ways and exits non-zero if any goes unnoticed. The geometry rebuild it was waiting on has finished, so the class membership below is now measurable rather than invented |
 | 5 | make the runtime reconstructable | partly done |
 | 6 | one current experiment status page | open |
 
@@ -33,8 +33,14 @@ Wanted: ordinary Fabs, nanobodies, split scFvs, identical antigen copies, homodi
 residues, partial score output, malformed JSON, confidence ties. CPU-only except one small GPU replay
 that must consume the stored `lf_*` loss features.
 
-Deferred until the geometry rebuild finishes, because that run is what identifies the membership of
-each class from real data rather than invention. Candidates already measured:
+NO LONGER DEFERRED: the geometry rebuild has finished. `phase_j_label_audit_selftest.py` covers the
+label-audit phase and is the pattern to copy -- fixtures built from the repo's own files, damage
+applied deliberately, non-zero exit when a damage is missed. It also demonstrated the value
+immediately, by failing on its first run for a reason that turned out to be a WRONG EXPECTATION
+rather than a bug: deleting the END of a chain is correctly invisible, because SAbDab2 crops to the
+variable region and cannot verify residues it does not contain. A truncation test must be aimed.
+
+Candidates already measured:
 
 | Class | Count in the selection | Example |
 |---|---|---|

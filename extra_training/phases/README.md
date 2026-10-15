@@ -546,6 +546,55 @@ Every effective parameter matches, so `filter_param` — the `qsc`/`--diff`/`--m
 shapes each alignment — is identical to Protenix's. Combined with the staged-equals-unstaged result,
 the premise the review was worried about holds: our MSAs are built the way Protenix's were.
 
+## Label validation — the whole chain, in run order
+
+Added 2026-10-15, when the label audit closed. Everything below is CPU-only and touches no pose.
+
+| # | script | what it answers | entry point |
+|---|---|---|---|
+| 1 | `phase_j0_select_structures.py` | which structures, and which instance per cluster | run directly |
+| 2 | `phase_j_job_cifs.py` | builds the LABEL from the RCSB entry: which chains, which COPY, which residues placed | via (4) |
+| 3 | `phase_j_label_audit.py` | do our labels match SAbDab2's independent coordinates, residue by residue and atom by atom | via (4) |
+| 4 | `phase_j_labels_and_audit.sh` | **the reproducible driver for 2+3**: `bash phases/phase_j_labels_and_audit.sh both` | **start here** |
+| 5 | `phase_j_label_audit_selftest.py` | can the audit in (3) actually FAIL? Damages real labels in 5 known ways and asserts each is caught | run directly |
+| 6 | `phase_j_check_contacts.py` | does each selected antigen copy touch the selected antibody (review item J2) | run directly |
+| 7 | `phase_j_disposition_mismatches.py` | for an audit exception: the SAME interface in a different frame, or a DIFFERENT interface? OST DockQ | run directly |
+| 8 | `phase_j_domain_audit.py` | stage 1, a different question: does each FOLDED QUERY correspond to its deposited chain | run directly |
+
+### Result, 2026-10-15
+
+| | training (n=501) | validation (n=53) |
+|---|---|---|
+| `ok` -- every role audited and accounted for, 0 atoms over 1 A | **498** | **52** |
+| COORD MISMATCH, all dispositioned harmless by DockQ | 3 | 1 |
+| **known label defects** | **0** | **0** |
+
+Counts are STRUCTURES. Full report `docs/label_audit_results.md`; per-structure
+`train_val_splits/label_audit_*.csv`.
+
+### Two traps this chain exists to catch, both measured
+
+| trap | why the obvious test misses it | what catches it |
+|---|---|---|
+| the wrong COPY of a repeated chain | `9djw` has 61 chains, ~30 copies each. The mis-selected pair CONTACTED at 2.55 A over 180 atom pairs and still shared zero epitope residues with the real interface. A packing contact is a real contact, so no contact test separates them | `pick_instance_copies` in (2): SAbDab2's instance cif preserves the DEPOSITED frame, so the right copy matches at 0.0000 A and the runner-up at 25-33 A. An argmin, not a threshold |
+| a check that cannot fail | three checks here passed for exactly this reason -- an identity test walking difflib's matching blocks (substitutions invisible by construction), a coverage count tallying RMSD rows instead of `ok` verdicts, and a structure passing with BOTH antibody chains unpaired | (5), which exits non-zero if any planted defect goes unnoticed |
+
+### Superseded, kept for provenance — do not run
+
+| path | why |
+|---|---|
+| `shell_scripts/rebuild_labels.sh` | ONE-TIME migration for the 2026-10-14 geometry fix, already applied. (4) is the standing driver |
+| `phase_j_refold_list.py` | superseded by `phase_j_refold_from_audit.py`, which reads HMM domain boundaries instead of guessing the VH/VL splice from G/S composition |
+
+### Stale claims corrected 2026-10-15
+
+| claim, as carried in the status briefs | actual |
+|---|---|
+| "`phase_j_build_cache.py` and `phase_j_replay.py` are NOT written" | both ARE written, 593 and 368 lines, no stubs. `phase_j_replay.py` has never been RUN, which is the real gate on training |
+| "see `extra_training/reviews/round5_2026-10-13_phasej.md`" | `reviews/` does not exist |
+| "J2: check whether each selected antigen copy contacts the antibody" | done for the audit exceptions, and SUPERSEDED as a criterion: contact is not sufficient, per the trap table above |
+
+
 ## Phase I
 
 `phase_i_fold_validation.sh smoke | run | verify`, absorbing `val_fold.sh` and the smoke assertions
