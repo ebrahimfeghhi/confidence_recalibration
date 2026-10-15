@@ -1,11 +1,153 @@
 # Label audit: our RCSB-derived labels vs SAbDab2's independent coordinates
 
-Run 2026-10-15 1:10 PM ET by `phases/phase_j_label_audit.py`. Full per-structure report in
-`train_val_splits/label_audit_training.csv`.
+Reproduce both audits with `phases/phase_j_labels_and_audit.sh both`; prove the audit can fail with
+`phases/phase_j_label_audit_selftest.py`. Per-structure reports in
+`train_val_splits/label_audit_{training,validation}.csv`.
 
-> **REVISED 2026-10-15 2:40 PM ET** after review of c8137d8 found three holes in this audit. The
-> earlier headline figures (496 of 501, 51 of 53, "0 residue mismatches over 2.03M atoms") were
-> wrong or unfalsifiable and are replaced below.
+> **REVISED 2026-10-15 12:40 PM ET.** The pairing was rewritten: solved jointly per structure and, for
+> a fused chain, by concatenation. Verified counts rose from 481/501 to **497/501** (training) and
+> 48/53 to **52/53** (validation), with no role left unaudited in either set. Earlier headline
+> figures on this page (496/501, 51/53, "0 residue mismatches over 2.03M atoms", then 481/501 and
+> 48/53) are superseded by the table below.
+
+## Verdict, 2026-10-15 12:40 PM ET
+
+| verdict | training (n=501) | validation (n=53) |
+|---|---|---|
+| **ok** -- every role audited, no substitution, max deviation 0.0000 A | **497** | **52** |
+| COORD MISMATCH -- sequences exact, coordinates differ | 4 | 1 |
+| INCOMPLETE -- a role could not be paired | 0 | 0 |
+| SUBSTITUTION -- a residue identity differs | 0 | 0 |
+
+Columns: `training`/`validation` count STRUCTURES, not chains or residues. A structure is `ok` only
+when every role it declares was paired and compared; see "Three holes" below for why that is stated.
+
+## What the audit had to solve: chain-to-chain correspondence
+
+Both files hold the same molecule and divide it into chains differently. Every structure left
+unverified before this revision failed for one of three reasons, none of them a label defect.
+
+| reason | measured example |
+|---|---|
+| the two sources disagree on whether an scFv is one chain or two, in BOTH directions | `32nz` our label A=122 + B=115, SAbDab2 A=238 fused; `10fj` our label A=220 fused, SAbDab2 B=120 + C=113 |
+| `chain_roles` records a chain id absent from SAbDab2's file, or one carrying a copy suffix (`B1`/`B2`) | pairing by name fails; pairing is by sequence |
+| the crystal holds two copies of the complex, and the two files took different copies | `8dpl` every chain fits at 0.000-0.020 A alone, 28.5 A pooled |
+
+Two changes, neither introducing a tolerance:
+
+| change | why | measured effect |
+|---|---|---|
+| pair all roles at once (`scipy.optimize.linear_sum_assignment`) instead of per role | a per-role choice let one role take a chain another needed: on `9vb4` role H scored best against the ANTIGEN chain C (33/351) and claimed it, leaving both antibody roles unaudited | 481 -> 494 training |
+| compare roles GROUPED BY REFERENCE CHAIN, concatenating our chains when they share one | the claim "these two chains are the pieces of that one" is tested directly, with the same matcher and acceptance test as any one-to-one chain | 494 -> 497 training, 50 -> 52 validation |
+
+### An approach that was abandoned, and why
+
+Slicing the fused chain to one role's window needed a register tolerance to discard blocks in the
+homologous other domain. That constant had no principled value and had to be hand-tuned per
+structure: 30 passed `29tj` and failed `32nz` (122 matched over a 144-wide span); 8 passed `32nz`.
+Forcing the window to the label chain's length instead invented substitutions at the boundary --
+`29tj` H 142-144 reported ASP/ILE/VAL against ALA/ALA/SER. Both failures came from the slice, not the
+data. Concatenation needs no such constant and is what ships.
+
+## The one threshold, and evidence it is not load-bearing
+
+`MIN_COVER = 0.95` is the single threshold in `phase_j_label_audit.py`, used for both pairing and
+acceptance. `--coverage-hist` re-measures its margin on every run; the driver passes it always.
+
+| set | chain groups | lowest accepted | below 0.99 | below 0.97 | below MIN_COVER |
+|---|---|---|---|---|---|
+| training | 1,517 | 0.9871 | 1 | 0 | 0 |
+| validation | 140 | 0.9848 | 1 | 0 | 0 |
+
+Columns count chain GROUPS (one per reference chain, so a fused chain is one group covering two of
+our chains). Nothing lies between 0.95 and 0.98, so any cutoff in that range gives identical
+verdicts and nothing passes by sitting just above the line.
+
+**OPEN QUESTION FOR REVIEW.** A reference chain not FULLY accounted for could be a hard failure with
+the shortfall itemised, removing the last threshold from the file. It changes no verdict today, so it
+is a design decision rather than something to settle by tuning.
+
+## The 5 COORD MISMATCH structures
+
+Sequences match exactly in all five (`n_subs` 0). `per_chain_rmsd` superposes each reference chain on
+its own, alongside the pooled fit the verdict uses, which separates mixed copies from wrong atoms.
+
+| structure | per-chain rmsd (A) | pooled rmsd (A) | pooled max (A) | reading |
+|---|---|---|---|---|
+| `8dpl` | 0.000, 0.020, 0.020 | 28.50 | 68.41 | copies mixed; our atoms are right |
+| `8f6x` | 0.000, 0.443, 0.443 | 34.87 | 71.91 | copies mixed |
+| `8d53` | 0.000, 0.000, 0.000, 0.453 | 0.34 | 10.18 | one antigen chain differs locally |
+| `9djw` | 1.558, 1.596 | 15.77 | 47.02 | both chains differ locally |
+| `8v8f` (val) | 0.254, 0.725 | 0.29 | 4.36 | small local difference |
+
+`8dpl` and `8f6x` are harmless. The other three carry real local differences (max 4-13 A) and are 3
+of 554 structures; not yet explained.
+
+## Proving the audit can fail
+
+`phases/phase_j_label_audit_selftest.py` damages copies of real labels and asserts the audit notices,
+on a one-to-one structure (`10gh`) and a fused one (`32nz`). It builds its fixtures from the repo and
+exits non-zero if any damage goes unnoticed. Result 2026-10-15: 10 of 10 detected.
+
+| case | damage | verdict, 10gh | verdict, 32nz |
+|---|---|---|---|
+| clean | none (positive control) | ok | ok |
+| substitution | one residue renamed, coordinates untouched | SUBSTITUTION, n_subs 1 | SUBSTITUTION, n_subs 1 |
+| swap | coordinates of two chains exchanged | COORD MISMATCH, 7.97 A | COORD MISMATCH, 14.01 A |
+| truncate | 30 residues deleted inside the variable domain | INCOMPLETE | INCOMPLETE |
+| shift | one chain translated 5 A | COORD MISMATCH, 1.26 A | COORD MISMATCH, 2.24 A |
+
+A truncation must be AIMED. Deleting the END of a chain was tried first and the audit reported `ok`
+-- correctly: SAbDab2 crops to the variable region, so `10gh` label chain A is 238 residues (VH+CH1)
+against SAbDab2's 119, and the deleted quarter was CH1, which the reference does not contain. An
+audit cannot verify residues its reference lacks. That is this audit's coverage limit, and the reason
+an unaimed truncation test would have proved nothing.
+
+## DECISION FOR REVIEW: keep our RCSB labels, or switch to SAbDab2's?
+
+Raised 2026-10-15 by the user, who asked for the pros and cons weighed rather than assumed. Numbers
+below are measured, not estimated; the script that produced them is in this commit's message.
+
+**What the audit says about label quality.** Our labels now verify against SAbDab2's independent
+coordinates at 497 of 501 (training) and 52 of 53 (validation), with 0 substitutions and 0 unaudited
+roles, and the audit is shown to be able to fail (10 of 10 planted defects detected). So there is no
+label-QUALITY argument for switching. The question is coverage versus simplicity.
+
+**Coverage cost of switching**, over all 501 training structures:
+
+| quantity | residues |
+|---|---|
+| in our RCSB-derived labels | 311,923 |
+| in SAbDab2's labels | 266,336 |
+| lost by switching | 45,587 (14.6% of our labelled residues) |
+
+Structures where SAbDab2 has FEWER residues than ours: 284 of 501. Where it has MORE: 4. The gap is
+the constant domains -- SAbDab2 crops to the variable region, so `10gh` is 1,474 residues for us
+against 1,234, and its heavy chain is 238 (VH+CH1) against 119.
+
+**Why the constant domains may not be discardable.** `chain_pair_iptm` in Protenix
+(`sample_confidence.py:536`) builds `pair_mask` as the UNION of all tokens in both chains, with NO
+contact filter. The per-interface ipTM we are training the head to predict therefore depends on
+constant-domain tokens. The folded input contains them either way, so switching labels would leave
+those tokens present in the input but without ground truth in the FT3 losses (pLDDT, PAE, PDE,
+resolved), which are per-token and per-pair.
+
+| | keep our RCSB labels | switch to SAbDab2's |
+|---|---|---|
+| labelled residues | 311,923 | 266,336 (-14.6%) |
+| constant domains labelled | yes | no |
+| tokens in input with no label | none measured | the 45,587 above |
+| verified against an independent source | yes, 497/501 and 52/53 | it IS the source; no second opinion possible |
+| chain-correspondence code needed | yes (this file) | none |
+| already built and folded | yes | labels yes, nothing refolded |
+
+**OPEN QUESTIONS FOR THE AGENT.**
+1. Does the FT3 loss mask unlabelled tokens cleanly, or would 14.6% unlabelled residues bias the
+   pLDDT/PAE targets? This is the question that decides it, and it is not answered here.
+2. Is a label set that cannot be cross-checked against anything acceptable, given that four earlier
+   checks in this project were wrong in the same direction?
+3. If we keep our labels, are the 3 unexplained local differences (`8d53`, `9djw`, `8v8f`, max
+   4-13 A) worth chasing, or is 3 of 554 tolerable?
 
 ## Three holes found in review, and closed
 

@@ -61,6 +61,7 @@ run_training() {
         --skipped     "$R/training/prep/skipped_job_cifs.csv"
     echo "== training audit =="
     $PY -I "$R/phases/phase_j_label_audit.py" --which training \
+        --coverage-hist \
         --out "$R/train_val_splits/label_audit_training.csv"
 }
 
@@ -82,6 +83,7 @@ run_validation() {
         --selection "$R/train_val_splits/val_all_structures.csv" \
         --labels    "$R/validation/prep/job_cifs" \
         --roles     "$R/validation/fold/chain_roles.csv" \
+        --coverage-hist \
         --out "$R/train_val_splits/label_audit_validation.csv"
 }
 

@@ -29,18 +29,56 @@ name).
 The constant domains SAbDab2 deliberately crops are excluded by construction, since they are absent
 from its files -- that is a coverage limit, not a mismatch, and is reported as coverage rather than
 as error. If the coordinate frames differ, ONE rigid transform is fitted over the whole complex and
-applied to all chains together; never a separate fit per chain, which would mask a chain that has
-been swapped for another copy.
+applied to all chains together, and THAT pooled fit is what the verdict uses -- a per-chain fit
+alone would mask a chain swapped for another copy. A per-chain fit is also reported, in
+`per_chain_rmsd`, precisely to tell the two cases apart: when every chain fits at ~0 but the pooled
+fit does not, the atoms are right and the COPIES are mixed (8dpl: chains 0.000/0.020/0.020, pooled
+28.5 A). Without that column a large pooled RMSD cannot be distinguished from wrong coordinates.
 
-KNOWN LIMITATION: SINGLE-CHAIN CONSTRUCTS PAIR 2-TO-1 AND ARE NOT AUDITED. SAbDab2 keeps an scFv as
-ONE fused chain while our label splits it into two -- 7tzh is sabdab chain C at 230 residues against
-label chains A:125 and B:108, and 8v8f and 9cn2 sum EXACTLY to the fused length. The pairing here is
-one-to-one, so those antibody roles come back unpaired and are reported as AMBIGUOUS CHAIN or "too
-few shared atoms" rather than as verified. Their ANTIGEN roles still audit exactly. Normalising the
-sequence-coverage fallback by the label chain instead of the SAbDab2 chain was tried and made
-matters worse -- it left 7tzh and 8v8f unpaired anyway and regressed 9nr6 -- so the limitation is
-recorded rather than papered over. This is the same class as open review item J1/J3, the 9 split
-single-chain constructs. Auditing them needs an explicit 2-to-1 mode, which is not written.
+THE HARD PART IS MATCHING CHAIN TO CHAIN, NOT THE CHEMISTRY. Both files hold the same molecule,
+but they divide it into chains differently, in three ways, and every structure this audit failed to
+verify before 2026-10-15 failed for one of them:
+
+  1. THEY CUT THE ANTIBODY DIFFERENTLY. An scFv is one physical chain whose heavy and light domains
+     are joined by a linker, and each source chose independently whether to call that one chain or
+     two -- in BOTH directions. 32nz: our label A=122 + B=115, SAbDab2 A=238 fused. 10fj: our label
+     A=220 fused, SAbDab2 B=120 + C=113.
+  2. CHAIN NAMES DO NOT LINE UP. chain_roles sometimes records an id absent from SAbDab2's file, or
+     one carrying a copy suffix (B1/B2 for the two domains of one chain), so pairing by name fails.
+  3. CRYSTALS OFTEN HOLD TWO COPIES OF THE COMPLEX. Our label can take the antibody from copy 1 and
+     SAbDab2's from copy 2. Every atom is correct; they sit in different places.
+
+HOW THE PAIRING IS DECIDED. Jointly for the whole structure, then by concatenation -- two steps,
+neither of which introduces a tolerance:
+
+  1. ONE ASSIGNMENT, NOT A CHOICE PER ROLE. Containment of each label chain in each SAbDab2 chain is
+     scored, and a maximum-weight one-to-one matching is solved over the whole structure
+     (scipy.optimize.linear_sum_assignment). Pairing roles independently let one role take a chain
+     another needed: on 9vb4 the H role scored best against the ANTIGEN chain C (33/351) and claimed
+     it, so both antibody roles went unaudited while their own chains sat unused. A role left with no
+     chain of its own -- which is what having more roles than chains MEANS -- may then share one,
+     and the named chain breaks ties so identical copies keep the pairing chain_roles recorded.
+  2. CONCATENATION, NOT SLICING. Roles are compared GROUPED BY REFERENCE CHAIN. When two label
+     chains share one, the claim being made is that they are its pieces, so they are concatenated
+     and the result compared against it with the same matcher, the same acceptance test and the same
+     substitution accounting as any one-to-one chain. Order comes from where each chain's longest
+     match falls in the reference, because VH-then-VL and VL-then-VH both occur.
+
+WHY NOT SLICE THE FUSED CHAIN INSTEAD. That was built first and abandoned. Comparing one role
+against the whole fused chain needs the other domain excluded, and the two domains are homologous,
+so it required a register tolerance to discard spurious blocks -- a constant with no principled
+value, which had to be hand-tuned per structure (30 passed 29tj and failed 32nz at 122 matched over
+a 144-wide span; 8 passed 32nz). Forcing the window to the label chain's length instead invented
+substitutions at the boundary, reporting 29tj H 142-144 ASP/ILE/VAL against ALA/ALA/SER. Both
+failures came from the slice, not the data. Concatenation needs no such constant.
+
+A LABEL CHAIN MAY LEGITIMATELY HOLD MORE THAN THE REFERENCE. SAbDab2 is the reference, so coverage
+is measured over ITS chain: the claim is that every reference residue appears in our label with the
+same identity and the same coordinates. Residues our label has in ADDITION are reported as
+only_in_label, never as a failure. Requiring our side to be covered too was tried and is wrong,
+because the fusion runs both ways -- on 10fj our fused chain A (220) rightly carries more than
+SAbDab2's B (120) -- and that requirement rejected 230 structures whose reference residues all
+matched exactly.
 
 A PASS REQUIRES EVERY EXPECTED ROLE, AND SUBSTITUTIONS ARE COUNTED EXPLICITLY. Two holes were found
 in review of c8137d8 and are closed here:
@@ -66,7 +104,23 @@ hold the same deposited atoms. Residue identity must match exactly. A large RMSD
 deviation, or a residue-identity mismatch means the mapping is wrong somewhere and is reported for
 inspection rather than silently tolerated or silently dropped.
 """
-import argparse, collections, csv, glob, math, os, sys
+import argparse, collections, csv, difflib, glob, math, os, sys
+
+# THE ONE THRESHOLD IN THIS FILE, used for both pairing and acceptance so there is a single number
+# to argue about. A chain pairs with, and is accepted against, a reference chain when this fraction
+# of the REFERENCE chain is matched.
+#
+# IT IS NOT LOAD-BEARING, AND THAT IS MEASURED RATHER THAN ASSERTED. Over the 1,517 training and 140
+# validation chain groups audited on 2026-10-15 the LOWEST accepted fraction is 0.9871 (training) and
+# 0.9848 (validation); exactly one group in each falls below 0.99 and none below 0.97. Nothing sits
+# between 0.95 and 0.98, so any cutoff in that range produces identical verdicts, and no structure
+# passes by sitting just above the line. Re-run with --coverage-hist to re-measure this.
+#
+# OPEN QUESTION FOR REVIEW: a reference chain that is not FULLY accounted for could be a hard failure
+# with the shortfall itemised, rather than a fraction at all. That would remove the last threshold
+# from this file. The five structures that fail today fail on coordinates, not coverage, so the
+# choice changes nothing now -- but it is a design decision, not something to settle by tuning.
+MIN_COVER = 0.95
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -140,6 +194,13 @@ def main():
     ap.add_argument("--roles", default="")
     ap.add_argument("--out", required=True)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--debug-pdb", default="",
+                    help="print why each chain group of this pdb was rejected (matched, "
+                         "denominator, lengths), which is how the pairing bugs above were found.")
+    ap.add_argument("--coverage-hist", action="store_true",
+                    help="print the distribution of matched/denominator over every audited chain "
+                         "group, which is how MIN_COVER is shown not to be load-bearing. Re-measure "
+                         "this rather than trusting the number quoted beside MIN_COVER.")
     a = ap.parse_args()
 
     sel = a.selection or (f"{ROOT}/train_val_splits/cache_train_structures.csv" if a.which == "training"
@@ -176,44 +237,121 @@ def main():
         # which chain_roles records per role; SAbDab2's file is keyed by ITS label_asym_id, so the
         # roles are paired through chain_roles rather than by assuming the names agree.
         P, Q, pairs, ambig, idmis, cov = [], [], [], [], [], []
+        per_group = []       # per-reference-chain rmsd/maxdev, to separate copy mixing from bad atoms
         subs, only_s, only_l = [], 0, 0
         audited = set()
         expected = sorted(roles.get(pdb, {}))
-        for role, rr in sorted(roles.get(pdb, {}).items()):
-            lk = rr.get("model_chain")       # the label's chain NAME
-            sk = rr.get("ref_chain")         # SAbDab2's label_asym_id
-            how = "named"
-            if sk not in sab:
-                # chain_roles records SAbDab2's label id, but for a single-chain construct it can
-                # carry a copy index (B1/B2 for the two domains of one chain) and for some entries
-                # the id simply does not appear. Fall back to the chain whose sequence matches the
-                # label chain best, and RECORD that it was paired by sequence rather than by name,
-                # so a sequence-paired row is never mistaken for a named one.
-                cand = None
-                if lk in lab:
-                    lseq0 = "".join(_one(lab[lk][x][0]) for x in sorted(lab[lk]))
-                    import difflib as _dl
-                    for k2, v2 in sab.items():
-                        s2 = "".join(_one(v2[x][0]) for x in sorted(v2))
-                        m2 = sum(b.size for b in _dl.SequenceMatcher(None, s2, lseq0,
-                                 autojunk=False).get_matching_blocks())
-                        c2 = m2 / max(1, len(s2))
-                        if cand is None or c2 > cand[0]:
-                            cand = (c2, k2)
-                if cand and cand[0] >= 0.95:
-                    sk, how = cand[1], "by-seq"
+
+        # ---------------- PAIRING PRE-PASS: AN ASSIGNMENT, NOT A PER-ROLE GUESS ----------------
+        # Pairing each role independently with its best-matching chain lets one role take a chain
+        # another role needs. Measured on 9vb4, the H role scored best against the ANTIGEN chain C
+        # (33/351) and claimed it, so both antibody roles ended up unaudited while their own chains
+        # sat unused. The pairing is therefore solved jointly: maximise total containment over a
+        # one-to-one matching first, which is the normal case, and only then let a role that has no
+        # chain left SHARE one. That order is what makes sharing mean something -- a chain is reused
+        # only when the structure genuinely has more roles than SAbDab2 has chains, which is the
+        # scFv case, where SAbDab2 fuses VH and VL into one chain and our label splits them.
+        _rl = sorted(roles.get(pdb, {}).items())
+        seqs_l, named = {}, {}
+        for _role, _rr in _rl:
+            _lk = _rr.get("model_chain")
+            named[_role] = _rr.get("ref_chain")
+            if _lk in lab:
+                seqs_l[_role] = (_lk, "".join(_one(lab[_lk][x][0]) for x in sorted(lab[_lk])))
+        seqs_s = {k: "".join(_one(v[x][0]) for x in sorted(v)) for k, v in sab.items()}
+
+        def _contain(ls, ss):
+            # fraction of the LABEL chain found in the SAbDab2 chain. Asymmetric on purpose: the
+            # question is whether this label chain is a segment of that chain, so normalising by the
+            # SAbDab2 length would score each half of a fused scFv at ~0.5 and reject both.
+            _sm = difflib.SequenceMatcher(None, ss, ls, autojunk=False)
+            return sum(b.size for b in _sm.get_matching_blocks()) / max(1, len(ls))
+
+        roles_o, chains_o = list(seqs_l), list(seqs_s)
+        score = {}
+        for _r in roles_o:
+            for _s in chains_o:
+                # the named chain wins ties, so identical copies keep the pairing chain_roles
+                # recorded and nothing that passes today is re-paired by a coin flip
+                score[(_r, _s)] = _contain(seqs_l[_r][1], seqs_s[_s]) + (1e-6 if named.get(_r) == _s else 0.0)
+        assign = {}
+        if roles_o and chains_o:
+            import numpy as _np
+            from scipy.optimize import linear_sum_assignment as _lsa
+            _ri, _ci = _lsa(_np.array([[-score[(r, c)] for c in chains_o] for r in roles_o]))
+            for _i, _j in zip(_ri, _ci):
+                if score[(roles_o[_i], chains_o[_j])] >= MIN_COVER:
+                    assign[roles_o[_i]] = chains_o[_j]
+        for _r in roles_o:                       # roles with no chain of their own may share one
+            if _r in assign:
+                continue
+            _b = max(chains_o, key=lambda c: score[(_r, c)]) if chains_o else None
+            # below threshold, keep the chain chain_roles NAMED so the rejection is reported against
+            # the chain actually claimed rather than against whichever one happened to score highest
+            assign[_r] = _b if (_b is not None and score[(_r, _b)] >= MIN_COVER) else named.get(_r)
+        shared = collections.Counter(v for v in assign.values() if v)
+
+        # ------------- COMPARISON, GROUPED BY REFERENCE CHAIN -------------
+        # ONE GROUP PER SAbDab2 CHAIN, NOT ONE PER ROLE. An scFv is one physical chain whose heavy
+        # and light domains are joined by a linker, and the two sources disagree about whether to
+        # call that one chain or two -- in BOTH directions. Measured here: on 32nz our label splits
+        # it (A=122, B=115) and SAbDab2 fuses it (A=238); on 10fj our label fuses it (A=220) and
+        # SAbDab2 splits it (B=120, C=113). A role-by-role comparison has nothing to align in the
+        # first case and leaves both antibody roles unaudited.
+        #
+        # Grouping states the claim directly and needs NO new tolerance or threshold: if these label
+        # chains are the pieces of that reference chain, then CONCATENATING them reproduces it. The
+        # concatenation is then compared with the same matcher, the same acceptance test and the same
+        # substitution accounting as any one-to-one chain, so the fused case is not a special path
+        # with its own constants. An earlier attempt did slice the fused chain to a window instead,
+        # which required a register tolerance to reject homologous blocks in the other domain; the
+        # tolerance had to be hand-tuned per structure (30 passed 29tj but failed 32nz) and is gone.
+        groups = collections.defaultdict(list)
+        for role, rr in _rl:
+            lk = rr.get("model_chain")                      # the label's chain NAME
+            sk = assign.get(role) or rr.get("ref_chain")    # SAbDab2's label_asym_id
             if not lk or not sk or lk not in lab or sk not in sab:
                 cov.append(f"{role}:unpaired({lk}/{sk})"); continue
-            lres, sres = lab[lk], sab[sk]
-            lp, sp = sorted(lres), sorted(sres)
-            lseq = "".join(_one(lres[p][0]) for p in lp)
-            sseq = "".join(_one(sres[p][0]) for p in sp)
-            import difflib
+            groups[sk].append((role, lk, sk == rr.get("ref_chain")))
+
+        for sk, members in sorted(groups.items()):
+            sres = sab[sk]
+            sp = sorted(sres)
+            sseq = "".join(_one(sres[x][0]) for x in sp)
+            # Concatenation order comes from the data, not from the role names: each label chain is
+            # placed where its longest match falls in the reference chain. VH-then-VL and VL-then-VH
+            # both occur, so assuming an order would silently mis-pair whichever convention differs.
+            def _anchor(lk):
+                _ls = "".join(_one(lab[lk][x][0]) for x in sorted(lab[lk]))
+                return difflib.SequenceMatcher(None, sseq, _ls, autojunk=False) \
+                        .find_longest_match(0, len(sseq), 0, len(_ls)).a
+            members = sorted(members, key=lambda m: _anchor(m[1]))
+
+            lp, owner = [], []          # lp: (label chain, residue key); owner: the role it belongs to
+            for role, lk, _named in members:
+                for x in sorted(lab[lk]):
+                    lp.append((lk, x)); owner.append(role)
+            lseq = "".join(_one(lab[lk_][x][0]) for lk_, x in lp)
+
             sm = difflib.SequenceMatcher(None, sseq, lseq, autojunk=False)
-            blocks = [b for b in sm.get_matching_blocks() if b.size]
-            matched = sum(b.size for b in blocks)
-            if not matched or matched / len(sseq) < 0.95:
-                ambig.append(f"{role}:{lk}/{sk}@{matched}/{len(sseq)}"); continue
+            matched = sum(b.size for b in sm.get_matching_blocks() if b.size)
+            # SAbDab2 IS THE REFERENCE, so the denominator is ITS chain. The audit's claim is that
+            # every reference residue appears in our label with the same identity and the same
+            # coordinates; residues our label has in ADDITION are reported as only_in_label rather
+            # than as a failure. Requiring our side to be covered too is wrong and was measured to
+            # be: on 10fj our fused chain A (220) legitimately carries more than SAbDab2's B (120),
+            # and that requirement rejected 230 structures whose reference residues all matched.
+            denom = len(sseq)
+            ok_cov = bool(matched) and matched / denom >= MIN_COVER
+            if not ok_cov:
+                if a.debug_pdb == pdb:
+                    print(f"  DBG {pdb} {'+'.join(m[0] for m in members)} "
+                          f"lk={'+'.join(m[1] for m in members)} sk={sk} "
+                          f"matched={matched} denom={denom} len_l={len(lseq)}", file=sys.stderr)
+                ambig.append(f"{'+'.join(m[0] for m in members)}:"
+                             f"{'+'.join(m[1] for m in members)}/{sk}@{matched}/{denom}")
+                continue
+
             # OPCODES, NOT MATCHING BLOCKS. `equal` gives the correspondence to compare; `replace`
             # is a substitution and must be reported rather than skipped; `delete` and `insert` are
             # residues present in only one of the two files.
@@ -221,35 +359,51 @@ def main():
             for tag, i1, i2, j1, j2 in sm.get_opcodes():
                 if tag == "equal":
                     for k in range(i2 - i1):
-                        corr.append((sp[i1 + k], lp[j1 + k]))
+                        corr.append((sp[i1 + k], lp[j1 + k], owner[j1 + k]))
                 elif tag == "replace":
                     n = min(i2 - i1, j2 - j1)
                     for k in range(n):
-                        subs.append(f"{role}:{sp[i1+k]}->{lp[j1+k]}:"
-                                    f"{sres[sp[i1+k]][0]}!={lres[lp[j1+k]][0]}")
+                        _s, _l = sp[i1 + k], lp[j1 + k]
+                        subs.append(f"{owner[j1+k]}:{_s}->{_l[0]}{_l[1]}:"
+                                    f"{sres[_s][0]}!={lab[_l[0]][_l[1]][0]}")
                     only_s += max(0, (i2 - i1) - n)
                     only_l += max(0, (j2 - j1) - n)
                 elif tag == "delete":
                     only_s += i2 - i1
                 elif tag == "insert":
                     only_l += j2 - j1
-            audited.add(role)
-            pairs.append(f"{role}={lk}/{sk}" + ("" if how == "named" else "~seq"))
-            for sp_i, lp_i in corr:
-                if sres[sp_i][0] != lres[lp_i][0]:
-                    idmis.append(f"{role}:{sp_i}->{lp_i}:{sres[sp_i][0]}!={lres[lp_i][0]}")
+
+            for role, lk, _named in members:
+                audited.add(role)
+                pairs.append(f"{role}={lk}/{sk}" + ("" if _named else "~seq"))
+            cov.append(f"{'+'.join(m[0] for m in members)}:{matched}/{denom}")
+            _gP, _gQ = [], []
+            for sp_i, lp_i, role in corr:
+                _lres = lab[lp_i[0]][lp_i[1]]
+                if sres[sp_i][0] != _lres[0]:
+                    idmis.append(f"{role}:{sp_i}->{lp_i[1]}:{sres[sp_i][0]}!={_lres[0]}")
                     continue
                 for an, xyz in sres[sp_i][1].items():
-                    if an in lres[lp_i][1]:
-                        Q.append(xyz); P.append(lres[lp_i][1][an])
-            cov.append(f"{role}:{matched}/{len(sseq)}")
+                    if an in _lres[1]:
+                        Q.append(xyz); P.append(_lres[1][an])
+                        _gQ.append(xyz); _gP.append(_lres[1][an])
+            # EACH GROUP SUPERPOSED ON ITS OWN, as well as all of them together below. The two
+            # answers differ when the pairing is right chain-by-chain but mixes COPIES: a crystal
+            # with two copies of the complex lets our label's antibody pair to copy 1 and its
+            # antigen to copy 2, and each chain then superposes exactly while the pooled fit does
+            # not. Without this column a large pooled RMSD cannot be told apart from wrong atoms.
+            _gr, _gm = kabsch(_gP, _gQ) if len(_gP) >= 3 else (None, None)
+            per_group.append(f"{'+'.join(m[0] for m in members)}:"
+                             + ("" if _gr is None else f"{_gr:.3f}/{_gm:.3f}"))
 
         rmsd, maxdev = kabsch(P, Q) if len(P) >= 3 else (None, None)
         skipped = [r for r in expected if r not in audited]
         rec.update(roles_expected=len(expected), roles_audited=len(audited),
                    roles_skipped=";".join(skipped), n_subs=len(subs), subs=";".join(subs[:6]),
                    only_in_sabdab=only_s, only_in_label=only_l,
+                   shared_chains=";".join(f"{k}x{v}" for k, v in sorted(shared.items()) if v > 1),
                    matched_atoms=len(P), pairs=";".join(pairs), coverage=";".join(cov),
+                   per_chain_rmsd=";".join(per_group),
                    rmsd="" if rmsd is None else f"{rmsd:.4f}",
                    maxdev="" if maxdev is None else f"{maxdev:.4f}",
                    n_resid_mismatch=len(idmis), resid_mismatch=";".join(idmis[:6]),
@@ -273,13 +427,29 @@ def main():
 
     cols = ["pdb", "instance", "verdict", "roles_expected", "roles_audited", "roles_skipped",
             "matched_atoms", "rmsd", "maxdev", "n_subs", "subs", "only_in_sabdab", "only_in_label",
-            "n_resid_mismatch", "pairs", "coverage", "resid_mismatch", "ambiguous"]
+            "n_resid_mismatch", "shared_chains", "per_chain_rmsd",
+            "pairs", "coverage", "resid_mismatch", "ambiguous"]
     with open(a.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
         for r in rows:
             w.writerow(r)
     c = collections.Counter(r.get("verdict") for r in rows)
+    if a.coverage_hist:
+        fr = []
+        for r in rows:
+            for g in (r.get("coverage") or "").split(";"):
+                if ":" in g and "/" in g and "unpaired" not in g:
+                    num, den = g.split(":")[1].split("/")
+                    fr.append(int(num) / int(den))
+        fr.sort()
+        if fr:
+            print(f"coverage over {len(fr)} chain group(s): min={fr[0]:.4f} "
+                  f"below_0.99={sum(1 for x in fr if x < 0.99)} "
+                  f"below_0.97={sum(1 for x in fr if x < 0.97)} "
+                  f"below_MIN_COVER={sum(1 for x in fr if x < MIN_COVER)}")
+            print(f"  lowest 8: {[round(x, 4) for x in fr[:8]]}")
+            print(f"  MIN_COVER={MIN_COVER}; a cutoff anywhere below min above changes no verdict")
     print(f"audited {len(rows)} structure(s) -> {a.out}")
     for k, v in c.most_common():
         print(f"  {k:<28} {v}")
