@@ -22,6 +22,46 @@ the job cif's atoms, and the per-pose label must be a permutation of its sibling
 through the loss. Check 3 here adds the other thing training depends on and the loss cannot see: that
 the gradient reaches the confidence head and nothing else.
 
+WHAT HAS ACTUALLY BEEN REPLAYED, AND WHAT PASSED. 2026-10-15, 5 units over 25 poses, chosen to cover
+the classes that break things rather than 5 ordinary Fabs. Every one is EXACT -- 0.00e+00, not a
+tolerance -- on the label, on all four loss terms and the total, with the gradient confined to the
+confidence head (165 tensors inside it, 0 outside).
+
+| unit | the class it covers | poses | atoms | sample indices as stored | result |
+|---|---|---|---|---|---|
+| `10fj/free_500000` | first run; ordinary Fab, our label FUSES what SAbDab2 splits | 5 | 4795 | [0, 4, 3, 2, 1] | PASS |
+| `9djw/free_500000` | nanobody (H, no L), AND the re-selected copy from f8bb5a38 | 5 | 2035 | [2, 3, 4, 1, 0] | PASS |
+| `8h3c/free_500000` | split single-chain construct (scFv), also a geometry-veto case | 5 | 1841 | [2, 0, 4, 1, 3] | PASS |
+| `9e7l/free_500000` | identical antigen copies | 5 | 3175 | [3, 4, 0, 1, 2] | PASS |
+| `9g13/free_500000` | ordinary Fab control, the smallest in the selection | 5 | 1083 | [3, 0, 1, 4, 2] | PASS |
+
+Reproduce any row with:
+    CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold python phases/phase_j_replay.py --unit <unit>
+
+THE SAMPLE INDICES COLUMN IS THE POINT OF LISTING IT. Not one of the five is in `_sample_k` order,
+and no two permutations agree. Had the cache assumed order, these would have silently trained the
+head against another pose's label -- which is why phase_j_build_cache.py resolves the index and why
+this table records what each unit's permutation actually was.
+
+THREE THINGS THIS CAMPAIGN FOUND, none of which the loss comparison itself could see:
+
+  1. LAYERNORM_TYPE=openfold is REQUIRED and this script refuses without it. The guard fired on the
+     very first attempt. Without it coordinates are silently NaN.
+  2. 9djw's cached label was STALE after its copy was re-selected, and build_cache REFUSED it:
+     "2011 of 2011 resolved label atoms are more than 0.01 A from any atom of the job cif (worst
+     104.630 A)" -- 104.6 A being the distance between the two crystal copies. Fixing the job cif was
+     not enough; the BIOASSEMBLY and the indices row are built from it and had to be rebuilt too,
+     then the label cache. A label fix is three layers deep, and only the guard made that visible.
+  3. phase_j_prepare_training_data.py DELETES bioassemblies not in its selection (`extra` branch).
+     Rebuilding one structure by pointing it at the real --bio-dir with a one-row selection would
+     have removed the other 500. It must be run into a TEMP --bio-dir and the single .pkl.gz and its
+     index rows spliced in; the splice was verified by row count, 3 replaced, 3111 unchanged.
+
+WHAT IS STILL NOT ESTABLISHED. These 5 units are 25 poses of 3,611 cached units. The pass is exact
+rather than approximate, which is strong evidence the mechanism is right, but it is not a sweep. The
+remaining fixture classes in docs/organization_plan.md -- homodimers, partial score output, malformed
+JSON, confidence ties -- are unreplayed.
+
 WHAT IS COMPARED
   1. LABEL: the stored permuted coordinates and mask against a live permutation of the same pose.
   2. LOSS: every FT3 term (plddt, pde, pae, resolved) and the total, from the stored label against
