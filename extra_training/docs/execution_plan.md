@@ -20,12 +20,44 @@ Both built by `phases/phase_j_queue_now.py` (`--apply` writes; without it only c
 
 ## Order of work
 
-| stage | what | units | consumer | writes to |
-|---|---|---|---|---|
-| 1 | FoldBench top-off | 31 of 612 done | `fbtop_0/1/3` | `foldbench_baseline_remaining_folds/` |
-| 2 | training cache | 733 | `tcache_0/1/3`, `sabdab_train` | `training/fold_regen/` |
-| 3 | validation | 300 | `vfold_0/1/3`, `sabdab_val2` | `validation/fold_regen/` |
-| deferred | the refolds | 2,480 | blocked on the corrected MSAs | -- |
+Driven by `shell_scripts/watch_train_val_then_foldbench.sh` (tmux `fbwatch`).
+`watch_foldbench_then_training.sh` is SUPERSEDED and must not be run.
+
+| stage | what | units | measured | consumer | writes to |
+|---|---|---|---|---|---|
+| 1 | training cache | 733 | 5.2 h | `tcache_0/1/3`, `sabdab_train` | `training/fold_regen/` |
+| 2 | validation | 300 | 2.6 h | `vfold_0/1/3`, `sabdab_val2` | `validation/fold_regen/` |
+| 3 | FoldBench top-off | 576 of 612 left | ~18.7 h | `fbtop_0/1/3`, `foldbench` | `foldbench_baseline_remaining_folds/` |
+| deferred | the refolds | 2,480 | -- | blocked on the corrected MSAs | -- |
+
+### Why this order, and what the first ETA got wrong
+
+FoldBench is ~70% of the ~26.5 h remaining and is the one stage the confidence-head work is not
+waiting on -- it is the benchmark top-off. The training cache and validation folds are what
+everything downstream needs and together they are 7.8 h, so they run first. The total is unchanged.
+
+The first estimate put FoldBench at 56.6 h. It was measured from a rate observed while the three
+workers spent their entire first 3.5 h on the two LARGEST complexes in an unsorted queue -- `7zau`
+at 2,520 residues and `7z2m` at 2,244, the only two folded in that window -- against a remaining
+queue whose median is 1,230 residues. Rates and sizes, for the record:
+
+| | n | median tokens | observed per-fold |
+|---|---|---|---|
+| FoldBench, folded so far | 36 | 2,520 | 1,202 s (29 of 34 within 1,195-1,208 s) |
+| FoldBench, still queued | 576 | 1,230 residues | -- |
+| training cache | 3,983 | 654 | 46 s |
+
+A quadratic-in-residues model anchored on those two complexes predicts 11.5 GPU-h for the 36 already
+done against 10.6 actual, 8% over, and gives ~18.7 h for the 576 remaining. It is an extrapolation
+DOWNWARD into sizes nothing has folded yet, so treat it as plus or minus several hours until the
+workers reach the smaller complexes.
+
+### FoldBench is drained, never killed
+
+`folder.py` has no stop file and no graceful exit, so a worker killed mid-fold loses that fold
+outright and its poses do not reproduce. The switch waits for every claimed-but-unwritten unit --
+a claim with no `run.json` is a fold on a GPU right now -- before stopping the workers, up to 2 h,
+and if it times out it stops nothing. FoldBench is claim-based and resumes where it left off.
 
 ### Why stages 2 and 3 write to a fresh root
 

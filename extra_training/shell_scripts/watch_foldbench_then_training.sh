@@ -1,4 +1,8 @@
 #!/bin/bash
+# SUPERSEDED 2026-10-14 by watch_train_val_then_foldbench.sh. Do not run this one: it folds FoldBench
+# FIRST, which is ~18.7 h of the ~26.5 h remaining and the one stage nothing downstream waits on,
+# and it has no drain -- starting it while fbtop workers are mid-fold loses those folds.
+#
 # Watch the FoldBench top-off, remediate it, then hand the cards back to the TRIMMED training queue.
 #
 # WHY THIS EXISTS. The switch of 2026-10-14 stopped tcache_watch along with its workers, so the
