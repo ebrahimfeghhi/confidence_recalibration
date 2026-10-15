@@ -38,9 +38,33 @@ Within the fully-verified passes:
 | worst max deviation | **0.0000 A** | **0.0000 A** |
 
 So where a structure is fully audited, the agreement is exact -- not approximate, not
-within-tolerance, bit-identical on every compared atom. The 10 and 2 residues present in SAbDab2 but
-absent from our label are the only real coverage gaps found and have not been individually
-inspected.
+within-tolerance, bit-identical on every compared atom.
+
+### The 12 residues SAbDab2 has and our label lacks are deliberate, logged drops
+
+Inspected. Not losses: every one is the `drop_geometrically_impossible` veto in
+`phase_j_job_cifs.py` (`max_ca=4.5`), and the writer's own `unplaced_residues.csv` accounts for all
+12 with matching counts.
+
+| structure | role | kept / expected | vetoed |
+|---|---|---|---|
+| 7ugn | ag0 | 448 / 451 | 3 |
+| 7ugq | ag0 | 444 / 447 | 3 |
+| 7ugq | ag1 | 444 / 447 | 3 |
+| 9mnq | ag1 | 168 / 169 | 1 |
+| 7t2p | H | 130 / 132 | 2 |
+
+10 training plus 2 validation = 12, exactly the figure this audit reached independently.
+
+WHY THE VETO EXISTS, measured rather than assumed: sequence alignment can place a residue at a
+position it does not belong to, because it only needs the same amino acid and the true residue there
+is often unresolved. Without the veto, 104 of 501 structures lost an ENTIRE CHAIN to AF3's 10 A
+filter (`filter.py:146`), and 34 more carried a 4.5-10 A break that the filter passes, so they would
+have trained against a wrong residue silently. Twelve dropped residues against 104 destroyed chains
+is the right trade.
+
+That the audit rediscovered an already-logged quantity, with counts matching the writer's own
+record, is a small positive signal for the audit itself.
 
 ## What was compared, and why it is independent
 
