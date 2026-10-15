@@ -949,7 +949,27 @@ def write_job_cif(st, keep, expected, out_cif, max_unplaced_frac=0.15,
         # the whole chain downstream.
         misplaced = drop_geometrically_impossible(res, pos)
         unplaced = [i for i in range(len(res)) if i not in pos]
-        if unplaced and len(unplaced) > max_unplaced_frac * len(res):
+        # THE FRACTION IS OVER POLYMER RESIDUES, NOT EVERY RESIDUE IN THE SPAN. `res` is a slice of
+        # the deposited chain, so it carries that chain's waters and ligands, and NONE of those can
+        # ever align to the fold's sequence -- they are correctly dropped either way. Counting them
+        # as failures made the ratio a function of how much solvent a chain happens to carry.
+        # Measured on 7stz: chain D holds 422 polymer residues, 18 ligands (glycans, PG4, Ca) and 62
+        # waters, so `80 of 502 do not align` was 62 waters plus 18 ligands -- 16%, over the 15%
+        # limit, and the structure was refused. Chain C passed the identical artefact only because
+        # its 540 polymer residues diluted it to 12%. The polymer residues of chain D align at
+        # 422 of 422, 100%.
+        _poly_idx = [i for i, r in enumerate(res)
+                     if len(res_code(r.name)) == 1 and res_code(r.name).isalpha()
+                     and res_code(r.name) != "X"]
+        _poly = set(_poly_idx)
+        unplaced_poly = [i for i in unplaced if i in _poly]
+        if unplaced_poly and len(unplaced_poly) > max_unplaced_frac * max(1, len(_poly_idx)):
+            return None, (f"{role}: {len(unplaced_poly)} of {len(_poly_idx)} observed POLYMER "
+                          f"residues do not align to the fold's sequence "
+                          f"({len(unplaced_poly)/max(1,len(_poly_idx)):.0%}, limit "
+                          f"{max_unplaced_frac:.0%}) -- too much to be a junction artefact"
+                          f" [{len(unplaced)} of {len(res)} counting waters and ligands]")
+        if False:
             return None, (f"{role}: {len(unplaced)} of {len(res)} observed residues do not align to "
                           f"the fold's sequence ({100*len(unplaced)/len(res):.0f}%, limit "
                           f"{100*max_unplaced_frac:.0f}%) -- too much to be a junction artefact")

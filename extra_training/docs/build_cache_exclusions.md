@@ -9,11 +9,11 @@ Companion to `phases/phase_j_build_cache.py`. Written 2026-10-15. Reproduce any 
 |---|---|---|
 | selected for the training cache | 501 | 5,010 |
 | folded | 500 | 5,000 |
-| **labelled and trainable** | **499** | **4,990** |
-| lost | 2 | 20 |
+| **labelled and trainable** | **500** | **5,000** |
+| lost | 1 | 10 |
 
-`9mx1` cannot be folded at all: 2,941 residues against Protenix's 2,560-token refusal
-(`runner/inference.py:399`). `7stz` is folded but unlabelled, and is the one open item -- see below.
+`9mx1` is the only loss and cannot be folded at all: 2,941 residues against Protenix's 2,560-token
+refusal (`runner/inference.py:399`). Nothing that was folded is unlabelled.
 
 ## What the guards are, and why they exist
 
@@ -46,9 +46,9 @@ Running all three pickers on the named path was tried and rejected: it changes 2
 intentionally, but 5 move unexplainably -- `9r09` and `9hng` put the heavy chain on a chain named
 `J000`, `9shd` puts the antigen on `H0Z0`. Those 5 are open findings, not shipped behaviour.
 
-## Open: `7stz`
+## `7stz`, resolved -- and the guard was wrong, not the data
 
-Folded, not labelled. Its antigen is the only one SAbDab2 names, and it does not touch the antibody.
+Its antigen is the only one SAbDab2 names, and it does not touch the antibody.
 
 | measurement | value |
 |---|---|
@@ -64,10 +64,16 @@ unchanged at 590 -- but `write_job_cif` refuses it:
 
     ag1: 80 of 502 observed residues do not align to the fold's sequence (16%, limit 15%)
 
-UNEXPLAINED. `502` matches neither chain D's 422 polymer residues nor its 440 including
-non-polymers, and the glycan hypothesis fails: chain D is 4.1% non-polymer, not 16%. Until that
-count is understood the structure stays out, because the alternative is overriding a guard whose
-objection has not been read.
+THE GUARD WAS COUNTING SOLVENT. `502` is chain D's residue count INCLUDING 62 waters, and the 80
+"misaligned" residues are exactly those 62 waters plus 18 ligands (glycans, PG4, Ca). None of them
+can ever align to a protein sequence and all of them were already being dropped correctly -- only the
+RATIO was wrong, which made it a function of how much solvent a chain happens to carry. Chain C
+passed the identical artefact only because its 540 polymer residues diluted it to 12%.
+
+The fraction is now computed over POLYMER residues only. Chain D's polymer residues align at
+422 of 422, 100%. Result: 7stz's bioassembly rebuilds to 7,848 atoms with all three chains and
+dissociation zero -- exactly the 7,848 the pose carries -- and all 10 labels build with no masking.
+NO REFOLD was needed: the folded antigen sequence is 590 either way, so only label coordinates moved.
 
 `7stz` is also an anti-hapten antibody -- `agtypes` is `HAPTEN/PROTEIN`, `agchains` is `BC/C` -- so
 its true antigen is a small molecule the pipeline excludes as a non-polymer. That is context, not
