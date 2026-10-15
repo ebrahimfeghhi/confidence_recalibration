@@ -46,7 +46,26 @@ Tested directly: is SAbDab2's own structure a clean substring of SAbDab2's own s
 Their dataset is self-consistent. The mismatch is a consequence of our join, not a defect they
 shipped.
 
-## But SAbDab2's labels cannot replace RCSB's
+## SAbDab2's labels CAN be used; the limitation is which regions they supervise
+
+CORRECTED after review. The earlier heading here said their labels "cannot replace RCSB's", which
+was too absolute. What is true is a coverage limitation, not an invalidity:
+
+| supervision wanted | can SAbDab2's cropped coordinates supply it? |
+|---|---|
+| variable domain and antigen | **yes**, given validated residue mapping |
+| the full Fab, constant domain included | only partly -- constant-domain coordinates must come from elsewhere |
+| full-Fab inputs with losses restricted to chosen regions | **yes**, with explicit supervision masks |
+
+That third option needs care: "cropped out by the dataset" must not be allowed to become
+"experimentally unresolved", which would corrupt the `resolved` head's supervision in particular.
+
+RCSB is the right choice for THIS pipeline because our inputs carry substantial constant-domain
+sequence and we supervise across the whole chain. That is an implementation consequence of our
+coverage needs, not a defect in SAbDab2. Missing SEQRES in their CIFs likewise means reconstruction
+work, not unusable coordinates.
+
+### The measurement that drove the original wording
 
 The deciding test: for each role we want to refold, does SAbDab2's own structure already contain the
 sequence we need?
@@ -57,8 +76,9 @@ sequence we need?
 | 90-99% | **0** |
 | < 90% (typically 54%, range 50-72%) | **136 of 136** |
 
-SAbDab2's structures cover roughly half of each chain and the residues at issue are not in them.
-Using their coordinates as labels is therefore not an option for a full-Fab fold.
+SAbDab2's structures cover roughly half of each chain and the residues at issue are not in them, so
+they cannot supply CONSTANT-DOMAIN labels for a full-Fab fold. They remain usable for the variable
+domain and the antigen.
 
 ## The part of this that argues against refolding at all
 
@@ -68,12 +88,14 @@ independent lines point the same way:
 | | |
 |---|---|
 | 1 | of the 1,059 residues a refold would restore, **1,044 (98.6%) are constant domain or termini**; only 15 touch a variable domain, and both of those straddle its C-terminal edge rather than a CDR |
-| 2 | **SAbDab2's own curated structures omit that region entirely**, so the field's reference antibody-antigen set does not treat it as load-bearing. This is the only one of the three that is an external check rather than our own reasoning |
-| 3 | FT3 trains pLDDT + PAE + PDE + resolved (`configs_base.py:402`, `alpha_pae` 0.0 "or 1 in finetuning stage 3") over all atoms, but the quantity we report is **per-interface ipTM**, which reads the PAE block between antibody and antigen. Constant-domain residues do not enter it |
+| 2 | ~~SAbDab2's curated structures omit that region, so the field does not treat it as load-bearing~~ **RETRACTED.** The cropping is a deliberate scoping choice by the curators, not evidence about biological relevance. And SAbDab2 is itself derived from PDB depositions, so it is a curated subset of the same experimental data rather than an independent source of truth -- it cannot serve as the external check I claimed. Their site also offers full processed structures separately from the ML dataset |
+| 3 | ~~the reported metric does not read them~~ **WRONG.** `sample_confidence.py:536` builds `pair_mask` as the union of ALL tokens in both chains and passes it straight to `calculate_iptm`, which applies no contact or distance filter. Per-interface ipTM is therefore computed over every inter-chain PAE entry between the complete heavy chain -- VH **and CH1** -- and the complete antigen. Constant-domain residues DO affect the score |
 
-What a refold still buys is input consistency with the benchmarks, which feed full deposited
-sequences, so at evaluation the model meets complete CH1 it did not train on. That is real but
-second-order, and testable on the validation split after training.
+WHERE THAT LEAVES THE CASE AGAINST REFOLDING: largely collapsed. Argument 2 is retracted and
+argument 3 was simply wrong. Argument 1 survives only as a geometric statement -- the residues are
+far from the paratope -- and its relevance is much reduced now that the reported metric is known not
+to be geometry-restricted. Restoring those residues changes the ipTM we report, so the refold is
+better justified than I argued. It was launched on 2026-10-15 and is running.
 
 **Decision taken 2026-10-15:** refold the 118 training and 13 validation structures with their
 ORIGINAL queries, which needs no MSA rebuild and runs immediately, rather than wait on the
@@ -87,9 +109,12 @@ description of what each structure file contains:
 > "Each structure file contains a single paired-chain or single-chain antibody, **cropped to the
 > variable region**, alongside any antigen chains."
 
-So the 50-72% coverage measured above is the dataset working as designed, not a defect, and the
-constant domain is out of scope for the reference antibody-antigen ML set by the authors' own
-decision. That is the external check this document previously said it lacked.
+So the 50-72% coverage measured above is the dataset working as designed, not a defect.
+
+IT IS NOT, HOWEVER, AN EXTERNAL CHECK ON WHETHER THE CONSTANT DOMAIN MATTERS, which is how an
+earlier revision of this file used it. Cropping is a scoping decision by the curators, and SAbDab2
+derives from PDB depositions, so it is a curated subset of the same experimental data rather than
+independent evidence. Their site offers full processed structures separately from the ML dataset.
 
 Version in use: **v0.2.0** (Zenodo 22019991, published 2026-08-20). **v0.3.0** was published
 2026-10-13 (record 23343734) and we are not on it; its record carries no changelog, and the authors
@@ -97,6 +122,10 @@ state splits are backward-compatible across versions, so nothing here is invalid
 `training_data_overview.md` for the full citation and the version table.
 
 ## Open, and not traced
+
+THE CROPPING DOES NOT EXPLAIN THE SEQUENCE OMISSIONS, and matching their cropped variable-region
+coordinates does nothing to validate the omitted constant-region sequence. These are two separate
+questions and only the first is answered.
 
 **Why** SAbDab2's sequence table differs from RCSB's SEQRES in those ~25% of cases -- a curation
 choice, a different construct record, or something else -- has never been investigated. That is the
