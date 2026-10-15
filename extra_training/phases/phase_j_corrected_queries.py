@@ -44,8 +44,16 @@ def dir_name(seq, roles):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gaps", nargs="+", required=True,
-                    help="one or more --native-gaps csvs from phase_j_job_cifs.py")
+    ap.add_argument("--gaps", nargs="*", default=[],
+                    help="one or more --native-gaps csvs from phase_j_job_cifs.py (legacy path: it "
+                         "re-derives the corrected sequence from the gap runs)")
+    ap.add_argument("--refold", nargs="*", default=[],
+                    help="one or more refold lists from phase_j_refold_from_audit.py. PREFERRED. "
+                         "These carry `corrected_q` verbatim, so nothing is re-derived here -- the "
+                         "legacy --gaps path rebuilt the sequence from the run list and came out "
+                         "short by the unresolved-residue count on 28 of 173 runs, because the map "
+                         "it derived covered only resolved positions. A column that is read is not "
+                         "a computation that can drift.")
     ap.add_argument("--out-dir", default=f"{ROOT}/building_msa/queries_corrected")
     ap.add_argument("--controls", type=int, default=5,
                     help="how many UNCHANGED queries to add to the batch as the conversion control. "
@@ -57,13 +65,21 @@ def main():
                     help="the existing store, to pick control queries whose MSA is already there")
     a = ap.parse_args()
 
+    if not a.gaps and not a.refold:
+        raise SystemExit("STOP: pass --refold (preferred) or --gaps")
     per = collections.defaultdict(set)
+    for f in a.refold:
+        for r in csv.DictReader(open(f)):
+            q = (r.get("corrected_q") or "").strip().upper()
+            if not q:
+                raise SystemExit(f"STOP: {f} row {r.get('pdb')} {r.get('role')} has no corrected_q")
+            per[q].add(f"{r['pdb']}_{r['role']}")
     for g in a.gaps:
         for r in csv.DictReader(open(g)):
             if r.get("kind") == "omission" and r.get("corrected_query"):
                 per[r["corrected_query"].strip().upper()].add(f"{r['pdb']}_{r['role']}")
     if not per:
-        raise SystemExit(f"STOP: no omission rows with a corrected query in {a.gaps}")
+        raise SystemExit(f"STOP: no corrected queries in {a.refold or a.gaps}")
 
     os.makedirs(a.out_dir, exist_ok=True)
     idx = {seq: dir_name(seq, roles) for seq, roles in per.items()}

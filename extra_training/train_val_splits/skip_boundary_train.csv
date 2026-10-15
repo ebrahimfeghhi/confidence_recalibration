@@ -1,0 +1,11 @@
+pdb,role,chain,qlen,domains,dom,tether_in_query,n_tether,missing_domain,n_missing_domain,reason
+7tr4,ag2,L,10,,span 1-115,,,2-3;5-22;24-49;52-54;56-69;71-78;80-113,105,alignment unreliable: query covers 9% of its span (10 residues over 115); too sparse to call a hole
+8dpl,H,H,116,H:1-118;K:139-243,H:1-118,,0,115-118,4,domain residues absent from the query
+8s6k,H,A,125,H:1-117;K:135-241,H:1-117,126-134,9,,0,tether residues inside the query
+8yj7,L,G,104,H:1-111;K:135-243,K:135-243,,0,135-138,4,domain residues absent from the query
+9lrh,L,H,116,H:1-123;K:140-245,K:140-245,131-139,9,,0,tether residues inside the query
+9lsi,H,C,124,H:1-119;K:125-231,H:1-119,120-124,5,,0,tether residues inside the query
+9lsj,H,D,124,H:1-119;K:125-231,H:1-119,120-124,5,,0,tether residues inside the query
+9nw6,ag1,E,9,,span 2-86,,,3-33;35-39;42-55;57-77;80-80;82-85,76,alignment unreliable: query covers 11% of its span (9 residues over 85); too sparse to call a hole
+9pkv,ag0,A,9,,span 3-267,,,4-78;80-179;182-188;190-201;203-213;215-265,256,alignment unreliable: query covers 3% of its span (9 residues over 265); too sparse to call a hole
+9tuy,H,A,125,H:32-153;L:169-279,H:32-153,155-158,4,,0,tether residues inside the query

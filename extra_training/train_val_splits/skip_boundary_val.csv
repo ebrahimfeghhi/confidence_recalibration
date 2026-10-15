@@ -1,0 +1,4 @@
+pdb,role,chain,qlen,domains,dom,tether_in_query,n_tether,missing_domain,n_missing_domain,reason
+22gi,ag0,C,6,,span 1-84,,,3-75;78-81;83-83,78,alignment unreliable: query covers 7% of its span (6 residues over 84); too sparse to call a hole
+29tj,H,B,124,H:1-119;K:142-254,H:1-119,120-122,3,,0,tether residues inside the query
+7tzh,H,C,128,H:3-124;K:140-245,H:3-124,125-127,3,,0,tether residues inside the query
