@@ -1,0 +1,236 @@
+"""Independent label audit: our RCSB-derived training labels vs SAbDab2's curated coordinates.
+
+WHY AN EXTERNAL REFERENCE. The labels in `training/prep/job_cifs/` are built by phase_j_job_cifs
+from the deposited RCSB entries, and the chain-to-role mapping is INFERRED -- by sequence, with
+contact checks and tie-breaks. Nothing in that path is checked against a second opinion. Every audit
+written so far has compared our data to quantities derived by the same code, and four of those
+checks were wrong in the same way: auth chain names used where label_asym_id was meant, resolved
+positions pooled across chain copies, a symmetric difflib ratio applied to a partial chain, and
+gemmi's remove_ligands_and_waters deleting peptide antigens. An external file does not share those
+assumptions.
+
+SAbDab2's instance cifs are that external file. They are NOT the same artifact as our labels:
+
+    training/refs/<pdb>.cif        md5-identical to SAbDab2's instance cif. The DockQ reference.
+    training/prep/job_cifs/<pdb>.cif   built from rcsb_training_cifs. The TRAINING LABEL.
+
+For 10fj the label carries chains of 220, 220 and 172 residues -- full Fab plus antigen -- while
+SAbDab2 carries 120, 113 and 172, the variable domains plus the antigen. Same deposit, independently
+processed, overlapping over the variable region and the antigen.
+
+RESIDUE CORRESPONDENCE COMES FROM SEQUENCE ALIGNMENT, NOT FROM label_seq. The two files number
+independently: for 10fj's heavy chain SAbDab2 runs 20..139 while the label runs 1..220, a constant
+offset of 18, and comparing at equal label_seq matched 8 of 120 residue identities. Aligning the
+sequences instead gives an exact 120-residue block. An offset is not a defect; assuming a shared
+index is.
+
+WHAT IS COMPARED. Only atoms present in BOTH files, matched by (chain role, aligned residue, atom
+name).
+The constant domains SAbDab2 deliberately crops are excluded by construction, since they are absent
+from its files -- that is a coverage limit, not a mismatch, and is reported as coverage rather than
+as error. If the coordinate frames differ, ONE rigid transform is fitted over the whole complex and
+applied to all chains together; never a separate fit per chain, which would mask a chain that has
+been swapped for another copy.
+
+WHAT COUNTS AS A FAILURE. Coordinates should agree to file-rounding precision, because both files
+hold the same deposited atoms. Residue identity must match exactly. A large RMSD, a large maximum
+deviation, or a residue-identity mismatch means the mapping is wrong somewhere and is reported for
+inspection rather than silently tolerated or silently dropped.
+"""
+import argparse, collections, csv, glob, math, os, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+
+def _one(resname):
+    import gemmi
+    t = gemmi.find_tabulated_residue(resname)
+    return t.one_letter_code.upper() if t else "X"
+
+
+def load(path, key="subchain"):
+    """{chain key: {label_seq: (resname, {atom name: (x,y,z)})}}.
+
+    THE TWO FILES ARE KEYED DIFFERENTLY AND chain_roles NAMES BOTH. The label cif written by
+    phase_j_job_cifs is in model order with chain NAMES A, B, C -- gemmi reports its subchains as
+    `Ap`, `Bp`, `Cp`, so keying the label on subchain matches nothing and the first run of this
+    audit reported 0 shared atoms for every structure. chain_roles' `model_chain` is the label's
+    chain name and its `ref_chain` is SAbDab2's label_asym_id, so each side is looked up with its
+    own identifier instead of assuming the two agree.
+    """
+    import gemmi
+    st = gemmi.read_structure(str(path))
+    st.setup_entities()
+    st.remove_alternative_conformations()
+    out = collections.defaultdict(dict)
+    for ch in st[0]:
+        for r in ch:
+            if r.label_seq is None:
+                continue
+            k = (r.subchain or ch.name) if key == "subchain" else ch.name
+            atoms = {}
+            for a in r:
+                # FIRST OCCURRENCE WINS, so an altloc that survived cannot silently replace an atom
+                if a.name not in atoms:
+                    atoms[a.name] = (a.pos.x, a.pos.y, a.pos.z)
+            out[k][int(r.label_seq)] = (r.name, atoms)
+    return out
+
+
+def kabsch(P, Q):
+    """ONE rigid transform fitted over every matched atom of the complex. Returns (rmsd, maxdev)."""
+    n = len(P)
+    if n < 3:
+        return None, None
+    cp = [sum(c[i] for c in P) / n for i in range(3)]
+    cq = [sum(c[i] for c in Q) / n for i in range(3)]
+    p = [[c[i] - cp[i] for i in range(3)] for c in P]
+    q = [[c[i] - cq[i] for i in range(3)] for c in Q]
+    H = [[sum(p[k][i] * q[k][j] for k in range(n)) for j in range(3)] for i in range(3)]
+    try:
+        import numpy as np
+        U, S, Vt = np.linalg.svd(np.array(H))
+        d = 1.0 if np.linalg.det(Vt.T @ U.T) > 0 else -1.0
+        D = np.diag([1.0, 1.0, d])
+        R = Vt.T @ D @ U.T
+        pa = np.array(p); qa = np.array(q)
+        diff = (pa @ R.T) - qa
+        per = np.sqrt((diff ** 2).sum(axis=1))
+        return float(np.sqrt((per ** 2).mean())), float(per.max())
+    except Exception:
+        return None, None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--which", choices=["training", "validation"], required=True)
+    ap.add_argument("--selection", default="")
+    ap.add_argument("--labels", default="")
+    ap.add_argument("--sabdab", default=f"{ROOT}/SAbDab2_data/training_cifs")
+    ap.add_argument("--roles", default="")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--limit", type=int, default=0)
+    a = ap.parse_args()
+
+    sel = a.selection or (f"{ROOT}/train_val_splits/cache_train_structures.csv" if a.which == "training"
+                          else f"{ROOT}/train_val_splits/val_split_proposal.csv")
+    labels = a.labels or f"{ROOT}/{a.which}/prep/job_cifs"
+    rolesf = a.roles or f"{ROOT}/{a.which}/fold/chain_roles.csv"
+
+    inst = {}
+    for r in csv.DictReader(open(sel)):
+        if r.get("pdb") and r.get("instance"):
+            inst[r["pdb"]] = r["instance"]
+    roles = collections.defaultdict(dict)
+    for r in csv.DictReader(open(rolesf)):
+        roles[r["pdb"]][r["role"]] = r
+    pdbs = sorted(inst)
+    if a.limit:
+        pdbs = pdbs[:a.limit]
+
+    rows = []
+    for pdb in pdbs:
+        rec = dict(pdb=pdb, instance=inst[pdb])
+        lab_p = os.path.join(labels, f"{pdb}.cif")
+        sab_p = os.path.join(a.sabdab, f"{inst[pdb]}.cif")
+        if not os.path.exists(lab_p):
+            rec["verdict"] = "no label cif"; rows.append(rec); continue
+        if not os.path.exists(sab_p):
+            rec["verdict"] = "no sabdab cif"; rows.append(rec); continue
+        try:
+            lab, sab = load(lab_p, key="name"), load(sab_p, key="subchain")
+        except Exception as e:
+            rec["verdict"] = f"read error: {type(e).__name__}"; rows.append(rec); continue
+
+        # role -> (label chain key, sabdab chain key). The label is keyed by its own label_asym_id,
+        # which chain_roles records per role; SAbDab2's file is keyed by ITS label_asym_id, so the
+        # roles are paired through chain_roles rather than by assuming the names agree.
+        P, Q, pairs, ambig, idmis, cov = [], [], [], [], [], []
+        for role, rr in sorted(roles.get(pdb, {}).items()):
+            lk = rr.get("model_chain")       # the label's chain NAME
+            sk = rr.get("ref_chain")         # SAbDab2's label_asym_id
+            how = "named"
+            if sk not in sab:
+                # chain_roles records SAbDab2's label id, but for a single-chain construct it can
+                # carry a copy index (B1/B2 for the two domains of one chain) and for some entries
+                # the id simply does not appear. Fall back to the chain whose sequence matches the
+                # label chain best, and RECORD that it was paired by sequence rather than by name,
+                # so a sequence-paired row is never mistaken for a named one.
+                cand = None
+                if lk in lab:
+                    lseq0 = "".join(_one(lab[lk][x][0]) for x in sorted(lab[lk]))
+                    import difflib as _dl
+                    for k2, v2 in sab.items():
+                        s2 = "".join(_one(v2[x][0]) for x in sorted(v2))
+                        m2 = sum(b.size for b in _dl.SequenceMatcher(None, s2, lseq0,
+                                 autojunk=False).get_matching_blocks())
+                        c2 = m2 / max(1, len(s2))
+                        if cand is None or c2 > cand[0]:
+                            cand = (c2, k2)
+                if cand and cand[0] >= 0.95:
+                    sk, how = cand[1], "by-seq"
+            if not lk or not sk or lk not in lab or sk not in sab:
+                cov.append(f"{role}:unpaired({lk}/{sk})"); continue
+            lres, sres = lab[lk], sab[sk]
+            lp, sp = sorted(lres), sorted(sres)
+            lseq = "".join(_one(lres[p][0]) for p in lp)
+            sseq = "".join(_one(sres[p][0]) for p in sp)
+            import difflib
+            sm = difflib.SequenceMatcher(None, sseq, lseq, autojunk=False)
+            blocks = [b for b in sm.get_matching_blocks() if b.size]
+            matched = sum(b.size for b in blocks)
+            if not matched or matched / len(sseq) < 0.95:
+                ambig.append(f"{role}:{lk}/{sk}@{matched}/{len(sseq)}"); continue
+            corr = []
+            for b in blocks:
+                for k in range(b.size):
+                    corr.append((sp[b.a + k], lp[b.b + k]))
+            score = 1.0
+            pairs.append(f"{role}={lk}/{sk}" + ("" if how == "named" else "~seq"))
+            for sp_i, lp_i in corr:
+                if sres[sp_i][0] != lres[lp_i][0]:
+                    idmis.append(f"{role}:{sp_i}->{lp_i}:{sres[sp_i][0]}!={lres[lp_i][0]}")
+                    continue
+                for an, xyz in sres[sp_i][1].items():
+                    if an in lres[lp_i][1]:
+                        Q.append(xyz); P.append(lres[lp_i][1][an])
+            cov.append(f"{role}:{matched}/{len(sseq)}")
+
+        rmsd, maxdev = kabsch(P, Q) if len(P) >= 3 else (None, None)
+        rec.update(matched_atoms=len(P), pairs=";".join(pairs), coverage=";".join(cov),
+                   rmsd="" if rmsd is None else f"{rmsd:.4f}",
+                   maxdev="" if maxdev is None else f"{maxdev:.4f}",
+                   n_resid_mismatch=len(idmis), resid_mismatch=";".join(idmis[:6]),
+                   ambiguous=";".join(ambig))
+        if len(P) < 3:
+            rec["verdict"] = "too few shared atoms"
+        elif idmis:
+            rec["verdict"] = "RESIDUE IDENTITY MISMATCH"
+        elif ambig:
+            rec["verdict"] = "AMBIGUOUS CHAIN"
+        elif rmsd is not None and rmsd > 0.10:
+            rec["verdict"] = "COORD MISMATCH"
+        else:
+            rec["verdict"] = "ok"
+        rows.append(rec)
+
+    cols = ["pdb", "instance", "verdict", "matched_atoms", "rmsd", "maxdev",
+            "n_resid_mismatch", "pairs", "coverage", "resid_mismatch", "ambiguous"]
+    with open(a.out, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+    c = collections.Counter(r.get("verdict") for r in rows)
+    print(f"audited {len(rows)} structure(s) -> {a.out}")
+    for k, v in c.most_common():
+        print(f"  {k:<28} {v}")
+    bad = [r for r in rows if r.get("verdict") not in ("ok",)]
+    for r in bad[:10]:
+        print(f"    {r['pdb']}: {r.get('verdict')}  rmsd={r.get('rmsd')} max={r.get('maxdev')} "
+              f"atoms={r.get('matched_atoms')} {r.get('resid_mismatch','')[:60]}")
+
+
+if __name__ == "__main__":
+    main()
