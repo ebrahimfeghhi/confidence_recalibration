@@ -42,6 +42,25 @@ matters worse -- it left 7tzh and 8v8f unpaired anyway and regressed 9nr6 -- so 
 recorded rather than papered over. This is the same class as open review item J1/J3, the 9 split
 single-chain constructs. Auditing them needs an explicit 2-to-1 mode, which is not written.
 
+A PASS REQUIRES EVERY EXPECTED ROLE, AND SUBSTITUTIONS ARE COUNTED EXPLICITLY. Two holes were found
+in review of c8137d8 and are closed here:
+
+  * A ROLE THAT COULD NOT BE PAIRED USED TO BE INVISIBLE. Validation's 9nr6 was reported `ok` with
+    BOTH antibody chains unpaired -- only its antigen had been compared -- because an unpaired role
+    was noted in the coverage string and never reached the verdict. A structure now passes only if
+    every role in `chain_roles` was actually audited; otherwise the verdict is INCOMPLETE and says
+    which roles were skipped.
+  * THE RESIDUE-IDENTITY CHECK WAS UNFALSIFIABLE. It walked `get_matching_blocks()`, which by
+    definition returns only EQUAL blocks, so a substitution fell outside every block, never entered
+    the correspondence, and could not be reported. "0 residue mismatches over 2.03M atoms" was
+    therefore not evidence of anything. The walk is now over `get_opcodes()`, so `replace` is
+    reported as a SUBSTITUTION and `delete`/`insert` as residues present in only one file.
+
+AND PARTIAL AGREEMENT IS NOT A PASS. Counting rows with rmsd < 0.01 overstated coverage: 496 of 501
+training rows were coordinate-exact but only 481 were complete passes, the other 15 being exact over
+an incomplete set of roles. The report carries `roles_expected`, `roles_audited` and `verdict`, and
+only `verdict == ok` means fully verified.
+
 WHAT COUNTS AS A FAILURE. Coordinates should agree to file-rounding precision, because both files
 hold the same deposited atoms. Residue identity must match exactly. A large RMSD, a large maximum
 deviation, or a residue-identity mismatch means the mapping is wrong somewhere and is reported for
@@ -157,6 +176,9 @@ def main():
         # which chain_roles records per role; SAbDab2's file is keyed by ITS label_asym_id, so the
         # roles are paired through chain_roles rather than by assuming the names agree.
         P, Q, pairs, ambig, idmis, cov = [], [], [], [], [], []
+        subs, only_s, only_l = [], 0, 0
+        audited = set()
+        expected = sorted(roles.get(pdb, {}))
         for role, rr in sorted(roles.get(pdb, {}).items()):
             lk = rr.get("model_chain")       # the label's chain NAME
             sk = rr.get("ref_chain")         # SAbDab2's label_asym_id
@@ -192,11 +214,26 @@ def main():
             matched = sum(b.size for b in blocks)
             if not matched or matched / len(sseq) < 0.95:
                 ambig.append(f"{role}:{lk}/{sk}@{matched}/{len(sseq)}"); continue
+            # OPCODES, NOT MATCHING BLOCKS. `equal` gives the correspondence to compare; `replace`
+            # is a substitution and must be reported rather than skipped; `delete` and `insert` are
+            # residues present in only one of the two files.
             corr = []
-            for b in blocks:
-                for k in range(b.size):
-                    corr.append((sp[b.a + k], lp[b.b + k]))
-            score = 1.0
+            for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                if tag == "equal":
+                    for k in range(i2 - i1):
+                        corr.append((sp[i1 + k], lp[j1 + k]))
+                elif tag == "replace":
+                    n = min(i2 - i1, j2 - j1)
+                    for k in range(n):
+                        subs.append(f"{role}:{sp[i1+k]}->{lp[j1+k]}:"
+                                    f"{sres[sp[i1+k]][0]}!={lres[lp[j1+k]][0]}")
+                    only_s += max(0, (i2 - i1) - n)
+                    only_l += max(0, (j2 - j1) - n)
+                elif tag == "delete":
+                    only_s += i2 - i1
+                elif tag == "insert":
+                    only_l += j2 - j1
+            audited.add(role)
             pairs.append(f"{role}={lk}/{sk}" + ("" if how == "named" else "~seq"))
             for sp_i, lp_i in corr:
                 if sres[sp_i][0] != lres[lp_i][0]:
@@ -208,13 +245,22 @@ def main():
             cov.append(f"{role}:{matched}/{len(sseq)}")
 
         rmsd, maxdev = kabsch(P, Q) if len(P) >= 3 else (None, None)
-        rec.update(matched_atoms=len(P), pairs=";".join(pairs), coverage=";".join(cov),
+        skipped = [r for r in expected if r not in audited]
+        rec.update(roles_expected=len(expected), roles_audited=len(audited),
+                   roles_skipped=";".join(skipped), n_subs=len(subs), subs=";".join(subs[:6]),
+                   only_in_sabdab=only_s, only_in_label=only_l,
+                   matched_atoms=len(P), pairs=";".join(pairs), coverage=";".join(cov),
                    rmsd="" if rmsd is None else f"{rmsd:.4f}",
                    maxdev="" if maxdev is None else f"{maxdev:.4f}",
                    n_resid_mismatch=len(idmis), resid_mismatch=";".join(idmis[:6]),
                    ambiguous=";".join(ambig))
-        if len(P) < 3:
+        # A PASS REQUIRES EVERY ROLE. An unpaired role used to vanish into the coverage string.
+        if skipped:
+            rec["verdict"] = f"INCOMPLETE ({len(skipped)} role(s) not audited)"
+        elif len(P) < 3:
             rec["verdict"] = "too few shared atoms"
+        elif subs:
+            rec["verdict"] = "SUBSTITUTION"
         elif idmis:
             rec["verdict"] = "RESIDUE IDENTITY MISMATCH"
         elif ambig:
@@ -225,7 +271,8 @@ def main():
             rec["verdict"] = "ok"
         rows.append(rec)
 
-    cols = ["pdb", "instance", "verdict", "matched_atoms", "rmsd", "maxdev",
+    cols = ["pdb", "instance", "verdict", "roles_expected", "roles_audited", "roles_skipped",
+            "matched_atoms", "rmsd", "maxdev", "n_subs", "subs", "only_in_sabdab", "only_in_label",
             "n_resid_mismatch", "pairs", "coverage", "resid_mismatch", "ambiguous"]
     with open(a.out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")

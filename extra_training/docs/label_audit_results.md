@@ -3,18 +3,44 @@
 Run 2026-10-15 1:10 PM ET by `phases/phase_j_label_audit.py`. Full per-structure report in
 `train_val_splits/label_audit_training.csv`.
 
+> **REVISED 2026-10-15 2:40 PM ET** after review of c8137d8 found three holes in this audit. The
+> earlier headline figures (496 of 501, 51 of 53, "0 residue mismatches over 2.03M atoms") were
+> wrong or unfalsifiable and are replaced below.
+
+## Three holes found in review, and closed
+
+| hole | effect | fix |
+|---|---|---|
+| a role that could not be paired never reached the verdict | validation's **9nr6 passed `ok` with BOTH antibody chains unpaired** -- only its antigen had been compared | a pass now requires `roles_audited == roles_expected`; otherwise INCOMPLETE, naming the skipped roles |
+| the residue-identity check walked `get_matching_blocks()`, which returns only EQUAL blocks | a substitution fell outside every block and could not be reported. **"0 residue mismatches" was unfalsifiable** | the walk is over `get_opcodes()`; `replace` is a SUBSTITUTION, `delete`/`insert` are residues in only one file |
+| coverage was counted as rows with rmsd < 0.01 | **496 of 501 was overstated** -- only 481 were complete passes; 15 were exact over an incomplete set of roles | the report carries `roles_expected`/`roles_audited`; only `verdict == ok` is fully verified |
+
+NEGATIVE CONTROL, which the earlier version failed. One residue of 10gh's heavy chain was mutated
+ARG->TRP in a copy of the label. Before: `ok`, 0 mismatches. After: `SUBSTITUTION`, `n_subs 1`,
+`subs H:41->41:ARG!=TRP`. The check can now fail, so its passing means something.
+
 ## Verdict
 
-| | structures |
-|---|---|
-| **RMSD < 0.01 A -- exact to file-rounding precision** | **496 of 501** |
-| 0.01-1.0 A, minor and localised | 1 |
-| >= 1.0 A, a DIFFERENT COPY of the complex | 4 |
-| residue-identity mismatches, anywhere | **0** |
-| total atoms compared | **2,027,629** |
+| verdict | training | validation |
+|---|---|---|
+| **ok -- every role audited, no substitution, max deviation 0.0000 A** | **481 of 501** | **48 of 53** |
+| INCOMPLETE -- one or more roles could not be paired | 18 | 5 |
+| COORD MISMATCH | 2 | 0 |
 
-The labels are correct. 496 of 501 structures agree atom for atom with a separately curated copy of
-the same deposit, and not one residue identity disagrees across two million atoms.
+Within the fully-verified passes:
+
+| | training | validation |
+|---|---|---|
+| substitutions | **0** | **0** |
+| residues in SAbDab2 but NOT in our label | **10** | **2** |
+| residues in our label only (the constant domain SAbDab2 crops) | 45,594 | 5,012 |
+| atoms compared | 1,978,685 | 137,052 |
+| worst max deviation | **0.0000 A** | **0.0000 A** |
+
+So where a structure is fully audited, the agreement is exact -- not approximate, not
+within-tolerance, bit-identical on every compared atom. The 10 and 2 residues present in SAbDab2 but
+absent from our label are the only real coverage gaps found and have not been individually
+inspected.
 
 ## What was compared, and why it is independent
 
