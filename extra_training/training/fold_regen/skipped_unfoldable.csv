@@ -1,0 +1,2 @@
+pdb,residues,units,reason
+9mx1,2941,10,"protenix-v2 refuses n_token > 2560 (runner/inference.py:399). Removed from the queue after 24 failed attempts across 3 workers: the claims are released on failure, so workers re-claimed and re-attempted it indefinitely, and the stage could never reach its target so it would never advance to validation. Skipped with a reason, never folded at reduced settings."
