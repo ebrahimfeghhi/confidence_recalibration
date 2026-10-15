@@ -80,19 +80,36 @@ def ungapped(seq):
     return "".join(c for c in seq if c not in "-.").upper()
 
 
-def remap(rows, at, restored):
-    """Carry every row onto the corrected query. Returns (new_rows, failures)."""
+def remap(rows, at, restored, old_len, new_len):
+    """Carry every row onto the corrected query. Returns (new_rows, failures).
+
+    THE ABSOLUTE COLUMN COUNT IS CHECKED, NOT ONLY THE DELTA. The first version required each row to
+    GAIN n match columns and nothing more, so a row that arrived malformed left malformed and nothing
+    reported it: a 215-column hit against a 214-residue query became 222 against 221, with zero
+    failures. The delta was right and the file was still broken. An a3m is one match column per query
+    residue BY DEFINITION, so every input row must have exactly `old_len` and every output row
+    exactly `new_len`. Malformed rows are not hypothetical -- the rejected mmseqs2 rebuild produced
+    them on an unchanged query.
+    """
     n = len(restored)
     out, bad = [], []
     for k, (h, s) in enumerate(rows):
+        if len(match_columns(s)) != old_len:
+            bad.append((k, h, f"input row has {len(match_columns(s))} match columns, "
+                              f"query has {old_len}"))
+            continue
         fill = restored if k == 0 else "-" * n
         new, pos = insert_columns(s, at, fill)
         # REVERSIBILITY, per row: deleting exactly what was inserted must give the original back.
         if new[:pos] + new[pos + n:] != s:
             bad.append((k, h, "not reversible"))
             continue
+        if len(match_columns(new)) != new_len:
+            bad.append((k, h, f"output row has {len(match_columns(new))} match columns, "
+                              f"corrected query has {new_len}"))
+            continue
         if len(match_columns(new)) != len(match_columns(s)) + n:
-            bad.append((k, h, "match-column count wrong"))
+            bad.append((k, h, "did not gain exactly n columns"))
             continue
         if k and ungapped(new) != ungapped(s):
             bad.append((k, h, "homolog residues changed"))
@@ -190,7 +207,7 @@ def main():
                 fails.append((fn, "empty")); continue
             if orig[0][1].replace("-", "").upper() != old.upper():
                 fails.append((fn, "query row is not the old query")); continue
-            nr, bad = remap(orig, at, restored)
+            nr, bad = remap(orig, at, restored, len(old), len(new))
             if bad or len(nr) != len(orig):
                 fails.append((fn, f"{len(bad)} row(s) failed, e.g. {bad[0][2] if bad else 'count'}"))
                 continue
