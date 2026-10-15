@@ -1,6 +1,6 @@
 # Plan: rebuild the MSAs for the 155 corrected queries
 
-**Revision 2, 2026-10-14.** Revision 1 (`89b35118`) was reviewed and four execution defects were
+**Revision 3, 2026-10-14.** Revision 2 (`e7de1264`, `a2d58b51`) was reviewed and four more defects were found. All four reproduce and are corrected below. One of them DISSOLVES the blocker revision 2 was built around. Nothing in this plan has run.
 found. All four are corrected below, and verifying them turned up a fifth that invalidates half of
 revision 1's approach. Nothing in this plan has run.
 
@@ -11,89 +11,55 @@ residues (`train_val_splits/refold_internal_omissions*.csv`). Their corrected qu
 residues longer, and an a3m is one match column per query residue, so the stored alignments no longer
 describe the sequences. 155 unique changed sequences need new MSAs before those 2,850 folds can run.
 
-## THE BLOCKER REVISION 1 MISSED: the mirror has no prebuilt envdb
+## THE ENVDB BLOCKER IS DISSOLVED: the conversion was never invoked
 
-`opendata.mmseqs.org` is 503 on every path. The GWDG mirror
-(`wwwuser.gwdg.de/~compbiol/colabfold/`, the Söding lab's host) serves the same releases, but only in
-the TSV packaging:
+Revision 2 called the mirror route blocked because the TSV form of envdb "produced 265 GB that
+converted to nothing and still exited 0". Review round 2 predicted the cause and a direct test
+confirms it: **`tsv2exprofiledb` was never called.**
+
+`setup_databases.sh:20` defaults `FAST_PREBUILT_DATABASES=1`, and that one flag controls two
+unrelated things:
+
+| what it controls | at `=1` |
+|---|---|
+| which URL to download (`:78-85`) | the prebuilt `.db.tar.gz` |
+| whether to convert after extracting (`:146`, `:188`) | **skip `tsv2exprofiledb`** |
+
+`phase_e_search_envdb.sh` fetches the tarball itself and writes it to
+`$DB/colabfold_envdb_202108.tar.gz`, then calls `setup_databases.sh`. That bypasses the download half
+of the flag but not the conversion half. Put a TSV archive at that filename and the script extracts
+it, sees the flag, skips the conversion, and exits 0.
+
+Measured on a 223-byte stand-in archive with the real script:
+
+| `FAST_PREBUILT_DATABASES` | `tsv2exprofiledb` invoked | exit |
+|---|---|---|
+| `1` (default) | **0 times** | 0 |
+| `0` | **1 time** | 0 |
+
+So nothing failed to convert. **Nothing was asked to convert.** The fix is to pass
+`FAST_PREBUILT_DATABASES=0` alongside the `CFDB` and `MMSEQS_NO_INDEX=1` that phase E already passes.
+
+**This means the mirror is a candidate complete substitute after all**, and the conclusion of
+revision 2 -- that the mirror can only supply half -- is withdrawn. What remains unproven is whether
+the conversion SUCCEEDS on the real 118 GB archive; only that it is now actually attempted. The
+`mini_swissprot` harness cannot test that, because `DEBUG_MINI_DB=1` takes a `mvdb` path that never
+touches `tsv2exprofiledb`, and the mini tarball is hosted on the server that is down.
+
+## The source
+
+`opendata.mmseqs.org` is 503 on every path. The GWDG mirror (`wwwuser.gwdg.de/~compbiol/colabfold/`,
+the Söding lab's host) serves the same releases, TSV packaging only:
 
 | file | mirror | status |
 |---|---|---|
 | `uniref30_2302.tar.gz` | 102,918,187,842 bytes | **200** |
 | `colabfold_envdb_202108.tar.gz` | 117,965,643,010 bytes | **200** |
-| `uniref30_2302.db.tar.gz` | — | **404** |
-| `colabfold_envdb_202108.db.tar.gz` | — | **404** |
+| either `.db.tar.gz` | — | **404** |
 
-`setup_databases.sh` distributes both packagings of each release and says so itself: `${DB}.db.tar.gz`
-is the "new prebuilt ... don't require calling tsv2exprofiledb", `${DB}.tar.gz` the "old .tsv +
-tsv2exprofiledb" form. Our phases fetch the prebuilt one.
-
-**And the TSV form of envdb is a RECORDED FAILURE in this environment.**
-`phase_e_search_envdb.sh:116-119` exists because of it:
-
-> THE PREBUILT DATABASE. setup_databases.sh defaults FAST_PREBUILT_DATABASES=1, which extracts
-> `${CFDB}.tar.gz` straight to MMseqs format and never calls tsv2exprofiledb. The URL above is the
-> .db.tar.gz for that reason: **the plain .tar.gz is the tsv form, and extracting it once produced
-> 265 GB that converted to nothing and still exited 0.**
-
-So the mirror can plausibly supply the uniref30 half and **cannot** supply the envdb half by any path
-this project has got working. Revision 1 presented the mirror as a complete substitute. It is not.
-
-### What that leaves
-
-| option | uniref30 | envdb | verdict |
-|---|---|---|---|
-| wait for `opendata.mmseqs.org` | prebuilt | prebuilt | **the only route to a complete MSA**; polled every 5 min |
-| GWDG mirror | TSV + `tsv2exprofiledb`, untested here | TSV, known to produce nothing | incomplete |
-| gap-padding (`phase_j_remap_msa.py`) | n/a | n/a | fallback; no aligned evidence at ~2% of positions |
-
-A uniref30-only MSA is NOT a valid substitute: the existing 5,549 were built from both databases, so
-dropping envdb for these 155 makes them systematically shallower than everything they are compared
-against. The envdb pass is what the project's own phase E calls the source of "depth uniref30 cannot
-reach".
-
-### Do NOT start the mirror download yet — it is not useful in either branch
-
-Revision 2 first said it was "worth starting for uniref30 alone, because it is free while the GPUs
-work". That is wrong, and the correction belongs in the plan rather than in a conversation. Work
-through both outcomes:
-
-| if `opendata.mmseqs.org` … | what we would use for uniref30 | was the mirror build useful? |
-|---|---|---|
-| comes back | the prebuilt `.db` — simpler, and what the other 5,549 MSAs came from | **no**, the TSV build is discarded |
-| stays down | the mirror TSV build | **no**, envdb is still missing so the MSA is incomplete |
-
-It pays off only if the host returns for envdb but not uniref30 — same host, same outage, not a
-realistic split. And "free" was wrong anyway: free of GPU is not free of 96 GB of transfer, ~420 GB
-of disk and hours of CPU.
-
-The mirror finding is still worth having. It establishes that a route EXISTS if the outage turns out
-to be long-lived and we decide a uniref30-only rebuild beats gap-padding. That is a decision to take
-with more information, not one to pre-commit 500 GB to.
-
-### THE ENVDB FAILURE WAS NEVER DIAGNOSED, AND MIGHT BE FIXABLE
-
-This is the open lead, and it reframes the blocker. The problem is NOT that the mirror holds less
-data — it holds the same releases, verified sizes, with md5sums bundled. The problem is that the TSV
-packaging has to be CONVERTED by `tsv2exprofiledb`, and for envdb that conversion produced nothing.
-
-A missing-data problem has no fix. A conversion problem may well have one, and nobody looked: the
-note in `phase_e_search_envdb.sh` reads like a workaround taken under time pressure while a working
-prebuilt URL existed. That URL is gone now, so the workaround is no longer available and the
-underlying failure is worth ten minutes.
-
-What makes it suspicious rather than hopeless:
-
-* **the conversion exited 0 while producing nothing.** Whatever went wrong was not reported, so the
-  cause was never on screen.
-* the archive's member list can be read without downloading all 118 GB, so whether the inputs
-  `tsv2exprofiledb` expects are even present is a cheap check.
-* plausible causes nobody ruled out: a member missing from the extraction, a flag the newer mmseqs
-  requires, or `MMSEQS_NO_INDEX=1` interacting badly with the conversion.
-
-**If that conversion can be made to work, the mirror becomes a complete substitute and the whole
-blocker dissolves.** If it cannot, we are waiting on the canonical host either way and the download
-should not be started. Diagnosing it is the highest-value next step and costs almost nothing.
+Versions are `uniref30_2302` and `colabfold_envdb_202108` — exactly what the existing 5,549 MSAs were
+built from. `uniref30_2302.tar.gz` carries a bundled `md5sum` for six members; the envdb archive's
+first member is `colabfold_envdb_202108_h.tsv`, 31.6 GB, dated 2021-09-13.
 
 ## The four review defects, corrected
 
@@ -114,8 +80,21 @@ Properly enumerated, uniref30 from the TSV distribution:
 
 Against 1,411 GB free, uniref30 alone fits with roughly 475 GB of headroom, and the unmeasured
 conversion intermediates come out of that. Both databases at once do not fit, which is what phase E
-already enforces. The 301 GB search index is NOT built — `MMSEQS_NO_INDEX=1`, as the original run
-used.
+already enforces.
+
+**THE INDEX NEEDS `BUILD_INDEX=0`, NOT `MMSEQS_NO_INDEX=1`.** Revision 2 said the 301 GB index is not
+built because `MMSEQS_NO_INDEX=1` is passed. That is only true of `setup_databases.sh`.
+`phase_d_search_uniref.sh:216` builds its own index and defaults `BUILD_INDEX=1`:
+
+    if [ "${BUILD_INDEX:-1}" = "0" ]; then   # skip the index, give _db_seq taxonomy sidecars instead
+    ...
+    $M createindex uniref30_2302_db tmp1 ...
+
+So with the documented settings the peak would be ~936 + 301 = **~1,237 GB against 1,411 GB free**,
+before intermediates — far tighter than revision 2 implied and possibly not viable. `BUILD_INDEX=0`
+is required, and phase D's own comment says it is safe: it "saves 301 GB and ~5 minutes per batch"
+and hands `_db_seq` the taxonomy sidecars instead, which `verify_minidb.sh` experiment 1 exists to
+confirm.
 
 ### 2. `FREE_DB=0` throughout contradicts phase E
 
@@ -181,6 +160,18 @@ Same release names do not establish identical search results, and the existing u
 the PREBUILT database while these would come from the TSV build. If the control does not pass, the
 batch does not run.
 
+**AND IT MUST COMPARE LIKE WITH LIKE.** Revision 2 had the control run phase D + F and compare to the
+stored MSA. That comparison cannot pass: the stored `pairing.a3m` is the merge of the uniref AND
+environmental passes, so a uniref-only rebuild differs from it by every envdb hit — a guaranteed
+failure that says nothing about the TSV build. Either:
+
+* compare the **UniRef component separately** — phase D's own `uniref.a3m` intermediate against the
+  stored one, before phase F merges anything; or
+* run the **full control after envdb is available**, D + E + F, against the stored merge.
+
+The first is available now and is the one that tests the TSV conversion. The second is the real
+equivalence check and waits on envdb.
+
 ## The plan
 
 | # | step | cost | gate |
@@ -194,7 +185,7 @@ batch does not run.
 | 7 | **BLOCKED**: envdb. The mirror cannot supply it; needs `opendata.mmseqs.org` | — | — |
 | 8 | `phase_f_pair_and_split.py` into `mmcif_msa_corrected` | CPU | every corrected role has `pairing.a3m` and `non_pairing.a3m` |
 | 9 | `phase_h_search_templates.py` for the corrected queries | CPU | date-filter marker, as before |
-| 10 | re-run `phase_j_corrected_jobs.py` WITHOUT `--allow-missing-msa` | seconds | every corrected-role path must now resolve to a file that exists |
+| 10 | re-run `phase_j_corrected_jobs.py` with `--expect 125` (and 16) and WITHOUT `--allow-missing-msa` | seconds | **exits non-zero unless every expected job validates**, and any job it cannot validate is renamed `.notready` |
 | 11 | smoke-test `11zw` end to end | one fold | 7 residues restored, masked in the label, flanks retained |
 | 12 | queue 2,850 refolds into `training/fold_corrected/` | ~19 h GPU | separate tree |
 
@@ -204,6 +195,13 @@ step in this table -- it is diagnosing why `tsv2exprofiledb` produced nothing fo
 is what decides whether the mirror route exists at all. The 141 corrected job jsons already exist, written with `--allow-missing-msa`, so
 their paths are correct and pending; **a fold must not be queued from them until step 10 passes
 without that flag.**
+
+Step 10 was not a gate when revision 2 described it. A strict run exited 0 while skipping every job
+whose MSA was absent, and the jsons written by the earlier `--allow-missing-msa` run stayed in the
+out-dir — so a queue builder would have found 141 pending-path jobs and folded them. Reported as
+skips, read as ready. Now: `--expect N` makes a shortfall exit non-zero, a strict run with any skip
+exits non-zero, and every job that fails to validate is renamed `.notready` so nothing can queue
+from it. Verified: a pre-existing job plus unbuilt MSAs gives exit 1, 0 `.json`, 1 `.notready`.
 
 ## What is not blocked
 

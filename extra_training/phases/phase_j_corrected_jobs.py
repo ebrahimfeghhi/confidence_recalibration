@@ -60,6 +60,9 @@ def main():
                     help="the CORRECTED msa store the rewritten jobs must point at")
     ap.add_argument("--old-msa-root", default=f"{ROOT}/building_msa/work/mmcif_msa",
                     help="the original store; a job still pointing here is refused")
+    ap.add_argument("--expect", type=int, default=0,
+                    help="how many jobs this run MUST write. With it, the run is a readiness GATE: "
+                         "anything less exits non-zero and no stale file is left behind")
     ap.add_argument("--allow-missing-msa", action="store_true",
                     help="write the corrected paths even though the MSAs are not built yet. For "
                          "preparing jobs ahead of the rebuild; a fold must NOT be queued from these")
@@ -178,6 +181,21 @@ def main():
                          old_lens=";".join(str(len(v[0])) for _k, v in sorted(per_role.items())),
                          new_lens=";".join(str(len(v[1])) for _k, v in sorted(per_role.items()))))
 
+    # A READINESS GATE HAS TO FAIL, AND HAS TO LEAVE NOTHING BEHIND. Without this the strict run
+    # exited 0 while skipping every job whose MSA was absent -- and the jobs written by an EARLIER
+    # --allow-missing-msa run were still sitting in the out-dir, so a queue builder would have found
+    # 141 pending-path jsons and folded them. Reported as skips, read as ready.
+    stale_left = []
+    if not a.allow_missing_msa:
+        written = {d["pdb"] for d in done}
+        for fn in sorted(os.listdir(a.out_dir)) if os.path.isdir(a.out_dir) else []:
+            if not fn.endswith("-final-updated.json"):
+                continue
+            pdb = fn.split("-")[0]
+            if pdb not in written:
+                os.replace(os.path.join(a.out_dir, fn), os.path.join(a.out_dir, fn + ".notready"))
+                stale_left.append(fn)
+
     print(f"corrected job jsons written: {len(done)} -> {a.out_dir}")
     print(f"  roles corrected   : {sum(d['n_roles'] for d in done)}")
     print(f"  residues restored : {sum(d['residues_restored'] for d in done)}")
@@ -195,6 +213,15 @@ def main():
             w = csv.DictWriter(fh, fieldnames=["pdb", "why"], lineterminator="\n")
             w.writeheader(); w.writerows(skipped)
         print(f"\nwrote {a.report} and {sp}")
+    if stale_left:
+        print(f"\n{len(stale_left)} job(s) this run could NOT validate were renamed to .notready so "
+              f"nothing can queue a fold from them, e.g. {stale_left[0]}")
+    if a.expect and len(done) != a.expect:
+        raise SystemExit(f"STOP: --expect {a.expect} job(s) but {len(done)} validated. "
+                         f"{len(skipped)} skipped. NOT READY to queue a refold.")
+    if not a.allow_missing_msa and skipped:
+        raise SystemExit(f"STOP: {len(skipped)} job(s) did not validate. A strict run is a readiness "
+                         "gate: it must write every expected job or fail.")
 
 
 if __name__ == "__main__":
