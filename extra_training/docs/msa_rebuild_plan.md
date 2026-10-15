@@ -195,6 +195,34 @@ stale, which is the worse half of the mistake: the table is what someone execute
 | 12 | smoke-test `11zw` end to end | — | one fold | 7 residues restored, masked in the label, flanks retained |
 | 13 | queue 2,850 refolds into `training/fold_corrected/` | — | ~19 h GPU | separate tree; step 9 and step 11 must both have passed |
 
+### THE STEP 5 THRESHOLDS, PRE-REGISTERED AND AWAITING REVIEW
+
+The criteria for the conversion control are named in the table but the PASS/FAIL NUMBERS were never
+stated, and that is the gap that matters. Writing thresholds after seeing the results is how a
+control becomes a rubber stamp, so they are committed here first, before the control runs, and they
+want review precisely because I am the wrong person to set them unchecked.
+
+Proposed, on ONE unchanged query whose MSA is already in the store:
+
+| compared | proposed pass condition | why this number, and where I am unsure |
+|---|---|---|
+| hit identities | the symmetric difference is ≤ 1% of the stored hit count, and **no hit is GAINED** | mmseqs' prefilter is heuristic, so bit-exact identity may be unreasonably strict. But a gained hit cannot come from a correct rebuild of the same search over the same data, so gains are a harder signal than losses. **Unsure: whether 1% is defensible or whether identity should be required.** |
+| depth | ≥ 99% of the stored depth, every loss attributed to a named hit | the rejected mmseqs-local-db route lost 17.8% and I called that disqualifying; I never said what is acceptable. 99% is a guess anchored on "a correct rebuild should lose nothing". **Unsure: whether any loss at all should be tolerated.** |
+| per-column coverage | occupancy per query column within 1% of the stored profile, no column dropping below 50% of its stored occupancy | a uniform small loss is believable; a localised collapse means the alignment shifted, which is the failure that matters. **Unsure about the 50% floor — it is not derived from anything.** |
+| taxonomy | every retained hit carries the SAME taxid as in the stored MSA | this one I am confident about, with a caveat: `uniref30_2302_newtaxonomy.tar.gz` REPLACES the taxonomy by design, so if the stored MSAs predate that replacement a wholesale reassignment is expected and is NOT a defect. That has to be established before the comparison is read, or the control will fail for the wrong reason |
+| match columns | every row exactly `len(query)`, no tolerance | definitional, not statistical |
+
+**How many queries.** The table says "one", which is the weakest part of the design: one query can pass
+by luck, and the structures differ enough in length and family that a single case is not
+representative. Proposed instead: **five unchanged queries spanning the length range** — the shortest,
+the longest, the median, one nanobody, one with a high-insertion MSA — and **all five must pass**. The
+cost is a few hours of CPU rather than one, against a decision that gates 2,850 folds.
+
+**The specific thing I would like checked:** whether these thresholds are self-serving. They were
+chosen to be passable by a correct rebuild, but I have not shown that an INCORRECT rebuild would fail
+them — and that is the property a gate needs. If there is a cheap way to demonstrate that (a
+deliberately degraded database, a search with a wrong `-e`), it belongs in the control.
+
 ### What is proven, and what is not
 
 **Proven:** the envdb conversion was never invoked, and `FAST_PREBUILT_DATABASES=0` invokes it —
