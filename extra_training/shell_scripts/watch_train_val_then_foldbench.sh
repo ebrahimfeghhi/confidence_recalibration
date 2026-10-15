@@ -53,40 +53,54 @@ launch_va(){ tmux new-session -d -s vfold_$1 "cd /home/ebrahim/Protenix && CUDA_
       --csv $VG/results.csv --claim-dir $VG/claims --dataset sabdab_val2 --ncycle 10 --nsample 5 \
       --dtype bf16 --overlap-scoring >> $VG/w$1.log 2>&1"; }
 
-# in-flight = a claim whose unit has no run.json yet. That is a fold on a GPU right now.
-inflight(){ $PY - "$1" <<'PYX'
-import glob, os, sys
-B = sys.argv[1]
-done = {(p.split("/")[-3], p.split("/")[-2].split("-")[0])
-        for p in glob.glob(f"{B}/poses/*/*/run.json")}
-n = 0
-for c in glob.glob(f"{B}/claims/*"):
-    f = os.path.basename(c).split("_")
-    if (f[0], f[-1]) not in done:
-        n += 1
-print(n)
-PYX
-}
+# DRAINING AT A FOLD BOUNDARY, not by waiting for the GPUs to go quiet.
+#
+# The first version waited for "no claim without a run.json" and would have waited forever. A worker
+# claims its next unit the instant it finishes one, so that condition is a race the drain always
+# loses: observed live, FoldBench went 36 -> 39 poses (the three in-flight folds DID finish) while
+# the in-flight count stayed at 3 the whole time, because three new units had been claimed. Eight
+# polls, no progress, and it would have burned the full 2 h before bailing.
+#
+# Emptying the queue file does not help either: folder.py:1176 reads the queue ONCE at startup and
+# holds it in memory, so a running worker never sees the change.
+#
+# So each worker is stopped just after it finishes a fold, detected by its own log gaining another
+# "interfaces in <n>s" line. The next fold is then at most POLL seconds old, so what is thrown away
+# is seconds rather than the ~20 min a mid-fold kill would cost -- and nothing is lost at all for a
+# worker that happens to be between folds. Waiting for a clean boundary costs one fold-cycle per
+# worker, ~20 min worst case, which is the price of not discarding work.
+POLL=${POLL:-15}
+fold_count(){ grep -c 'interfaces in [0-9]*s' "$1" 2>/dev/null || echo 0; }
 
 drain_foldbench(){
-    local alive n i
+    local alive g n0 n i left
     alive=$(tmux ls 2>/dev/null | grep -cE '^fbtop_[013]:')
     [ "$alive" -eq 0 ] && { say "FoldBench not running; nothing to drain"; return 0; }
-    say "draining FoldBench: letting the in-flight folds finish before stopping the workers"
-    for i in $(seq 1 60); do                       # up to 2 h; a 2,520-residue fold is ~20 min
-        n=$(inflight "$B")
-        [ -z "$n" ] && n=0
-        if [ "$n" -eq 0 ]; then
-            say "  no fold in flight; stopping the fbtop workers"
-            for g in $GPUS; do tmux kill-session -t fbtop_$g 2>/dev/null; done
-            sleep 10
+    say "draining FoldBench: stopping each worker at its next fold boundary"
+    declare -A base
+    for g in $GPUS; do base[$g]=$(fold_count "$B/w$g.log"); done
+    for i in $(seq 1 480); do                      # 480 x 15 s = 2 h
+        left=0
+        for g in $GPUS; do
+            tmux has-session -t fbtop_$g 2>/dev/null || continue
+            left=$((left+1))
+            n=$(fold_count "$B/w$g.log")
+            if [ "$n" -gt "${base[$g]}" ]; then
+                tmux kill-session -t fbtop_$g 2>/dev/null
+                say "  fbtop_$g finished a fold; stopped it at the boundary"
+                left=$((left-1))
+            fi
+        done
+        if [ "$left" -eq 0 ]; then
+            say "  all fbtop workers stopped cleanly"
+            sleep 5
             $PY $R/run_model/reconcile_stale_claims.py $B --dataset foldbench --nsample 5 >> "$LOG" 2>&1
             return 0
         fi
-        say "  $n fold(s) still in flight (check $i/60)"
-        sleep 120
+        [ $((i % 20)) -eq 0 ] && say "  $left worker(s) still mid-fold ($((i*POLL/60)) min)"
+        sleep "$POLL"
     done
-    say "DRAIN TIMED OUT with folds still in flight -- NOT killing them. Nothing switched."
+    say "DRAIN TIMED OUT after 2 h with workers still mid-fold -- NOT killing them."
     return 1
 }
 
