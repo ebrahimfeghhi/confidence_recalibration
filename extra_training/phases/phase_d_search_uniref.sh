@@ -450,7 +450,36 @@ done
 say "=== phase D OK for $TAG: $NA alignments; $NFOUND of $NHITS sampled UniRef hits carry a taxid ==="
 
 # ---------------------------------------------------------------- 5. free the database, on request
+# VALIDATE THE INTERMEDIATES BEFORE DELETING THE DATABASE THEY CANNOT BE REBUILT WITHOUT.
+# phase E resumes from uniref.a3m and prof_res; once uniref30 is gone, a truncated intermediate means
+# re-downloading 96 GB and re-searching. `-s` is not enough: an mmseqs db is a data file plus an
+# .index of "key offset length", and a 3-byte data file whose index claims 1,000 bytes passes every
+# existence check there is. So the index is compared against the data it points into.
+check_mmseqs_db() {
+    local base="$1" data idx end sz
+    data="$base"; idx="$base.index"
+    [ -s "$data" ] || { say "  MISSING or empty $data"; return 1; }
+    [ -s "$idx" ]  || { say "  MISSING or empty $idx";  return 1; }
+    sz=$(stat -c %s "$data")
+    # the furthest byte any key claims; it must lie inside the data file
+    end=$(awk -F'\t' 'NF>=3 {e=$2+$3; if (e>m) m=e} END{printf "%d", m}' "$idx")
+    if [ "${end:-0}" -gt "$sz" ]; then
+        say "  TRUNCATED $data: the index reaches byte $end, the file is $sz"
+        return 1
+    fi
+    say "  ok $(basename "$data"): $(awk 'END{print NR}' "$idx") keys, index reaches $end of $sz bytes"
+    return 0
+}
+
 if [ "${FREE_DB:-0}" = "1" ]; then
+    say "validating the retained intermediates before freeing uniref30"
+    bad=0
+    for b in "$OUT/uniref.a3m" "$OUT/prof_res"; do
+        [ -e "$b" ] || { say "  absent: $b"; bad=1; continue; }
+        check_mmseqs_db "$b" || bad=1
+    done
+    [ "$bad" -eq 0 ] || die "a retained intermediate is missing or truncated; NOT freeing uniref30 --
+     phase E resumes from these, and rebuilding them means another 96 GB download and search"
     say "freeing uniref30 and its index so the env database fits"
     rm -rf "$DB"/uniref30_2302_db* "$DB"/UNIREF30_READY
     say "freed; quota $(quota -s 2>/dev/null | awk '/nvme/{print $2" of "$4}')"

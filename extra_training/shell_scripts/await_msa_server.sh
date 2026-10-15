@@ -37,6 +37,28 @@ while :; do
     sleep "$INTERVAL"
 done
 
+# ONE DATABASE, ONE BUILDER. The mirror build and this poller write THE SAME PLACES -- the database
+# in tools/colabfold/db that both routes search, and msa_corrected_idx. With no lock, a canonical
+# host returning mid-build would start phase D against a half-extracted database: the searches would
+# read whatever happened to be on disk at that instant and report success, because phase D gates on
+# data files existing and they would. So this does NOT start phase D while the mirror build holds the
+# lock -- it says so and leaves the decision to a person, since switching routes mid-build means
+# choosing which half-finished thing to abandon.
+LOCK=$R/tools/colabfold/db/.msa_build.lock
+if [ -e "$LOCK" ]; then
+    owner=$(cat "$LOCK" 2>/dev/null)
+    if kill -0 "${owner%% *}" 2>/dev/null; then
+        say "SERVER IS BACK but the mirror build holds $LOCK (owner $owner)."
+        say "  NOT starting phase D: it would search a half-built database and report success."
+        say "  Decide which route to keep, stop the other, remove the lock, then re-run this."
+        exit 0
+    fi
+    say "stale lock from a dead owner ($owner); removing it"
+    rm -f "$LOCK"
+fi
+echo "$$ await_msa_server.sh $(date '+%F %T')" > "$LOCK"
+trap 'rm -f "$LOCK"' EXIT
+
 # DO NOT START IF THE CARDS ARE ALREADY BUSY WITH SOMETHING THAT NEEDS THE CPUs. The search is
 # taskset-pinned to 64 cores and the fold workers need CPU for featurisation; 288 cores means both
 # fit, but the check is recorded so a future reader knows it was considered.

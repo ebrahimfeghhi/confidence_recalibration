@@ -39,6 +39,47 @@ ACTIONABLE = "omission"
 BLOCKING = ("unresolved", "ambiguous", "linker?")
 
 
+
+def msa_mismatch(path, corrected):
+    """None if `path` is an a3m FOR THIS corrected query, else why it is not.
+
+    EXISTENCE IS NOT ENOUGH, and successful parsing is not either. The gate checked only that the
+    file was there, so an unrelated MSA satisfied `--expect 1`. Worse, Protenix's reader silently
+    TRUNCATES rows longer than the query and PADS shorter ones, so a wrong-length alignment does not
+    raise -- it quietly becomes a different alignment. Both things the model would be trained on.
+
+    So: the query row must equal the corrected sequence exactly, and every row must carry exactly
+    len(corrected) match columns, since an a3m is one match column per query residue by definition.
+    """
+    try:
+        rows, h, buf = [], None, []
+        with open(path) as fh:
+            for line in fh:
+                line = line.rstrip("\n")
+                if line.startswith(">"):
+                    if h is not None:
+                        rows.append("".join(buf))
+                    h, buf = line, []
+                else:
+                    buf.append(line)
+        if h is not None:
+            rows.append("".join(buf))
+    except OSError as e:
+        return f"could not be read: {e}"
+    if not rows:
+        return "is empty"
+    q = rows[0].replace("-", "").upper()
+    if q != corrected.strip().upper():
+        return (f"is an a3m for a DIFFERENT query: its query row is {len(q)} residues, this role's "
+                f"corrected query is {len(corrected)}")
+    want = len(corrected)
+    for i, r in enumerate(rows):
+        mc = sum(1 for c in r if not c.islower())
+        if mc != want:
+            return f"row {i} has {mc} match columns, the corrected query has {want}"
+    return None
+
+
 def under(path, root):
     """True when `path` is inside `root`. A BARE startswith IS WRONG HERE: the corrected store is
     `mmcif_msa_corrected` and the old one is `mmcif_msa`, so the corrected path starts with the old
@@ -56,6 +97,12 @@ def main():
     ap.add_argument("--jobs-dir", default=f"{ROOT}/training/jobs",
                     help="the ORIGINAL job jsons, read only")
     ap.add_argument("--out-dir", default=f"{ROOT}/training/jobs_corrected")
+    ap.add_argument("--seq-to-dir",
+                    default=f"{ROOT}/building_msa/queries_corrected/seq_to_dir.json",
+                    help="the sequence -> directory index from phase_j_corrected_queries.py. The "
+                         "directory a corrected MSA lands in is named from the FASTA header, so "
+                         "inventing a name here instead of reading it is how a whole search gets "
+                         "written under names no job points at")
     ap.add_argument("--msa-root", default=f"{ROOT}/building_msa/work/mmcif_msa_corrected",
                     help="the CORRECTED msa store the rewritten jobs must point at")
     ap.add_argument("--old-msa-root", default=f"{ROOT}/building_msa/work/mmcif_msa",
@@ -68,6 +115,11 @@ def main():
                          "preparing jobs ahead of the rebuild; a fold must NOT be queued from these")
     ap.add_argument("--report", default=None, help="csv of what was corrected and what was skipped")
     a = ap.parse_args()
+
+    if not os.path.exists(a.seq_to_dir):
+        raise SystemExit(f"STOP: no {a.seq_to_dir}. Run phase_j_corrected_queries.py first; without "
+                         "it this would invent directory names that phase F will not use.")
+    seq2dir = json.load(open(a.seq_to_dir))
 
     rows = list(csv.DictReader(open(a.gaps)))
     if not rows:
@@ -136,13 +188,26 @@ def main():
                     why = (f"role {role}: {key} is {oldp}, which is not under --old-msa-root "
                            f"{a.old_msa_root}; refusing to guess where it should move")
                     break
-                sub = os.path.basename(os.path.dirname(str(oldp)))
-                newp = os.path.join(a.msa_root, sub, base)
-                if not os.path.exists(newp) and not a.allow_missing_msa:
-                    why = (f"role {role}: {newp} does not exist. The corrected MSAs have not been "
-                           "built, so this job cannot be folded yet. Pass --allow-missing-msa to "
-                           "prepare the json anyway, and do NOT queue a fold from it.")
+                # THE NAME COMES FROM THE INDEX, not from the old directory. phase F names its
+                # output from the FASTA header, so reusing the old basename pointed every job at a
+                # directory that would never exist.
+                sub = seq2dir.get(new.strip().upper())
+                if sub is None:
+                    why = (f"role {role}: the corrected sequence is not in {a.seq_to_dir}. Re-run "
+                           "phase_j_corrected_queries.py so the FASTA and these paths agree.")
                     break
+                newp = os.path.join(a.msa_root, sub, base)
+                if not a.allow_missing_msa:
+                    bad = msa_mismatch(newp, new) if base.endswith(".a3m") else None
+                    if not os.path.exists(newp):
+                        why = (f"role {role}: {newp} does not exist. The corrected MSAs have not "
+                               "been built, so this job cannot be folded yet. Pass "
+                               "--allow-missing-msa to prepare the json anyway, and do NOT queue a "
+                               "fold from it.")
+                        break
+                    if bad:
+                        why = f"role {role}: {newp} {bad}"
+                        break
                 pc[key] = newp
                 repathed += 1
             if why:
