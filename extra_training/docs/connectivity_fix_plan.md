@@ -91,3 +91,45 @@ go straight to the corrected path once step 3 passes.
 | the 57 "chain not found" roles | `chain_roles.csv` names an auth chain absent from the cif for 57 roles. Not investigated. They are not in the fused count and may hide a separate mapping problem |
 | validation not yet measured | the 138/119 figures are the TRAINING selection only. The same measurement has not been run on the 53 validation structures |
 | gap columns | the restored positions get no evolutionary signal. Accepted above, but it is a real difference from a fresh search |
+
+---
+
+# CHECKED: the benchmarks splice too. This weakens the plan's justification.
+
+Added 2026-10-15 11:55 AM ET, at the user's request, before any step was run.
+
+Same test as on our own data: align each benchmark job query to its reference chain and ask whether
+the native positions it maps onto form one contiguous run.
+
+| | queries confidently matched to a chain | spliced across unresolved gaps |
+|---|---|---|
+| FoldBench | 135 | **15 (11%)** |
+| PXM-2025 | 109 | **21 (19%)** |
+| our training selection | 1,478 | 138 (9%) |
+
+Examples: FoldBench `7yxu` chain H, a 228-residue query over 2 runs; `8ahn` chain H, 223 over 2.
+PXM `8w5d` chain c, 131 over 2; `8w5e` chain c, 133 over 2.
+
+LIMITATION OF THIS MEASUREMENT: only about 55% of benchmark queries could be confidently matched to a
+reference chain -- 97 unmatched for FoldBench, 146 for PXM -- because their queries come from their own
+FASTA rather than from these reference files. The percentages are over the matched subset and should
+be read as a strong signal, not a precise rate.
+
+## What it does to the argument
+
+| | |
+|---|---|
+| physical correctness | unchanged. A spliced query still asserts a peptide bond that does not exist, in our inputs AND in theirs |
+| train/eval consistency | **reversed.** Our spliced inputs currently MATCH benchmark practice. Correcting only ours would introduce the train/eval difference the correction was partly meant to remove |
+| the case for running the plan | now rests on physical correctness alone, with a consistency COST rather than a consistency benefit |
+
+## What would settle it
+
+Step 6 of the plan, promoted from last to first: fold one affected structure both ways -- spliced and
+contiguous -- and compare DockQ and per-interface ipTM at the same seeds. That measures whether the
+splice costs anything at all. If it does not, the plan should not run, because it would only break
+consistency with the benchmarks for no gain. If it does, the finding applies to the benchmarks too
+and is worth reporting rather than quietly fixing on our side.
+
+It needs one padded MSA, not the 96 GB rebuild, so it is cheap and should precede any decision about
+the other 118 structures.
