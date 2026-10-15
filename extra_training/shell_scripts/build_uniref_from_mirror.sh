@@ -64,7 +64,7 @@ if [ ! -s "$DB/uniref30_2302_db_seq" ]; then
     # from RCSB on this machine, and extra ranged connections ADD throughput rather than dividing it.
     # One stream is 32 hours for 96 GB. Each part is size-checked and the whole file against the
     # server's content-length, because a silently short chunk is this method's failure mode.
-    bash "$R/extra_training/shell_scripts/parallel_fetch.sh" "$URL" "$TAR" "${CONNS:-8}" >> "$LOG" 2>&1 \
+    bash "$R/tools/fetch/parallel_fetch.sh" "$URL" "$TAR" "${CONNS:-8}" >> "$LOG" 2>&1 \
         || die "download failed; re-run to resume (parts are kept)"
     say "  fetched $(du -h "$TAR" | cut -f1)"
   else

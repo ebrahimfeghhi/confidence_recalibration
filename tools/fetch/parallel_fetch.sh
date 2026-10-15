@@ -42,8 +42,13 @@ fetch_part_parallel() {
     for k in $(seq 0 $((per-1))); do
         a=$(( rs + k * sub )); b=$(( a + sub - 1 )); [ "$b" -gt "$e" ] && b=$e
         [ "$a" -gt "$e" ] && continue
-        f="$D/p$i.sub$k"; sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
-        if [ "$sh" -gt "$sw" ]; then say "  p$i.sub$k is $sh over the $sw asked for; discarding"; rm -f "$f"; sh=0; fi
+        # NAMED BY ITS ABSOLUTE RANGE, not its index. `p$i.sub$k` was reused across runs, but which
+        # absolute range sub$k covers depends on how much the part already held -- so after an
+        # interruption the ranges shift and a leftover sub0 holding the OLD range's bytes was reused
+        # for the NEW one: right byte count, wrong bytes. Binding the name to "$a-$b" means a file
+        # from a superseded split can never match a current range again.
+        f="$D/p$i.sub.$a-$b"; sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
+        if [ "$sh" -gt "$sw" ]; then say "  $(basename "$f") is $sh over $sw; discarding"; rm -f "$f"; sh=0; fi
         [ "$sh" -eq "$sw" ] && continue
         ( curl -sL --fail --retry 8 --retry-delay 15 -r "$(( a + sh ))-$b" "$URL" >> "$f" ) &
         pids="$pids $!"
@@ -54,16 +59,25 @@ fetch_part_parallel() {
     for k in $(seq 0 $((per-1))); do
         a=$(( rs + k * sub )); b=$(( a + sub - 1 )); [ "$b" -gt "$e" ] && b=$e
         [ "$a" -gt "$e" ] && continue
-        f="$D/p$i.sub$k"; sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
+        f="$D/p$i.sub.$a-$b"; sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
         if [ "$sh" -ne "$sw" ]; then
-            say "  p$i.sub$k short: $sh of $sw -- NOT appending any sub-range of p$i this round"
+            say "  $(basename "$f") short: $sh of $sw -- NOT appending any sub-range of p$i"
             ok=0
         fi
     done
     [ "$ok" -eq 1 ] || return 1
     for k in $(seq 0 $((per-1))); do
-        f="$D/p$i.sub$k"
+        a=$(( rs + k * sub )); b=$(( a + sub - 1 )); [ "$b" -gt "$e" ] && b=$e
+        [ "$a" -gt "$e" ] && continue
+        f="$D/p$i.sub.$a-$b"
         [ -e "$f" ] || continue
+        # THE PART MUST ALREADY END EXACTLY WHERE THIS RANGE BEGINS, or the append lands at the
+        # wrong offset. Checked per append, so a stale file cannot slip in.
+        local at=$(( s + $(stat -c %s "$D/p$i") ))
+        if [ "$at" -ne "$a" ]; then
+            say "  refusing $(basename "$f"): the part ends at absolute $at, not $a"
+            return 1
+        fi
         cat "$f" >> "$D/p$i" || return 1
         rm -f "$f"
     done
