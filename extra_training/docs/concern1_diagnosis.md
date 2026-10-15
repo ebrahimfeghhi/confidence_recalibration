@@ -1,118 +1,103 @@
-# Concern 1 diagnosed: two causes, one of them a scorer bug
+# Concern 1: one cause confirmed, one claim RETRACTED
 
-Written 2026-10-15 8:10 AM ET, after review of a4f65258. Supersedes that commit's CONCERN 1
-section, which was wrong in two ways recorded at the bottom.
+Written 2026-10-15 8:40 AM ET. Replaces the previous revision of this file, whose central claim was
+wrong. Review of 9cbe93c3 was correct on every point.
 
-## Representative case: 9vb4
+## RETRACTED: there is no column-order bug, and no mis-attribution
 
-`chain_roles.csv` and sequence identity agree on the mapping, so the role assignment is correct:
+The previous revision claimed `eval/ost_dockq.py:155` read OST's `dockq_interfaces` columns in the
+wrong order, that `results.csv` rows therefore carried other interfaces' DockQ values, and that 454
+of 501 structures were exposed. **All of that is withdrawn.** The installed OST 2.8.0 documents the
+order explicitly, at `ost/mol/alg/scoring.py:1113`:
 
-| model chain | best reference match | identity | role | reference label |
+    :type: :class:`list` of :class:`tuple` with 4 elements each:
+           (trg_ch1, trg_ch2, mdl_ch1, mdl_ch2)
+
+and the same property builds each entry as `(i[0], i[1], flat_mapping[i[0]], flat_mapping[i[1]])`
+where `i` is a TARGET interface, so `GetFlatMapping()` is reference -> model. The parser as written
+is correct: its keys are reference pairs, and `model_chains` really does hold model chains.
+
+My argument rested on reading `chain_mapping` as model -> reference. It is reference -> model. Under
+the correct direction every entry for 9vb4 is consistent and nothing is mis-attributed:
+
+| `dockq_interfaces` entry | target pair | model pair | roles | consistent with `chain_mapping` {A:C, B:D, C:A} |
 |---|---|---|---|---|
-| A (120 res) | auth D1 | 1.00 | H | C |
-| B (111) | auth D2 | 1.00 | L | D |
-| C (354) | auth A | 1.00 | ag0 | A |
-| D (358) | auth B | 0.97 (model carries an N-term His tag) | ag1 | B |
+| `[A,B,C,D]` | A,B | C,D | ag0-ag1 | A->C, B->D, yes |
+| `[A,C,C,A]` | A,C | C,A | ag0-H | A->C, C->A, yes |
+| `[B,C,D,A]` | B,C | D,A | ag1-H | B->D, C->A, yes |
 
-Measured heavy-atom contacts under 4.5 A in the reference, against what the pool claims:
+So `9vb4_BC` = DockQ 0.922 really is the ag1-H interface. **No historical score is shown to be
+wrong by this analysis, and the proposed column swap must not be applied** -- it would have
+introduced exactly the silent mis-attribution it was meant to fix.
 
-| pool pair | roles | reference contacts | row written? |
-|---|---|---|---|
-| A,C | ag0-H | 84 | yes, DockQ 0.945 |
-| B,C | ag1-H | 88 | yes, DockQ 0.922 -- **but see below** |
-| A,D | ag0-L | 94 | **no** |
-| B,D | ag1-L | **0** | no -- correct, there is no interface |
+## CONFIRMED: 27 of 31 never-scored pairs are not interfaces at all
 
-## Cause 1: the pool is a cross product, not measured contacts
+Re-measured at OST's 5 A definition as asked, alongside the original 4.5 A. Identical both ways:
 
-`phase_g_build_val_jobs.py:344` -- "Interfaces are every (antibody chain, antigen chain) pair ...
-antigen against each antibody chain". Nothing measures whether the pair touches.
-
-Across all 31 never-scored pool pairs in the 20 affected structures:
-
-| | pairs |
-|---|---|
-| zero reference contacts, correctly unscoreable | **27** |
-| a real reference interface that was lost | **4** |
-
-The 27 are not a defect in the folds or the scorer; they are interfaces the pool should never have
-claimed. This is open review item **J2**. The four that are real:
-
-| pair | roles | reference contacts |
+| | 4.5 A | 5.0 A |
 |---|---|---|
-| 9vaw_AB | ag0-H | 101 |
-| 9vb4_AD | ag0-L | 94 |
-| 9q5v_EJ | ag1-H | 64 |
-| 9q5m_EH | ag2-H | 45 |
+| never-scored pool pairs that ARE real reference interfaces | 4 | 4 |
+| never-scored pool pairs with NO reference contact | 27 | 27 |
 
-## Cause 2: `ost_dockq.parse` reads OST's interface columns in the wrong order
+`phase_g_build_val_jobs.py:344` builds interfaces as "every (antibody chain, antigen chain) pair";
+nothing measures contact. 27 of the 31 pairs the pool claims for these 20 structures do not touch in
+the reference at either threshold, so having no DockQ for them is correct. That is open review item
+**J2**, and the 27 can be removed from the pool on this evidence.
 
-`eval/ost_dockq.py:155` keys the result by `t[0],t[1]` and records `t[2],t[3]` as `model_chains`:
+## CONFIRMED: 4 real interfaces are lost, because a target chain goes unmapped
 
-    ref_pair = f"{t[0]},{t[1]}"
-    res[ref_pair] = {"dockq": ..., "model_chains": (t[2], t[3])}
-
-The columns are the other way round. OST's own `chain_mapping` is model -> reference and for 9vb4 is
-`{A: C, B: D, C: A}`, with model D unmapped. Its `dockq_interfaces` are
-`[[A,B,C,D], [A,C,C,A], [B,C,D,A]]`:
-
-| entry | read as model-first | read as reference-first |
+| pair | roles | reference contacts at 5 A |
 |---|---|---|
-| `[B,C,D,A]` | model B->D and C->A, both exactly `chain_mapping` | requires model D->ref B, which `chain_mapping` does not contain |
+| 9vaw_AB | ag0-H | 185 |
+| 9vb4_AD | ag0-L | 164 |
+| 9q5v_EJ | ag1-H | 123 |
+| 9q5m_EH | ag2-H | 81 |
 
-So `t[0],t[1]` are MODEL chains. The parsed keys for 9vb4 are `A,B` `A,C` `B,C`, which are model
-pairs, while `pool.csv` queries reference labels. Consequences:
+The mechanism, from the same OST source: `dockq_interfaces` includes a target interface only
+`if i[0] in flat_mapping and i[1] in flat_mapping` (`scoring.py:1121`). So an interface is dropped
+whenever either of its target chains is absent from the mapping.
 
-| pool query (reference labels) | matched result key (model letters) | physical pair asked for | physical pair returned |
+For 9vb4 the mapping covers target A, B and C and omits target **D**, the 111-residue light chain,
+although model chain B is a 111-residue match at identity 1.00. Chains, as OST loaded them:
+
+| target label | auth | residues | role |
 |---|---|---|---|
-| A,C = ag0-H | A,C = H-ag0 | {ag0,H} | {ag0,H} -- correct by coincidence |
-| B,C = ag1-H | B,C = L-ag0 | {ag1,H} | **{L,ag0} -- wrong interface** |
-| A,D = ag0-L | none | {ag0,L} | nothing, though its value sits in the B,C row |
-| B,D = ag1-L | none | {ag1,L} | nothing, correctly |
+| A | A | 351 | ag0 |
+| B | B | 338 | ag1 |
+| C | D1 | 119 | H |
+| D | D2 | 111 | L |
 
-So `9vb4_BC` in `results.csv` carries DockQ 0.922 labelled ag1-H when that number is the ag0-L
-interface, and the genuine ag1-H interface (88 contacts) was never scored at all, because OST left
-model chain D unmapped.
+A lead, not a conclusion: OST's `chem_groups` for the target are `[[A], [B,D], [C]]` and its
+`chem_mapping` is `[[C], [D], [A,B]]` -- model chains A AND B are both placed in the group holding
+target C alone, so only one of them can map and target D is left with nothing. H and L are
+homologous immunoglobulin V domains, which would explain a chemical grouping that cannot separate
+them. Not verified.
 
-A lookup succeeds only when the pool's letter pair happens to denote the same physical pair as the
-identical model letter pair. Scope of the risk:
+The never-scored pairs are not confined to one role, so "the light chain is always dropped" is not
+the rule:
 
-| | structures |
+| role appearing in a never-scored pair | count |
 |---|---|
-| model letter == reference label for every chain (lookup safe) | 47 |
-| they differ (lookup can match the wrong interface) | **454** |
-| total training structures | 501 |
-
-Only 20 of the 454 showed MISSING rows. The other 434 got a row for every pool interface, which is
-not evidence that the rows are right -- a wrong match is silent.
+| L | 18 |
+| ag0 | 17 |
+| H | 13 |
+| ag1 | 10 |
+| ag2 | 4 |
 
 ## What this does and does not affect
 
 | | affected |
 |---|---|
-| trunks, poses, folds | **no** -- all 723 units intact; 9vb4 logs N_asym 4, N_token 705, a 40 s forward pass |
-| training labels | **no** -- built by `phase_j_job_cifs.py` from the deposited structure, an independent path that never reads `pool.csv` or `chain_roles.csv` |
-| DockQ and ipTM in `results.csv` | **YES**, wherever model and reference naming differ |
-| the already-published FoldBench / PXM numbers | **UNKNOWN** -- those datasets' `chain_roles.csv` has a different schema (`chain_1`/`chain_2`, no model/reference columns), so the test above does not apply to them. Needs its own check before any of those numbers are relied on again. |
+| trunks, poses, folds | no -- all 723 units intact. Folds kept; nothing needs refolding |
+| training labels | no -- `phase_j_job_cifs.py` reads the deposited structure and never touches `pool.csv` or `chain_roles.csv` |
+| `results.csv` attribution | **no** -- retracted above |
+| coverage of `results.csv` | yes, narrowly: 4 real interfaces across 4 structures have no DockQ |
+| published FoldBench / PXM numbers | not shown to be wrong. The earlier "unknown, needs checking" framing came from the retracted claim |
 
-`pair_iptm` is indexed off `model_chains`, which under the correct reading holds the REFERENCE
-chains, so ipTM attribution is suspect by the same mechanism.
+## Next steps
 
-## Proposed fix, NOT applied
-
-Swap the columns in `parse()` so the key is the reference pair `t[2],t[3]` and `model_chains` is
-`t[0],t[1]`, then re-derive every affected number. This is deliberately left unapplied: it changes
-the attribution of every DockQ value this scorer has produced, including numbers already in the
-report, so it should be a reviewed decision rather than an overnight edit. The folds are preserved
-and nothing needs refolding -- the poses are correct, only the bookkeeping over them is wrong.
-
-Separately, J2 would remove the 27 phantom pairs by building the pool from measured contacts.
-
-## Corrections to a4f65258
-
-| claim there | correct |
+| step | why |
 |---|---|
-| "folder.py keeps the claim by design" after SCORING INCOMPLETE | WRONG. `folder.py` calls `release()` on that path. The unit is retryable; the new completion logic treats the logged failure as terminal without proving it is unrecoverable. |
-| "evaluation-only ... the folds are not at fault" | NOT ESTABLISHED THEN, and only half right now. Folds and labels are indeed unaffected, but 4 real interfaces were lost and an unknown number of rows are mis-attributed, which is more than a missing-value problem. |
-| "9vaw scored nothing of its two" | one seed's row read as the structure's. 9vaw seed 500002 is short only `AC`. |
-| equal chain counts cited as evidence the right copies were selected | they are not evidence. The mapping was confirmed here by per-chain sequence identity and by measured reference contacts. |
+| remove the 27 non-contacting pairs from the pool (J2) | they are measured non-interfaces at 4.5 A and 5 A |
+| establish why OST leaves a target chain unmapped on 4 structures | the chem_groups/chem_mapping lead above; affects 4 real interfaces |
+| re-score those 4 with an explicit `-c` chain map | `ost_dockq.invoke` already accepts `chain_map`, so it can be forced without changing the parser |
