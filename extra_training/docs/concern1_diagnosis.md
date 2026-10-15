@@ -101,3 +101,82 @@ the rule:
 | remove the 27 non-contacting pairs from the pool (J2) | they are measured non-interfaces at 4.5 A and 5 A |
 | establish why OST leaves a target chain unmapped on 4 structures | the chem_groups/chem_mapping lead above; affects 4 real interfaces |
 | re-score those 4 with an explicit `-c` chain map | `ost_dockq.invoke` already accepts `chain_map`, so it can be forced without changing the parser |
+
+---
+
+# Steps 1-3 executed, 2026-10-15 9:30 AM ET
+
+## Step 1: the phantom pairs, measured across all 501 structures
+
+Measured with OST's own criterion, which `scoring.py` sets as `contact_d = 5.0` and
+`contact_mode = "aa"` -- all-atom contacts at 5 A, the same test OST applies when deciding what a
+target interface is.
+
+| | pairs |
+|---|---|
+| pool pairs, all 501 training structures | 1,137 |
+| with reference contacts (kept) | 1,037 |
+| **ZERO reference contacts (phantom)** | **100, over 81 structures** |
+
+Contact distribution of the 1,037 that are real: min 1, p10 38, median 210, max 4,927. The phantom
+pairs are not a borderline tail -- they are exactly zero.
+
+Most common role combinations among the 100: ag0-L 30, ag1-L 22, ag1-H 12, L-ag1 8, L-ag0 8.
+
+Written out: `train_val_splits/pool_reference_contacts.csv` (every pair with its contact count),
+`train_val_splits/pool_phantom_pairs.csv` (the 100), and `training/fold/pool.contacting.csv` (the
+1,037). **The live `pool.csv` is NOT overwritten** -- swapping it in changes the denominator of every
+coverage statistic this project has quoted, so it should be a reviewed step rather than a side
+effect of this investigation.
+
+### This explains the old run's unsolved cases
+
+`10op_FN` -- flagged early on as "zero samples on every seed" and carried as an open mystery all
+session -- is a phantom pair: roles ag1-L, zero reference contacts. It was never a scorer failure.
+
+### Why only 20 structures looked affected
+
+`partial_scores.csv` covers the 74 structures in the regeneration queue, not all 501. The other 61
+phantom-pair structures were folded in the earlier run and their results live in
+`training/fold/results.csv`. Checked directly: `10op_FN`, `10or_BT`, `10or_FT`, `7stz_AF` and
+`7tn9_FH` each have 0 rows there, so nothing was scored for them and there is no contradiction
+between the 100 and the 20.
+
+## Steps 2-3: the four real interfaces
+
+`-c` is not a usable lever. OST validates a custom map against its own chemical grouping and refuses
+the correct one:
+
+    RuntimeError: Chem group mismatch in custom mapping: target chain "D" groups with the following
+    chemically equivalent target chains: ['B', 'D'] but model chain "B" maps to the following target
+    chains: ['C']
+
+Model B is 9vb4's 111-residue light chain and target C its 119-residue heavy chain; OST holds them
+chemically equivalent, which is what the chem-grouping hypothesis predicted. Scoring the interface's
+two chains in isolation puts one chain per group and the mapping comes out right.
+
+| interface | roles | DockQ | pair_iptm | model chains returned | expected | verdict |
+|---|---|---|---|---|---|---|
+| 9vb4_AD | ag0-L | **0.894** | 0.919 | (C, B) | (C, B) | accepted |
+| 9vaw_AB | ag0-H | **0.005** | 0.178 | (C, A) | (C, A) | accepted |
+| 9q5v_EJ | ag1-H | -- | -- | -- | -- | REFUSED, ambiguous map |
+| 9q5m_EH | ag2-H | -- | -- | -- | -- | REFUSED, ambiguous map |
+
+Step 3 is the "model chains returned vs expected" columns: a recovered number is accepted only when
+the model chains OST reports are the ones `chain_roles.csv` names for those roles, so it cannot be
+filed under the wrong physical pair.
+
+9vaw_AB at 0.005 is the result that matters. That interface is a near-total failure and it was being
+omitted rather than recorded, so dropping unmappable interfaces biases evaluation OPTIMISTICALLY.
+
+The two refusals are references carrying several identical antigen copies -- 9q5m has three
+372-residue chains, each matching more than one model chain at 0.82 -- so sequence alone does not
+determine a one-to-one map. They need symmetry-aware mapping, which is what OST's chain mapper is
+for and what fails here. Refused rather than guessed.
+
+## Scope, restated after the review's qualification
+
+"Training labels unaffected" means only that this scorer issue does not change how they were
+constructed. It is NOT the label and cache validation still owed before training:
+`phase_j_replay.py` has never been run, and `phase_i_check.py`'s validator still accepts NaN
+coordinates and bad trunk shapes.
