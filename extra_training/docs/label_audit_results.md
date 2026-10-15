@@ -14,10 +14,14 @@ Reproduce both audits with `phases/phase_j_labels_and_audit.sh both`; prove the 
 
 | verdict | training (n=501) | validation (n=53) |
 |---|---|---|
-| **ok** -- every role audited, no substitution, max deviation 0.0000 A | **497** | **52** |
+| **ok** -- every role audited and accounted for, no substitution, max deviation 0.0000 A | **497** | **52** |
 | COORD MISMATCH -- sequences exact, coordinates differ | 4 | 1 |
-| INCOMPLETE -- a role could not be paired | 0 | 0 |
+| INCOMPLETE -- a role unpaired or not accounted for | 0 | 0 |
 | SUBSTITUTION -- a residue identity differs | 0 | 0 |
+
+Of the 5 COORD MISMATCH, 4 are proven harmless by OST DockQ against SAbDab2 (1.0000, 1.0000, 1.0000,
+0.8550) and **1 is genuinely wrong**: `9djw`, DockQ 0.0080, a different complex. That is the only
+label defect in 554 structures. See "The 5 COORD MISMATCH structures" below.
 
 Columns: `training`/`validation` count STRUCTURES, not chains or residues. A structure is `ok` only
 when every role it declares was paired and compared; see "Three holes" below for why that is stated.
@@ -155,17 +159,20 @@ resolved), which are per-token and per-pair.
 | labelled residues | 311,923 | 266,336 (-14.6%) |
 | constant domains labelled | yes | no |
 | tokens in input with no label | none measured | the 45,587 above |
-| verified against an independent source | yes, 497/501 and 52/53 | it IS the source; no second opinion possible |
+| verified against an independent source | yes, 497/501 and 52/53 | RETRACTED 2026-10-15: review round 6 is right that SAbDab2's labels CAN be cross-checked against RCSB -- the comparison runs in either direction. The earlier "no second opinion possible" was wrong. |
 | chain-correspondence code needed | yes (this file) | none |
 | already built and folded | yes | labels yes, nothing refolded |
 
-**OPEN QUESTIONS FOR THE AGENT.**
-1. Does the FT3 loss mask unlabelled tokens cleanly, or would 14.6% unlabelled residues bias the
-   pLDDT/PAE targets? This is the question that decides it, and it is not answered here.
-2. Is a label set that cannot be cross-checked against anything acceptable, given that four earlier
-   checks in this project were wrong in the same direction?
-3. If we keep our labels, are the 3 unexplained local differences (`8d53`, `9djw`, `8v8f`, max
-   4-13 A) worth chasing, or is 3 of 554 tolerable?
+**ANSWERED BY REVIEW ROUND 6, and it settles the decision against switching.** Upstream Protenix uses
+`coordinate_mask` as the resolved/unresolved supervision target, so atoms SAbDab2 crops away would be
+presented to the model as genuinely unresolved -- teaching 45,587 false "unresolved" labels. Avoiding
+that needs a separate supervision mask in the training path, which is NEW code. Keeping our
+RCSB-derived labels needs none. Switching is therefore more work, not less, and the reviewer's
+recommendation is to keep them.
+
+**STILL OPEN.** Coverage shortfalls should be explained residue by residue rather than accepted under
+a percentage (round 6). As of this revision there are none: the one case, `8s6k`, was a defect in the
+AUDIT and is fixed -- see below.
 
 ## Three holes found in review, and closed
 

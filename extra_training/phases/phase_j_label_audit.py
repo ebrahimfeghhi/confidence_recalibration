@@ -388,19 +388,36 @@ def main():
             # contributing nothing -- yet both roles were reported audited. A group result cannot
             # stand in for its members.
             #
-            # The requirement reuses MIN_COVER and introduces no new constant: a role must own
-            # MIN_COVER of the reference residues it COULD own, which is bounded by its own label
-            # chain and by the reference chain. Checked against the cases that exist:
-            #   10gh  1 role, label 238 (VH+CH1) vs reference 119: can own 119, owns 119  -> pass
-            #   32nz  2 roles, labels 122 + 115 vs fused reference 238: each owns its own  -> pass
-            #   8f6x  2 roles, one owning 429 and one owning 0                 -> the second FAILS
-            # Requiring coverage of the LABEL chain instead would be wrong for the same reason it
-            # was wrong at group level: on 10gh only 119 of our 238 residues can ever be matched.
-            owned = collections.Counter(r for _s, _l, r in corr)
+            # The requirement is on the REFERENCE side only, and reuses MIN_COVER rather than
+            # adding a constant: of the reference residues spanned by what this role owns, it must
+            # own MIN_COVER of them, and it must own at least one.
+            #
+            # BOUNDING IT BY THE LABEL CHAIN'S LENGTH IS WRONG, and 8s6k measured why. SAbDab2's
+            # chain B is the 223-residue fused scFv; our label splits it into A=124 and B=107, and
+            # A's last 8 residues are the GGGGS-type LINKER, which SAbDab2's chain does not contain.
+            # Role H therefore owns 116 of its 124 label residues and a label-side bound failed it,
+            # although all 116 reference residues it is responsible for are exact. Those 8 are extra
+            # in OUR label, not missing from the reference -- the same error as requiring label
+            # coverage at group level, reintroduced per role.
+            #
+            # Checked against the cases that exist:
+            #   8s6k  H owns reference 0-115 contiguous: 116 of a 116 span   -> pass
+            #   32nz  H and L each own their own contiguous half of the fused chain -> pass
+            #   10gh  1 role owning all 119 reference residues               -> pass
+            #   phantom (self-test) a redundant role owning 0                -> FAILS on "at least one"
+            own_idx = collections.defaultdict(list)
+            for _k, (_s, _l, _r) in enumerate(corr):
+                own_idx[_r].append(_s)
+            owned = {r: len(v) for r, v in own_idx.items()}
             for role, lk, _named in members:
-                can_own = min(len(lab[lk]), len(sseq))
-                if owned[role] < MIN_COVER * can_own:
-                    role_cov.append(f"{role}:{lk}/{sk}@owns{owned[role]}of{can_own}")
+                idx = own_idx.get(role) or []
+                if not idx:
+                    role_cov.append(f"{role}:{lk}/{sk}@owns0")
+                    continue
+                lo, hi = sp.index(min(idx)), sp.index(max(idx))
+                span = hi - lo + 1
+                if len(idx) < MIN_COVER * span:
+                    role_cov.append(f"{role}:{lk}/{sk}@owns{len(idx)}of{span}span")
                     continue
                 audited.add(role)
                 pairs.append(f"{role}={lk}/{sk}" + ("" if _named else "~seq"))
