@@ -1,0 +1,217 @@
+#!/bin/bash
+# THE DEFERRED REFOLD: the 118 training and 13 validation structures whose trunks were deleted when
+# the corrected-query refold was still planned, now refolded with their ORIGINAL queries. FoldBench
+# finishes afterwards. Supersedes watch_train_val_then_foldbench.sh, which did the first 1,023 units.
+#
+# WHY ORIGINAL QUERIES AND NOT CORRECTED ONES. The corrected-query path needs UniRef30 re-fetched
+# (96 GB, deleted) plus envdb built (~700 GB), is effectively one-shot once phase D frees uniref30,
+# and would restore residues that are 98.6% constant-domain. Three independent lines say that region
+# does not matter here: it is 30+ A from the paratope; SAbDab2's own curated structures trim it away
+# entirely, so the field's reference ab-ag set does not treat it as load-bearing; and the metric we
+# report, per-interface ipTM, reads the PAE block between the antibody and the antigen, which those
+# residues do not enter. See docs/sabdab_labels.md.
+#
+# 1,180 training units over 118 structures and 1,300 validation units over 13, ~495 GB, taking the
+# cache from 382 of 501 to 500 of 501 and validation from 40 of 53 to 53 of 53. 9mx1 is excluded:
+# 2,941 residues against protenix-v2's 2,560 ceiling.
+#
+# WHY THE ORDER CHANGED. Measured, the remaining work is ~26.5 h: FoldBench ~18.7 h, the training
+# cache 5.2 h, validation 2.6 h. FoldBench is 70% of that and it is the one stage the confidence-head
+# project is NOT waiting on -- it is the benchmark top-off. The training cache and the validation
+# folds are what everything downstream needs, and together they are 7.8 h. Running them first puts
+# them in hand the same morning instead of a day and a half later, and the total is unchanged
+# because it is the same work in a different order.
+#
+# The earlier 56.6 h estimate for FoldBench was wrong, and wrong in an instructive way: the queue is
+# not sorted and the three workers had happened to spend their whole first 3.5 h on the two LARGEST
+# complexes in it, 7zau at 2,520 residues and 7z2m at 2,244. Extrapolating a rate measured there
+# across a queue whose median is 1,230 residues overstated it threefold. A quadratic-in-residues
+# model, anchored on those two and checked against them (11.5 GPU-h predicted vs 10.6 actual, 8%
+# over), gives ~18.7 h for the 576 that remain.
+#
+# FOLDBENCH IS DRAINED, NOT KILLED. folder.py has no stop file and no graceful exit, so a worker
+# killed mid-fold loses that fold outright -- its poses do not reproduce. The switch therefore waits
+# for every claimed-but-unwritten unit to finish before stopping the workers. FoldBench is
+# claim-based and resumes where it stopped, so nothing else is lost by pausing it here.
+#
+# NOTHING IS TORN DOWN WITHOUT CONFIRMED COMPLETION. Each stage's teardown is gated on
+# phase_j_stage_complete.py, which requires the trunk AND exactly one finished pose directory AND
+# every expected score row -- the trunk alone is written during inference, before the poses are
+# finalised and scored, and under --overlap-scoring the scoring is deferred to a background thread.
+# A stage that does not confirm completion STOPS THE WATCHER and leaves its workers running; it
+# never kills them and never switches stages. Resuming is re-running this script.
+set -u
+R=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+B=$R/experimental_data/protenix/foldbench/foldbench_baseline_remaining_folds
+EG=$R/extra_training/training/fold_deferred
+VG=$R/extra_training/validation/fold_deferred
+PY=/home/ebrahim/Protenix/.venv/bin/python
+CHK=$R/extra_training/phases/phase_j_stage_complete.py
+LOG=$B/watcher.log
+GPUS="0 1 3"
+STALL_POLLS=${STALL_POLLS:-9}            # 9 x 300 s = 45 min
+say(){ echo "[$(date '+%m-%d %H:%M:%S')] $*" >> "$LOG"; }
+
+launch_fb(){ tmux new-session -d -s fbtop_$1 "cd /home/ebrahim/Protenix && CUDA_VISIBLE_DEVICES=$1 \
+      LAYERNORM_TYPE=openfold $PY $R/run_model/folder.py --queue $B/queue.tsv --out $B/poses \
+      --csv $B/results.csv --claim-dir $B/claims --dataset foldbench --ncycle 10 --nsample 5 \
+      --dtype bf16 --overlap-scoring >> $B/w$1.log 2>&1"; }
+launch_tr(){ tmux new-session -d -s tcache_$1 "cd /home/ebrahim/Protenix && CUDA_VISIBLE_DEVICES=$1 \
+      LAYERNORM_TYPE=openfold TRUNK_DUMP_DIR=$EG/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
+      PROTENIX_DUMP_CONF_INPUTS=1 $PY $R/run_model/folder.py --queue $EG/queue.tsv --out $EG/poses \
+      --csv $EG/results.csv --claim-dir $EG/claims --dataset sabdab_train --ncycle 10 --nsample 5 \
+      --dtype bf16 --overlap-scoring >> $EG/w$1.log 2>&1"; }
+launch_va(){ tmux new-session -d -s vfold_$1 "cd /home/ebrahim/Protenix && CUDA_VISIBLE_DEVICES=$1 \
+      LAYERNORM_TYPE=openfold TRUNK_DUMP_DIR=$VG/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
+      PROTENIX_DUMP_CONF_INPUTS=1 $PY $R/run_model/folder.py --queue $VG/queue.tsv --out $VG/poses \
+      --csv $VG/results.csv --claim-dir $VG/claims --dataset sabdab_val2 --ncycle 10 --nsample 5 \
+      --dtype bf16 --overlap-scoring >> $VG/w$1.log 2>&1"; }
+
+# DRAINING AT A FOLD BOUNDARY, not by waiting for the GPUs to go quiet.
+#
+# The first version waited for "no claim without a run.json" and would have waited forever. A worker
+# claims its next unit the instant it finishes one, so that condition is a race the drain always
+# loses: observed live, FoldBench went 36 -> 39 poses (the three in-flight folds DID finish) while
+# the in-flight count stayed at 3 the whole time, because three new units had been claimed. Eight
+# polls, no progress, and it would have burned the full 2 h before bailing.
+#
+# Emptying the queue file does not help either: folder.py:1176 reads the queue ONCE at startup and
+# holds it in memory, so a running worker never sees the change.
+#
+# So each worker is stopped just after it finishes a fold, detected by its own log gaining another
+# "interfaces in <n>s" line. The next fold is then at most POLL seconds old, so what is thrown away
+# is seconds rather than the ~20 min a mid-fold kill would cost -- and nothing is lost at all for a
+# worker that happens to be between folds. Waiting for a clean boundary costs one fold-cycle per
+# worker, ~20 min worst case, which is the price of not discarding work.
+POLL=${POLL:-15}
+fold_count(){ grep -c 'interfaces in [0-9]*s' "$1" 2>/dev/null || echo 0; }
+
+drain_foldbench(){
+    local alive g n0 n i left
+    alive=$(tmux ls 2>/dev/null | grep -cE '^fbtop_[013]:')
+    [ "$alive" -eq 0 ] && { say "FoldBench not running; nothing to drain"; return 0; }
+    say "draining FoldBench: stopping each worker at its next fold boundary"
+    declare -A base
+    for g in $GPUS; do base[$g]=$(fold_count "$B/w$g.log"); done
+    for i in $(seq 1 480); do                      # 480 x 15 s = 2 h
+        left=0
+        for g in $GPUS; do
+            tmux has-session -t fbtop_$g 2>/dev/null || continue
+            left=$((left+1))
+            n=$(fold_count "$B/w$g.log")
+            if [ "$n" -gt "${base[$g]}" ]; then
+                tmux kill-session -t fbtop_$g 2>/dev/null
+                say "  fbtop_$g finished a fold; stopped it at the boundary"
+                left=$((left-1))
+            fi
+        done
+        if [ "$left" -eq 0 ]; then
+            say "  all fbtop workers stopped cleanly"
+            sleep 5
+            $PY $R/run_model/reconcile_stale_claims.py $B --dataset foldbench --nsample 5 >> "$LOG" 2>&1
+            return 0
+        fi
+        [ $((i % 20)) -eq 0 ] && say "  $left worker(s) still mid-fold ($((i*POLL/60)) min)"
+        sleep "$POLL"
+    done
+    say "DRAIN TIMED OUT after 2 h with workers still mid-fold -- NOT killing them."
+    return 1
+}
+
+watch_stage(){   # $1 label  $2 fold dir  $3 queue  $4 total  $5 prefix  $6 dataset  $7 extra flags
+    local last=-1 stalled=0 n tot alive q cc fresh lf
+    say "watching $1: $4 units (complete = trunk + one finished pose dir + all score rows)"
+    while :; do
+        cc=$($PY "$CHK" --fold "$2" --queue "$3" --dataset "$6" --nsample 5 $7 2>/dev/null \
+             | sed -n 's|.*: \([0-9]*\)/\([0-9]*\) units COMPLETE.*|\1 \2|p')
+        n=${cc%% *}; tot=${cc##* }
+        [ -z "$n" ] && { say "$1: completion check did not report -- investigate"; n=0; }
+        alive=$(tmux ls 2>/dev/null | grep -cE "^$5_[013]:")
+        q=$(quota -s 2>/dev/null | awk 'NR==3{print $2}')
+        if [ "$n" -ge "$4" ]; then say "$1 COMPLETE: $n/$4 fully done, quota $q"; return 0; fi
+        if [ "$alive" -lt 3 ]; then
+            say "only $alive/3 $5 workers at $n/$4 -- reconciling and relaunching"
+            $PY $R/run_model/reconcile_stale_claims.py "$2" --dataset "$6" --nsample 5 >> "$LOG" 2>&1
+            for g in $GPUS; do
+                if ! tmux has-session -t ${5}_$g 2>/dev/null; then
+                    case "$5" in tcache) launch_tr $g;; vfold) launch_va $g;; fbtop) launch_fb $g;; esac
+                    say "  relaunched ${5}_$g"
+                fi
+            done
+            stalled=0
+        elif [ "$n" -eq "$last" ]; then
+            stalled=$((stalled+1))
+            [ $((stalled % 3)) -eq 0 ] && say "$1: no newly completed unit for $((stalled*5)) min at $n/$4"
+            # a worker log written inside the window means a fold is RUNNING, however flat the count
+            fresh=0
+            for lf in "$2"/w*.log; do
+                [ -f "$lf" ] || continue
+                [ $(( $(date +%s) - $(stat -c %Y "$lf") )) -lt $(( STALL_POLLS * 300 )) ] && fresh=1
+            done
+            if [ "$stalled" -ge "$STALL_POLLS" ] && [ "$fresh" -eq 0 ]; then
+                say "$1: no completed unit AND no worker log for $((stalled*5)) min."
+                say "$1: $n of $4 complete. NOT switching stages and NOT killing anything."
+                $PY "$CHK" --fold "$2" --queue "$3" --dataset "$6" --nsample 5 $7 --verbose >> "$LOG" 2>&1
+                return 2
+            fi
+        else
+            stalled=0; say "$1 $n/$4 complete, $alive workers, quota $q"
+        fi
+        last=$n; sleep 300
+    done
+}
+
+# THE FALLBACK. Every exit path below refuses to kill a running worker, which is right -- but it
+# can leave the cards IDLE: if a stage fails with its workers already dead, or the drain times out
+# and then those folds finish, three cards sit doing nothing until someone looks. So before giving
+# up, if nothing of ours is folding, FoldBench goes back on its ORIGINAL queue. It is claim-based
+# and resumes where it stopped, so that is always safe and always useful work. It NEVER pre-empts a
+# live worker: the guard is that no tcache, vfold or fbtop session exists.
+bail(){                                  # $1 = what failed
+    local busy
+    busy=$(tmux ls 2>/dev/null | grep -cE '^(tcache|vfold|fbtop)_[013]:')
+    if [ "$busy" -gt 0 ]; then
+        say "$1 -- LEAVING THE $busy RUNNING WORKER(S) ALONE. Nothing killed, nothing switched."
+        say "Investigate, then re-run this script to resume."
+    else
+        say "$1 -- no worker is folding, so the cards would idle. Putting FoldBench back on its"
+        say "original queue (claim-based, resumes where it stopped)."
+        $PY $R/run_model/reconcile_stale_claims.py $B --dataset foldbench --nsample 5 >> "$LOG" 2>&1
+        for g in $GPUS; do launch_fb $g; say "  launched fbtop_$g on the original FoldBench queue"; done
+        say "FoldBench is folding again. The training cache and validation still need a human."
+    fi
+    exit 1
+}
+
+say "=== DEFERRED REFOLD: training (1,180) -> validation (1,300) -> FoldBench ==="
+drain_foldbench || bail "the FoldBench drain timed out with folds still in flight"
+
+say "stage 1: deferred training refold, $(wc -l < $EG/queue.tsv) units over 118 structures"
+$PY $R/run_model/reconcile_stale_claims.py $EG --dataset sabdab_train --nsample 5 >> "$LOG" 2>&1
+for g in $GPUS; do launch_tr $g; say "  launched tcache_$g"; done
+if ! watch_stage "training cache" "$EG" "$EG/queue.tsv" "$(wc -l < $EG/queue.tsv)" tcache sabdab_train ""; then
+    bail "the training cache did NOT confirm completion"
+fi
+for g in $GPUS; do tmux kill-session -t tcache_$g 2>/dev/null; done
+sleep 10
+
+say "stage 2: deferred validation refold, $(wc -l < $VG/queue.tsv) units over 13 structures"
+$PY $R/run_model/reconcile_stale_claims.py $VG --dataset sabdab_val2 --nsample 5 >> "$LOG" 2>&1
+for g in $GPUS; do launch_va $g; say "  launched vfold_$g"; done
+if ! watch_stage "validation" "$VG" "$VG/queue.tsv" "$(wc -l < $VG/queue.tsv)" vfold sabdab_val2 ""; then
+    bail "validation did NOT confirm completion"
+fi
+for g in $GPUS; do tmux kill-session -t vfold_$g 2>/dev/null; done
+sleep 10
+
+say "stage 3: FoldBench, resuming where the drain left it"
+$PY $R/run_model/reconcile_stale_claims.py $B --dataset foldbench --nsample 5 >> "$LOG" 2>&1
+for g in $GPUS; do launch_fb $g; say "  launched fbtop_$g"; done
+# --no-trunk: FoldBench dumps no trunks, so complete there is poses + every score row
+if ! watch_stage "FoldBench" "$B" "$B/queue.tsv" "$(wc -l < $B/queue.tsv)" fbtop foldbench "--no-trunk"; then
+    bail "FoldBench did NOT confirm completion"
+fi
+
+say "ALL RUNNABLE WORK DONE. The refolds are NOT queued: 1,180 training and 1,300 validation units"
+say "wait on the corrected MSAs (deferred_refold.csv in each fold dir). GPU holders are untouched."
+say "done"
