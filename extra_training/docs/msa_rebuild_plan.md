@@ -195,33 +195,52 @@ stale, which is the worse half of the mistake: the table is what someone execute
 | 12 | smoke-test `11zw` end to end | — | one fold | 7 residues restored, masked in the label, flanks retained |
 | 13 | queue 2,850 refolds into `training/fold_corrected/` | — | ~19 h GPU | separate tree; step 9 and step 11 must both have passed |
 
-### THE STEP 5 THRESHOLDS, PRE-REGISTERED AND AWAITING REVIEW
+### THE STEP 5 ACCEPTANCE RULES
 
-The criteria for the conversion control are named in the table but the PASS/FAIL NUMBERS were never
-stated, and that is the gap that matters. Writing thresholds after seeing the results is how a
-control becomes a rubber stamp, so they are committed here first, before the control runs, and they
-want review precisely because I am the wrong person to set them unchecked.
+Revision 3 proposed 1% tolerances and a "no gained hits" rule. Both are withdrawn after review.
 
-Proposed, on ONE unchanged query whose MSA is already in the store:
+**"No gained hits" was unjustified.** Different database ordering can REPLACE retained hits, which
+produces gains and losses together. A gain on its own does not establish corruption, so treating it
+as a harder signal than a loss was wrong.
 
-| compared | proposed pass condition | why this number, and where I am unsure |
-|---|---|---|
-| hit identities | the symmetric difference is ≤ 1% of the stored hit count, and **no hit is GAINED** | mmseqs' prefilter is heuristic, so bit-exact identity may be unreasonably strict. But a gained hit cannot come from a correct rebuild of the same search over the same data, so gains are a harder signal than losses. **Unsure: whether 1% is defensible or whether identity should be required.** |
-| depth | ≥ 99% of the stored depth, every loss attributed to a named hit | the rejected mmseqs-local-db route lost 17.8% and I called that disqualifying; I never said what is acceptable. 99% is a guess anchored on "a correct rebuild should lose nothing". **Unsure: whether any loss at all should be tolerated.** |
-| per-column coverage | occupancy per query column within 1% of the stored profile, no column dropping below 50% of its stored occupancy | a uniform small loss is believable; a localised collapse means the alignment shifted, which is the failure that matters. **Unsure about the 50% floor — it is not derived from anything.** |
-| taxonomy | every retained hit carries the SAME taxid as in the stored MSA | this one I am confident about, with a caveat: `uniref30_2302_newtaxonomy.tar.gz` REPLACES the taxonomy by design, so if the stored MSAs predate that replacement a wholesale reassignment is expected and is NOT a defect. That has to be established before the comparison is read, or the control will fail for the wrong reason |
-| match columns | every row exactly `len(query)`, no tolerance | definitional, not statistical |
+**And the percentage tolerances were screening rules presented as guarantees.** They can be passed by
+an alignment that is simply wrong: shifted hit alignments with IDENTICAL hit ids, depth, taxonomy and
+per-column occupancy were constructed during review. Occupancy counts how many rows occupy a column,
+not whether the residues in it are the right ones.
 
-**How many queries.** The table says "one", which is the weakest part of the design: one query can pass
-by luck, and the structures differ enough in length and family that a single case is not
-representative. Proposed instead: **five unchanged queries spanning the length range** — the shortest,
-the longest, the median, one nanobody, one with a high-insertion MSA — and **all five must pass**. The
-cost is a few hours of CPU rather than one, against a decision that gates 2,850 folds.
+So the rules are absolute, and comparison reaches the alignments themselves:
 
-**The specific thing I would like checked:** whether these thresholds are self-serving. They were
-chosen to be passable by a correct rebuild, but I have not shown that an INCORRECT rebuild would fail
-them — and that is the property a gate needs. If there is a cheap way to demonstrate that (a
-deliberately degraded database, a search with a wrong `-e`), it belongs in the control.
+| # | rule |
+|---|---|
+| 1 | **Absolute correctness checks.** The query row equals the corrected sequence exactly. Every row carries exactly `len(query)` match columns. Taxonomy assignments are unchanged for shared hits. No tolerance on any of these |
+| 2 | **Compare the actual alignments.** Match shared hits by accession AND segment, then compare each one's residue/gap string and its insertion count. Ignore row order and cosmetic metadata. This is what catches a shift that every aggregate statistic passes |
+| 3 | **Start from exact normalised agreement** across the five unchanged queries. If differences appear, report GAINED hits, LOST hits and CHANGED alignments as three separate categories, and investigate before approving any fold. **Do not tune search parameters to force a pass** -- a parameter chosen to make the control agree makes the control meaningless |
+| 4 | one `flock` lock across both routes, held by the process doing the build or search; the watcher reports recovery and does nothing while another route holds it |
+
+Rule 3 is the one that matters most. The failure mode is not "the control fails" -- it is "the control
+is made to pass". Differences are information to chase, not a number to get under.
+
+### RUN THE CONTROL QUERIES IN THE SAME BATCH AS THE CORRECTED ONES
+
+This is the change that avoids repeating a search, and it is a change to the ORDER of the plan, not
+just its checks.
+
+Phase D keeps per-batch intermediates -- `uniref.a3m` and `prof_res` -- and phase E resumes the
+environmental pass from them once UniRef30 is deleted. Each batch gets its own output directory
+precisely because the keys are positional and a second batch would shift them.
+
+So if the five control queries are searched as a SEPARATE batch, their intermediates live in a
+separate directory, and after UniRef30 is freed the environmental pass for them is no longer
+possible without another 96 GB download. The full D + E + F equivalence check -- the only comparison
+that can be made against the stored merged MSAs -- would be unreachable.
+
+Therefore: **the five control queries go into `query.fasta` alongside the 155 corrected ones**, as one
+batch of 160. Their intermediates are retained with the rest, the environmental pass covers them for
+free, and the final comparison reuses a search that has already happened.
+
+And before UniRef30 is deleted, `check_mmseqs_db` validates the data/index consistency of
+`uniref.a3m` and `prof_res` for that batch -- not just that the files exist. Getting that wrong is
+what costs the re-download.
 
 ### What is proven, and what is not
 

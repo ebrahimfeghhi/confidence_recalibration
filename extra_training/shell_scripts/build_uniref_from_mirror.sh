@@ -30,18 +30,22 @@ say(){ echo "[$(date '+%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 die(){ say "STOP: $*"; exit 1; }
 free_gb(){ quota -s 2>/dev/null | awk 'NR==3{u=$2; gsub(/[^0-9.]/,"",u); printf "%d", 3072-u}'; }
 
-# THE LOCK, taken before anything is written. await_msa_server.sh launches phase D against the same
-# database directory, so without this a canonical-host recovery mid-build would start a search over a
-# half-extracted database and report success -- phase D gates on data files existing, and they would.
+# ONE DATABASE, ONE BUILDER -- AND THE EXCLUSION IS ATOMIC. await_msa_server.sh launches phase D
+# against the same database directory, so a canonical-host recovery mid-build would otherwise start a
+# search over a half-extracted database and report success, since phase D gates on data files
+# existing and they would exist.
+#
+# flock, NOT test-then-write. The first version did `[ -e "$LOCK" ]` and then wrote it, which is a
+# race with a window between the two: both processes can see no lock and both proceed. flock(1) takes
+# the lock in the kernel in one operation, and holds it on an open descriptor -- so it is released
+# when THIS process dies, however it dies, with no stale-lock cleanup to get wrong.
 LOCK=$DB/.msa_build.lock
-if [ -e "$LOCK" ]; then
-    owner=$(cat "$LOCK" 2>/dev/null)
-    kill -0 "${owner%% *}" 2>/dev/null && die "another MSA builder holds $LOCK (owner $owner)"
-    say "stale lock from a dead owner ($owner); removing it"
-    rm -f "$LOCK"
+mkdir -p "$DB"
+exec 9>"$LOCK" || die "cannot open $LOCK"
+if ! flock -n 9; then
+    die "another MSA builder holds $LOCK: $(cat "$LOCK" 2>/dev/null). Stop it or wait."
 fi
-echo "$$ build_uniref_from_mirror.sh $(date '+%F %T')" > "$LOCK"
-trap 'rm -f "$LOCK"' EXIT
+echo "$$ build_uniref_from_mirror.sh $(date '+%F %T')" >&9
 
 say "=== uniref30_2302 from the GWDG mirror. free: $(free_gb) GB ==="
 [ "$(free_gb)" -ge 1000 ] || die "only $(free_gb) GB free; need ~936 for archive + TSVs + db"

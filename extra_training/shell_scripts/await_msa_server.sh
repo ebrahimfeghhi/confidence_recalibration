@@ -44,20 +44,19 @@ done
 # data files existing and they would. So this does NOT start phase D while the mirror build holds the
 # lock -- it says so and leaves the decision to a person, since switching routes mid-build means
 # choosing which half-finished thing to abandon.
+# flock, NOT test-then-write: `[ -e "$LOCK" ]` followed by a write is a race, and both processes can
+# pass it. The lock lives on descriptor 9 and is released when THIS process dies, so the holder's
+# lifetime is the real work's lifetime and there is no stale lock to reason about.
 LOCK=$R/tools/colabfold/db/.msa_build.lock
-if [ -e "$LOCK" ]; then
-    owner=$(cat "$LOCK" 2>/dev/null)
-    if kill -0 "${owner%% *}" 2>/dev/null; then
-        say "SERVER IS BACK but the mirror build holds $LOCK (owner $owner)."
-        say "  NOT starting phase D: it would search a half-built database and report success."
-        say "  Decide which route to keep, stop the other, remove the lock, then re-run this."
-        exit 0
-    fi
-    say "stale lock from a dead owner ($owner); removing it"
-    rm -f "$LOCK"
+mkdir -p "$(dirname "$LOCK")"
+exec 9>"$LOCK" || { say "cannot open $LOCK"; exit 1; }
+if ! flock -n 9; then
+    say "SERVER IS BACK but another route holds $LOCK: $(cat "$LOCK" 2>/dev/null)"
+    say "  REPORTING ONLY. Not starting phase D -- it would search a half-built database and"
+    say "  report success. Decide which route to keep, stop the other, then re-run this."
+    exit 0
 fi
-echo "$$ await_msa_server.sh $(date '+%F %T')" > "$LOCK"
-trap 'rm -f "$LOCK"' EXIT
+echo "$$ await_msa_server.sh $(date '+%F %T')" >&9
 
 # DO NOT START IF THE CARDS ARE ALREADY BUSY WITH SOMETHING THAT NEEDS THE CPUs. The search is
 # taskset-pinned to 64 cores and the fold workers need CPU for featurisation; 288 cores means both

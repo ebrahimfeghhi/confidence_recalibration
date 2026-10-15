@@ -47,6 +47,14 @@ def main():
     ap.add_argument("--gaps", nargs="+", required=True,
                     help="one or more --native-gaps csvs from phase_j_job_cifs.py")
     ap.add_argument("--out-dir", default=f"{ROOT}/building_msa/queries_corrected")
+    ap.add_argument("--controls", type=int, default=5,
+                    help="how many UNCHANGED queries to add to the batch as the conversion control. "
+                         "They must be in the SAME batch: phase D's intermediates are per batch and "
+                         "positional, so a separate control batch could not have its environmental "
+                         "pass run after UniRef30 is freed -- the full D+E+F equivalence check would "
+                         "need another 96 GB download. 0 disables them")
+    ap.add_argument("--msa-root", default=f"{ROOT}/building_msa/work/mmcif_msa",
+                    help="the existing store, to pick control queries whose MSA is already there")
     a = ap.parse_args()
 
     per = collections.defaultdict(set)
@@ -62,11 +70,74 @@ def main():
     if len(set(idx.values())) != len(idx):
         raise SystemExit("STOP: two sequences hashed to the same directory name")
 
+    # THE CONTROLS, CHOSEN TO SPAN THE RANGE rather than taken at random: one query can pass by luck
+    # and five similar ones barely better. Shortest, longest, median, and two more by length so a
+    # length-dependent failure cannot hide. Each must already have a stored MSA to compare against.
+    controls = {}
+    if a.controls:
+        import glob
+        have = []
+        for d in sorted(os.listdir(a.msa_root)):
+            pa = os.path.join(a.msa_root, d, "pairing.a3m")
+            if not os.path.exists(pa):
+                continue
+            q = []
+            with open(pa) as fh:
+                for line in fh:
+                    if line.startswith(">"):
+                        if q:
+                            break
+                        continue
+                    q.append(line.strip())
+            seq = "".join(q).replace("-", "").upper()
+            if seq and seq not in per:          # UNCHANGED: must not be one of the corrected ones
+                have.append((len(seq), seq, d))
+        have.sort()
+        # SPAN THE RANGE THE CORRECTED QUERIES OCCUPY, not the store's. Chosen from the whole store,
+        # the picks were a 5-residue peptide and a 2,710-residue antigen -- neither says anything
+        # about 111-234 residue antibody chains, and the 5-residue one would not even share this
+        # batch: phase_d_search_uniref.sh routes queries under 20 residues to a separate batch
+        # (query_short.fasta), so its intermediates would live elsewhere and the environmental pass
+        # for it could not be resumed after UniRef30 is freed -- the exact trap this change exists to
+        # avoid. 2,710 was also 9mx1, the one structure protenix-v2 cannot fold at all.
+        lo = min(len(x) for x in per)
+        hi = max(len(x) for x in per)
+        span = [h for h in have if lo <= h[0] <= hi]
+        if len(span) >= a.controls:
+            have = span
+            print(f"control candidates within the corrected range {lo}-{hi} aa: {len(have)}")
+        else:
+            print(f"WARNING: only {len(span)} candidates in {lo}-{hi} aa; falling back to the whole "
+                  f"store, so a control may not be representative")
+        if len(have) < a.controls:
+            raise SystemExit(f"STOP: only {len(have)} usable control candidates in {a.msa_root}")
+        picks = {0, len(have) - 1, len(have) // 2}
+        step = max(1, len(have) // (a.controls + 1))
+        i = step
+        while len(picks) < a.controls and i < len(have):
+            picks.add(i); i += step
+        for i in sorted(picks)[:a.controls]:
+            L, seq, d = have[i]
+            controls[seq] = f"CONTROL_{d}"
+        print(f"\ncontrol queries (UNCHANGED, searched in the SAME batch so their intermediates are "
+              f"retained with the rest): {len(controls)}")
+        for seq, nm in sorted(controls.items(), key=lambda t: len(t[0])):
+            print(f"   {len(seq):4d} aa  {nm}")
+
     fa = os.path.join(a.out_dir, "query.fasta")
     with open(fa + ".part", "w") as fh:
         for seq in sorted(per):
             fh.write(f">{idx[seq]}\n{seq}\n")
+        for seq, nm in sorted(controls.items()):
+            fh.write(f">{nm}\n{seq}\n")       # same batch; see --controls
     os.replace(fa + ".part", fa)
+    if controls:
+        cj = os.path.join(a.out_dir, "controls.json")
+        with open(cj + ".part", "w") as fh:
+            json.dump({nm: {"sequence": seq, "stored_msa_dir": nm[len("CONTROL_"):]}
+                       for seq, nm in controls.items()}, fh, indent=1, sort_keys=True)
+        os.replace(cj + ".part", cj)
+        print(f"wrote {cj} -- which stored MSA each control must be compared against")
 
     ij = os.path.join(a.out_dir, "seq_to_dir.json")
     with open(ij + ".part", "w") as fh:
