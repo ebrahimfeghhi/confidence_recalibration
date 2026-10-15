@@ -89,8 +89,16 @@ if [ ! -s "$DB/uniref30_2302_db_seq" ]; then
     if [ "$got" = "$sum" ]; then say "  ok   $name"
     else say "  FAIL $name: $got != $sum"; bad=1; fi
   done < "$DB/uniref30_2302.md5sum"
-  [ "$bad" -eq 0 ] || die "md5 verification failed; not converting a database we cannot trust"
+  [ "$bad" -eq 0 ] || die "md5 verification failed; not converting a database we cannot trust.
+     The download parts are still in $TAR.parts -- a bad member can be refetched without the
+     whole 96 GB"
   say "  every member verified. free: $(free_gb) GB"
+  # ONLY NOW are the download parts expendable: the archive has verified end to end, member by
+  # member. parallel_fetch deliberately leaves them so that a failure above is recoverable.
+  if [ -d "$TAR.parts" ]; then
+      say "  archive verified; removing the download parts ($(du -sh "$TAR.parts" | cut -f1))"
+      rm -rf "${TAR:?}.parts"
+  fi
 
   # ------------------------------------------------------------ 3. convert
   # FAST_PREBUILT_DATABASES=0 is the fix. MMSEQS_NO_INDEX=1 keeps setup_databases.sh from building

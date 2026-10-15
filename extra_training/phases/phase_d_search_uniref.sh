@@ -474,7 +474,10 @@ check_mmseqs_db() {
 if [ "${FREE_DB:-0}" = "1" ]; then
     say "validating the retained intermediates before freeing uniref30"
     bad=0
-    for b in "$OUT/uniref.a3m" "$OUT/prof_res"; do
+    # BOTH BATCH DIRECTORIES, when a second is named. The controls are their own batch and phase E
+    # processes both, so a truncated intermediate in EITHER costs the 96 GB download and a re-search.
+    # ALSO_VALIDATE is a space-separated list of other batch directories to check before freeing.
+    for b in "$OUT/uniref.a3m" "$OUT/prof_res" $(for o in ${ALSO_VALIDATE:-}; do echo "$o/uniref.a3m" "$o/prof_res"; done); do
         [ -e "$b" ] || { say "  absent: $b"; bad=1; continue; }
         check_mmseqs_db "$b" || bad=1
     done

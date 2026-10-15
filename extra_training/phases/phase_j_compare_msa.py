@@ -110,27 +110,36 @@ def compare(a_path, b_path, label, out=sys.stdout):
                 bad_rows.append(f"{nm} row {i}: {len(m)} match columns, query has {len(qa)}")
     res["malformed_rows"] = bad_rows
 
-    da = {}
-    for h, s in A[1:]:
-        da[key_of(h)] = (h, s)
-    db = {}
-    for h, s in B[1:]:
-        db[key_of(h)] = (h, s)
+    # MULTIPLICITY IS PRESERVED. A dict keyed on (accession, segment) OVERWRITES a repeat, so two
+    # rows sharing a key collapsed to one and a rebuild that dropped one of them compared EXACT. An
+    # a3m may legitimately carry the same accession and segment twice; losing one is a real loss.
+    da, db = collections.defaultdict(list), collections.defaultdict(list)
+    for h, sq in A[1:]:
+        da[key_of(h)].append((h, sq))
+    for h, sq in B[1:]:
+        db[key_of(h)].append((h, sq))
 
+    lost, gained = [], []
+    for k in set(da) | set(db):
+        na, nb = len(da.get(k, [])), len(db.get(k, []))
+        if na > nb:
+            lost += [k] * (na - nb)        # including a MULTIPLICITY drop, not only a missing key
+        elif nb > na:
+            gained += [k] * (nb - na)
     shared = set(da) & set(db)
-    lost = sorted(set(da) - set(db))
-    gained = sorted(set(db) - set(da))
-    changed_align, changed_ins, changed_tax = [], [], []
+    changed_align, changed_ins = [], []
     for k in sorted(shared):
-        ma, ia = normalise(da[k][1])
-        mb, ib = normalise(db[k][1])
-        if ma != mb:
-            first = next((j for j in range(min(len(ma), len(mb))) if ma[j] != mb[j]), None)
-            changed_align.append((k, first))
-        elif ia != ib:
-            changed_ins.append(k)
-        if taxid(k[0]) != taxid(k[0]):     # same key, so same accession -- kept for symmetry
-            changed_tax.append(k)
+        # compare the rows of this key pairwise, in file order, over the count they share
+        rows_a = [normalise(x[1]) for x in da[k]]
+        rows_b = [normalise(x[1]) for x in db[k]]
+        for n in range(min(len(rows_a), len(rows_b))):
+            ma, ia = rows_a[n]
+            mb, ib = rows_b[n]
+            if ma != mb:
+                first = next((j for j in range(min(len(ma), len(mb))) if ma[j] != mb[j]), None)
+                changed_align.append((k, first))
+            elif ia != ib:
+                changed_ins.append(k)
 
     res.update(shared=len(shared), lost=len(lost), gained=len(gained),
                changed_alignment=len(changed_align), changed_insertions=len(changed_ins))
@@ -166,6 +175,12 @@ def main():
     ap.add_argument("--stored-root", default=None, help="the existing msa store")
     ap.add_argument("--rebuilt-root", required=True, help="where the control rebuild landed")
     ap.add_argument("--file", default="pairing.a3m", choices=("pairing.a3m", "non_pairing.a3m"))
+    ap.add_argument("--raw", action="store_true",
+                    help="compare phase D's RAW per-query uniref output (<dir>/uniref.a3m) instead of "
+                         "a phase-F layout. Step 6 of the plan compares the uniref half BEFORE phase "
+                         "F merges anything, and the CLI could not express that -- it only accepted "
+                         "pairing.a3m / non_pairing.a3m, so the gate the plan depends on was not "
+                         "runnable")
     ap.add_argument("--report", default=None)
     a = ap.parse_args()
 
@@ -174,16 +189,24 @@ def main():
     stored_root = a.stored_root or f"{ROOT}/building_msa/work/mmcif_msa"
 
     ctl = json.load(open(a.controls))
-    results = []
+    # EVERY DECLARED CONTROL MUST BE PRESENT. Missing ones were skipped with a note and the run
+    # reported success on whatever happened to be there -- five declared, one present, "1 of 1 EXACT".
+    # A control that did not run is a control that did not pass.
+    results, absent = [], []
     for name, meta in sorted(ctl.items()):
         sp = os.path.join(stored_root, meta["stored_msa_dir"], a.file)
-        rp = os.path.join(a.rebuilt_root, name, a.file)
+        rp = (os.path.join(a.rebuilt_root, name, a.file) if not a.raw
+              else os.path.join(a.rebuilt_root, name, "uniref.a3m"))
         if not os.path.exists(sp):
-            print(f"{name}: no stored {a.file} at {sp}"); continue
+            absent.append(f"{name}: no stored file at {sp}"); continue
         if not os.path.exists(rp):
-            print(f"{name}: no rebuilt {a.file} at {rp} -- the control search has not run")
-            continue
+            absent.append(f"{name}: no rebuilt file at {rp} -- its search has not run"); continue
         results.append(compare(sp, rp, name))
+    if absent:
+        for x in absent:
+            print(f"  ABSENT {x}")
+        raise SystemExit(f"STOP: {len(absent)} of {len(ctl)} declared control(s) could not be "
+                         "compared. A control that did not run has not passed.")
 
     ok = [r for r in results if r and r.get("verdict") == "EXACT"]
     print(f"\n{len(ok)} of {len(results)} control(s) EXACT")

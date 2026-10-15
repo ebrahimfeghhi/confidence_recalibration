@@ -23,6 +23,53 @@ TOTAL=$(printf '%s' "$hdr" | awk 'tolower($1)=="content-length:"{print $2}' | ta
 [ "${TOTAL:-0}" -ge 1000000000 ] 2>/dev/null || { say "STOP: content-length ${TOTAL:-?} is not a real file"; exit 1; }
 say "$TOTAL bytes over $N connections -> $OUT"
 
+# Fetch one part's remaining range over `per` sub-connections, and append ONLY when every sub-range
+# is exactly the size it was asked for.
+#
+# WHY THAT CONDITION IS THE WHOLE POINT. The first version did `wait || true` and then appended any
+# sub-file that was merely NON-EMPTY. With sub0 short and sub1 complete -- which is exactly what
+# happened here on p2 -- it would concatenate sub0 then sub1, leaving a GAP where sub0's missing
+# bytes belong and sub1's data at the wrong offset. The resume loop would then top the part up at the
+# end, so the part reaches its expected SIZE holding the wrong bytes. The md5 verification would
+# eventually catch it, at the cost of the entire 96 GB download.
+fetch_part_parallel() {
+    local i="$1" per="$2" s e want have rs left sub a b k f sw sh pids=""
+    s=$(( i * CH )); e=$(( s + CH - 1 )); [ "$e" -ge "$TOTAL" ] && e=$(( TOTAL - 1 ))
+    want=$(( e - s + 1 )); have=0; [ -s "$D/p$i" ] && have=$(stat -c %s "$D/p$i")
+    [ "$have" -ge "$want" ] && return 0
+    rs=$(( s + have )); left=$(( e - rs + 1 ))
+    sub=$(( (left + per - 1) / per ))
+    for k in $(seq 0 $((per-1))); do
+        a=$(( rs + k * sub )); b=$(( a + sub - 1 )); [ "$b" -gt "$e" ] && b=$e
+        [ "$a" -gt "$e" ] && continue
+        f="$D/p$i.sub$k"; sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
+        if [ "$sh" -gt "$sw" ]; then say "  p$i.sub$k is $sh over the $sw asked for; discarding"; rm -f "$f"; sh=0; fi
+        [ "$sh" -eq "$sw" ] && continue
+        ( curl -sL --fail --retry 8 --retry-delay 15 -r "$(( a + sh ))-$b" "$URL" >> "$f" ) &
+        pids="$pids $!"
+    done
+    for k in $pids; do wait "$k" || true; done
+    # EVERY sub-range exact, or nothing is appended and the caller tries again.
+    local ok=1
+    for k in $(seq 0 $((per-1))); do
+        a=$(( rs + k * sub )); b=$(( a + sub - 1 )); [ "$b" -gt "$e" ] && b=$e
+        [ "$a" -gt "$e" ] && continue
+        f="$D/p$i.sub$k"; sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
+        if [ "$sh" -ne "$sw" ]; then
+            say "  p$i.sub$k short: $sh of $sw -- NOT appending any sub-range of p$i this round"
+            ok=0
+        fi
+    done
+    [ "$ok" -eq 1 ] || return 1
+    for k in $(seq 0 $((per-1))); do
+        f="$D/p$i.sub$k"
+        [ -e "$f" ] || continue
+        cat "$f" >> "$D/p$i" || return 1
+        rm -f "$f"
+    done
+    return 0
+}
+
 if [ -s "$OUT" ] && [ "$(stat -c %s "$OUT")" = "$TOTAL" ]; then
     say "already complete"; exit 0
 fi
@@ -49,28 +96,12 @@ for i in $(seq 0 $((N-1))); do
 done
 if [ "$nshort_pre" -gt 0 ] && [ "$nshort_pre" -lt "$N" ]; then
     say "$nshort_pre of $N part(s) incomplete -- splitting their remaining ranges across all $N"
-    pids=""
     per=$(( N / nshort_pre )); [ "$per" -lt 1 ] && per=1
     for i in $(seq 0 $((N-1))); do
         s=$(( i * CH )); e=$(( s + CH - 1 )); [ "$e" -ge "$TOTAL" ] && e=$(( TOTAL - 1 ))
         w=$(( e - s + 1 )); h=0; [ -s "$D/p$i" ] && h=$(stat -c %s "$D/p$i")
         [ "$h" -ge "$w" ] && continue
-        rs=$(( s + h )); left=$(( e - rs + 1 )); sub=$(( (left + per - 1) / per ))
-        for k in $(seq 0 $((per-1))); do
-            a=$(( rs + k * sub )); b=$(( a + sub - 1 )); [ "$b" -gt "$e" ] && b=$e
-            [ "$a" -gt "$e" ] && continue
-            f="$D/p$i.sub$k"; sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
-            [ "$sh" -ge "$sw" ] && continue
-            ( curl -sL --fail --retry 8 --retry-delay 15 -r "$(( a + sh ))-$b" "$URL" >> "$f" ) &
-            pids="$pids $!"
-        done
-    done
-    for pp in $pids; do wait "$pp" || true; done
-    for i in $(seq 0 $((N-1))); do
-        for k in $(seq 0 $((per-1))); do
-            f="$D/p$i.sub$k"
-            [ -s "$f" ] && { cat "$f" >> "$D/p$i" && rm -f "$f"; }
-        done
+        fetch_part_parallel "$i" "$per" || say "  p$i incomplete this round; will retry"
     done
 fi
 
@@ -122,31 +153,8 @@ while :; do
     nshort=$(echo $short | wc -w)
     per=$(( N / nshort )); [ "$per" -lt 1 ] && per=1
     say "round $round: $nshort part(s) short; $per connection(s) each"
-    pids=""
     for i in $short; do
-        s=$(( i * CH )); e=$(( s + CH - 1 )); [ "$e" -ge "$TOTAL" ] && e=$(( TOTAL - 1 ))
-        have=0; [ -s "$D/p$i" ] && have=$(stat -c %s "$D/p$i")
-        rs=$(( s + have )); left=$(( e - rs + 1 ))
-        [ "$left" -le 0 ] && continue
-        sub=$(( (left + per - 1) / per ))
-        for k in $(seq 0 $((per-1))); do
-            a=$(( rs + k * sub )); b=$(( a + sub - 1 )); [ "$b" -gt "$e" ] && b=$e
-            [ "$a" -gt "$e" ] && continue
-            f="$D/p$i.sub$k"
-            sw=$(( b - a + 1 )); sh=0; [ -s "$f" ] && sh=$(stat -c %s "$f")
-            [ "$sh" -ge "$sw" ] && continue
-            ( curl -sL --fail --retry 8 --retry-delay 15 -r "$(( a + sh ))-$b" "$URL" >> "$f" ) &
-            pids="$pids $!"
-        done
-    done
-    for p in $pids; do wait "$p" || fail=1; done
-    # APPEND THE SUB-FILES IN ORDER. Out of order would corrupt the part silently, so the loop is
-    # over k ascending and each sub-file is removed only once appended.
-    for i in $short; do
-        for k in $(seq 0 $((per-1))); do
-            f="$D/p$i.sub$k"
-            [ -s "$f" ] && { cat "$f" >> "$D/p$i" && rm -f "$f"; }
-        done
+        fetch_part_parallel "$i" "$per" || say "  p$i still incomplete; next round"
     done
 done
 [ "$fail" -eq 0 ] || { say "STOP: a connection failed; re-run to resume"; exit 1; }
@@ -162,5 +170,7 @@ cat $(for i in $(seq 0 $((N-1))); do echo "$D/p$i"; done) > "$OUT.tmp" || { say 
 got=$(stat -c %s "$OUT.tmp")
 [ "$got" = "$TOTAL" ] || { say "STOP: assembled $got bytes, server says $TOTAL"; exit 1; }
 mv -f "$OUT.tmp" "$OUT"
-rm -rf "$D"
-say "complete: $(du -h "$OUT" | cut -f1)"
+# THE PARTS ARE KEPT. Removing them here meant a failure in the caller's md5 verification left
+# nothing to resume from and cost the whole 96 GB. The caller deletes $D only once the archive has
+# verified end to end.
+say "complete: $(du -h "$OUT" | cut -f1); parts kept in $D until the archive verifies"

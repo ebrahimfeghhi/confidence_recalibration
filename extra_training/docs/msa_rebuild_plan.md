@@ -186,11 +186,11 @@ stale, which is the worse half of the mistake: the table is what someone execute
 | 3 | convert to a searchable db | **`FAST_PREBUILT_DATABASES=0`** (its default of 1 is why the earlier attempt converted nothing), `MMSEQS_NO_INDEX=1` | hours CPU | `_db_seq`, `_db_aln`, `_db_h` non-empty — never a `READY` marker and never the exit code, since this step exits 0 when it does nothing |
 | 4 | apply `uniref30_2302_newtaxonomy.tar.gz` (on disk, 1.97 GB) | — | minutes | taxonomy md5 equals the copy we already hold, `83105388…` |
 | 5 | **CONTROL BATCH**: the 5 unchanged queries alone through phase D | `BUILD_INDEX=0` | ~1 h | — |
-| 6 | **COMPARE** their `uniref.a3m` against the stored originals, before any corrected query is searched | `phase_j_compare_msa.py` | minutes | **exact agreement on all 5**. Differences reported as GAINED / LOST / CHANGED and investigated. No parameter tuning to force a pass |
-| 7 | **MAIN BATCH**: all 160 — the 155 corrected queries plus the same 5 controls again | `BUILD_INDEX=0` | hours | `MIN_LONG_HIT_PCT`, as the original used |
+| 6 | **COMPARE** their `uniref.a3m` against the stored originals, before any corrected query is searched | `phase_j_compare_msa.py --raw` | minutes | **exact agreement on all 5**. Differences reported as GAINED / LOST / CHANGED and investigated. No parameter tuning to force a pass |
+| 7 | **MAIN BATCH**: the 155 corrected queries | `BUILD_INDEX=0` | hours | `MIN_LONG_HIT_PCT`, as the original used |
 | 8 | **validate the intermediates, then free UniRef30** | `FREE_DB=1` | minutes | `check_mmseqs_db` on `uniref.a3m` AND `prof_res`: the furthest byte the index claims must lie inside the data file. **THIS IS THE POINT OF NO RETURN** — envdb cannot be fetched until UniRef30 is gone, and a bad intermediate found afterwards costs another 96 GB and a re-search |
 | 9 | **download envdb (118 GB)** and convert it | **`FAST_PREBUILT_DATABASES=0`**, `FREE_DB=0` so it survives a phase F retry | 118 GB + hours | `${CFDB}_db_seq`, `_db_aln`, `_db_h` non-empty. **UNPROVEN on the real archive** — the test shows only that the conversion is now invoked |
-| 10 | `phase_e_search_envdb.sh` on all 160, resuming from the retained intermediates | — | hours | — |
+| 10 | `phase_e_search_envdb.sh` on BOTH batch directories, resuming from their retained intermediates | — | hours | both batches' `uniref.a3m` and `prof_res` must have passed step 8 |
 | 11 | `phase_f_pair_and_split.py` into `mmcif_msa_corrected` | — | CPU | every corrected role has `pairing.a3m` and `non_pairing.a3m` |
 | 12 | **FULL CONTROL COMPARISON**: the 5 controls' merged MSAs against the stored merged originals | `phase_j_compare_msa.py` | minutes | exact agreement on all 5. **This is the real equivalence check** — step 6 only tests the uniref half |
 | 13 | `phase_h_search_templates.py` for the corrected queries | — | CPU | date-filter marker, as before |
@@ -198,24 +198,21 @@ stale, which is the worse half of the mistake: the table is what someone execute
 | 15 | smoke-test `11zw` alone, end to end | — | one fold | the 7 restored residues present as tokens, masked in the label, flanks retained, native mapping correct |
 | 16 | queue the remaining 2,850 refolds into `training/fold_corrected/` | — | ~19 h GPU | steps 6, 12, 14 and 15 must all have passed |
 
-### A conflict in the instructions, resolved by searching the controls TWICE
+### The controls are a SEPARATE batch, searched once
 
-The review asked for two things that cannot both hold of one batch:
+An earlier revision searched the 5 controls twice -- once alone to gate on, once inside a batch of 160
+-- to satisfy two requirements that looked incompatible: compare the controls BEFORE the corrected
+queries are searched, and keep the controls' intermediates alongside the corrected ones so the
+environmental pass reuses a completed search.
 
-* *"Run the unchanged-query controls first. Compare their UniRef results with the stored originals.
-  Investigate differences before searching all corrected queries."* -- controls must come FIRST, as
-  their own run.
-* *"Keep the control queries' intermediates alongside the corrected queries"* -- so that the
-  environmental pass and the final comparison reuse the completed search, which means the SAME batch.
+They are not incompatible. **Phase E accepts multiple batch directories**, so it can process the
+control batch and the corrected batch separately after UniRef30 is deleted, provided BOTH batches'
+intermediates survive step 8. So the controls are their own batch of 5, searched once, compared at
+step 6, and their intermediates are validated and retained exactly like the corrected batch's.
 
-Searched together, the controls cannot be compared before the corrected queries are searched. Searched
-separately, their intermediates land in a separate directory and -- because phase D's intermediates are
-per batch and positional -- the environmental pass for them is unreachable once UniRef30 is freed.
-
-So the controls are searched twice: once alone as step 5, to gate on before committing the main batch,
-and again inside the 160 of step 7, so their intermediates live with the corrected ones. Five queries
-is a negligible second search against a decision that gates 2,850 folds, and it satisfies both
-requirements rather than trading one off.
+That makes step 8 cover two directories rather than one, which is the only thing to get right: a
+missing or truncated intermediate in EITHER batch, discovered after UniRef30 is freed, costs the
+96 GB download and a re-search.
 
 ### What is proven, and what is not
 
