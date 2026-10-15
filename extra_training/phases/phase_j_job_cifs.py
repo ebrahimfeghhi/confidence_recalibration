@@ -352,6 +352,80 @@ def pick_contacting_copies(pairs, row, seqs, st, cutoff=5.0, ident_floor=0.9):
     return out, moved
 
 
+def rescue_noncontacting_antigen(pairs, row, seqs, st, cutoff=5.0, ident_floor=0.9):
+    """Re-point an antigen role whose selected chain TOUCHES NOTHING onto a copy that does.
+
+    WHY THIS IS NEEDED ON TOP OF THE OTHER TWO PICKERS, and why it has to be allowed to override
+    SAbDab2's own naming -- which named_chains and pick_contacting_copies both treat as
+    authoritative. Measured across all 501 training structures: 11 of 627 selected antigen chains
+    have NO atom within 5 A of the antibody, and every one of the 11 is SAbDab2's OWN named chain.
+    For two of them the instance has no other contacting antigen at all, so Protenix's
+    remove_dissociation deletes the chain outright and the label stops matching the pose:
+
+        7stz  SAbDab2's chain C at 5.81 A; entry chain D contacts at 2.41 A
+        8gpu  SAbDab2's chain E at 5.02 A; entry chain B contacts at 2.43 A
+
+    pick_instance_copies cannot help, because the instance cif IS the non-contacting pair -- its own
+    chains sit 18.84 A (7stz heavy-antigen) and 11.31 A (8gpu light-antigen) apart. So the instance
+    is faithful and still describes no interface.
+
+    CONTACT ALONE IS NOT A SUFFICIENT CRITERION -- that is what 9djw proved, where a crystal-packing
+    contact at 2.55 A over 180 atom pairs had ZERO epitope residues in common with the real
+    interface. So this runs LAST, after pick_instance_copies has already anchored the copy by
+    coordinates, and it fires only when the anchored choice touches nothing. A label with no
+    interface teaches a confidence head nothing about interfaces, which is the whole point of the
+    finetune, so "touches nothing" is the one case where contact must win.
+
+    Returns (pairs, moved). Moves nothing unless a same-sequence copy actually contacts.
+    """
+    import difflib
+    names = role_names(row, seqs)
+    ab = [c for role, c, _lo, _hi in pairs if role in ("H", "L")]
+    ags = [(role, c, lo, hi) for role, c, lo, hi in pairs if role.startswith("ag")]
+    if not ab or not ags:
+        return pairs, []
+    _poly = polymer_subchains(st)
+    hv = {}
+    def heavy(c):
+        if c not in hv:
+            hv[c] = _heavy(st[0][c], _poly)
+        return hv[c]
+    abat = [heavy(c) for c in ab if c in seqs]
+    if not abat:
+        return pairs, []
+    out, moved = {t[0]: t for t in pairs}, []
+    taken = {t[1] for t in pairs}
+    for role, c, lo, hi in ags:
+        if c not in seqs:
+            continue
+        if min(_min_dist(heavy(c), A) for A in abat) <= cutoff:
+            continue                                  # already touching: leave it alone
+        q = seqs[c]
+        best = None
+        for cand, cq in seqs.items():
+            if cand == c or not cq or cand in taken:
+                continue
+            sm = difflib.SequenceMatcher(None, q, cq, autojunk=False)
+            if sum(b.size for b in sm.get_matching_blocks()) / max(1, min(len(q), len(cq))) \
+                    < ident_floor:
+                continue
+            d = min(_min_dist(heavy(cand), A) for A in abat)
+            if d <= cutoff and (best is None or d < best[0]):
+                best = (d, cand)
+        if best is None:
+            continue                                  # no copy contacts: nothing to rescue
+        # THE SPAN MUST BE RE-DERIVED FOR THE NEW CHAIN, not carried over. Keeping the old chain's
+        # (lo, hi) crashed write_job_cif with an IndexError: 7stz's old chain C has 540 residues and
+        # the chain it moves to has 422, so the slice ran off the end. spans_for re-aligns the
+        # role's expected sequence against the chain it is now pointing at.
+        sp = spans_for([(role, best[1])], row, seqs)
+        out[role] = sp[0] if sp else (role, best[1], lo, min(hi, len(seqs[best[1]])))
+        taken.discard(c); taken.add(best[1])
+        moved.append((role, c, best[1], round(best[0], 2)))
+    order = [k for k, _q in role_sequences(row)]
+    return sorted(out.values(), key=lambda t: order.index(t[0])), moved
+
+
 def named_chains(row, seqs):
     """SAbDab2's OWN chain assignment for this instance, when every name resolves in the entry.
 
@@ -501,12 +575,32 @@ def job_chains(row, seqs, st=None, inst_st=None):
         resolved.append(sp[0])
         spans[c].append((lo, hi))
     taken = {c for c in spans}
+    # NO EARLY RETURN WHEN EVERY NAME RESOLVED. This used to `return resolved, []` here, which
+    # skipped all three coordinate-based pickers for exactly the structures where SAbDab2's naming
+    # was trusted completely -- and that is where the naming is wrong. Measured: 7stz and 8gpu
+    # resolve every role by name, so the antigen was never checked for contact, and SAbDab2's named
+    # antigen sits 5.81 A and 5.02 A away with no atom within 5 A of the antibody. 9djw was only
+    # ever fixed because its names did NOT resolve and it fell through to the pickers. A name tells
+    # you which chain SAbDab2 meant; it does not tell you that chain touches the antibody.
+    # WHEN EVERY NAME RESOLVED, only the CONTACT RESCUE runs -- not the two copy pickers.
+    # Letting all three run here was tried and changes 24 structures: about 16 cosmetically (the
+    # X1/X2 copy index resolving to entry chain X, the same chain) and 3 intentionally (7stz, 8gpu,
+    # 9djw), but 5 move for no reason I can explain -- 9r09 and 9hng put the heavy chain on a chain
+    # named J000, 9shd puts the antigen on H0Z0. Shipping churn I cannot account for is how a label
+    # set stops being trustworthy, so the named path gets the one check it provably needs: an
+    # antigen that touches nothing. The other 5 are recorded as open findings instead.
     if not leftover:
+        if st is not None:
+            resolved, _resc = rescue_noncontacting_antigen(resolved, row, seqs, st)
         return resolved, []
-    # SEQUENCE ONLY FOR WHAT IS LEFT, over the chains the named roles did not claim.
-    rest = {c: q for c, q in seqs.items() if c not in taken}
-    more, bad = assign_chains(leftover, rest)
-    out = resolved + more
+    out = list(resolved)
+    if True:
+        # SEQUENCE ONLY FOR WHAT IS LEFT, over the chains the named roles did not claim.
+        rest = {c: q for c, q in seqs.items() if c not in taken}
+        more, bad = assign_chains(leftover, rest)
+        out = resolved + more
+    else:
+        bad = []
     # keep the caller's role order stable
     order = [k for k, _q in want]
     out.sort(key=lambda t: order.index(t[0]))
@@ -519,6 +613,10 @@ def job_chains(row, seqs, st=None, inst_st=None):
     # WITH COORDINATES, make the sequence-resolved roles come from ONE copy of the complex.
     if st is not None and not bad:
         out, _moved = pick_contacting_copies(out, row, seqs, st)
+    # LAST: an antigen that touches NOTHING is rescued onto a copy that does. Runs after the two
+    # pickers above so it can only act on a choice they have already settled; see the docstring.
+    if st is not None and not bad:
+        out, _rescued = rescue_noncontacting_antigen(out, row, seqs, st)
     return out, bad
 
 

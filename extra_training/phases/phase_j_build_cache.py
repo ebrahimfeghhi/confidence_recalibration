@@ -32,6 +32,10 @@ WHAT IS WRITTEN. One npz per unit beside the trunks, holding the per-pose permut
 indices, and the loss-side feature arrays the trunk npz does not carry. Nothing is overwritten and no
 pose is touched.
 """
+# WHAT FAILS HERE, WHY, AND WHAT IS LOST: docs/build_cache_exclusions.md. It carries the measured
+# cause of every structure this script has refused, the fix where there is one, and the two guards
+# below stated as what they assert rather than what they do. Keep it current in the same commit as
+# any change to those guards -- a refusal nobody wrote down becomes a silent exclusion.
 import argparse
 import collections
 import copy
@@ -205,16 +209,27 @@ def check_alignment(npz_feat, ds_feat, pdb):
 
 
 def label_atom_coords(cif_path):
-    """The job cif's heavy-atom coordinates as an [N, 3] array -- the label's independent witness."""
+    """The job cif's heavy-atom coordinates as an [N, 3] array -- the label's independent witness.
+
+    Also returns the LARGEST heavy-atom count of any single residue in this file, which is what the
+    drop budget below is denominated in. It is measured from the structure rather than written down,
+    so there is no per-residue constant to get wrong.
+    """
     import gemmi
     st = gemmi.read_structure(cif_path)
     st.setup_entities()
     st.remove_hydrogens()
-    return np.array([[a.pos.x, a.pos.y, a.pos.z] for ch in st[0] for r in ch for a in r],
-                    dtype=np.float64)
+    pts, biggest = [], 0
+    for ch in st[0]:
+        for r in ch:
+            n = 0
+            for at in r:
+                pts.append([at.pos.x, at.pos.y, at.pos.z]); n += 1
+            biggest = max(biggest, n)
+    return np.array(pts, dtype=np.float64), biggest
 
 
-def check_label(lc, lm, atoms, pdb, unit, tol=0.01):
+def check_label(lc, lm, atoms, pdb, unit, tol=0.01, budget_atoms=0):
     """Two invariants a correct per-pose label must satisfy, checked rather than assumed.
 
     WHY THIS EXISTS. The replay compares a cached FT3 loss to an uncached one, and the reviewer's
@@ -250,10 +265,41 @@ def check_label(lc, lm, atoms, pdb, unit, tol=0.01):
     pts = np.array([[float(v) for v in t] for t in ref], dtype=np.float64)
     d, _i = cKDTree(atoms).query(pts, k=1)
     far = int((d > tol).sum())
-    if far:
-        raise ValueError(f"{pdb}/{unit}: {far} of {len(pts)} resolved label atoms are more than "
-                         f"{tol} A from any atom of the job cif the label was built from "
-                         f"(worst {d.max():.3f} A)")
+    if not far:
+        return lm, 0
+    # A RESIDUE THE JOB CIF DELIBERATELY DROPPED CANNOT BE SUPERVISED, AND IS NOT AN ERROR.
+    # phase_j_job_cifs vetoes residues it cannot place -- `unplaced` and `misplaced` in
+    # unplaced_residues.csv -- while Protenix's parse reconstructs them from the entity sequence, so
+    # the label ends up holding atoms the job cif does not. Measured on 8av9: the bioassembly carries
+    # 4426 atoms against the cif's 4365, and the 61 extra are exactly the 7 vetoed residues (H 2
+    # unplaced + 2 misplaced, L 2 + 1). Four of them survive into the resolved label. Refusing the
+    # whole structure over that loses 10 units; marking those atoms UNRESOLVED is what
+    # coordinate_mask exists to express, and the FT3 loss already skips unresolved atoms.
+    #
+    # THE BUDGET IS WHAT STOPS THIS BEING A LOOPHOLE. It is derived, not chosen: the number of
+    # residues the job cif RECORDED dropping, times the largest heavy-atom count of any residue in
+    # that same file. Both come from the data. 9djw's wrong-copy label sat 104 A out on 2011 of 2011
+    # atoms and 7stz loses a whole 540-residue chain whose record claims 0 drops -- neither fits in
+    # a budget of a few residues, so both still fail loudly.
+    if budget_atoms and far <= budget_atoms:
+        out = []
+        for i in range(len(lc)):
+            m = lm[i].astype(bool).copy()
+            idx = np.flatnonzero(m)
+            kk = key(lc[i][m])
+            dd, _ = cKDTree(atoms).query(
+                np.array([[float(v) for v in t] for t in kk], dtype=np.float64), k=1)
+            # mark this pose's own worst-offending atoms unresolved. Done per pose by coordinate
+            # match rather than by index, because each pose's label is a permutation of the others.
+            worst = np.argsort(-dd, kind="stable")[:far]
+            m[idx[worst]] = False
+            out.append(m.astype(np.uint8))
+        return out, far
+    raise ValueError(f"{pdb}/{unit}: {far} of {len(pts)} resolved label atoms are more than "
+                     f"{tol} A from any atom of the job cif the label was built from "
+                     f"(worst {d.max():.3f} A)"
+                     + (f"; the recorded drops allow at most {budget_atoms} atom(s)"
+                        if budget_atoms else "; no deliberate drops are recorded for it"))
 
 
 SCHEMA = 2        # bump whenever the payload's meaning changes, so old labels stop being reused
@@ -523,6 +569,20 @@ def main():
     rows, skipped, t0, reused = [], [], time.time(), 0
     # THE DATASET ITEM IS BUILT ONCE PER STRUCTURE, not once per unit: every seed of a structure
     # shares the same label, and building it is the expensive half.
+    # THE JOB CIF'S OWN RECORD of residues it could not place, per structure. It is the only reason
+    # a label atom may legitimately be absent from the cif, so it is the budget for masking one.
+    dropped_residues, masked_rows = {}, []
+    _ur = os.path.join(os.path.dirname(a.mmcif_dir), "unplaced_residues.csv")
+    if os.path.exists(_ur):
+        import csv as _csv2
+        for _r in _csv2.DictReader(open(_ur)):
+            dropped_residues[_r["pdb"]] = dropped_residues.get(_r["pdb"], 0) + \
+                int(_r.get("unplaced") or 0) + int(_r.get("misplaced") or 0)
+        print(f"drop record: {_ur} -> {sum(1 for v in dropped_residues.values() if v)} structure(s) "
+              f"with at least one deliberately dropped residue")
+    else:
+        print(f"WARNING no drop record at {_ur}; no label atom may be masked, so a structure whose "
+              f"job cif vetoed a residue will be refused rather than supervised without it")
     cached_item, cif_atoms = {}, {}
     for n, up in enumerate(units, 1):
         pdb = os.path.basename(os.path.dirname(up))
@@ -572,7 +632,14 @@ def main():
 
             if pdb not in cif_atoms:
                 cif_atoms[pdb] = label_atom_coords(os.path.join(a.mmcif_dir, f"{pdb}.cif"))
-            check_label(lc, lm, cif_atoms[pdb], pdb, arm_seed)
+            _cif_pts, _max_res_atoms = cif_atoms[pdb]
+            _budget = dropped_residues.get(pdb, 0) * _max_res_atoms
+            lm, n_unresolved = check_label(lc, lm, _cif_pts, pdb, arm_seed,
+                                           budget_atoms=_budget)
+            if n_unresolved:
+                masked_rows.append({"pdb": pdb, "unit": arm_seed, "atoms_masked": n_unresolved,
+                                    "budget_atoms": _budget,
+                                    "dropped_residues": dropped_residues.get(pdb, 0)})
             payload = {"fingerprint": np.array(fprint), "schema": np.array(SCHEMA),
                        "label_coordinate": np.stack(lc), "label_coordinate_mask": np.stack(lm),
                        "sample_index": ks, "pdb": pdb, "unit": arm_seed,
@@ -614,6 +681,18 @@ def main():
 
     print(f"\nbuilt {len(rows)} label set(s), reused {reused} already matching their inputs, "
           f"skipped {len(skipped)}")
+    if masked_rows:
+        import collections as _c2
+        byp = _c2.Counter(r["pdb"] for r in masked_rows)
+        tot = sum(r["atoms_masked"] for r in masked_rows)
+        print(f"MASKED UNRESOLVED: {tot} label atom(s) over {len(masked_rows)} unit(s) and "
+              f"{len(byp)} structure(s) had no counterpart in the job cif and were marked "
+              f"unresolved rather than supervised. Each is within that structure's recorded drop "
+              f"budget; see unplaced_residues.csv.")
+        for _p, _n in byp.most_common(8):
+            _ex = next(r for r in masked_rows if r["pdb"] == _p)
+            print(f"    {_p}: {_n} unit(s), {_ex['atoms_masked']} atom(s) each, "
+                  f"{_ex['dropped_residues']} dropped residue(s), budget {_ex['budget_atoms']}")
     if a.report:
         import csv
         with open(a.report, "w", newline="") as fh:
