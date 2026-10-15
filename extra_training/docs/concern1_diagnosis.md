@@ -234,3 +234,49 @@ with the scoring evidence rather than contradicting it.
 
 Structures removed from training by any of this: **0**. The only training structure lost remains
 9mx1, at 2,941 residues against protenix-v2's 2,560 ceiling.
+
+---
+
+# All scoring gaps closed, 2026-10-15 10:10 AM ET
+
+`phases/phase_j_fill_scores.py` scores an interface's two chains in isolation, which puts one chain
+per chemical group so OST's mapping is unambiguous. 450 OST calls, 200 best rows, 151 new after
+de-duplication.
+
+| interface | roles | candidate model pairs | DockQ range | winning copies |
+|---|---|---|---|---|
+| 9vb4_AD | ag0-L | 1x1 | 0.635 - 0.955 | C+B, all 50 |
+| 9vaw_AB | ag0-H | 1x1 | 0.005 - 0.539 | C+A, all 50 |
+| 9q5m_EH | ag2-H | 4x1, symmetric | 0.014 - 0.399 | D+A 17, F+A 12, E+A 11, C+A 10 |
+| 9q5v_EJ | ag1-H | 3x1, symmetric | 0.006 - 0.010 | C+A 19, E+A 19, D+A 12 |
+
+State afterwards, under the STRICT rule (every interface, every sample, no terminal tolerance):
+
+| | units | complete | partial |
+|---|---|---|---|
+| training | 723 | **723** | 0 |
+| validation | 300 | **300** | 0 |
+
+## The two symmetric cases were not ambiguous for the reason I first gave
+
+I refused 9q5m_EH and 9q5v_EJ earlier as having an undetermined map. The real situation: the
+reference's antigen is PARTIALLY RESOLVED -- 81 residues of a 532-residue chain -- and `difflib.ratio`
+is symmetric, so it scored 0.26 against its own model chain and looked like a non-match. Normalising
+by the shorter sequence gives 1.00. Once that is fixed the fragment matches THREE or FOUR identical
+model copies equally, which is a genuine symmetry ambiguity rather than a missing chain, and
+`chain_roles.csv`'s pick is positional convention. Every candidate copy is scored and the best taken,
+as symmetry-aware DockQ does for a homo-oligomer; the winning copy differs per pose, which is what
+that convention implies.
+
+## Was omitting them biasing the evaluation? Direction yes, magnitude no
+
+| | n | mean DockQ | median | fraction below CAPRI-incorrect (0.23) |
+|---|---|---|---|---|
+| already scored | 7,364 | 0.355 | 0.123 | 54% |
+| recovered | 200 | **0.249** | 0.045 | **70%** |
+| pooled | 7,564 | 0.352 | | |
+
+The omitted interfaces were genuinely worse, so the bias ran optimistic as suspected. But 200 rows
+against 7,364 moves the pooled mean by **+0.0028 DockQ**. Worth closing for correctness; it does not
+move any reported number, and the earlier framing of this as "a stronger reason to finish" overstated
+it.
