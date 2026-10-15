@@ -65,11 +65,31 @@ launch_va(){ tmux new-session -d -s vfold_$1 "cd /home/ebrahim/Protenix && CUDA_
       --csv $VG/results.csv --claim-dir $VG/claims --dataset sabdab_val2 --ncycle 10 --nsample 5 \
       --dtype bf16 --overlap-scoring >> $VG/w$1.log 2>&1"; }
 
-# DONE IS THE TRUNK COUNT FOR THIS QUEUE'S OWN ROWS, not a pose count and not the absence of
-# workers. The trunk npz is the artefact this phase exists to produce, folder.py refuses to
-# overwrite one, and poses for these structures already exist from the folds whose trunks were
-# deleted -- so counting poses would report the training queue finished before a single trunk had
-# been written.
+# COMPLETION IS NOT THE TRUNK COUNT. folder.py:1034 passes PROTENIX_DUMP_TRUNK into the fold, so the
+# trunk is written DURING inference, while the poses are finalised and the interfaces scored
+# afterwards -- and under --overlap-scoring the scoring runs on a BACKGROUND thread after the fold
+# returns. Counting trunks therefore reports COMPLETE while the last units are still being written,
+# and the stage switch then kills the workers mid-unit. Reproduced: a trunk present with no poses
+# passed the old check, which is exactly the unit the cache builder cannot use, since it needs the
+# poses that trunk was computed from.
+#
+# phase_j_stage_complete.py requires, per queued unit, the trunk AND exactly one finished pose
+# directory AND every expected score row, reusing folder.py's own iface_scored and
+# interfaces_by_pdb so the watcher cannot disagree with the worker about what "scored" means.
+#
+# AND IT CANNOT WAIT FOREVER. Some units never score completely: 10op_FN has zero samples across
+# every seed and 7sk4 is incomplete on 8 consecutive seeds, and a partially scored unit KEEPS its
+# claim by design so it is never retried. A strict AND with no escape would hang the handoff on
+# those -- the same failure inverted. So a stage also ends when the completed count has not moved
+# for STALL_POLLS polls while all three workers are alive, and then the stragglers are NAMED in the
+# log rather than passed over silently. Claim count is not a liveness signal: claims persist after
+# success (3,323 of them against 3,097 trunks), so progress is measured by the completed count.
+STALL_POLLS=${STALL_POLLS:-9}            # 9 x 300 s = 45 min, the same threshold used above
+complete_count(){                        # $1 fold dir  $2 queue  $3 dataset -> "<done> <total>"
+    $PY $R/extra_training/phases/phase_j_stage_complete.py --fold "$1" --queue "$2" \
+        --dataset "$3" --nsample 5 2>/dev/null \
+        | sed -n 's|.*: \([0-9]*\)/\([0-9]*\) units COMPLETE.*|\1 \2|p'
+}
 
 say "watching the FoldBench top-off: $TOTAL folds"
 last=0; stalled=0
@@ -103,24 +123,34 @@ for g in $GPUS; do launch_tr $g; say "  launched tcache_$g"; done
 
 # ---- stage 2: the training queue, then the validation queue --------------------------------------
 watch_stage(){   # $1 label  $2 fold dir  $3 queue  $4 total  $5 session prefix  $6 dataset
-    local last=0 stalled=0 n alive q
-    say "watching $1: $4 units"
+    local last=-1 stalled=0 n tot alive q cc
+    say "watching $1: $4 units (complete = trunk + one finished pose dir + all score rows)"
     while :; do
-        n=$(awk -F'\t' -v d="$2" '{if (system("test -e " d "/trunks/" $2 "/" $1 "_" $5 ".npz")==0) c++} END{print c+0}' "$3")
+        cc=$(complete_count "$2" "$3" "$6"); n=${cc%% *}; tot=${cc##* }
+        [ -z "$n" ] && { say "$1: completion check failed to report -- investigate"; n=0; }
         alive=$(tmux ls 2>/dev/null | grep -cE "^$5_[013]:")
         q=$(quota -s 2>/dev/null | awk 'NR==3{print $2}')
-        if [ "$n" -ge "$4" ]; then say "$1 COMPLETE: $n/$4, quota $q"; return 0; fi
+        if [ "$n" -ge "$4" ]; then say "$1 COMPLETE: $n/$4 fully done, quota $q"; return 0; fi
         if [ "$alive" -lt 3 ]; then
             say "only $alive/3 $5 workers at $n/$4 -- reconciling and relaunching"
             $PY $R/run_model/reconcile_stale_claims.py "$2" --dataset "$6" --nsample 5 >> "$LOG" 2>&1
             for g in $GPUS; do
                 tmux has-session -t ${5}_$g 2>/dev/null || { [ "$5" = tcache ] && launch_tr $g || launch_va $g; say "  relaunched ${5}_$g"; }
             done
-        fi
-        if [ "$n" -eq "$last" ]; then
+            stalled=0
+        elif [ "$n" -eq "$last" ]; then
             stalled=$((stalled+1))
-            [ $((stalled % 9)) -eq 0 ] && say "$1: NO PROGRESS for $((stalled*5)) min at $n/$4 -- investigate"
-        else stalled=0; say "$1 $n/$4 units, $alive workers, quota $q"; fi
+            [ $((stalled % 3)) -eq 0 ] && say "$1: no newly completed unit for $((stalled*5)) min at $n/$4"
+            if [ "$stalled" -ge "$STALL_POLLS" ]; then
+                say "$1: GIVING UP on the remainder after $((stalled*5)) min with 3 workers alive."
+                say "$1: $n of $4 complete. The units that never completed, and why:"
+                $PY $R/extra_training/phases/phase_j_stage_complete.py --fold "$2" --queue "$3" \
+                    --dataset "$6" --nsample 5 --verbose >> "$LOG" 2>&1
+                return 2
+            fi
+        else
+            stalled=0; say "$1 $n/$4 complete, $alive workers, quota $q"
+        fi
         last=$n; sleep 300
     done
 }

@@ -51,11 +51,35 @@ than guessing, so a same-root refold would have failed the cache build regardles
 each: it relaunches a dead worker after `reconcile_stale_claims.py` and flags a stall every 45 min.
 Running as tmux `fbwatch`, log `experimental_data/.../foldbench_baseline_remaining_folds/watcher.log`.
 
-Completion per stage is the count of trunk npz for that queue's own rows, never a pose count and
-never the absence of workers. Poses for the group-A structures already exist -- their trunks were
-deleted, not their poses -- so a pose count reports stage 2 finished before one trunk is written.
-Positive control for the counter: on the pre-split queue it returns 3,097 of 3,760, the known
-trunk count.
+### Completion, and why it is not the trunk count
+
+`folder.py:1034` passes `PROTENIX_DUMP_TRUNK` into the fold, so the trunk is written DURING
+inference while the poses are finalised and the interfaces scored afterwards -- and under
+`--overlap-scoring` the scoring runs on a background thread after the fold returns. A trunk count
+therefore reports COMPLETE while the last units are still being written, and the stage switch then
+kills the workers mid-unit. Reproduced: a trunk with no poses passed the old check.
+
+`phases/phase_j_stage_complete.py` requires, per queued unit, all three of:
+
+| | requirement | matches |
+|---|---|---|
+| 1 | the trunk npz exists | `<fold>/trunks/<pdb>/<tag>_<seed>.npz` |
+| 2 | EXACTLY ONE finished pose dir | what `phase_j_build_cache.py:84` demands |
+| 3 | every interface, every expected sample scored | `folder.py`'s own `iface_scored` |
+
+It reuses `folder.py`'s `iface_scored` and `interfaces_by_pdb` and reads the same `ds.pool_csv`
+(`folder.py:595`), so the watcher cannot disagree with the worker about what "scored" means.
+
+Controls: a fabricated trunk with no poses is reported `trunk but NO finished pose dir`, exit 1. On
+200 units of the old root known to have trunks it reports 170 complete and 30 with incomplete score
+rows -- a real pre-existing gap, e.g. `10op_FN` has zero samples on every seed and `7sk4` is
+incomplete on 8 consecutive seeds.
+
+Because of those, the check cannot be a strict AND with no escape: a partially scored unit keeps its
+claim by design and is never retried, so the handoff would hang on it. A stage therefore also ends
+when the completed count has not moved for `STALL_POLLS` (9 polls, 45 min) while all three workers
+are alive, and the stragglers are then NAMED in the log. Claim count is not a liveness signal --
+claims persist after success, 3,323 against 3,097 trunks -- so progress is the completed count.
 
 ## Disk
 
