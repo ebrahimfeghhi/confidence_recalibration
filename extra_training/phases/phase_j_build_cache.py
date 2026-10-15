@@ -371,7 +371,14 @@ def stale(out, want, n_pose=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", default=f"{ROOT}/training/fold")
-    ap.add_argument("--out-dir", default=f"{ROOT}/training/fold/labels")
+    ap.add_argument("--out-dir", default=None,
+                    help="where label npz files are written. DEFAULTS TO <fold>/labels, so it "
+                         "follows --fold. It used to be hardcoded to training/fold/labels, which "
+                         "meant --fold training/fold_regen wrote its labels into the fold root's "
+                         "label directory -- labels built from one root's trunks, filed under "
+                         "another. The fingerprint stores trunk=sha(trunk_p) so a mismatch would be "
+                         "caught on the next run rather than trained on, but the files would "
+                         "already be in the wrong place.")
     ap.add_argument("--indices", default=f"{ROOT}/training/prep/job_indices.csv")
     ap.add_argument("--bio-dir", default=f"{ROOT}/training/prep/job_bioassembly")
     ap.add_argument("--mmcif-dir", default=f"{ROOT}/training/prep/job_cifs")
@@ -386,6 +393,28 @@ def main():
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--only", default="", help="comma-separated pdb ids")
+    ap.add_argument("--require-complete", action="store_true",
+                    help="fail unless every unit of the MANIFEST has a label in one of "
+                         "--label-dirs. Successful completion otherwise means only that the units "
+                         "which had trunks were labelled, which is not training-set completeness. "
+                         "Pass this before training; leave it off for incremental builds.")
+    ap.add_argument("--manifest-selection", default=f"{ROOT}/train_val_splits/cache_train_structures.csv",
+                    help="THE MANIFEST IS THE SELECTION TIMES THE SEEDS, NOT ANY queue.tsv. Measured "
+                         "2026-10-15: training/fold, fold_regen and fold_deferred hold queues of "
+                         "733, 723 and 1180 units, summing to 2636 against an intended 5010 -- each "
+                         "queue is the REMNANT of one stage, whatever was left to fold at the time. "
+                         "Asserting completeness against one of them would pass over 733 units "
+                         "while 4277 went unchecked.")
+    ap.add_argument("--manifest-seeds", default="500000-500009",
+                    help="the seed range the manifest expects per structure, inclusive.")
+    ap.add_argument("--label-dirs", default="",
+                    help="comma-separated label directories to satisfy the manifest from. The "
+                         "trunks live in several roots and so do their labels, so completeness is a "
+                         "question about the UNION. Defaults to --out-dir alone.")
+    ap.add_argument("--manifest-skip", default="",
+                    help="comma-separated pdb ids the manifest must NOT expect, each a deliberate, "
+                         "documented drop -- 9mx1 is one: 2941 residues against Protenix's 2560 "
+                         "token limit (runner/inference.py:399), so it cannot be folded at all.")
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--report", default=None, help="csv of what was built")
     a = ap.parse_args()
@@ -416,10 +445,10 @@ def main():
     # THE EXPECTED SET IS EXPLICIT, NOT WHATEVER IS ON DISK. Discovery cannot see a unit that has no
     # trunk file, so a fold that died partway looks complete. The queue is the contract.
     queue = f"{a.fold}/queue.tsv"
+    want_units = set()          # the queue's contract, empty when the queue is not consulted
     if os.path.exists(queue) and not (a.only or a.limit or a.stride != 1):
         # queue.tsv columns are: mode, pdb, target, tag, SEED. Reading the seed from f[0] took the
         # mode instead, so every queued unit looked absent and the note fired on all 501.
-        want_units = set()
         for line in open(queue):
             f = line.split()
             if len(f) >= 5:
@@ -428,8 +457,20 @@ def main():
                  os.path.basename(u)[:-4].split("_")[-1]) for u in units}
         gap = want_units - have
         if gap:
-            print(f"NOTE: {len(gap)} of {len(want_units)} queued unit(s) have no trunk yet, "
-                  f"e.g. {sorted(gap)[:3]} -- this run labels {len(have)} of them")
+            # A NOTE IS NOT A GATE. Incremental builds are the normal case while a fold is in
+            # flight, so this cannot be fatal by default -- but a run that finishes having labelled
+            # a SUBSET exits 0, and "build_cache succeeded" then reads as "the training set is
+            # complete" when it is not. --require-complete makes the queue's contract enforceable.
+            msg = (f"{len(gap)} of {len(want_units)} queued unit(s) have no trunk yet, "
+                   f"e.g. {sorted(gap)[:3]} -- this run labels {len(have)} of them")
+            if a.require_complete:
+                raise SystemExit(f"STOP: {msg}\n  --require-complete was given: every queued unit "
+                                 f"must have a trunk and a label before training. Re-run without "
+                                 f"it to build incrementally while the fold is still going.")
+            print(f"NOTE: {msg}")
+            print("  (this run is INCOMPLETE by the queue's own contract; pass --require-complete "
+                  "to make that fatal, and do so before training)")
+        gap_units = gap
     if a.only:
         keep = {x.strip().lower() for x in a.only.split(",") if x.strip()}
         units = [u for u in units if os.path.basename(os.path.dirname(u)).lower() in keep]
@@ -473,6 +514,11 @@ def main():
     except Exception:
         loss_fp = "n/a"
 
+    # --out-dir FOLLOWS --fold unless given explicitly. Resolved here, after parsing, so the
+    # default tracks whatever --fold ended up being.
+    if not a.out_dir:
+        a.out_dir = os.path.join(a.fold, "labels")
+    print(f"fold root {a.fold}\nlabels -> {a.out_dir}")
     os.makedirs(a.out_dir, exist_ok=True)
     rows, skipped, t0, reused = [], [], time.time(), 0
     # THE DATASET ITEM IS BUILT ONCE PER STRUCTURE, not once per unit: every seed of a structure
@@ -581,6 +627,39 @@ def main():
                 w = csv.DictWriter(fh, fieldnames=["pdb", "unit", "why"], lineterminator="\n")
                 w.writeheader(); w.writerows(skipped)
             print(f"wrote {sp}")
+    # THE MANIFEST MUST ACCOUNT FOR EVERY INTENDED UNIT, AND BY LABEL ON DISK, not by what this run
+    # happened to do. A run that reused 3,000 labels and built 11 is a success and says nothing about
+    # the other 2,000; conversely a label can be absent because its trunk never arrived, because it
+    # skipped, or because an earlier run wrote it somewhere else (see --out-dir, which used not to
+    # follow --fold). Only looking for the file distinguishes "complete" from "this run worked".
+    if a.require_complete:
+        import csv as _csv
+        lo, hi = (int(x) for x in a.manifest_seeds.split("-"))
+        skip = {x.strip().lower() for x in a.manifest_skip.split(",") if x.strip()}
+        with open(a.manifest_selection) as fh:
+            pdbs = [r["pdb"].strip().lower() for r in _csv.DictReader(fh)]
+        intended = {(p, str(sd)) for p in pdbs if p not in skip for sd in range(lo, hi + 1)}
+        dirs = [d.strip() for d in a.label_dirs.split(",") if d.strip()] or [a.out_dir]
+        found, missing = set(), []
+        for u in sorted(intended):
+            if any(os.path.exists(os.path.join(d, u[0], f"free_{u[1]}.npz")) for d in dirs):
+                found.add(u)
+            else:
+                missing.append(u)
+        print(f"\nMANIFEST: {len(found)} of {len(intended)} intended unit(s) have a label")
+        print(f"  manifest = {len(pdbs) - len(skip & set(pdbs))} structure(s) x seeds "
+              f"{lo}-{hi}, from {a.manifest_selection}")
+        print(f"  skipped by name: {sorted(skip) or 'none'}")
+        print(f"  label dirs searched: {dirs}")
+        if missing:
+            import collections as _c
+            byp = _c.Counter(u[0] for u in missing)
+            raise SystemExit(
+                f"STOP: {len(missing)} intended unit(s) over {len(byp)} structure(s) have NO label "
+                f"in any of {dirs}.\n  worst: {byp.most_common(5)}\n"
+                f"  The training set is INCOMPLETE. Either build them, or add a deliberate drop to "
+                f"--manifest-skip and record it in docs/cached_training.md.")
+
     # A SKIP IS A FAILURE, not a statistic. Training on a subset chosen by which labels happened to
     # build is the kind of silent selection this project keeps finding; the caller decides.
     if skipped:
