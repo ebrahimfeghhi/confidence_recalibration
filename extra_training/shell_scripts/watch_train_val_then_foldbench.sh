@@ -133,16 +133,36 @@ watch_stage(){   # $1 label  $2 fold dir  $3 queue  $4 total  $5 prefix  $6 data
     done
 }
 
+# THE FALLBACK. Every exit path below refuses to kill a running worker, which is right -- but it
+# can leave the cards IDLE: if a stage fails with its workers already dead, or the drain times out
+# and then those folds finish, three cards sit doing nothing until someone looks. So before giving
+# up, if nothing of ours is folding, FoldBench goes back on its ORIGINAL queue. It is claim-based
+# and resumes where it stopped, so that is always safe and always useful work. It NEVER pre-empts a
+# live worker: the guard is that no tcache, vfold or fbtop session exists.
+bail(){                                  # $1 = what failed
+    local busy
+    busy=$(tmux ls 2>/dev/null | grep -cE '^(tcache|vfold|fbtop)_[013]:')
+    if [ "$busy" -gt 0 ]; then
+        say "$1 -- LEAVING THE $busy RUNNING WORKER(S) ALONE. Nothing killed, nothing switched."
+        say "Investigate, then re-run this script to resume."
+    else
+        say "$1 -- no worker is folding, so the cards would idle. Putting FoldBench back on its"
+        say "original queue (claim-based, resumes where it stopped)."
+        $PY $R/run_model/reconcile_stale_claims.py $B --dataset foldbench --nsample 5 >> "$LOG" 2>&1
+        for g in $GPUS; do launch_fb $g; say "  launched fbtop_$g on the original FoldBench queue"; done
+        say "FoldBench is folding again. The training cache and validation still need a human."
+    fi
+    exit 1
+}
+
 say "=== REORDERED: training cache -> validation -> FoldBench ==="
-drain_foldbench || exit 1
+drain_foldbench || bail "the FoldBench drain timed out with folds still in flight"
 
 say "stage 1: the training cache, $(wc -l < $EG/queue.tsv) units over 74 structures"
 $PY $R/run_model/reconcile_stale_claims.py $EG --dataset sabdab_train --nsample 5 >> "$LOG" 2>&1
 for g in $GPUS; do launch_tr $g; say "  launched tcache_$g"; done
 if ! watch_stage "training cache" "$EG" "$EG/queue.tsv" "$(wc -l < $EG/queue.tsv)" tcache sabdab_train ""; then
-    say "training cache did NOT confirm completion. LEAVING THE tcache WORKERS RUNNING."
-    say "No stage switch, nothing killed. Investigate, then re-run this script to resume."
-    exit 1
+    bail "the training cache did NOT confirm completion"
 fi
 for g in $GPUS; do tmux kill-session -t tcache_$g 2>/dev/null; done
 sleep 10
@@ -151,8 +171,7 @@ say "stage 2: validation, $(wc -l < $VG/queue.tsv) units over 3 structures"
 $PY $R/run_model/reconcile_stale_claims.py $VG --dataset sabdab_val2 --nsample 5 >> "$LOG" 2>&1
 for g in $GPUS; do launch_va $g; say "  launched vfold_$g"; done
 if ! watch_stage "validation" "$VG" "$VG/queue.tsv" "$(wc -l < $VG/queue.tsv)" vfold sabdab_val2 ""; then
-    say "validation did NOT confirm completion. LEAVING THE vfold WORKERS RUNNING, nothing killed."
-    exit 1
+    bail "validation did NOT confirm completion"
 fi
 for g in $GPUS; do tmux kill-session -t vfold_$g 2>/dev/null; done
 sleep 10
@@ -162,8 +181,7 @@ $PY $R/run_model/reconcile_stale_claims.py $B --dataset foldbench --nsample 5 >>
 for g in $GPUS; do launch_fb $g; say "  launched fbtop_$g"; done
 # --no-trunk: FoldBench dumps no trunks, so complete there is poses + every score row
 if ! watch_stage "FoldBench" "$B" "$B/queue.tsv" "$(wc -l < $B/queue.tsv)" fbtop foldbench "--no-trunk"; then
-    say "FoldBench did NOT confirm completion. LEAVING THE fbtop WORKERS RUNNING, nothing killed."
-    exit 1
+    bail "FoldBench did NOT confirm completion"
 fi
 
 say "ALL RUNNABLE WORK DONE. The refolds are NOT queued: 1,180 training and 1,300 validation units"
