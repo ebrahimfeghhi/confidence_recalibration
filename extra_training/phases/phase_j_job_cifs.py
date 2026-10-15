@@ -177,6 +177,105 @@ def _min_dist(A, B):
     return m
 
 
+def pick_instance_copies(pairs, row, seqs, st, inst_st, ident_floor=0.9):
+    """Re-point every role at the copy of the complex THE INSTANCE ACTUALLY IS, using its coordinates.
+
+    WHY THIS EXISTS, AND WHY pick_contacting_copies IS NOT ENOUGH. That function's docstring states
+    the assumption "any contacting copy pair is an equally valid label". It is false, and 9djw is the
+    measured counterexample. The entry holds 61 chains, roughly 30 copies each of a single-domain
+    antibody and its antigen. Sequence cannot tell copies apart; the contact heuristic then picked
+    chains 0 and x, which DO touch at 2.55 A over 180 atom pairs -- and touch at the wrong surface:
+
+        antigen residues contacted, our pick   : 53, 55, 86, 87, 125, 127     (180 atom pairs)
+        antigen residues contacted, the instance: 3-9, 30-39                  (204 atom pairs)
+        overlap: 0 residues.  DockQ of our label against the instance: 0.0080
+
+    A crystal-packing contact looks like a real interface by every LOCAL measure -- it is a genuine
+    contact of comparable size -- so no contact test, however tuned, can separate the two. The label
+    would have taught the confidence head to be certain about an epitope that is not the answer.
+
+    THE INSTANCE CIF SETTLES IT, and it is available for every structure. SAbDab2 preserves the
+    deposited coordinate frame, verified on 9djw: its antigen chain matches entry chain `4` at
+    0.0000 A over 155 CA, and its antibody chain matches entry chain `6` at 0.0000 A over 107 CA
+    after sequence alignment. So the instance names its copy EXACTLY, and the only reason the match
+    needs a sequence alignment at all is that SAbDab2 renumbers antibody chains -- which is also why
+    comparing by residue number finds nothing and was tried first.
+
+    HOW. For each role, the instance's own chain for that role (by SAbDab2's name) supplies reference
+    CA coordinates. Every entry chain at >= `ident_floor` identity is aligned to it by sequence and
+    compared IN PLACE, with no superposition -- superposing would make every copy fit and destroy the
+    very signal being used. The role takes the argmin.
+
+    THE DECISION IS AN ARGMIN, NOT A THRESHOLD. The measured separation is absolute: the correct copy
+    sits at 0.0000 A and the runner-up at 26.6 A (antibody) or 22.0 A (antigen). Both distances are
+    returned for every move so an ambiguous case would be visible rather than silently resolved.
+
+    Returns (pairs, moved, report). `moved` is [(role, from, to)]; `report` carries the best and
+    runner-up distance per role. Falls back to returning `pairs` unchanged when the instance has no
+    chain for a role, so a missing or unusable instance cif cannot silently re-point anything.
+    """
+    import difflib
+    # res_code(), NOT gemmi.one_letter_code: this file spells MSE as M on purpose to match the fold
+    # input, and the raw helper spells it X, which has already regressed an alignment here once.
+    def _cas(structure):
+        out = {}
+        for ch in structure[0]:
+            for r in ch:
+                a = r.find_atom("CA", "*")
+                if a is None:
+                    continue
+                code = res_code(r.name)
+                if len(code) == 1 and code.isalpha() and code != "X":
+                    out.setdefault(ch.name, []).append((code, a.pos))
+        return out
+    inst_ca, ent_ca = _cas(inst_st), _cas(st)
+
+    # SAbDab2's OWN name per role, deliberately WITHOUT `seqs`: the copy-index stripping that
+    # role_names does with seqs is about finding the chain in the ENTRY, whereas what is wanted here
+    # is the name as it appears in the INSTANCE cif.
+    names = role_names(row)
+    out, moved, report = [], [], []
+    for role, c, lo, hi in pairs:
+        iname = names.get(role)
+        ref = inst_ca.get(iname) if iname else None
+        if not ref:
+            out.append((role, c, lo, hi)); report.append(f"{role}:no-instance-chain"); continue
+        rseq = "".join(x for x, _ in ref)
+        scored = []
+        for cand, cq in seqs.items():
+            if not cq:
+                continue
+            sm = difflib.SequenceMatcher(None, rseq, cq, autojunk=False)
+            if sum(b.size for b in sm.get_matching_blocks()) / max(1, min(len(rseq), len(cq))) \
+                    < ident_floor:
+                continue
+            cv = ent_ca.get(cand) or []
+            cseq = "".join(x for x, _ in cv)
+            sm2 = difflib.SequenceMatcher(None, rseq, cseq, autojunk=False)
+            d, n = 0.0, 0
+            for tag, i1, i2, j1, j2 in sm2.get_opcodes():
+                if tag != "equal":
+                    continue
+                for k in range(i2 - i1):
+                    d += ref[i1 + k][1].dist(cv[j1 + k][1]); n += 1
+            if n >= 20:
+                scored.append((d / n, cand))
+        if not scored:
+            out.append((role, c, lo, hi)); report.append(f"{role}:no-candidate"); continue
+        scored.sort()
+        best = scored[0][1]
+        runner = f"{scored[1][0]:.2f}" if len(scored) > 1 else "-"
+        report.append(f"{role}:{best}@{scored[0][0]:.4f}/next{runner}")
+        if best == c:
+            out.append((role, c, lo, hi)); continue
+        sp = assign_chains([(role, dict(role_sequences(row))[role])], {best: seqs[best]})
+        out.append(sp[0][0] if sp and sp[0] else (role, best, lo, hi))
+        moved.append((role, c, best))
+    order = [k for k, _q in role_sequences(row)]
+    out.sort(key=lambda t: order.index(t[0]))
+    return out, moved, report
+
+
 def pick_contacting_copies(pairs, row, seqs, st, cutoff=5.0, ident_floor=0.9):
     """Re-point the SEQUENCE-RESOLVED roles at a copy of the complex that actually touches.
 
@@ -369,7 +468,7 @@ def role_names(row, seqs=None):
     return out
 
 
-def job_chains(row, seqs, st=None):
+def job_chains(row, seqs, st=None, inst_st=None):
     """in: a splits row, {chain: sequence} from the entry, and optionally the entry structure.
     out: ([(role, chain, lo, hi)], [unresolved roles]) -- the chains the fold actually contains.
 
@@ -411,6 +510,12 @@ def job_chains(row, seqs, st=None):
     # keep the caller's role order stable
     order = [k for k, _q in want]
     out.sort(key=lambda t: order.index(t[0]))
+    # WITH THE INSTANCE'S COORDINATES, take the copy the instance ACTUALLY IS. This is tried first
+    # and is the correct source: a contacting copy pair is NOT interchangeable with the right one
+    # (9djw, see pick_instance_copies). The contact heuristic remains as the fallback for a role the
+    # instance cannot anchor.
+    if st is not None and not bad and inst_st is not None:
+        out, _moved, _rep = pick_instance_copies(out, row, seqs, st, inst_st)
     # WITH COORDINATES, make the sequence-resolved roles come from ONE copy of the complex.
     if st is not None and not bad:
         out, _moved = pick_contacting_copies(out, row, seqs, st)
@@ -817,6 +922,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--selection", default=f"{ROOT}/train_val_splits/cache_train_structures.csv")
     ap.add_argument("--splits", default=f"{ROOT}/SAbDab2_data/zenodo_splits/splits_final/abag_split.csv")
+    ap.add_argument("--sabdab-cifs", default=f"{ROOT}/SAbDab2_data/training_cifs",
+                    help="SAbDab2 instance cifs. Their coordinates decide WHICH COPY of the complex "
+                         "each role takes; see pick_instance_copies. Without them the copy choice "
+                         "falls back to the contact heuristic, which accepted a crystal-packing "
+                         "contact on 9djw (0 epitope residues in common, DockQ 0.0080).")
     ap.add_argument("--src-dir", default=f"{ROOT}/SAbDab2_data/rcsb_training_cifs")
     ap.add_argument("--out-dir", default=f"{ROOT}/training/prep/job_cifs")
     ap.add_argument("--limit", type=int, default=0)
@@ -858,7 +968,7 @@ def main():
     if a.limit:
         sel = sel[:a.limit]
     import gemmi
-    ok, bad, unplaced_rows = 0, [], []
+    ok, bad, unplaced_rows, no_instance = 0, [], [], []
     # NATIVE POSITIONS A ROLE'S QUERY OMITS, one row per role that has any. THIS IS THE REFOLD LIST:
     # a query missing an INTERNAL native stretch folded a molecule whose residues are covalently
     # adjacent when they are not, and no label-side repair can add those tokens back.
@@ -872,7 +982,21 @@ def main():
         # ONE MODEL. An NMR entry carries many; the fold predicts one structure.
         while len(st) > 1:
             del st[1]
-        pairs, unresolved = job_chains(row, chain_seqs(st), st)
+        # THE INSTANCE CIF ANCHORS WHICH COPY, when it is available. Loaded here rather than inside
+        # job_chains so a missing one is visible as a warning instead of a silent fallback to the
+        # contact heuristic, which cannot tell a crystal-packing contact from the real interface.
+        inst_st = None
+        _ip = os.path.join(a.sabdab_cifs, f"{r['instance']}.cif")
+        if os.path.exists(_ip):
+            inst_st = gemmi.read_structure(_ip)
+            inst_st.setup_entities()
+            inst_st.remove_alternative_conformations()
+            inst_st.remove_hydrogens()
+            while len(inst_st) > 1:
+                del inst_st[1]
+        else:
+            no_instance.append((r["pdb"], r["instance"]))
+        pairs, unresolved = job_chains(row, chain_seqs(st), st, inst_st=inst_st)
         if unresolved:
             bad.append((r["pdb"], r["instance"],
                         f"no chain matches the {unresolved} sequence(s) at 85% identity"))
@@ -1010,6 +1134,9 @@ def main():
           f"{len({g['pdb'] for g in _om})} structure(s), {sum(g['n_missing'] for g in _om)} residues")
     nz = [r for r in unplaced_rows if r["unplaced"]]
     mz = [r for r in unplaced_rows if r.get("misplaced")]
+    if no_instance:
+        print(f"WARNING no instance cif for {len(no_instance)} structure(s); their copy choice fell "
+              f"back to the contact heuristic: {[p for p, _i in no_instance[:8]]}")
     print(f"wrote {ok} job cif(s) to {a.out_dir}")
     print(f"dropped residues not in the fold's sequence: {sum(r['unplaced'] for r in nz)} across "
           f"{len({r['pdb'] for r in nz})} structure(s) -> {a.unplaced}")
