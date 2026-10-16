@@ -62,27 +62,93 @@ estimate with no measurement behind it and it is **wrong**: the evaluator, which
 items per rank would have been ~312 GB, and a 300 GB cap applied *per rank* would have permitted
 900 GB.
 
+## The collective timeout must exceed the evaluation
+
+`torch`'s default process-group timeout is **30 minutes**. The per-epoch evaluation at
+`--eval-budget 100` covers all 5,300 validation units and takes **~73 minutes**, measured on GATE 1
+(06:52 to 08:05 PT on 2026-10-16). Rank 0 evaluates while the other ranks wait at a `dist.barrier()`,
+so on the default the barrier times out and kills the run at the FIRST epoch boundary -- after hours
+of correct training, and the failure reads as a network fault rather than a timeout somebody chose.
+
+`--dist-timeout-min` defaults to 240, which leaves room for an evaluation that runs long under
+contention. Found before the first multi-GPU run started, not after it died.
+
 ## Evidence
 
-`phases/phase_k_train_ddp_selftest.py` runs two structures with one seed each — 10 poses — once on
-one GPU with `--accum 10`, then on two GPUs where each rank takes one structure and accumulates 5.
-Both perform exactly one optimiser step over the same 10 poses, so the final head must match.
+### The first version of the selftest was not evidence
 
-| run | result |
+It compared the two runs' final parameters against a tolerance relative to the PARAMETER magnitude:
+`1e-4 x 1.04e+02 = 1.04e-02` absolute. One Adam step at lr 1e-3 moves a parameter by about 1e-3
+(measured: 9.999e-04). So a multi-GPU run that took **no step at all** differed from the single-GPU
+run by ~1e-3 and PASSED, by a factor of ten.
+
+Worse for requirement 1: Adam's update is `m_hat/sqrt(v_hat)`, which is invariant to a constant
+factor on the gradient, so after one step a gradient scaled by `world_size` produces very nearly the
+same parameters. The thing the test most needed to catch was the thing it was least able to see.
+Raised in review on 2026-10-16.
+
+### What it checks now
+
+| check | measured | what a bug scores |
+|---|---|---|
+| 0. the lr-0 run is a fixed point | 9.999e-04 displacement | 0, and nothing below means anything |
+| 1. pre-clip gradient norm, 1 GPU vs 2 | 0.000736 both, **2.4e-07** relative (tol 1e-4) | **1.0** for a per-rank loss scale |
+| 2. update from the starting head | **1.04e-04** relative (tol 1e-3) | **1.0** for a run that took no step |
+| 3. the ranks after 5 steps | **0.000e+00** — bit-identical (tol 1e-9) | >0 for a missed all-reduce |
+| writers of `head_final.pt` | 1 | 2 before the rank-0 guard |
+
+Check 1 is the one that covers requirement 1, and no parameter comparison can substitute for it:
+`clip_grad_norm_` returns the norm BEFORE clipping, which the trainer records per step as
+`grad_norm`, and that number is linear in the gradient, so Adam's normalisation cannot hide a scale
+error in it.
+
+Check 2 compares DISPLACEMENTS from the starting head, with the tolerance relative to the
+displacement, so a do-nothing run scores 1.0 instead of passing. The test computes that negative
+control explicitly and fails if it would have passed.
+
+Note the margins: check 1 passes with 400x of room, check 2 with only 10x. That is Adam amplifying a
+small gradient difference — with a gradient norm of 7.4e-04 spread over 19.8M parameters, `v_hat` is
+small enough that `eps` matters, so the step is nearly `lr * sign` and a 2.4e-07 gradient difference
+becomes ~1e-04 in the parameters. It is another reason the gradient is the better place to measure.
+
+Check 3 exists because exact agreement with one GPU is only meaningful for a single full-batch step:
+with more steps the two runs partition the poses differently -- one GPU takes consecutive poses, the
+ranks take one from each structure -- so their trajectories diverge legitimately. What must hold over
+many steps is that the RANKS agree with EACH OTHER, and a missed all-reduce shows up there and
+nowhere else.
+
+### The saved head must be the evaluated head
+
+The partial accumulation left at the end of an epoch used to be flushed AFTER the epoch loop, which
+is after the last evaluation. At production settings that means: evaluate step 292, then take step
+293, then write `head_final.pt` -- so the shipped head was one optimiser step away from the only head
+whose validation metric existed, and the number reported for the run did not belong to the checkpoint
+the run produced. Raised in review on 2026-10-16.
+
+The remainder fires in the multi-GPU case and not the single-GPU one, because `steps_cap` is computed
+from the global pose count while each rank gets a TRUNCATED shard: 166 structures rather than 166.67,
+so 294 steps are budgeted and 292 are reached, leaving 80 poses accumulated. On one GPU `steps_cap`
+equals the complete steps the data supports, so the loop breaks with an empty accumulator.
+
+Three fixes, all in `_apply_partial`:
+
+| | |
 |---|---|
-| tensors compared | 248, same keys |
-| worst absolute difference | 1.8e-06 – 8.2e-06 across runs |
-| mean parameter magnitude | 1.04e+02 |
-| relative | **1.8e-08 – 8e-08**, tolerance 1e-04 |
-| writers of `head_final.pt` | 1 |
+| flushed inside the epoch loop, before the evaluation | the evaluated head is the saved head |
+| gradient scaled by `accum_eff / n_contributing`, the count all-reduced rather than assumed | the last step of an epoch is the same size as every other, not a fraction of one |
+| `_apply_step`'s success flag respected | a non-finite gradient no longer advances the step counter |
 
-The residual is float32 non-associativity: one GPU sums 10 poses in sequence, two GPUs sum 5+5 then
-add. It is four to six orders of magnitude below the tolerance, which is itself far below anything a
-real gradient error could hide under.
+Verified on 3 structures over 2 ranks, where the shard truncation bites: `flushing a partial
+accumulation of 2/4 pose(s), gradient scaled by 2.0000`, the count reduced across ranks, and no
+warning after the loop.
 
-The selftest also caught a genuine bug: **both ranks wrote `head_final.pt`**. The content was
-identical because the replicas agree, but two processes writing one path can interleave and leave a
-truncated checkpoint. Checkpoint writes are now rank 0 only.
+### Other bugs the selftest caught
+
+**Both ranks wrote `head_final.pt`.** The content was identical because the replicas agree, but two
+processes writing one path can interleave and leave a truncated checkpoint. Checkpoint writes are now
+rank 0 only, with `--debug-save-rank-heads` for the selftest's per-rank comparison.
+
+**The sweep was missing `--allow-code-drift`** and would have stopped on its first unit.
 
 ## Expected speed
 

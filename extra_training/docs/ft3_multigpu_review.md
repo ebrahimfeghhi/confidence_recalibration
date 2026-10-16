@@ -1,6 +1,10 @@
 # FT3 multi-GPU training: review brief
 
-**For review.** Commit `c186e4b5` on `main`. `docs/multi_gpu_training.md` is canonical for the
+**Review round 1 is addressed.** Both findings were correct and both are fixed; see "Round 1" below
+for what changed and what the fixes measure. Commit `c186e4b5` on `main`, fixes on top of
+`fd27f238`.
+
+**For review.** Originally commit `c186e4b5` on `main`. `docs/multi_gpu_training.md` is canonical for the
 measurements and the design; this file is the review-facing summary and says what to attack. Where a
 number appears in both, that file is the one to trust.
 
@@ -56,17 +60,17 @@ structures with one seed each are 2 units of 5 poses = 10 poses:
 
 Same poses, same single step, so the final head must match.
 
-| | |
-|---|---|
-| tensors compared | 248, same keys |
-| worst absolute difference | 1.8e-06 – 8.2e-06 across runs |
-| mean parameter magnitude | 1.04e+02 |
-| relative | **1.8e-08 – 8e-08** |
-| tolerance | 1e-04 |
-| writers of `head_final.pt` | 1 |
+| check | measured | what a bug scores |
+|---|---|---|
+| 0. the lr-0 run is a fixed point | 9.999e-04 displacement | 0, and nothing below means anything |
+| 1. pre-clip gradient norm, 1 GPU vs 2 | 0.000736 both, **2.4e-07** relative (tol 1e-4) | **1.0** for a per-rank loss scale |
+| 2. update from the starting head | **1.04e-04** relative (tol 1e-3) | **1.0** for a run that took no step |
+| 3. the ranks after 5 steps | **0.000e+00** — bit-identical (tol 1e-9) | >0 for a missed all-reduce |
+| writers of `head_final.pt` | 1 | 2 before the rank-0 guard |
 
 Run it with `python -I phases/phase_k_train_ddp_selftest.py --cards 1,3`; it needs two idle cards and
-leaves GPU 0 alone by default.
+leaves GPU 0 alone by default. The four runs are INIT (lr 0, the starting head), ONE (1 GPU, full
+batch), TWO (2 GPUs, same full batch) and MANY (2 GPUs, 5 steps, every rank writing its own head).
 
 Two real bugs it caught before the sweep could, each of which would have cost a run:
 
@@ -90,14 +94,52 @@ The correct constraint is that `--max-rss-gb` is **per process** while the user'
 whole-box figure, so each rank gets `--preload-items 170 --max-rss-gb 95`. Holding 200 items per rank
 would have been ~312 GB, and the old 300 GB cap applied per rank would have permitted 900 GB.
 
+## Round 1: the two findings, and what the fixes measure
+
+**1. The equivalence test could pass even if distributed training did nothing.** Correct, and the
+arithmetic was as stated: the tolerance was 1e-4 relative to a mean parameter magnitude of 1.04e+02,
+so 1.04e-02 absolute, while one Adam step at lr 1e-3 moves a parameter by ~1e-3 — since measured at
+9.999e-04. A no-op passed by a factor of ten. The deeper problem was that Adam's `m_hat/sqrt(v_hat)`
+is invariant to a constant factor on the gradient, so a `world_size` scale error — the exact failure
+requirement 1 exists to prevent — is nearly invisible in a one-step parameter comparison.
+
+Rewritten as four checks (table above): the pre-clip **gradient norm**, which is linear in the
+gradient and so immune to Adam's normalisation; the **displacement** from the starting head with the
+tolerance relative to the displacement; an explicit **negative control** that fails the test if a
+do-nothing run would have passed; and **rank-to-rank agreement over 5 steps**, which is the only
+check that can see replicas drifting.
+
+Exact agreement with one GPU over MANY steps is not achievable and is not claimed: the two runs
+partition the poses differently, so their trajectories diverge legitimately. That is why the
+multi-step check is between ranks.
+
+**2. The final head differed from the last evaluated head.** Correct. The partial accumulation was
+flushed after the epoch loop, i.e. after the last evaluation: evaluate step 292, take step 293, save
+the final head. Fixed on all three counts — flushed inside the epoch loop before the evaluation,
+scaled by `accum_eff / n_contributing` with the count all-reduced rather than assumed, and
+`_apply_step`'s success flag respected so a non-finite gradient no longer advances the counter.
+Verified on 3 structures over 2 ranks, where the shard truncation makes the remainder appear:
+`flushing a partial accumulation of 2/4 pose(s), gradient scaled by 2.0000`, and no warning after the
+loop.
+
+**3. Found while fixing the above, not raised in review.** `torch`'s default collective timeout is 30
+minutes. The per-epoch evaluation covers 5,300 validation units and takes **~73 minutes**, measured
+on GATE 1. Rank 0 evaluates while the other ranks wait at a barrier, so on the default the barrier
+would have timed out and killed the run at the FIRST epoch boundary, after hours of correct training,
+with the failure reading as a network fault. `--dist-timeout-min` now defaults to 240.
+
+Point 3 is the one worth drawing a lesson from: the two review findings were both about the final
+checkpoint, and chasing them surfaced a third defect that would have destroyed the run outright.
+
 ## What to attack first
 
 The weakest points, stated so they get looked at rather than skipped.
 
-1. **The equivalence test covers one step, not a run.** It proves the gradient and the step, not
-   three epochs. The argument that nothing can drift — bit-identical gradients and identical AdamW
-   state after every all-reduce, so no mechanism for the replicas to separate — is worth checking
-   rather than trusting.
+1. **The multi-step check is between ranks, not against one GPU.** Rank agreement after 5 steps is
+   exact (0.000e+00), but it cannot show that the 3-rank trajectory is a good optimisation, only that
+   the replicas stay together. Nothing here establishes that 3 GPUs reach the same validation metric
+   as 1 GPU would over 3 epochs, and the pose partitioning differs, so they will not take identical
+   paths. If that matters, the comparison has to be the metric, not the parameters.
 2. **2 structures of 500 are dropped per epoch** to keep the ranks equal (167/167/166 truncated to
    166). Reshuffling makes it a different 2 each epoch, but it is a real 0.4%, and padding rather
    than truncating is the alternative.

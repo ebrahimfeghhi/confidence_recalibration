@@ -163,6 +163,22 @@ def main():
     ap.add_argument("--grad-check-every", type=int, default=25,
                     help="re-assert that no gradient has appeared outside the confidence head")
     ap.add_argument("--save-every", type=int, default=250, help="optimiser steps per checkpoint")
+    ap.add_argument("--dist-timeout-min", type=float, default=240.0,
+                    help="COLLECTIVE TIMEOUT IN MINUTES, and it must exceed the per-epoch "
+                         "evaluation. torch's default is 30 min; the evaluation at --eval-budget "
+                         "100 covers 5,300 validation units and takes ~73 min, measured. Rank 0 "
+                         "evaluates while the other ranks wait at a barrier, so on the default the "
+                         "barrier would time out and kill the run at the FIRST epoch boundary -- "
+                         "after hours of correct training, with the failure looking like a network "
+                         "fault rather than a timeout someone chose. 240 min leaves room for an "
+                         "evaluation that runs long under contention.")
+    ap.add_argument("--debug-save-rank-heads", action="store_true",
+                    help="EVERY rank also writes head_final_rank<r>.pt. Off by default and not for "
+                         "training runs: the replicas are supposed to be identical, so these files "
+                         "are redundant in normal use. phase_k_train_ddp_selftest.py turns it on to "
+                         "CHECK that they are identical after several steps, which is the only way "
+                         "to catch replicas drifting apart -- a single-rank checkpoint cannot show "
+                         "it, and drift is exactly what a missed all-reduce would cause.")
     ap.add_argument("--dist-backend", default="gloo", choices=("gloo", "nccl"),
                     help="the collective backend for multi-GPU. DEFAULT gloo, NOT nccl, because "
                          "NCCL is broken on this box: a 20-line two-rank all_reduce on cards 1 and "
@@ -274,9 +290,12 @@ def main():
     dist = None
     if world > 1:
         import torch.distributed as dist
-        dist.init_process_group(backend=a.dist_backend)
+        import datetime
+        dist.init_process_group(backend=a.dist_backend,
+                                timeout=datetime.timedelta(minutes=a.dist_timeout_min))
         torch.cuda.set_device(local_rank)
-        print(f"[rank {rank}/{world}] cuda:{local_rank} backend={a.dist_backend}", flush=True)
+        print(f"[rank {rank}/{world}] cuda:{local_rank} backend={a.dist_backend} "
+              f"timeout={a.dist_timeout_min:.0f} min", flush=True)
     dev = torch.device(f"cuda:{local_rank}") if world > 1 else torch.device("cuda")
 
     # The effective batch is what the ranks actually sum to, which is not --accum when the world
@@ -742,6 +761,46 @@ def main():
             g["lr"] = lr
         rows, t0, step, n_in_accum, item_cache = [], time.time(), 0, 0, {}
         opt.zero_grad(set_to_none=True)
+
+        def _apply_partial():
+            """Step on FEWER than accum_local poses, scaled by the poses that actually contributed.
+
+            Every pose divided its loss by accum_eff, so a partial accumulation holds sum/accum_eff:
+            a gradient scaled DOWN by n_contributing/accum_eff, not a mean over the poses present.
+            The old code stepped on that directly, making the last step of an epoch a fraction of
+            the size of every other step -- 1/256th of one, if a single pose was left. Multiplying by
+            accum_eff/n_contributing restores the mean.
+
+            The count is reduced across ranks rather than assumed to be n_local * world: the shards
+            are equal length so it should be, but a step whose size depends on that assumption
+            should not take it on trust.
+
+            It also respects _apply_step's success flag. The old code incremented `step` whether or
+            not a step was taken, so a non-finite gradient here advanced the step counter anyway.
+            """
+            nonlocal step, n_in_accum
+            n_tot = n_in_accum * world
+            if world > 1:
+                t = torch.tensor([float(n_in_accum)], dtype=torch.float32)
+                if a.dist_backend == "gloo":
+                    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+                else:
+                    t = t.to(dev)
+                    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+                n_tot = int(round(float(t.item())))
+            n_in_accum = 0
+            if n_tot <= 0:
+                return
+            scale = accum_eff / n_tot
+            tset = set(trainable)
+            for _n, pp in model.named_parameters():
+                if _n in tset and pp.grad is not None:
+                    pp.grad.mul_(scale)
+            print(f"  flushing a partial accumulation of {n_tot}/{accum_eff} pose(s), gradient "
+                  f"scaled by {scale:.4f} so the step is the same size as every other")
+            _gn, _outside, ok = _apply_step(step)
+            if ok:
+                step += 1
         # AN EPOCH LOOP, BECAUSE --epochs USED TO DO NOTHING. It scaled steps_cap while the loop
         # traversed `flat` exactly once, so a request for more steps than the data provides simply
         # stopped early -- review round 7 asked for 5 optimiser steps and got 2. The data is now
@@ -833,6 +892,14 @@ def main():
                         break
                 if done:
                     break
+            # THE PARTIAL ACCUMULATION IS FLUSHED HERE, BEFORE THE EVALUATION, SO THE HEAD THAT
+            # IS SCORED IS THE HEAD THAT IS SAVED. It used to be flushed after the epoch loop, which
+            # is after the LAST evaluation: at production settings the run evaluated step 292, then
+            # took step 293, then wrote head_final.pt -- so the shipped head was one optimiser step
+            # away from the only head whose validation metric we had, and the number reported for
+            # the run did not belong to the checkpoint the run produced.
+            if n_in_accum:
+                _apply_partial()
             if a.eval_every_epoch and step > ep_start_step:
                 # RANK 0 EVALUATES, THE OTHERS WAIT. The evaluator is a separate process holding
                 # its own model, so letting every rank launch one would put three on the cards at
@@ -845,13 +912,14 @@ def main():
                     eval_checkpoint(step, ep + 1)
                 if world > 1:
                     dist.barrier()
-        # THE FINAL PARTIAL ACCUMULATION. Poses left in the accumulator when the data runs out used
-        # to be dropped, so the last fraction of an epoch contributed gradients that were computed
-        # and then thrown away.
+        # NOTHING MAY BE LEFT HERE. Every epoch flushes its own remainder above, before evaluating,
+        # so a non-zero accumulator at this point would mean a path out of the loop that skipped the
+        # flush -- and the saved head would again differ from the evaluated one. Flushed and reported
+        # rather than dropped, because dropping poses silently is what the flush was added to stop.
         if n_in_accum:
-            print(f"  flushing a partial accumulation of {n_in_accum}/{accum_local} pose(s)")
-            _apply_step(step)
-            step += 1
+            print(f"  WARNING: {n_in_accum} pose(s) still accumulated after the epoch loop; the "
+                  f"evaluated head is NOT the saved head for this run")
+            _apply_partial()
         if write_traj:
             _flush(traj_p, traj_cols, rows)
         return rows
@@ -928,11 +996,16 @@ def main():
     # the content would be identical, but two processes writing one path concurrently can interleave
     # and leave a truncated file -- the smoke test showed both ranks reporting the same save.
     cp = os.path.join(a.out, "head_final.pt")
-    if is_main:
+    if is_main or a.debug_save_rank_heads:
         import torch as _t
-        _t.save({n: p.detach().cpu() for n, p in model.named_parameters() if n in set(trainable)},
-                cp)
-        print(f"\nsaved {cp}")
+        _sd = {n: p.detach().cpu() for n, p in model.named_parameters() if n in set(trainable)}
+        if is_main:
+            _t.save(_sd, cp)
+            print(f"\nsaved {cp}")
+        if a.debug_save_rank_heads:
+            _rp = os.path.join(a.out, f"head_final_rank{rank}.pt")
+            _t.save(_sd, _rp)
+            print(f"saved {_rp}")
     print("THE LOSS IS NOT THE RESULT. Score this checkpoint with "
           "analysis/val_selection_metric.py after rescoring the validation poses with it; the target "
           "is mean DockQ 0.5779 and frac-acceptable 0.7283 at 100 seeds.")
