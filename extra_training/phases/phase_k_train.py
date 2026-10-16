@@ -163,17 +163,6 @@ def main():
     ap.add_argument("--grad-check-every", type=int, default=25,
                     help="re-assert that no gradient has appeared outside the confidence head")
     ap.add_argument("--save-every", type=int, default=250, help="optimiser steps per checkpoint")
-    ap.add_argument("--chunk-size", type=int, default=64,
-                    help="CHUNK THE PAIR OPERATIONS. The confidence head works on a token x token "
-                         "pair tensor, and triangle attention/multiplication build a scratch array "
-                         "across the whole token dimension at once. This processes that dimension "
-                         "in slices of --chunk-size, freeing each slice's scratch before the next, "
-                         "so the peak is roughly N/chunk_size of what it was. The arithmetic is "
-                         "identical -- not an approximation -- and the cost is many more small "
-                         "operations. We were passing None, i.e. no chunking, which overrode "
-                         "Protenix's own default of 4 for this call. 64 is a middle value and "
-                         "should be measured, not trusted; lower it toward 4 if a large structure "
-                         "still runs out of memory.")
     ap.add_argument("--blocks-per-ckpt", type=int, default=1,
                     help="ACTIVATION CHECKPOINTING over the head's pairformer blocks. Chunking "
                          "shrinks the SCRATCH inside one operation; this discards the activations "
@@ -372,7 +361,7 @@ def main():
         model.confidence_head.pairformer_stack.blocks_per_ckpt = a.blocks_per_ckpt
     _nblk = len(getattr(model.confidence_head.pairformer_stack, "blocks", []) or [])
     print(f"pair stack: {_nblk} block(s), blocks_per_ckpt="
-          f"{model.confidence_head.pairformer_stack.blocks_per_ckpt}, chunk_size={a.chunk_size}")
+          f"{model.confidence_head.pairformer_stack.blocks_per_ckpt}, chunking off")
     print(f"confidence_head.training = {model.confidence_head.training} "
           f"(trunk stays eval; train_confidence_only={configs.train_confidence_only})")
     loss_fn = ProtenixLoss(configs)
@@ -662,7 +651,13 @@ def main():
                     pair_mask=None, x_pred_coords=x,
                     triangle_multiplicative=configs.triangle_multiplicative,
                     triangle_attention=configs.triangle_attention, inplace_safe=False,
-                    chunk_size=a.chunk_size or None)
+                    # CHUNKING WAS TRIED AND REMOVED, 2026-10-16. --chunk-size 64 sliced the pair
+                    # operations so each one's scratch was ~N/64, but MEASURED it cost 5.8x in speed
+                    # (5.20 s/pose against 0.90) while GPU memory stayed at 65.9 GB, where it had
+                    # been before the OOM. It buys the smaller half of the memory for most of the
+                    # cost. --blocks-per-ckpt addresses the larger half: the activations kept
+                    # between pairformer blocks.
+                    chunk_size=None)
             # WHERE THE HEAD'S OUTPUTS LANDED, CHECKED HERE. Protenix offloads pae and pde to
             # the CPU above a token threshold when the module is in eval mode. The head is in
             # train mode now so it should not, but a silent recurrence would surface deep inside
