@@ -497,7 +497,14 @@ def main():
     # PERSIST THE TRAJECTORY PER STEP, not at the end. A run that dies at step 900 of 1000 must still
     # be analysable, and a loss curve is the only way to see a learning rate that is wrong.
     traj_p = os.path.join(a.out, "trajectory.csv")
+    # THE BATCH COLUMNS ARE THE CURVE; the bare TERMS are the single pose that happened to be last.
+    # batch_<term> is the mean over ALL accum_eff poses in the step, reduced across every rank, and
+    # batch_n is how many actually contributed -- accum_eff on a normal step, fewer on the partial
+    # step an epoch ends with. Added after review 2026-10-16: reporting read the stepping pose's own
+    # loss as the batch loss, which is 1 pose of 255, and no amount of reader-side work can
+    # reconstruct the other ranks' poses because they were never written.
     traj_cols = ["wall_s", "step", "unit_i", "pdb", "unit", "pose", "lr"] + list(TERMS) + \
+                ["batch_" + k for k in TERMS] + ["batch_n", "partial_step", "step_ok"] + \
                 ["grad_norm", "outside_head", "epoch", "step_taken", "nonfinite_grad"]
     # the per-structure item build is the cost --preload-items exists to amortise, so it is measured
     # rather than assumed; reported at the end against the number of structures actually visited.
@@ -935,8 +942,42 @@ def main():
             g["lr"] = lr
         rows, t0, step, n_in_accum, item_cache = [], time.time(), 0, 0, {}
         opt.zero_grad(set_to_none=True)
+        # LOCAL SUMS OVER THE WINDOW, reduced once per step. Summed rather than averaged so the
+        # reduction is exact regardless of how unevenly the ranks are filled.
+        batch_sum = {k: 0.0 for k in TERMS}
 
-        def _apply_partial():
+        def _batch_means():
+            """Mean of each loss term over EVERY pose in this step, across all ranks, and the count.
+
+            ONE COLLECTIVE for the terms and the count together: len(TERMS)+1 floats, against the
+            79 MB gradient buffer already reduced every step, so the cost is not measurable. The
+            count is reduced rather than assumed to be n_local * world -- the shards are equal
+            length so it should be, but a number the curve depends on should not be taken on trust.
+
+            Resets the accumulator, so it must be called exactly once per step.
+            """
+            nonlocal n_in_accum
+            vals = [batch_sum[k] for k in TERMS] + [float(n_in_accum)]
+            if world > 1:
+                t = torch.tensor(vals, dtype=torch.float64)
+                if a.dist_backend == "gloo":
+                    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+                else:
+                    t = t.to(dev)
+                    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+                    t = t.cpu()
+                vals = [float(x) for x in t]
+            n_tot = int(round(vals[-1]))
+            for k in batch_sum:
+                batch_sum[k] = 0.0
+            n_in_accum = 0
+            means = {"batch_" + k: (vals[i] / n_tot if n_tot else None)
+                     for i, k in enumerate(TERMS)}
+            means["batch_n"] = n_tot
+            return means, n_tot
+
+        def _apply_partial(ctx=None):
+            ctx = ctx or {}
             """Step on FEWER than accum_local poses, scaled by the poses that actually contributed.
 
             Every pose divided its loss by accum_eff, so a partial accumulation holds sum/accum_eff:
@@ -952,17 +993,10 @@ def main():
             It also respects _apply_step's success flag. The old code incremented `step` whether or
             not a step was taken, so a non-finite gradient here advanced the step counter anyway.
             """
-            nonlocal step, n_in_accum
-            n_tot = n_in_accum * world
-            if world > 1:
-                t = torch.tensor([float(n_in_accum)], dtype=torch.float32)
-                if a.dist_backend == "gloo":
-                    dist.all_reduce(t, op=dist.ReduceOp.SUM)
-                else:
-                    t = t.to(dev)
-                    dist.all_reduce(t, op=dist.ReduceOp.SUM)
-                n_tot = int(round(float(t.item())))
-            n_in_accum = 0
+            nonlocal step
+            # The count comes back from the same collective that reduces the loss sums, so the
+            # partial step is logged with the same numbers it was taken on.
+            means, n_tot = _batch_means()
             if n_tot <= 0:
                 return
             scale = accum_eff / n_tot
@@ -973,6 +1007,16 @@ def main():
             print(f"  flushing a partial accumulation of {n_tot}/{accum_eff} pose(s), gradient "
                   f"scaled by {scale:.4f} so the step is the same size as every other")
             _gn, _outside, ok = _apply_step(step)
+            # LOGGED, because this step used to leave no row at all: the reader then spliced the
+            # epoch's trailing poses into the next epoch's first window and dropped the run's final
+            # remainder. partial_step marks it; batch_n says how many poses it covered.
+            rows.append({"wall_s": round(time.time() - t0, 1), "step": step,
+                         "unit_i": ctx.get("unit_i", -1), "pdb": ctx.get("pdb", ""),
+                         "unit": ctx.get("unit", ""), "pose": ctx.get("pose", -1),
+                         "lr": ctx.get("lr", float("nan")), "grad_norm": _gn,
+                         "outside_head": _outside, "epoch": ctx.get("epoch", 0),
+                         "step_taken": 1 if ok else 0, "nonfinite_grad": 0 if ok else 1,
+                         "partial_step": 1, "step_ok": 1 if ok else 0, **means})
             if ok:
                 step += 1
         # AN EPOCH LOOP, BECAUSE --epochs USED TO DO NOTHING. It scaled steps_cap while the loop
@@ -1029,22 +1073,31 @@ def main():
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
                     n_in_accum += 1
+                    # EVERY POSE CONTRIBUTES TO THE WINDOW SUM, which is what the batch columns
+                    # average. The per-pose TERMS stay in the row too, for provenance.
+                    for _k in TERMS:
+                        batch_sum[_k] += float(met[_k])
                     gn, outside, took, bad_grad = float("nan"), -1, 0, 0
+                    means = {"batch_" + _k: None for _k in TERMS}
+                    means["batch_n"] = 0
                     if n_in_accum >= accum_local:
+                        # REDUCED BEFORE THE STEP IS TAKEN, so the numbers logged are the numbers
+                        # the step was taken on even if the step is then refused. _batch_means
+                        # resets the accumulator and n_in_accum, so neither is reset again below.
+                        means, _n_tot = _batch_means()
                         gn, outside, ok = _apply_step(step)
                         took = 1
                         if not ok:
                             bad_grad = 1
-                            n_in_accum = 0
                             rows.append({"wall_s": round(time.time() - t0, 1), "step": step,
                                          "unit_i": ui, "pdb": pdb,
                                          "unit": os.path.basename(lab_p)[:-4], "pose": i,
                                          "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
                                          "epoch": ep + 1, "step_taken": 0, "nonfinite_grad": 1,
-                                         **{k: met[k] for k in TERMS}})
+                                         "partial_step": 0, "step_ok": 0,
+                                         **{k: met[k] for k in TERMS}, **means})
                             continue
                         step += 1
-                        n_in_accum = 0
                         if a.save_every and step % a.save_every == 0 and write_traj:
                             cp = os.path.join(a.out, f"head_step{step}.pt")
                             torch.save({n: pp.detach().cpu() for n, pp in model.named_parameters()
@@ -1055,7 +1108,8 @@ def main():
                                  "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
                                  "epoch": ep + 1, "step_taken": took,
                                  "nonfinite_grad": bad_grad,
-                                 **{k: met[k] for k in TERMS}})
+                                 "partial_step": 0, "step_ok": 1 if took else 0,
+                                 **{k: met[k] for k in TERMS}, **means})
                     if write_traj and len(rows) % 20 == 0:
                         _flush(traj_p, traj_cols, rows); rows = []
                     if steps_cap and step >= steps_cap:
@@ -1080,7 +1134,8 @@ def main():
             # away from the only head whose validation metric we had, and the number reported for
             # the run did not belong to the checkpoint the run produced.
             if n_in_accum:
-                _apply_partial()
+                _apply_partial({"epoch": ep + 1, "lr": cur_lr, "pdb": pdb, "unit_i": ui,
+                                "unit": os.path.basename(lab_p)[:-4], "pose": i})
             if a.eval_every_epoch and step > ep_start_step:
                 # RANK 0 EVALUATES, THE OTHERS WAIT. The evaluator is a separate process holding
                 # its own model, so letting every rank launch one would put three on the cards at
@@ -1100,7 +1155,8 @@ def main():
         if n_in_accum:
             print(f"  WARNING: {n_in_accum} pose(s) still accumulated after the epoch loop; the "
                   f"evaluated head is NOT the saved head for this run")
-            _apply_partial()
+            _apply_partial({"epoch": ep + 1, "lr": cur_lr, "pdb": pdb, "unit_i": ui,
+                            "unit": os.path.basename(lab_p)[:-4], "pose": i})
         if write_traj:
             _flush(traj_p, traj_cols, rows)
         return rows

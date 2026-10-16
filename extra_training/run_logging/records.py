@@ -81,6 +81,16 @@ def read_run(out_dir, baseline_path=""):
                            "nonfinite": r.get("nonfinite_grad") == "1"}
                     for k in TERMS:
                         rec[k] = _num(r.get(k))
+                    # THE EXACT BATCH NUMBERS, when the trainer wrote them: the mean of each term
+                    # over all accum_eff poses in the step, reduced across every rank. Runs before
+                    # 2026-10-16 have no such columns and fall back to rank-0 window means, which
+                    # is the best that can be reconstructed -- the other ranks' poses were never
+                    # written. `batch_n` distinguishes the two: None means reconstructed.
+                    for k in TERMS:
+                        rec["batch_" + k] = _num(r.get("batch_" + k))
+                    rec["batch_n"] = _num(r.get("batch_n"))
+                    rec["partial_step"] = r.get("partial_step") == "1"
+                    rec["step_ok"] = r.get("step_ok") != "0"
                     out["poses"].append(rec)
         except OSError as e:
             out["warnings"].append(f"trajectory.csv unreadable: {e}")
@@ -158,6 +168,26 @@ def _window_means(poses, run_ended=False):
         rec["n_poses"] = len(window)
         rec["partial"] = partial
         out.append(rec)
+
+    # IF THE TRAINER LOGGED THE BATCH ITSELF, use it and do not reconstruct anything. Those rows
+    # already carry the cross-rank mean over every pose in the step, including the partial step an
+    # epoch ends with, which rank 0's rows cannot express.
+    exact = [p for p in poses if p.get("batch_n")]
+    if exact:
+        out = []
+        for n, p in enumerate(exact, 1):
+            rec = dict(p)
+            for k in TERMS + ("raw", "loss"):
+                v = p.get("batch_" + k)
+                if v is not None:
+                    rec[k] = v
+            rec["raw"] = sum(p["batch_" + k] for k in TERMS
+                             if p.get("batch_" + k) is not None and k != "loss")
+            rec["n_poses"] = int(p["batch_n"])
+            rec["partial"] = p.get("partial_step", False)
+            rec["step_index"] = n
+            out.append(rec)
+        return out
 
     for p in poses:
         if cur and p["epoch"] != cur[-1]["epoch"]:
