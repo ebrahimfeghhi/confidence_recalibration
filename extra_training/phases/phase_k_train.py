@@ -163,6 +163,25 @@ def main():
     ap.add_argument("--grad-check-every", type=int, default=25,
                     help="re-assert that no gradient has appeared outside the confidence head")
     ap.add_argument("--save-every", type=int, default=250, help="optimiser steps per checkpoint")
+    ap.add_argument("--chunk-size", type=int, default=64,
+                    help="CHUNK THE PAIR OPERATIONS. The confidence head works on a token x token "
+                         "pair tensor, and triangle attention/multiplication build a scratch array "
+                         "across the whole token dimension at once. This processes that dimension "
+                         "in slices of --chunk-size, freeing each slice's scratch before the next, "
+                         "so the peak is roughly N/chunk_size of what it was. The arithmetic is "
+                         "identical -- not an approximation -- and the cost is many more small "
+                         "operations. We were passing None, i.e. no chunking, which overrode "
+                         "Protenix's own default of 4 for this call. 64 is a middle value and "
+                         "should be measured, not trusted; lower it toward 4 if a large structure "
+                         "still runs out of memory.")
+    ap.add_argument("--blocks-per-ckpt", type=int, default=1,
+                    help="ACTIVATION CHECKPOINTING over the head's pairformer blocks. Chunking "
+                         "shrinks the SCRATCH inside one operation; this discards the activations "
+                         "kept BETWEEN blocks and recomputes them in the backward pass, which is "
+                         "the other half of the memory and the larger half. 1 checkpoints every "
+                         "block (most saved, about 30%% more compute). Protenix supports it "
+                         "natively on PairformerStack and it engages only when gradients are "
+                         "enabled, so the evaluator is unaffected. 0 disables it.")
     ap.add_argument("--alpha-confidence", type=float, default=1.0,
                     help="weight on the four confidence losses. Protenix ships 1e-4 because in full "
                          "AF3-style training these terms sit beside the diffusion and distogram "
@@ -346,6 +365,14 @@ def main():
     # the head's four Dropout modules all have p=0 and it holds no BatchNorm, so train() and eval()
     # compute the same function. The trunk stays in eval, which is what FT3 requires.
     model.confidence_head.train()
+    # ACTIVATION CHECKPOINTING ON THE HEAD'S PAIR STACK. Set here rather than at construction,
+    # because build_model comes from the rescoring helper. PairformerStack reads this attribute at
+    # forward time and ignores it when grad is off, so the evaluator is unaffected.
+    if a.blocks_per_ckpt:
+        model.confidence_head.pairformer_stack.blocks_per_ckpt = a.blocks_per_ckpt
+    _nblk = len(getattr(model.confidence_head.pairformer_stack, "blocks", []) or [])
+    print(f"pair stack: {_nblk} block(s), blocks_per_ckpt="
+          f"{model.confidence_head.pairformer_stack.blocks_per_ckpt}, chunk_size={a.chunk_size}")
     print(f"confidence_head.training = {model.confidence_head.training} "
           f"(trunk stays eval; train_confidence_only={configs.train_confidence_only})")
     loss_fn = ProtenixLoss(configs)
@@ -635,7 +662,7 @@ def main():
                     pair_mask=None, x_pred_coords=x,
                     triangle_multiplicative=configs.triangle_multiplicative,
                     triangle_attention=configs.triangle_attention, inplace_safe=False,
-                    chunk_size=None)
+                    chunk_size=a.chunk_size or None)
             # WHERE THE HEAD'S OUTPUTS LANDED, CHECKED HERE. Protenix offloads pae and pde to
             # the CPU above a token threshold when the module is in eval mode. The head is in
             # train mode now so it should not, but a silent recurrence would surface deep inside

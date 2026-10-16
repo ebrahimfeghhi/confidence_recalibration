@@ -151,7 +151,13 @@ def main():
     if a.dry_run:
         return 0
 
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": a.cards, "LAYERNORM_TYPE": "openfold"}
+    # expandable_segments:True at the user's direction on 2026-10-16, after an OOM whose own error
+    # message recommended it: 5.37 GB of the card was "reserved by PyTorch but unallocated", i.e.
+    # lost to fragmentation, against 85.30 GB actually allocated. It lets the allocator grow a
+    # segment instead of needing a contiguous block, so it reclaims that 5.37 GB. It is free and it
+    # is not a fix on its own -- 6% of what was resident.
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": a.cards, "LAYERNORM_TYPE": "openfold",
+           "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
     t0 = time.time()
     with open(os.path.join(out, "run.log"), "a") as lg:
         rc = subprocess.run(cmd, stdout=lg, stderr=subprocess.STDOUT, env=env).returncode
