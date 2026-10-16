@@ -95,7 +95,7 @@ def read_run(out_dir, baseline_path=""):
     # STILL RANK 0 ONLY. The trajectory is written by rank 0, which sees accum_local of the
     # accum_eff poses in a step (85 of 255 here). A true full-batch mean needs the trainer to
     # all-reduce the loss, which it does not do -- the gradient is reduced, the scalar is not.
-    out["steps"] = _window_means(out["poses"])
+    out["steps"] = _window_means(out["poses"], run_ended=bool(out["status"]))
     out["dropped_steps"] = [p for p in out["poses"] if p["nonfinite"]]
 
     for f in sorted(glob.glob(os.path.join(out_dir, "metric_ep*.json"))):
@@ -126,28 +126,56 @@ def read_run(out_dir, baseline_path=""):
     return out
 
 
-def _window_means(poses):
+def _window_means(poses, run_ended=False):
     """One record per optimiser step, averaging the loss terms over that step's accumulation window.
 
     See the note in read_run: the row flagged step_taken is the last pose of the window, so its own
-    loss fields describe one pose. `n_poses` is carried so a reader can see how many contributed,
-    and a window whose stepping row reported a non-finite gradient is dropped -- no step was taken.
+    loss fields describe one pose.
+
+    EPOCH BOUNDARIES CARRY A STEP THAT LEAVES NO ROW. At the end of an epoch (and of the run) the
+    trainer calls _apply_partial, which scales the gradient up to a full-size step and takes it --
+    but writes no trajectory row, because only the accum-boundary path appends one. Keying windows
+    purely on step_taken therefore merged an epoch's trailing poses into the NEXT epoch's first
+    window and discarded the run's final remainder (found in review 2026-10-16, before w23bjm
+    reached its first boundary). A window is closed here on an epoch change as well, and whatever
+    remains at the end is emitted too; both are marked `partial`, since the trainer's own count for
+    them is reduced across ranks and is not recoverable from rank 0's rows alone.
+
+    STILL RANK 0 ONLY. The trajectory is written by rank 0, which sees accum_local of the accum_eff
+    poses in a step (85 of 255 here). A true full-batch mean needs the trainer to all-reduce the
+    loss, which it does not do -- the gradient is reduced, the scalar is not.
     """
     out, cur = [], []
+
+    def _close(window, partial):
+        last = window[-1]
+        if last["nonfinite"]:
+            return
+        rec = dict(last)
+        for k in TERMS + ("raw", "loss"):
+            vals = [q[k] for q in window if q.get(k) is not None]
+            rec[k] = sum(vals) / len(vals) if vals else None
+        rec["n_poses"] = len(window)
+        rec["partial"] = partial
+        out.append(rec)
+
     for p in poses:
+        if cur and p["epoch"] != cur[-1]["epoch"]:
+            # The epoch ended on the previous row and _apply_partial stepped without logging it.
+            _close(cur, True)
+            cur = []
         cur.append(p)
-        if not p["step_taken"] and not p["nonfinite"]:
-            continue
-        last = cur[-1]
-        if not last["nonfinite"]:
-            rec = dict(last)
-            n = len(cur)
-            for k in TERMS + ("raw", "loss"):
-                vals = [q[k] for q in cur if q.get(k) is not None]
-                rec[k] = sum(vals) / len(vals) if vals else None
-            rec["n_poses"] = n
-            out.append(rec)
-        cur = []
+        if p["step_taken"] or p["nonfinite"]:
+            _close(cur, False)
+            cur = []
+    if cur and run_ended:
+        # THE RUN'S FINAL REMAINDER, stepped by _apply_partial at the end of train_loop and never
+        # logged. Emitted ONLY once the run has ended: mid-run those trailing rows are a window
+        # still ACCUMULATING, on which no step has been taken, so charting them would add a point
+        # that moves with every flush and claim a step that has not happened.
+        _close(cur, True)
+    for n, rec in enumerate(out, 1):
+        rec["step_index"] = n
     return out
 
 def effective_batch(run):

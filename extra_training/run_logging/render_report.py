@@ -157,14 +157,19 @@ def build(run, summ, generated, gen_epoch=0):
     steps, eps = run["steps"], run["epochs"]
 
     # ---- chart 1: the per-batch loss
-    total = [(p["step"], p["raw"]) for p in steps]
-    comps = [("pLDDT", "a", [(p["step"], p["plddt_loss"]) for p in steps if p["plddt_loss"] is not None]),
-             ("PAE", "b", [(p["step"], p["pae_loss"]) for p in steps if p["pae_loss"] is not None]),
-             ("PDE", "c", [(p["step"], p["pde_loss"]) for p in steps if p["pde_loss"] is not None]),
-             ("resolved", "d", [(p["step"], p["resolved_loss"]) for p in steps if p["resolved_loss"] is not None])]
+    # X IS step_index, NOT the row's `step`. An epoch-boundary partial takes a step that leaves no
+    # trajectory row, so the rows around it carry the same `step` value and plotting on it would
+    # stack two points on one x. step_index counts the windows the reader actually closed.
+    # Y IS p["loss"], the trainer's logged weighted objective -- not `raw`, the sum reconstructed
+    # from the four terms, which only coincides with the objective while both alphas are 1.
+    total = [(p["step_index"], p["loss"]) for p in steps if p["loss"] is not None]
+    comps = [("pLDDT", "a", [(p["step_index"], p["plddt_loss"]) for p in steps if p["plddt_loss"] is not None]),
+             ("PAE", "b", [(p["step_index"], p["pae_loss"]) for p in steps if p["pae_loss"] is not None]),
+             ("PDE", "c", [(p["step_index"], p["pde_loss"]) for p in steps if p["pde_loss"] is not None]),
+             ("resolved", "d", [(p["step_index"], p["resolved_loss"]) for p in steps if p["resolved_loss"] is not None])]
     c1 = line_chart([("total", "t", total)] + comps,
-                    xlab=f"optimiser step  (one step = {batch} poses)",
-                    ylab="summed confidence loss",
+                    xlab=f"optimiser step  (one step = {batch} poses; {local} of them on rank 0)",
+                    ylab="weighted confidence objective",
                     note="waiting for the first optimiser step")
 
     # ---- charts 2 and 3: validation, per epoch
@@ -319,10 +324,12 @@ summary:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
     <p class="axes">x: optimiser step &mdash; one step is <strong>{batch}</strong> poses
       ({local} per rank &times; {world} ranks; <code>--accum {a.get('accum','?')}</code> is the
       request, and {a.get('accum','?')}&nbsp;&divide;&nbsp;{world} does not divide evenly).
-      y: the confidence loss, as the sum of its four terms, which at
-      <code>alpha_confidence = {a.get('alpha_confidence','?')}</code> and
-      <code>alpha_pae = {a.get('alpha_pae','?')}</code> equals the weighted objective being
-      optimised (verified identical to 6 decimals on this run).
+      y: <strong>the weighted objective that was optimised</strong> &mdash; the trainer's own
+      <code>loss</code> scalar, as logged, not a sum reconstructed from the terms. The four terms
+      are drawn beneath it for composition; they happen to sum to the objective whenever
+      <code>alpha_confidence</code> and <code>alpha_pae</code> are both 1 (here
+      <code>{a.get('alpha_confidence','?')}</code> and <code>{a.get('alpha_pae','?')}</code>), but
+      the curve does not depend on that holding.
       <strong>One point is the mean over the {local} poses rank&nbsp;0 accumulated for that
       step</strong> &mdash; not one pose, and not all {batch}: the trajectory is written by rank 0
       and the trainer all-reduces the gradient but not the loss scalar, so the other
