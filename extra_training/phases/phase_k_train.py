@@ -540,7 +540,16 @@ def main():
                           f"structures will be rebuilt rather than held. Nothing fails.")
                     ram_floor["hit"] = True
                 ram_floor["n"] += 1
-                while len(item_cache) >= max(1, len(item_cache)):
+                # EVICT ONE, THEN RE-MEASURE. This loop was
+                #     while len(item_cache) >= max(1, len(item_cache)): pop()
+                # and max(1, n) == n for every n >= 1, so the condition was ALWAYS true and it
+                # emptied the whole cache -- 170 items to 0, as review reproduced. Every structure
+                # then had to be rebuilt, the cache refilled, the cap was hit again, and the run
+                # thrashed for the rest of its epochs. Dropping ONE item frees about one item of
+                # memory, which is what the next item needs, and this check runs again before the
+                # one after that, so the cache settles at what fits instead of collapsing. FIFO,
+                # matching the eviction below.
+                if item_cache:
                     item_cache.pop(next(iter(item_cache)))
             # EVICT ONLY WHEN THE BUDGET IS REACHED. Holding one item at a time means every structure
             # is rebuilt every epoch, which the numbers above make the dominant cost of a multi-epoch

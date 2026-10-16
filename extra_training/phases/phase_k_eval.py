@@ -281,28 +281,52 @@ def aggregate(a, rows, selfchk, want_ifaces):
     byif = collections.defaultdict(list)
     for iface, sd_, k, v, dq in rows:
         if dq is not None:
-            byif[iface].append((v, dq))
+            byif[iface].append((v, dq, sd_, k))
     missing_if = sorted(want_ifaces - set(byif))
     if missing_if:
         raise SystemExit(f"STOP: {len(missing_if)} pool interface(s) have no scored pose: "
                          f"{missing_if[:6]}. The metric would cover a subset.")
     # AND EVERY INTERFACE MUST CARRY THE WHOLE BUDGET. An interface with one scored pose out of 500
     # satisfied the check above; depth is what the word "budget" in the output is asserting.
+    # THE EXACT INTENDED KEY SET, NOT MERELY EQUAL DEPTH. Requiring every interface to carry the
+    # same number of poses passes when a seed is missing from EVERY interface: the depths stay equal
+    # and the label still claims the full sweep. The intended set is the cross product the budget
+    # asserts -- every pool interface x every seed in the budget x every sample.
+    have = {(iface, int(sd_), int(k)) for iface, sd_, k, _v, dq in rows if dq is not None}
+    want = {(iface, sd_, k) for iface in want_ifaces
+            for sd_ in range(a.seed_base, a.seed_base + a.budget)
+            for k in range(a.nsample)}
+    extra = sorted(have - want)
+    absent = sorted(want - have)
+    if extra:
+        raise SystemExit(f"STOP: {len(extra)} scored row(s) lie OUTSIDE the intended set, e.g. "
+                         f"{extra[:4]}. The metric would average over poses the budget does not "
+                         f"claim.")
+    if absent and not a.allow_partial:
+        _per = collections.Counter(i for i, _s, _k in absent)
+        raise SystemExit(
+            f"STOP: {len(absent)} of {len(want)} intended (interface, seed, sample) key(s) have no "
+            f"scored pose, across {len(_per)} interface(s), e.g. {absent[:5]}.\n  A metric labelled "
+            f"'budget {a.budget}' must cover every one of them. Equal depth is not the same "
+            f"assertion: a seed missing from every interface leaves the depths equal. Pass "
+            f"--allow-partial to report a number that does not mean what its label says.")
     n_pose = collections.Counter()
     for iface, sd_, _k, _v, dq in rows:
         if dq is not None:
             n_pose[iface] += 1
     want_depth = max(n_pose.values()) if n_pose else 0
-    shallow = sorted((i, n_pose[i]) for i in byif if n_pose[i] != want_depth)
-    if shallow and not a.allow_partial:
-        raise SystemExit(
-            f"STOP: {len(shallow)} interface(s) do not carry the same number of scored poses as the "
-            f"deepest ({want_depth}): e.g. {shallow[:5]}.\n  Averaging over interfaces of different "
-            f"depth makes the budget label meaningless; pass --allow-partial to accept it.")
     print(f"coverage: {len(byif)} interface(s), {want_depth} scored pose(s) each, "
-          f"{len(rows)} row(s) total, 0 duplicates, 0 non-finite")
-    sel = [max(v, key=lambda t: t[0])[1] for v in byif.values()]
-    orc = [max(dq for _v, dq in v) for v in byif.values()]
+          f"{len(rows)} row(s) total, {len(have)} of {len(want)} intended key(s), 0 duplicates, "
+          f"0 non-finite")
+    # THE TIE-BREAK IS EXPLICIT, so the selection cannot depend on row order. `max` returns the
+    # FIRST maximal element, and row order differs between a sharded run (shards concatenated,
+    # seeds interleaved) and a single-process one (seeds ascending), so two poses with equal ipTM
+    # selected different DockQ depending on how the work was split. Ties now go to the lowest seed,
+    # then the lowest sample -- the same answer either way.
+    def _pick(v):
+        return max(v, key=lambda t: (t[0], -t[2], -t[3]))
+    sel = [_pick(v)[1] for v in byif.values()]
+    orc = [max(dq for _v, dq, _s, _k in v) for v in byif.values()]
     n = len(sel)
     out = {"n_interfaces": n, "budget": a.budget,
            "mean_dockq": round(statistics.mean(sel), 4),
@@ -335,6 +359,10 @@ def main():
     ap.add_argument("--model-name", default="protenix-v2")
     ap.add_argument("--budget", type=int, default=100, help="seeds per interface, from --seed-base")
     ap.add_argument("--seed-base", type=int, default=400000)
+    ap.add_argument("--nsample", type=int, default=5,
+                    help="poses per unit, as the fold wrote them. Part of the coverage contract: "
+                         "the intended key set is interfaces x seeds x THIS, so a budget label "
+                         "asserts a specific number of rows rather than merely equal depth.")
     ap.add_argument("--iptm-tol", type=float, default=2e-3,
                     help="how closely the recomputed ipTM must reproduce results.csv with the "
                          "SHIPPED head. bf16 trunk tensors are stored and reloaded and the head runs "
@@ -538,9 +566,15 @@ def main():
             for iface, sd2, k2, v2, dq in rows:
                 key = (iface, sd2, k2)
                 sv = stored_iptm.get(key)
-                w.writerow([iface, sd2, k2, f"{v2:.6f}",
+                # FULL PRECISION, NOT 6 DECIMALS. repr() round-trips a float exactly.
+                # Rounding here manufactured ties that do not exist in the computed
+                # values, and the selection is an argmax -- so a tie was broken by
+                # whichever row the merge read first, which depends on shard order.
+                # Review reproduced a selected DockQ moving 0.9 -> 0.1 from the rounding
+                # alone. dockq keeps 4 decimals: that is the precision results.csv has.
+                w.writerow([iface, sd2, k2, repr(v2),
                             "" if dq is None else f"{dq:.4f}",
-                            "" if sv is None else f"{sv:.6f}"])
+                            "" if sv is None else repr(sv)])
         with open(a.rows_out + ".meta.json", "w") as fh:
             json.dump({"shard": a.shard, "nshards": a.nshards, "units": len(units),
                        "rows": len(rows), "n_ost": n_ost, "n_unresolvable": n_static,
