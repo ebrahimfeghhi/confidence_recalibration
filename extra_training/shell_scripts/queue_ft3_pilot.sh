@@ -13,6 +13,7 @@
 # not start.
 set -u
 R=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export R
 PY=/home/ebrahim/Protenix/.venv/bin/python
 LOG="$R/ft3_pilot.log"
 OUT="$R/training/ft3_pilot"
@@ -22,6 +23,60 @@ say "waiting for FoldBench to finish (pgrep to WAIT, never to kill)"
 while pgrep -f "[f]older.py.*foldbench_baseline" > /dev/null 2>&1; do sleep 120; done
 say "FoldBench has exited"
 sleep 60                      # let the cards settle before claiming memory
+
+# ---- STAGE 0: REFOLD THE 300 VALIDATION UNITS THAT HAVE NO TRUNKS ----
+# WHY. 7tzh, 8v8f and 9cn2 have poses and full scores but NO trunks, because trunk dumping stopped
+# at 2026-10-12 19:00 PT and all three folded between 19:03 and 23:07 that evening. 53 validation
+# structures have poses, exactly 50 have trunks, and the three without are precisely the ones folded
+# after dumping stopped. They were on the EARLIER refold list but not on deferred_refold.csv, the
+# 1,300-row list that actually ran, so nothing ever went back for them.
+#
+# The evaluation needs trunks to rescore with a changed head. Without these, the metric covers 86 of
+# 92 interfaces and cannot be compared with the 92-interface baseline of 0.5783 / 0.7283 -- so the
+# round-9 coverage gate refuses, which is why this stage exists rather than a weaker metric.
+TF="$R/validation/fold_trunkfix"; export TF
+if [ "$(find "$R/validation/fold/trunks" -name '*.npz' | wc -l)" -lt 5300 ]; then
+    say "STAGE 0: refolding $(wc -l < "$TF/queue.tsv") validation unit(s) that have no trunk"
+    say "  7tzh, 8v8f, 9cn2 x 100 seeds. TRUNK_DUMP_DIR is set, which is what was missing before."
+    mkdir -p "$TF/poses" "$TF/trunks" "$TF/claims"
+    for g in 0 1 3; do
+        tmux new-session -d -s tfix_$g "cd /home/ebrahim/Protenix && CUDA_VISIBLE_DEVICES=$g             LAYERNORM_TYPE=openfold TRUNK_DUMP_DIR=$TF/trunks PROTENIX_DUMP_TRUNK_BF16=1             PROTENIX_DUMP_CONF_INPUTS=1 $PY $R/../run_model/folder.py --queue $TF/queue.tsv             --out $TF/poses --csv $TF/results.csv --claim-dir $TF/claims --dataset sabdab_val2             --ncycle 10 --nsample 5 --dtype bf16 --overlap-scoring >> $TF/w$g.log 2>&1"
+        say "  launched tfix_$g"
+    done
+    # wait for it, reporting progress; never kill a worker
+    last=-1; quiet=0
+    while true; do
+        n=$(find "$TF/trunks" -name '*.npz' 2>/dev/null | wc -l)
+        alive=$(tmux ls 2>/dev/null | grep -cE '^tfix_[013]:')
+        [ "$n" -ge 300 ] && { say "STAGE 0: $n/300 trunks -- complete"; break; }
+        if [ "$alive" -eq 0 ]; then
+            say "STAGE 0: all workers exited at $n/300 trunks. NOT starting the pilot; the metric"
+            say "  would cover 86 of 92 interfaces. Investigate $TF/w*.log."
+            exit 1
+        fi
+        [ "$n" -eq "$last" ] && quiet=$((quiet+1)) || quiet=0
+        last=$n
+        [ $quiet -ge 18 ] && { say "STAGE 0: no progress for 45 min at $n/300. Leaving the $alive worker(s) alone."; exit 1; }
+        sleep 150
+    done
+    for g in 0 1 3; do tmux kill-session -t tfix_$g 2>/dev/null; done
+    sleep 15
+    # merge into validation/fold so the evaluator sees one root
+    $PY -I - <<'PYM' >> "$LOG" 2>&1
+import os, glob
+src=os.environ["TF"]; dst=os.environ["R"]+"/validation/fold"
+moved={"trunks":0,"poses":0}
+for kind,pat in (("trunks","trunks/*/*.npz"),("poses","poses/*/*")):
+    for p in glob.glob(f"{src}/{pat}"):
+        rel=os.path.relpath(p,src); d=os.path.join(dst,rel)
+        if os.path.exists(d): raise SystemExit(f"COLLISION: {p}")
+        os.makedirs(os.path.dirname(d), exist_ok=True); os.rename(p,d); moved[kind]+=1
+print("  merged into validation/fold:", moved)
+PYM
+    say "STAGE 0: merged. validation/fold trunks now $(find "$R/validation/fold/trunks" -name '*.npz' | wc -l)/5300"
+else
+    say "STAGE 0: skipped, validation/fold already has 5,300 trunks"
+fi
 
 say "GPU state before starting:"
 nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader | tee -a "$LOG"
