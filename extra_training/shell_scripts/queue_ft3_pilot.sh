@@ -15,6 +15,7 @@ set -u
 R=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export R
 PY=/home/ebrahim/Protenix/.venv/bin/python
+TORCHRUN=/home/ebrahim/Protenix/.venv/bin/torchrun
 LOG="$R/ft3_pilot.log"
 OUT="$R/training/ft3_pilot"
 say(){ echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
@@ -130,38 +131,32 @@ grep -q "^PASS:" "$R/training/ft3_pilot_replay.log" || {
     say "NOT starting the pilot. See $R/training/ft3_pilot_replay.log"; exit 1; }
 say "GATE 2: PASS"
 
-# PRELOADING IS GATED ON FREE RAM AT LAUNCH, AND AGAIN PER ITEM INSIDE THE TRAINER.
-# Holding all 500 structure items saves the ~57 min/epoch of rebuilds (measured: 3.6-10.4 s each)
-# but costs ~253 GB (measured: 331-886 MB each, avg 518). The user's condition is at least 500 GB
-# free before preloading, so it is measured here rather than assumed -- and the trainer re-checks
-# MemAvailable before EVERY item it caches, because the cache grows over the first epoch and a
-# startup check alone would let the box run out later and take the fold workers with it.
+# PRELOADING IS SIZED PER RANK BELOW, AND RE-CHECKED PER ITEM INSIDE THE TRAINER.
+# Holding a structure item saves rebuilding it every epoch (measured 3.6-10.4 s each, ~57 min/epoch
+# across 500) and costs 331-886 MB each, avg 518. Under three ranks each rank holds only its own
+# ~167-structure shard, so --preload-items 170 and --max-rss-gb 95 per rank keep the three together
+# under 300 GB. The trainer re-checks before EVERY item it caches, because the cache grows across
+# the first epoch and a startup check alone would let the box run out later.
+# What follows only records what the box looked like when the sweep started.
 FREE_GB=$(awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo)
-MIN_GB=500
-if [ "$FREE_GB" -ge "$MIN_GB" ]; then
-    PRELOAD=500
-    say "RAM: ${FREE_GB} GB available >= ${MIN_GB} GB -- preloading all 500 structure items"
-    say "  saves ~57 min/epoch of dataset-item rebuilds, costs ~253 GB"
-else
-    PRELOAD=1
-    say "RAM: only ${FREE_GB} GB available, below ${MIN_GB} GB -- NOT preloading (--preload-items 1)"
-    say "  each structure is rebuilt per epoch, ~57 min/epoch, rather than risking the fold workers"
-fi
+say "RAM: ${FREE_GB} GB available at launch; the three ranks are capped at 95 GB each"
 
 mkdir -p "$OUT"
-# ---- THE SWEEP: FOUR LEARNING RATES, ONE AT A TIME ----
-# SEQUENTIAL at the user's direction: no contention, each run gets a whole card for training and a
-# second for its evaluation, and no run's timing is polluted by another's.
+# ---- THE SWEEP: ONE LEARNING RATE, ON THREE GPUs ----
+# N_LR=1 at the user's direction on 2026-10-16: "Just run 1 lr for 3 epochs using 3 GPUs I want to
+# make sure that works." The adaptive chain below still records what the NEXT rate would be, so the
+# decision is on disk whether or not another rate is ever run.
 #
-# ORDERED SO THE MOST USEFUL COMES FIRST. 12 epoch-times run back to back will NOT all finish by
-# morning -- one LR is 3 epochs plus three 16.5-minute evaluations, which is 8 h at the optimistic
-# rate and 22 h at the rate measured under contention. So 1e-3 goes first (the planned default),
-# then the two brackets, then the low end. Whatever has finished by morning is complete and scored;
-# nothing is half-reported.
+# ONE RUN ACROSS THREE CARDS, not three runs on one card each. The ranks sum their head gradients
+# per step, so this is the same optimisation a single GPU performs, finished in a third of the time;
+# three independent runs would instead have needed three learning rates chosen before any curve
+# existed, which is the opposite of what the user asked for.
 #
-# RAM: 300 GB CAP ON OUR OWN PROCESS, per the user. --preload-items 200 is ~104 GB of dataset items
-# on top of roughly 110 GB of baseline, and --max-rss-gb 300 stops the cache growing past the cap
-# regardless. Only one run exists at a time, so the cap applies to the whole sweep.
+# RAM: THE 300 GB THE USER ASKED US NOT TO EXCEED IS A WHOLE-BOX FIGURE, AND THE CAP IS PER PROCESS.
+# Each rank is given --max-rss-gb 95, so the three together stay under it. The earlier note here
+# claimed a "~110 GB baseline" per process; that was an estimate with no measurement behind it and
+# it is wrong -- the evaluator, which builds the same 464M-parameter model, holds 4.1 GB. What
+# actually costs memory is the dataset-item cache, measured at 518 MB per structure.
 # EACH LEARNING RATE FOLLOWS FROM THE LAST RUN'S LOSS CURVE, at the user's direction: a loss that
 # descends smoothly means the step can go up a little, a sporadic one means it should come down.
 # phase_k_pick_lr.py makes that measurable -- descent, roughness, fraction of steps going the wrong
@@ -169,14 +164,14 @@ mkdir -p "$OUT"
 # [1e-5, 1e-2] so the chain cannot walk into a range nobody chose. The step is 2x, not a half-decade,
 # because "a small amount" was the instruction.
 LR=1e-3
-N_LR=4
+N_LR=1
 SWEEP="$R/training/ft3_sweep"
 SUMMARY="$SWEEP/summary.tsv"
 mkdir -p "$SWEEP"
 [ -f "$SUMMARY" ] || printf "lr\tepoch\tmean_dockq\tfrac_acc\toracle_mean\theadroom\tnext_lr\tverdict\n" > "$SUMMARY"
 
 say "SWEEP: $N_LR learning rates, 3 epochs each, SEQUENTIAL, each chosen from the previous curve"
-say "  first lr $LR. training on GPU 0, evaluation on GPU 1."
+say "  first lr $LR. training on GPUs 0, 1 and 3 (one rank each); evaluation on GPU 0."
 say "  baseline to beat: mean_dockq 0.5779, frac_acc 0.7283"
 say "  12 epoch-times back to back will not all finish overnight; each completed lr is whole."
 
@@ -187,13 +182,36 @@ for i in $(seq 1 $N_LR); do
     else
         mkdir -p "$OUT"
         say "SWEEP $i/$N_LR: lr $LR starting -> $OUT"
-        CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold $PY -I "$R/phases/phase_k_train.py" \
+        # THREE GPUs, ONE RUN. torchrun starts one rank per card and the ranks sum their head
+        # gradients each step, so the optimiser takes the same steps as a single GPU would in a
+        # third of the wall clock -- 7.9 h/epoch measured on one card, ~2.6 h expected on three.
+        # Validated 2026-10-16: two ranks reproduce the single-GPU head to 8e-06 on a parameter
+        # whose mean magnitude is 1.0e+02, which is float32 summation order, not a logic difference.
+        #
+        # RAM IS PER PROCESS, so the cap is per rank. Each rank holds only ITS OWN shard of the
+        # structures -- 500 over 3 ranks is ~167 each, ~86 GB at the measured 518 MB per item -- so
+        # --preload-items 170 and --max-rss-gb 95 keep all three ranks together under the 300 GB the
+        # user asked us not to exceed. Holding 200 each, as the single-GPU version did, would have
+        # been ~312 GB, and a 300 GB cap applied per rank would have allowed 900 GB.
+        #
+        # --eval-device 0 because every card now carries a rank; the other ranks wait at a barrier
+        # while rank 0 evaluates, and a second 6 GB model fits beside it on a 98 GB card.
+        #
+        # --allow-code-drift because phase_j_build_cache.py gained resolve_seed_dir in 2f6d2f92 and
+        # the fingerprint covers whole files, so all 5,000 labels now differ in the `code` field and
+        # in nothing else. Training had NO ambiguous pose directories, so the new resolver returns
+        # exactly what seed_dir + sample_indices returned, and GATE 2 proves it by rebuilding a
+        # label live. Without this the sweep stops on its first unit.
+        CUDA_VISIBLE_DEVICES=0,1,3 LAYERNORM_TYPE=openfold \
+        "$TORCHRUN" --nproc_per_node=3 --master_port=29540 "$R/phases/phase_k_train.py" \
             --fold "$R/training/fold" \
             --labels "$R/training/fold/labels" \
             --epochs 3 --accum 256 --lr "$LR" --warmup-steps 20 \
-            --eval-every-epoch --eval-budget 100 --eval-device 1 \
-            --preload-items 200 --max-rss-gb 300 \
+            --dist-backend gloo \
+            --eval-every-epoch --eval-budget 100 --eval-device 0 \
+            --preload-items 170 --max-rss-gb 95 \
             --grad-check-every 10 --save-every 100 \
+            --allow-code-drift \
             --require-replay "$R/training/ft3_pilot_replay.log" \
             --wandb-project confidence-recalibration --wandb-run "ft3-lr$LR" \
             --out "$OUT" >> "$OUT/run.log" 2>&1

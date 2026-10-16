@@ -163,6 +163,20 @@ def main():
     ap.add_argument("--grad-check-every", type=int, default=25,
                     help="re-assert that no gradient has appeared outside the confidence head")
     ap.add_argument("--save-every", type=int, default=250, help="optimiser steps per checkpoint")
+    ap.add_argument("--dist-backend", default="gloo", choices=("gloo", "nccl"),
+                    help="the collective backend for multi-GPU. DEFAULT gloo, NOT nccl, because "
+                         "NCCL is broken on this box: a 20-line two-rank all_reduce on cards 1 and "
+                         "3 fails with `CUDA error: an illegal memory access was encountered`, with "
+                         "P2P enabled and disabled alike, on NCCL 2.26.2+cuda12.2 under a torch "
+                         "built for 12.8 and driver 595.99.02. It is not this script -- the same "
+                         "failure reproduces with no model loaded. gloo is a CPU backend, so the "
+                         "gradients are staged through host memory: measured 60 ms per 79 MB "
+                         "all-reduce, about 6 s per epoch over ~98 steps, against an epoch of "
+                         "hours. Switch to nccl if the driver/NCCL pairing is ever fixed.")
+    ap.add_argument("--nsample", type=int, default=5,
+                    help="poses per unit, as the fold wrote them. Only asserted under multi-GPU, "
+                         "where a unit with a different count would shift one rank's optimiser step "
+                         "onto a different pose and deadlock the next all-reduce.")
     ap.add_argument("--lr-probe", default="",
                     help="comma-separated learning rates. Runs --probe-steps steps at each from the "
                          "SAME initial weights and reports the loss trend, then exits without "
@@ -235,7 +249,44 @@ def main():
     from protenix.utils.permutation.permutation import SymmetricPermutation
 
     os.makedirs(a.out, exist_ok=True)
-    dev = torch.device("cuda")
+
+    # ---- MULTI-GPU: SYNCHRONOUS REPLICAS, NOT DistributedDataParallel ----
+    #
+    # DDP wraps a module's forward, and ours is RC.confidence(model, configs, ...) over a FROZEN
+    # trunk. DDP's hooks would both fight that custom call and expect gradients for the 444M
+    # parameters that deliberately have none. So every rank holds an identical replica -- same
+    # checkpoint, hence identical initial parameters -- and only the HEAD gradients are summed
+    # across ranks before each step.
+    #
+    # WHY A SUM AND NOT A MEAN. Each pose is already scaled by the global accumulation at
+    # backward(), so summing the ranks' accumulated gradients reconstructs exactly the mean over all
+    # --accum poses that one GPU would have computed. After the all-reduce every rank holds
+    # bit-identical gradients, so the clip, the non-finite decision, the AdamW state and therefore
+    # the parameters stay in lockstep with no further communication and no parameter broadcast.
+    #
+    # RANKS MUST TAKE THE SAME NUMBER OF STEPS or they deadlock on the all-reduce. That is enforced
+    # two ways: shards are whole structures truncated to an equal count (shard_by_structure), and
+    # each unit is asserted to hold the same number of poses as every other.
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    is_main = rank == 0
+    dist = None
+    if world > 1:
+        import torch.distributed as dist
+        dist.init_process_group(backend=a.dist_backend)
+        torch.cuda.set_device(local_rank)
+        print(f"[rank {rank}/{world}] cuda:{local_rank} backend={a.dist_backend}", flush=True)
+    dev = torch.device(f"cuda:{local_rank}") if world > 1 else torch.device("cuda")
+
+    # The effective batch is what the ranks actually sum to, which is not --accum when the world
+    # size does not divide it. It is reported rather than silently assumed, and it is what the loss
+    # is scaled by, so the gradient is a true mean over the poses that contributed.
+    accum_local = max(1, a.accum // world)
+    accum_eff = accum_local * world
+    if world > 1:
+        print(f"  accum: {a.accum} requested -> {accum_local}/rank x {world} ranks = {accum_eff} "
+              f"poses per optimiser step")
     model, configs = RC.build_model(a.ckpt_dir, a.model_name, dev)
     configs.train_confidence_only = True
     configs.loss.weight.alpha_pae = float(a.alpha_pae)
@@ -258,7 +309,10 @@ def main():
         p.requires_grad_(id(p) in head_ids)
 
     wb = None
-    if a.wandb_project:
+    # RANK 0 ONLY. Three ranks initialising the same run name would either collide or create three
+    # runs logging a third of the steps each; the gradients are identical after the all-reduce, so
+    # rank 0's view is the run's view.
+    if a.wandb_project and is_main:
         import wandb
         wb = wandb.init(project=a.wandb_project, name=a.wandb_run or None, mode=a.wandb_mode,
                         config={**vars(a), "n_head_params": n_head, "n_all_params": n_all,
@@ -509,6 +563,10 @@ def main():
             feat_cache[k] = torch.as_tensor(v).to(dev) if v.dtype != object else lab[f"lf_{k}"]
 
         n_pose = poses.shape[0] if hasattr(poses, "shape") else len(poses)
+        if world > 1 and n_pose != a.nsample:
+            raise SystemExit(f"STOP: {pdb}/{arm_seed} holds {n_pose} pose(s), not --nsample "
+                             f"{a.nsample}. Across ranks that shifts the optimiser step onto a "
+                             f"different pose and the next all-reduce deadlocks.")
         for i in range(n_pose):
             x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
                 else torch.as_tensor(poses[i:i + 1], dtype=torch.float32, device=dev)
@@ -552,6 +610,29 @@ def main():
         counted, rather than the step being taken.
         """
         params = [pp for n, pp in model.named_parameters() if n in set(trainable)]
+        if world > 1:
+            # BEFORE THE CLIP, NOT AFTER. Clipping each rank's partial gradient to norm 1 and then
+            # averaging is not the same function as clipping the summed gradient, so the multi-GPU
+            # run would not reproduce the single-GPU one. A rank with no gradient for a parameter
+            # still has to contribute a tensor, or the collective's shapes do not line up.
+            for pp in params:
+                if pp.grad is None:
+                    pp.grad = torch.zeros_like(pp)
+            # ONE COLLECTIVE, NOT 248. The head's gradients are flattened into a single buffer, so
+            # the per-call latency is paid once per step rather than once per tensor. gloo is a CPU
+            # backend, so that buffer is staged through host memory and copied back.
+            flat = torch.cat([pp.grad.reshape(-1) for pp in params])
+            if a.dist_backend == "gloo":
+                host = flat.cpu()
+                dist.all_reduce(host, op=dist.ReduceOp.SUM)
+                flat = host.to(flat.device)
+            else:
+                dist.all_reduce(flat, op=dist.ReduceOp.SUM)
+            off = 0
+            for pp in params:
+                k = pp.grad.numel()
+                pp.grad.copy_(flat[off:off + k].view_as(pp.grad))
+                off += k
         try:
             gn = float(torch.nn.utils.clip_grad_norm_(params, 1.0, error_if_nonfinite=True))
         except RuntimeError as e:
@@ -587,6 +668,8 @@ def main():
         import json
         import subprocess
         cp = os.path.join(a.out, f"head_ep{epoch}_step{step}.pt")
+        if not is_main:
+            return          # the caller already holds the other ranks at a barrier
         torch.save({n: pp.detach().cpu() for n, pp in model.named_parameters()
                     if n in set(trainable)}, cp)
         mj = os.path.join(a.out, f"metric_ep{epoch}.json")
@@ -629,6 +712,31 @@ def main():
                     "val/headroom": m["headroom"], "epoch": epoch, "step": step})
         return m
 
+    def shard_by_structure(units):
+        """Split `units` across ranks by WHOLE STRUCTURE, equal in count on every rank.
+
+        By structure, not by unit, because --shuffle=structure keeps a structure's units
+        consecutive so one built dataset item serves all of them; sharding by unit would make every
+        rank build every structure and multiply the item cache by the world size for nothing.
+
+        Truncated to the smallest rank's share so all ranks run the same number of steps. 500
+        structures over 3 ranks is 167/167/166, so one structure is dropped from an epoch; the
+        per-epoch reshuffle means it is a different one each time rather than the same data being
+        excluded from training.
+        """
+        if world == 1:
+            return units, []
+        by, seen = {}, []
+        for t in units:
+            if t[0] not in by:
+                by[t[0]] = []
+                seen.append(t[0])
+            by[t[0]].append(t)
+        keep = min(len(seen[r::world]) for r in range(world))
+        mine = seen[rank::world]
+        dropped = mine[keep:]
+        return [t for k in mine[:keep] for t in by[k]], dropped
+
     def train_loop(steps_cap, lr, tag, write_traj):
         for g in opt.param_groups:
             g["lr"] = lr
@@ -657,6 +765,22 @@ def main():
                 for _k in _o:
                     _r.shuffle(_by[_k])
                 ep_units = [t for _k in _o for t in _by[_k]]
+            ep_units, _dropped = shard_by_structure(ep_units)
+            if world > 1:
+                if _dropped:
+                    print(f"  [rank {rank}] epoch {ep + 1}: dropped {_dropped} to keep the ranks "
+                          f"equal; the reshuffle means a different structure each epoch")
+                # THE RANKS MUST AGREE ON THE UNIT COUNT. If they do not, they take a different
+                # number of optimiser steps and the first mismatched all-reduce hangs forever
+                # rather than failing, so it is checked here where it can still be reported.
+                _t = torch.tensor([len(ep_units)], device=dev)
+                _mx, _mn = _t.clone(), _t.clone()
+                dist.all_reduce(_mx, op=dist.ReduceOp.MAX)
+                dist.all_reduce(_mn, op=dist.ReduceOp.MIN)
+                if int(_mx) != int(_mn):
+                    raise SystemExit(f"STOP: rank unit counts disagree ({int(_mn)}..{int(_mx)}). "
+                                     f"The ranks would take different numbers of steps and deadlock "
+                                     f"on the first all-reduce.")
             # a fractional last epoch takes that fraction of the units
             if ep == n_epochs - 1 and a.epochs < n_epochs:
                 frac = a.epochs - (n_epochs - 1)
@@ -669,10 +793,10 @@ def main():
                     cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
-                    (cum / a.accum).backward()
+                    (cum / accum_eff).backward()
                     n_in_accum += 1
                     gn, outside, took, bad_grad = float("nan"), -1, 0, 0
-                    if n_in_accum >= a.accum:
+                    if n_in_accum >= accum_local:
                         gn, outside, ok = _apply_step(step)
                         took = 1
                         if not ok:
@@ -709,14 +833,23 @@ def main():
                         break
                 if done:
                     break
-            if write_traj and a.eval_every_epoch and step > ep_start_step:
-                _flush(traj_p, traj_cols, rows); rows = []
-                eval_checkpoint(step, ep + 1)
+            if a.eval_every_epoch and step > ep_start_step:
+                # RANK 0 EVALUATES, THE OTHERS WAIT. The evaluator is a separate process holding
+                # its own model, so letting every rank launch one would put three on the cards at
+                # once. The barriers keep the ranks together across the ~16 min it takes; without
+                # the second one, rank 0 would re-enter training a whole evaluation behind.
+                if world > 1:
+                    dist.barrier()
+                if is_main:
+                    _flush(traj_p, traj_cols, rows); rows = []
+                    eval_checkpoint(step, ep + 1)
+                if world > 1:
+                    dist.barrier()
         # THE FINAL PARTIAL ACCUMULATION. Poses left in the accumulator when the data runs out used
         # to be dropped, so the last fraction of an epoch contributed gradients that were computed
         # and then thrown away.
         if n_in_accum:
-            print(f"  flushing a partial accumulation of {n_in_accum}/{a.accum} pose(s)")
+            print(f"  flushing a partial accumulation of {n_in_accum}/{accum_local} pose(s)")
             _apply_step(step)
             step += 1
         if write_traj:
@@ -766,12 +899,16 @@ def main():
         return 0
 
     total_poses = int(len(flat) * 5 * a.epochs)
-    steps_cap = max(1, total_poses // a.accum)
+    # PER RANK. Each rank sees total_poses/world poses and steps every accum_local of them, so the
+    # step count is total_poses/(world*accum_local) = total_poses/accum_eff either way, and a
+    # multi-GPU run does the same number of optimiser steps as a single-GPU one -- in a third of the
+    # wall clock, rather than a third of the training.
+    steps_cap = max(1, total_poses // accum_eff)
     print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
           f"~{steps_cap} optimiser step(s) for {a.epochs} epoch(s)")
     print(f"trajectory -> {traj_p}")
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
-    train_loop(steps_cap, a.lr, "train", write_traj=True)
+    train_loop(steps_cap, a.lr, "train", write_traj=is_main)
     if ram_floor["n"]:
         print(f"\nRAM FLOOR was hit on {ram_floor['n']} structure(s): the item cache was capped "
               f"below --preload-items to stay above {a.preload_min_free_gb:.0f} GB free, so those "
@@ -787,13 +924,22 @@ def main():
               + (f" -- --preload-items {a.preload_items} held them, so later epochs pay none of this"
                  if a.preload_items > 1 else
                  f" -- --preload-items is {a.preload_items}, so every epoch pays this again"))
+    # RANK 0 WRITES THE CHECKPOINT. Every rank holds the same parameters after the all-reduce, so
+    # the content would be identical, but two processes writing one path concurrently can interleave
+    # and leave a truncated file -- the smoke test showed both ranks reporting the same save.
     cp = os.path.join(a.out, "head_final.pt")
-    import torch as _t
-    _t.save({n: p.detach().cpu() for n, p in model.named_parameters() if n in set(trainable)}, cp)
-    print(f"\nsaved {cp}")
+    if is_main:
+        import torch as _t
+        _t.save({n: p.detach().cpu() for n, p in model.named_parameters() if n in set(trainable)},
+                cp)
+        print(f"\nsaved {cp}")
     print("THE LOSS IS NOT THE RESULT. Score this checkpoint with "
           "analysis/val_selection_metric.py after rescoring the validation poses with it; the target "
           "is mean DockQ 0.5779 and frac-acceptable 0.7283 at 100 seeds.")
+    # Tear the group down so the ranks exit together rather than on NCCL's timeout.
+    if world > 1:
+        dist.barrier()
+        dist.destroy_process_group()
     return 0
 
 
