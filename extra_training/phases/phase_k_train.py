@@ -147,7 +147,13 @@ def main():
                     help="how many non-finite-gradient steps to tolerate before stopping. Each one "
                          "drops its gradients and takes no step; past this the data or the learning "
                          "rate is wrong and continuing trains on noise.")
-    ap.add_argument("--preload-min-free-gb", type=float, default=500.0,
+    ap.add_argument("--max-rss-gb", type=float, default=300.0,
+                    help="HARD CAP ON THIS PROCESS'S OWN MEMORY, checked before every item is added "
+                         "to the cache. The user's constraint is that our processes do not exceed "
+                         "300 GB, and --preload-min-free-gb answers a different question: it looks "
+                         "at MemAvailable, so on an idle box it would let one run take 700 GB. Past "
+                         "this the cache stops growing and evicts; the run never fails for it.")
+    ap.add_argument("--preload-min-free-gb", type=float, default=200.0,
                     help="FLOOR ON FREE RAM, checked before every item is added to the cache -- not "
                          "once at startup. The cache GROWS to ~253 GB over the first epoch (500 "
                          "items at a measured 331-886 MB, avg 518), so a startup check would pass "
@@ -421,10 +427,16 @@ def main():
                                 if l.startswith("MemAvailable:")) / 1048576.0
             except Exception:
                 _free_gb = float("inf")
-            if _free_gb < a.preload_min_free_gb and len(item_cache) >= 1:
+            try:
+                _rss_gb = int(open(f"/proc/{os.getpid()}/statm").read().split()[1]) * \
+                          os.sysconf("SC_PAGE_SIZE") / 2**30
+            except Exception:
+                _rss_gb = 0.0
+            if (_rss_gb > a.max_rss_gb or _free_gb < a.preload_min_free_gb) and len(item_cache) >= 1:
                 if not ram_floor["hit"]:
-                    print(f"  RAM FLOOR: {_free_gb:.0f} GB available, below "
-                          f"--preload-min-free-gb {a.preload_min_free_gb:.0f}. The item cache stops "
+                    print(f"  RAM CAP: this process holds {_rss_gb:.0f} GB (cap "
+                          f"{a.max_rss_gb:.0f}), {_free_gb:.0f} GB free (floor "
+                          f"{a.preload_min_free_gb:.0f}). The item cache stops "
                           f"growing at {len(item_cache)} structure(s) and evicts from here on; "
                           f"structures will be rebuilt rather than held. Nothing fails.")
                     ram_floor["hit"] = True

@@ -121,22 +121,62 @@ else
 fi
 
 mkdir -p "$OUT"
-# TRAINING ON 0, EVALUATION ON 1. The evaluation is a subprocess that loads its own 464M-parameter
-# model while the trainer stays resident holding its allocator, so sharing one card risks an OOM
-# mid-run. Both are within the three cards this project is allowed (0, 1, 3) and the holders are
-# untouched.
-say "starting the 3-epoch pilot: batch 256, lr 1e-3, warmup 20, eval after every epoch"
-say "  training on GPU 0, epoch-end evaluation on GPU 1"
-say "  ~292 optimiser steps (97/epoch); each epoch-end eval is a full 100-seed pass (~16.5 min)"
-CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold $PY -I "$R/phases/phase_k_train.py" \
-    --fold "$R/training/fold" \
-    --labels "$R/training/fold/labels" \
-    --epochs 3 --accum 256 --lr 1e-3 --warmup-steps 20 \
-    --eval-every-epoch --eval-budget 100 --eval-device 1 \
-    --preload-items "$PRELOAD" --preload-min-free-gb "$MIN_GB" \
-    --grad-check-every 10 --save-every 100 \
-    --require-replay "$R/training/ft3_pilot_replay.log" \
-    --wandb-project confidence-recalibration --wandb-run ft3-pilot-3ep \
-    --out "$OUT" >> "$LOG" 2>&1
-say "pilot exit=$? -- trajectory $OUT/trajectory.csv, metrics $OUT/metric_ep*.json"
-say "THE LOSS IS NOT THE RESULT: compare metric_ep*.json against mean_dockq 0.5783 / frac_acc 0.7283"
+# ---- THE SWEEP: FOUR LEARNING RATES, ONE AT A TIME ----
+# SEQUENTIAL at the user's direction: no contention, each run gets a whole card for training and a
+# second for its evaluation, and no run's timing is polluted by another's.
+#
+# ORDERED SO THE MOST USEFUL COMES FIRST. 12 epoch-times run back to back will NOT all finish by
+# morning -- one LR is 3 epochs plus three 16.5-minute evaluations, which is 8 h at the optimistic
+# rate and 22 h at the rate measured under contention. So 1e-3 goes first (the planned default),
+# then the two brackets, then the low end. Whatever has finished by morning is complete and scored;
+# nothing is half-reported.
+#
+# RAM: 300 GB CAP ON OUR OWN PROCESS, per the user. --preload-items 200 is ~104 GB of dataset items
+# on top of roughly 110 GB of baseline, and --max-rss-gb 300 stops the cache growing past the cap
+# regardless. Only one run exists at a time, so the cap applies to the whole sweep.
+LRS="1e-3 3e-4 3e-3 1e-4"
+SUMMARY="$R/training/ft3_sweep/summary.tsv"
+mkdir -p "$R/training/ft3_sweep"
+[ -f "$SUMMARY" ] || printf "lr\tepoch\tmean_dockq\tfrac_acc\toracle_mean\theadroom\tbaseline_mean\tbaseline_acc\n" > "$SUMMARY"
+
+say "SWEEP: 4 learning rates, 3 epochs each, SEQUENTIAL. Order: $LRS"
+say "  training on GPU 0, evaluation on GPU 1. Baseline to beat: mean_dockq 0.5783, frac_acc 0.7283"
+say "  12 epoch-times run back to back will not all finish overnight; each completed LR is whole."
+
+for LR in $LRS; do
+    OUT="$R/training/ft3_sweep/lr$LR"
+    if [ -f "$OUT/head_final.pt" ]; then say "SWEEP: lr $LR already complete, skipping"; continue; fi
+    mkdir -p "$OUT"
+    say "SWEEP: lr $LR starting -> $OUT"
+    CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold $PY -I "$R/phases/phase_k_train.py" \
+        --fold "$R/training/fold" \
+        --labels "$R/training/fold/labels" \
+        --epochs 3 --accum 256 --lr "$LR" --warmup-steps 20 \
+        --eval-every-epoch --eval-budget 100 --eval-device 1 \
+        --preload-items 200 --max-rss-gb 300 \
+        --grad-check-every 10 --save-every 100 \
+        --require-replay "$R/training/ft3_pilot_replay.log" \
+        --wandb-project confidence-recalibration --wandb-run "ft3-lr$LR" \
+        --out "$OUT" >> "$OUT/run.log" 2>&1
+    rc=$?
+    say "SWEEP: lr $LR exit=$rc"
+    # COLLECT WHAT IT PRODUCED, whether or not it finished. A run that dies at epoch 2 still has
+    # epoch 1's metric, and that is the comparison the sweep exists for.
+    for mj in "$OUT"/metric_ep*.json; do
+        [ -f "$mj" ] || continue
+        $PY -I -c "
+import json,os,sys
+m=json.load(open('$mj'))
+ep=os.path.basename('$mj').replace('metric_ep','').replace('.json','')
+print('\t'.join(['$LR', ep, str(m['mean_dockq']), str(m['frac_acc']),
+                 str(m['oracle_mean_dockq']), str(m['headroom']), '0.5783', '0.7283']))" >> "$SUMMARY"
+    done
+    say "SWEEP: lr $LR collected. $SUMMARY now has $(( $(wc -l < "$SUMMARY") - 1 )) row(s)"
+done
+
+say "SWEEP DONE (or out of learning rates). Summary: $SUMMARY"
+say "  THE LOSS IS NOT THE RESULT. Compare mean_dockq against 0.5783 and frac_acc against 0.7283."
+say "  For significance use a PAIRED test on the 92 interfaces -- Wilcoxon signed-rank for"
+say "  mean_dockq, where an interface whose selection did not move contributes an exact zero, so the"
+say "  effective n is the number that moved. frac_acc is structurally underpowered: only 13 of 92"
+say "  interfaces sit below acceptable with a rescuable oracle, so its whole range is +0.141."
