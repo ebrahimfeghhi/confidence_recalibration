@@ -13,8 +13,8 @@ The other three terms stay on as regularisers: they keep the head honest about p
 distance-error confidence instead of letting it distort everything to fit PAE.
 
 THE TARGET, measured 2026-10-15 over 92 validation interfaces at 100 seeds
-(analysis/val_selection_metric.py): selecting by max pair_iptm gives mean DockQ 0.5776 and
-frac-acceptable 0.7283, against an oracle of 0.7184 / 0.8696. So there is 0.1408 of mean DockQ
+(analysis/val_selection_metric.py): selecting by max pair_iptm gives mean DockQ 0.5779 and
+frac-acceptable 0.7283, against an oracle of 0.7171 / 0.8696. So there is 0.1392 of mean DockQ
 available to a better ranker AT ZERO EXTRA COMPUTE, and that gap is the deliverable. Note ipTM
 selection PEAKS near 25 seeds and DECAYS to 100 while the oracle keeps climbing -- more sampling
 produces better poses and a greater chance confidence prefers a confidently wrong one.
@@ -113,7 +113,7 @@ def main():
     ap.add_argument("--eval-every-epoch", action="store_true",
                     help="score the validation metric at the end of every epoch. THE METRIC IS THE "
                          "RESULT, not the loss: mean DockQ and frac-acceptable of the pose selected "
-                         "by max pair_iptm, against the 0.5776 / 0.7283 baseline at 100 seeds.")
+                         "by max pair_iptm, against the 0.5779 / 0.7283 baseline at 100 seeds.")
     ap.add_argument("--eval-every", type=int, default=0,
                     help="also score every N optimiser steps. 0 disables. A full pass is 5,300 "
                          "validation units at 0.187 s/unit = ~16.5 min, so at 97 steps/epoch this "
@@ -196,7 +196,7 @@ def main():
                          "measured at ~16 GB, so 20 GB is the floor.")
     ap.add_argument("--eval-budget", type=int, default=100,
                     help="seeds per interface for the epoch-end metric. 100 is the full budget and "
-                         "the one the 0.5783 / 0.7283 baseline is quoted at; a pass is ~16.5 min.")
+                         "the one the 0.5779 / 0.7283 baseline is quoted at; a pass is ~16.5 min.")
     ap.add_argument("--require-replay", default="",
                     help="path to a replay result that must say PASS before training starts. "
                          "Cached training is only FT3 if the cache reproduces it; see "
@@ -265,7 +265,7 @@ def main():
                                 "head_frac": n_head / n_all, "n_head_tensors": len(trainable),
                                 "loss_weights": {k.replace("_loss", ""): float(v)
                                                  for k, v in w.items()},
-                                "baseline_mean_dockq": 0.5783, "baseline_frac_acc": 0.7283})
+                                "baseline_mean_dockq": 0.5779, "baseline_frac_acc": 0.7283})
         print(f"wandb: {wb.url if hasattr(wb, 'url') else a.wandb_project} (mode={a.wandb_mode})")
 
     # ---- THE MANIFEST COMES FROM THE FROZEN SELECTION, NOT FROM WHATEVER FILES EXIST ----
@@ -621,7 +621,7 @@ def main():
                              "scored and a training curve without it is not interpretable:\n  "
                              + "\n  ".join(tail))
         m = json.load(open(mj))
-        print(f"  epoch {epoch}: mean_dockq {m['mean_dockq']:.4f} (baseline 0.5783)  "
+        print(f"  epoch {epoch}: mean_dockq {m['mean_dockq']:.4f} (baseline 0.5779)  "
               f"frac_acc {m['frac_acc']:.4f} (baseline 0.7283)  headroom {m['headroom']:.4f}")
         if wb is not None:
             wb.log({"val/mean_dockq": m["mean_dockq"], "val/frac_acc": m["frac_acc"],
@@ -793,7 +793,7 @@ def main():
     print(f"\nsaved {cp}")
     print("THE LOSS IS NOT THE RESULT. Score this checkpoint with "
           "analysis/val_selection_metric.py after rescoring the validation poses with it; the target "
-          "is mean DockQ 0.5776 and frac-acceptable 0.7283 at 100 seeds.")
+          "is mean DockQ 0.5779 and frac-acceptable 0.7283 at 100 seeds.")
     return 0
 
 

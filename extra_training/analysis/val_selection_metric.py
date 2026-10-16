@@ -17,11 +17,18 @@ DIFFERENT values per interface.
 THE ORACLE AND RANDOM COLUMNS ARE THE POINT OF THE TABLE. `oracle` is argmax DockQ over the same
 pool -- the best the sampler produced, whether or not confidence found it -- so oracle minus selected
 is the headroom a better ranker can win at ZERO extra compute. `random` is the mean over all poses,
-which is what selection beats. Measured 2026-10-15 at N=100 over 92 interfaces: selected 0.5776,
-oracle 0.7184, random ~0.494. So selection is worth ~0.08 and leaves ~0.14 on the table.
+which is what selection beats. Measured 2026-10-16 at N=100 over 92 interfaces: selected 0.5779,
+oracle 0.7171, random ~0.4975. So selection is worth ~0.08 and leaves ~0.14 on the table.
 
-ipTM SELECTION PEAKS AROUND 25 SEEDS AND THEN DECAYS -- 0.5825 at 25, 0.5811 at 50, 0.5776 at 100 --
-while the oracle keeps climbing, 0.6885 -> 0.7090 -> 0.7184. More sampling produces better poses AND
+THESE NUMBERS MOVED ON 2026-10-16 and the old ones are not comparable. Two different baselines had
+been quoted in the tree, 0.5776 and 0.5783, from runs either side of an earlier fix; both predate the
+score-row repair, which replaced 2,147 of 46,000 rows where validation/fold held the refold's trunks
+beside the ORIGINAL fold's DockQ for 7tzh, 8v8f and 9cn2 (see docs/pose_provenance.md). Only 6 of
+the 92 interfaces could move, and the effect is small -- 0.5783 -> 0.5779 -- but one number now
+appears everywhere rather than two, and it is the one this file prints.
+
+ipTM SELECTION PEAKS AROUND 25 SEEDS AND THEN DECAYS -- 0.5855 at 25, 0.5797 at 50, 0.5779 at 100 --
+while the oracle keeps climbing, 0.6888 -> 0.7067 -> 0.7171. More sampling produces better poses AND
 a greater chance that confidence prefers a confidently wrong one. That is the confident-decoy effect
 measured on this validation set, and it is the thing the finetune is meant to fix.
 

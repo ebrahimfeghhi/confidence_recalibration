@@ -102,7 +102,7 @@ destination does not already have; after the repair both roots agree with `fold/
 16,000 rows, which still holds 46,000 rows and 46,000 distinct keys. The destination was copied to
 `results.csv.pre_merge` first.
 
-Because 2,147 rows changed, **the validation baseline (0.5783 / 0.7283 at 100 seeds over 92
+Because 2,147 rows changed, **the validation baseline (0.5779 / 0.7283 at 100 seeds over 92
 interfaces) must be recomputed** before it is used as a comparison point.
 
 ## Restoring the invariant
