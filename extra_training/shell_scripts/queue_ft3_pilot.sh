@@ -111,9 +111,14 @@ say "GPU state before starting:"
 nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader | tee -a "$LOG"
 
 # GATE 1: the evaluator must reproduce the fold's own ipTM with the shipped head.
-say "GATE 1: evaluator self-check with the SHIPPED head (full 100-seed budget)"
-CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold $PY -I "$R/phases/phase_k_eval.py" \
-    --budget 100 --out "$R/training/ft3_pilot_baseline.json" >> "$LOG" 2>&1
+# ON ALL THREE CARDS. A full pass is 5,300 units at 0.82 s/unit = ~73 min on one card, measured; the
+# evaluator is embarrassingly parallel, so it is sharded across the cards and merged. The split was
+# verified to change nothing: phase_k_eval_sharded.py --verify-against-single reported an identical
+# metric on all eight fields.
+say "GATE 1: evaluator self-check with the SHIPPED head, sharded over GPUs 0, 1 and 3"
+LAYERNORM_TYPE=openfold $PY -I "$R/phases/phase_k_eval_sharded.py" \
+    --cards 0,1,3 --budget 100 --work "$R/training/ft3_gate1_shards" \
+    --out "$R/training/ft3_pilot_baseline.json" >> "$LOG" 2>&1
 rc=$?
 say "GATE 1 exit=$rc"
 if [ $rc -ne 0 ]; then
@@ -194,8 +199,10 @@ for i in $(seq 1 $N_LR); do
         # user asked us not to exceed. Holding 200 each, as the single-GPU version did, would have
         # been ~312 GB, and a 300 GB cap applied per rank would have allowed 900 GB.
         #
-        # --eval-device 0 because every card now carries a rank; the other ranks wait at a barrier
-        # while rank 0 evaluates, and a second 6 GB model fits beside it on a 98 GB card.
+        # THE EVALUATION IS SHARDED OVER ALL THREE CARDS TOO, which is why no --eval-device is
+        # given. Every card carries a parked rank during the evaluation, and a 6 GB shard fits
+        # beside a parked rank's 6 GB on a 98 GB card. On one card a pass is ~73 min, measured, so
+        # evaluating on one while two idled cost ~47% of the run's wall clock.
         #
         # --allow-code-drift because phase_j_build_cache.py gained resolve_seed_dir in 2f6d2f92 and
         # the fingerprint covers whole files, so all 5,000 labels now differ in the `code` field and
@@ -208,7 +215,7 @@ for i in $(seq 1 $N_LR); do
             --labels "$R/training/fold/labels" \
             --epochs 3 --accum 256 --lr "$LR" --warmup-steps 20 \
             --dist-backend gloo \
-            --eval-every-epoch --eval-budget 100 --eval-device 0 \
+            --eval-every-epoch --eval-budget 100 \
             --preload-items 170 --max-rss-gb 95 \
             --grad-check-every 10 --save-every 100 \
             --allow-code-drift \

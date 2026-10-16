@@ -163,6 +163,11 @@ def main():
     ap.add_argument("--grad-check-every", type=int, default=25,
                     help="re-assert that no gradient has appeared outside the confidence head")
     ap.add_argument("--save-every", type=int, default=250, help="optimiser steps per checkpoint")
+    ap.add_argument("--eval-cards", default="",
+                    help="cards to SHARD the per-epoch evaluation over, comma separated. Default: "
+                         "every card this run was given, since the other ranks are parked at a "
+                         "barrier throughout and their cards would otherwise idle for the whole "
+                         "~73 min pass. One card falls back to the unsharded evaluator.")
     ap.add_argument("--dist-timeout-min", type=float, default=240.0,
                     help="COLLECTIVE TIMEOUT IN MINUTES, and it must exceed the per-epoch "
                          "evaluation. torch's default is 30 min; the evaluation at --eval-budget "
@@ -692,10 +697,28 @@ def main():
         torch.save({n: pp.detach().cpu() for n, pp in model.named_parameters()
                     if n in set(trainable)}, cp)
         mj = os.path.join(a.out, f"metric_ep{epoch}.json")
-        cmd = [sys.executable, "-I", a.eval_script, "--ckpt", cp, "--budget", str(a.eval_budget),
-               "--out", mj]
+        # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
+        # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
+        # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one
+        # shard on each card -- ~6 GB beside a parked rank's ~6 GB on a 98 GB card -- and merges.
+        cards = a.eval_cards or os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        shard_work = os.path.join(a.out, f"eval_shards_ep{epoch}")
+        if len([c for c in cards.split(",") if c.strip()]) > 1:
+            cmd = [sys.executable, "-I",
+                   os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "phase_k_eval_sharded.py"),
+                   "--cards", cards, "--ckpt", cp, "--budget", str(a.eval_budget),
+                   "--work", shard_work, "--out", mj]
+        else:
+            cmd = [sys.executable, "-I", a.eval_script, "--ckpt", cp,
+                   "--budget", str(a.eval_budget), "--out", mj]
         env = {**os.environ, "LAYERNORM_TYPE": "openfold"}
-        if a.eval_device:
+        sharded = "phase_k_eval_sharded.py" in cmd[2]
+        if sharded:
+            print(f"  evaluating epoch {epoch} sharded over GPU(s) {cards}")
+        elif a.eval_device:
+            # ONLY ON THE SINGLE-CARD PATH. Pinning CUDA_VISIBLE_DEVICES here would hand the sharding
+            # driver one card and silently undo the split.
             env["CUDA_VISIBLE_DEVICES"] = str(a.eval_device)
             print(f"  evaluating epoch {epoch} on GPU {a.eval_device} (the trainer keeps its card)")
         else:

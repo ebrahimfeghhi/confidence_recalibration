@@ -161,199 +161,69 @@ def ost_chain_pairs(unit_dir, pdb, k, refs):
     return pairs, ""
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--fold", default=f"{ROOT}/validation/fold")
-    ap.add_argument("--results", default=f"{ROOT}/validation/fold/results.csv")
-    ap.add_argument("--pool", default=f"{ROOT}/validation/fold/pool.csv")
-    ap.add_argument("--roles", default=f"{ROOT}/validation/fold/chain_roles.csv")
-    ap.add_argument("--ckpt", default="", help="a head state dict from phase_k_train; empty = shipped")
-    ap.add_argument("--ckpt-dir", default="/home/ebrahim/checkpoint")
-    ap.add_argument("--model-name", default="protenix-v2")
-    ap.add_argument("--budget", type=int, default=100, help="seeds per interface, from --seed-base")
-    ap.add_argument("--seed-base", type=int, default=400000)
-    ap.add_argument("--iptm-tol", type=float, default=2e-3,
-                    help="how closely the recomputed ipTM must reproduce results.csv with the "
-                         "SHIPPED head. bf16 trunk tensors are stored and reloaded and the head runs "
-                         "under autocast, so exact equality is not the bar.")
-    ap.add_argument("--no-self-check", action="store_true")
-    ap.add_argument("--allow-roles-fallback", action="store_true",
-                    help="use chain_roles.csv when OST's per-pose mapping is unusable. OFF by "
-                         "default: that table assigns one model chain per reference chain for the "
-                         "whole structure, which is measured WRONG for chemically identical chains "
-                         "(9eg6 on every pose, 7zra on some), and --ckpt runs skip the self-check "
-                         "that caught it. An unmapped chain that is FORCED by elimination needs no "
-                         "fallback and no flag.")
-    ap.add_argument("--selfcheck-out", default="",
-                    help="write EVERY row that fails the self-check to this csv, so the failure can "
-                         "be analysed without re-running the evaluator.")
-    ap.add_argument("--limit-units", type=int, default=0)
-    ap.add_argument("--allow-partial", action="store_true",
-                    help="report a metric that does NOT cover its stated budget: missing trunks, "
-                         "poses without DockQ, or interfaces of unequal depth. OFF by default, "
-                         "because a number labelled 'budget 100' computed from one seed is worse "
-                         "than no number.")
-    ap.add_argument("--out", default="")
-    a = ap.parse_args()
+def merge_rows(a):
+    """The aggregate half of the evaluator, over the UNION of several shards' rows. No GPU, no model.
 
-    import torch
-    import phase_j_rescore_cache as RC
-    import phase_j_build_cache as BC
-
-    pairs_by_pdb, unresolved = interface_chain_pairs(a.pool, a.roles)
-    refs_by_pdb = pool_ref_pairs(a.pool)
-    n_ost, n_static, n_differ, differ_pdbs = 0, 0, 0, collections.Counter()
-    unmapped = []
-    if unresolved:
-        raise SystemExit(f"STOP: {len(unresolved)} pool interface(s) cannot be mapped to model "
-                         f"chains via {a.roles}: {unresolved[:6]}. The metric would silently cover "
-                         f"a subset.")
-    want_ifaces = {i for v in pairs_by_pdb.values() for i, _x, _y in v}
-    print(f"pool: {len(want_ifaces)} interface(s) over {len(pairs_by_pdb)} structure(s)")
-
-    # join 3, read once
-    dockq, stored_iptm = {}, {}
-    with open(a.results) as fh:
-        for r in csv.DictReader(fh):
-            try:
-                k = (r["iface"], int(r["seed"]), int(r["sample"]))
-                dockq[k] = float(r["dockq"]); stored_iptm[k] = float(r["iptm"])
-            except (TypeError, ValueError):
-                pass
-    print(f"results.csv: {len(dockq)} scored (iface, seed, sample) row(s)")
-
-    # EVERY INTENDED UNIT, AND A MISSING TRUNK IS FATAL. This appended only the trunks that
-    # happened to exist, so a "100-seed" metric could be computed from one seed and still print
-    # "budget 100" -- review round 9 reproduced exactly that. The budget is a CLAIM about coverage,
-    # so it is enforced rather than described.
-    units, missing_trunk = [], []
-    for pdb in sorted(pairs_by_pdb):
-        for sd_ in range(a.seed_base, a.seed_base + a.budget):
-            tp = os.path.join(a.fold, "trunks", pdb, f"free_{sd_}.npz")
-            (units if os.path.exists(tp) else missing_trunk).append(
-                (pdb, sd_, tp) if os.path.exists(tp) else f"{pdb}/free_{sd_}")
-    if missing_trunk and not a.allow_partial:
-        raise SystemExit(
-            f"STOP: {len(missing_trunk)} of {len(pairs_by_pdb)*a.budget} intended unit(s) have no "
-            f"trunk under {a.fold}/trunks, e.g. {missing_trunk[:5]}.\n  A metric labelled "
-            f"'budget {a.budget}' must cover {a.budget} seeds for every structure. Lower --budget, "
-            f"or pass --allow-partial to report a number that does NOT mean what its label says.")
-    if a.limit_units:
-        if not a.allow_partial:
-            raise SystemExit("STOP: --limit-units subsets the data, so the metric would not be the "
-                             "metric. Pass --allow-partial to acknowledge that explicitly.")
-        units = units[:a.limit_units]
-    print(f"units: {len(units)} of {len(pairs_by_pdb)*a.budget} intended "
-          f"({len(pairs_by_pdb)} structures x {a.budget} seeds)"
-          + ("  [PARTIAL -- --allow-partial]" if a.allow_partial else ""))
-
-    # THE MODEL IS LOADED LAST, after everything that can be checked from the filesystem has
-    # been. Enumerating units after the build meant a coverage failure cost a 40 s model load and
-    # needed a free GPU to even observe, which is also why it could not be tested without one.
-    if os.environ.get("LAYERNORM_TYPE") != "openfold":
-        raise SystemExit("STOP: set LAYERNORM_TYPE=openfold (without it coordinates are NaN)")
-    dev = torch.device("cuda")
-    model, configs = RC.build_model(a.ckpt_dir, a.model_name, dev)
-    if a.ckpt:
-        sd = torch.load(a.ckpt, map_location="cpu")
-        have = dict(model.named_parameters())
-        missing = [k for k in sd if k not in have]
-        if missing:
-            raise SystemExit(f"STOP: {a.ckpt} has {len(missing)} tensor(s) absent from the model, "
-                             f"e.g. {missing[:4]}")
-        with torch.no_grad():
-            for k, v in sd.items():
-                have[k].data.copy_(v.to(have[k].device))
-        print(f"loaded {len(sd)} head tensor(s) from {a.ckpt}")
-    else:
-        print("using the SHIPPED head (no --ckpt)")
-
-    rows, selfchk, n_nosample = [], [], 0
-    for n, (pdb, sd_, tp) in enumerate(units, 1):
-        feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
-        summ = RC.confidence(model, configs, feat, s_in, s_tr, z, x, nc)
-        summ = summ if isinstance(summ, (list, tuple)) else [summ]
-        # join 2: pose -> sample, by coordinate identity. The pose DIRECTORY is itself resolved by
-        # the trunk, because a refold leaves two finished directories for one seed and neither
-        # filesystem order nor poses/index.tsv says which run wrote this trunk.
-        px = x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
-        try:
-            unit_dir, ks = BC.resolve_seed_dir(a.fold, pdb, sd_, px, 0.01, 0.5)
-        except Exception as e:
-            n_nosample += 1
-            if n_nosample <= 5:
-                print(f"  {pdb}/{sd_}: cannot join poses to samples ({type(e).__name__}: "
-                      f"{str(e)[:90]})")
-            continue
-        for i, s_i in enumerate(summ):
-            cpi = s_i["chain_pair_iptm"]
-            cpi = cpi.detach().cpu().numpy() if hasattr(cpi, "detach") else np.asarray(cpi)
-            cpi = cpi[0] if cpi.ndim == 3 else cpi
-            k = int(ks[i])
-            # JOIN 1, PER POSE. OST's own chain mapping for THIS pose, falling back to the static
-            # chain_roles table only when it cannot be read -- and counting both, so the output says
-            # how much of the metric rests on which.
-            pose_pairs, why = ost_chain_pairs(unit_dir, pdb, k, refs_by_pdb[pdb])
-            if pose_pairs is None:
-                # NO SILENT FALLBACK. chain_roles has been measured wrong for chemically identical
-                # chains, and with --ckpt the self-check that would have caught it does not run, so
-                # an unresolvable mapping is recorded and the run stops rather than scoring.
-                n_static += 1
-                unmapped.append(f"{pdb}/{sd_} sample {k}: {why}")
-                if a.allow_roles_fallback:
-                    pose_pairs = pairs_by_pdb[pdb]
-                else:
-                    continue
-            else:
-                n_ost += 1
-                if pose_pairs != pairs_by_pdb[pdb]:
-                    n_differ += 1
-                    differ_pdbs[pdb] += 1
-            for iface, ai, aj in pose_pairs:
-                if max(ai, aj) >= cpi.shape[0]:
-                    continue
-                v = float(cpi[ai, aj])
-                key = (iface, sd_, k)
-                rows.append((iface, sd_, k, v, dockq.get(key)))
-                if key in stored_iptm:
-                    # THE KEY, NOT JUST THE MAGNITUDE. Reporting "1014 rows disagree, max 0.2378"
-                    # says a join is wrong and nothing about WHICH, so the next step is a 73-minute
-                    # re-run to find out. Carrying the key costs nothing and makes the failure
-                    # actionable: whether it is a handful of interfaces (join 1), a set of seeds
-                    # (join 2) or scattered (join 3) is visible in the output itself.
-                    selfchk.append((abs(v - stored_iptm[key]), iface, sd_, k,
-                                    v, stored_iptm[key]))
-        if n % 200 == 0:
-            print(f"  ...{n}/{len(units)} units", flush=True)
-
-    if n_nosample:
-        raise SystemExit(f"STOP: {n_nosample} unit(s) could not be joined to their sample cifs. "
-                         f"Selecting a pose and reading another sample's DockQ would score the "
-                         f"wrong thing, so this is fatal rather than skipped.")
-
-    print(f"\njoin 1: OST's per-pose chain mapping used on {n_ost} pose(s), unresolvable on "
-          f"{n_static}")
-    if unmapped and not a.allow_roles_fallback:
-        for u in unmapped[:10]:
-            print(f"    {u}")
-        raise SystemExit(
-            f"STOP: {len(unmapped)} pose(s) have no usable OST chain mapping and none that is forced "
-            f"by elimination. chain_roles.csv is NOT an acceptable substitute -- it is measured wrong "
-            f"for chemically identical chains, and with --ckpt the shipped-head self-check does not "
-            f"run, so a wrong chain pair here would mis-score silently. Pass "
-            f"--allow-roles-fallback only if you have established the static table is right for "
-            f"these structures, and say why.")
-    if unmapped:
-        print(f"  FELL BACK to chain_roles on {len(unmapped)} pose(s) because "
-              f"--allow-roles-fallback was given; the static table is wrong for chemically "
-              f"identical chains, so this metric is only as good as that assumption")
+    A shard cannot judge coverage -- it holds a slice by construction -- so the self-check, the
+    coverage contract and the metric all wait until the shards' rows are back together. Reading them
+    here rather than recomputing anything means the merged result is exactly what an unsharded run
+    would have produced, which is asserted by phase_k_eval_sharded.py comparing the two.
+    """
+    paths = [x.strip() for x in a.rows_in.split(",") if x.strip()]
+    missing = [x for x in paths if not os.path.exists(x)]
+    if missing:
+        raise SystemExit(f"STOP: {len(missing)} shard row file(s) absent: {missing}. A shard that "
+                         f"died would otherwise silently shrink the metric's coverage.")
+    rows, selfchk, metas = [], [], []
+    for x in paths:
+        mp = x + ".meta.json"
+        if not os.path.exists(mp):
+            raise SystemExit(f"STOP: {x} has no {os.path.basename(mp)}, so its shard cannot be "
+                             f"confirmed to have finished rather than been truncated.")
+        metas.append(json.load(open(mp)))
+        with open(x) as fh:
+            for r in csv.DictReader(fh):
+                v = float(r["iptm"])
+                dq = float(r["dockq"]) if r["dockq"] != "" else None
+                rows.append((r["iface"], int(r["seed"]), int(r["sample"]), v, dq))
+                if r["stored_iptm"] != "":
+                    sv = float(r["stored_iptm"])
+                    selfchk.append((abs(v - sv), r["iface"], int(r["seed"]), int(r["sample"]),
+                                    v, sv))
+    # EVERY SHARD OF THE SAME RUN, AND ALL OF THEM. A merge over 2 of 3 shards, or over shards from
+    # two different budgets or checkpoints, would produce a number whose label is a lie.
+    ns = {m["nshards"] for m in metas}
+    if len(ns) != 1:
+        raise SystemExit(f"STOP: the shards disagree on --nshards: {sorted(ns)}")
+    n = ns.pop()
+    have = sorted(m["shard"] for m in metas)
+    if have != list(range(n)):
+        raise SystemExit(f"STOP: shards {have} of {n} present; the metric would cover a subset.")
+    for field in ("budget", "ckpt"):
+        vals = {m[field] for m in metas}
+        if len(vals) != 1:
+            raise SystemExit(f"STOP: the shards disagree on {field}: {sorted(vals)}")
+    if metas[0]["budget"] != a.budget:
+        raise SystemExit(f"STOP: the shards were run at budget {metas[0]['budget']} but this merge "
+                         f"says --budget {a.budget}; the label would not match the data.")
+    a.ckpt = metas[0]["ckpt"]
+    n_ost = sum(m["n_ost"] for m in metas)
+    n_differ = sum(m["n_differ"] for m in metas)
+    differ = collections.Counter()
+    for m in metas:
+        differ.update(m.get("differ_pdbs") or {})
+    print(f"merged {len(paths)} shard(s): {sum(m['units'] for m in metas)} unit(s), "
+          f"{len(rows)} row(s)")
+    print(f"join 1: OST's per-pose chain mapping used on {n_ost} pose(s), unresolvable on 0")
     if n_differ:
-        print(f"  the two DISAGREED on {n_differ} pose(s), across {len(differ_pdbs)} structure(s): "
-              + ", ".join(f"{k}:{v}" for k, v in differ_pdbs.most_common(8)))
-        print(f"  OST's is authoritative -- it is the mapping results.csv's own DockQ was computed "
-              f"under, and for chemically identical chains a static table cannot be right for every "
-              f"pose.")
+        print(f"  it DISAGREED with chain_roles on {n_differ} pose(s), across {len(differ)} "
+              f"structure(s): " + ", ".join(f"{k}:{v}" for k, v in differ.most_common(8)))
+    want_ifaces = {i for v in pool_ref_pairs(a.pool).values() for i, _c1, _c2 in v}
+    aggregate(a, rows, selfchk, want_ifaces)
 
+
+def aggregate(a, rows, selfchk, want_ifaces):
+    """The self-check, the coverage contract and the metric. Shared by the sharded and plain paths."""
     # ---- THE SELF-CHECK
     if not a.ckpt and not a.no_self_check:
         if not selfchk:
@@ -453,6 +323,253 @@ def main():
         print(f"  wrote {a.out}")
     return 0
 
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--fold", default=f"{ROOT}/validation/fold")
+    ap.add_argument("--results", default=f"{ROOT}/validation/fold/results.csv")
+    ap.add_argument("--pool", default=f"{ROOT}/validation/fold/pool.csv")
+    ap.add_argument("--roles", default=f"{ROOT}/validation/fold/chain_roles.csv")
+    ap.add_argument("--ckpt", default="", help="a head state dict from phase_k_train; empty = shipped")
+    ap.add_argument("--ckpt-dir", default="/home/ebrahim/checkpoint")
+    ap.add_argument("--model-name", default="protenix-v2")
+    ap.add_argument("--budget", type=int, default=100, help="seeds per interface, from --seed-base")
+    ap.add_argument("--seed-base", type=int, default=400000)
+    ap.add_argument("--iptm-tol", type=float, default=2e-3,
+                    help="how closely the recomputed ipTM must reproduce results.csv with the "
+                         "SHIPPED head. bf16 trunk tensors are stored and reloaded and the head runs "
+                         "under autocast, so exact equality is not the bar.")
+    ap.add_argument("--no-self-check", action="store_true")
+    ap.add_argument("--allow-roles-fallback", action="store_true",
+                    help="use chain_roles.csv when OST's per-pose mapping is unusable. OFF by "
+                         "default: that table assigns one model chain per reference chain for the "
+                         "whole structure, which is measured WRONG for chemically identical chains "
+                         "(9eg6 on every pose, 7zra on some), and --ckpt runs skip the self-check "
+                         "that caught it. An unmapped chain that is FORCED by elimination needs no "
+                         "fallback and no flag.")
+    ap.add_argument("--selfcheck-out", default="",
+                    help="write EVERY row that fails the self-check to this csv, so the failure can "
+                         "be analysed without re-running the evaluator.")
+    ap.add_argument("--limit-units", type=int, default=0)
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="report a metric that does NOT cover its stated budget: missing trunks, "
+                         "poses without DockQ, or interfaces of unequal depth. OFF by default, "
+                         "because a number labelled 'budget 100' computed from one seed is worse "
+                         "than no number.")
+    ap.add_argument("--out", default="")
+    # ---- SHARDING. The evaluator is embarrassingly parallel: every unit loads its own trunk and
+    # scores independently, so nothing has to be communicated between shards and no process group
+    # is needed -- which also keeps it clear of the NCCL fault on this box. A shard does the GPU
+    # work for its slice and writes per-pose ROWS; the aggregate checks (self-check, coverage,
+    # metric) can only be judged on the UNION, so they run once in --rows-in mode, on CPU.
+    ap.add_argument("--shard", type=int, default=0)
+    ap.add_argument("--nshards", type=int, default=1)
+    ap.add_argument("--rows-out", default="",
+                    help="write this shard's per-pose rows here and exit before the aggregate "
+                         "checks, which are meaningless on a slice.")
+    ap.add_argument("--rows-in", default="",
+                    help="comma-separated row csvs from --rows-out. Runs the self-check, the "
+                         "coverage contract and the metric on their union, on CPU, with no model.")
+    a = ap.parse_args()
+
+    if a.rows_in:
+        merge_rows(a)
+        return
+
+    import torch
+    import phase_j_rescore_cache as RC
+    import phase_j_build_cache as BC
+
+    pairs_by_pdb, unresolved = interface_chain_pairs(a.pool, a.roles)
+    refs_by_pdb = pool_ref_pairs(a.pool)
+    n_ost, n_static, n_differ, differ_pdbs = 0, 0, 0, collections.Counter()
+    unmapped = []
+    if unresolved:
+        raise SystemExit(f"STOP: {len(unresolved)} pool interface(s) cannot be mapped to model "
+                         f"chains via {a.roles}: {unresolved[:6]}. The metric would silently cover "
+                         f"a subset.")
+    want_ifaces = {i for v in pairs_by_pdb.values() for i, _x, _y in v}
+    print(f"pool: {len(want_ifaces)} interface(s) over {len(pairs_by_pdb)} structure(s)")
+
+    # join 3, read once
+    dockq, stored_iptm = {}, {}
+    with open(a.results) as fh:
+        for r in csv.DictReader(fh):
+            try:
+                k = (r["iface"], int(r["seed"]), int(r["sample"]))
+                dockq[k] = float(r["dockq"]); stored_iptm[k] = float(r["iptm"])
+            except (TypeError, ValueError):
+                pass
+    print(f"results.csv: {len(dockq)} scored (iface, seed, sample) row(s)")
+
+    # EVERY INTENDED UNIT, AND A MISSING TRUNK IS FATAL. This appended only the trunks that
+    # happened to exist, so a "100-seed" metric could be computed from one seed and still print
+    # "budget 100" -- review round 9 reproduced exactly that. The budget is a CLAIM about coverage,
+    # so it is enforced rather than described.
+    units, missing_trunk = [], []
+    for pdb in sorted(pairs_by_pdb):
+        for sd_ in range(a.seed_base, a.seed_base + a.budget):
+            tp = os.path.join(a.fold, "trunks", pdb, f"free_{sd_}.npz")
+            (units if os.path.exists(tp) else missing_trunk).append(
+                (pdb, sd_, tp) if os.path.exists(tp) else f"{pdb}/free_{sd_}")
+    if missing_trunk and not a.allow_partial:
+        raise SystemExit(
+            f"STOP: {len(missing_trunk)} of {len(pairs_by_pdb)*a.budget} intended unit(s) have no "
+            f"trunk under {a.fold}/trunks, e.g. {missing_trunk[:5]}.\n  A metric labelled "
+            f"'budget {a.budget}' must cover {a.budget} seeds for every structure. Lower --budget, "
+            f"or pass --allow-partial to report a number that does NOT mean what its label says.")
+    if a.limit_units:
+        if not a.allow_partial:
+            raise SystemExit("STOP: --limit-units subsets the data, so the metric would not be the "
+                             "metric. Pass --allow-partial to acknowledge that explicitly.")
+        units = units[:a.limit_units]
+    if a.nshards > 1:
+        if not a.rows_out:
+            raise SystemExit("STOP: --nshards without --rows-out would compute a metric from a "
+                             "slice and label it with the full budget. A shard writes rows; the "
+                             "metric is computed once, in --rows-in mode, over their union.")
+        # STRIDED, not contiguous. units are ordered by structure, and structure sizes vary 2-3x, so
+        # contiguous blocks would hand one shard the large complexes. A stride interleaves them.
+        units = units[a.shard::a.nshards]
+        print(f"shard {a.shard} of {a.nshards}: {len(units)} unit(s)")
+    print(f"units: {len(units)} of {len(pairs_by_pdb)*a.budget} intended "
+          f"({len(pairs_by_pdb)} structures x {a.budget} seeds)"
+          + ("  [PARTIAL -- --allow-partial]" if a.allow_partial else ""))
+
+    # THE MODEL IS LOADED LAST, after everything that can be checked from the filesystem has
+    # been. Enumerating units after the build meant a coverage failure cost a 40 s model load and
+    # needed a free GPU to even observe, which is also why it could not be tested without one.
+    if os.environ.get("LAYERNORM_TYPE") != "openfold":
+        raise SystemExit("STOP: set LAYERNORM_TYPE=openfold (without it coordinates are NaN)")
+    dev = torch.device("cuda")
+    model, configs = RC.build_model(a.ckpt_dir, a.model_name, dev)
+    if a.ckpt:
+        sd = torch.load(a.ckpt, map_location="cpu")
+        have = dict(model.named_parameters())
+        missing = [k for k in sd if k not in have]
+        if missing:
+            raise SystemExit(f"STOP: {a.ckpt} has {len(missing)} tensor(s) absent from the model, "
+                             f"e.g. {missing[:4]}")
+        with torch.no_grad():
+            for k, v in sd.items():
+                have[k].data.copy_(v.to(have[k].device))
+        print(f"loaded {len(sd)} head tensor(s) from {a.ckpt}")
+    else:
+        print("using the SHIPPED head (no --ckpt)")
+
+    rows, selfchk, n_nosample = [], [], 0
+    for n, (pdb, sd_, tp) in enumerate(units, 1):
+        feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
+        summ = RC.confidence(model, configs, feat, s_in, s_tr, z, x, nc)
+        summ = summ if isinstance(summ, (list, tuple)) else [summ]
+        # join 2: pose -> sample, by coordinate identity. The pose DIRECTORY is itself resolved by
+        # the trunk, because a refold leaves two finished directories for one seed and neither
+        # filesystem order nor poses/index.tsv says which run wrote this trunk.
+        px = x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
+        try:
+            unit_dir, ks = BC.resolve_seed_dir(a.fold, pdb, sd_, px, 0.01, 0.5)
+        except Exception as e:
+            n_nosample += 1
+            if n_nosample <= 5:
+                print(f"  {pdb}/{sd_}: cannot join poses to samples ({type(e).__name__}: "
+                      f"{str(e)[:90]})")
+            continue
+        for i, s_i in enumerate(summ):
+            cpi = s_i["chain_pair_iptm"]
+            cpi = cpi.detach().cpu().numpy() if hasattr(cpi, "detach") else np.asarray(cpi)
+            cpi = cpi[0] if cpi.ndim == 3 else cpi
+            k = int(ks[i])
+            # JOIN 1, PER POSE. OST's own chain mapping for THIS pose, falling back to the static
+            # chain_roles table only when it cannot be read -- and counting both, so the output says
+            # how much of the metric rests on which.
+            pose_pairs, why = ost_chain_pairs(unit_dir, pdb, k, refs_by_pdb[pdb])
+            if pose_pairs is None:
+                # NO SILENT FALLBACK. chain_roles has been measured wrong for chemically identical
+                # chains, and with --ckpt the self-check that would have caught it does not run, so
+                # an unresolvable mapping is recorded and the run stops rather than scoring.
+                n_static += 1
+                unmapped.append(f"{pdb}/{sd_} sample {k}: {why}")
+                if a.allow_roles_fallback:
+                    pose_pairs = pairs_by_pdb[pdb]
+                else:
+                    continue
+            else:
+                n_ost += 1
+                if pose_pairs != pairs_by_pdb[pdb]:
+                    n_differ += 1
+                    differ_pdbs[pdb] += 1
+            for iface, ai, aj in pose_pairs:
+                if max(ai, aj) >= cpi.shape[0]:
+                    continue
+                v = float(cpi[ai, aj])
+                key = (iface, sd_, k)
+                rows.append((iface, sd_, k, v, dockq.get(key)))
+                if key in stored_iptm:
+                    # THE KEY, NOT JUST THE MAGNITUDE. Reporting "1014 rows disagree, max 0.2378"
+                    # says a join is wrong and nothing about WHICH, so the next step is a 73-minute
+                    # re-run to find out. Carrying the key costs nothing and makes the failure
+                    # actionable: whether it is a handful of interfaces (join 1), a set of seeds
+                    # (join 2) or scattered (join 3) is visible in the output itself.
+                    selfchk.append((abs(v - stored_iptm[key]), iface, sd_, k,
+                                    v, stored_iptm[key]))
+        if n % 200 == 0:
+            print(f"  ...{n}/{len(units)} units", flush=True)
+
+    if n_nosample:
+        raise SystemExit(f"STOP: {n_nosample} unit(s) could not be joined to their sample cifs. "
+                         f"Selecting a pose and reading another sample's DockQ would score the "
+                         f"wrong thing, so this is fatal rather than skipped.")
+
+    print(f"\njoin 1: OST's per-pose chain mapping used on {n_ost} pose(s), unresolvable on "
+          f"{n_static}")
+    if a.rows_out:
+        # The shard's own work is done and verified per pose: every unit joined to its samples, and
+        # every pose's chain pair resolved from OST or refused. What CANNOT be judged here is
+        # coverage -- a shard holds a slice by construction -- so the rows go out and the aggregate
+        # checks wait for the union.
+        if unmapped:
+            for u in unmapped[:10]:
+                print(f"    {u}")
+            raise SystemExit(f"STOP: {len(unmapped)} pose(s) in this shard have no usable OST chain "
+                             f"mapping and none forced by elimination.")
+        with open(a.rows_out, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["iface", "seed", "sample", "iptm", "dockq", "stored_iptm"])
+            for iface, sd2, k2, v2, dq in rows:
+                key = (iface, sd2, k2)
+                sv = stored_iptm.get(key)
+                w.writerow([iface, sd2, k2, f"{v2:.6f}",
+                            "" if dq is None else f"{dq:.4f}",
+                            "" if sv is None else f"{sv:.6f}"])
+        with open(a.rows_out + ".meta.json", "w") as fh:
+            json.dump({"shard": a.shard, "nshards": a.nshards, "units": len(units),
+                       "rows": len(rows), "n_ost": n_ost, "n_unresolvable": n_static,
+                       "n_differ": n_differ, "differ_pdbs": dict(differ_pdbs),
+                       "budget": a.budget, "ckpt": a.ckpt}, fh, indent=1)
+        print(f"shard {a.shard}: {len(rows)} row(s) -> {a.rows_out}")
+        return
+    if unmapped and not a.allow_roles_fallback:
+        for u in unmapped[:10]:
+            print(f"    {u}")
+        raise SystemExit(
+            f"STOP: {len(unmapped)} pose(s) have no usable OST chain mapping and none that is forced "
+            f"by elimination. chain_roles.csv is NOT an acceptable substitute -- it is measured wrong "
+            f"for chemically identical chains, and with --ckpt the shipped-head self-check does not "
+            f"run, so a wrong chain pair here would mis-score silently. Pass "
+            f"--allow-roles-fallback only if you have established the static table is right for "
+            f"these structures, and say why.")
+    if unmapped:
+        print(f"  FELL BACK to chain_roles on {len(unmapped)} pose(s) because "
+              f"--allow-roles-fallback was given; the static table is wrong for chemically "
+              f"identical chains, so this metric is only as good as that assumption")
+    if n_differ:
+        print(f"  the two DISAGREED on {n_differ} pose(s), across {len(differ_pdbs)} structure(s): "
+              + ", ".join(f"{k}:{v}" for k, v in differ_pdbs.most_common(8)))
+        print(f"  OST's is authoritative -- it is the mapping results.csv's own DockQ was computed "
+              f"under, and for chemically identical chains a static table cannot be right for every "
+              f"pose.")
+
+    aggregate(a, rows, selfchk, want_ifaces)
 
 if __name__ == "__main__":
     sys.exit(main())
