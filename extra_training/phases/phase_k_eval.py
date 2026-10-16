@@ -34,6 +34,7 @@ import collections
 import csv
 import functools
 import glob
+import json
 import os
 import statistics
 import sys
@@ -70,6 +71,67 @@ def interface_chain_pairs(pool_csv, roles_csv):
     return out, unresolved
 
 
+def pool_ref_pairs(pool_csv):
+    """{pdb: [(iface_id, ref_chain_1, ref_chain_2)]} -- the pool, in REFERENCE chain letters.
+
+    The interface id is built from the reference letters because that is what results.csv's `iface`
+    column holds; the MODEL chains those letters correspond to is a separate question, answered per
+    pose by ost_chain_pairs.
+    """
+    out = collections.defaultdict(list)
+    with open(pool_csv) as fh:
+        for r in csv.DictReader(fh):
+            pdb, c1, c2 = r["pdb"], r["chain1"], r["chain2"]
+            out[pdb].append((f"{pdb}_{c1}{c2}", c1, c2))
+    return out
+
+
+def ost_chain_pairs(unit_dir, pdb, k, refs):
+    """Join 1 FOR ONE POSE: [(iface_id, asym_i, asym_j)] from OST's own chain mapping.
+
+    WHY THIS IS PER POSE AND NOT A STATIC TABLE. chain_roles.csv assigns each model chain one
+    reference chain for the whole structure. That is unanswerable when two reference chains are
+    chemically identical: 9eg6 and 7zra -- the only two validation structures with more than one
+    antigen chain -- each carry two antigen copies with IDENTICAL sequences, so which model chain is
+    "the first antigen" is not determined by sequence. OST decides it per pose, by whichever
+    assignment scores best, and writes the decision to ost_json/<k>.json as `chain_mapping`.
+
+    Measured on 2026-10-16: chain_roles is consistently swapped against OST for 9eg6 (samples 0, 1
+    and 2 alike) and swapped for only SOME poses of 7zra (sample 0 yes, samples 1 and 2 no). The
+    static table therefore cannot be repaired by correcting it -- for 7zra there is no single correct
+    answer. Using the static table made the evaluator read one interface's ipTM against the other
+    interface's DockQ on 1,014 of 46,000 rows, which is what GATE 1 refused.
+
+    DIRECTION: OST's chain_mapping is REFERENCE -> MODEL. Established on 7r58, whose three chains are
+    chemically distinct so its mapping is unambiguous: OST's {'A':'C','B':'A','C':'B'} inverts to
+    exactly chain_roles' model->ref {'A':'B','B':'C','C':'A'}.
+
+    Model chains are lettered A, B, C... in asym_id order by write_job_cif, so a letter's position in
+    the alphabet IS its asym index.
+    """
+    f = os.path.join(unit_dir, "ost_json", f"{k}.json")
+    if not os.path.exists(f):
+        return None, f"no {os.path.basename(f)}"
+    with open(f) as fh:
+        j = json.load(fh)
+    # THE INDEX IS ASSERTED, NOT ASSUMED. ost_json/<k>.json is paired with _sample_<k>.cif by
+    # filename only; reading the wrong pose's mapping would reintroduce exactly the defect this
+    # function exists to fix, and silently.
+    mdl = str(j.get("model", ""))
+    if not mdl.endswith(f"_sample_{k}.cif"):
+        return None, f"{os.path.basename(f)} describes {os.path.basename(mdl)}, not sample {k}"
+    cm = j.get("chain_mapping")
+    if not isinstance(cm, dict):
+        return None, f"{os.path.basename(f)} has no chain_mapping"
+    pairs = []
+    for iface, c1, c2 in refs:
+        m1, m2 = cm.get(c1), cm.get(c2)
+        if not m1 or not m2 or len(m1) != 1 or len(m2) != 1:
+            return None, f"{iface}: chain_mapping has no single model chain for {c1}/{c2}"
+        pairs.append((iface, ord(m1) - ord("A"), ord(m2) - ord("A")))
+    return pairs, ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", default=f"{ROOT}/validation/fold")
@@ -86,6 +148,9 @@ def main():
                          "SHIPPED head. bf16 trunk tensors are stored and reloaded and the head runs "
                          "under autocast, so exact equality is not the bar.")
     ap.add_argument("--no-self-check", action="store_true")
+    ap.add_argument("--selfcheck-out", default="",
+                    help="write EVERY row that fails the self-check to this csv, so the failure can "
+                         "be analysed without re-running the evaluator.")
     ap.add_argument("--limit-units", type=int, default=0)
     ap.add_argument("--allow-partial", action="store_true",
                     help="report a metric that does NOT cover its stated budget: missing trunks, "
@@ -100,6 +165,8 @@ def main():
     import phase_j_build_cache as BC
 
     pairs_by_pdb, unresolved = interface_chain_pairs(a.pool, a.roles)
+    refs_by_pdb = pool_ref_pairs(a.pool)
+    n_ost, n_static, n_differ, differ_pdbs = 0, 0, 0, collections.Counter()
     if unresolved:
         raise SystemExit(f"STOP: {len(unresolved)} pool interface(s) cannot be mapped to model "
                          f"chains via {a.roles}: {unresolved[:6]}. The metric would silently cover "
@@ -186,14 +253,34 @@ def main():
             cpi = cpi.detach().cpu().numpy() if hasattr(cpi, "detach") else np.asarray(cpi)
             cpi = cpi[0] if cpi.ndim == 3 else cpi
             k = int(ks[i])
-            for iface, ai, aj in pairs_by_pdb[pdb]:
+            # JOIN 1, PER POSE. OST's own chain mapping for THIS pose, falling back to the static
+            # chain_roles table only when it cannot be read -- and counting both, so the output says
+            # how much of the metric rests on which.
+            pose_pairs, why = ost_chain_pairs(unit_dir, pdb, k, refs_by_pdb[pdb])
+            if pose_pairs is None:
+                n_static += 1
+                if n_static <= 5:
+                    print(f"  {pdb}/{sd_} sample {k}: falling back to chain_roles ({why})")
+                pose_pairs = pairs_by_pdb[pdb]
+            else:
+                n_ost += 1
+                if pose_pairs != pairs_by_pdb[pdb]:
+                    n_differ += 1
+                    differ_pdbs[pdb] += 1
+            for iface, ai, aj in pose_pairs:
                 if max(ai, aj) >= cpi.shape[0]:
                     continue
                 v = float(cpi[ai, aj])
                 key = (iface, sd_, k)
                 rows.append((iface, sd_, k, v, dockq.get(key)))
                 if key in stored_iptm:
-                    selfchk.append(abs(v - stored_iptm[key]))
+                    # THE KEY, NOT JUST THE MAGNITUDE. Reporting "1014 rows disagree, max 0.2378"
+                    # says a join is wrong and nothing about WHICH, so the next step is a 73-minute
+                    # re-run to find out. Carrying the key costs nothing and makes the failure
+                    # actionable: whether it is a handful of interfaces (join 1), a set of seeds
+                    # (join 2) or scattered (join 3) is visible in the output itself.
+                    selfchk.append((abs(v - stored_iptm[key]), iface, sd_, k,
+                                    v, stored_iptm[key]))
         if n % 200 == 0:
             print(f"  ...{n}/{len(units)} units", flush=True)
 
@@ -202,16 +289,45 @@ def main():
                          f"Selecting a pose and reading another sample's DockQ would score the "
                          f"wrong thing, so this is fatal rather than skipped.")
 
+    print(f"\njoin 1: OST's per-pose chain mapping used on {n_ost} pose(s), chain_roles fallback on "
+          f"{n_static}")
+    if n_differ:
+        print(f"  the two DISAGREED on {n_differ} pose(s), across {len(differ_pdbs)} structure(s): "
+              + ", ".join(f"{k}:{v}" for k, v in differ_pdbs.most_common(8)))
+        print(f"  OST's is authoritative -- it is the mapping results.csv's own DockQ was computed "
+              f"under, and for chemically identical chains a static table cannot be right for every "
+              f"pose.")
+
     # ---- THE SELF-CHECK
     if not a.ckpt and not a.no_self_check:
         if not selfchk:
             raise SystemExit("STOP: no recomputed ipTM could be compared against results.csv, so "
                              "the three joins are unverified and no metric below means anything.")
-        mx = max(selfchk)
-        over = sum(1 for d in selfchk if d > a.iptm_tol)
+        mx = max(d for d, *_ in selfchk)
+        bad = [t for t in selfchk if t[0] > a.iptm_tol]
+        over = len(bad)
         print(f"\nSELF-CHECK vs results.csv: {len(selfchk)} row(s), max |diff| {mx:.6f}, "
               f"{over} over --iptm-tol {a.iptm_tol}")
         if over:
+            # WHICH ROWS, GROUPED THE WAY THE THREE JOINS WOULD FAIL. An interface wrong in join 1
+            # is wrong at EVERY seed, so it shows as a near-complete count; a join-2 problem hits
+            # particular seeds of particular structures; a join-3 problem is scattered.
+            per_if = collections.Counter(t[1] for t in bad)
+            tot_if = collections.Counter(t[1] for t in selfchk)
+            print(f"  offending interfaces: {len(per_if)} of {len(tot_if)} compared")
+            for ifc, c in per_if.most_common(15):
+                print(f"    {ifc}: {c} of {tot_if[ifc]} row(s), "
+                      f"worst {max(t[0] for t in bad if t[1] == ifc):.6f}")
+            worst = sorted(bad, key=lambda t: -t[0])[:5]
+            print("  worst rows (iface, seed, sample: recomputed vs stored):")
+            for d, ifc, sd2, k2, v2, sv in worst:
+                print(f"    {ifc} {sd2} s{k2}: {v2:.4f} vs {sv:.4f}  (|diff| {d:.4f})")
+            if a.selfcheck_out:
+                with open(a.selfcheck_out, "w") as fh:
+                    fh.write("iface,seed,sample,recomputed_iptm,stored_iptm,abs_diff\n")
+                    for d, ifc, sd2, k2, v2, sv in sorted(bad, key=lambda t: -t[0]):
+                        fh.write(f"{ifc},{sd2},{k2},{v2:.6f},{sv:.6f},{d:.6f}\n")
+                print(f"  every offending row written to {a.selfcheck_out}")
             raise SystemExit(f"STOP: the shipped head does not reproduce {over} stored ipTM value(s). "
                              f"One of the three joins -- interface->chain pair, pose->sample, or "
                              f"(iface,seed,sample)->DockQ -- is wrong.")
