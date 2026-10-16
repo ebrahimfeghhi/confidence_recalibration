@@ -128,9 +128,12 @@ def line_chart(series, *, xlab, ylab, width=760, height=260, refs=(), xint=False
     return "\n".join(o)
 
 
-def build(run, summ, generated):
+def build(run, summ, generated, gen_epoch=0):
     a, base = run["args"], run["baseline"]
     cfg, stat = run.get("config") or {}, run.get("status") or {}
+    # THE EFFECTIVE BATCH, not the requested one: 256 over three ranks is 85 each and 255 in total.
+    eff, local, world = R.effective_batch(run)
+    batch = eff if eff else a.get("accum", "?")
     # THE COMMIT AND THE REASON FOR THE LAUNCH, on the page rather than only in config.json. A curve
     # cannot be compared with another unless the code behind it is identifiable, and a run that was
     # a restart should say what it was a restart FROM.
@@ -158,7 +161,7 @@ def build(run, summ, generated):
              ("PDE", "c", [(p["step"], p["pde_loss"]) for p in steps if p["pde_loss"] is not None]),
              ("resolved", "d", [(p["step"], p["resolved_loss"]) for p in steps if p["resolved_loss"] is not None])]
     c1 = line_chart([("total", "t", total)] + comps,
-                    xlab=f"optimiser step  (one step = {a.get('accum', '?')} poses)",
+                    xlab=f"optimiser step  (one step = {batch} poses)",
                     ylab="summed confidence loss",
                     note="waiting for the first optimiser step")
 
@@ -292,7 +295,8 @@ summary:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
   <h1>FT3 Confidence Finetune</h1>
   <p class="sub">Confidence head only, 19.8M of 464.4M parameters, trunk frozen. Target to beat:
     <code>{beat_s}</code> mean DockQ, the shipped head scored by this same evaluator.
-    Generated {html.escape(generated)} from <code>{html.escape(os.path.basename(run['out_dir']))}</code>.</p>
+    Generated {html.escape(generated)} from <code>{html.escape(os.path.basename(run['out_dir']))}</code>,
+    <span id="age" data-gen="{gen_epoch}">just now</span>.</p>
   {f'<p class="sub" style="margin-top:-14px">{prov}</p>' if prov else ''}
 
   {warn}
@@ -310,8 +314,10 @@ summary:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
 
   <section>
     <h2>Training loss per batch</h2>
-    <p class="axes">x: optimiser step &mdash; one step is {a.get('accum','?')} poses
-      ({a.get('accum','?')}&nbsp;&divide;&nbsp;3 ranks, summed). y: the confidence loss, as the sum of
+    <p class="axes">x: optimiser step &mdash; one step is <strong>{batch}</strong> poses
+      ({local} per rank &times; {world} ranks; <code>--accum {a.get('accum','?')}</code> is the
+      request, and {a.get('accum','?')}&nbsp;&divide;&nbsp;{world} does not divide evenly).
+      y: the confidence loss, as the sum of
       its four terms. One point is one step, not one pose. Raw terms, unweighted
       (<code>alpha_confidence = {a.get('alpha_confidence','?')}</code>).</p>
     <div class="chartbox">{c1}</div>
@@ -355,6 +361,27 @@ summary:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
       <dl class="kvs">{rest}</dl></details>
   </section>
 
+  <script>
+  // How old is this page? The records are re-rendered every 5 minutes on the machine, but the
+  // published page changes only when it is republished, so the gap is shown rather than hidden.
+  (function () {{
+    var el = document.getElementById("age");
+    if (!el) return;
+    var gen = parseInt(el.getAttribute("data-gen"), 10) * 1000;
+    function tick() {{
+      if (!gen) return;
+      var mins = Math.floor((Date.now() - gen) / 60000);
+      el.textContent = mins < 1 ? "less than a minute ago"
+        : mins === 1 ? "1 minute ago"
+        : mins < 90 ? mins + " minutes ago"
+        : Math.round(mins / 60) + " hours ago";
+      el.style.color = mins > 20 ? "var(--warn)" : "";
+    }}
+    tick();
+    setInterval(tick, 30000);
+  }})();
+  </script>
+
   <p class="foot">Records: <code>trajectory.csv</code> (one row per pose),
     <code>metric_ep&lt;N&gt;.json</code> (one per epoch), <code>args.json</code>. Rendered by
     <code>run_logging/render_report.py</code>; re-run it to refresh. The trainer carries no viewer
@@ -383,9 +410,13 @@ def main():
     run = R.read_run(a.run, a.baseline)
     summ = R.summarise(run)
     gen = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+    # The epoch seconds go in too, so the page can say how stale it is. The FILE is re-rendered
+    # every 5 min by watch.sh, but the PUBLISHED page only changes when it is republished, so a
+    # reader needs to see the gap rather than assume there is none.
+    gen_epoch = int(datetime.datetime.now().timestamp())
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, "w") as fh:
-        fh.write(build(run, summ, gen))
+        fh.write(build(run, summ, gen, gen_epoch))
     print(f"{a.out}: epoch {summ['epoch']}, {summ['steps']} step(s), {summ['poses']} pose(s), "
           f"{summ['evals']} val point(s)")
     for w in run["warnings"]:

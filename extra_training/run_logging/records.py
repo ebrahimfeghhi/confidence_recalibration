@@ -117,6 +117,34 @@ def read_run(out_dir, baseline_path=""):
     return out
 
 
+def effective_batch(run):
+    """The poses that ACTUALLY contribute to one optimiser step, which is not --accum.
+
+    --accum is a request: the trainer splits it across ranks as accum // world, so 256 over three
+    ranks is 85 each and 255 in total. The report printed the requested 256 and was wrong by a pose
+    per rank. Derived here from the records rather than recomputed from the arguments, because the
+    trajectory shows what happened: the gap between step_taken rows IS the per-rank accumulation.
+    """
+    steps = [i for i, p in enumerate(run["poses"]) if p["step_taken"]]
+    gaps = [steps[i] - steps[i - 1] for i in range(1, len(steps))]
+    local = None
+    if gaps:
+        local = sorted(gaps)[len(gaps) // 2]
+    world = (run.get("config") or {}).get("nproc")
+    if not world:
+        # Count the ranks that announced themselves, so a run without a config still resolves.
+        try:
+            with open(os.path.join(run["out_dir"], "run.log")) as fh:
+                import re
+                world = max((int(m.group(1)) for m in
+                             re.finditer(r"\[rank \d+/(\d+)\]", fh.read())), default=None)
+        except OSError:
+            world = None
+    if local and world:
+        return local * world, local, world
+    return run["args"].get("accum"), local, world
+
+
 def summarise(run):
     """The few numbers a reader wants before any chart: where the run is and whether it is healthy."""
     poses, steps, args = run["poses"], run["steps"], run["args"]
