@@ -107,7 +107,7 @@ mkdir -p $PROTENIX_ROOT_DIR/search_database
 ## 4. The build
 
 ```bash
-export REPO=/path/to/tts_abag
+export REPO=/home/ebrahim/confidence_recalibration
 export MMSEQS=$REPO/tools/mmseqs/bin/mmseqs
 export CF=$REPO/envs/colabfold/bin/colabfold_search
 export DB=$REPO/tools/colabfold/db

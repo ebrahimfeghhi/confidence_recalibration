@@ -1,5 +1,5 @@
 """
-Centralized paths for the tts_abag benchmark.
+Centralized paths for the confidence_recalibration benchmark (formerly tts_abag).
 
 Single source of truth for every absolute path the run / eval / plot / analysis
 scripts depend on. Each value defaults to a location under $HOME and can be
@@ -13,7 +13,7 @@ dirs until they find this file, add the repo root to sys.path, then
 the model venvs without needing an editable install.
 
 NOTE: this module points at *existing* data/output locations in the original
-repos. The tts_abag repo holds scripts only — predictions and ground-truth data
+repos. This repo holds scripts only — predictions and ground-truth data
 are NOT moved here.
 """
 

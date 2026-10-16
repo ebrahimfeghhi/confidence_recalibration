@@ -25,10 +25,15 @@
 set -u
 cd "$(dirname "$0")"
 
-DB="${DB:-/home/ebrahim/tts_abag/tools/colabfold/db}"
+# THE REPO ROOT IS DERIVED, NOT HARDCODED. These three paths were absolute under the repo's
+# old name (tts_abag) and silently broke when it was renamed; two levels up from
+# tools/colabfold is the root whatever the directory is called.
+REPO="$(cd ../.. && pwd)"
+
+DB="${DB:-$REPO/tools/colabfold/db}"
 CORES="${CORES:-0-31}"          # 64 is the hard cap on this box; 32 leaves room for the fold workers
 mkdir -p "$DB"
-export PATH="/home/ebrahim/tts_abag/tools/mmseqs/bin:$PATH"
+export PATH="$REPO/tools/mmseqs/bin:$PATH"
 
 log() { echo "[$(date '+%F %T')] $*"; }
 

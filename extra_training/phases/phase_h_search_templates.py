@@ -24,7 +24,7 @@ WHY UP FRONT AND SINGLE-PROCESS
 
 THE DATABASE is pdb_seqres_2022_09_28.fasta. template_search.py downloads it to
     $PROTENIX_ROOT_DIR/search_database/ on first use, so PROTENIX_ROOT_DIR is set by the caller to keep
-    it inside tts_abag rather than $HOME.
+    it inside this repo rather than $HOME.
 
 INPUTS   --jobs-dir: the directory of validation job jsons. Each is rewritten in place with its
                      templatesPath fields pointing at the hmmsearch.a3m that now exists.
@@ -91,7 +91,7 @@ import sys
 
 # PROTENIX_ROOT_DIR IS SET HERE, not left to the caller. template_search.py downloads
 # pdb_seqres_2022_09_28.fasta to $PROTENIX_ROOT_DIR/search_database/ on first use, and with the
-# variable unset that lands in $HOME -- outside tts_abag, which everything in this project is
+# variable unset that lands in $HOME -- outside the repo, which everything in this project is
 # supposed to stay inside, and on a quota that is not the one we manage.
 # the repo root, from this file, so renaming the checkout needs no edit here
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
