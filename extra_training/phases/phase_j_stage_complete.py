@@ -33,6 +33,25 @@ from run_model.folder import interfaces_by_pdb, open_csv, iface_scored   # ONE d
 import paths                                                          # repo root, not run_model/
 
 
+
+def trunk_resolves(fold, pdb, seed, trunk, tol, margin):
+    """True when the cached trunk picks exactly one of a seed's several finished pose directories.
+
+    The cheap test comes first: with no trunk on disk there is nothing to arbitrate with, so the
+    ambiguity stands. Only ambiguous units reach the cif parsing, which is why this stays out of
+    the hot path -- an unambiguous unit never calls it.
+    """
+    if not os.path.exists(trunk):
+        return False
+    try:
+        import phase_j_build_cache as _BCr
+        _z, _f, poses = _BCr.load_trunk(trunk)
+        _BCr.resolve_seed_dir(fold, pdb, seed, poses, tol, margin)
+        return True
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", required=True, help="the fold root: trunks/, poses/, results.csv")
@@ -51,6 +70,9 @@ def main():
                     help="require EVERY interface scored. Off by default: see TERMINAL below.")
     ap.add_argument("--partial-out", default="", help="write the partially scored units to a csv")
     ap.add_argument("--verbose", action="store_true")
+    # Same defaults as build_cache's --coord-tol/--coord-margin, because this is the same join.
+    ap.add_argument("--coord-tol", type=float, default=0.01)
+    ap.add_argument("--coord-margin", type=float, default=0.5)
     a = ap.parse_args()
 
     ds = paths.DATASETS[a.dataset]
@@ -116,8 +138,14 @@ def main():
         elif len(pdirs) == 0:
             no_pose += 1
             why = "NO finished pose dir" if a.no_trunk else "trunk but NO finished pose dir"
-        elif len(pdirs) > 1:
-            bad_pose += 1; why = f"{len(pdirs)} finished pose dirs (build_cache will refuse)"
+        elif len(pdirs) > 1 and not trunk_resolves(a.fold, pdb, seed, trunk, a.coord_tol,
+                                                    a.coord_margin):
+            # TWO FINISHED POSE DIRECTORIES IS NOT AUTOMATICALLY BROKEN. A refold writes a second
+            # one for the same seed -- 1,600 of the 5,300 validation units -- and the trunk says
+            # which run wrote it, so build_cache and the evaluator both resolve it. The unit is
+            # incomplete only when the trunk resolves to neither directory or to both.
+            bad_pose += 1
+            why = f"{len(pdirs)} finished pose dirs and the trunk resolves to no single one"
         elif not scored:
             if not a.strict_scores and (pdb, arm, seed) in term:
                 partial += 1          # the worker finished with it; see TERMINAL above

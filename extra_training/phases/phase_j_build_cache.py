@@ -102,6 +102,43 @@ def seed_dir(fold, pdb, seed):
     return dirs[0]
 
 
+def seed_dirs_all(fold, pdb, seed):
+    """Every FINISHED pose directory of (pdb, seed), sorted so the order is reproducible."""
+    return sorted(d for d in glob.glob(f"{fold}/poses/{pdb}/{seed}-*")
+                  if os.path.exists(os.path.join(d, "run.json")))
+
+
+def resolve_seed_dir(fold, pdb, seed, poses, tol, margin):
+    """The pose directory whose sample cifs ARE `poses`, with that unit's sample indices.
+
+    A REFOLD LEAVES TWO FINISHED DIRECTORIES FOR ONE SEED, so seed_dir's "exactly one finished
+    directory" cannot choose between them: the validation set's 16 refolded structures (1,600 of
+    5,300 units) each keep the original run and the refold, and both hold a run.json. Nor can
+    `poses/index.tsv` choose -- it was written by the original fold and never updated, so it names
+    the superseded run, measured wrong on 5 of 5 spot-checked 22gi seeds. Filesystem order is not
+    evidence either; the caller that took `glob(...)[0]` was right only by luck.
+
+    THE TRUNK IS THE ARBITER. `ci_coordinate` was written by exactly one of the runs, so exactly
+    one directory's cifs join to it under sample_indices' identity contract. This adds no threshold
+    of its own -- a directory qualifies only if sample_indices already accepts it, and on 22gi the
+    true directory matches at 0.0000 A while the superseded one sits 0.026-3.118 A away, far
+    outside `tol`. Zero or two qualifying directories is refused rather than guessed at.
+    """
+    dirs = seed_dirs_all(fold, pdb, seed)
+    if not dirs:
+        raise ValueError(f"no finished pose directory for {pdb} seed {seed}")
+    ok, why = [], []
+    for d in dirs:
+        try:
+            ok.append((d, sample_indices(poses, sample_cifs(d, pdb), tol, margin)))
+        except Exception as e:
+            why.append(f"{os.path.basename(d)} [{type(e).__name__}: {e}]")
+    if len(ok) != 1:
+        raise ValueError(f"{len(ok)} of {len(dirs)} pose directory(ies) for {pdb} seed {seed} join "
+                         f"to the cached trunk, need exactly 1; rejected: " + "; ".join(why))
+    return ok[0]
+
+
 def sample_cifs(unit_dir, pdb):
     """The `_sample_<k>.cif` files of a unit, in k order, under EITHER on-disk layout.
 
@@ -651,8 +688,12 @@ def main():
                                                item["label_full_dict"])
             z, feat_npz, poses = load_trunk(up)
             check_alignment(feat_npz, feat_ds, pdb)
-            ud = seed_dir(a.fold, pdb, arm_seed.split("_")[-1])
-            ks = sample_indices(poses, sample_cifs(ud, pdb), a.coord_tol, a.coord_margin)
+            # The pose directory is resolved BY THE TRUNK, not by seed_dir's "exactly one finished
+            # directory": a refold leaves a second finished directory for the same seed, which
+            # seed_dir refuses and poses/index.tsv mis-names. On a seed with one directory this is
+            # the same work seed_dir + sample_indices did, so no training label changes.
+            ud, ks = resolve_seed_dir(a.fold, pdb, arm_seed.split("_")[-1], poses,
+                                      a.coord_tol, a.coord_margin)
 
             # PER POSE. The chain and atom permutation is chosen to match THIS pose, so a label
             # permuted for one pose is the wrong label for another. permute_label_to_match_mini_

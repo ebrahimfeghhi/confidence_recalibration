@@ -169,12 +169,12 @@ def main():
         feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
         summ = RC.confidence(model, configs, feat, s_in, s_tr, z, x, nc)
         summ = summ if isinstance(summ, (list, tuple)) else [summ]
-        # join 2: pose -> sample, by coordinate identity
-        unit_dir = next(iter(glob.glob(os.path.join(a.fold, "poses", pdb, f"{sd_}-*"))), None)
-        cifs = BC.sample_cifs(unit_dir, pdb) if unit_dir else []
+        # join 2: pose -> sample, by coordinate identity. The pose DIRECTORY is itself resolved by
+        # the trunk, because a refold leaves two finished directories for one seed and neither
+        # filesystem order nor poses/index.tsv says which run wrote this trunk.
         px = x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
         try:
-            ks = BC.sample_indices(px, cifs, 0.01, 0.5)
+            unit_dir, ks = BC.resolve_seed_dir(a.fold, pdb, sd_, px, 0.01, 0.5)
         except Exception as e:
             n_nosample += 1
             if n_nosample <= 5:
