@@ -1,0 +1,9 @@
+[2026-10-16 10:46:21] watching /home/ebrahim/confidence_recalibration/extra_training/training/ft3_sweep/lr1e-3 -> /home/ebrahim/confidence_recalibration/extra_training/run_logging/reports/lr1e-3.html every 300s
+/home/ebrahim/confidence_recalibration/extra_training/run_logging/reports/lr1e-3.html: epoch 1, 8 step(s), 740 pose(s), 0 val point(s)
+/home/ebrahim/confidence_recalibration/extra_training/run_logging/reports/lr1e-3.html: epoch 1, 8 step(s), 740 pose(s), 0 val point(s)
+[2026-10-16 10:51:22] no training process left; final report written, watcher exiting
+[2026-10-16 10:57:26] watching /home/ebrahim/confidence_recalibration/extra_training/training/ft3_sweep/lr1e-3 -> /home/ebrahim/confidence_recalibration/extra_training/run_logging/reports/lr1e-3.html every 300s
+/home/ebrahim/confidence_recalibration/extra_training/run_logging/reports/lr1e-3.html: epoch 0, 0 step(s), 0 pose(s), 0 val point(s)
+/home/ebrahim/confidence_recalibration/extra_training/run_logging/reports/lr1e-3.html: epoch 1, 0 step(s), 60 pose(s), 0 val point(s)
+/home/ebrahim/confidence_recalibration/extra_training/run_logging/reports/lr1e-3.html: epoch 1, 2 step(s), 240 pose(s), 0 val point(s)
+/home/ebrahim/confidence_recalibration/extra_training/run_logging/reports/lr1e-3.html: epoch 1, 5 step(s), 500 pose(s), 0 val point(s)

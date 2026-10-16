@@ -42,7 +42,19 @@ def read_run(out_dir, baseline_path=""):
     renderer shows what exists and says what is pending.
     """
     out = {"out_dir": out_dir, "args": {}, "poses": [], "steps": [], "epochs": [],
-           "baseline": {}, "warnings": []}
+           "baseline": {}, "config": {}, "status": {}, "warnings": []}
+
+    # config.json and status.json come from run_logging/launch.py: the settings, the commit the run
+    # was launched from and whether the tree was dirty, then how it ended. A curve whose commit is
+    # unknown cannot be compared with another, which is why they are read here rather than left as
+    # files someone might open.
+    for name, key in (("config.json", "config"), ("status.json", "status")):
+        p_ = os.path.join(out_dir, name)
+        if os.path.exists(p_):
+            try:
+                out[key] = json.load(open(p_))
+            except (json.JSONDecodeError, OSError) as e:
+                out["warnings"].append(f"{name} unreadable: {e}")
 
     ap = os.path.join(out_dir, "args.json")
     if os.path.exists(ap):

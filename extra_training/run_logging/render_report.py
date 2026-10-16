@@ -130,6 +130,25 @@ def line_chart(series, *, xlab, ylab, width=760, height=260, refs=(), xint=False
 
 def build(run, summ, generated):
     a, base = run["args"], run["baseline"]
+    cfg, stat = run.get("config") or {}, run.get("status") or {}
+    # THE COMMIT AND THE REASON FOR THE LAUNCH, on the page rather than only in config.json. A curve
+    # cannot be compared with another unless the code behind it is identifiable, and a run that was
+    # a restart should say what it was a restart FROM.
+    prov = ""
+    if cfg:
+        bits = [f'run <code>{html.escape(str(cfg.get("run_id", "?")))}</code>',
+                f'commit <code>{html.escape(str(cfg.get("commit", "?"))[:8])}</code>'
+                + (" <strong>(dirty)</strong>" if cfg.get("dirty") else "")]
+        if cfg.get("cards"):
+            bits.append(f'cards <code>{html.escape(str(cfg["cards"]))}</code>')
+        if stat.get("exit_code") is not None:
+            bits.append(f'exited <code>{stat["exit_code"]}</code> after {stat.get("wall_min","?")} min')
+        prov = " &middot; ".join(bits)
+        if cfg.get("note"):
+            prov += f'<br>{html.escape(str(cfg["note"]))}'
+    elif summ["poses"]:
+        prov = ("No <code>config.json</code>: this run predates "
+                "<code>run_logging/launch.py</code>, so its commit is not recorded.")
     steps, eps = run["steps"], run["epochs"]
 
     # ---- chart 1: the per-batch loss
@@ -274,6 +293,7 @@ summary:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
   <p class="sub">Confidence head only, 19.8M of 464.4M parameters, trunk frozen. Target to beat:
     <code>{beat_s}</code> mean DockQ, the shipped head scored by this same evaluator.
     Generated {html.escape(generated)} from <code>{html.escape(os.path.basename(run['out_dir']))}</code>.</p>
+  {f'<p class="sub" style="margin-top:-14px">{prov}</p>' if prov else ''}
 
   {warn}
 
@@ -345,11 +365,21 @@ summary:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run", required=True, help="a run's --out directory")
+    ap.add_argument("--run", default="", help="a run's --out directory")
+    ap.add_argument("--run-id", default="",
+                    help="a run id under training/runs/, or `latest`. Resolves to its directory, so "
+                         "a report can be asked for by the id the index lists.")
     ap.add_argument("--baseline", default="")
     ap.add_argument("--out", required=True, help="where to write the html")
     a = ap.parse_args()
     import datetime
+    if a.run_id:
+        a.run = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "training", "runs", a.run_id)
+    if not a.run:
+        sys.exit("STOP: pass --run <dir> or --run-id <id>")
+    if not os.path.isdir(a.run):
+        sys.exit(f"STOP: {a.run} is not a directory")
     run = R.read_run(a.run, a.baseline)
     summ = R.summarise(run)
     gen = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()

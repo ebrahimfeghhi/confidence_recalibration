@@ -1,0 +1,233 @@
+<title>FT3 Confidence Finetune</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column, summary strip first, then the three charts stacked, config last. */
+:root {
+  --bg:#f4f5f7; --panel:#ffffff; --fg:#1b2027; --mute:#5d6673; --line:#dde1e7;
+  --accent:#b4690e; --ref:#2a7f7a; --ok:#2f6b3a; --warn:#8a5a12;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark) { :root:not([data-theme="light"]) {
+  --bg:#14171c; --panel:#1b1f26; --fg:#e6e9ee; --mute:#9aa4b2; --line:#2b313a;
+  --accent:#e0a040; --ref:#5bb8b0; --ok:#7bc08a; --warn:#d8a44a; color-scheme:dark;
+} }
+:root[data-theme="dark"] {
+  --bg:#14171c; --panel:#1b1f26; --fg:#e6e9ee; --mute:#9aa4b2; --line:#2b313a;
+  --accent:#e0a040; --ref:#5bb8b0; --ok:#7bc08a; --warn:#d8a44a; color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);margin:0}
+.wrap{max-width:860px;margin:0 auto;padding-block:28px;padding-left:16px;padding-right:16px}
+h1{font-size:1.4rem;font-weight:600;margin:0 0 2px;letter-spacing:-.01em;text-wrap:balance}
+.sub{color:var(--mute);font-size:.84rem;margin:0 0 22px}
+.sub code{font-family:var(--mono);font-size:.82rem}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:6px;overflow:hidden;
+  margin-bottom:24px}
+.cell{background:var(--panel);padding:11px 13px;min-width:0}
+.cell .lab{font-size:.64rem;text-transform:uppercase;letter-spacing:.07em;color:var(--mute)}
+.cell .val{font-family:var(--mono);font-size:1.02rem;font-variant-numeric:tabular-nums;
+  margin-top:3px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px;
+  margin-bottom:18px}
+h2{font-size:.95rem;font-weight:600;margin:0 0 3px}
+.axes{color:var(--mute);font-size:.76rem;margin:0 0 12px;line-height:1.5}
+.chartbox{overflow-x:auto}
+.chart{width:100%;min-width:460px;height:auto;display:block}
+.grid{stroke:var(--line);stroke-width:1}
+.axis{stroke:var(--line);stroke-width:1.5}
+.tick,.axlab{fill:var(--mute);font-family:var(--mono);font-size:10px}
+.axlab{font-size:10.5px}
+.empty{fill:var(--mute);font-family:var(--sans);font-size:12px;font-style:italic}
+.ln{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.ln-t{stroke:var(--accent);stroke-width:2.4}
+.ln-a{stroke:var(--mute);stroke-width:1.1;opacity:.75}
+.ln-b{stroke:var(--ref);stroke-width:1.4;opacity:.9}
+.ln-c{stroke:var(--mute);stroke-width:1.1;opacity:.5;stroke-dasharray:4 3}
+.ln-d{stroke:var(--mute);stroke-width:1.1;opacity:.35;stroke-dasharray:2 3}
+.dot{fill:var(--accent);stroke:var(--panel);stroke-width:1.2}
+.ref{stroke-width:1.3;stroke-dasharray:6 4}
+.ref-base{stroke:var(--ok)} .ref-orc{stroke:var(--ref)}
+.reflab{font-family:var(--mono);font-size:9.5px}
+.reflab.ref-base{fill:var(--ok)} .reflab.ref-orc{fill:var(--ref)}
+.key{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:.73rem;color:var(--mute);
+  font-family:var(--mono)}
+.key i{display:inline-block;width:16px;height:0;border-top:2px solid currentColor;
+  vertical-align:middle;margin-right:5px}
+.k-t{color:var(--accent)} .k-b{color:var(--ref)} .k-base{color:var(--ok)}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);
+  font-variant-numeric:tabular-nums}
+th{font-size:.66rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);
+  font-weight:500}
+td{font-family:var(--mono);font-size:.8rem}
+.pending{color:var(--mute);font-style:italic;font-family:var(--sans)}
+.kvs{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0 18px;margin:0}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;
+  border-bottom:1px solid var(--line);min-width:0}
+.kv dt{color:var(--mute);font-size:.76rem}
+.kv dd{margin:0;font-family:var(--mono);font-size:.76rem;overflow-wrap:anywhere;text-align:right}
+details{margin-top:12px}
+summary{cursor:pointer;font-size:.78rem;color:var(--mute)}
+summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.warn{background:var(--panel);border:1px solid var(--warn);border-left-width:3px;
+  border-radius:6px;padding:12px 14px;margin-bottom:18px;font-size:.8rem}
+.warn ul{margin:6px 0 0;padding-left:18px}
+.foot{color:var(--mute);font-size:.73rem;margin-top:22px;line-height:1.6}
+</style>
+
+<div class="wrap">
+  <h1>FT3 Confidence Finetune</h1>
+  <p class="sub">Confidence head only, 19.8M of 464.4M parameters, trunk frozen. Target to beat:
+    <code>0.5775</code> mean DockQ, the shipped head scored by this same evaluator.
+    Generated 2026-10-16 11:12:27 from <code>lr1e-3</code>.</p>
+  <p class="sub" style="margin-top:-14px">No <code>config.json</code>: this run predates <code>run_logging/launch.py</code>, so its commit is not recorded.</p>
+
+  
+
+  <div class="strip">
+    <div class="cell"><div class="lab">epoch</div><div class="val">1 / 3.0</div></div>
+    <div class="cell"><div class="lab">steps</div><div class="val">5</div></div>
+    <div class="cell"><div class="lab">poses</div><div class="val">500</div></div>
+    <div class="cell"><div class="lab">wall</div><div class="val">15 min</div></div>
+    <div class="cell"><div class="lab">lr</div><div class="val">0.001</div></div>
+    <div class="cell"><div class="lab">grad norm</div><div class="val">8.18</div></div>
+    <div class="cell"><div class="lab">dropped steps</div><div class="val">0</div></div>
+    <div class="cell"><div class="lab">val points</div><div class="val">0</div></div>
+  </div>
+
+  <section>
+    <h2>Training loss per batch</h2>
+    <p class="axes">x: optimiser step &mdash; one step is 256 poses
+      (256&nbsp;&divide;&nbsp;3 ranks, summed). y: the confidence loss, as the sum of
+      its four terms. One point is one step, not one pose. Raw terms, unweighted
+      (<code>alpha_confidence = 1.0</code>).</p>
+    <div class="chartbox"><svg viewBox="0 0 760 260" role="img" class="chart" aria-label="summed confidence loss against optimiser step  (one step = 256 poses)">
+<line class="grid" x1="58" y1="202.4" x2="746" y2="202.4"/>
+<text class="tick" x="50" y="206.4" text-anchor="end">0</text>
+<line class="grid" x1="58" y1="139.9" x2="746" y2="139.9"/>
+<text class="tick" x="50" y="143.9" text-anchor="end">5</text>
+<line class="grid" x1="58" y1="77.4" x2="746" y2="77.4"/>
+<text class="tick" x="50" y="81.4" text-anchor="end">10</text>
+<line class="grid" x1="58" y1="15.0" x2="746" y2="15.0"/>
+<text class="tick" x="50" y="19.0" text-anchor="end">15</text>
+<text class="tick" x="58.0" y="240" text-anchor="middle">1</text>
+<text class="tick" x="230.0" y="240" text-anchor="middle">2</text>
+<text class="tick" x="402.0" y="240" text-anchor="middle">3</text>
+<text class="tick" x="574.0" y="240" text-anchor="middle">4</text>
+<text class="tick" x="746.0" y="240" text-anchor="middle">5</text>
+<line class="axis" x1="58" y1="222" x2="746" y2="222"/>
+<path class="ln ln-t" d="M58.0,55.8 L230.0,77.8 L402.0,34.1 L574.0,116.4 L746.0,62.4"/>
+<circle class="dot dot-t" cx="58.0" cy="55.8" r="3.5"/>
+<circle class="dot dot-t" cx="230.0" cy="77.8" r="3.5"/>
+<circle class="dot dot-t" cx="402.0" cy="34.1" r="3.5"/>
+<circle class="dot dot-t" cx="574.0" cy="116.4" r="3.5"/>
+<circle class="dot dot-t" cx="746.0" cy="62.4" r="3.5"/>
+<path class="ln ln-a" d="M58.0,132.1 L230.0,137.1 L402.0,113.0 L574.0,168.2 L746.0,133.6"/>
+<circle class="dot dot-a" cx="58.0" cy="132.1" r="3.5"/>
+<circle class="dot dot-a" cx="230.0" cy="137.1" r="3.5"/>
+<circle class="dot dot-a" cx="402.0" cy="113.0" r="3.5"/>
+<circle class="dot dot-a" cx="574.0" cy="168.2" r="3.5"/>
+<circle class="dot dot-a" cx="746.0" cy="133.6" r="3.5"/>
+<path class="ln ln-b" d="M58.0,174.5 L230.0,181.4 L402.0,157.3 L574.0,164.6 L746.0,174.0"/>
+<circle class="dot dot-b" cx="58.0" cy="174.5" r="3.5"/>
+<circle class="dot dot-b" cx="230.0" cy="181.4" r="3.5"/>
+<circle class="dot dot-b" cx="402.0" cy="157.3" r="3.5"/>
+<circle class="dot dot-b" cx="574.0" cy="164.6" r="3.5"/>
+<circle class="dot dot-b" cx="746.0" cy="174.0" r="3.5"/>
+<path class="ln ln-c" d="M58.0,167.5 L230.0,164.6 L402.0,169.1 L574.0,189.5 L746.0,163.4"/>
+<circle class="dot dot-c" cx="58.0" cy="167.5" r="3.5"/>
+<circle class="dot dot-c" cx="230.0" cy="164.6" r="3.5"/>
+<circle class="dot dot-c" cx="402.0" cy="169.1" r="3.5"/>
+<circle class="dot dot-c" cx="574.0" cy="189.5" r="3.5"/>
+<circle class="dot dot-c" cx="746.0" cy="163.4" r="3.5"/>
+<path class="ln ln-d" d="M58.0,188.9 L230.0,201.8 L402.0,201.9 L574.0,201.2 L746.0,198.5"/>
+<circle class="dot dot-d" cx="58.0" cy="188.9" r="3.5"/>
+<circle class="dot dot-d" cx="230.0" cy="201.8" r="3.5"/>
+<circle class="dot dot-d" cx="402.0" cy="201.9" r="3.5"/>
+<circle class="dot dot-d" cx="574.0" cy="201.2" r="3.5"/>
+<circle class="dot dot-d" cx="746.0" cy="198.5" r="3.5"/>
+<text class="axlab" x="402" y="256" text-anchor="middle">optimiser step  (one step = 256 poses)</text>
+<text class="axlab" transform="rotate(-90 14 111)" x="14" y="111" text-anchor="middle">summed confidence loss</text>
+</svg></div>
+    <div class="key"><span class="k-t"><i></i>total</span><span class="k-b"><i></i>PAE</span>
+      <span><i></i>pLDDT</span><span><i></i>PDE (dashed)</span><span><i></i>resolved (dotted)</span></div>
+    <p class="axes" style="margin-top:10px;margin-bottom:0">PAE is the term that matters: ipTM, which
+      selects poses, is computed entirely from PAE. Protenix ships its weight at 0, so this run sets
+      <code>alpha_pae = 1.0</code>.</p>
+  </section>
+
+  <section>
+    <h2>Validation &mdash; mean DockQ of the selected pose</h2>
+    <p class="axes">x: epoch. y: mean over 92 interfaces of the DockQ of
+      the pose the head ranked highest by per-interface ipTM, over the full
+      100-seed budget. One point is one checkpoint scored on all 5,300
+      validation units.</p>
+    <div class="chartbox"><svg viewBox="0 0 760 260" role="img" class="chart" aria-label="mean DockQ of the selected pose against epoch">
+<line class="grid" x1="58" y1="174.8" x2="746" y2="174.8"/>
+<text class="tick" x="50" y="178.8" text-anchor="end">0.6</text>
+<line class="grid" x1="58" y1="114.8" x2="746" y2="114.8"/>
+<text class="tick" x="50" y="118.8" text-anchor="end">0.65</text>
+<line class="grid" x1="58" y1="54.7" x2="746" y2="54.7"/>
+<text class="tick" x="50" y="58.7" text-anchor="end">0.7</text>
+<text class="tick" x="58.0" y="240" text-anchor="middle">0</text>
+<text class="tick" x="746.0" y="240" text-anchor="middle">1</text>
+<line class="axis" x1="58" y1="222" x2="746" y2="222"/>
+<line class="ref ref-base" x1="58" y1="201.9" x2="746" y2="201.9"/>
+<text class="reflab ref-base" x="742" y="195.9" text-anchor="end">shipped head 0.5775</text>
+<line class="ref ref-orc" x1="58" y1="34.1" x2="746" y2="34.1"/>
+<text class="reflab ref-orc" x="742" y="28.1" text-anchor="end">oracle 0.7171</text>
+<text class="axlab" x="402" y="256" text-anchor="middle">epoch</text>
+<text class="axlab" transform="rotate(-90 14 111)" x="14" y="111" text-anchor="middle">mean DockQ of the selected pose</text>
+<text class="empty" x="402" y="118" text-anchor="middle">pending: the first value lands at the end of epoch 1</text>
+</svg></div>
+    <div class="key"><span class="k-t"><i></i>trained head</span>
+      <span class="k-base"><i></i>shipped head</span><span class="k-b"><i></i>oracle (best pose produced)</span></div>
+  </section>
+
+  <section>
+    <h2>Validation &mdash; fraction acceptable</h2>
+    <p class="axes">x: epoch. y: the fraction of those interfaces whose selected pose reaches
+      DockQ&nbsp;&ge;&nbsp;0.23, the CAPRI acceptable threshold. Same selection rule as above.</p>
+    <div class="chartbox"><svg viewBox="0 0 760 260" role="img" class="chart" aria-label="fraction with DockQ ≥ 0.23 against epoch">
+<line class="grid" x1="58" y1="176.1" x2="746" y2="176.1"/>
+<text class="tick" x="50" y="180.1" text-anchor="end">0.75</text>
+<line class="grid" x1="58" y1="116.8" x2="746" y2="116.8"/>
+<text class="tick" x="50" y="120.8" text-anchor="end">0.8</text>
+<line class="grid" x1="58" y1="57.4" x2="746" y2="57.4"/>
+<text class="tick" x="50" y="61.4" text-anchor="end">0.85</text>
+<text class="tick" x="58.0" y="240" text-anchor="middle">0</text>
+<text class="tick" x="746.0" y="240" text-anchor="middle">1</text>
+<line class="axis" x1="58" y1="222" x2="746" y2="222"/>
+<line class="ref ref-base" x1="58" y1="201.9" x2="746" y2="201.9"/>
+<text class="reflab ref-base" x="742" y="195.9" text-anchor="end">shipped head 0.7283</text>
+<line class="ref ref-orc" x1="58" y1="34.1" x2="746" y2="34.1"/>
+<text class="reflab ref-orc" x="742" y="28.1" text-anchor="end">oracle 0.8696</text>
+<text class="axlab" x="402" y="256" text-anchor="middle">epoch</text>
+<text class="axlab" transform="rotate(-90 14 111)" x="14" y="111" text-anchor="middle">fraction with DockQ ≥ 0.23</text>
+<text class="empty" x="402" y="118" text-anchor="middle">pending: the first value lands at the end of epoch 1</text>
+</svg></div>
+    <div class="key"><span class="k-t"><i></i>trained head</span>
+      <span class="k-base"><i></i>shipped head</span><span class="k-b"><i></i>oracle</span></div>
+  </section>
+
+  <section>
+    <h2>Validation by epoch</h2>
+    <table><thead><tr><th>epoch</th><th>mean dockq</th><th>frac acc</th><th>oracle</th>
+      <th>headroom</th><th>checkpoint</th></tr></thead><tbody><tr><td colspan="6" class="pending">no epoch has finished yet; the shipped-head reference is in the charts above</td></tr></tbody></table>
+  </section>
+
+  <section>
+    <h2>Run configuration</h2>
+    <dl class="kvs"><div class="kv"><dt>lr</dt><dd>0.001</dd></div><div class="kv"><dt>epochs</dt><dd>3.0</dd></div><div class="kv"><dt>accum</dt><dd>256</dd></div><div class="kv"><dt>alpha_confidence</dt><dd>1.0</dd></div><div class="kv"><dt>alpha_pae</dt><dd>1.0</dd></div><div class="kv"><dt>clip_norm</dt><dd>25.0</dd></div><div class="kv"><dt>warmup_steps</dt><dd>20</dd></div><div class="kv"><dt>dist_backend</dt><dd>gloo</dd></div><div class="kv"><dt>preload_items</dt><dd>170</dd></div><div class="kv"><dt>max_rss_gb</dt><dd>80.0</dd></div><div class="kv"><dt>eval_budget</dt><dd>100</dd></div><div class="kv"><dt>eval_every_epoch</dt><dd>True</dd></div><div class="kv"><dt>allow_code_drift</dt><dd>True</dd></div><div class="kv"><dt>seed</dt><dd>0</dd></div><div class="kv"><dt>shuffle</dt><dd>structure</dd></div><div class="kv"><dt>fold</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/fold</dd></div><div class="kv"><dt>labels</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/fold/labels</dd></div><div class="kv"><dt>out</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/ft3_sweep/lr1e-3</dd></div></dl>
+    <details><summary>every other argument (27)</summary>
+      <dl class="kvs"><div class="kv"><dt>bio_dir</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/prep/job_bioassembly</dd></div><div class="kv"><dt>ckpt_dir</dt><dd>/home/ebrahim/checkpoint</dd></div><div class="kv"><dt>crop_size</dt><dd>3400</dd></div><div class="kv"><dt>debug_save_rank_heads</dt><dd>False</dd></div><div class="kv"><dt>dist_timeout_min</dt><dd>240.0</dd></div><div class="kv"><dt>eval_cards</dt><dd></dd></div><div class="kv"><dt>eval_device</dt><dd></dd></div><div class="kv"><dt>eval_every</dt><dd>0</dd></div><div class="kv"><dt>eval_min_free_mib</dt><dd>20000</dd></div><div class="kv"><dt>eval_script</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_eval.py</dd></div><div class="kv"><dt>grad_check_every</dt><dd>10</dd></div><div class="kv"><dt>indices</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/prep/job_indices.csv</dd></div><div class="kv"><dt>limit_units</dt><dd>0</dd></div><div class="kv"><dt>lr_probe</dt><dd></dd></div><div class="kv"><dt>manifest_selection</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/train_val_splits/cache_train_structures.csv</dd></div><div class="kv"><dt>manifest_skip</dt><dd>9mx1</dd></div><div class="kv"><dt>max_nonfinite</dt><dd>10</dd></div><div class="kv"><dt>mmcif_dir</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/prep/job_cifs</dd></div><div class="kv"><dt>model_name</dt><dd>protenix-v2</dd></div><div class="kv"><dt>msa_root</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa</dd></div><div class="kv"><dt>nsample</dt><dd>5</dd></div><div class="kv"><dt>preload_min_free_gb</dt><dd>200.0</dd></div><div class="kv"><dt>probe_steps</dt><dd>30</dd></div><div class="kv"><dt>require_replay</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/ft3_pilot_replay.log</dd></div><div class="kv"><dt>save_every</dt><dd>100</dd></div><div class="kv"><dt>seeds</dt><dd>500000-500009</dd></div><div class="kv"><dt>seq_index</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/pdb_seqs/seq_to_pdb_index.json</dd></div></dl></details>
+  </section>
+
+  <p class="foot">Records: <code>trajectory.csv</code> (one row per pose),
+    <code>metric_ep&lt;N&gt;.json</code> (one per epoch), <code>args.json</code>. Rendered by
+    <code>run_logging/render_report.py</code>; re-run it to refresh. The trainer carries no viewer
+    instrumentation, so the records outlive whatever reads them.</p>
+</div>

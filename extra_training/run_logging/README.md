@@ -16,13 +16,49 @@ pilot spent four restarts on 2026-10-16 already. So the records are the contract
 | `<out>/args.json` | the trainer at startup | every argument the run was launched with |
 | `training/ft3_pilot_baseline.json` | GATE 1 | the **shipped head** scored by the same evaluator |
 
+## Launching a run
+
+```
+python -I run_logging/launch.py --note "why this launch exists" --cards 0,1,3 -- \
+    --fold training/fold --labels training/fold/labels --epochs 3 --accum 256 --lr 1e-3 ...
+```
+
+Everything after `--` is passed to `phase_k_train.py` unchanged. The launcher mints a **random run
+id**, creates `training/runs/<id>/`, writes `config.json` **before** starting (so a run that dies in
+its first second still says what it was), appends a row to `training/runs/index.csv`, and points
+`latest` at it.
+
+| in `training/runs/<id>/` | what it is |
+|---|---|
+| `config.json` | the settings, the **commit** and whether tracked files were modified, the exact command, cards, host, library versions |
+| `status.json` | exit code and wall time, written after |
+| `trajectory.csv` | one row per pose; the per-step series is `step_taken == 1` |
+| `metric_ep<N>.json` | the validation metric per epoch |
+| `run.log` | stdout of every rank |
+| `head_*.pt` | checkpoints — kept because the per-epoch evaluation has to score something |
+
+**Why a random id per launch.** Launches used to share one directory keyed on the learning rate. On
+2026-10-16 four of them collided in `training/ft3_sweep/lr1e-3` and **three of the four loss curves
+were lost**, because preserving them depended on renaming files by hand before each restart. A run's
+identity is a launch, not a learning rate.
+
+**`dirty` means tracked files changed**, not that untracked files exist. The repo always holds
+untracked data directories, so counting those made every run dirty and the flag stopped meaning
+anything. What bears on reproducibility is whether the code differs from the commit.
+
+The commit is part of the config for a concrete reason: labels carry a fingerprint over the builder's
+source, and `--allow-code-drift` lets a run proceed when that source has changed. A curve whose
+commit is unknown cannot be compared with another.
+
 ## Usage
 
 ```
 python -I run_logging/render_report.py --run training/ft3_sweep/lr1e-3 \
     --baseline training/ft3_pilot_baseline.json --out run_logging/reports/lr1e-3.html
 
-bash run_logging/watch.sh training/ft3_sweep/lr1e-3          # re-render every 5 min
+python -I run_logging/render_report.py --run-id latest --out run_logging/reports/latest.html
+
+bash run_logging/watch.sh training/runs/latest               # re-render every 5 min
 ```
 
 `watch.sh` refreshes the file on disk. It does **not** publish: publishing goes through Claude's
