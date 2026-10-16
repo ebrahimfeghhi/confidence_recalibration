@@ -7,7 +7,7 @@ pair_iptm over a seed budget, then report
     frac_acc    -- fraction of interfaces whose selected pose clears DockQ 0.23 (CAPRI acceptable)
 
 Baseline to beat, measured 2026-10-15 over 92 interfaces at 100 seeds with the SHIPPED head:
-mean_dockq 0.5779, frac_acc 0.7283, against an oracle of 0.7171 / 0.8696. The 0.1392 gap is what a
+mean_dockq 0.5775, frac_acc 0.7283, against an oracle of 0.7171 / 0.8696. The 0.1396 gap is what a
 better ranker wins at zero extra compute.
 
 NO VALIDATION LABELS ARE NEEDED. The metric is built from ipTM and DockQ, not from the FT3 loss, so
@@ -339,7 +339,7 @@ def aggregate(a, rows, selfchk, want_ifaces):
     print(f"  mean_dockq {out['mean_dockq']:.4f}   frac_acc {out['frac_acc']:.4f}")
     print(f"  oracle     {out['oracle_mean_dockq']:.4f}   {out['oracle_frac_acc']:.4f}   "
           f"headroom {out['headroom']:.4f}")
-    print(f"  baseline to beat: mean_dockq 0.5779  frac_acc 0.7283  (shipped head, 100 seeds)")
+    print(f"  baseline to beat: mean_dockq 0.5775  frac_acc 0.7283  (shipped head, 100 seeds,\n           THIS evaluator -- results.csv rounds ipTM to 4dp and reads 0.5779)")
     if a.out:
         with open(a.out, "w") as fh:
             import json

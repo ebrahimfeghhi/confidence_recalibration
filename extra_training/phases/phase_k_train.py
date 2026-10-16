@@ -13,7 +13,7 @@ The other three terms stay on as regularisers: they keep the head honest about p
 distance-error confidence instead of letting it distort everything to fit PAE.
 
 THE TARGET, measured 2026-10-15 over 92 validation interfaces at 100 seeds
-(analysis/val_selection_metric.py): selecting by max pair_iptm gives mean DockQ 0.5779 and
+(analysis/val_selection_metric.py): selecting by max pair_iptm gives mean DockQ 0.5775 and
 frac-acceptable 0.7283, against an oracle of 0.7171 / 0.8696. So there is 0.1392 of mean DockQ
 available to a better ranker AT ZERO EXTRA COMPUTE, and that gap is the deliverable. Note ipTM
 selection PEAKS near 25 seeds and DECAYS to 100 while the oracle keeps climbing -- more sampling
@@ -113,7 +113,7 @@ def main():
     ap.add_argument("--eval-every-epoch", action="store_true",
                     help="score the validation metric at the end of every epoch. THE METRIC IS THE "
                          "RESULT, not the loss: mean DockQ and frac-acceptable of the pose selected "
-                         "by max pair_iptm, against the 0.5779 / 0.7283 baseline at 100 seeds.")
+                         "by max pair_iptm, against the 0.5775 / 0.7283 baseline at 100 seeds.")
     ap.add_argument("--eval-every", type=int, default=0,
                     help="also score every N optimiser steps. 0 disables. A full pass is 5,300 "
                          "validation units at 0.82 s/unit = ~73 min, MEASURED on GATE 1 2026-10-16 (73 units/min over 5,300). An earlier 0.187 s/unit here came from a small probe of small structures with the model already warm and was 4.4x optimistic, so at 97 steps/epoch this "
@@ -231,12 +231,6 @@ def main():
                          "in phase_j_build_cache.py invalidates all 5,000 labels. OFF by default: a "
                          "drift in any other field, or several fields, is still fatal, and every "
                          "accepted drift is printed with both hashes.")
-    ap.add_argument("--wandb-project", default="",
-                    help="wandb project. Empty disables wandb entirely. Every argparse value is "
-                         "logged as config, the four loss terms + lr + grad_norm per step, and the "
-                         "two validation metrics at each epoch boundary.")
-    ap.add_argument("--wandb-run", default="")
-    ap.add_argument("--wandb-mode", default="online", choices=["online", "offline", "disabled"])
     ap.add_argument("--eval-script", default=f"{ROOT}/phases/phase_k_eval.py")
     ap.add_argument("--eval-device", default="",
                     help="CUDA index for the epoch-end evaluation. The subprocess would otherwise "
@@ -251,7 +245,7 @@ def main():
                          "measured at ~16 GB, so 20 GB is the floor.")
     ap.add_argument("--eval-budget", type=int, default=100,
                     help="seeds per interface for the epoch-end metric. 100 is the full budget and "
-                         "the one the 0.5779 / 0.7283 baseline is quoted at; a pass is ~73 min, measured.")
+                         "the one the 0.5775 / 0.7283 baseline is quoted at; a pass is ~73 min, measured.")
     ap.add_argument("--require-replay", default="",
                     help="path to a replay result that must say PASS before training starts. "
                          "Cached training is only FT3 if the cache reproduces it; see "
@@ -353,19 +347,11 @@ def main():
     for n, p in model.named_parameters():
         p.requires_grad_(id(p) in head_ids)
 
-    wb = None
-    # RANK 0 ONLY. Three ranks initialising the same run name would either collide or create three
-    # runs logging a third of the steps each; the gradients are identical after the all-reduce, so
-    # rank 0's view is the run's view.
-    if a.wandb_project and is_main:
-        import wandb
-        wb = wandb.init(project=a.wandb_project, name=a.wandb_run or None, mode=a.wandb_mode,
-                        config={**vars(a), "n_head_params": n_head, "n_all_params": n_all,
-                                "head_frac": n_head / n_all, "n_head_tensors": len(trainable),
-                                "loss_weights": {k.replace("_loss", ""): float(v)
-                                                 for k, v in w.items()},
-                                "baseline_mean_dockq": 0.5779, "baseline_frac_acc": 0.7283})
-        print(f"wandb: {wb.url if hasattr(wb, 'url') else a.wandb_project} (mode={a.wandb_mode})")
+    # NO EXPERIMENT TRACKER. Runs are recorded by the files this script already writes --
+    # trajectory.csv, metric_ep<N>.json, args.json -- and rendered by run_logging/render_report.py.
+    # wandb was removed on 2026-10-16 at the user's direction: it needed an account, it put the
+    # record somewhere the repo cannot read, and instrumenting the trainer for a viewer means a
+    # restart whenever the viewer changes. The records outlive whatever reads them.
 
     # ---- THE MANIFEST COMES FROM THE FROZEN SELECTION, NOT FROM WHATEVER FILES EXIST ----
     # GLOBBING THE LABEL DIRECTORY CANNOT ESTABLISH COMPLETENESS. It did: the manifest was built by
@@ -819,12 +805,8 @@ def main():
                              "scored and a training curve without it is not interpretable:\n  "
                              + "\n  ".join(tail))
         m = json.load(open(mj))
-        print(f"  epoch {epoch}: mean_dockq {m['mean_dockq']:.4f} (baseline 0.5779)  "
+        print(f"  epoch {epoch}: mean_dockq {m['mean_dockq']:.4f} (baseline 0.5775)  "
               f"frac_acc {m['frac_acc']:.4f} (baseline 0.7283)  headroom {m['headroom']:.4f}")
-        if wb is not None:
-            wb.log({"val/mean_dockq": m["mean_dockq"], "val/frac_acc": m["frac_acc"],
-                    "val/oracle_mean_dockq": m["oracle_mean_dockq"],
-                    "val/headroom": m["headroom"], "epoch": epoch, "step": step})
         return m
 
     def shard_by_structure(units):
@@ -977,10 +959,6 @@ def main():
                                  "epoch": ep + 1, "step_taken": took,
                                  "nonfinite_grad": bad_grad,
                                  **{k: float(met[k]) for k in TERMS}})
-                    if wb is not None:
-                        wb.log({f"train/{k.replace('_loss','')}": float(met[k]) for k in TERMS}
-                               | {"train/lr": cur_lr, "train/grad_norm": gn, "step": step,
-                                  "epoch": ep + 1})
                     if write_traj and len(rows) % 20 == 0:
                         _flush(traj_p, traj_cols, rows); rows = []
                     if steps_cap and step >= steps_cap:
@@ -1104,7 +1082,7 @@ def main():
             print(f"saved {_rp}")
     print("THE LOSS IS NOT THE RESULT. Score this checkpoint with "
           "analysis/val_selection_metric.py after rescoring the validation poses with it; the target "
-          "is mean DockQ 0.5779 and frac-acceptable 0.7283 at 100 seeds.")
+          "is mean DockQ 0.5775 and frac-acceptable 0.7283 at 100 seeds.")
     # Tear the group down so the ranks exit together rather than on NCCL's timeout.
     if world > 1:
         dist.barrier()

@@ -33,7 +33,7 @@ sleep 60                      # let the cards settle before claiming memory
 # 1,300-row list that actually ran, so nothing ever went back for them.
 #
 # The evaluation needs trunks to rescore with a changed head. Without these, the metric covers 86 of
-# 92 interfaces and cannot be compared with the 92-interface baseline of 0.5779 / 0.7283 -- so the
+# 92 interfaces and cannot be compared with the 92-interface baseline of 0.5775 / 0.7283 -- so the
 # round-9 coverage gate refuses, which is why this stage exists rather than a weaker metric.
 TF="$R/validation/fold_trunkfix"; export TF
 if [ "$(find "$R/validation/fold/trunks" -name '*.npz' | wc -l)" -lt 5300 ]; then
@@ -177,7 +177,7 @@ mkdir -p "$SWEEP"
 
 say "SWEEP: $N_LR learning rates, 3 epochs each, SEQUENTIAL, each chosen from the previous curve"
 say "  first lr $LR. training on GPUs 0, 1 and 3 (one rank each); evaluation on GPU 0."
-say "  baseline to beat: mean_dockq 0.5779, frac_acc 0.7283"
+say "  baseline to beat: mean_dockq 0.5775, frac_acc 0.7283 (THIS evaluator; results.csv reads 0.5779)"
 say "  12 epoch-times back to back will not all finish overnight; each completed lr is whole."
 
 for i in $(seq 1 $N_LR); do
@@ -220,7 +220,6 @@ for i in $(seq 1 $N_LR); do
             --grad-check-every 10 --save-every 100 \
             --allow-code-drift \
             --require-replay "$R/training/ft3_pilot_replay.log" \
-            --wandb-project confidence-recalibration --wandb-run "ft3-lr$LR" \
             --out "$OUT" >> "$OUT/run.log" 2>&1
         say "SWEEP $i/$N_LR: lr $LR exit=$?"
     fi
@@ -255,7 +254,7 @@ print('\t'.join([os.environ['LR'], ep, str(m['mean_dockq']), str(m['frac_acc']),
 done
 
 say "SWEEP DONE. Summary: $SUMMARY"
-say "  THE LOSS IS NOT THE RESULT. Compare mean_dockq against 0.5779 and frac_acc against 0.7283."
+say "  THE LOSS IS NOT THE RESULT. Compare mean_dockq against 0.5775 and frac_acc against 0.7283."
 say "  For significance use a PAIRED test on the 92 interfaces -- Wilcoxon signed-rank for"
 say "  mean_dockq, where an interface whose selection did not move contributes an exact zero, so the"
 say "  effective n is the number that moved. frac_acc is structurally underpowered: only 13 of 92"
