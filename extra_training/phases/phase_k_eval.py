@@ -87,11 +87,13 @@ def main():
                          "under autocast, so exact equality is not the bar.")
     ap.add_argument("--no-self-check", action="store_true")
     ap.add_argument("--limit-units", type=int, default=0)
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="report a metric that does NOT cover its stated budget: missing trunks, "
+                         "poses without DockQ, or interfaces of unequal depth. OFF by default, "
+                         "because a number labelled 'budget 100' computed from one seed is worse "
+                         "than no number.")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
-
-    if os.environ.get("LAYERNORM_TYPE") != "openfold":
-        raise SystemExit("STOP: set LAYERNORM_TYPE=openfold (without it coordinates are NaN)")
 
     import torch
     import phase_j_rescore_cache as RC
@@ -116,6 +118,36 @@ def main():
                 pass
     print(f"results.csv: {len(dockq)} scored (iface, seed, sample) row(s)")
 
+    # EVERY INTENDED UNIT, AND A MISSING TRUNK IS FATAL. This appended only the trunks that
+    # happened to exist, so a "100-seed" metric could be computed from one seed and still print
+    # "budget 100" -- review round 9 reproduced exactly that. The budget is a CLAIM about coverage,
+    # so it is enforced rather than described.
+    units, missing_trunk = [], []
+    for pdb in sorted(pairs_by_pdb):
+        for sd_ in range(a.seed_base, a.seed_base + a.budget):
+            tp = os.path.join(a.fold, "trunks", pdb, f"free_{sd_}.npz")
+            (units if os.path.exists(tp) else missing_trunk).append(
+                (pdb, sd_, tp) if os.path.exists(tp) else f"{pdb}/free_{sd_}")
+    if missing_trunk and not a.allow_partial:
+        raise SystemExit(
+            f"STOP: {len(missing_trunk)} of {len(pairs_by_pdb)*a.budget} intended unit(s) have no "
+            f"trunk under {a.fold}/trunks, e.g. {missing_trunk[:5]}.\n  A metric labelled "
+            f"'budget {a.budget}' must cover {a.budget} seeds for every structure. Lower --budget, "
+            f"or pass --allow-partial to report a number that does NOT mean what its label says.")
+    if a.limit_units:
+        if not a.allow_partial:
+            raise SystemExit("STOP: --limit-units subsets the data, so the metric would not be the "
+                             "metric. Pass --allow-partial to acknowledge that explicitly.")
+        units = units[:a.limit_units]
+    print(f"units: {len(units)} of {len(pairs_by_pdb)*a.budget} intended "
+          f"({len(pairs_by_pdb)} structures x {a.budget} seeds)"
+          + ("  [PARTIAL -- --allow-partial]" if a.allow_partial else ""))
+
+    # THE MODEL IS LOADED LAST, after everything that can be checked from the filesystem has
+    # been. Enumerating units after the build meant a coverage failure cost a 40 s model load and
+    # needed a free GPU to even observe, which is also why it could not be tested without one.
+    if os.environ.get("LAYERNORM_TYPE") != "openfold":
+        raise SystemExit("STOP: set LAYERNORM_TYPE=openfold (without it coordinates are NaN)")
     dev = torch.device("cuda")
     model, configs = RC.build_model(a.ckpt_dir, a.model_name, dev)
     if a.ckpt:
@@ -131,16 +163,6 @@ def main():
         print(f"loaded {len(sd)} head tensor(s) from {a.ckpt}")
     else:
         print("using the SHIPPED head (no --ckpt)")
-
-    units = []
-    for pdb in sorted(pairs_by_pdb):
-        for sd_ in range(a.seed_base, a.seed_base + a.budget):
-            tp = os.path.join(a.fold, "trunks", pdb, f"free_{sd_}.npz")
-            if os.path.exists(tp):
-                units.append((pdb, sd_, tp))
-    if a.limit_units:
-        units = units[:a.limit_units]
-    print(f"units: {len(units)} (budget {a.budget} seeds)")
 
     rows, selfchk, n_nosample = [], [], 0
     for n, (pdb, sd_, tp) in enumerate(units, 1):
@@ -195,7 +217,25 @@ def main():
                              f"(iface,seed,sample)->DockQ -- is wrong.")
         print("  the joins reproduce the fold's own ipTM, so the metric below is measuring the head")
 
-    # ---- THE METRIC
+    # ---- COVERAGE, ENFORCED KEY BY KEY BEFORE ANY NUMBER IS COMPUTED
+    # `if dq is not None` silently dropped every pose without a DockQ, and the only coverage check
+    # was that an interface had at least ONE scored pose -- so one of 500 passed. All four of the
+    # reviewer's conditions are now required: every intended key, unique rows, finite scores.
+    seen = collections.Counter((iface, sd_, k) for iface, sd_, k, _v, _dq in rows)
+    dup = [kk for kk, c in seen.items() if c > 1]
+    if dup:
+        raise SystemExit(f"STOP: {len(dup)} duplicate (iface, seed, sample) row(s), e.g. {dup[:4]}. "
+                         f"A duplicated pose would be weighted twice in the selection.")
+    nonfinite = [(iface, sd_, k) for iface, sd_, k, v, dq in rows
+                 if not np.isfinite(v) or (dq is not None and not np.isfinite(dq))]
+    if nonfinite:
+        raise SystemExit(f"STOP: {len(nonfinite)} row(s) carry a non-finite ipTM or DockQ, e.g. "
+                         f"{nonfinite[:4]}. argmax over a nan is undefined.")
+    nodq = sorted((f"{i}/{s_}/{k}") for i, s_, k, _v, dq in rows if dq is None)
+    if nodq and not a.allow_partial:
+        raise SystemExit(f"STOP: {len(nodq)} scored pose(s) have no DockQ in {a.results}, e.g. "
+                         f"{nodq[:5]}. Dropping them silently changes what the mean is over; "
+                         f"recover them with phase_j_fill_scores.py or pass --allow-partial.")
     byif = collections.defaultdict(list)
     for iface, sd_, k, v, dq in rows:
         if dq is not None:
@@ -204,6 +244,21 @@ def main():
     if missing_if:
         raise SystemExit(f"STOP: {len(missing_if)} pool interface(s) have no scored pose: "
                          f"{missing_if[:6]}. The metric would cover a subset.")
+    # AND EVERY INTERFACE MUST CARRY THE WHOLE BUDGET. An interface with one scored pose out of 500
+    # satisfied the check above; depth is what the word "budget" in the output is asserting.
+    n_pose = collections.Counter()
+    for iface, sd_, _k, _v, dq in rows:
+        if dq is not None:
+            n_pose[iface] += 1
+    want_depth = max(n_pose.values()) if n_pose else 0
+    shallow = sorted((i, n_pose[i]) for i in byif if n_pose[i] != want_depth)
+    if shallow and not a.allow_partial:
+        raise SystemExit(
+            f"STOP: {len(shallow)} interface(s) do not carry the same number of scored poses as the "
+            f"deepest ({want_depth}): e.g. {shallow[:5]}.\n  Averaging over interfaces of different "
+            f"depth makes the budget label meaningless; pass --allow-partial to accept it.")
+    print(f"coverage: {len(byif)} interface(s), {want_depth} scored pose(s) each, "
+          f"{len(rows)} row(s) total, 0 duplicates, 0 non-finite")
     sel = [max(v, key=lambda t: t[0])[1] for v in byif.values()]
     orc = [max(dq for _v, dq in v) for v in byif.values()]
     n = len(sel)

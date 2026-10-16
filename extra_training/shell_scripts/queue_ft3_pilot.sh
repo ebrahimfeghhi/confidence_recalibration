@@ -66,13 +66,18 @@ else
 fi
 
 mkdir -p "$OUT"
+# TRAINING ON 0, EVALUATION ON 1. The evaluation is a subprocess that loads its own 464M-parameter
+# model while the trainer stays resident holding its allocator, so sharing one card risks an OOM
+# mid-run. Both are within the three cards this project is allowed (0, 1, 3) and the holders are
+# untouched.
 say "starting the 3-epoch pilot: batch 256, lr 1e-3, warmup 20, eval after every epoch"
+say "  training on GPU 0, epoch-end evaluation on GPU 1"
 say "  ~292 optimiser steps (97/epoch); each epoch-end eval is a full 100-seed pass (~16.5 min)"
 CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold $PY -I "$R/phases/phase_k_train.py" \
     --fold "$R/training/fold" \
     --labels "$R/training/fold/labels" \
     --epochs 3 --accum 256 --lr 1e-3 --warmup-steps 20 \
-    --eval-every-epoch --eval-budget 100 \
+    --eval-every-epoch --eval-budget 100 --eval-device 1 \
     --preload-items "$PRELOAD" --preload-min-free-gb "$MIN_GB" \
     --grad-check-every 10 --save-every 100 \
     --require-replay "$R/training/ft3_pilot_replay.log" \

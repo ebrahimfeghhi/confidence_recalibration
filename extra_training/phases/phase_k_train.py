@@ -177,6 +177,17 @@ def main():
     ap.add_argument("--wandb-run", default="")
     ap.add_argument("--wandb-mode", default="online", choices=["online", "offline", "disabled"])
     ap.add_argument("--eval-script", default=f"{ROOT}/phases/phase_k_eval.py")
+    ap.add_argument("--eval-device", default="",
+                    help="CUDA index for the epoch-end evaluation. The subprocess would otherwise "
+                         "INHERIT CUDA_VISIBLE_DEVICES from the trainer and land on the same card "
+                         "while the trainer is still resident and holding its memory -- the "
+                         "evaluation does not get the trainer's allocator back. Give it an idle "
+                         "card. Empty means share, and then the memory is checked first and the "
+                         "evaluation is refused rather than risking an OOM mid-run.")
+    ap.add_argument("--eval-min-free-mib", type=int, default=20000,
+                    help="when the evaluation must share the training card, how much VRAM has to be "
+                         "free for it to run. The eval loads a second 464M-parameter model; "
+                         "measured at ~16 GB, so 20 GB is the floor.")
     ap.add_argument("--eval-budget", type=int, default=100,
                     help="seeds per interface for the epoch-end metric. 100 is the full budget and "
                          "the one the 0.5783 / 0.7283 baseline is quoted at; a pass is ~16.5 min.")
@@ -569,9 +580,29 @@ def main():
         mj = os.path.join(a.out, f"metric_ep{epoch}.json")
         cmd = [sys.executable, "-I", a.eval_script, "--ckpt", cp, "--budget", str(a.eval_budget),
                "--out", mj]
-        print(f"  evaluating epoch {epoch} -> {os.path.basename(cp)}")
-        r = subprocess.run(cmd, capture_output=True, text=True,
-                           env={**os.environ, "LAYERNORM_TYPE": "openfold"})
+        env = {**os.environ, "LAYERNORM_TYPE": "openfold"}
+        if a.eval_device:
+            env["CUDA_VISIBLE_DEVICES"] = str(a.eval_device)
+            print(f"  evaluating epoch {epoch} on GPU {a.eval_device} (the trainer keeps its card)")
+        else:
+            # SHARING MEANS CHECKING FIRST. The trainer is still resident and does not hand its
+            # allocator back, so a second 464M-parameter model has to fit alongside it.
+            free_mib = None
+            try:
+                q = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                                   capture_output=True, text=True)
+                idx = int(str(os.environ.get("CUDA_VISIBLE_DEVICES", "0")).split(",")[0])
+                free_mib = int(q.stdout.strip().splitlines()[idx])
+            except Exception:
+                pass
+            if free_mib is not None and free_mib < a.eval_min_free_mib:
+                raise SystemExit(
+                    f"STOP: the epoch-{epoch} evaluation would share the training card with only "
+                    f"{free_mib} MiB free, under --eval-min-free-mib {a.eval_min_free_mib}. It "
+                    f"loads a second 464M-parameter model (~16 GB) while the trainer stays "
+                    f"resident. Pass --eval-device <idle gpu>, or raise the floor deliberately.")
+            print(f"  evaluating epoch {epoch} on the TRAINING card, {free_mib} MiB free")
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if r.returncode != 0:
             tail = (r.stdout + r.stderr).strip().splitlines()[-6:]
             raise SystemExit("STOP: the validation evaluation failed, so this checkpoint cannot be "
