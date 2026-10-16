@@ -163,6 +163,21 @@ def main():
     ap.add_argument("--grad-check-every", type=int, default=25,
                     help="re-assert that no gradient has appeared outside the confidence head")
     ap.add_argument("--save-every", type=int, default=250, help="optimiser steps per checkpoint")
+    ap.add_argument("--mem-log", action="store_true",
+                    help="print live GPU memory after every pose, with the token count. For "
+                         "diagnosing whether memory ACCUMULATES (a retained reference) or merely "
+                         "peaks (a capacity limit) -- three peak-reducing changes did not move when "
+                         "the run died, which is not what a capacity limit looks like.")
+    ap.add_argument("--drop-pde", action="store_true",
+                    help="do not compute or train the PDE term. ipTM -- the number the project is "
+                         "judged on -- is derived ENTIRELY from PAE, so PDE contributes nothing to "
+                         "it while costing the same memory: both are [N_token, N_token, 64] and the "
+                         "loss builds several tensors of that shape per term, one of them an int64 "
+                         "one-hot. Zeroing its weight does NOT help, because aggregate_losses calls "
+                         "each loss_fn BEFORE it reads the weight, so the module itself is replaced "
+                         "with a stub. This is a deviation from Protenix's FT3 recipe, which trains "
+                         "all four terms, and the auxiliary signal may regularise the shared "
+                         "pairformer -- so it is a memory decision, not a free one.")
     ap.add_argument("--blocks-per-ckpt", type=int, default=1,
                     help="ACTIVATION CHECKPOINTING over the head's pairformer blocks. Chunking "
                          "shrinks the SCRATCH inside one operation; this discards the activations "
@@ -357,14 +372,26 @@ def main():
     # ACTIVATION CHECKPOINTING ON THE HEAD'S PAIR STACK. Set here rather than at construction,
     # because build_model comes from the rescoring helper. PairformerStack reads this attribute at
     # forward time and ignores it when grad is off, so the evaluator is unaffected.
-    if a.blocks_per_ckpt:
-        model.confidence_head.pairformer_stack.blocks_per_ckpt = a.blocks_per_ckpt
+    # 0 DISABLES IT, rather than silently leaving whatever the config set. The first version was
+    # `if a.blocks_per_ckpt:`, which skipped the assignment on 0 -- and Protenix's config already
+    # sets blocks_per_ckpt=1, so checkpointing was ALWAYS on, --blocks-per-ckpt 1 was a no-op, and
+    # --blocks-per-ckpt 0 did not turn it off. Every conclusion drawn about what checkpointing cost
+    # or saved was drawn from two identical configurations.
+    model.confidence_head.pairformer_stack.blocks_per_ckpt = (a.blocks_per_ckpt
+                                                              if a.blocks_per_ckpt else None)
     _nblk = len(getattr(model.confidence_head.pairformer_stack, "blocks", []) or [])
     print(f"pair stack: {_nblk} block(s), blocks_per_ckpt="
           f"{model.confidence_head.pairformer_stack.blocks_per_ckpt}, chunking off")
     print(f"confidence_head.training = {model.confidence_head.training} "
           f"(trunk stays eval; train_confidence_only={configs.train_confidence_only})")
     loss_fn = ProtenixLoss(configs)
+    if a.drop_pde:
+        # A STUB IN PLACE OF THE MODULE, because a zero weight would still run it.
+        class _NoPDE(torch.nn.Module):
+            def forward(self, *_args, **_kw):
+                return torch.zeros((), device=dev)
+        loss_fn.pde_loss = _NoPDE()
+        print("PDE term DROPPED: not computed, not trained. ipTM comes only from PAE.")
     w = {k: loss_fn.loss_weight[k] for k in ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss")}
     print("loss weights: " + "  ".join(f"{k.replace('_loss','')} {v:g}" for k, v in w.items()))
     zero = [k for k, v in w.items() if not v]
@@ -638,11 +665,25 @@ def main():
             feat_cache[k] = torch.as_tensor(v).to(dev) if v.dtype != object else lab[f"lf_{k}"]
 
         n_pose = poses.shape[0] if hasattr(poses, "shape") else len(poses)
+        n_tok = int(feat_cache["asym_id"].shape[-1]) if "asym_id" in feat_cache else -1
         if world > 1 and n_pose != a.nsample:
             raise SystemExit(f"STOP: {pdb}/{arm_seed} holds {n_pose} pose(s), not --nsample "
                              f"{a.nsample}. Across ranks that shifts the optimiser step onto a "
                              f"different pose and the next all-reduce deadlocks.")
-        for i in range(n_pose):
+        # ONE POSE, IN A FUNCTION THAT RETURNS NUMBERS.
+        #
+        # This was inline in the generator, which held each pose's logits, prediction dict and labels
+        # in its frame ACROSS the yield -- so the caller ran backward and then began the next forward
+        # while the previous pose's pair tensors were still referenced. Two fp32 pair-logit tensors at
+        # 3,400 tokens x 64 bins are about 5.5 GiB, so the peaks overlapped for no reason. Review round
+        # 4 reproduced the object-lifetime behaviour and was explicit that this is OVERLAPPING PEAKS,
+        # not unbounded accumulation -- correcting my own claim of a leak, which rested on dividing
+        # 90.4 GB by 720 poses and finding a number that happened to match a tensor size.
+        #
+        # A called function's frame is destroyed on return, so every large tensor here is freed before
+        # the next pose allocates. backward() happens inside and only Python floats come out; the
+        # optimiser step stays with the caller, which owns the accumulation count.
+        def _one_pose(i):
             x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
                 else torch.as_tensor(poses[i:i + 1], dtype=torch.float32, device=dev)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -651,41 +692,27 @@ def main():
                     pair_mask=None, x_pred_coords=x,
                     triangle_multiplicative=configs.triangle_multiplicative,
                     triangle_attention=configs.triangle_attention, inplace_safe=False,
-                    # CHUNKING WAS TRIED AND REMOVED, 2026-10-16. --chunk-size 64 sliced the pair
-                    # operations so each one's scratch was ~N/64, but MEASURED it cost 5.8x in speed
-                    # (5.20 s/pose against 0.90) while GPU memory stayed at 65.9 GB, where it had
-                    # been before the OOM. It buys the smaller half of the memory for most of the
-                    # cost. --blocks-per-ckpt addresses the larger half: the activations kept
-                    # between pairformer blocks.
+                    # CHUNKING WAS TRIED AND REMOVED: --chunk-size 64 cost 5.8x in speed for no
+                    # measurable memory, and Protenix's own config says chunk_size "should set to
+                    # null for normal training".
                     chunk_size=None)
-            # WHERE THE HEAD'S OUTPUTS LANDED, CHECKED HERE. Protenix offloads pae and pde to
-            # the CPU above a token threshold when the module is in eval mode. The head is in
-            # train mode now so it should not, but a silent recurrence would surface deep inside
-            # the loss as a device mismatch again. Named here instead.
-            _off = [n for n, t in (("plddt", plddt), ("pae", pae), ("pde", pde),
-                                   ("resolved", resolved)) if t.device != dev]
+            # WHERE THE HEAD'S OUTPUTS LANDED. Compared BY INDEX, because torch.device("cuda") is not
+            # equal to torch.device("cuda:0") and the first version of this check fired on every pose
+            # of a single-GPU run -- it killed the memory probe before it printed a single number.
+            _di = dev.index if dev.index is not None else torch.cuda.current_device()
+            _off = [n for n, t in (("plddt", plddt), ("pae", pae), ("pde", pde), ("resolved", resolved))
+                    if t.device.type != "cuda" or (t.device.index or 0) != _di]
             if _off:
                 raise SystemExit(
-                    f"STOP: {pdb}/{arm_seed} pose {i}: the confidence head returned {_off} on a "
-                    f"device other than {dev}. Protenix offloads pae/pde to the CPU above "
-                    f"PROTENIX_CONF_OFFLOAD_TOKENS (default 2000) when the module is NOT in "
-                    f"training mode; confidence_head.training is "
-                    f"{model.confidence_head.training}.")
+                    f"STOP: {pdb}/{arm_seed} pose {i}: the confidence head returned {_off} off "
+                    f"cuda:{_di}. Protenix offloads pae/pde to the CPU above "
+                    f"PROTENIX_CONF_OFFLOAD_TOKENS (default 2000) when the module is NOT in training "
+                    f"mode; confidence_head.training is {model.confidence_head.training}.")
             pred = {"plddt": plddt.float(), "pae": pae.float(), "pde": pde.float(),
                     "resolved": resolved.float(), "coordinate_mini": x}
-            # EVERY NUMERIC ARRAY GOES TO THE DEVICE, not just the ones already tensors.
-            #
-            # This line used to be `v.to(dev) if torch.is_tensor(v) else v`, which left a numpy
-            # array in the label dict as numpy. Protenix then converts it internally with
-            # torch.as_tensor, giving a CPU tensor, and from there the whole loss branch computes
-            # on CPU: PDELoss builds its bin boundaries with device=pred_coordinate.device, so
-            # every tensor inside calculate_label agrees with the others and only the logits are
-            # left on the GPU. The failure therefore surfaces at `labels * log_softmax(logits)` as
-            # "cuda:2 and cpu", pointing at Protenix's loss rather than at the dict that fed it.
-            #
-            # IT IS DATA-DEPENDENT, which is why it survived the selftest and 8 optimiser steps of
-            # the real run before killing it 24 minutes in: only some structures carry such a
-            # field. feat_live above was already coerced this way; the label dict was not.
+            # EVERY NUMERIC ARRAY GOES TO THE DEVICE, not only those already tensors. A numpy array
+            # left as numpy is converted by Protenix with torch.as_tensor, giving a CPU tensor, and
+            # PDELoss then builds its bin boundaries on the CPU too, so the whole loss computes there.
             ld = {}
             for _k, _v in label_dict.items():
                 if torch.is_tensor(_v):
@@ -703,10 +730,6 @@ def main():
             except RuntimeError as _e:
                 if "same device" not in str(_e):
                     raise
-                # NAME THE OFFENDER. A device mismatch inside Protenix's loss says nothing
-                # about which input was wrong, and the structure that triggers it is only
-                # reachable by running until it appears -- 24 min, on one rank of three. The
-                # inputs are dumped here so one crash is enough.
                 def _where(d, label):
                     out = []
                     for _k2, _v2 in sorted(d.items()):
@@ -715,21 +738,40 @@ def main():
                         elif isinstance(_v2, np.ndarray):
                             out.append(f"{_k2}:numpy[{_v2.dtype}]")
                     return f"  {label}: " + " ".join(out)
-                print(f"DEVICE MISMATCH on {pdb}/{arm_seed} pose {i}, dev={dev}: {_e}",
-                      flush=True)
+                print(f"DEVICE MISMATCH on {pdb}/{arm_seed} pose {i}, dev={dev}: {_e}", flush=True)
                 print(_where(ld, "label_dict"), flush=True)
                 print(_where(feat_cache, "feat"), flush=True)
                 print(_where(pred, "pred"), flush=True)
                 raise
-            absent = [k for k in TERMS if k not in met]
+            absent = [k for k in TERMS if k not in met and not (a.drop_pde and k == "pde_loss")]
             if absent:
                 raise SystemExit(f"STOP: the loss produced no {absent} for {pdb}/{arm_seed} pose {i}; "
-                                 f"a confidence term that stopped being produced reads as a lower "
-                                 f"loss, which is the failure this check exists for.")
+                                 f"a term that stopped being produced reads as a lower loss, which is "
+                                 f"the failure this check exists for.")
             if not math.isfinite(float(met["loss"])):
-                raise SystemExit(f"STOP: {pdb}/{arm_seed} pose {i} loss is {float(met['loss'])}, "
-                                 f"not finite. Training on it would destroy the head.")
-            yield i, cum, met
+                raise SystemExit(f"STOP: {pdb}/{arm_seed} pose {i} loss is {float(met['loss'])}, not "
+                                 f"finite. Training on it would destroy the head.")
+            out = {k: (float(met[k]) if k in met else 0.0) for k in TERMS}
+            out["loss"] = float(met["loss"])
+            out["pose"] = i
+            # SCALED BY THE EFFECTIVE BATCH, so summing the ranks reconstructs the full-batch mean.
+            (cum / accum_eff).backward()
+            # Explicit, though the return would free them anyway: this is the function's whole purpose,
+            # and naming them stops a later edit from quietly hoisting one into the enclosing scope.
+            del cum, met, pred, ld, x, plddt, pae, pde, resolved
+            return out
+
+        for i in range(n_pose):
+            m = _one_pose(i)
+            if a.mem_log:
+                # AT A CONSISTENT BOUNDARY: after backward, and after the pose's tensors are gone.
+                # allocated = live tensors. reserved = what the allocator holds, which is what
+                # nvidia-smi shows -- which is why a high nvidia-smi number proves nothing by itself.
+                print(f"MEM {pdb}/{arm_seed} pose {i} tokens {n_tok} items {len(item_cache)}: "
+                      f"allocated {torch.cuda.memory_allocated(dev) / 2**30:.2f} GB  "
+                      f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f}  "
+                      f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f}", flush=True)
+            yield m
 
     def outside_head_grads():
         return sum(1 for n, p in model.named_parameters()
@@ -978,13 +1020,14 @@ def main():
                 ep_units = ep_units[:max(1, int(len(ep_units) * frac))]
             print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
             ep_start_step = step
+            ep_t0 = time.time()
             for ui, (pdb, lab_p, cands) in enumerate(ep_units):
                 trunk_p = resolve_trunk(pdb, lab_p, cands)
-                for i, cum, met in run_unit(pdb, lab_p, trunk_p, item_cache):
+                for _m in run_unit(pdb, lab_p, trunk_p, item_cache):
+                    i, met = _m["pose"], _m      # floats only; the tensors are already freed
                     cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
-                    (cum / accum_eff).backward()
                     n_in_accum += 1
                     gn, outside, took, bad_grad = float("nan"), -1, 0, 0
                     if n_in_accum >= accum_local:
@@ -998,7 +1041,7 @@ def main():
                                          "unit": os.path.basename(lab_p)[:-4], "pose": i,
                                          "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
                                          "epoch": ep + 1, "step_taken": 0, "nonfinite_grad": 1,
-                                         **{k: float(met[k]) for k in TERMS}})
+                                         **{k: met[k] for k in TERMS}})
                             continue
                         step += 1
                         n_in_accum = 0
@@ -1012,7 +1055,7 @@ def main():
                                  "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
                                  "epoch": ep + 1, "step_taken": took,
                                  "nonfinite_grad": bad_grad,
-                                 **{k: float(met[k]) for k in TERMS}})
+                                 **{k: met[k] for k in TERMS}})
                     if write_traj and len(rows) % 20 == 0:
                         _flush(traj_p, traj_cols, rows); rows = []
                     if steps_cap and step >= steps_cap:
@@ -1020,6 +1063,16 @@ def main():
                         break
                 if done:
                     break
+            # HOW LONG THE EPOCH TOOK, logged rather than left to be derived. Timing has been
+            # estimated wrong four times on this pilot, every time from a median or a short probe
+            # treated as a mean; an epoch that reports its own duration cannot be misquoted.
+            _ep_min = (time.time() - ep_t0) / 60.0
+            _ep_poses = step - ep_start_step
+            print(f"  epoch {ep + 1} took {_ep_min:.1f} min for {len(ep_units)} unit(s), "
+                  f"{_ep_poses} optimiser step(s)"
+                  + (f", {_ep_min * 60 / max(1, len(ep_units) * a.nsample):.2f} s/pose"
+                     if ep_units else ""))
+
             # THE PARTIAL ACCUMULATION IS FLUSHED HERE, BEFORE THE EVALUATION, SO THE HEAD THAT
             # IS SCORED IS THE HEAD THAT IS SAVED. It used to be flushed after the epoch loop, which
             # is after the LAST evaluation: at production settings the run evaluated step 292, then

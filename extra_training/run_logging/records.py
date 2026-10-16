@@ -145,6 +145,73 @@ def effective_batch(run):
     return run["args"].get("accum"), local, world
 
 
+def pose_cost(run):
+    """Per-pose wall time BUCKETED BY TOKEN COUNT, because the cost scales with the pair area.
+
+    WHY THIS EXISTS. Timing on this pilot was misreported four times, and every time the mistake
+    was the same: a median or a mean taken over whatever structures a run happened to reach, then
+    compared against a different run that reached different ones. Measured, 699 tokens costs
+    0.90 s/pose and 1364 costs 3.80 -- a 4.2x spread from size alone -- so ANY aggregate over mixed
+    sizes says more about which structures were sampled than about the configuration. Comparisons
+    belong within a token bucket, and n belongs beside every number.
+    """
+    tok = _token_counts()
+    rows = []
+    poses = run["poses"]
+    for i in range(1, len(poses)):
+        if poses[i]["pdb"] != poses[i - 1]["pdb"]:
+            continue                      # a structure switch is item-build time, not pose time
+        rows.append((tok.get(poses[i]["pdb"], -1), poses[i]["wall_s"] - poses[i - 1]["wall_s"],
+                     poses[i]["pdb"]))
+    out = []
+    for lo, hi in ((0, 500), (500, 800), (800, 1200), (1200, 1600), (1600, 99999)):
+        d = [t for n, t, _p in rows if lo <= n < hi]
+        if not d:
+            continue
+        d.sort()
+        out.append({"bucket": f"{lo}-{hi if hi < 99999 else '+'} tokens", "n": len(d),
+                    "median": d[len(d) // 2], "mean": sum(d) / len(d),
+                    "structures": len({p for n, _t, p in rows if lo <= n < hi})})
+    return out
+
+
+def _token_counts():
+    import csv as _csv
+    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "train_val_splits", "cache_train_structures.csv")
+    out = {}
+    if os.path.exists(p):
+        try:
+            for r in _csv.DictReader(open(p)):
+                if r.get("tokens", "").isdigit():
+                    out[r["pdb"]] = int(r["tokens"])
+        except OSError:
+            pass
+    return out
+
+
+def epoch_times(run):
+    """[(epoch, minutes, poses, structures)] from the per-pose wall clock.
+
+    Derived rather than logged, so it is available for runs already in flight -- the trainer prints
+    it too, but only from the next launch. An epoch's duration is the wall time of its last pose
+    minus that of the previous epoch's last pose, which is exact because wall_s is measured from the
+    same t0 throughout.
+    """
+    out, prev = [], 0.0
+    byep = {}
+    for p_ in run["poses"]:
+        byep.setdefault(p_["epoch"], []).append(p_)
+    for ep in sorted(byep):
+        rows = byep[ep]
+        end = rows[-1]["wall_s"]
+        out.append({"epoch": ep, "minutes": (end - prev) / 60.0, "poses": len(rows),
+                    "structures": len({r["pdb"] for r in rows}),
+                    "complete": ep < max(byep)})
+        prev = end
+    return out
+
+
 def summarise(run):
     """The few numbers a reader wants before any chart: where the run is and whether it is healthy."""
     poses, steps, args = run["poses"], run["steps"], run["args"]
