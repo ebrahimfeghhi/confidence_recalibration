@@ -351,7 +351,7 @@ def main():
     # be analysable, and a loss curve is the only way to see a learning rate that is wrong.
     traj_p = os.path.join(a.out, "trajectory.csv")
     traj_cols = ["wall_s", "step", "unit_i", "pdb", "unit", "pose", "lr"] + list(TERMS) + \
-                ["grad_norm", "outside_head", "epoch"]
+                ["grad_norm", "outside_head", "epoch", "step_taken", "nonfinite_grad"]
     # the per-structure item build is the cost --preload-items exists to amortise, so it is measured
     # rather than assumed; reported at the end against the number of structures actually visited.
     item_build_s = []
@@ -671,11 +671,19 @@ def main():
                         g["lr"] = cur_lr
                     (cum / a.accum).backward()
                     n_in_accum += 1
-                    gn, outside = float("nan"), -1
+                    gn, outside, took, bad_grad = float("nan"), -1, 0, 0
                     if n_in_accum >= a.accum:
                         gn, outside, ok = _apply_step(step)
+                        took = 1
                         if not ok:
+                            bad_grad = 1
                             n_in_accum = 0
+                            rows.append({"wall_s": round(time.time() - t0, 1), "step": step,
+                                         "unit_i": ui, "pdb": pdb,
+                                         "unit": os.path.basename(lab_p)[:-4], "pose": i,
+                                         "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
+                                         "epoch": ep + 1, "step_taken": 0, "nonfinite_grad": 1,
+                                         **{k: float(met[k]) for k in TERMS}})
                             continue
                         step += 1
                         n_in_accum = 0
@@ -687,7 +695,8 @@ def main():
                     rows.append({"wall_s": round(time.time() - t0, 1), "step": step, "unit_i": ui,
                                  "pdb": pdb, "unit": os.path.basename(lab_p)[:-4], "pose": i,
                                  "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
-                                 "epoch": ep + 1,
+                                 "epoch": ep + 1, "step_taken": took,
+                                 "nonfinite_grad": bad_grad,
                                  **{k: float(met[k]) for k in TERMS}})
                     if wb is not None:
                         wb.log({f"train/{k.replace('_loss','')}": float(met[k]) for k in TERMS}

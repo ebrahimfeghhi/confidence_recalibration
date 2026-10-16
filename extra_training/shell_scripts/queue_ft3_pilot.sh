@@ -134,47 +134,74 @@ mkdir -p "$OUT"
 # RAM: 300 GB CAP ON OUR OWN PROCESS, per the user. --preload-items 200 is ~104 GB of dataset items
 # on top of roughly 110 GB of baseline, and --max-rss-gb 300 stops the cache growing past the cap
 # regardless. Only one run exists at a time, so the cap applies to the whole sweep.
-LRS="1e-3 3e-4 3e-3 1e-4"
-SUMMARY="$R/training/ft3_sweep/summary.tsv"
-mkdir -p "$R/training/ft3_sweep"
-[ -f "$SUMMARY" ] || printf "lr\tepoch\tmean_dockq\tfrac_acc\toracle_mean\theadroom\tbaseline_mean\tbaseline_acc\n" > "$SUMMARY"
+# EACH LEARNING RATE FOLLOWS FROM THE LAST RUN'S LOSS CURVE, at the user's direction: a loss that
+# descends smoothly means the step can go up a little, a sporadic one means it should come down.
+# phase_k_pick_lr.py makes that measurable -- descent, roughness, fraction of steps going the wrong
+# way, and non-finite gradient events -- prints the numbers it decided on, and clamps the result to
+# [1e-5, 1e-2] so the chain cannot walk into a range nobody chose. The step is 2x, not a half-decade,
+# because "a small amount" was the instruction.
+LR=1e-3
+N_LR=4
+SWEEP="$R/training/ft3_sweep"
+SUMMARY="$SWEEP/summary.tsv"
+mkdir -p "$SWEEP"
+[ -f "$SUMMARY" ] || printf "lr\tepoch\tmean_dockq\tfrac_acc\toracle_mean\theadroom\tnext_lr\tverdict\n" > "$SUMMARY"
 
-say "SWEEP: 4 learning rates, 3 epochs each, SEQUENTIAL. Order: $LRS"
-say "  training on GPU 0, evaluation on GPU 1. Baseline to beat: mean_dockq 0.5783, frac_acc 0.7283"
-say "  12 epoch-times run back to back will not all finish overnight; each completed LR is whole."
+say "SWEEP: $N_LR learning rates, 3 epochs each, SEQUENTIAL, each chosen from the previous curve"
+say "  first lr $LR. training on GPU 0, evaluation on GPU 1."
+say "  baseline to beat: mean_dockq 0.5783, frac_acc 0.7283"
+say "  12 epoch-times back to back will not all finish overnight; each completed lr is whole."
 
-for LR in $LRS; do
-    OUT="$R/training/ft3_sweep/lr$LR"
-    if [ -f "$OUT/head_final.pt" ]; then say "SWEEP: lr $LR already complete, skipping"; continue; fi
-    mkdir -p "$OUT"
-    say "SWEEP: lr $LR starting -> $OUT"
-    CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold $PY -I "$R/phases/phase_k_train.py" \
-        --fold "$R/training/fold" \
-        --labels "$R/training/fold/labels" \
-        --epochs 3 --accum 256 --lr "$LR" --warmup-steps 20 \
-        --eval-every-epoch --eval-budget 100 --eval-device 1 \
-        --preload-items 200 --max-rss-gb 300 \
-        --grad-check-every 10 --save-every 100 \
-        --require-replay "$R/training/ft3_pilot_replay.log" \
-        --wandb-project confidence-recalibration --wandb-run "ft3-lr$LR" \
-        --out "$OUT" >> "$OUT/run.log" 2>&1
-    rc=$?
-    say "SWEEP: lr $LR exit=$rc"
-    # COLLECT WHAT IT PRODUCED, whether or not it finished. A run that dies at epoch 2 still has
-    # epoch 1's metric, and that is the comparison the sweep exists for.
+for i in $(seq 1 $N_LR); do
+    OUT="$SWEEP/lr$LR"
+    if [ -f "$OUT/head_final.pt" ]; then
+        say "SWEEP: lr $LR already complete, skipping to its recommendation"
+    else
+        mkdir -p "$OUT"
+        say "SWEEP $i/$N_LR: lr $LR starting -> $OUT"
+        CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold $PY -I "$R/phases/phase_k_train.py" \
+            --fold "$R/training/fold" \
+            --labels "$R/training/fold/labels" \
+            --epochs 3 --accum 256 --lr "$LR" --warmup-steps 20 \
+            --eval-every-epoch --eval-budget 100 --eval-device 1 \
+            --preload-items 200 --max-rss-gb 300 \
+            --grad-check-every 10 --save-every 100 \
+            --require-replay "$R/training/ft3_pilot_replay.log" \
+            --wandb-project confidence-recalibration --wandb-run "ft3-lr$LR" \
+            --out "$OUT" >> "$OUT/run.log" 2>&1
+        say "SWEEP $i/$N_LR: lr $LR exit=$?"
+    fi
+
+    # DECIDE THE NEXT RATE FROM THIS RUN'S CURVE, before collecting, so the decision is recorded
+    # alongside the metrics even if the run died partway.
+    REC="$OUT/next_lr.json"
+    $PY -I "$R/phases/phase_k_pick_lr.py" --trajectory "$OUT/trajectory.csv" --lr "$LR" \
+        --out "$REC" >> "$LOG" 2>&1
+    NEXT=$($PY -I -c "import json;print(json.load(open('$REC'))['next_lr'])" 2>/dev/null)
+    VERDICT=$($PY -I -c "import json;print(json.load(open('$REC'))['verdict'])" 2>/dev/null)
+    WHY=$($PY -I -c "import json;print(json.load(open('$REC'))['reason'])" 2>/dev/null)
+    say "SWEEP: lr $LR -> $VERDICT -> next $NEXT"
+    say "  because: $WHY"
+
+    # COLLECT EVERY EPOCH THIS RUN MANAGED, whether or not it finished. A run that stops at epoch 2
+    # still has epoch 1's metric, which is the comparison the sweep exists for.
     for mj in "$OUT"/metric_ep*.json; do
         [ -f "$mj" ] || continue
-        $PY -I -c "
-import json,os,sys
-m=json.load(open('$mj'))
-ep=os.path.basename('$mj').replace('metric_ep','').replace('.json','')
-print('\t'.join(['$LR', ep, str(m['mean_dockq']), str(m['frac_acc']),
-                 str(m['oracle_mean_dockq']), str(m['headroom']), '0.5783', '0.7283']))" >> "$SUMMARY"
+        LR="$LR" NEXT="$NEXT" VERDICT="$VERDICT" MJ="$mj" $PY -I -c "
+import json, os
+m=json.load(open(os.environ['MJ']))
+ep=os.path.basename(os.environ['MJ']).replace('metric_ep','').replace('.json','')
+print('\t'.join([os.environ['LR'], ep, str(m['mean_dockq']), str(m['frac_acc']),
+                 str(m['oracle_mean_dockq']), str(m['headroom']),
+                 os.environ['NEXT'], os.environ['VERDICT']]))" >> "$SUMMARY"
     done
-    say "SWEEP: lr $LR collected. $SUMMARY now has $(( $(wc -l < "$SUMMARY") - 1 )) row(s)"
+    say "SWEEP: $SUMMARY now has $(( $(wc -l < "$SUMMARY") - 1 )) row(s)"
+
+    [ -z "$NEXT" ] && { say "SWEEP: no recommendation produced -- stopping rather than guessing a rate"; break; }
+    LR="$NEXT"
 done
 
-say "SWEEP DONE (or out of learning rates). Summary: $SUMMARY"
+say "SWEEP DONE. Summary: $SUMMARY"
 say "  THE LOSS IS NOT THE RESULT. Compare mean_dockq against 0.5783 and frac_acc against 0.7283."
 say "  For significance use a PAIRED test on the 92 interfaces -- Wilcoxon signed-rank for"
 say "  mean_dockq, where an interface whose selection did not move contributes an exact zero, so the"
