@@ -329,6 +329,25 @@ def main():
     configs.train_confidence_only = True
     configs.loss.weight.alpha_pae = float(a.alpha_pae)
     configs.loss.weight.alpha_confidence = float(a.alpha_confidence)
+
+    # THE HEAD WE ARE TRAINING MUST BE IN TRAINING MODE.
+    #
+    # build_model() comes from phase_j_rescore_cache, which exists to RESCORE, so it ends with
+    # model.eval(). Training through it left confidence_head.training == False, and Protenix's
+    # confidence head has an inference-only memory optimisation keyed on exactly that flag
+    # (modules/confidence.py:233): above PROTENIX_CONF_OFFLOAD_TOKENS tokens (default 2000) and when
+    # `not self.training`, it moves pae and pde to the CPU and empties the cache. The loss then gets
+    # two of its four logit tensors on the CPU while the labels are on the GPU and dies inside
+    # Protenix's PDE loss as "cuda:2 and cpu" -- pointing at the loss rather than at the mode flag.
+    # Data-dependent, so it killed two runs 20-24 min in, once the shuffle reached a structure over
+    # 2000 tokens (9dzf).
+    #
+    # Switching the mode changes NO ARITHMETIC, which is why the steps already taken were valid:
+    # the head's four Dropout modules all have p=0 and it holds no BatchNorm, so train() and eval()
+    # compute the same function. The trunk stays in eval, which is what FT3 requires.
+    model.confidence_head.train()
+    print(f"confidence_head.training = {model.confidence_head.training} "
+          f"(trunk stays eval; train_confidence_only={configs.train_confidence_only})")
     loss_fn = ProtenixLoss(configs)
     w = {k: loss_fn.loss_weight[k] for k in ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss")}
     print("loss weights: " + "  ".join(f"{k.replace('_loss','')} {v:g}" for k, v in w.items()))
@@ -617,6 +636,19 @@ def main():
                     triangle_multiplicative=configs.triangle_multiplicative,
                     triangle_attention=configs.triangle_attention, inplace_safe=False,
                     chunk_size=None)
+            # WHERE THE HEAD'S OUTPUTS LANDED, CHECKED HERE. Protenix offloads pae and pde to
+            # the CPU above a token threshold when the module is in eval mode. The head is in
+            # train mode now so it should not, but a silent recurrence would surface deep inside
+            # the loss as a device mismatch again. Named here instead.
+            _off = [n for n, t in (("plddt", plddt), ("pae", pae), ("pde", pde),
+                                   ("resolved", resolved)) if t.device != dev]
+            if _off:
+                raise SystemExit(
+                    f"STOP: {pdb}/{arm_seed} pose {i}: the confidence head returned {_off} on a "
+                    f"device other than {dev}. Protenix offloads pae/pde to the CPU above "
+                    f"PROTENIX_CONF_OFFLOAD_TOKENS (default 2000) when the module is NOT in "
+                    f"training mode; confidence_head.training is "
+                    f"{model.confidence_head.training}.")
             pred = {"plddt": plddt.float(), "pae": pae.float(), "pde": pde.float(),
                     "resolved": resolved.float(), "coordinate_mini": x}
             # EVERY NUMERIC ARRAY GOES TO THE DEVICE, not just the ones already tensors.
