@@ -84,9 +84,18 @@ def read_run(out_dir, baseline_path=""):
                     out["poses"].append(rec)
         except OSError as e:
             out["warnings"].append(f"trajectory.csv unreadable: {e}")
-    # THE PER-BATCH SERIES IS THE STEPS, NOT THE POSES. One optimiser step covers --accum poses, so
-    # a per-pose curve is 85x denser than the thing being optimised and reads as noise.
-    out["steps"] = [p for p in out["poses"] if p["step_taken"] and not p["nonfinite"]]
+    # THE PER-BATCH SERIES IS THE WINDOW MEAN, NOT THE STEPPING POSE. One optimiser step accumulates
+    # accum_local poses and the row carrying step_taken == 1 is the LAST of them -- its loss fields
+    # are that single pose's. Taking that row as the batch point was a reporting bug (found in
+    # review 2026-10-16): it charted one pose out of 85 and labelled it "per batch", so a falling
+    # batch mean could have been drawn as a flat line. Each point here averages the loss terms over
+    # the whole accumulation window; lr, grad_norm and step stay from the stepping row, because those
+    # are properties of the step and not of a pose.
+    #
+    # STILL RANK 0 ONLY. The trajectory is written by rank 0, which sees accum_local of the
+    # accum_eff poses in a step (85 of 255 here). A true full-batch mean needs the trainer to
+    # all-reduce the loss, which it does not do -- the gradient is reduced, the scalar is not.
+    out["steps"] = _window_means(out["poses"])
     out["dropped_steps"] = [p for p in out["poses"] if p["nonfinite"]]
 
     for f in sorted(glob.glob(os.path.join(out_dir, "metric_ep*.json"))):
@@ -116,6 +125,30 @@ def read_run(out_dir, baseline_path=""):
         out["warnings"].append(f"no baseline at {bp}; the reference lines will be absent")
     return out
 
+
+def _window_means(poses):
+    """One record per optimiser step, averaging the loss terms over that step's accumulation window.
+
+    See the note in read_run: the row flagged step_taken is the last pose of the window, so its own
+    loss fields describe one pose. `n_poses` is carried so a reader can see how many contributed,
+    and a window whose stepping row reported a non-finite gradient is dropped -- no step was taken.
+    """
+    out, cur = [], []
+    for p in poses:
+        cur.append(p)
+        if not p["step_taken"] and not p["nonfinite"]:
+            continue
+        last = cur[-1]
+        if not last["nonfinite"]:
+            rec = dict(last)
+            n = len(cur)
+            for k in TERMS + ("raw", "loss"):
+                vals = [q[k] for q in cur if q.get(k) is not None]
+                rec[k] = sum(vals) / len(vals) if vals else None
+            rec["n_poses"] = n
+            out.append(rec)
+        cur = []
+    return out
 
 def effective_batch(run):
     """The poses that ACTUALLY contribute to one optimiser step, which is not --accum.

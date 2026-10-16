@@ -134,6 +134,8 @@ def build(run, summ, generated, gen_epoch=0):
     # THE EFFECTIVE BATCH, not the requested one: 256 over three ranks is 85 each and 255 in total.
     eff, local, world = R.effective_batch(run)
     batch = eff if eff else a.get("accum", "?")
+    # Named for the caption, which has to say whose poses are in the curve and whose are not.
+    world_minus_one = (world - 1) if isinstance(world, int) and world else "other"
     # THE COMMIT AND THE REASON FOR THE LAUNCH, on the page rather than only in config.json. A curve
     # cannot be compared with another unless the code behind it is identifiable, and a run that was
     # a restart should say what it was a restart FROM.
@@ -317,9 +319,14 @@ summary:focus-visible{{outline:2px solid var(--accent);outline-offset:2px}}
     <p class="axes">x: optimiser step &mdash; one step is <strong>{batch}</strong> poses
       ({local} per rank &times; {world} ranks; <code>--accum {a.get('accum','?')}</code> is the
       request, and {a.get('accum','?')}&nbsp;&divide;&nbsp;{world} does not divide evenly).
-      y: the confidence loss, as the sum of
-      its four terms. One point is one step, not one pose. Raw terms, unweighted
-      (<code>alpha_confidence = {a.get('alpha_confidence','?')}</code>).</p>
+      y: the confidence loss, as the sum of its four terms, which at
+      <code>alpha_confidence = {a.get('alpha_confidence','?')}</code> and
+      <code>alpha_pae = {a.get('alpha_pae','?')}</code> equals the weighted objective being
+      optimised (verified identical to 6 decimals on this run).
+      <strong>One point is the mean over the {local} poses rank&nbsp;0 accumulated for that
+      step</strong> &mdash; not one pose, and not all {batch}: the trajectory is written by rank 0
+      and the trainer all-reduces the gradient but not the loss scalar, so the other
+      {world_minus_one} ranks' poses are not in this curve.</p>
     <div class="chartbox">{c1}</div>
     <div class="key"><span class="k-t"><i></i>total</span><span class="k-b"><i></i>PAE</span>
       <span><i></i>pLDDT</span><span><i></i>PDE (dashed)</span><span><i></i>resolved (dotted)</span></div>
