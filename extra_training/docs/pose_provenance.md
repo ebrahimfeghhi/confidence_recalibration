@@ -82,3 +82,37 @@ no GPU, so it can be re-run as a pre-flight before any evaluation.
 distinct `(iface, seed, sample)` keys, no duplicates, and a refolded interface's rows are byte-equal
 to `fold_deferred/results.csv`. So the stored ipTM the evaluator checks itself against came from the
 same run as the trunk.
+
+## The second defect from the same merge: score rows
+
+STAGE 0's merge moved `trunks/` and `poses/` and **nothing else**, so `validation/fold` ended up
+holding the refold's trunks and poses beside the ORIGINAL fold's score rows for three structures.
+This is the same "a new trunk must not be paired with an old pose" error in score-row form, and the
+resolver above **cannot** detect it: the trunk and the cifs agree, so join 2 passes, and the wrong
+DockQ is read from `results.csv` with no symptom.
+
+| root | rows | identical in `fold/results.csv` before the repair | different |
+|---|---|---|---|
+| `fold_deferred` (13 structures) | 13,000 | 13,000 | 0 |
+| `fold_trunkfix` (3 structures: 7tzh, 8v8f, 9cn2) | 3,000 | 853 | **2,147** |
+
+The deferred merge did it correctly, which is why only one stage was affected. Repaired with
+`phase_j_merge_results.py`, which replaces rows by `(iface, seed, sample)` and refuses a src key the
+destination does not already have; after the repair both roots agree with `fold/results.csv` on all
+16,000 rows, which still holds 46,000 rows and 46,000 distinct keys. The destination was copied to
+`results.csv.pre_merge` first.
+
+Because 2,147 rows changed, **the validation baseline (0.5783 / 0.7283 at 100 seeds over 92
+interfaces) must be recomputed** before it is used as a comparison point.
+
+## Restoring the invariant
+
+The one-pose-directory-per-seed invariant is the real fix; the resolver is a guard. Both merge paths
+are corrected (`queue_ft3_pilot.sh` now keys its collision test on `(pdb, seed)` and merges score
+rows), and `phase_j_drop_superseded_poses.py` removes the directories no trunk was computed from:
+1,600 directories, 2.8 GiB, 0 seeds where the trunk singled out neither or both. It recomputes the
+evidence itself rather than reading a list, keeps the directory the trunk matches, and re-checks that
+survivor against its trunk immediately before removing its rival, so no seed is left without
+readable poses. This deletion was explicitly requested by the user on 2026-10-16, overriding the
+standing never-delete-poses rule for this one case; the removed folds had no trunks (deleted in the
+earlier 381 GB reclaim) and no score rows in `results.csv`.

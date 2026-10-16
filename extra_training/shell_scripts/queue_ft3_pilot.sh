@@ -61,11 +61,34 @@ if [ "$(find "$R/validation/fold/trunks" -name '*.npz' | wc -l)" -lt 5300 ]; the
     done
     for g in 0 1 3; do tmux kill-session -t tfix_$g 2>/dev/null; done
     sleep 15
-    # merge into validation/fold so the evaluator sees one root
+    # MERGE INTO validation/fold SO THE EVALUATOR SEES ONE ROOT.
+    #
+    # The first version of this block had two defects, both found on 2026-10-16 after GATE 1 failed.
+    # Its collision test was `os.path.exists(<seed>-<runid>)`, and a refold's runid is always new,
+    # so it never fired: it silently left TWO finished pose directories for every merged seed, which
+    # is the one invariant the fresh-root design exists to protect. The test is now keyed on
+    # (pdb, seed) and refuses, because two folds of one seed are different poses -- the same seed
+    # refolded has gone from DockQ 0.022 to 0.644 -- and nothing here may choose between them.
+    #
+    # It also moved trunks and poses and NOTHING ELSE, leaving the refold's trunks beside the
+    # ORIGINAL fold's score rows for 7tzh, 8v8f and 9cn2: 2,147 of 3,000 rows disagreed, so the
+    # evaluator would have selected a pose by the new trunk and read the old fold's DockQ for it.
+    # results.csv is now merged too, by phase_j_merge_results.py, which replaces rows by
+    # (iface, seed, sample) and refuses a src key the destination does not already have.
     $PY -I - <<'PYM' >> "$LOG" 2>&1
 import os, glob
 src=os.environ["TF"]; dst=os.environ["R"]+"/validation/fold"
 moved={"trunks":0,"poses":0}
+for p in sorted(glob.glob(f"{src}/poses/*/*")):
+    if not os.path.isdir(p): continue
+    pdb, unit = p.split(os.sep)[-2], os.path.basename(p)
+    seed = unit.rsplit("-",1)[0]
+    have = [d for d in glob.glob(f"{dst}/poses/{pdb}/{seed}-*")
+            if os.path.exists(os.path.join(d,"run.json"))]
+    if have:
+        raise SystemExit(f"COLLISION: {pdb} seed {seed} already has a finished pose dir in the "
+                         f"destination ({[os.path.basename(d) for d in have]}). Two folds of one "
+                         f"seed are different poses; merging would leave the pair unresolvable.")
 for kind,pat in (("trunks","trunks/*/*.npz"),("poses","poses/*/*")):
     for p in glob.glob(f"{src}/{pat}"):
         rel=os.path.relpath(p,src); d=os.path.join(dst,rel)
@@ -73,6 +96,11 @@ for kind,pat in (("trunks","trunks/*/*.npz"),("poses","poses/*/*")):
         os.makedirs(os.path.dirname(d), exist_ok=True); os.rename(p,d); moved[kind]+=1
 print("  merged into validation/fold:", moved)
 PYM
+    $PY -I "$R/phases/phase_j_merge_results.py" --src "$TF/results.csv" \
+        --dst "$R/validation/fold/results.csv" --apply >> "$LOG" 2>&1 || {
+        say "STAGE 0: the score-row merge FAILED. The trunks are merged but the rows are not, so"
+        say "the evaluator would read the old fold's DockQ. NOT starting the pilot."
+        exit 1; }
     say "STAGE 0: merged. validation/fold trunks now $(find "$R/validation/fold/trunks" -name '*.npz' | wc -l)/5300"
 else
     say "STAGE 0: skipped, validation/fold already has 5,300 trunks"
