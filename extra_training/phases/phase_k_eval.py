@@ -123,11 +123,40 @@ def ost_chain_pairs(unit_dir, pdb, k, refs):
     cm = j.get("chain_mapping")
     if not isinstance(cm, dict):
         return None, f"{os.path.basename(f)} has no chain_mapping"
+
+    # A REFERENCE CHAIN OST DID NOT MAP IS RESOLVED BY ELIMINATION, OR NOT AT ALL.
+    #
+    # OST omits a chain it could not place -- 7shy's reference chain A is absent from chain_mapping
+    # on every pose, which is the same OST behaviour that dropped 7shy_AH from the scores
+    # (ost/mol/alg/scoring.py:1121). Falling back to chain_roles there is precisely the table this
+    # function exists to distrust, and 7shy is NOT a safe case for it: OST's own chem_mapping puts
+    # its model chains A and B in ONE group, so they are interchangeable and a static assignment of
+    # them is a guess.
+    #
+    # It is still determined, though, without consulting that table. 7shy has three reference chains
+    # and three model chains, and chain_mapping accounts for two of each, so exactly one of each is
+    # left and the assignment is FORCED. That is the only inference allowed here: one unassigned
+    # reference chain and one unassigned model chain. Two of either is genuinely ambiguous and is
+    # refused, because a wrong chain pair reads one interface's ipTM against another's DockQ, and
+    # with --ckpt the shipped-head self-check does not run, so nothing downstream would catch it.
+    ref_all = [c for c in (j.get("reference_chains") or []) if c]
+    mdl_all = [c for c in (j.get("model_chains") or []) if c]
+    need = {c for _i, c1, c2 in refs for c in (c1, c2)}
+    if not need <= set(cm):
+        free_r = [c for c in ref_all if c not in cm]
+        free_m = [c for c in mdl_all if c not in set(cm.values())]
+        if len(free_r) == 1 and len(free_m) == 1:
+            cm = {**cm, free_r[0]: free_m[0]}
+        else:
+            return None, (f"reference chain(s) {sorted(need - set(cm))} unmapped by OST and not "
+                          f"forced: {len(free_r)} reference and {len(free_m)} model chain(s) free "
+                          f"({free_r} / {free_m})")
+
     pairs = []
     for iface, c1, c2 in refs:
         m1, m2 = cm.get(c1), cm.get(c2)
         if not m1 or not m2 or len(m1) != 1 or len(m2) != 1:
-            return None, f"{iface}: chain_mapping has no single model chain for {c1}/{c2}"
+            return None, f"{iface}: no single model chain for {c1}/{c2}"
         pairs.append((iface, ord(m1) - ord("A"), ord(m2) - ord("A")))
     return pairs, ""
 
@@ -148,6 +177,13 @@ def main():
                          "SHIPPED head. bf16 trunk tensors are stored and reloaded and the head runs "
                          "under autocast, so exact equality is not the bar.")
     ap.add_argument("--no-self-check", action="store_true")
+    ap.add_argument("--allow-roles-fallback", action="store_true",
+                    help="use chain_roles.csv when OST's per-pose mapping is unusable. OFF by "
+                         "default: that table assigns one model chain per reference chain for the "
+                         "whole structure, which is measured WRONG for chemically identical chains "
+                         "(9eg6 on every pose, 7zra on some), and --ckpt runs skip the self-check "
+                         "that caught it. An unmapped chain that is FORCED by elimination needs no "
+                         "fallback and no flag.")
     ap.add_argument("--selfcheck-out", default="",
                     help="write EVERY row that fails the self-check to this csv, so the failure can "
                          "be analysed without re-running the evaluator.")
@@ -167,6 +203,7 @@ def main():
     pairs_by_pdb, unresolved = interface_chain_pairs(a.pool, a.roles)
     refs_by_pdb = pool_ref_pairs(a.pool)
     n_ost, n_static, n_differ, differ_pdbs = 0, 0, 0, collections.Counter()
+    unmapped = []
     if unresolved:
         raise SystemExit(f"STOP: {len(unresolved)} pool interface(s) cannot be mapped to model "
                          f"chains via {a.roles}: {unresolved[:6]}. The metric would silently cover "
@@ -258,10 +295,15 @@ def main():
             # how much of the metric rests on which.
             pose_pairs, why = ost_chain_pairs(unit_dir, pdb, k, refs_by_pdb[pdb])
             if pose_pairs is None:
+                # NO SILENT FALLBACK. chain_roles has been measured wrong for chemically identical
+                # chains, and with --ckpt the self-check that would have caught it does not run, so
+                # an unresolvable mapping is recorded and the run stops rather than scoring.
                 n_static += 1
-                if n_static <= 5:
-                    print(f"  {pdb}/{sd_} sample {k}: falling back to chain_roles ({why})")
-                pose_pairs = pairs_by_pdb[pdb]
+                unmapped.append(f"{pdb}/{sd_} sample {k}: {why}")
+                if a.allow_roles_fallback:
+                    pose_pairs = pairs_by_pdb[pdb]
+                else:
+                    continue
             else:
                 n_ost += 1
                 if pose_pairs != pairs_by_pdb[pdb]:
@@ -289,8 +331,22 @@ def main():
                          f"Selecting a pose and reading another sample's DockQ would score the "
                          f"wrong thing, so this is fatal rather than skipped.")
 
-    print(f"\njoin 1: OST's per-pose chain mapping used on {n_ost} pose(s), chain_roles fallback on "
+    print(f"\njoin 1: OST's per-pose chain mapping used on {n_ost} pose(s), unresolvable on "
           f"{n_static}")
+    if unmapped and not a.allow_roles_fallback:
+        for u in unmapped[:10]:
+            print(f"    {u}")
+        raise SystemExit(
+            f"STOP: {len(unmapped)} pose(s) have no usable OST chain mapping and none that is forced "
+            f"by elimination. chain_roles.csv is NOT an acceptable substitute -- it is measured wrong "
+            f"for chemically identical chains, and with --ckpt the shipped-head self-check does not "
+            f"run, so a wrong chain pair here would mis-score silently. Pass "
+            f"--allow-roles-fallback only if you have established the static table is right for "
+            f"these structures, and say why.")
+    if unmapped:
+        print(f"  FELL BACK to chain_roles on {len(unmapped)} pose(s) because "
+              f"--allow-roles-fallback was given; the static table is wrong for chemically "
+              f"identical chains, so this metric is only as good as that assumption")
     if n_differ:
         print(f"  the two DISAGREED on {n_differ} pose(s), across {len(differ_pdbs)} structure(s): "
               + ", ".join(f"{k}:{v}" for k, v in differ_pdbs.most_common(8)))
