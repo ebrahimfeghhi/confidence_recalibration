@@ -116,7 +116,7 @@ def main():
                          "by max pair_iptm, against the 0.5779 / 0.7283 baseline at 100 seeds.")
     ap.add_argument("--eval-every", type=int, default=0,
                     help="also score every N optimiser steps. 0 disables. A full pass is 5,300 "
-                         "validation units at 0.187 s/unit = ~16.5 min, so at 97 steps/epoch this "
+                         "validation units at 0.82 s/unit = ~73 min, MEASURED on GATE 1 2026-10-16 (73 units/min over 5,300). An earlier 0.187 s/unit here came from a small probe of small structures with the model already warm and was 4.4x optimistic, so at 97 steps/epoch this "
                          "is normally left off in favour of --eval-every-epoch.")
     ap.add_argument("--limit-units", type=int, default=0, help="debug: cap the number of units")
     ap.add_argument("--shuffle", default="structure",
@@ -226,7 +226,7 @@ def main():
                          "measured at ~16 GB, so 20 GB is the floor.")
     ap.add_argument("--eval-budget", type=int, default=100,
                     help="seeds per interface for the epoch-end metric. 100 is the full budget and "
-                         "the one the 0.5779 / 0.7283 baseline is quoted at; a pass is ~16.5 min.")
+                         "the one the 0.5779 / 0.7283 baseline is quoted at; a pass is ~73 min, measured.")
     ap.add_argument("--require-replay", default="",
                     help="path to a replay result that must say PASS before training starts. "
                          "Cached training is only FT3 if the cache reproduces it; see "

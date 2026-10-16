@@ -146,8 +146,12 @@ The weakest points, stated so they get looked at rather than skipped.
 3. **`accum_eff` is 255, not 256**, since 256 does not divide by 3. The loss is scaled by 255 so the
    gradient is a true mean over the poses that contributed, but the effective batch is not the number
    anyone wrote down.
-4. **The per-epoch evaluation serialises.** Rank 0 evaluates for ~16.5 min while the other two ranks
-   wait at a barrier, so two cards idle three times per run.
+4. **The per-epoch evaluation serialises, and it is expensive.** Rank 0 evaluates for **~73
+   minutes** (measured: 73 units/min over 5,300 units) while the other two ranks wait at a barrier,
+   so two cards idle for 73 min three times per run. Against a ~2.6 h epoch that is ~47% overhead,
+   and ~3.7 h of the run is evaluation. A smaller `--eval-budget` for the per-epoch passes, with the
+   full 100 only at the end, would cut most of it -- the metric reports every budget, so a budget-25
+   pass compares against the N=25 baseline (0.5855 / 0.7391) rather than the N=100 one.
 5. **`--allow-code-drift` is being used in anger.** Its safety rests on training having had no
    ambiguous pose directories, so the new resolver is a no-op there. GATE 2 tests that independently
    by rebuilding a label live and comparing; a GATE 2 pass justifies the flag, and a failure means the
