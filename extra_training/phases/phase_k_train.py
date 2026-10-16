@@ -91,15 +91,33 @@ def main():
     ap.add_argument("--alpha-pae", type=float, default=1.0,
                     help="FT3 wants 1. At Protenix's shipped 0.0 the PAE term is multiplied by zero "
                          "and ipTM -- the only number this project is judged on -- cannot move.")
-    ap.add_argument("--lr", type=float, default=1e-4,
-                    help="Protenix's global default is 0.0018, tuned for finetuning the whole model. "
-                         "This trains 19.8M parameters (4.3%%), so the default is not transferable "
-                         "and --lr-probe exists to measure it rather than inherit it.")
-    ap.add_argument("--warmup-steps", type=int, default=50)
-    ap.add_argument("--accum", type=int, default=8,
-                    help="poses per optimiser step. Token counts vary per structure so units cannot "
-                         "be batched into one tensor; accumulation is how the effective batch is set.")
-    ap.add_argument("--epochs", type=float, default=1.0)
+    ap.add_argument("--lr", type=float, default=1e-3,
+                    help="Protenix ships TWO: configs_base.py has 0.0018 and their own "
+                         "finetune_demo.sh passes 0.001. FT3 is a finetune, so 0.001 is the default "
+                         "here. Neither was tuned for training 4.3%% of the model at batch 256, so "
+                         "--lr-probe exists to measure it rather than inherit it.")
+    ap.add_argument("--warmup-steps", type=int, default=20,
+                    help="SHORT BECAUSE THE RUN IS SHORT. Protenix's finetune_demo.sh warms up over "
+                         "2,000 steps of a 100,000-step run (2%%). At batch 256 three epochs of our "
+                         "cache is 292 optimiser steps, so 2,000 would be 685%% of the run and the "
+                         "learning rate would never reach its set value. 20 is 6.8%%.")
+    ap.add_argument("--accum", type=int, default=256,
+                    help="POSES PER OPTIMISER STEP -- the effective batch. The micro-batch is forced "
+                         "to 1: token counts run 263-3,400 across our structures, so poses cannot be "
+                         "stacked into one tensor without padding the head's pair representations. "
+                         "256 at the user's direction. For reference, Protenix's own finetune runs "
+                         "one structure per step with iters_to_accumulate=1 and scales by world_size; "
+                         "256 is AF3's paper figure, for full-model training across many devices. At "
+                         "256 an epoch of our 25,000 poses is 97 steps.")
+    ap.add_argument("--epochs", type=float, default=3.0)
+    ap.add_argument("--eval-every-epoch", action="store_true",
+                    help="score the validation metric at the end of every epoch. THE METRIC IS THE "
+                         "RESULT, not the loss: mean DockQ and frac-acceptable of the pose selected "
+                         "by max pair_iptm, against the 0.5776 / 0.7283 baseline at 100 seeds.")
+    ap.add_argument("--eval-every", type=int, default=0,
+                    help="also score every N optimiser steps. 0 disables. A full pass is 5,300 "
+                         "validation units at 0.187 s/unit = ~16.5 min, so at 97 steps/epoch this "
+                         "is normally left off in favour of --eval-every-epoch.")
     ap.add_argument("--limit-units", type=int, default=0, help="debug: cap the number of units")
     ap.add_argument("--shuffle", default="structure",
                     choices=["structure", "none"],
@@ -145,6 +163,16 @@ def main():
                          "in phase_j_build_cache.py invalidates all 5,000 labels. OFF by default: a "
                          "drift in any other field, or several fields, is still fatal, and every "
                          "accepted drift is printed with both hashes.")
+    ap.add_argument("--wandb-project", default="",
+                    help="wandb project. Empty disables wandb entirely. Every argparse value is "
+                         "logged as config, the four loss terms + lr + grad_norm per step, and the "
+                         "two validation metrics at each epoch boundary.")
+    ap.add_argument("--wandb-run", default="")
+    ap.add_argument("--wandb-mode", default="online", choices=["online", "offline", "disabled"])
+    ap.add_argument("--eval-script", default=f"{ROOT}/phases/phase_k_eval.py")
+    ap.add_argument("--eval-budget", type=int, default=100,
+                    help="seeds per interface for the epoch-end metric. 100 is the full budget and "
+                         "the one the 0.5783 / 0.7283 baseline is quoted at; a pass is ~16.5 min.")
     ap.add_argument("--require-replay", default="",
                     help="path to a replay result that must say PASS before training starts. "
                          "Cached training is only FT3 if the cache reproduces it; see "
@@ -204,6 +232,17 @@ def main():
           f"({n_head/n_all:.1%}), under {prefixes}")
     for n, p in model.named_parameters():
         p.requires_grad_(id(p) in head_ids)
+
+    wb = None
+    if a.wandb_project:
+        import wandb
+        wb = wandb.init(project=a.wandb_project, name=a.wandb_run or None, mode=a.wandb_mode,
+                        config={**vars(a), "n_head_params": n_head, "n_all_params": n_all,
+                                "head_frac": n_head / n_all, "n_head_tensors": len(trainable),
+                                "loss_weights": {k.replace("_loss", ""): float(v)
+                                                 for k, v in w.items()},
+                                "baseline_mean_dockq": 0.5783, "baseline_frac_acc": 0.7283})
+        print(f"wandb: {wb.url if hasattr(wb, 'url') else a.wandb_project} (mode={a.wandb_mode})")
 
     # ---- THE MANIFEST COMES FROM THE FROZEN SELECTION, NOT FROM WHATEVER FILES EXIST ----
     # GLOBBING THE LABEL DIRECTORY CANNOT ESTABLISH COMPLETENESS. It did: the manifest was built by
@@ -489,6 +528,40 @@ def main():
         opt.zero_grad(set_to_none=True)
         return gn, outside, True
 
+    def eval_checkpoint(step, epoch):
+        """Save the head, score it on the validation metric, log it. Returns the metric dict.
+
+        RUN AS A SUBPROCESS, not imported. phase_k_eval carries its own guards -- the pool-coverage
+        check, the pose-to-sample join by coordinate identity, and the self-check that the SHIPPED
+        head reproduces results.csv's own ipTM -- and running it as the script keeps all of them,
+        including its refusal to report a number when a join is unverified. It also keeps a second
+        model off this process's GPU memory.
+        """
+        import json
+        import subprocess
+        cp = os.path.join(a.out, f"head_ep{epoch}_step{step}.pt")
+        torch.save({n: pp.detach().cpu() for n, pp in model.named_parameters()
+                    if n in set(trainable)}, cp)
+        mj = os.path.join(a.out, f"metric_ep{epoch}.json")
+        cmd = [sys.executable, "-I", a.eval_script, "--ckpt", cp, "--budget", str(a.eval_budget),
+               "--out", mj]
+        print(f"  evaluating epoch {epoch} -> {os.path.basename(cp)}")
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           env={**os.environ, "LAYERNORM_TYPE": "openfold"})
+        if r.returncode != 0:
+            tail = (r.stdout + r.stderr).strip().splitlines()[-6:]
+            raise SystemExit("STOP: the validation evaluation failed, so this checkpoint cannot be "
+                             "scored and a training curve without it is not interpretable:\n  "
+                             + "\n  ".join(tail))
+        m = json.load(open(mj))
+        print(f"  epoch {epoch}: mean_dockq {m['mean_dockq']:.4f} (baseline 0.5783)  "
+              f"frac_acc {m['frac_acc']:.4f} (baseline 0.7283)  headroom {m['headroom']:.4f}")
+        if wb is not None:
+            wb.log({"val/mean_dockq": m["mean_dockq"], "val/frac_acc": m["frac_acc"],
+                    "val/oracle_mean_dockq": m["oracle_mean_dockq"],
+                    "val/headroom": m["headroom"], "epoch": epoch, "step": step})
+        return m
+
     def train_loop(steps_cap, lr, tag, write_traj):
         for g in opt.param_groups:
             g["lr"] = lr
@@ -522,6 +595,7 @@ def main():
                 frac = a.epochs - (n_epochs - 1)
                 ep_units = ep_units[:max(1, int(len(ep_units) * frac))]
             print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
+            ep_start_step = step
             for ui, (pdb, lab_p, cands) in enumerate(ep_units):
                 trunk_p = resolve_trunk(pdb, lab_p, cands)
                 for i, cum, met in run_unit(pdb, lab_p, trunk_p, item_cache):
@@ -548,6 +622,10 @@ def main():
                                  "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
                                  "epoch": ep + 1,
                                  **{k: float(met[k]) for k in TERMS}})
+                    if wb is not None:
+                        wb.log({f"train/{k.replace('_loss','')}": float(met[k]) for k in TERMS}
+                               | {"train/lr": cur_lr, "train/grad_norm": gn, "step": step,
+                                  "epoch": ep + 1})
                     if write_traj and len(rows) % 20 == 0:
                         _flush(traj_p, traj_cols, rows); rows = []
                     if steps_cap and step >= steps_cap:
@@ -555,6 +633,9 @@ def main():
                         break
                 if done:
                     break
+            if write_traj and a.eval_every_epoch and step > ep_start_step:
+                _flush(traj_p, traj_cols, rows); rows = []
+                eval_checkpoint(step, ep + 1)
         # THE FINAL PARTIAL ACCUMULATION. Poses left in the accumulator when the data runs out used
         # to be dropped, so the last fraction of an epoch contributed gradients that were computed
         # and then thrown away.
