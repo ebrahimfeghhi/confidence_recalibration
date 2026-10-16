@@ -163,6 +163,26 @@ def main():
     ap.add_argument("--grad-check-every", type=int, default=25,
                     help="re-assert that no gradient has appeared outside the confidence head")
     ap.add_argument("--save-every", type=int, default=250, help="optimiser steps per checkpoint")
+    ap.add_argument("--alpha-confidence", type=float, default=1.0,
+                    help="weight on the four confidence losses. Protenix ships 1e-4 because in full "
+                         "AF3-style training these terms sit beside the diffusion and distogram "
+                         "losses and must not perturb them. FT3 freezes the trunk and optimises "
+                         "NOTHING ELSE, so that weight is a constant on the whole objective -- it "
+                         "moves no minimum, but it is not harmless either: it pushed per-parameter "
+                         "gradients to ~1.8e-07, at or below AdamW's eps of 1e-8, so eps dominated "
+                         "the denominator and damped the typical step ~12x (MEASURED: a step at "
+                         "lr 1e-3 moved parameters by 8.1e-05). Default 1.0, at the user's "
+                         "direction on 2026-10-16, so lr means what it says.")
+    ap.add_argument("--clip-norm", type=float, default=25.0,
+                    help="gradient-norm clip. THIS SCALES WITH --alpha-confidence and must be set "
+                         "with it. At the old 1e-4 weight the norm was 7.9e-04 against a threshold "
+                         "of 1.0, so clipping never fired and was decorative. At weight 1.0 the "
+                         "same gradients are norm 7.9 (median) and 11.8 (max, measured over this "
+                         "run's first 8 steps), so a threshold of 1.0 would fire on EVERY step and "
+                         "silently turn this into normalised gradient descent. 25 is ~3x the "
+                         "measured median: it catches a genuine spike and never binds on a normal "
+                         "step. It is a judgement call, derived from measurement rather than picked "
+                         "in advance, and it should be revisited if the gradient scale changes.")
     ap.add_argument("--eval-cards", default="",
                     help="cards to SHARD the per-epoch evaluation over, comma separated. Default: "
                          "every card this run was given, since the other ranks are parked at a "
@@ -314,6 +334,7 @@ def main():
     model, configs = RC.build_model(a.ckpt_dir, a.model_name, dev)
     configs.train_confidence_only = True
     configs.loss.weight.alpha_pae = float(a.alpha_pae)
+    configs.loss.weight.alpha_confidence = float(a.alpha_confidence)
     loss_fn = ProtenixLoss(configs)
     w = {k: loss_fn.loss_weight[k] for k in ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss")}
     print("loss weights: " + "  ".join(f"{k.replace('_loss','')} {v:g}" for k, v in w.items()))
@@ -603,12 +624,54 @@ def main():
                     chunk_size=None)
             pred = {"plddt": plddt.float(), "pae": pae.float(), "pde": pde.float(),
                     "resolved": resolved.float(), "coordinate_mini": x}
-            ld = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in label_dict.items()}
+            # EVERY NUMERIC ARRAY GOES TO THE DEVICE, not just the ones already tensors.
+            #
+            # This line used to be `v.to(dev) if torch.is_tensor(v) else v`, which left a numpy
+            # array in the label dict as numpy. Protenix then converts it internally with
+            # torch.as_tensor, giving a CPU tensor, and from there the whole loss branch computes
+            # on CPU: PDELoss builds its bin boundaries with device=pred_coordinate.device, so
+            # every tensor inside calculate_label agrees with the others and only the logits are
+            # left on the GPU. The failure therefore surfaces at `labels * log_softmax(logits)` as
+            # "cuda:2 and cpu", pointing at Protenix's loss rather than at the dict that fed it.
+            #
+            # IT IS DATA-DEPENDENT, which is why it survived the selftest and 8 optimiser steps of
+            # the real run before killing it 24 minutes in: only some structures carry such a
+            # field. feat_live above was already coerced this way; the label dict was not.
+            ld = {}
+            for _k, _v in label_dict.items():
+                if torch.is_tensor(_v):
+                    ld[_k] = _v.to(dev)
+                elif isinstance(_v, np.ndarray) and _v.dtype != object:
+                    ld[_k] = torch.as_tensor(_v).to(dev)
+                else:
+                    ld[_k] = _v
             ld["coordinate"] = torch.as_tensor(lab["label_coordinate"][i], dtype=torch.float32,
                                                device=dev)
             ld["coordinate_mask"] = torch.as_tensor(
                 lab["label_coordinate_mask"][i].astype(np.float32), device=dev)
-            cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
+            try:
+                cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
+            except RuntimeError as _e:
+                if "same device" not in str(_e):
+                    raise
+                # NAME THE OFFENDER. A device mismatch inside Protenix's loss says nothing
+                # about which input was wrong, and the structure that triggers it is only
+                # reachable by running until it appears -- 24 min, on one rank of three. The
+                # inputs are dumped here so one crash is enough.
+                def _where(d, label):
+                    out = []
+                    for _k2, _v2 in sorted(d.items()):
+                        if torch.is_tensor(_v2):
+                            out.append(f"{_k2}:{_v2.device}")
+                        elif isinstance(_v2, np.ndarray):
+                            out.append(f"{_k2}:numpy[{_v2.dtype}]")
+                    return f"  {label}: " + " ".join(out)
+                print(f"DEVICE MISMATCH on {pdb}/{arm_seed} pose {i}, dev={dev}: {_e}",
+                      flush=True)
+                print(_where(ld, "label_dict"), flush=True)
+                print(_where(feat_cache, "feat"), flush=True)
+                print(_where(pred, "pred"), flush=True)
+                raise
             absent = [k for k in TERMS if k not in met]
             if absent:
                 raise SystemExit(f"STOP: the loss produced no {absent} for {pdb}/{arm_seed} pose {i}; "
@@ -658,7 +721,8 @@ def main():
                 pp.grad.copy_(flat[off:off + k].view_as(pp.grad))
                 off += k
         try:
-            gn = float(torch.nn.utils.clip_grad_norm_(params, 1.0, error_if_nonfinite=True))
+            gn = float(torch.nn.utils.clip_grad_norm_(params, a.clip_norm,
+                                                      error_if_nonfinite=True))
         except RuntimeError as e:
             nonfinite["n"] += 1
             print(f"  NON-FINITE GRADIENT at step {step} ({e}); gradients dropped, no step taken "
