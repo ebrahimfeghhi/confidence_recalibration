@@ -47,6 +47,24 @@ grep -q "^PASS:" "$R/training/ft3_pilot_replay.log" || {
     say "NOT starting the pilot. See $R/training/ft3_pilot_replay.log"; exit 1; }
 say "GATE 2: PASS"
 
+# PRELOADING IS GATED ON FREE RAM AT LAUNCH, AND AGAIN PER ITEM INSIDE THE TRAINER.
+# Holding all 500 structure items saves the ~57 min/epoch of rebuilds (measured: 3.6-10.4 s each)
+# but costs ~253 GB (measured: 331-886 MB each, avg 518). The user's condition is at least 500 GB
+# free before preloading, so it is measured here rather than assumed -- and the trainer re-checks
+# MemAvailable before EVERY item it caches, because the cache grows over the first epoch and a
+# startup check alone would let the box run out later and take the fold workers with it.
+FREE_GB=$(awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo)
+MIN_GB=500
+if [ "$FREE_GB" -ge "$MIN_GB" ]; then
+    PRELOAD=500
+    say "RAM: ${FREE_GB} GB available >= ${MIN_GB} GB -- preloading all 500 structure items"
+    say "  saves ~57 min/epoch of dataset-item rebuilds, costs ~253 GB"
+else
+    PRELOAD=1
+    say "RAM: only ${FREE_GB} GB available, below ${MIN_GB} GB -- NOT preloading (--preload-items 1)"
+    say "  each structure is rebuilt per epoch, ~57 min/epoch, rather than risking the fold workers"
+fi
+
 mkdir -p "$OUT"
 say "starting the 3-epoch pilot: batch 256, lr 1e-3, warmup 20, eval after every epoch"
 say "  ~292 optimiser steps (97/epoch); each epoch-end eval is a full 100-seed pass (~16.5 min)"
@@ -55,7 +73,7 @@ CUDA_VISIBLE_DEVICES=0 LAYERNORM_TYPE=openfold $PY -I "$R/phases/phase_k_train.p
     --labels "$R/training/fold/labels" \
     --epochs 3 --accum 256 --lr 1e-3 --warmup-steps 20 \
     --eval-every-epoch --eval-budget 100 \
-    --preload-items 1 \
+    --preload-items "$PRELOAD" --preload-min-free-gb "$MIN_GB" \
     --grad-check-every 10 --save-every 100 \
     --require-replay "$R/training/ft3_pilot_replay.log" \
     --wandb-project confidence-recalibration --wandb-run ft3-pilot-3ep \

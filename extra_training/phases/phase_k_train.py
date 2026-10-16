@@ -147,6 +147,13 @@ def main():
                     help="how many non-finite-gradient steps to tolerate before stopping. Each one "
                          "drops its gradients and takes no step; past this the data or the learning "
                          "rate is wrong and continuing trains on noise.")
+    ap.add_argument("--preload-min-free-gb", type=float, default=500.0,
+                    help="FLOOR ON FREE RAM, checked before every item is added to the cache -- not "
+                         "once at startup. The cache GROWS to ~253 GB over the first epoch (500 "
+                         "items at a measured 331-886 MB, avg 518), so a startup check would pass "
+                         "and the box could still be driven out of memory later, taking the fold "
+                         "workers with it. When MemAvailable falls below this the cache stops "
+                         "growing and evicts instead; it never fails the run.")
     ap.add_argument("--grad-check-every", type=int, default=25,
                     help="re-assert that no gradient has appeared outside the confidence head")
     ap.add_argument("--save-every", type=int, default=250, help="optimiser steps per checkpoint")
@@ -332,6 +339,7 @@ def main():
     # rather than assumed; reported at the end against the number of structures actually visited.
     item_build_s = []
     nonfinite = {"n": 0}
+    ram_floor = {"hit": False, "n": 0}
     code_drift = {"n": 0, "warned": False}
 
     def resolve_trunk(pdb, lab_p, cands, want_fp_cache={}):
@@ -396,6 +404,22 @@ def main():
         """
         arm_seed = os.path.basename(lab_p)[:-4]
         if pdb not in item_cache:
+            # RE-CHECKED EVERY TIME, from MemAvailable rather than a remembered number
+            try:
+                _free_gb = next(int(l.split()[1]) for l in open("/proc/meminfo")
+                                if l.startswith("MemAvailable:")) / 1048576.0
+            except Exception:
+                _free_gb = float("inf")
+            if _free_gb < a.preload_min_free_gb and len(item_cache) >= 1:
+                if not ram_floor["hit"]:
+                    print(f"  RAM FLOOR: {_free_gb:.0f} GB available, below "
+                          f"--preload-min-free-gb {a.preload_min_free_gb:.0f}. The item cache stops "
+                          f"growing at {len(item_cache)} structure(s) and evicts from here on; "
+                          f"structures will be rebuilt rather than held. Nothing fails.")
+                    ram_floor["hit"] = True
+                ram_floor["n"] += 1
+                while len(item_cache) >= max(1, len(item_cache)):
+                    item_cache.pop(next(iter(item_cache)))
             # EVICT ONLY WHEN THE BUDGET IS REACHED. Holding one item at a time means every structure
             # is rebuilt every epoch, which the numbers above make the dominant cost of a multi-epoch
             # run. FIFO rather than LRU because --shuffle visits each structure's units consecutively,
@@ -696,6 +720,10 @@ def main():
     print(f"trajectory -> {traj_p}")
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
     train_loop(steps_cap, a.lr, "train", write_traj=True)
+    if ram_floor["n"]:
+        print(f"\nRAM FLOOR was hit on {ram_floor['n']} structure(s): the item cache was capped "
+              f"below --preload-items to stay above {a.preload_min_free_gb:.0f} GB free, so those "
+              f"structures were rebuilt rather than held.")
     if code_drift["n"]:
         print(f"\nCODE DRIFT ACCEPTED on {code_drift['n']} unit(s) via --allow-code-drift. The "
               f"labels' data provenance matched in every field; only the builder's source hash "
