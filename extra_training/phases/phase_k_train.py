@@ -58,15 +58,29 @@ print = functools.partial(print, flush=True)
 TERMS = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss", "loss")
 
 
+# THE COMMIT THIS PROCESS IS ACTUALLY RUNNING, read once at import and never again.
+#
+# It used to be read at save time, which is wrong in the one case that matters: run 9mfb4y launched
+# at 1aedd04b, HEAD moved four commits while it ran, and resume_ep3.pt therefore recorded commit
+# 7b744e7a for weights produced entirely by 1aedd04b's code. Python had the old module in memory;
+# only the git working tree had moved. A provenance field that reports the tree instead of the
+# running code is worse than no field, because it will be believed.
+_COMMIT_AT_START = None
+
+
 def _git_commit():
-    """The commit a resume bundle was written from, so a resume across a code change is visible."""
+    """The commit THIS PROCESS loaded its code from, cached at first call during startup."""
+    global _COMMIT_AT_START
+    if _COMMIT_AT_START is not None:
+        return _COMMIT_AT_START
     import subprocess
     try:
-        return subprocess.run(["git", "-C", os.path.dirname(os.path.abspath(__file__)),
-                               "rev-parse", "HEAD"], capture_output=True, text=True,
-                              timeout=10).stdout.strip() or "unknown"
+        _COMMIT_AT_START = subprocess.run(
+            ["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10).stdout.strip() or "unknown"
     except (OSError, subprocess.SubprocessError):
-        return "unknown"
+        _COMMIT_AT_START = "unknown"
+    return _COMMIT_AT_START
 
 
 def head_param_names(model):
@@ -322,6 +336,11 @@ def main():
                          "phase_j_replay.py. Pass 'skip' to train without the gate and say why.")
     a = ap.parse_args()
     a.labels = a.labels or os.path.join(a.fold, "labels")
+
+    # PIN THE COMMIT NOW, before any work, so every bundle this process writes records the code it
+    # is running rather than whatever HEAD has become hours later. Caching it lazily at the first
+    # epoch boundary was not enough: that is hours in, and the tree can already have moved.
+    _git_commit()
 
     if os.environ.get("LAYERNORM_TYPE") != "openfold":
         raise SystemExit("STOP: set LAYERNORM_TYPE=openfold. Without it the trunk's coordinates are "
@@ -606,7 +625,55 @@ def main():
                  "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
                  "lr": a.lr, "warmup_steps": a.warmup_steps}
-        _bad = {k: (_g.get(k, "<absent>"), v) for k, v in _mine.items() if _g.get(k, "<absent>") != v}
+
+        # A BUNDLE WRITTEN BY OLDER CODE IS NOT DRIFT. The guard grew from four fields to twelve
+        # while run 9mfb4y was in flight, so its bundles carry only the original eight: the running
+        # process had the old module loaded and kept writing the old shape while HEAD moved under
+        # it. Reading the six newer fields as "<absent>" made every one of them a mismatch, which
+        # would have reported six settings as changed when none had, and a resume as a FORK when it
+        # is a continuation.
+        #
+        # So an absent field falls back to the run's own args.json, which sits beside the bundle and
+        # does record them. That is the same evidence, written by the same process at launch.
+        _side = os.path.join(os.path.dirname(os.path.abspath(a.resume)), "args.json")
+        _fallback = {}
+        if os.path.exists(_side):
+            try:
+                _fallback = json.load(open(_side))
+            except Exception as e:
+                print(f"  (could not read {_side}: {type(e).__name__}: {e})")
+
+        _bad, _from_args, _unknown = {}, [], []
+        for k, v in _mine.items():
+            if k in _g:
+                if _g[k] != v:
+                    _bad[k] = (_g[k], v)
+            elif k in _fallback:
+                if _fallback[k] != v:
+                    _bad[k] = (_fallback[k], v)
+                else:
+                    _from_args.append(k)
+            else:
+                _unknown.append(k)
+        if _from_args:
+            print(f"  resume guard: {len(_from_args)} field(s) absent from the bundle and matched "
+                  f"against {os.path.basename(_side)} instead: {', '.join(sorted(_from_args))}")
+        if _unknown:
+            # manifest_digest is the only field in neither place. It is a hash of the unit list,
+            # which is determined by the selection file and the skip list -- and manifest_skip IS
+            # in the bundle and is compared above. So the population is still checked, by its
+            # inputs rather than by its hash. Said out loud rather than passed over, because an
+            # unverified field is not a verified one.
+            print(f"  resume guard: {len(_unknown)} field(s) in neither the bundle nor "
+                  f"{os.path.basename(_side)}, so NOT compared: {', '.join(sorted(_unknown))}")
+            for k in _unknown:
+                if k != "manifest_digest":
+                    raise SystemExit(
+                        f"STOP: {k} is recorded nowhere for this bundle, so a resume cannot show "
+                        f"the setting is unchanged. Relaunch from scratch instead.")
+            print(f"    manifest_digest is a hash of the unit list; manifest_skip "
+                  f"({_g.get('manifest_skip')!r}) and the selection file determine that list and "
+                  f"manifest_skip is compared, so the population is checked by its inputs.")
         if _bad and not a.resume_allow_drift:
             raise SystemExit(
                 "STOP: this resume bundle was written under different settings:\n"
