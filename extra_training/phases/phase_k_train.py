@@ -679,6 +679,22 @@ def main():
             except Exception as e:
                 print(f"  (could not read {_side}: {type(e).__name__}: {e})")
 
+        # A FIELD THAT POSTDATES THE BUNDLE IS NOT AN UNKNOWN FIELD. crop_margin and crop_contact
+        # joined the guard after run 9mfb4y was already in flight, so none of its bundles carry
+        # them -- not resume_ep1/2/3, and not the ep4/ep5 ones being written tonight either, since
+        # that process loaded its code before the fields existed. Reading them as "recorded
+        # nowhere" made the _unknown hard-stop fire on every pre-crop bundle and refused the
+        # resume outright, which --resume-allow-drift could not even override because the stop
+        # runs first. I turned a safety check into a wall by adding two fields every existing
+        # bundle lacks; review round 6 reproduced it.
+        #
+        # Absence is EVIDENCE here, not ignorance: a bundle written by code with no cropping was
+        # written with cropping off. So these migrate to the pre-crop defaults and are compared
+        # like any other field -- which means a resume that ENABLES cropping shows up as real
+        # drift and needs --resume-allow-drift, because it genuinely changes the objective.
+        _PRE_CROP = {"crop_margin": 0.0, "crop_contact": 5.0}
+        _migrated = []
+
         _bad, _from_args, _unknown = {}, [], []
         for k, v in _mine.items():
             if k in _g:
@@ -689,8 +705,16 @@ def main():
                     _bad[k] = (_fallback[k], v)
                 else:
                     _from_args.append(k)
+            elif k in _PRE_CROP:
+                _migrated.append(k)
+                if _PRE_CROP[k] != v:
+                    _bad[k] = (f"{_PRE_CROP[k]} (pre-crop default)", v)
             else:
                 _unknown.append(k)
+        if _migrated:
+            print(f"  resume guard: {len(_migrated)} field(s) postdate this bundle and are read as "
+                  f"the pre-crop default: "
+                  f"{', '.join(f'{k}={_PRE_CROP[k]}' for k in sorted(_migrated))}")
         if _from_args:
             print(f"  resume guard: {len(_from_args)} field(s) absent from the bundle and matched "
                   f"against {os.path.basename(_side)} instead: {', '.join(sorted(_from_args))}")
@@ -753,7 +777,14 @@ def main():
     crop_stats = {"n": 0, "tok": 0, "kept": 0, "frames": 0, "undefined": 0}
     crop_rows = []
     crop_cols = ["pdb", "unit", "n_tok", "kept_tok", "frames_cleared", "status"]
-    crop_p = a.crop_log or (os.path.join(a.out, "crop_sizes.csv") if a.crop_margin > 0 else "")
+    # PER RANK, because each rank crops its own third of the units and only rank 0 was flushing:
+    # the other two accumulated rows forever and wrote none, so the csv described a third of the
+    # run while reading like the whole of it. Review round 6 caught that.
+    crop_p = ""
+    if a.crop_margin > 0:
+        _base = a.crop_log or os.path.join(a.out, "crop_sizes.csv")
+        _stem, _ext = os.path.splitext(_base)
+        crop_p = f"{_stem}_rank{rank}{_ext or '.csv'}"
 
     traj_p = os.path.join(a.out, "trajectory.csv")
     # THE BATCH COLUMNS ARE THE CURVE; the bare TERMS are the single pose that happened to be last.
@@ -1464,11 +1495,12 @@ def main():
                                  **{k: met[k] for k in TERMS}, **means})
                     if write_traj and len(rows) % 20 == 0:
                         _flush(traj_p, traj_cols, rows); rows = []
-                        # THE CROP LOG FLUSHES WITH THE TRAJECTORY, not only at the epoch boundary.
-                        # A run that dies mid-epoch -- as this one did, on a hangup -- would
-                        # otherwise leave no record of what it had cropped.
-                        if crop_p and crop_rows:
-                            _flush(crop_p, crop_cols, crop_rows); crop_rows.clear()
+                    # THE CROP LOG FLUSHES ON EVERY RANK, and with the trajectory rather than only
+                    # at the epoch boundary: a run that dies mid-epoch -- as this one did, on a
+                    # hangup -- would otherwise leave no record of what it had cropped. Outside the
+                    # write_traj branch because crop_p is per-rank and every rank owns its file.
+                    if crop_p and len(crop_rows) >= 20:
+                        _flush(crop_p, crop_cols, crop_rows); crop_rows.clear()
                     if steps_cap and step >= steps_cap:
                         done = True
                         break
@@ -1522,9 +1554,9 @@ def main():
                             "unit": os.path.basename(lab_p)[:-4], "pose": i})
         if write_traj:
             _flush(traj_p, traj_cols, rows)
-            if crop_p and crop_rows:
-                _flush(crop_p, crop_cols, crop_rows)
-                crop_rows.clear()
+        if crop_p and crop_rows:        # every rank, its own file
+            _flush(crop_p, crop_cols, crop_rows)
+            crop_rows.clear()
         return rows
 
     def _flush(path, cols, rows):
@@ -1598,26 +1630,39 @@ def main():
     print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
           f"~{_expect} optimiser step(s) for {a.epochs} epoch(s) "
           f"({_full} full + 1 partial per epoch); no step cap, the epoch loop decides")
-    if a.crop_margin > 0:
-        if crop_p and crop_rows:
-            _flush(crop_p, crop_cols, crop_rows)
-            crop_rows.clear()
-        _cs = crop_stats
-        if _cs["n"]:
-            print(f"\ncrop: contact {a.crop_contact:.0f} A, margin {a.crop_margin:.0f} A over "
-                  f"{_cs['n']} unit(s): kept {_cs['kept']}/{_cs['tok']} token(s) "
-                  f"({_cs['kept'] / _cs['tok'] * 100:.1f}%), "
-                  f"{_cs['frames']} frame(s) cleared for want of their atoms")
-        if _cs["undefined"]:
-            print(f"  {_cs['undefined']} unit(s) had NO DEFINABLE CROP -- fewer than two chains "
-                  f"with usable coordinates, or no cross-chain contact -- and trained on the whole "
-                  f"structure. They are in {crop_p} with status=no-crop-definable.")
-        if crop_p:
-            print(f"crop sizes -> {crop_p}")
     print(f"trajectory -> {traj_p}")
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
     train_loop(steps_cap, a.lr, "train", write_traj=is_main,
                from_epoch=start_epoch, from_step=start_step)
+    # THE CROP SUMMARY BELONGS AFTER TRAINING. It was written above the train_loop call, so it read
+    # every counter at zero and printed nothing at all -- an arm would have reported no retained
+    # fraction and no fallback count, which is exactly the bookkeeping it exists to provide.
+    # Review round 6 caught it.
+    if a.crop_margin > 0:
+        if crop_p and crop_rows:
+            _flush(crop_p, crop_cols, crop_rows)
+            crop_rows.clear()
+        # ACROSS EVERY RANK, not just this one. Each rank crops its own third of the units, so a
+        # single rank's counters describe a third of the run. One collective, at the very end.
+        _keys = ("n", "tok", "kept", "frames", "undefined")
+        _cs = dict(crop_stats)
+        if world > 1:
+            _t = torch.tensor([float(crop_stats[k]) for k in _keys], dtype=torch.float64)
+            dist.all_reduce(_t, op=dist.ReduceOp.SUM)
+            _cs = {k: int(v) for k, v in zip(_keys, _t.tolist())}
+        if is_main:
+            if _cs["n"]:
+                print(f"\ncrop: contact {a.crop_contact:.0f} A, margin {a.crop_margin:.0f} A over "
+                      f"{_cs['n']} unit(s) across {world} rank(s): kept {_cs['kept']}/{_cs['tok']} "
+                      f"token(s) ({_cs['kept'] / _cs['tok'] * 100:.1f}%), "
+                      f"{_cs['frames']} frame(s) cleared for want of their atoms")
+            if _cs["undefined"]:
+                print(f"  {_cs['undefined']} unit(s) had NO DEFINABLE CROP -- fewer than two "
+                      f"chains with usable coordinates, or no cross-chain contact -- and trained "
+                      f"on the whole structure, logged with status=no-crop-definable.")
+            if crop_p:
+                print(f"crop sizes -> {crop_p} (one file per rank; this is rank {rank}'s)")
+
     if ram_floor["n"]:
         print(f"\nRAM FLOOR was hit on {ram_floor['n']} structure(s): the item cache was capped "
               f"below --preload-items to stay above {a.preload_min_free_gb:.0f} GB free, so those "
