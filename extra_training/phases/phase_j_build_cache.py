@@ -466,6 +466,158 @@ def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
     ])
 
 
+# ---------------------------------------------------------------------------------------------
+# INTERFACE CROPPING, for TRAINING SAMPLES ONLY.
+#
+# WHY IT IS SAFE TO CROP TRAINING AND NOT VALIDATION. The metric is pair_iptm, and Protenix computes
+# it through calculate_normalization(N_d) = 1.24 * (max(N_d,19) - 15)**(1/3) - 1.8 where N_d is the
+# token count AFTER the pair's chain mask -- so cropping would move the metric. Validation is left
+# uncropped, which keeps N_d and therefore the 0.5775 baseline and every historical FoldBench/PXM
+# number comparable. This is also the regime the base model was built under: Protenix trains at
+# train_crop_size 256 (configs_base.py:58) and its inference never crops.
+#
+# AND WHY GROUND TRUTH MAY CHOOSE THE CROP. Only training samples are cropped, and training already
+# sees the ground-truth coordinates -- that is what the loss is. No GT-derived hint reaches the
+# metric, because nothing is cropped at validation.
+#
+# MEASURED retained fraction on 40 of the 491 structures, contact 8 A, with time ~ tokens^2.21
+# (r=0.950 on this project's own trajectory): margin 10 A keeps 45% for 5.64x, 15 A keeps 67% for
+# 2.62x, 20 A keeps 83% for 1.88x, 30 A keeps 97% for 1.38x. The margin costs speed quickly.
+#
+# WE SLICE A CACHED POST-TRUNK TENSOR, which is NOT what Protenix's CropData does. CropData crops
+# before the trunk runs; our trunks are already folded at full size, so z_trunk[idx][:,idx] is a
+# k-by-k window of a full-structure representation and each z[i,j] still encodes attention over
+# tokens no longer present. That is arguably better matched to an uncropped validation than
+# crop-then-fold would be, but it is a different thing, so their code does not apply here.
+
+
+def interface_crop_tokens(z, lab, contact=8.0, margin=15.0):
+    """(keep_tok, keep_atom) boolean masks for an interface-plus-margin crop.
+
+    A token is an INTERFACE token when its PAE representative atom lies within `contact` of a
+    representative atom in a different chain, by GROUND-TRUTH coordinates. The crop keeps every
+    token whose representative is within `margin` of any interface token.
+
+    Returns (None, None) when the crop cannot be defined -- fewer than two chains with usable
+    coordinates, or no contact at all -- so the caller trains on the full structure rather than
+    guessing. Silently cropping to nothing is the failure this avoids.
+
+    WHOLE TOKENS ONLY. Keeping a token keeps all of its atoms, so atom-level arrays slice by the
+    induced atom mask and a token's frame atoms come along with it.
+    """
+    import numpy as np
+    asym = np.asarray(z["ci_feat_asym_id"]).reshape(-1)
+    a2t = np.asarray(z["ci_feat_atom_to_token_idx"]).reshape(-1)
+    rep = np.asarray(lab["lf_pae_rep_atom_mask"]).reshape(-1).astype(bool)
+    xyz = np.asarray(lab["label_coordinate"])[0]
+    cmask = np.asarray(lab["label_coordinate_mask"])[0].astype(bool)
+    n_tok = asym.shape[0]
+
+    # one representative coordinate per token, from the GT label
+    tok_xyz = np.full((n_tok, 3), np.nan, dtype=np.float64)
+    for ai in np.nonzero(rep & cmask)[0]:
+        t = int(a2t[ai])
+        if 0 <= t < n_tok and np.isnan(tok_xyz[t, 0]):
+            tok_xyz[t] = xyz[ai]
+    good = ~np.isnan(tok_xyz[:, 0])
+    if good.sum() < 4 or len(np.unique(asym[good])) < 2:
+        return None, None
+
+    idx = np.nonzero(good)[0]
+    c, sa = tok_xyz[idx], asym[idx]
+    d = np.linalg.norm(c[:, None, :] - c[None, :, :], axis=-1)
+    iface_local = ((d < contact) & (sa[:, None] != sa[None, :])).any(axis=1)
+    if not iface_local.any():
+        return None, None
+    keep_local = iface_local | (d[:, iface_local] < margin).any(axis=1)
+
+    keep_tok = np.zeros(n_tok, dtype=bool)
+    keep_tok[idx[keep_local]] = True
+    # A token with no usable representative coordinate cannot be placed, so it is dropped. That is
+    # a decision, not an oversight: including it would put a token in the crop whose distance to the
+    # interface is unknown.
+    keep_atom = keep_tok[a2t]
+    return keep_tok, keep_atom
+
+
+def slice_cached_unit(z, lab, keep_tok, keep_atom, dev, torch):
+    """Everything a cropped training unit needs, sliced and re-indexed. One implementation.
+
+    Returns (feat_head, s_inputs, s_trunk, z_trunk, poses, n_cycle, feat_loss, label_full_coords,
+    n_broken).
+    `label_full_coords` is (coordinate[n_pose, k_atom, 3], mask[n_pose, k_atom]) so the per-pose
+    label is sliced once per unit rather than per pose.
+
+    ATOM INDICES ARE REMAPPED, which is the one thing here that can fail silently.
+    atom_to_token_idx must point into the NEW token numbering and frame_atom_index into the NEW atom
+    numbering; leaving either at its old values would score a pose against another residue's frame.
+    has_frame is cleared for any token whose frame atoms did not survive -- measured as never
+    happening (a token's three frame atoms belong to that token), but asserted rather than assumed.
+    It is cleared in BOTH dictionaries. The head and the loss carry their own copy, from the trunk
+    cache and the label npz respectively, and a token marked framed for one and unframed for the
+    other is an inconsistency with no correct reading, so the clearing applies to both.
+    """
+    import numpy as np
+    kt = np.nonzero(keep_tok)[0]
+    ka = np.nonzero(keep_atom)[0]
+    tok_new = np.full(keep_tok.shape[0], -1, dtype=np.int64); tok_new[kt] = np.arange(kt.size)
+    atom_new = np.full(keep_atom.shape[0], -1, dtype=np.int64); atom_new[ka] = np.arange(ka.size)
+
+    def T(a, dtype=None):
+        t = torch.from_numpy(np.ascontiguousarray(a))
+        return t.to(dev, dtype=dtype) if dtype else t.to(dev)
+
+    a2t_old = np.asarray(z["ci_feat_atom_to_token_idx"]).reshape(-1)[ka]
+    a2t = tok_new[a2t_old]
+    if (a2t < 0).any():
+        raise ValueError("an atom survived whose token did not; the masks are inconsistent")
+
+    # WHICH FRAMES BROKE, decided once. frame_atom_index holds ATOM indices into the full atom
+    # array; a -1 after remapping means one of the three atoms was not kept.
+    fai_old = np.asarray(lab["lf_frame_atom_index"])[kt]
+    fai = atom_new[fai_old]
+    broken = (fai < 0).any(axis=-1)
+
+    hf_head = np.asarray(z["ci_feat_has_frame"]).reshape(-1)[kt].copy()
+    if broken.any():
+        hf_head[broken] = 0
+    feat_head = {
+        "asym_id": T(np.asarray(z["ci_feat_asym_id"]).reshape(-1)[kt]),
+        "has_frame": T(hf_head),
+        "atom_to_token_idx": T(a2t),
+        "atom_to_tokatom_idx": T(np.asarray(z["ci_feat_atom_to_tokatom_idx"]).reshape(-1)[ka]),
+        "distogram_rep_atom_mask": T(np.asarray(z["ci_feat_distogram_rep_atom_mask"]).reshape(-1)[ka]),
+        "is_ligand": T(np.asarray(z["ci_feat_is_ligand"]).reshape(-1)[ka]),
+    }
+    s_inputs = T(np.asarray(z["ci_s_inputs"])[kt]).float()
+    s_trunk = T(np.asarray(z["ci_s_trunk_f32"])[kt]).float()
+    zt_u16 = np.asarray(z["z_trunk"])[np.ix_(kt, kt)]
+    z_trunk = torch.from_numpy(np.ascontiguousarray(zt_u16)).to(dev).view(torch.bfloat16)
+    poses = T(np.asarray(z["ci_coordinate"])[:, ka, :]).float()
+
+    # THE NINE LOSS FEATURES, sliced on their own axis. resolution is a scalar; frame_atom_index
+    # was remapped above; everything else is per-atom or per-token.
+    hf = np.asarray(lab["lf_has_frame"]).reshape(-1)[kt].copy()
+    if broken.any():
+        hf[broken] = 0
+        fai[broken] = 0            # never read where has_frame is 0, but must stay in range
+    feat_loss = {
+        "resolution": T(np.asarray(lab["lf_resolution"])),
+        "is_rna": T(np.asarray(lab["lf_is_rna"]).reshape(-1)[ka]),
+        "is_dna": T(np.asarray(lab["lf_is_dna"]).reshape(-1)[ka]),
+        "is_ligand": T(np.asarray(lab["lf_is_ligand"]).reshape(-1)[ka]),
+        "plddt_m_rep_atom_mask": T(np.asarray(lab["lf_plddt_m_rep_atom_mask"]).reshape(-1)[ka]),
+        "distogram_rep_atom_mask": T(np.asarray(lab["lf_distogram_rep_atom_mask"]).reshape(-1)[ka]),
+        "pae_rep_atom_mask": T(np.asarray(lab["lf_pae_rep_atom_mask"]).reshape(-1)[ka]),
+        "frame_atom_index": T(fai),
+        "has_frame": T(hf),
+    }
+    coords = np.asarray(lab["label_coordinate"])[:, ka, :]
+    cmask = np.asarray(lab["label_coordinate_mask"])[:, ka]
+    return (feat_head, s_inputs, s_trunk, z_trunk, poses, int(z["ci_N_cycle"]),
+            feat_loss, (coords, cmask), int(broken.sum()))
+
+
 def minimal_loss_inputs(lab, pose_i, dev, torch, np_mod=None):
     """The loss's ENTIRE input, from the cached label npz alone. No dataset item.
 
