@@ -25,6 +25,12 @@ the head.
 import csv, glob, json, os
 
 TERMS = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss")
+# THE BATCH COLUMNS INCLUDE THE TOTAL, and leaving it out was a bug: TERMS here is the four
+# components, but the trainer's own TERMS also carries "loss" -- the weighted objective it actually
+# backpropagated. Reading only TERMS meant batch_loss was never loaded, so the chart's total line
+# silently fell back to the stepping pose's own loss while the component lines were correct batch
+# means. Found in review 2026-10-16; reproduced as logged batch loss 3 displayed as 9.
+BATCH_FIELDS = TERMS + ("loss",)
 
 
 def _num(x, default=None):
@@ -86,7 +92,7 @@ def read_run(out_dir, baseline_path=""):
                     # 2026-10-16 have no such columns and fall back to rank-0 window means, which
                     # is the best that can be reconstructed -- the other ranks' poses were never
                     # written. `batch_n` distinguishes the two: None means reconstructed.
-                    for k in TERMS:
+                    for k in BATCH_FIELDS:
                         rec["batch_" + k] = _num(r.get("batch_" + k))
                     rec["batch_n"] = _num(r.get("batch_n"))
                     rec["partial_step"] = r.get("partial_step") == "1"
@@ -172,17 +178,22 @@ def _window_means(poses, run_ended=False):
     # IF THE TRAINER LOGGED THE BATCH ITSELF, use it and do not reconstruct anything. Those rows
     # already carry the cross-rank mean over every pose in the step, including the partial step an
     # epoch ends with, which rank 0's rows cannot express.
-    exact = [p for p in poses if p.get("batch_n")]
+    # ONLY STEPS THAT WERE ACTUALLY TAKEN. A step refused for a non-finite gradient still carries
+    # batch columns -- deliberately, they are the numbers it was attempted on -- so keying on
+    # batch_n alone put refused steps in the series as though the optimiser had moved. step_ok is
+    # written by the trainer and defaults True for rows that predate it.
+    exact = [p for p in poses if p.get("batch_n") and p.get("step_ok", True)
+             and not p.get("nonfinite")]
     if exact:
         out = []
         for n, p in enumerate(exact, 1):
             rec = dict(p)
-            for k in TERMS + ("raw", "loss"):
+            for k in BATCH_FIELDS:
                 v = p.get("batch_" + k)
                 if v is not None:
                     rec[k] = v
             rec["raw"] = sum(p["batch_" + k] for k in TERMS
-                             if p.get("batch_" + k) is not None and k != "loss")
+                             if p.get("batch_" + k) is not None)
             rec["n_poses"] = int(p["batch_n"])
             rec["partial"] = p.get("partial_step", False)
             rec["step_index"] = n

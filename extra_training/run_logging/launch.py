@@ -82,12 +82,26 @@ def main():
     ap.add_argument("--cards", default="0,1,3")
     ap.add_argument("--run-id", default="", help="default: a fresh random id")
     ap.add_argument("--dry-run", action="store_true", help="write the config and print the command")
+    ap.add_argument("--skip-gate", action="store_true",
+                    help="skip the label-provenance preflight. It takes ~2 min on CPU and iabg5i "
+                         "burned 3 h and 65 steps on a fault it would have caught in that time, so "
+                         "skipping it needs a reason.")
     a, rest = ap.parse_known_args()
     if rest and rest[0] == "--":
         rest = rest[1:]
 
     rid = a.run_id or new_run_id()
     out = os.path.join(RUNS, rid)
+    # A NON-EMPTY DIRECTORY IS REFUSED. new_run_id() already avoids collisions, but --run-id is
+    # accepted from the caller and `exist_ok=True` let a second launch overwrite config.json while
+    # the first run's trajectory.csv stayed behind -- a run whose settings and whose records came
+    # from different launches, which is exactly the provenance failure this module exists to stop
+    # (review 2026-10-16). A resumed run gets its own directory and names its parent in --note.
+    if os.path.isdir(out) and os.listdir(out):
+        sys.exit(f"STOP: {out} already exists and is not empty ({len(os.listdir(out))} entry/ies). "
+                 f"Its config.json would be overwritten while its trajectory.csv stayed, leaving a "
+                 f"run whose settings and records come from different launches. Omit --run-id for a "
+                 f"fresh one, or pick an unused id.")
     os.makedirs(out, exist_ok=True)
 
     train = os.path.join(ROOT, "phases", "phase_k_train.py")
@@ -112,8 +126,12 @@ def main():
            # those made every run "dirty" and the flag stopped meaning anything. What bears on
            # reproducibility is whether the CODE differs from the commit.
            "dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
-           "dirty_files": [l[3:] for l in
-                           git("status", "--porcelain", "--untracked-files=no").splitlines()][:40],
+           # SPLIT, DON'T SLICE. git() strips its output, which eats the leading space of the
+           # FIRST porcelain line only (" M path" -> "M path"), so a fixed l[3:] cut one character
+           # off exactly one filename and the record of which files were dirty was wrong for it.
+           "dirty_files": [l.split(maxsplit=1)[1] for l in
+                           git("status", "--porcelain", "--untracked-files=no").splitlines()
+                           if l.split(maxsplit=1)[1:]][:40],
            "untracked_count": len(git("status", "--porcelain").splitlines())
            - len(git("status", "--porcelain", "--untracked-files=no").splitlines()),
            "branch": git("rev-parse", "--abbrev-ref", "HEAD", default=""),
@@ -150,6 +168,33 @@ def main():
     print(f"  {cfg['command']}")
     if a.dry_run:
         return 0
+
+    # THE PREFLIGHT, RUN HERE RATHER THAN REMEMBERED. phase_k_train verifies a label's fingerprint
+    # when it reaches that unit, which is correct but late: iabg5i died at step 65, three hours in,
+    # on one structure of 491. The gate checks all of them up front in about two minutes on CPU.
+    # It is given the SAME --manifest-skip and --seeds the training run gets, so the population it
+    # checks is the population that will be trained on.
+    if not a.skip_gate:
+        gate = [sys.executable, "-I", os.path.join(ROOT, "phases", "phase_k_fingerprint_scan.py")]
+        for flag in ("--manifest-skip", "--seeds"):
+            if flag in rest:
+                gate += [flag, rest[rest.index(flag) + 1]]
+        print(f"  preflight: {' '.join(shlex.quote(c) for c in gate)}")
+        g = subprocess.run(gate, env={**os.environ, "LAYERNORM_TYPE": "openfold"},
+                           capture_output=True, text=True)
+        tail = [l for l in g.stdout.splitlines() if "GATE" in l or "labels," in l]
+        for l in tail:
+            print(f"    {l}")
+        with open(os.path.join(out, "preflight.log"), "w") as fh:
+            fh.write(g.stdout + g.stderr)
+        if g.returncode != 0:
+            with open(os.path.join(out, "status.json"), "w") as fh:
+                json.dump({"run_id": rid, "exit_code": g.returncode,
+                           "reason": "label-provenance preflight failed; nothing was launched",
+                           "ended": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, fh, indent=1)
+            print(f"STOP: the preflight failed (exit {g.returncode}); nothing launched. "
+                  f"Full output in {os.path.join(out, 'preflight.log')}")
+            return g.returncode
 
     # expandable_segments:True at the user's direction on 2026-10-16, after an OOM whose own error
     # message recommended it: 5.37 GB of the card was "reserved by PyTorch but unallocated", i.e.

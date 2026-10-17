@@ -91,6 +91,15 @@ for k in sorted(bad, key=lambda k: -len(bad[k])):
 if missing:
     print(f"\nmissing labels: {missing[:10]}")
 
+# A MISSING LABEL IS A FAILURE, NOT A FOOTNOTE. The gate used to print the missing list and then
+# decide only on the mismatches, so a fixture with no label file at all exited 0 saying "GATE
+# PASSED" (review 2026-10-16). The trainer does catch it later, but the whole point of a preflight
+# is that its assurance means something.
+if missing:
+    print(f"\nGATE FAILED: {len(missing)} label(s) do not exist, e.g. {missing[:6]}")
+    print("The manifest is the frozen population: a label that was never written is an error, not "
+          "a smaller training set. Build them with phases/phase_j_build_cache.py.")
+    sys.exit(1)
 fatal = {k: v for k, v in bad.items() if k != "code"}
 if fatal:
     print(f"\nGATE FAILED: {sum(len(v) for v in fatal.values())} label(s) the trainer will refuse.")

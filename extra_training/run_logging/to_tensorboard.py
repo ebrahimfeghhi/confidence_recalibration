@@ -50,7 +50,29 @@ def scalar(w, tag, value, step, wall):
 
 
 def read_steps(run_dir):
-    """One record per OPTIMISER step, from the per-pose trajectory."""
+    """One record per OPTIMISER step -- DELEGATED to run_logging/records.py, not reimplemented.
+
+    This used to walk trajectory.csv itself and take the step_taken row's own loss fields, which is
+    one pose of 255 and is the bug review 2026-10-16 found in the HTML reporter. Two readers of the
+    same records drifting apart is how that happened twice, so there is now one reader: records.py
+    prefers the trainer's cross-rank batch columns, falls back to rank-0 window means for older
+    runs, closes a window at an epoch boundary, and drops refused steps.
+    """
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import records as _R
+    _run = _R.read_run(run_dir)
+    out = []
+    for p in _run["steps"]:
+        out.append({"step": p["step_index"], "wall_s": p["wall_s"], "epoch": p["epoch"],
+                    "grad_norm": p["grad_norm"], "lr": p["lr"],
+                    "loss_sum": p["loss"] if p["loss"] is not None else p["raw"],
+                    **{k: p.get(k) for k in TERMS}})
+    return out
+
+
+def _read_steps_legacy(run_dir):
+    """The old per-pose walk, kept only so the bug it caused stays visible in the diff."""
     p = os.path.join(run_dir, "trajectory.csv")
     if not os.path.exists(p):
         return []

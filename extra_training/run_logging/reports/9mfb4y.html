@@ -1,0 +1,287 @@
+<title>FT3 Confidence Finetune</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column, summary strip first, then the three charts stacked, config last. */
+:root {
+  --bg:#f4f5f7; --panel:#ffffff; --fg:#1b2027; --mute:#5d6673; --line:#dde1e7;
+  --accent:#b4690e; --ref:#2a7f7a; --ok:#2f6b3a; --warn:#8a5a12;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark) { :root:not([data-theme="light"]) {
+  --bg:#14171c; --panel:#1b1f26; --fg:#e6e9ee; --mute:#9aa4b2; --line:#2b313a;
+  --accent:#e0a040; --ref:#5bb8b0; --ok:#7bc08a; --warn:#d8a44a; color-scheme:dark;
+} }
+:root[data-theme="dark"] {
+  --bg:#14171c; --panel:#1b1f26; --fg:#e6e9ee; --mute:#9aa4b2; --line:#2b313a;
+  --accent:#e0a040; --ref:#5bb8b0; --ok:#7bc08a; --warn:#d8a44a; color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);margin:0}
+.wrap{max-width:860px;margin:0 auto;padding-block:28px;padding-left:16px;padding-right:16px}
+h1{font-size:1.4rem;font-weight:600;margin:0 0 2px;letter-spacing:-.01em;text-wrap:balance}
+.sub{color:var(--mute);font-size:.84rem;margin:0 0 22px}
+.sub code{font-family:var(--mono);font-size:.82rem}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:1px;
+  background:var(--line);border:1px solid var(--line);border-radius:6px;overflow:hidden;
+  margin-bottom:24px}
+.cell{background:var(--panel);padding:11px 13px;min-width:0}
+.cell .lab{font-size:.64rem;text-transform:uppercase;letter-spacing:.07em;color:var(--mute)}
+.cell .val{font-family:var(--mono);font-size:1.02rem;font-variant-numeric:tabular-nums;
+  margin-top:3px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px;
+  margin-bottom:18px}
+h2{font-size:.95rem;font-weight:600;margin:0 0 3px}
+.axes{color:var(--mute);font-size:.76rem;margin:0 0 12px;line-height:1.5}
+.chartbox{overflow-x:auto}
+.chart{width:100%;min-width:460px;height:auto;display:block}
+.grid{stroke:var(--line);stroke-width:1}
+.axis{stroke:var(--line);stroke-width:1.5}
+.tick,.axlab{fill:var(--mute);font-family:var(--mono);font-size:10px}
+.axlab{font-size:10.5px}
+.empty{fill:var(--mute);font-family:var(--sans);font-size:12px;font-style:italic}
+.ln{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.ln-t{stroke:var(--accent);stroke-width:2.4}
+.ln-a{stroke:var(--mute);stroke-width:1.1;opacity:.75}
+.ln-b{stroke:var(--ref);stroke-width:1.4;opacity:.9}
+.ln-c{stroke:var(--mute);stroke-width:1.1;opacity:.5;stroke-dasharray:4 3}
+.ln-d{stroke:var(--mute);stroke-width:1.1;opacity:.35;stroke-dasharray:2 3}
+.dot{fill:var(--accent);stroke:var(--panel);stroke-width:1.2}
+.ref{stroke-width:1.3;stroke-dasharray:6 4}
+.ref-base{stroke:var(--ok)} .ref-orc{stroke:var(--ref)}
+.reflab{font-family:var(--mono);font-size:9.5px}
+.reflab.ref-base{fill:var(--ok)} .reflab.ref-orc{fill:var(--ref)}
+.key{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px;font-size:.73rem;color:var(--mute);
+  font-family:var(--mono)}
+.key i{display:inline-block;width:16px;height:0;border-top:2px solid currentColor;
+  vertical-align:middle;margin-right:5px}
+.k-t{color:var(--accent)} .k-b{color:var(--ref)} .k-base{color:var(--ok)}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);
+  font-variant-numeric:tabular-nums}
+th{font-size:.66rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mute);
+  font-weight:500}
+td{font-family:var(--mono);font-size:.8rem}
+.pending{color:var(--mute);font-style:italic;font-family:var(--sans)}
+.kvs{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0 18px;margin:0}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;
+  border-bottom:1px solid var(--line);min-width:0}
+.kv dt{color:var(--mute);font-size:.76rem}
+.kv dd{margin:0;font-family:var(--mono);font-size:.76rem;overflow-wrap:anywhere;text-align:right}
+details{margin-top:12px}
+summary{cursor:pointer;font-size:.78rem;color:var(--mute)}
+summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.warn{background:var(--panel);border:1px solid var(--warn);border-left-width:3px;
+  border-radius:6px;padding:12px 14px;margin-bottom:18px;font-size:.8rem}
+.warn ul{margin:6px 0 0;padding-left:18px}
+.foot{color:var(--mute);font-size:.73rem;margin-top:22px;line-height:1.6}
+</style>
+
+<div class="wrap">
+  <h1>FT3 Confidence Finetune</h1>
+  <p class="sub">Confidence head only, 19.8M of 464.4M parameters, trunk frozen. Target to beat:
+    <code>0.5775</code> mean DockQ, the shipped head scored by this same evaluator.
+    Generated 2026-10-16 18:44:37 from <code>9mfb4y</code>,
+    <span id="age" data-gen="1792201477">just now</span>.</p>
+  <p class="sub" style="margin-top:-14px">run <code>9mfb4y</code> &middot; commit <code>1aedd04b</code> &middot; cards <code>0,1,3</code><br>5 epochs, lr 1e-3, NO data cut (491 of 501, only the 10 that cannot fit in memory). Replaces iabg5i, which died at step 65 on 8gpu fingerprint idx drift; 8gpu rebuilt, pre-launch gate now clean. Adds per-epoch resume bundles (head + AdamW moments + step) and --save-every 24 for mid-epoch weight saves. Overfit test settled the lr: 1e-3 beat 1e-4, -30.6% vs -16.8% over 40 steps on identical poses.</p>
+
+  
+
+  <div class="strip">
+    <div class="cell"><div class="lab">epoch</div><div class="val">1 / 5.0</div></div>
+    <div class="cell"><div class="lab">steps</div><div class="val">10</div></div>
+    <div class="cell"><div class="lab">poses</div><div class="val">920</div></div>
+    <div class="cell"><div class="lab">wall</div><div class="val">19 min</div></div>
+    <div class="cell"><div class="lab">lr</div><div class="val">0.001</div></div>
+    <div class="cell"><div class="lab">grad norm</div><div class="val">7.67</div></div>
+    <div class="cell"><div class="lab">dropped steps</div><div class="val">0</div></div>
+    <div class="cell"><div class="lab">val points</div><div class="val">0</div></div>
+  </div>
+
+  <section>
+    <h2>Training loss per batch</h2>
+    <p class="axes">x: optimiser step &mdash; one step is <strong>255</strong> poses
+      (85 per rank &times; 3 ranks; <code>--accum 256</code> is the
+      request, and 256&nbsp;&divide;&nbsp;3 does not divide evenly).
+      y: <strong>the weighted objective that was optimised</strong> &mdash; the trainer's own
+      <code>loss</code> scalar, as logged, not a sum reconstructed from the terms. The four terms
+      are drawn beneath it for composition; they happen to sum to the objective whenever
+      <code>alpha_confidence</code> and <code>alpha_pae</code> are both 1 (here
+      <code>1.0</code> and <code>1.0</code>), but
+      the curve does not depend on that holding.
+      <strong>One point is the mean over the 85 poses rank&nbsp;0 accumulated for that
+      step</strong> &mdash; not one pose, and not all 255: the trajectory is written by rank 0
+      and the trainer all-reduces the gradient but not the loss scalar, so the other
+      2 ranks' poses are not in this curve.</p>
+    <div class="chartbox"><svg viewBox="0 0 760 260" role="img" class="chart" aria-label="weighted confidence objective against optimiser step  (one step = 255 poses; 85 of them on rank 0)">
+<line class="grid" x1="58" y1="202.6" x2="746" y2="202.6"/>
+<text class="tick" x="50" y="206.6" text-anchor="end">0</text>
+<line class="grid" x1="58" y1="123.4" x2="746" y2="123.4"/>
+<text class="tick" x="50" y="127.4" text-anchor="end">5</text>
+<line class="grid" x1="58" y1="44.1" x2="746" y2="44.1"/>
+<text class="tick" x="50" y="48.1" text-anchor="end">10</text>
+<text class="tick" x="134.4" y="240" text-anchor="middle">2</text>
+<text class="tick" x="287.3" y="240" text-anchor="middle">4</text>
+<text class="tick" x="440.2" y="240" text-anchor="middle">6</text>
+<text class="tick" x="593.1" y="240" text-anchor="middle">8</text>
+<text class="tick" x="746.0" y="240" text-anchor="middle">10</text>
+<line class="axis" x1="58" y1="222" x2="746" y2="222"/>
+<path class="ln ln-t" d="M58.0,70.7 L134.4,88.4 L210.9,44.8 L287.3,55.4 L363.8,35.4 L440.2,60.3 L516.7,65.8 L593.1,34.1 L669.6,62.5 L746.0,68.2"/>
+<circle class="dot dot-t" cx="58.0" cy="70.7" r="3.5"/>
+<circle class="dot dot-t" cx="134.4" cy="88.4" r="3.5"/>
+<circle class="dot dot-t" cx="210.9" cy="44.8" r="3.5"/>
+<circle class="dot dot-t" cx="287.3" cy="55.4" r="3.5"/>
+<circle class="dot dot-t" cx="363.8" cy="35.4" r="3.5"/>
+<circle class="dot dot-t" cx="440.2" cy="60.3" r="3.5"/>
+<circle class="dot dot-t" cx="516.7" cy="65.8" r="3.5"/>
+<circle class="dot dot-t" cx="593.1" cy="34.1" r="3.5"/>
+<circle class="dot dot-t" cx="669.6" cy="62.5" r="3.5"/>
+<circle class="dot dot-t" cx="746.0" cy="68.2" r="3.5"/>
+<path class="ln ln-a" d="M58.0,150.9 L134.4,159.4 L210.9,126.5 L287.3,142.7 L363.8,125.1 L440.2,131.4 L516.7,149.1 L593.1,119.3 L669.6,141.6 L746.0,147.8"/>
+<circle class="dot dot-a" cx="58.0" cy="150.9" r="3.5"/>
+<circle class="dot dot-a" cx="134.4" cy="159.4" r="3.5"/>
+<circle class="dot dot-a" cx="210.9" cy="126.5" r="3.5"/>
+<circle class="dot dot-a" cx="287.3" cy="142.7" r="3.5"/>
+<circle class="dot dot-a" cx="363.8" cy="125.1" r="3.5"/>
+<circle class="dot dot-a" cx="440.2" cy="131.4" r="3.5"/>
+<circle class="dot dot-a" cx="516.7" cy="149.1" r="3.5"/>
+<circle class="dot dot-a" cx="593.1" cy="119.3" r="3.5"/>
+<circle class="dot dot-a" cx="669.6" cy="141.6" r="3.5"/>
+<circle class="dot dot-a" cx="746.0" cy="147.8" r="3.5"/>
+<path class="ln ln-b" d="M58.0,159.0 L134.4,161.3 L210.9,161.6 L287.3,149.8 L363.8,154.1 L440.2,160.4 L516.7,161.9 L593.1,158.2 L669.6,159.2 L746.0,153.7"/>
+<circle class="dot dot-b" cx="58.0" cy="159.0" r="3.5"/>
+<circle class="dot dot-b" cx="134.4" cy="161.3" r="3.5"/>
+<circle class="dot dot-b" cx="210.9" cy="161.6" r="3.5"/>
+<circle class="dot dot-b" cx="287.3" cy="149.8" r="3.5"/>
+<circle class="dot dot-b" cx="363.8" cy="154.1" r="3.5"/>
+<circle class="dot dot-b" cx="440.2" cy="160.4" r="3.5"/>
+<circle class="dot dot-b" cx="516.7" cy="161.9" r="3.5"/>
+<circle class="dot dot-b" cx="593.1" cy="158.2" r="3.5"/>
+<circle class="dot dot-b" cx="669.6" cy="159.2" r="3.5"/>
+<circle class="dot dot-b" cx="746.0" cy="153.7" r="3.5"/>
+<path class="ln ln-c" d="M58.0,166.8 L134.4,173.9 L210.9,164.0 L287.3,169.1 L363.8,163.2 L440.2,174.9 L516.7,163.8 L593.1,164.0 L669.6,168.9 L746.0,173.7"/>
+<circle class="dot dot-c" cx="58.0" cy="166.8" r="3.5"/>
+<circle class="dot dot-c" cx="134.4" cy="173.9" r="3.5"/>
+<circle class="dot dot-c" cx="210.9" cy="164.0" r="3.5"/>
+<circle class="dot dot-c" cx="287.3" cy="169.1" r="3.5"/>
+<circle class="dot dot-c" cx="363.8" cy="163.2" r="3.5"/>
+<circle class="dot dot-c" cx="440.2" cy="174.9" r="3.5"/>
+<circle class="dot dot-c" cx="516.7" cy="163.8" r="3.5"/>
+<circle class="dot dot-c" cx="593.1" cy="164.0" r="3.5"/>
+<circle class="dot dot-c" cx="669.6" cy="168.9" r="3.5"/>
+<circle class="dot dot-c" cx="746.0" cy="173.7" r="3.5"/>
+<path class="ln ln-d" d="M58.0,201.9 L134.4,201.7 L210.9,200.6 L287.3,201.7 L363.8,201.0 L440.2,201.5 L516.7,198.8 L593.1,200.5 L669.6,200.7 L746.0,200.9"/>
+<circle class="dot dot-d" cx="58.0" cy="201.9" r="3.5"/>
+<circle class="dot dot-d" cx="134.4" cy="201.7" r="3.5"/>
+<circle class="dot dot-d" cx="210.9" cy="200.6" r="3.5"/>
+<circle class="dot dot-d" cx="287.3" cy="201.7" r="3.5"/>
+<circle class="dot dot-d" cx="363.8" cy="201.0" r="3.5"/>
+<circle class="dot dot-d" cx="440.2" cy="201.5" r="3.5"/>
+<circle class="dot dot-d" cx="516.7" cy="198.8" r="3.5"/>
+<circle class="dot dot-d" cx="593.1" cy="200.5" r="3.5"/>
+<circle class="dot dot-d" cx="669.6" cy="200.7" r="3.5"/>
+<circle class="dot dot-d" cx="746.0" cy="200.9" r="3.5"/>
+<text class="axlab" x="402" y="256" text-anchor="middle">optimiser step  (one step = 255 poses; 85 of them on rank 0)</text>
+<text class="axlab" transform="rotate(-90 14 111)" x="14" y="111" text-anchor="middle">weighted confidence objective</text>
+</svg></div>
+    <div class="key"><span class="k-t"><i></i>total</span><span class="k-b"><i></i>PAE</span>
+      <span><i></i>pLDDT</span><span><i></i>PDE (dashed)</span><span><i></i>resolved (dotted)</span></div>
+    <p class="axes" style="margin-top:10px;margin-bottom:0">PAE is the term that matters: ipTM, which
+      selects poses, is computed entirely from PAE. Protenix ships its weight at 0, so this run sets
+      <code>alpha_pae = 1.0</code>.</p>
+  </section>
+
+  <section>
+    <h2>Validation &mdash; mean DockQ of the selected pose</h2>
+    <p class="axes">x: epoch. y: mean over 92 interfaces of the DockQ of
+      the pose the head ranked highest by per-interface ipTM, over the full
+      100-seed budget. One point is one checkpoint scored on all 5,300
+      validation units.</p>
+    <div class="chartbox"><svg viewBox="0 0 760 260" role="img" class="chart" aria-label="mean DockQ of the selected pose against epoch">
+<line class="grid" x1="58" y1="174.8" x2="746" y2="174.8"/>
+<text class="tick" x="50" y="178.8" text-anchor="end">0.6</text>
+<line class="grid" x1="58" y1="114.8" x2="746" y2="114.8"/>
+<text class="tick" x="50" y="118.8" text-anchor="end">0.65</text>
+<line class="grid" x1="58" y1="54.7" x2="746" y2="54.7"/>
+<text class="tick" x="50" y="58.7" text-anchor="end">0.7</text>
+<text class="tick" x="58.0" y="240" text-anchor="middle">0</text>
+<text class="tick" x="746.0" y="240" text-anchor="middle">1</text>
+<line class="axis" x1="58" y1="222" x2="746" y2="222"/>
+<line class="ref ref-base" x1="58" y1="201.9" x2="746" y2="201.9"/>
+<text class="reflab ref-base" x="742" y="195.9" text-anchor="end">shipped head 0.5775</text>
+<line class="ref ref-orc" x1="58" y1="34.1" x2="746" y2="34.1"/>
+<text class="reflab ref-orc" x="742" y="28.1" text-anchor="end">oracle 0.7171</text>
+<text class="axlab" x="402" y="256" text-anchor="middle">epoch</text>
+<text class="axlab" transform="rotate(-90 14 111)" x="14" y="111" text-anchor="middle">mean DockQ of the selected pose</text>
+<text class="empty" x="402" y="118" text-anchor="middle">pending: the first value lands at the end of epoch 1</text>
+</svg></div>
+    <div class="key"><span class="k-t"><i></i>trained head</span>
+      <span class="k-base"><i></i>shipped head</span><span class="k-b"><i></i>oracle (best pose produced)</span></div>
+  </section>
+
+  <section>
+    <h2>Validation &mdash; fraction acceptable</h2>
+    <p class="axes">x: epoch. y: the fraction of those interfaces whose selected pose reaches
+      DockQ&nbsp;&ge;&nbsp;0.23, the CAPRI acceptable threshold. Same selection rule as above.</p>
+    <div class="chartbox"><svg viewBox="0 0 760 260" role="img" class="chart" aria-label="fraction with DockQ ≥ 0.23 against epoch">
+<line class="grid" x1="58" y1="176.1" x2="746" y2="176.1"/>
+<text class="tick" x="50" y="180.1" text-anchor="end">0.75</text>
+<line class="grid" x1="58" y1="116.8" x2="746" y2="116.8"/>
+<text class="tick" x="50" y="120.8" text-anchor="end">0.8</text>
+<line class="grid" x1="58" y1="57.4" x2="746" y2="57.4"/>
+<text class="tick" x="50" y="61.4" text-anchor="end">0.85</text>
+<text class="tick" x="58.0" y="240" text-anchor="middle">0</text>
+<text class="tick" x="746.0" y="240" text-anchor="middle">1</text>
+<line class="axis" x1="58" y1="222" x2="746" y2="222"/>
+<line class="ref ref-base" x1="58" y1="201.9" x2="746" y2="201.9"/>
+<text class="reflab ref-base" x="742" y="195.9" text-anchor="end">shipped head 0.7283</text>
+<line class="ref ref-orc" x1="58" y1="34.1" x2="746" y2="34.1"/>
+<text class="reflab ref-orc" x="742" y="28.1" text-anchor="end">oracle 0.8696</text>
+<text class="axlab" x="402" y="256" text-anchor="middle">epoch</text>
+<text class="axlab" transform="rotate(-90 14 111)" x="14" y="111" text-anchor="middle">fraction with DockQ ≥ 0.23</text>
+<text class="empty" x="402" y="118" text-anchor="middle">pending: the first value lands at the end of epoch 1</text>
+</svg></div>
+    <div class="key"><span class="k-t"><i></i>trained head</span>
+      <span class="k-base"><i></i>shipped head</span><span class="k-b"><i></i>oracle</span></div>
+  </section>
+
+  <section>
+    <h2>Validation by epoch</h2>
+    <table><thead><tr><th>epoch</th><th>mean dockq</th><th>frac acc</th><th>oracle</th>
+      <th>headroom</th><th>checkpoint</th></tr></thead><tbody><tr><td colspan="6" class="pending">no epoch has finished yet; the shipped-head reference is in the charts above</td></tr></tbody></table>
+  </section>
+
+  <section>
+    <h2>Run configuration</h2>
+    <dl class="kvs"><div class="kv"><dt>lr</dt><dd>0.001</dd></div><div class="kv"><dt>epochs</dt><dd>5.0</dd></div><div class="kv"><dt>accum</dt><dd>256</dd></div><div class="kv"><dt>alpha_confidence</dt><dd>1.0</dd></div><div class="kv"><dt>alpha_pae</dt><dd>1.0</dd></div><div class="kv"><dt>clip_norm</dt><dd>25.0</dd></div><div class="kv"><dt>warmup_steps</dt><dd>20</dd></div><div class="kv"><dt>dist_backend</dt><dd>gloo</dd></div><div class="kv"><dt>preload_items</dt><dd>170</dd></div><div class="kv"><dt>max_rss_gb</dt><dd>80.0</dd></div><div class="kv"><dt>eval_budget</dt><dd>100</dd></div><div class="kv"><dt>eval_every_epoch</dt><dd>True</dd></div><div class="kv"><dt>allow_code_drift</dt><dd>True</dd></div><div class="kv"><dt>seed</dt><dd>0</dd></div><div class="kv"><dt>shuffle</dt><dd>structure</dd></div><div class="kv"><dt>fold</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/fold</dd></div><div class="kv"><dt>labels</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/fold/labels</dd></div><div class="kv"><dt>out</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/runs/9mfb4y</dd></div></dl>
+    <details><summary>every other argument (31)</summary>
+      <dl class="kvs"><div class="kv"><dt>bio_dir</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/prep/job_bioassembly</dd></div><div class="kv"><dt>blocks_per_ckpt</dt><dd>1</dd></div><div class="kv"><dt>ckpt_dir</dt><dd>/home/ebrahim/checkpoint</dd></div><div class="kv"><dt>crop_size</dt><dd>3400</dd></div><div class="kv"><dt>debug_save_rank_heads</dt><dd>False</dd></div><div class="kv"><dt>dist_timeout_min</dt><dd>240.0</dd></div><div class="kv"><dt>drop_pde</dt><dd>False</dd></div><div class="kv"><dt>eval_cards</dt><dd></dd></div><div class="kv"><dt>eval_device</dt><dd></dd></div><div class="kv"><dt>eval_every</dt><dd>0</dd></div><div class="kv"><dt>eval_min_free_mib</dt><dd>20000</dd></div><div class="kv"><dt>eval_script</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_eval.py</dd></div><div class="kv"><dt>grad_check_every</dt><dd>25</dd></div><div class="kv"><dt>indices</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/prep/job_indices.csv</dd></div><div class="kv"><dt>limit_units</dt><dd>0</dd></div><div class="kv"><dt>lr_probe</dt><dd></dd></div><div class="kv"><dt>manifest_selection</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/train_val_splits/cache_train_structures.csv</dd></div><div class="kv"><dt>manifest_skip</dt><dd>9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3</dd></div><div class="kv"><dt>max_nonfinite</dt><dd>10</dd></div><div class="kv"><dt>mem_log</dt><dd>False</dd></div><div class="kv"><dt>mmcif_dir</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/prep/job_cifs</dd></div><div class="kv"><dt>model_name</dt><dd>protenix-v2</dd></div><div class="kv"><dt>msa_root</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/mmcif_msa</dd></div><div class="kv"><dt>nsample</dt><dd>5</dd></div><div class="kv"><dt>preload_min_free_gb</dt><dd>260.0</dd></div><div class="kv"><dt>probe_steps</dt><dd>30</dd></div><div class="kv"><dt>require_replay</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/training/ft3_pilot_replay.log</dd></div><div class="kv"><dt>resume</dt><dd></dd></div><div class="kv"><dt>save_every</dt><dd>24</dd></div><div class="kv"><dt>seeds</dt><dd>500000-500009</dd></div><div class="kv"><dt>seq_index</dt><dd>/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/pdb_seqs/seq_to_pdb_index.json</dd></div></dl></details>
+  </section>
+
+  <script>
+  // How old is this page? The records are re-rendered every 5 minutes on the machine, but the
+  // published page changes only when it is republished, so the gap is shown rather than hidden.
+  (function () {
+    var el = document.getElementById("age");
+    if (!el) return;
+    var gen = parseInt(el.getAttribute("data-gen"), 10) * 1000;
+    function tick() {
+      if (!gen) return;
+      var mins = Math.floor((Date.now() - gen) / 60000);
+      el.textContent = mins < 1 ? "less than a minute ago"
+        : mins === 1 ? "1 minute ago"
+        : mins < 90 ? mins + " minutes ago"
+        : Math.round(mins / 60) + " hours ago";
+      el.style.color = mins > 20 ? "var(--warn)" : "";
+    }
+    tick();
+    setInterval(tick, 30000);
+  })();
+  </script>
+
+  <p class="foot">Records: <code>trajectory.csv</code> (one row per pose),
+    <code>metric_ep&lt;N&gt;.json</code> (one per epoch), <code>args.json</code>. Rendered by
+    <code>run_logging/render_report.py</code>; re-run it to refresh. The trainer carries no viewer
+    instrumentation, so the records outlive whatever reads them.</p>
+</div>

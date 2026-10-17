@@ -40,6 +40,7 @@ import copy
 import csv
 import functools
 import glob
+import hashlib
 import json
 import math
 import os
@@ -290,6 +291,11 @@ def main():
                          "else. REFUSES a bundle whose world size, seed, accum or nsample differ "
                          "from this run's: all four change which poses land in which batch, so the "
                          "optimiser state would belong to a different problem.")
+    ap.add_argument("--resume-allow-drift", action="store_true",
+                    help="accept a resume bundle whose settings differ from this run's, recording "
+                         "what changed. Without it the differences are refused. Use it to FORK a "
+                         "run deliberately -- continuing at a lower lr, say -- never to paper over "
+                         "a mismatch you did not intend.")
     ap.add_argument("--require-replay", default="",
                     help="path to a replay result that must say PASS before training starts. "
                          "Cached training is only FT3 if the cache reproduces it; see "
@@ -487,6 +493,14 @@ def main():
     flat = [(pp, lp, cands) for pp in order for lp, cands in bypdb[pp]]
     if a.limit_units:
         flat = flat[:a.limit_units]
+    # THE POPULATION, AS ONE HASH. The resume guard compares this rather than the arguments that
+    # produced it: --manifest-selection, --manifest-skip, --seeds and --limit-units can all change
+    # which units exist, and a guard that checked the flags would still miss a rewritten selection
+    # csv. Review 2026-10-16 reproduced a resume accepted after the exclusions changed.
+    _manifest_digest = hashlib.sha256(
+        "\n".join(f"{p}/{os.path.basename(lp)}" for p, lp, _c in sorted(flat)).encode()
+    ).hexdigest()[:16]
+    print(f"  manifest digest {_manifest_digest} over {len(flat)} unit(s)")
     print(f"  resolved {len(flat)} unit(s) over {len(set(x[0] for x in flat))} structure(s) "
           f"from {len(roots)} fold root(s), shuffle={a.shuffle}, seed={a.seed}")
 
@@ -525,15 +539,32 @@ def main():
             raise SystemExit(f"STOP: no resume bundle at {a.resume}")
         _b = torch.load(a.resume, map_location="cpu", weights_only=False)
         _g = _b.get("guard", {})
-        _mine = {"world": world, "seed": a.seed, "accum": a.accum, "nsample": a.nsample}
-        _bad = {k: (_g.get(k), v) for k, v in _mine.items() if _g.get(k) != v}
-        if _bad:
+        # WHAT MUST MATCH, in two groups. The first changes which poses land in which batch, so the
+        # saved moments describe a different problem. The second changes the objective or the
+        # schedule, so continuing would silently blend two experiments. Checking only the first four
+        # let a resume through after the exclusions, the loss weights and the lr had all changed
+        # (review 2026-10-16).
+        _mine = {"world": world, "seed": a.seed, "accum": a.accum, "nsample": a.nsample,
+                 "manifest_digest": _manifest_digest, "crop_size": a.crop_size,
+                 "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
+                 "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
+                 "lr": a.lr, "warmup_steps": a.warmup_steps}
+        _bad = {k: (_g.get(k, "<absent>"), v) for k, v in _mine.items() if _g.get(k, "<absent>") != v}
+        if _bad and not a.resume_allow_drift:
             raise SystemExit(
-                "STOP: this resume bundle was written under different settings, and every one of "
-                "these changes which poses land in which batch:\n"
+                "STOP: this resume bundle was written under different settings:\n"
                 + "".join(f"  {k}: bundle {b!r} vs this run {m!r}\n" for k, (b, m) in _bad.items())
-                + "  The saved AdamW moments describe a different problem. Relaunch from scratch, "
-                  "or match the settings.")
+                + "  Changes to world/seed/accum/nsample/manifest_digest/crop_size move which poses\n"
+                  "  land in which batch, so the saved AdamW moments belong to a different problem.\n"
+                  "  Changes to the alphas, drop_pde, clip_norm, lr or warmup change the objective or\n"
+                  "  the schedule, so continuing would blend two experiments into one curve.\n"
+                  "  Match the settings, relaunch from scratch, or pass --resume-allow-drift to\n"
+                  "  accept this deliberately -- it is recorded in args.json either way.")
+        if _bad:
+            print("ACCEPTING RESUME DRIFT (--resume-allow-drift); this run is a FORK of the bundle, "
+                  "not a continuation of it:")
+            for k, (b, m) in _bad.items():
+                print(f"  {k}: bundle {b!r} -> this run {m!r}")
         if _b["epoch"] >= max(1, math.ceil(a.epochs)):
             raise SystemExit(f"STOP: the bundle has {_b['epoch']} epoch(s) done and --epochs is "
                              f"{a.epochs}; there is nothing left to run.")
@@ -1101,6 +1132,11 @@ def main():
                                   "nsample": a.nsample, "lr": a.lr,
                                   "warmup_steps": a.warmup_steps, "epochs": a.epochs,
                                   "manifest_skip": a.manifest_skip,
+                                  "manifest_digest": _manifest_digest,
+                                  "crop_size": a.crop_size,
+                                  "alpha_confidence": a.alpha_confidence,
+                                  "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
+                                  "clip_norm": a.clip_norm,
                                   "commit": _git_commit(), "written": time.strftime("%Y-%m-%dT%H:%M:%S%z")}},
                        tmp)
             # ATOMIC: a bundle half-written by a crash at the epoch boundary would be the one thing
@@ -1282,10 +1318,19 @@ def main():
             rows = train_loop(a.probe_steps, lr, f"probe{lr}", write_traj=False)
             if not rows:
                 print(f"  lr {lr:g}: no rows"); continue
-            k = max(1, len(rows) // 5)
-            first = sum(r["loss"] for r in rows[:k]) / k
-            last = sum(r["loss"] for r in rows[-k:]) / k
-            fin = all(math.isfinite(r["loss"]) for r in rows)
+            # THE BATCH LOSS ON STEPS ACTUALLY TAKEN, not every per-pose row. `rows` is one entry
+            # per POSE on rank 0; averaging those compares learning rates on rank 0's slice of a
+            # handful of structures, and review 2026-10-16 built a case where the global batch loss
+            # fell while rank 0's pose losses rose, so this recommended LOWERING the lr. The
+            # cross-rank batch mean is in the row the optimiser stepped on.
+            _st = [r for r in rows if r.get("step_taken") and r.get("step_ok")
+                   and r.get("batch_loss") is not None]
+            if not _st:
+                print(f"  lr {lr:g}: no completed optimiser step to judge; skipped"); continue
+            k = max(1, len(_st) // 5)
+            first = sum(r["batch_loss"] for r in _st[:k]) / k
+            last = sum(r["batch_loss"] for r in _st[-k:]) / k
+            fin = all(math.isfinite(r["batch_loss"]) for r in _st)
             out.append((lr, first, last, last - first, fin))
             print(f"  lr {lr:<9g} loss first{k} {first:.6f} -> last{k} {last:.6f} "
                   f"(delta {last-first:+.6f}) finite={fin}")
@@ -1299,14 +1344,26 @@ def main():
               "analysis/val_selection_metric.py, never on this loss.")
         return 0
 
-    total_poses = int(len(flat) * 5 * a.epochs)
+    # THE ESTIMATE USES --nsample, not a hardcoded 5. It was 5 because every unit has 5 poses in
+    # this pilot, which is a fact about the data and not about the code.
+    total_poses = int(len(flat) * a.nsample * a.epochs)
     # PER RANK. Each rank sees total_poses/world poses and steps every accum_local of them, so the
     # step count is total_poses/(world*accum_local) = total_poses/accum_eff either way, and a
     # multi-GPU run does the same number of optimiser steps as a single-GPU one -- in a third of the
     # wall clock, rather than a third of the training.
-    steps_cap = max(1, total_poses // accum_eff)
+    # THE CAP IS FOR DEBUGGING ONLY, AND IS OFF FOR REAL TRAINING. total_poses // accum_eff counts
+    # full accumulations, but the loop ALSO flushes a partial one at every epoch boundary, so the
+    # step counter advances faster than the cap anticipates and the last epoch could be cut short.
+    # Review 2026-10-16 reproduced three epochs of ten poses running only 24 of 30. The epoch loop
+    # already knows when it is finished; `--limit-units` and the lr probe remain for capped runs.
+    # 9mfb4y escaped by one step (cap 481, 480 taken) only because total_poses counts all 491
+    # structures while the loop runs the 489 that survive shard truncation -- two errors cancelling.
+    _full = (len(flat) // max(1, world)) * a.nsample // accum_local
+    _expect = (_full + 1) * max(1, math.ceil(a.epochs))
+    steps_cap = 0
     print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
-          f"~{steps_cap} optimiser step(s) for {a.epochs} epoch(s)")
+          f"~{_expect} optimiser step(s) for {a.epochs} epoch(s) "
+          f"({_full} full + 1 partial per epoch); no step cap, the epoch loop decides")
     print(f"trajectory -> {traj_p}")
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
     train_loop(steps_cap, a.lr, "train", write_traj=is_main,
