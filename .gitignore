@@ -217,3 +217,7 @@ experimental_data/protenix/*/ost_json/**
 extra_training/run_logging/.tbvenv/
 extra_training/run_logging/.tb_port
 extra_training/run_logging/*.log
+# Generated reports: run_logging/report.py --watch rewrites the live run's every 5 minutes, so
+# tracking them leaves the tree permanently dirty and launch.py then records every run as not
+# reproducible from its commit. The records they are built from are the provenance, not these.
+extra_training/run_logging/reports/
