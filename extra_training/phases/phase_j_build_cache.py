@@ -480,12 +480,15 @@ def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
 # sees the ground-truth coordinates -- that is what the loss is. No GT-derived hint reaches the
 # metric, because nothing is cropped at validation.
 #
-# MEASURED retained fraction, contact 5 A heavy-atom, n = 100 of the 491 structures (median full
-# size 620 tokens). The "projected" column extrapolates at time ~ tokens^2.21 (r=0.950 on this
+# MEASURED retained fraction, contact 5 A heavy-atom. The 10 A row is the WHOLE POPULATION, all 491
+# structures (median full size 641 tokens); the other rows are n = 100. Three samples of the 10 A
+# setting disagreed -- 48.8% at n=100, 52.4% at n=80, 60.9% at n=35 -- because the per-structure
+# fraction runs from 10.2% to 88.9% (quartiles 38.6% and 65.7%), so a sample median is a poor
+# summary of it and the population was measured instead of argued about. The "projected" column extrapolates at time ~ tokens^2.21 (r=0.950 on this
 # project's own trajectory):
 #
 #   margin   median kept   projected   MEASURED fwd+bwd
-#     10 A         48.8%       5.23x    --
+#     10 A         51.1%       4.81x    3.35x   (ALL 491 structures; 0 with no definable crop)
 #     15 A         67.1%       2.79x    2.58x   (pooled over 11 structures, card 5)
 #     20 A         78.4%       2.11x    --
 #     30 A         88.0%       1.64x    --

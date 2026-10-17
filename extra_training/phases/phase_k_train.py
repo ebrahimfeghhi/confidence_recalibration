@@ -330,12 +330,44 @@ def main():
                          "what changed. Without it the differences are refused. Use it to FORK a "
                          "run deliberately -- continuing at a lower lr, say -- never to paper over "
                          "a mismatch you did not intend.")
+    ap.add_argument("--crop-margin", type=float, default=0.0,
+                    help="interface-plus-margin cropping: train on the window within this many "
+                         "angstroms of an interface token instead of the whole structure. 0 "
+                         "(default) is the whole structure. TRAINING ONLY -- validation is never "
+                         "cropped, so the metric stays comparable with every historical number. "
+                         "At 10 the population keeps a median 51.1%% of tokens (333 of 641, all "
+                         "491 structures, 0 with no definable crop) for a MEASURED 3.35x on the "
+                         "head and ~1.99x on a whole step, landing near Protenix's own "
+                         "train_crop_size of 256. Requires --minimal-items.")
+    ap.add_argument("--crop-contact", type=float, default=5.0,
+                    help="a token is an interface token when any of its heavy atoms lies within "
+                         "this many angstroms of a heavy atom on a DIFFERENT CHAIN, by ground-truth "
+                         "coordinates. EVERY chain pair counts, the antibody's own heavy-light "
+                         "packing included; restricting to antibody-antigen pairs is a separate "
+                         "experiment needing role annotation this does not read.")
+    ap.add_argument("--crop-log", default="",
+                    help="csv of per-unit crop sizes; defaults to <out>/crop_sizes.csv when cropping")
     ap.add_argument("--require-replay", default="",
                     help="path to a replay result that must say PASS before training starts. "
                          "Cached training is only FT3 if the cache reproduces it; see "
                          "phase_j_replay.py. Pass 'skip' to train without the gate and say why.")
     a = ap.parse_args()
     a.labels = a.labels or os.path.join(a.fold, "labels")
+
+    # CROPPING IS ONLY COHERENT ON THE MINIMAL PATH. The dataset item carries a FULL-SIZE
+    # label_dict, so cropping the prediction while the loss reads full-size masks would either
+    # raise on a shape or line up by accident and score poses against the wrong residues. The
+    # minimal path builds the loss inputs from the same cached label the crop slices, so both
+    # sides are cropped together or neither is.
+    if a.crop_margin > 0 and not a.minimal_items:
+        raise SystemExit(
+            "STOP: --crop-margin needs --minimal-items. The dataset item's label_dict is built at "
+            "full size, so cropping only the prediction would score poses against the wrong "
+            "residues. Pass --minimal-items with its --alignment-preflight marker.")
+    if a.crop_margin < 0:
+        raise SystemExit("STOP: --crop-margin cannot be negative.")
+    if a.crop_log and a.crop_margin == 0:
+        raise SystemExit("STOP: --crop-log was given but --crop-margin is 0, so nothing is cropped.")
 
     # PIN THE COMMIT NOW, before any work, so every bundle this process writes records the code it
     # is running rather than whatever HEAD has become hours later. Caching it lazily at the first
@@ -624,7 +656,11 @@ def main():
                  "manifest_digest": _manifest_digest, "crop_size": a.crop_size,
                  "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
-                 "lr": a.lr, "warmup_steps": a.warmup_steps}
+                 "lr": a.lr, "warmup_steps": a.warmup_steps,
+                 # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
+                 # tokens and pairs -- so resuming across a crop change would blend two experiments
+                 # into one curve, which is exactly what this guard exists to stop.
+                 "crop_margin": a.crop_margin, "crop_contact": a.crop_contact}
 
         # A BUNDLE WRITTEN BY OLDER CODE IS NOT DRIFT. The guard grew from four fields to twelve
         # while run 9mfb4y was in flight, so its bundles carry only the original eight: the running
@@ -711,6 +747,14 @@ def main():
 
     # PERSIST THE TRAJECTORY PER STEP, not at the end. A run that dies at step 900 of 1000 must still
     # be analysable, and a loss curve is the only way to see a learning rate that is wrong.
+    # CROP BOOKKEEPING, counted rather than assumed. An arm whose crop silently failed to apply on
+    # many structures is not the arm it claims to be, and the retained fraction is the only record
+    # that says which happened.
+    crop_stats = {"n": 0, "tok": 0, "kept": 0, "frames": 0, "undefined": 0}
+    crop_rows = []
+    crop_cols = ["pdb", "unit", "n_tok", "kept_tok", "frames_cleared", "status"]
+    crop_p = a.crop_log or (os.path.join(a.out, "crop_sizes.csv") if a.crop_margin > 0 else "")
+
     traj_p = os.path.join(a.out, "trajectory.csv")
     # THE BATCH COLUMNS ARE THE CURVE; the bare TERMS are the single pose that happened to be last.
     # batch_<term> is the mean over ALL accum_eff poses in the step, reduced across every rank, and
@@ -876,11 +920,45 @@ def main():
             # run, once per structure, in the preflight asserted above.
             _z, feat_npz, _poses_np = BC.load_trunk(trunk_p)
             BC.check_alignment(feat_npz, feat_ds, pdb)
-        feat_head, s_inputs, s_trunk, zt, poses, _nc = RC.load_unit(trunk_p, dev)
+        # THE CROP, WHEN ASKED FOR. The head's tensors and the loss's features come out of
+        # slice_cached_unit together, from one pair of masks, so there is no path on which one side
+        # is cropped and the other is not -- the misalignment the re-indexing gate exists to catch.
+        # interface_crop_tokens returns (None, None) when a crop is not definable (fewer than two
+        # chains with usable coordinates, or no cross-chain contact), and this trains on the whole
+        # structure then, counted, rather than guessing at a window.
+        crop_slice = None
+        if a.crop_margin > 0:
+            _zc = np.load(trunk_p)
+            _kt, _ka = BC.interface_crop_tokens(_zc, lab, a.crop_contact, a.crop_margin)
+            if _kt is None:
+                crop_stats["undefined"] += 1
+                crop_rows.append({"pdb": pdb, "unit": arm_seed, "n_tok": "", "kept_tok": "",
+                                  "frames_cleared": "", "status": "no-crop-definable"})
+            else:
+                crop_slice = BC.slice_cached_unit(_zc, lab, _kt, _ka, dev, torch)
+                crop_stats["n"] += 1
+                crop_stats["tok"] += int(_kt.shape[0])
+                crop_stats["kept"] += int(_kt.sum())
+                crop_stats["frames"] += int(crop_slice[8])
+                crop_rows.append({"pdb": pdb, "unit": arm_seed, "n_tok": int(_kt.shape[0]),
+                                  "kept_tok": int(_kt.sum()),
+                                  "frames_cleared": int(crop_slice[8]), "status": "cropped"})
+        if crop_slice is not None:
+            (feat_head, s_inputs, s_trunk, zt, poses, _nc,
+             crop_feat_loss, crop_labels, _nb) = crop_slice
+        else:
+            crop_feat_loss = crop_labels = None
+            feat_head, s_inputs, s_trunk, zt, poses, _nc = RC.load_unit(trunk_p, dev)
 
         def to_dev(d):
             return {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in d.items()}
-        if a.minimal_items:
+        if crop_feat_loss is not None:
+            # THE CROPPED LOSS FEATURES, from the same masks as the head's tensors. These are the
+            # per-atom and per-token arrays the loss indexes with -- plddt_m_rep_atom_mask,
+            # pae_rep_atom_mask, frame_atom_index, has_frame and the rest -- so a full-size copy
+            # here against a cropped prediction is the silent misalignment, not a shape error.
+            feat_cache = crop_feat_loss
+        elif a.minimal_items:
             # ONE SHARED BUILDER, so this and the equivalence gate cannot drift apart -- two
             # readers of one record diverging is how the reporting bug shipped twice.
             feat_cache, _ = BC.minimal_loss_inputs(lab, 0, dev, torch)
@@ -948,7 +1026,13 @@ def main():
             # EVERY NUMERIC ARRAY GOES TO THE DEVICE, not only those already tensors. A numpy array
             # left as numpy is converted by Protenix with torch.as_tensor, giving a CPU tensor, and
             # PDELoss then builds its bin boundaries on the CPU too, so the whole loss computes there.
-            if a.minimal_items:
+            if crop_feat_loss is not None:
+                # SLICED ONCE PER UNIT: the label coordinates for every pose were cropped together,
+                # so per pose this only picks a row.
+                _cc, _cm = crop_labels
+                ld = {"coordinate": torch.as_tensor(_cc[i], dtype=torch.float32, device=dev),
+                      "coordinate_mask": torch.as_tensor(_cm[i].astype(np.float32), device=dev)}
+            elif a.minimal_items:
                 _, ld = BC.minimal_loss_inputs(lab, i, dev, torch)
             else:
                 ld = {}
@@ -1277,6 +1361,8 @@ def main():
                                   "alpha_confidence": a.alpha_confidence,
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
+                                  "crop_margin": a.crop_margin,
+                                  "crop_contact": a.crop_contact,
                                   "commit": _git_commit(), "written": time.strftime("%Y-%m-%dT%H:%M:%S%z")}},
                        tmp)
             # ATOMIC: a bundle half-written by a crash at the epoch boundary would be the one thing
@@ -1378,6 +1464,11 @@ def main():
                                  **{k: met[k] for k in TERMS}, **means})
                     if write_traj and len(rows) % 20 == 0:
                         _flush(traj_p, traj_cols, rows); rows = []
+                        # THE CROP LOG FLUSHES WITH THE TRAJECTORY, not only at the epoch boundary.
+                        # A run that dies mid-epoch -- as this one did, on a hangup -- would
+                        # otherwise leave no record of what it had cropped.
+                        if crop_p and crop_rows:
+                            _flush(crop_p, crop_cols, crop_rows); crop_rows.clear()
                     if steps_cap and step >= steps_cap:
                         done = True
                         break
@@ -1431,6 +1522,9 @@ def main():
                             "unit": os.path.basename(lab_p)[:-4], "pose": i})
         if write_traj:
             _flush(traj_p, traj_cols, rows)
+            if crop_p and crop_rows:
+                _flush(crop_p, crop_cols, crop_rows)
+                crop_rows.clear()
         return rows
 
     def _flush(path, cols, rows):
@@ -1504,6 +1598,22 @@ def main():
     print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
           f"~{_expect} optimiser step(s) for {a.epochs} epoch(s) "
           f"({_full} full + 1 partial per epoch); no step cap, the epoch loop decides")
+    if a.crop_margin > 0:
+        if crop_p and crop_rows:
+            _flush(crop_p, crop_cols, crop_rows)
+            crop_rows.clear()
+        _cs = crop_stats
+        if _cs["n"]:
+            print(f"\ncrop: contact {a.crop_contact:.0f} A, margin {a.crop_margin:.0f} A over "
+                  f"{_cs['n']} unit(s): kept {_cs['kept']}/{_cs['tok']} token(s) "
+                  f"({_cs['kept'] / _cs['tok'] * 100:.1f}%), "
+                  f"{_cs['frames']} frame(s) cleared for want of their atoms")
+        if _cs["undefined"]:
+            print(f"  {_cs['undefined']} unit(s) had NO DEFINABLE CROP -- fewer than two chains "
+                  f"with usable coordinates, or no cross-chain contact -- and trained on the whole "
+                  f"structure. They are in {crop_p} with status=no-crop-definable.")
+        if crop_p:
+            print(f"crop sizes -> {crop_p}")
     print(f"trajectory -> {traj_p}")
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
     train_loop(steps_cap, a.lr, "train", write_traj=is_main,
