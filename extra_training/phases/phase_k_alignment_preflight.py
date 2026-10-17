@@ -91,8 +91,17 @@ def main():
             print(f"  {i}/{len(todo)}  {(time.time()-t0)/i:.1f} s/structure  "
                   f"{len(bad)} mismatch(es)", flush=True)
 
-    ok = not bad and not missing
-    rec = {"ok": ok, "manifest_digest": digest, "n_structures": len(todo), "n_units": len(units),
+    # COMPLETENESS IS PART OF THE PASS. --limit exists for debugging, but the digest is computed
+    # over the WHOLE manifest, so a marker written after checking one structure used to carry
+    # ok=true with the full population's digest -- and the trainer, which compares the digest and
+    # reads ok, accepted it as authorisation for all 491. Review round 5 reproduced that. The
+    # marker now records whether every structure in the manifest was actually checked, and a
+    # partial run can never be ok.
+    complete = len(todo) == len(pdbs)
+    ok = not bad and not missing and complete
+    rec = {"ok": ok, "complete": complete, "n_manifest_structures": len(pdbs),
+           "limit": int(a.limit), "manifest_digest": digest,
+           "n_structures": len(todo), "n_units": len(units),
            "manifest_selection": a.manifest_selection, "manifest_skip": a.manifest_skip,
            "seeds": a.seeds, "checked_seed": lo,
            "mismatches": [{"pdb": p, "error": e} for p, e in bad],
@@ -110,6 +119,10 @@ def main():
         print(f"PREFLIGHT FAILED: {len(bad)} structure(s) whose trunk disagrees with the dataset:")
         for p, e in bad[:10]:
             print(f"  {p}: {e}")
+    if not complete:
+        print(f"PREFLIGHT INCOMPLETE: --limit {a.limit} checked {len(todo)} of {len(pdbs)} "
+              f"structure(s), so this marker records ok=false and the trainer will refuse it. "
+              f"Re-run without --limit to authorise training.")
     if ok:
         print(f"PREFLIGHT PASSED: {len(todo)} structure(s) aligned, in "
               f"{(time.time()-t0)/60:.1f} min. --minimal-items may use this marker.")

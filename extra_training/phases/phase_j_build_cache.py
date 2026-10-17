@@ -480,9 +480,23 @@ def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
 # sees the ground-truth coordinates -- that is what the loss is. No GT-derived hint reaches the
 # metric, because nothing is cropped at validation.
 #
-# MEASURED retained fraction on 40 of the 491 structures, contact 8 A, with time ~ tokens^2.21
-# (r=0.950 on this project's own trajectory): margin 10 A keeps 45% for 5.64x, 15 A keeps 67% for
-# 2.62x, 20 A keeps 83% for 1.88x, 30 A keeps 97% for 1.38x. The margin costs speed quickly.
+# MEASURED retained fraction, contact 5 A heavy-atom, n = 100 of the 491 structures (median full
+# size 620 tokens). The "projected" column extrapolates at time ~ tokens^2.21 (r=0.950 on this
+# project's own trajectory):
+#
+#   margin   median kept   projected   MEASURED fwd+bwd
+#     10 A         48.8%       5.23x    --
+#     15 A         67.1%       2.79x    2.58x   (pooled over 11 structures, card 5)
+#     20 A         78.4%       2.11x    --
+#     30 A         88.0%       1.64x    --
+#
+# THE PROJECTION OVERSTATES THE SPEEDUP. On the same 12 structures the exponent predicted 4.67x and
+# timing one pose's forward+backward each way gave 2.58x. The exponent was fitted to whole training
+# steps, where per-structure overheads scale with size too; a crop keeps those overheads and shrinks
+# only the head, so it cannot reach the fitted curve. Review round 5 asked for measured time rather
+# than a projection and was right to. The 2.58x itself is conservative in one direction: the largest
+# structure in the sample (31mr, 1,581 tokens, 22% kept) would not fit at full size on the test card,
+# and that is exactly the case a crop helps most, so it is excluded from the pooled figure.
 #
 # WE SLICE A CACHED POST-TRUNK TENSOR, which is NOT what Protenix's CropData does. CropData crops
 # before the trunk runs; our trunks are already folded at full size, so z_trunk[idx][:,idx] is a
@@ -491,12 +505,12 @@ def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
 # crop-then-fold would be, but it is a different thing, so their code does not apply here.
 
 
-def interface_crop_tokens(z, lab, contact=8.0, margin=15.0):
+def interface_crop_tokens(z, lab, contact=5.0, margin=15.0, all_poses=True):
     """(keep_tok, keep_atom) boolean masks for an interface-plus-margin crop.
 
-    A token is an INTERFACE token when its PAE representative atom lies within `contact` of a
-    representative atom in a different chain, by GROUND-TRUTH coordinates. The crop keeps every
-    token whose representative is within `margin` of any interface token.
+    A token is an INTERFACE token when any of its HEAVY ATOMS lies within `contact` of a heavy atom
+    of a different chain, by ground-truth coordinates. The crop keeps every token whose
+    representative atom is within `margin` of any interface token.
 
     Returns (None, None) when the crop cannot be defined -- fewer than two chains with usable
     coordinates, or no contact at all -- so the caller trains on the full structure rather than
@@ -504,40 +518,125 @@ def interface_crop_tokens(z, lab, contact=8.0, margin=15.0):
 
     WHOLE TOKENS ONLY. Keeping a token keeps all of its atoms, so atom-level arrays slice by the
     induced atom mask and a token's frame atoms come along with it.
+
+    HEAVY ATOMS, NOT REPRESENTATIVE ATOMS, to seed the interface. The first version tested only the
+    PAE representative atom (one per token, the CA for a protein residue) at 8 A, which is a proxy
+    for a contact rather than a contact. Measured against real 5 A heavy-atom contacts on 150
+    structures, that proxy missed a genuinely contacting CHAIN PAIR in 11 of them and left 24 of
+    16,629 real contact tokens out of the crop in 9 of them -- small, but the residues it dropped
+    are paratope and epitope residues, the ones the confidence head exists to score. A cKDTree over
+    the label's own atoms is both exact and cheap (milliseconds, once per structure). Review round 5
+    raised the chain-pair question; the heavy-atom seed is the fix for it.
+
+    EVERY POSE, NOT POSE 0. The label is stored per pose because Protenix permutes symmetric chains
+    and atoms to match each prediction, so for a structure with identical copies pose 1's interface
+    can involve a copy that pose 0's interface does not, and a crop chosen from pose 0 alone would
+    stay perfectly self-consistent while removing the interface pose 1 is scored on. Measured on all
+    491 training structures x all 5 poses, the permutation never moves a token: the largest
+    |d(pose i) - d(pose 0)| over token representative atoms is 0.000000 A, and 77 of the 491 do have
+    at least two chains of equal token count. So this costs nothing today -- the union equals pose
+    0's mask on every structure measured -- and it is taken because it is free insurance against a
+    label rebuild that does permute. assert_pose_invariant_crop() is the gate that would catch it.
     """
     import numpy as np
+    from scipy.spatial import cKDTree
     asym = np.asarray(z["ci_feat_asym_id"]).reshape(-1)
     a2t = np.asarray(z["ci_feat_atom_to_token_idx"]).reshape(-1)
     rep = np.asarray(lab["lf_pae_rep_atom_mask"]).reshape(-1).astype(bool)
-    xyz = np.asarray(lab["label_coordinate"])[0]
-    cmask = np.asarray(lab["label_coordinate_mask"])[0].astype(bool)
+    lc = np.asarray(lab["label_coordinate"])
+    lm = np.asarray(lab["label_coordinate_mask"])
     n_tok = asym.shape[0]
-
-    # one representative coordinate per token, from the GT label
-    tok_xyz = np.full((n_tok, 3), np.nan, dtype=np.float64)
-    for ai in np.nonzero(rep & cmask)[0]:
-        t = int(a2t[ai])
-        if 0 <= t < n_tok and np.isnan(tok_xyz[t, 0]):
-            tok_xyz[t] = xyz[ai]
-    good = ~np.isnan(tok_xyz[:, 0])
-    if good.sum() < 4 or len(np.unique(asym[good])) < 2:
-        return None, None
-
-    idx = np.nonzero(good)[0]
-    c, sa = tok_xyz[idx], asym[idx]
-    d = np.linalg.norm(c[:, None, :] - c[None, :, :], axis=-1)
-    iface_local = ((d < contact) & (sa[:, None] != sa[None, :])).any(axis=1)
-    if not iface_local.any():
-        return None, None
-    keep_local = iface_local | (d[:, iface_local] < margin).any(axis=1)
+    n_pose = lc.shape[0] if all_poses else 1
+    in_range = (a2t >= 0) & (a2t < n_tok)
 
     keep_tok = np.zeros(n_tok, dtype=bool)
-    keep_tok[idx[keep_local]] = True
-    # A token with no usable representative coordinate cannot be placed, so it is dropped. That is
-    # a decision, not an oversight: including it would put a token in the crop whose distance to the
-    # interface is unknown.
-    keep_atom = keep_tok[a2t]
+    any_pose = False
+    for pi in range(n_pose):
+        cmask = lm[pi].astype(bool) & in_range
+        if cmask.sum() < 4:
+            continue
+        xyz, tok_of_atom = lc[pi][cmask], a2t[cmask]
+        chain_of_atom = asym[tok_of_atom]
+        if np.unique(chain_of_atom).size < 2:
+            continue
+
+        # INTERFACE TOKENS: any heavy-atom pair under `contact` whose atoms sit on different chains.
+        iface = np.zeros(n_tok, dtype=bool)
+        for i, j in cKDTree(xyz).query_pairs(contact):
+            if chain_of_atom[i] != chain_of_atom[j]:
+                iface[tok_of_atom[i]] = True
+                iface[tok_of_atom[j]] = True
+        if not iface.any():
+            continue
+
+        # MARGIN: measured from the token representative atom, which is one point per token, so the
+        # margin is a residue-level radius and not an atom-level one.
+        tok_xyz = np.full((n_tok, 3), np.nan, dtype=np.float64)
+        for ai in np.nonzero(rep & cmask)[0]:
+            t = int(a2t[ai])
+            if np.isnan(tok_xyz[t, 0]):
+                tok_xyz[t] = lc[pi][ai]
+        good = ~np.isnan(tok_xyz[:, 0])
+        # An interface token with no usable representative atom is kept regardless: it is in contact,
+        # which is the whole point, and only its role as a MARGIN CENTRE needs a coordinate.
+        centres = np.nonzero(iface & good)[0]
+        if centres.size == 0:
+            keep_tok |= iface
+            any_pose = True
+            continue
+        gi = np.nonzero(good)[0]
+        d = np.linalg.norm(tok_xyz[gi][:, None, :] - tok_xyz[centres][None, :, :], axis=-1)
+        near = np.zeros(n_tok, dtype=bool)
+        near[gi[(d < margin).any(axis=1)]] = True
+        keep_tok |= iface | near
+        any_pose = True
+
+    if not any_pose or not keep_tok.any():
+        return None, None
+    keep_atom = np.zeros(a2t.shape[0], dtype=bool)
+    keep_atom[in_range] = keep_tok[a2t[in_range]]
     return keep_tok, keep_atom
+
+
+def assert_pose_invariant_crop(z, lab, contact=5.0, margin=15.0):
+    """Raise if any single pose needs a token the all-pose union does not hold.
+
+    The union cannot miss a pose's tokens by construction, so this is really a regression test on
+    interface_crop_tokens itself and on the label: it fails if a future label rebuild changes the
+    per-pose permutation in a way the union stops covering, or if all_poses stops being honoured.
+    """
+    import numpy as np
+    union, _ = interface_crop_tokens(z, lab, contact, margin, all_poses=True)
+    if union is None:
+        return 0
+    n_pose = np.asarray(lab["label_coordinate"]).shape[0]
+    extra = 0
+    for pi in range(n_pose):
+        one, _ = _crop_one_pose(z, lab, pi, contact, margin)
+        if one is None:
+            continue
+        miss = int((one & ~union).sum())
+        if miss:
+            raise ValueError(f"pose {pi} needs {miss} token(s) the all-pose union does not keep")
+        extra = max(extra, int((union & ~one).sum()))
+    return extra
+
+
+def _crop_one_pose(z, lab, pose_i, contact=5.0, margin=15.0):
+    """interface_crop_tokens restricted to one pose. Only assert_pose_invariant_crop uses it."""
+    import numpy as np
+    lc = np.asarray(lab["label_coordinate"])
+    lm = np.asarray(lab["label_coordinate_mask"])
+
+    class _One:
+        def __getitem__(self, k):
+            if k == "label_coordinate":
+                return lc[pose_i:pose_i + 1]
+            if k == "label_coordinate_mask":
+                return lm[pose_i:pose_i + 1]
+            return lab[k]
+
+    return interface_crop_tokens(z, _One(), contact, margin, all_poses=True)
 
 
 def slice_cached_unit(z, lab, keep_tok, keep_atom, dev, torch):

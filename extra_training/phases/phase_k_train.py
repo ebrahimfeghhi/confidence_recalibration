@@ -542,6 +542,18 @@ def main():
                 f"about the structures this run will train on; re-run it.")
         if not _pf.get("ok"):
             raise SystemExit(f"STOP: {a.alignment_preflight} does not record a pass.")
+        # THE MARKER MUST COVER THE WHOLE MANIFEST, not just carry its digest. The digest is
+        # computed over every unit even when the preflight ran with --limit, so a one-structure
+        # debug marker used to pass both checks above and authorise all 491. Asserted on BOTH
+        # sides: the preflight now refuses to write ok=true when incomplete, and this refuses a
+        # marker that does not say so -- including one written before that change existed.
+        if not _pf.get("complete"):
+            _lim = _pf.get("limit")
+            raise SystemExit(
+                f"STOP: {a.alignment_preflight} does not record complete=true. It checked "
+                f"{_pf.get('n_structures')} of {_pf.get('n_manifest_structures', '?')} structure(s)"
+                + (f" (--limit {_lim})" if _lim else "")
+                + ", so it says nothing about the rest. Re-run the preflight without --limit.")
         print(f"  alignment preflight: PASS over {_pf.get('n_structures')} structure(s), "
               f"digest {_pf.get('manifest_digest')}")
         print(f"  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label "

@@ -13,9 +13,13 @@ retained fraction with the projected speedup at the measured tokens^2.21.
 
   CUDA_VISIBLE_DEVICES=5 LAYERNORM_TYPE=openfold python -I phases/phase_k_crop_consistency.py
 """
-import argparse, csv, os, random, sys
+import argparse, csv, os, random, sys, time
 import numpy as np
 import torch
+# Protenix's pairformer calls torch.utils.checkpoint.checkpoint when blocks_per_ckpt is set, and
+# torch.utils does not expose the submodule unless something imports it. The trainer gets it for
+# free from another import; a gate that only ran forward under no_grad never reached the call.
+import torch.utils.checkpoint  # noqa: F401
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "phases"))
@@ -28,6 +32,55 @@ TERMS = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss")
 # The same fold roots the trainer reads, in the same order.
 ROOTS = ("training/fold", "training/fold_regen", "training/fold_deferred")
 SEEDS = tuple(f"free_5000{i:02d}" for i in range(15))
+
+
+def run_one_pose(model, configs, loss_fn, fh, s_in, s_tr, zt, poses, fl, co, cm, pi, dev,
+                 backward=False):
+    """One pose through the real head and the real loss, exactly as phase_k_train runs it.
+
+    Returns (cumulative loss, {term: value}). With backward=True it also runs .backward(), which is
+    the half of the computation a no_grad gate never touches."""
+    x = poses[pi:pi + 1]
+    ctx = torch.enable_grad() if backward else torch.no_grad()
+    with ctx:
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            plddt, pae, pde, resolved = model.run_confidence_head(
+                input_feature_dict=fh, s_inputs=s_in, s_trunk=s_tr, z_trunk=zt,
+                pair_mask=None, x_pred_coords=x,
+                triangle_multiplicative=configs.triangle_multiplicative,
+                triangle_attention=configs.triangle_attention,
+                inplace_safe=False, chunk_size=None)
+        pred = {"plddt": plddt.float(), "pae": pae.float(), "pde": pde.float(),
+                "resolved": resolved.float(), "coordinate_mini": x}
+        ld = {"coordinate": torch.as_tensor(co[pi], dtype=torch.float32, device=dev),
+              "coordinate_mask": torch.as_tensor(cm[pi].astype(np.float32), device=dev)}
+        cum, met = loss_fn.calculate_losses(fl, pred, ld, mode="train")
+        if backward:
+            cum.backward()
+    return float(cum), {t: float(met[t]) for t in TERMS}
+
+
+def time_fwd_bwd(model, configs, loss_fn, build, dev, reps=3):
+    """Median wall-clock seconds for one pose's forward+backward. `build` returns the tensor set.
+
+    MEASURED, NOT PROJECTED. The 2.21 exponent came from this project's own trajectory and predicts
+    the head's cost well in aggregate, but a crop also changes the memory traffic and the kernel
+    shapes, so the only honest speedup number is a timed one."""
+    fh, s_in, s_tr, zt, poses, _nc, fl, (co, cm), _nb = build()
+    ts = []
+    for r in range(reps + 1):
+        model.zero_grad(set_to_none=True)
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        run_one_pose(model, configs, loss_fn, fh, s_in, s_tr, zt, poses, fl, co, cm, 0, dev,
+                     backward=True)
+        torch.cuda.synchronize()
+        if r:                      # first pass is warm-up: autotuning and allocator growth
+            ts.append(time.perf_counter() - t0)
+    model.zero_grad(set_to_none=True)
+    del fh, s_in, s_tr, zt, poses, fl, co, cm
+    torch.cuda.empty_cache()
+    return float(np.median(ts))
 
 
 def check_indices(z, lab, keep_tok, keep_atom, sliced, pdb):
@@ -206,11 +259,15 @@ def broken_frame_case(z, lab, keep_tok, keep_atom, dev, pdb):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--n", type=int, default=8, help="structures to test")
-    ap.add_argument("--contact", type=float, default=8.0)
+    ap.add_argument("--contact", type=float, default=5.0)
     ap.add_argument("--margin", type=float, default=15.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--run-model", action="store_true", default=True,
                     help="also run the real head and loss on each crop")
+    ap.add_argument("--poses", type=int, default=0,
+                    help="poses to run per structure through forward AND backward; 0 = all")
+    ap.add_argument("--time", action="store_true",
+                    help="also time full-structure vs cropped forward+backward on the same pose")
     ap.add_argument("--out", default="", help="write the per-structure table to this csv")
     ap.add_argument("--no-self-test", action="store_true",
                     help="skip the mutation test that proves the index checks fire")
@@ -242,12 +299,18 @@ def main():
     # PROTENIX_CONF_OFFLOAD_TOKENS (2000) only when the module is NOT training, and the loss would
     # then compute on the CPU. Matching the trainer keeps this gate honest about where tensors live.
     model.confidence_head.train()
+    # GRADIENTS ON THE HEAD ONLY, as FT3 trains it. Without this every backward below would be a
+    # no-op and the "backward produced no gradient" check would fire on every pose.
+    for prm in model.parameters():
+        prm.requires_grad_(False)
+    for prm in model.confidence_head.parameters():
+        prm.requires_grad_(True)
     loss_fn = ProtenixLoss(configs)
 
     print(f"contact {a.contact:.0f} A, margin {a.margin:.0f} A, {len(picks)} structure(s)\n")
     print(f"{'structure':10s} {'tokens':>7s} {'kept':>7s} {'%':>6s} {'frames cleared':>14s} "
-          f"{'index checks':>13s} {'loss on crop':>13s}")
-    failures, fracs, fulls, table = [], [], [], []
+          f"{'union-1':>6s} {'index checks':>13s} {'loss on crop':>13s}")
+    failures, fracs, fulls, table, timing = [], [], [], [], []
     for r in picks:
         pdb = r["pdb"]
         tp = lp = ""
@@ -273,34 +336,67 @@ def main():
         lossinfo, terms = "not run", ""
         if a.run_model:
             fh, s_in, s_tr, zt, poses, _nc, fl, (co, cm), nb = sliced
+            n_pose = poses.shape[0] if a.poses <= 0 else min(a.poses, poses.shape[0])
             try:
-                with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    plddt, pae, pde, resolved = model.run_confidence_head(
-                        input_feature_dict=fh, s_inputs=s_in, s_trunk=s_tr, z_trunk=zt,
-                        pair_mask=None, x_pred_coords=poses[0:1],
-                        triangle_multiplicative=configs.triangle_multiplicative,
-                        triangle_attention=configs.triangle_attention,
-                        inplace_safe=False, chunk_size=None)
-                if pae.shape[-2] != k or pae.shape[-3] != k:
-                    bad.append(f"head returned pae {tuple(pae.shape)} for {k} token(s)")
-                pred = {"plddt": plddt.float(), "pae": pae.float(), "pde": pde.float(),
-                        "resolved": resolved.float(), "coordinate_mini": poses[0:1]}
-                ld = {"coordinate": torch.as_tensor(co[0], dtype=torch.float32, device=dev),
-                      "coordinate_mask": torch.as_tensor(cm[0].astype(np.float32), device=dev)}
-                with torch.no_grad():
-                    cum, met = loss_fn.calculate_losses(fl, pred, ld, mode="train")
-                vals = {t: float(met[t]) for t in TERMS}
-                if not all(np.isfinite(v) for v in vals.values()):
-                    bad.append(f"non-finite loss term: {vals}")
-                lossinfo = f"{float(cum):.4f}"
+                cums, per_term = [], {t: [] for t in TERMS}
+                for pi in range(n_pose):
+                    # FORWARD AND BACKWARD, as training runs it. no_grad was the gap review round 5
+                    # named: a sliced tensor that is a non-contiguous view, or a remapped index used
+                    # as a gather source, can forward cleanly and fail or silently zero in backward.
+                    cum, vals = run_one_pose(model, configs, loss_fn, fh, s_in, s_tr, zt,
+                                             poses, fl, co, cm, pi, dev, backward=True)
+                    cums.append(cum)
+                    for t in TERMS:
+                        per_term[t].append(vals[t])
+                    if not np.isfinite(cum) or not all(np.isfinite(v) for v in vals.values()):
+                        bad.append(f"pose {pi}: non-finite loss {vals}")
+                    g = [n for n, prm in model.confidence_head.named_parameters()
+                         if prm.grad is not None and not torch.isfinite(prm.grad).all()]
+                    if g:
+                        bad.append(f"pose {pi}: non-finite gradient in {len(g)} tensor(s), "
+                                   f"first {g[0]}")
+                    if all(prm.grad is None or float(prm.grad.abs().sum()) == 0.0
+                           for _n, prm in model.confidence_head.named_parameters()):
+                        bad.append(f"pose {pi}: backward produced no gradient at all")
+                    model.zero_grad(set_to_none=True)
+                vals = {t: float(np.mean(per_term[t])) for t in TERMS}
+                lossinfo = f"{np.mean(cums):.4f}"
                 terms = " ".join(f"{t.split('_')[0]} {vals[t]:.3f}" for t in TERMS)
+                terms += f"  [{n_pose} pose(s), fwd+bwd]"
+            except torch.cuda.OutOfMemoryError as e:
+                bad.append(f"OOM: {str(e)[:90]}")
+                lossinfo = "OOM"
             except Exception as e:
                 bad.append(f"{type(e).__name__}: {e}")
                 lossinfo = "RAISED"
-                terms = ""
+            model.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
+
+        if a.time:
+            # SAME POSE, SAME CODE PATH, full structure versus crop. The full build goes through
+            # slice_cached_unit with all-true masks so the only difference being timed is the size.
+            try:
+                full_t = time_fwd_bwd(
+                    model, configs, loss_fn,
+                    lambda: BC.slice_cached_unit(z, lab, np.ones(n_tok, bool),
+                                                 np.ones(keep_atom.shape[0], bool), dev, torch), dev)
+                crop_t = time_fwd_bwd(
+                    model, configs, loss_fn,
+                    lambda: BC.slice_cached_unit(z, lab, keep_tok, keep_atom, dev, torch), dev)
+                timing.append((pdb, n_tok, k, full_t, crop_t))
+            except torch.cuda.OutOfMemoryError:
+                timing.append((pdb, n_tok, k, float("nan"), float("nan")))
+                torch.cuda.empty_cache()
+
+        # THE UNION IS NOT A GUESS: assert no single pose needs a token the union dropped.
+        try:
+            extra = BC.assert_pose_invariant_crop(z, lab, a.contact, a.margin)
+        except Exception as e:
+            bad.append(f"pose-invariance: {type(e).__name__}: {e}")
+            extra = -1
+
         nb = sliced[8]
-        print(f"{pdb:10s} {n_tok:7d} {k:7d} {k/n_tok*100:5.1f}% {nb:14d} "
+        print(f"{pdb:10s} {n_tok:7d} {k:7d} {k/n_tok*100:5.1f}% {nb:14d} {extra:6d} "
               f"{('OK' if not bad else f'{len(bad)} FAIL'):>13s} {lossinfo:>13s}   {terms}")
         row = {"pdb": pdb, "trunk": os.path.relpath(tp, ROOT), "tokens": n_tok,
                "kept_tokens": k, "kept_frac": round(k / n_tok, 4), "frames_cleared": nb,
@@ -343,6 +439,20 @@ def main():
         sp = (fu ** 2.21).sum() / ((fu * fr) ** 2.21).sum()
         print(f"\nretained: median {np.median(fr)*100:.1f}%  mean {fr.mean()*100:.1f}%"
               f"  | projected speedup {sp:.2f}x at the measured tokens^2.21")
+    if timing:
+        ok_t = [t for t in timing if np.isfinite(t[3]) and np.isfinite(t[4])]
+        print(f"\nMEASURED forward+backward, one pose, median of 3 (card {os.environ.get('CUDA_VISIBLE_DEVICES','?')})")
+        print(f"  {'structure':10s} {'tokens':>7s} {'kept':>7s} {'full s':>8s} {'crop s':>8s} {'x':>6s}")
+        for pdb_, nt_, k_, ft_, ct_ in ok_t:
+            print(f"  {pdb_:10s} {nt_:7d} {k_:7d} {ft_:8.3f} {ct_:8.3f} {ft_/ct_:6.2f}")
+        if ok_t:
+            tf = sum(t[3] for t in ok_t); tc = sum(t[4] for t in ok_t)
+            print(f"  pooled over {len(ok_t)} structure(s): {tf:.2f} s full, {tc:.2f} s cropped, "
+                  f"{tf/tc:.2f}x")
+        n_oom = len(timing) - len(ok_t)
+        if n_oom:
+            print(f"  {n_oom} structure(s) could not be timed at full size on this card (OOM)")
+
     if a.out and table:
         keys = list(table[0].keys())
         with open(a.out, "w", newline="") as fh:
