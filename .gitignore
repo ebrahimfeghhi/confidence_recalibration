@@ -210,3 +210,10 @@ experimental_data/protenix/*/ost_json/**
 # contents do not.
 !extra_training/*/README.md
 !extra_training/*/*/README.md
+
+# The TensorBoard viewer's own virtualenv and its port file. Built by run_logging/to_tensorboard.py
+# in an isolated venv so tensorboard's protobuf/grpcio cannot collide with the Protenix venv that
+# trains. 2,527 files of it were committed by a careless `git add -A run_logging` on 2026-10-16.
+extra_training/run_logging/.tbvenv/
+extra_training/run_logging/.tb_port
+extra_training/run_logging/*.log
