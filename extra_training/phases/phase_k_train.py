@@ -57,6 +57,17 @@ print = functools.partial(print, flush=True)
 TERMS = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss", "loss")
 
 
+def _git_commit():
+    """The commit a resume bundle was written from, so a resume across a code change is visible."""
+    import subprocess
+    try:
+        return subprocess.run(["git", "-C", os.path.dirname(os.path.abspath(__file__)),
+                               "rev-parse", "HEAD"], capture_output=True, text=True,
+                              timeout=10).stdout.strip() or "unknown"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+
+
 def head_param_names(model):
     """The parameters FT3 may move, taken from the model's own module tree.
 
@@ -269,6 +280,16 @@ def main():
     ap.add_argument("--eval-budget", type=int, default=100,
                     help="seeds per interface for the epoch-end metric. 100 is the full budget and "
                          "the one the 0.5775 / 0.7283 baseline is quoted at; a pass is ~73 min, measured.")
+    ap.add_argument("--resume", default="",
+                    help="a resume bundle written at an epoch boundary (resume_ep<N>.pt). Restores "
+                         "the head's weights AND AdamW's moment estimates AND the step counter, so "
+                         "the warmup position and the per-parameter adaptive scales continue rather "
+                         "than restarting -- a weights-only warm start throws both away. Training "
+                         "picks up at epoch N+1, which reproduces the right data order because the "
+                         "per-epoch reshuffle is random.Random(seed + ep) and depends on nothing "
+                         "else. REFUSES a bundle whose world size, seed, accum or nsample differ "
+                         "from this run's: all four change which poses land in which batch, so the "
+                         "optimiser state would belong to a different problem.")
     ap.add_argument("--require-replay", default="",
                     help="path to a replay result that must say PASS before training starts. "
                          "Cached training is only FT3 if the cache reproduces it; see "
@@ -493,6 +514,45 @@ def main():
     init_state = copy.deepcopy({n: p.detach().clone() for n, p in model.named_parameters()
                                 if n in set(trainable)})
     init_opt = copy.deepcopy(opt.state_dict())
+
+    # THE RESUME, LOADED BY EVERY RANK. The bundle is written by rank 0 but all ranks must restore
+    # it: they each hold their own copy of the head and their own optimiser, and a rank left at the
+    # initial weights would contribute a gradient computed at a different point in parameter space
+    # and quietly corrupt the averaged step.
+    start_epoch, start_step = 0, 0
+    if a.resume:
+        if not os.path.exists(a.resume):
+            raise SystemExit(f"STOP: no resume bundle at {a.resume}")
+        _b = torch.load(a.resume, map_location="cpu", weights_only=False)
+        _g = _b.get("guard", {})
+        _mine = {"world": world, "seed": a.seed, "accum": a.accum, "nsample": a.nsample}
+        _bad = {k: (_g.get(k), v) for k, v in _mine.items() if _g.get(k) != v}
+        if _bad:
+            raise SystemExit(
+                "STOP: this resume bundle was written under different settings, and every one of "
+                "these changes which poses land in which batch:\n"
+                + "".join(f"  {k}: bundle {b!r} vs this run {m!r}\n" for k, (b, m) in _bad.items())
+                + "  The saved AdamW moments describe a different problem. Relaunch from scratch, "
+                  "or match the settings.")
+        if _b["epoch"] >= max(1, math.ceil(a.epochs)):
+            raise SystemExit(f"STOP: the bundle has {_b['epoch']} epoch(s) done and --epochs is "
+                             f"{a.epochs}; there is nothing left to run.")
+        _tset = set(trainable)
+        _missing = _tset - set(_b["head"])
+        if _missing:
+            raise SystemExit(f"STOP: the bundle is missing {len(_missing)} trainable tensor(s), "
+                             f"e.g. {sorted(_missing)[:3]}")
+        with torch.no_grad():
+            for _n, _p in model.named_parameters():
+                if _n in _tset:
+                    _p.data.copy_(_b["head"][_n].to(_p.device, _p.dtype))
+        opt.load_state_dict(_b["opt"])
+        start_epoch, start_step = int(_b["epoch"]), int(_b["step"])
+        if is_main:
+            print(f"RESUMED from {a.resume}: {start_epoch} epoch(s) done, step {start_step}, "
+                  f"AdamW state for {len(_b['opt'].get('state', {}))} tensor(s) restored; "
+                  f"continuing at epoch {start_epoch + 1}/{max(1, math.ceil(a.epochs))}")
+            print(f"  bundle commit {_g.get('commit', '?')[:8]}, written {_g.get('written', '?')}")
 
     # PERSIST THE TRAJECTORY PER STEP, not at the end. A run that dies at step 900 of 1000 must still
     # be analysable, and a loss curve is the only way to see a learning rate that is wrong.
@@ -937,10 +997,10 @@ def main():
         dropped = mine[keep:]
         return [t for k in mine[:keep] for t in by[k]], dropped
 
-    def train_loop(steps_cap, lr, tag, write_traj):
+    def train_loop(steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
         for g in opt.param_groups:
             g["lr"] = lr
-        rows, t0, step, n_in_accum, item_cache = [], time.time(), 0, 0, {}
+        rows, t0, step, n_in_accum, item_cache = [], time.time(), from_step, 0, {}
         opt.zero_grad(set_to_none=True)
         # LOCAL SUMS OVER THE WINDOW, reduced once per step. Summed rather than averaged so the
         # reduction is exact regardless of how unevenly the ranks are filled.
@@ -1019,6 +1079,36 @@ def main():
                          "partial_step": 1, "step_ok": 1 if ok else 0, **means})
             if ok:
                 step += 1
+        def _save_resume(epochs_done, step_now):
+            """Everything needed to continue: the head, AdamW's moments, the step, and a guard.
+
+            THE OPTIMISER STATE IS THE POINT. AdamW carries a per-parameter exp_avg and exp_avg_sq,
+            which is what makes its steps adaptive; restoring weights alone restarts those from zero
+            and the first steps after a resume are effectively un-adapted. It roughly triples the
+            file -- 76 MiB of weights, ~158 MiB of moments -- which is nothing against the 1.4 TB of
+            trunks this run reads.
+
+            The guard records what determines batch composition, so a resume into different settings
+            is refused rather than silently training with moments that belong elsewhere.
+            """
+            p = os.path.join(a.out, f"resume_ep{epochs_done}.pt")
+            tmp = p + ".tmp"
+            torch.save({"head": {n: pp.detach().cpu() for n, pp in model.named_parameters()
+                                 if n in set(trainable)},
+                        "opt": opt.state_dict(),
+                        "epoch": epochs_done, "step": step_now,
+                        "guard": {"world": world, "seed": a.seed, "accum": a.accum,
+                                  "nsample": a.nsample, "lr": a.lr,
+                                  "warmup_steps": a.warmup_steps, "epochs": a.epochs,
+                                  "manifest_skip": a.manifest_skip,
+                                  "commit": _git_commit(), "written": time.strftime("%Y-%m-%dT%H:%M:%S%z")}},
+                       tmp)
+            # ATOMIC: a bundle half-written by a crash at the epoch boundary would be the one thing
+            # a reader reaches for, so it is renamed into place only once it is complete.
+            os.replace(tmp, p)
+            print(f"  saved {p} ({os.path.getsize(p)/2**20:.0f} MiB: head + AdamW moments + step)",
+                  flush=True)
+
         # AN EPOCH LOOP, BECAUSE --epochs USED TO DO NOTHING. It scaled steps_cap while the loop
         # traversed `flat` exactly once, so a request for more steps than the data provides simply
         # stopped early -- review round 7 asked for 5 optimiser steps and got 2. The data is now
@@ -1026,7 +1116,7 @@ def main():
         # the epoch count is reached.
         n_epochs = max(1, math.ceil(a.epochs))
         done = False
-        for ep in range(n_epochs):
+        for ep in range(from_epoch, n_epochs):
             if done:
                 break
             ep_units = list(flat)
@@ -1136,6 +1226,12 @@ def main():
             if n_in_accum:
                 _apply_partial({"epoch": ep + 1, "lr": cur_lr, "pdb": pdb, "unit_i": ui,
                                 "unit": os.path.basename(lab_p)[:-4], "pose": i})
+            # THE RESUME BUNDLE, WRITTEN BEFORE THE EVALUATION. The evaluator is a subprocess that
+            # does not touch these weights, so either side would be correct -- but writing first
+            # means a crash IN the evaluator still leaves this epoch resumable, and the evaluator
+            # has crashed before (OST chain mapping, a card with no free memory).
+            if is_main and write_traj:
+                _save_resume(ep + 1, step)
             if a.eval_every_epoch and step > ep_start_step:
                 # RANK 0 EVALUATES, THE OTHERS WAIT. The evaluator is a separate process holding
                 # its own model, so letting every rank launch one would put three on the cards at
@@ -1213,7 +1309,8 @@ def main():
           f"~{steps_cap} optimiser step(s) for {a.epochs} epoch(s)")
     print(f"trajectory -> {traj_p}")
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
-    train_loop(steps_cap, a.lr, "train", write_traj=is_main)
+    train_loop(steps_cap, a.lr, "train", write_traj=is_main,
+               from_epoch=start_epoch, from_step=start_step)
     if ram_floor["n"]:
         print(f"\nRAM FLOOR was hit on {ram_floor['n']} structure(s): the item cache was capped "
               f"below --preload-items to stay above {a.preload_min_free_gb:.0f} GB free, so those "
