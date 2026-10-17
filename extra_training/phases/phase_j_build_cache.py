@@ -466,6 +466,41 @@ def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
     ])
 
 
+def minimal_loss_inputs(lab, pose_i, dev, torch, np_mod=None):
+    """The loss's ENTIRE input, from the cached label npz alone. No dataset item.
+
+    WHY THIS EXISTS. phase_k_train cached each structure's full dataset item to supply feat_ds and
+    label_dict to ProtenixLoss. That cache is the training run's memory: measured at 331-886 MB per
+    item, 164 structures per rank, so 82-95 GB per rank and ~264 GB across three -- which is what
+    kept breaching the box's free-RAM budget, what made the cache stop growing at --max-rss-gb, and
+    therefore what degraded the pace from 2.8 to 3.4 min/step as structures began to be rebuilt
+    instead of reused.
+
+    MEASURED 2026-10-17, by recording every key access during a real calculate_losses call on four
+    structures spanning 128-1,581 tokens and 2-5 chains: the loss reads exactly NINE feature keys
+    and TWO label keys, and all eleven are already in the cached label npz. feat_ds and label_dict
+    contributed nothing. So the item is not needed to compute the loss -- only to run
+    check_alignment, which is a provenance assertion and belongs in a preflight.
+
+    The nine are LOSS_FEATS, stored as lf_<name>; the two are label_coordinate and
+    label_coordinate_mask, which phase_k_train was already overwriting from this same file.
+
+    Returns (feat, label_dict). Everything lands on `dev`, because a numpy array left as numpy is
+    converted by Protenix with torch.as_tensor into a CPU tensor and then PDELoss builds its bin
+    boundaries on the CPU too, computing the whole loss there.
+    """
+    import numpy as np
+    feat = {}
+    for k in LOSS_FEATS:
+        v = np.asarray(lab[f"lf_{k}"])
+        feat[k] = torch.as_tensor(v).to(dev) if v.dtype != object else lab[f"lf_{k}"]
+    ld = {"coordinate": torch.as_tensor(lab["label_coordinate"][pose_i], dtype=torch.float32,
+                                        device=dev),
+          "coordinate_mask": torch.as_tensor(
+              lab["label_coordinate_mask"][pose_i].astype(np.float32), device=dev)}
+    return feat, ld
+
+
 # Every array a cached unit must carry for the replay and the loss to read it. A payload missing one
 # of these is not reusable however good its fingerprint looks.
 #

@@ -291,6 +291,26 @@ def main():
                          "else. REFUSES a bundle whose world size, seed, accum or nsample differ "
                          "from this run's: all four change which poses land in which batch, so the "
                          "optimiser state would belong to a different problem.")
+    ap.add_argument("--minimal-items", action="store_true",
+                    help="DO NOT build the full dataset item for each structure. MEASURED "
+                         "2026-10-17 by recording every key access during a real "
+                         "calculate_losses call on four structures spanning 128-1,581 tokens and "
+                         "2-5 chains: the loss reads nine feature keys and two label keys, and all "
+                         "eleven are already in the cached label npz -- feat_ds and label_dict "
+                         "contribute nothing. phase_k_minimal_item_equivalence.py then showed the "
+                         "two paths give bit-identical losses on 50 of 50 comparisons. The item is "
+                         "the run's memory: ~518 MB each, 164 per rank, so 82-95 GB per rank and "
+                         "~264 GB across three, which is what breached the box's free-RAM budget, "
+                         "stopped the cache growing at --max-rss-gb and degraded the pace from 2.8 "
+                         "to 3.4 min/step as structures began to be rebuilt. The label npz is "
+                         "0.11 MiB. REQUIRES --alignment-preflight, because check_alignment is the "
+                         "one other thing the item was used for and it cannot run without one.")
+    ap.add_argument("--alignment-preflight", default="",
+                    help="path to the marker phase_k_alignment_preflight.py writes once it has "
+                         "confirmed, for every structure in the manifest, that the trunk's features "
+                         "agree atom for atom with the dataset's. --minimal-items refuses without "
+                         "it: that check is the one failure that would pair a pose with another "
+                         "molecule's label, and skipping it silently is not a trade worth making.")
     ap.add_argument("--resume-allow-drift", action="store_true",
                     help="accept a resume bundle whose settings differ from this run's, recording "
                          "what changed. Without it the differences are refused. Use it to FORK a "
@@ -501,6 +521,31 @@ def main():
         "\n".join(f"{p}/{os.path.basename(lp)}" for p, lp, _c in sorted(flat)).encode()
     ).hexdigest()[:16]
     print(f"  manifest digest {_manifest_digest} over {len(flat)} unit(s)")
+    # THE PREFLIGHT IS REQUIRED, AND IT MUST BE THIS POPULATION'S. A marker from a different
+    # manifest proves nothing about the structures this run will train on.
+    if a.minimal_items:
+        if not a.alignment_preflight:
+            raise SystemExit(
+                "STOP: --minimal-items needs --alignment-preflight. Skipping the full dataset item "
+                "also skips check_alignment, which is what proves the trunk's features agree atom "
+                "for atom with the dataset's -- the one failure that would pair a pose with another "
+                "molecule's label. Run:\n"
+                "  phases/phase_k_alignment_preflight.py --out <marker>\n"
+                "and pass that marker.")
+        if not os.path.exists(a.alignment_preflight):
+            raise SystemExit(f"STOP: no alignment preflight marker at {a.alignment_preflight}")
+        _pf = json.load(open(a.alignment_preflight))
+        if _pf.get("manifest_digest") != _manifest_digest:
+            raise SystemExit(
+                f"STOP: the alignment preflight was run over manifest "
+                f"{_pf.get('manifest_digest')}, this run is {_manifest_digest}. It says nothing "
+                f"about the structures this run will train on; re-run it.")
+        if not _pf.get("ok"):
+            raise SystemExit(f"STOP: {a.alignment_preflight} does not record a pass.")
+        print(f"  alignment preflight: PASS over {_pf.get('n_structures')} structure(s), "
+              f"digest {_pf.get('manifest_digest')}")
+        print(f"  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label "
+              f"only ({len(BC.LOSS_FEATS)} features + coordinate/coordinate_mask)")
     print(f"  resolved {len(flat)} unit(s) over {len(set(x[0] for x in flat))} structure(s) "
           f"from {len(roots)} fold root(s), shuffle={a.shuffle}, seed={a.seed}")
 
@@ -665,7 +710,9 @@ def main():
         there is nothing here to skip.
         """
         arm_seed = os.path.basename(lab_p)[:-4]
-        if pdb not in item_cache:
+        if a.minimal_items:
+            feat_ds = label_dict = label_full = None     # never built; see --minimal-items
+        elif pdb not in item_cache:
             # RE-CHECKED EVERY TIME, from MemAvailable rather than a remembered number
             try:
                 _free_gb = next(int(l.split()[1]) for l in open("/proc/meminfo")
@@ -708,7 +755,8 @@ def main():
             it = train_ds[byp[pdb][0]]
             item_cache[pdb] = (it["input_feature_dict"], it["label_dict"], it["label_full_dict"])
             item_build_s.append(time.time() - _t)
-        feat_ds, label_dict, label_full = item_cache[pdb]
+        if not a.minimal_items:
+            feat_ds, label_dict, label_full = item_cache[pdb]
         lab = np.load(lab_p, allow_pickle=True)
         # THE CACHE'S PROVENANCE IS REQUIRED, NOT OPTIONAL. build_cache stores a `fingerprint` of
         # the job cif, bioassembly, index rows, trunk and code the label was built from, plus a
@@ -744,26 +792,36 @@ def main():
         # check_alignment compares against the dataset's -- it calls np.asarray, so handing it the
         # device tensors raises "can't convert cuda:0 device type tensor to numpy". load_unit gives
         # the device tensors the head consumes, and reverses the bf16-as-uint16 storage.
-        _z, feat_npz, _poses_np = BC.load_trunk(trunk_p)
-        BC.check_alignment(feat_npz, feat_ds, pdb)
+        if not a.minimal_items:
+            # check_alignment needs the dataset's features, so on the minimal path it has already
+            # run, once per structure, in the preflight asserted above.
+            _z, feat_npz, _poses_np = BC.load_trunk(trunk_p)
+            BC.check_alignment(feat_npz, feat_ds, pdb)
         feat_head, s_inputs, s_trunk, zt, poses, _nc = RC.load_unit(trunk_p, dev)
 
         def to_dev(d):
             return {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in d.items()}
-        feat_live = to_dev({k: (v if torch.is_tensor(v) else torch.as_tensor(np.asarray(v)))
-                            for k, v in feat_ds.items()
-                            if torch.is_tensor(v) or isinstance(v, (np.ndarray, int, float))})
-        for k, v in feat_ds.items():
-            if k not in feat_live:
-                feat_live[k] = v
-        # the stored loss features are the ones the label was built with
-        feat_cache = dict(feat_live)
-        for k in BC.LOSS_FEATS:
-            v = np.asarray(lab[f"lf_{k}"])          # presence asserted above
-            feat_cache[k] = torch.as_tensor(v).to(dev) if v.dtype != object else lab[f"lf_{k}"]
+        if a.minimal_items:
+            # ONE SHARED BUILDER, so this and the equivalence gate cannot drift apart -- two
+            # readers of one record diverging is how the reporting bug shipped twice.
+            feat_cache, _ = BC.minimal_loss_inputs(lab, 0, dev, torch)
+        else:
+            feat_live = to_dev({k: (v if torch.is_tensor(v) else torch.as_tensor(np.asarray(v)))
+                                for k, v in feat_ds.items()
+                                if torch.is_tensor(v) or isinstance(v, (np.ndarray, int, float))})
+            for k, v in feat_ds.items():
+                if k not in feat_live:
+                    feat_live[k] = v
+            # the stored loss features are the ones the label was built with
+            feat_cache = dict(feat_live)
+            for k in BC.LOSS_FEATS:
+                v = np.asarray(lab[f"lf_{k}"])      # presence asserted above
+                feat_cache[k] = torch.as_tensor(v).to(dev) if v.dtype != object else lab[f"lf_{k}"]
 
         n_pose = poses.shape[0] if hasattr(poses, "shape") else len(poses)
-        n_tok = int(feat_cache["asym_id"].shape[-1]) if "asym_id" in feat_cache else -1
+        # FROM THE HEAD'S FEATURES, which carry asym_id on both paths. feat_cache does not, on the
+        # minimal path: the loss never reads it, so it is not in the nine.
+        n_tok = int(feat_head["asym_id"].shape[-1]) if "asym_id" in feat_head else -1
         if world > 1 and n_pose != a.nsample:
             raise SystemExit(f"STOP: {pdb}/{arm_seed} holds {n_pose} pose(s), not --nsample "
                              f"{a.nsample}. Across ranks that shifts the optimiser step onto a "
@@ -811,18 +869,21 @@ def main():
             # EVERY NUMERIC ARRAY GOES TO THE DEVICE, not only those already tensors. A numpy array
             # left as numpy is converted by Protenix with torch.as_tensor, giving a CPU tensor, and
             # PDELoss then builds its bin boundaries on the CPU too, so the whole loss computes there.
-            ld = {}
-            for _k, _v in label_dict.items():
-                if torch.is_tensor(_v):
-                    ld[_k] = _v.to(dev)
-                elif isinstance(_v, np.ndarray) and _v.dtype != object:
-                    ld[_k] = torch.as_tensor(_v).to(dev)
-                else:
-                    ld[_k] = _v
-            ld["coordinate"] = torch.as_tensor(lab["label_coordinate"][i], dtype=torch.float32,
-                                               device=dev)
-            ld["coordinate_mask"] = torch.as_tensor(
-                lab["label_coordinate_mask"][i].astype(np.float32), device=dev)
+            if a.minimal_items:
+                _, ld = BC.minimal_loss_inputs(lab, i, dev, torch)
+            else:
+                ld = {}
+                for _k, _v in label_dict.items():
+                    if torch.is_tensor(_v):
+                        ld[_k] = _v.to(dev)
+                    elif isinstance(_v, np.ndarray) and _v.dtype != object:
+                        ld[_k] = torch.as_tensor(_v).to(dev)
+                    else:
+                        ld[_k] = _v
+                ld["coordinate"] = torch.as_tensor(lab["label_coordinate"][i], dtype=torch.float32,
+                                                   device=dev)
+                ld["coordinate_mask"] = torch.as_tensor(
+                    lab["label_coordinate_mask"][i].astype(np.float32), device=dev)
             try:
                 cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
             except RuntimeError as _e:
