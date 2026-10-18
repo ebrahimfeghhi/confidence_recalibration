@@ -199,6 +199,11 @@ def merge_rows(a):
     have = sorted(m["shard"] for m in metas)
     if have != list(range(n)):
         raise SystemExit(f"STOP: shards {have} of {n} present; the metric would cover a subset.")
+    bad = [(m["shard"], m["n_unmapped"]) for m in metas if m.get("n_unmapped")]
+    if bad:
+        raise SystemExit(f"STOP: shard(s) {bad} wrote rows but left pose(s) unmapped, so the merge "
+                         f"would cover fewer poses than its budget claims. Resolve the chain "
+                         f"mapping or exclude those structures from the pool and re-run them.")
     for field in ("budget", "ckpt"):
         vals = {m[field] for m in metas}
         if len(vals) != 1:
@@ -379,6 +384,25 @@ def main():
                     help="write EVERY row that fails the self-check to this csv, so the failure can "
                          "be analysed without re-running the evaluator.")
     ap.add_argument("--limit-units", type=int, default=0)
+    ap.add_argument("--join-cache", default="",
+                    help="cache the pose->sample join (unit_dir and sample indices) in this json "
+                         "and reuse it. The join is derived from the trunk's coordinates and the "
+                         "pose cifs, neither of which changes between epochs, so re-deriving it "
+                         "every pass costs a measured 3.6 min per shard for an answer that cannot "
+                         "differ. OFF by default: it changes nothing about the metric, but a stale "
+                         "cache would, so it is opt-in and keyed on the trunk's mtime and size.")
+    ap.add_argument("--pair-iptm-only", action="store_true",
+                    help="compute chain_pair_iptm directly from PAE instead of the whole Protenix "
+                         "summary, whose other fields this script computes and discards. Measured "
+                         "bit-identical (largest difference 0.000e+00 over 25 units) and 2.7 min "
+                         "faster per 26.1 min pass; see phase_k_eval_stage_timing.py. OFF by "
+                         "default because a metric path is not changed on a 25-unit sample without "
+                         "being asked.")
+    ap.add_argument("--prefetch", action="store_true",
+                    help="read the next unit's trunk on a background thread while the GPU scores "
+                         "this one. Load is a measured 4.7 min per shard of a 26.1 min pass and is "
+                         "strictly serial with the forward today, at 813 MB/s against a disk that "
+                         "does 1782. OFF by default.")
     ap.add_argument("--allow-partial", action="store_true",
                     help="report a metric that does NOT cover its stated budget: missing trunks, "
                          "poses without DockQ, or interfaces of unequal depth. OFF by default, "
@@ -485,17 +509,74 @@ def main():
     else:
         print("using the SHIPPED head (no --ckpt)")
 
+    # THE POSE->SAMPLE JOIN IS CACHEABLE, and it is the only part of this loop that is. It is a
+    # function of the trunk's own coordinates and the pose cifs on disk, so for a fixed validation
+    # set it returns the same answer every epoch -- 3.6 min per shard, fifteen times over, for a
+    # constant. The key carries the trunk's size and mtime so a refold or a rebuild invalidates it
+    # rather than silently reusing a mapping to superseded poses, which is the exact failure
+    # resolve_seed_dir was written to prevent.
+    join_cache, join_hits, join_new = {}, 0, 0
+    # ONE FILE PER SHARD. The sharded driver passes --extra to EVERY shard, so a single path would
+    # have three processes writing one json and the last writer would win with a third of the
+    # entries -- or catch a half-written file mid-read. Each shard owns its own, keyed by index.
+    if a.join_cache and a.nshards > 1:
+        _st, _ext = os.path.splitext(a.join_cache)
+        a.join_cache = f"{_st}_shard{a.shard}{_ext or '.json'}"
+    if a.join_cache and os.path.exists(a.join_cache):
+        try:
+            join_cache = json.load(open(a.join_cache))
+            print(f"join cache: {len(join_cache)} entry(ies) from {a.join_cache}")
+        except Exception as e:
+            print(f"join cache: ignoring {a.join_cache} ({type(e).__name__}: {e})")
+            join_cache = {}
+
+    def _join_key(pdb, sd_, tp):
+        st = os.stat(tp)
+        return f"{pdb}/{sd_}|{st.st_size}|{int(st.st_mtime)}"
+
+    # PREFETCH READS BYTES, NOT TENSORS. The thread only pulls the npz off disk into the page cache;
+    # load_unit still does the numpy-to-device work on the main thread, so no CUDA call is made from
+    # a second thread and the device tensors are built in exactly the order they were before.
+    _pf_pool = None
+    if a.prefetch:
+        from concurrent.futures import ThreadPoolExecutor
+        _pf_pool = ThreadPoolExecutor(max_workers=1)
+
+        def _warm(path):
+            try:
+                with open(path, "rb", buffering=0) as fh:
+                    while fh.read(8 << 20):
+                        pass
+            except OSError:
+                pass
+        print("prefetch: one background reader warming the next trunk")
+    _pf_future = None
+
     rows, selfchk, n_nosample = [], [], 0
     for n, (pdb, sd_, tp) in enumerate(units, 1):
+        if _pf_pool is not None:
+            if _pf_future is not None:
+                _pf_future.result()          # this unit's bytes; started one iteration ago
+            if n < len(units):
+                _pf_future = _pf_pool.submit(_warm, units[n][2])
         feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
-        summ = RC.confidence(model, configs, feat, s_in, s_tr, z, x, nc)
+        summ = (RC.pair_iptm_only if a.pair_iptm_only else RC.confidence)(
+            model, configs, feat, s_in, s_tr, z, x, nc)
         summ = summ if isinstance(summ, (list, tuple)) else [summ]
         # join 2: pose -> sample, by coordinate identity. The pose DIRECTORY is itself resolved by
         # the trunk, because a refold leaves two finished directories for one seed and neither
         # filesystem order nor poses/index.tsv says which run wrote this trunk.
         px = x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
+        _jk = _join_key(pdb, sd_, tp) if a.join_cache else None
         try:
-            unit_dir, ks = BC.resolve_seed_dir(a.fold, pdb, sd_, px, 0.01, 0.5)
+            if _jk is not None and _jk in join_cache:
+                unit_dir, ks = join_cache[_jk][0], list(join_cache[_jk][1])
+                join_hits += 1
+            else:
+                unit_dir, ks = BC.resolve_seed_dir(a.fold, pdb, sd_, px, 0.01, 0.5)
+                if _jk is not None:
+                    join_cache[_jk] = [unit_dir, [int(v) for v in ks]]
+                    join_new += 1
         except Exception as e:
             n_nosample += 1
             if n_nosample <= 5:
@@ -543,10 +624,30 @@ def main():
         if n % 200 == 0:
             print(f"  ...{n}/{len(units)} units", flush=True)
 
+    if _pf_pool is not None:
+        if _pf_future is not None:
+            _pf_future.result()
+        _pf_pool.shutdown(wait=True)
+
+    # WRITTEN ONLY ON A CLEAN PASS. The cache is a shortcut past resolve_seed_dir, which exists to
+    # refuse an ambiguous pose directory; persisting entries from a pass that then failed to join
+    # some unit would hand the next pass a half-built shortcut. So it is written after the
+    # no-join check below, not here. The counters print either way.
+    if a.join_cache:
+        print(f"join cache: {join_hits} hit(s), {join_new} newly derived "
+              f"({join_hits / max(1, join_hits + join_new) * 100:.0f}% reused)")
+
     if n_nosample:
         raise SystemExit(f"STOP: {n_nosample} unit(s) could not be joined to their sample cifs. "
                          f"Selecting a pose and reading another sample's DockQ would score the "
                          f"wrong thing, so this is fatal rather than skipped.")
+
+    if a.join_cache and join_new:
+        tmp = a.join_cache + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(join_cache, fh)
+        os.replace(tmp, a.join_cache)       # atomic: a half-written cache is the one a reader takes
+        print(f"join cache -> {a.join_cache} ({len(join_cache)} entry(ies))")
 
     print(f"\njoin 1: OST's per-pose chain mapping used on {n_ost} pose(s), unresolvable on "
           f"{n_static}")
@@ -555,11 +656,12 @@ def main():
         # every pose's chain pair resolved from OST or refused. What CANNOT be judged here is
         # coverage -- a shard holds a slice by construction -- so the rows go out and the aggregate
         # checks wait for the union.
-        if unmapped:
-            for u in unmapped[:10]:
-                print(f"    {u}")
-            raise SystemExit(f"STOP: {len(unmapped)} pose(s) in this shard have no usable OST chain "
-                             f"mapping and none forced by elimination.")
+        # WRITE FIRST, REFUSE SECOND. An unmapped pose is a bookkeeping failure at the join,
+        # discovered after every unit in the shard has already been through the GPU. Raising
+        # before the write threw away a measured ~50 min of finished forward passes on two of
+        # three shards, so the rows and the meta go to disk unconditionally and the refusal
+        # comes after. The meta records the unmapped poses and the aggregate refuses to merge
+        # a shard that has any, so a partial shard can be kept without being silently counted.
         with open(a.rows_out, "w", newline="") as fh:
             w = csv.writer(fh)
             w.writerow(["iface", "seed", "sample", "iptm", "dockq", "stored_iptm"])
@@ -579,8 +681,16 @@ def main():
             json.dump({"shard": a.shard, "nshards": a.nshards, "units": len(units),
                        "rows": len(rows), "n_ost": n_ost, "n_unresolvable": n_static,
                        "n_differ": n_differ, "differ_pdbs": dict(differ_pdbs),
+                       "n_unmapped": len(unmapped), "unmapped": unmapped[:50],
                        "budget": a.budget, "ckpt": a.ckpt}, fh, indent=1)
         print(f"shard {a.shard}: {len(rows)} row(s) -> {a.rows_out}")
+        if unmapped:
+            for u in unmapped[:10]:
+                print(f"    {u}")
+            raise SystemExit(f"STOP: {len(unmapped)} pose(s) in this shard have no usable OST chain "
+                             f"mapping and none forced by elimination. The rows that DID resolve "
+                             f"are on disk and the meta names the ones that did not; the aggregate "
+                             f"will refuse this shard until they are resolved or excluded.")
         return
     if unmapped and not a.allow_roles_fallback:
         for u in unmapped[:10]:

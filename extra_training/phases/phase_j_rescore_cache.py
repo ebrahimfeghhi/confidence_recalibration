@@ -127,6 +127,52 @@ def confidence(model, configs, feat, s_inputs, s, z, x, n_cycle):
     return summary
 
 
+def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle):
+    """chain_pair_iptm and nothing else, for callers that read only that.
+
+    WHAT THIS SKIPS AND WHY IT IS SAFE. confidence() computes the whole Protenix summary: the
+    distogram head, contact probabilities, atom pLDDT, token-pair PDE and PAE, clash and
+    chain-based pLDDT. phase_k_eval reads exactly one field of it -- chain_pair_iptm -- so the rest
+    is computed and discarded. calculate_chain_based_ptm needs only the PAE probabilities, the
+    frames, asym_id and the ligand mask, so this goes straight there.
+
+    MEASURED, 25 validation units, median 481 tokens, uncontended card:
+      confidence head                 0.448 s   75.6% of the current path  (both paths pay it)
+      distogram head + contact prob   0.001 s    0.1%                      (skipped here)
+      compute_full_data_and_summary   0.097 s   16.3%                      (skipped here)
+      softmax(PAE) + chain ptm        0.006 s                              (this path)
+    so 0.592 -> 0.453 s per unit, 1.17x on the GPU half, 2.7 min off a 26.1 min pass.
+
+    AND IT IS THE SAME NUMBER, not merely a close one: over those 25 units the largest absolute
+    difference in chain_pair_iptm against confidence() was 0.000e+00. A faster number that differed
+    would be a different metric, so that check gates adoption -- see
+    phase_k_eval_stage_timing.py, which re-runs both paths side by side.
+
+    Returned in confidence()'s shape -- a list of per-pose dicts -- so a caller can swap one for
+    the other without touching the loop that consumes it.
+    """
+    from protenix.model import sample_confidence
+    from protenix.utils.torch_utils import autocasting_disable_decorator
+    with torch.no_grad():
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            _plddt, pae, _pde, _res = model.run_confidence_head(
+                input_feature_dict=feat, s_inputs=s_inputs, s_trunk=s, z_trunk=z, pair_mask=None,
+                x_pred_coords=x, triangle_multiplicative=configs.triangle_multiplicative,
+                triangle_attention=configs.triangle_attention, inplace_safe=False, chunk_size=None)
+        # fp32 for the softmax and the pTM sum: the bins are weighted and summed over N_token^2, and
+        # bf16 accumulation there is not what the reference path does.
+        pae_prob = torch.softmax(pae.float(), dim=-1)
+        token_is_ligand = torch.zeros_like(feat["asym_id"]).scatter_add(
+            0, feat["atom_to_token_idx"], feat["is_ligand"].long()) > 0
+        out = autocasting_disable_decorator(True)(sample_confidence.calculate_chain_based_ptm)(
+            pae_prob, has_frame=feat["has_frame"].bool(), asym_id=feat["asym_id"],
+            token_is_ligand=token_is_ligand,
+            **sample_confidence.get_bin_params(configs.loss.pae))
+    cpi = out["chain_pair_iptm"]
+    n_pose = cpi.shape[0] if cpi.dim() == 3 else 1
+    return [{"chain_pair_iptm": cpi[i] if cpi.dim() == 3 else cpi} for i in range(n_pose)]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", default=f"{ROOT}/validation/fold")
