@@ -532,18 +532,48 @@ def main():
     if a.pae_only:
         # SAME STUB TRICK as --drop-pde, for the same reason: a zero weight still runs the module
         # and still pays for it. Replacing the module is what actually removes the term.
+        #
+        # IT ANSWERS ANY ENTRY POINT, not just forward(). ProtenixLoss does NOT call these three
+        # uniformly: pde_loss and resolved_loss go through __call__, but pLDDT is reached by a
+        # NAMED METHOD -- `self.plddt_loss.forward_given_atom_lddt(...)` (loss.py:1771). A stub
+        # carrying only forward() raised AttributeError at pose 0 of unit 0, so the first version
+        # of this flag could not run a single step. Generalising from --drop-pde, which happens to
+        # be the easy case, is what produced that.
         class _Zero(torch.nn.Module):
             def forward(self, *_args, **_kw):
                 return torch.zeros((), device=dev)
-        # ASSERTED, NOT hasattr-GUARDED. A renamed attribute would make this a silent no-op that
-        # still prints "PAE-ONLY" -- an arm that reports one objective and trains another.
+
+            def __getattr__(self, name):
+                try:
+                    return super().__getattr__(name)
+                except AttributeError:
+                    if name.startswith("_"):
+                        raise
+                    return self.forward
+
+        # CHECKED AGAINST THE REAL MODULE, not with hasattr on the stub. hasattr(loss_fn, name)
+        # only proved the attribute existed; it said nothing about the calling convention, which
+        # is precisely what broke. This asserts the stub answers every public callable the module
+        # being replaced exposes, so a library that grows a new named entry point fails loudly.
         for _name in ("plddt_loss", "pde_loss", "resolved_loss"):
-            if not hasattr(loss_fn, _name):
+            _orig = getattr(loss_fn, _name, None)
+            if _orig is None:
                 raise SystemExit(f"STOP: --pae-only cannot drop {_name}: ProtenixLoss has no such "
                                  f"submodule. It has {sorted(k for k in dir(loss_fn) if 'loss' in k)}. "
                                  f"Dropping nothing while announcing PAE-only would mislabel the run.")
-            setattr(loss_fn, _name, _Zero())
+            _stub = _Zero()
+            _base = set(dir(torch.nn.Module))
+            _api = [m for m in dir(type(_orig))
+                    if not m.startswith("_") and m not in _base and callable(getattr(_orig, m, None))]
+            _missing = [m for m in _api if not callable(getattr(_stub, m, None))]
+            if _missing:
+                raise SystemExit(f"STOP: the --pae-only stub cannot stand in for {_name}: it does "
+                                 f"not answer {_missing}, which {type(_orig).__name__} exposes and "
+                                 f"the loss may call. A stub that is missing the entry point the "
+                                 f"caller uses dies mid-run, or worse, silently skips a term.")
+            setattr(loss_fn, _name, _stub)
             _dropped_terms.add(_name)
+            print(f"  dropped {_name} ({type(_orig).__name__}); stub answers {sorted(_api)}")
         print("PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. "
               "Every gradient now goes to the one output ipTM reads.")
     _pae_keep = {"m": None}
@@ -585,6 +615,58 @@ def main():
               f"{sum(len(v) for v in _scored_asym.values())} interface(s), from "
               f"{a.pae_scored_pairs}")
 
+    def _check_eval_pool():
+        """Stat the training-eval pool now, not at the first epoch boundary.
+
+        eval_checkpoint shells out to phase_k_eval.py, which hard-stops on a missing trunk or a
+        pool interface with no scored pose. That SystemExit lands on RANK 0 ONLY, while ranks 1
+        and 2 sit in dist.barrier() until --dist-timeout-min, so a bad pool costs hours of
+        training and then a four-hour zombie. The default fold pool really does contain a
+        structure the manifest skips (9mx1 has no trunk at all), so this is one wrong path away.
+        """
+        if not a.train_eval_pool:
+            return
+        if "," in a.fold:
+            raise SystemExit(f"STOP: --train-eval-pool needs a single --fold; got {a.fold!r}. "
+                             f"phase_k_eval treats --fold as one directory, so a comma-separated "
+                             f"root would be read as a literal path.")
+        need = [a.train_eval_pool, os.path.join(a.fold, "results.csv"),
+                os.path.join(a.fold, "chain_roles.csv")]
+        gone = [f for f in need if not os.path.exists(f)]
+        if gone:
+            raise SystemExit(f"STOP: --train-eval-pool needs {gone}, which do not exist.")
+        import csv as _csv2
+        skip = {x.strip() for x in (a.manifest_skip or "").split(",") if x.strip()}
+        pool_pdbs = {r["pdb"] for r in _csv2.DictReader(open(a.train_eval_pool))}
+        bad = sorted(pool_pdbs & skip)
+        if bad:
+            raise SystemExit(f"STOP: --train-eval-pool names {bad}, which --manifest-skip excludes "
+                             f"from training. The evaluator hard-stops on a structure with no "
+                             f"trunk, on rank 0, with the other ranks parked at a barrier.")
+        notrunk = sorted(p for p in pool_pdbs
+                         if not os.path.isdir(os.path.join(a.fold, "trunks", p)))
+        if notrunk:
+            raise SystemExit(f"STOP: --train-eval-pool names {len(notrunk)} structure(s) with no "
+                             f"trunk directory, e.g. {notrunk[:4]}.")
+        print(f"train-eval pool: {len(pool_pdbs)} structure(s), all present, none skipped")
+
+    def _pae_mask_check():
+        """A mask that never fires is a baseline arm wearing the masked arm's label.
+
+        Both fallbacks below are silent by design -- they keep training rather than dying on one
+        odd structure. But if NOTHING is ever masked, the startup banner has announced an objective
+        the run is not training. The classic way in is pointing --pae-scored-pairs at the wrong
+        pool (the validation one, say): the banner reports 92 structures, every training unit then
+        misses, and the run trains the unmasked term under the masked arm's name.
+        """
+        st = _pae_mask_stats
+        if _scored_asym and st["masked"] == 0 and st["unmasked"] >= 20:
+            raise SystemExit(
+                f"STOP: --pae-scored-pairs matched NO unit in the first {st['unmasked']} seen. "
+                f"The pool names {len(_scored_asym)} structure(s), none of which this run trains "
+                f"on, so every pose fell back to the UNMASKED PAE term while the run is labelled "
+                f"masked. Check that {a.pae_scored_pairs} covers --manifest-selection.")
+
     def _set_pae_mask(pdb, asym, has_frame):
         """[N_frame, N_token] over the CROPPED tokens: keep only scored cross-chain entries.
 
@@ -597,6 +679,7 @@ def main():
         if not pairs:
             _pae_keep["m"] = None
             _pae_mask_stats["unmasked"] += 1
+            _pae_mask_check()
             return
         aa = asym.reshape(-1).long()
         fa = aa[has_frame.reshape(-1).bool()]
@@ -607,12 +690,16 @@ def main():
         if not bool(keep.any()):
             _pae_keep["m"] = None
             _pae_mask_stats["unmasked"] += 1
+            _pae_mask_check()
             return
         _pae_keep["m"] = keep
         _pae_mask_stats["masked"] += 1
 
     w = {k: loss_fn.loss_weight[k] for k in ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss")}
-    print("loss weights: " + "  ".join(f"{k.replace('_loss','')} {v:g}" for k, v in w.items()))
+    print("loss weights: " + "  ".join(
+        f"{k.replace('_loss','')} {v:g}" + (" [DROPPED]" if k in _dropped_terms else "")
+        for k, v in w.items()))
+    _check_eval_pool()
     zero = [k for k, v in w.items() if not v and k not in _dropped_terms]
     if zero:
         raise SystemExit(f"STOP: {', '.join(zero)} carries weight 0, so that term cannot train. "
@@ -781,7 +868,14 @@ def main():
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
-                 "crop_margin": a.crop_margin, "crop_contact": a.crop_contact}
+                 "crop_margin": a.crop_margin, "crop_contact": a.crop_contact,
+                 # SAME REASON AS CROPPING. --pae-scored-pairs changes which pairs the PAE term
+                 # averages over and --pae-only changes which terms exist at all, so resuming
+                 # across either blends two objectives into one curve, carrying the first one's
+                 # AdamW moments. These were added to the saved bundle and to _PRE_CROP but NOT
+                 # here, which left the guard inert: it compared neither, and the _PRE_CROP
+                 # defaults for them were never consulted.
+                 "pae_scored_pairs": a.pae_scored_pairs, "pae_only": a.pae_only}
 
         # A BUNDLE WRITTEN BY OLDER CODE IS NOT DRIFT. The guard grew from four fields to twelve
         # while run 9mfb4y was in flight, so its bundles carry only the original eight: the running
@@ -1314,19 +1408,20 @@ def main():
     # DERIVED FROM --seeds, NOT FROM --eval-budget. The validation fold holds 100 seeds per
     # interface; the training fold holds exactly the ones this run trained on, and asking the
     # evaluator for more than exist makes it refuse rather than quietly report a thinner number.
-    def _seeds_count(spec):
-        n = 0
-        for part in str(spec).split(","):
-            part = part.strip()
-            if not part:
-                continue
-            if "-" in part:
-                lo, hi = part.split("-", 1)
-                n += int(hi) - int(lo) + 1
-            else:
-                n += 1
-        return n
-    _train_eval_budget = a.train_eval_budget or _seeds_count(a.seeds)
+    def _seed_lo_hi(spec):
+        """--seeds is `lo-hi` and nothing else, so parse it that way and say so.
+
+        The first version accepted comma-separated ranges, which the rest of the file does not:
+        the manifest builder does `lo, hi = (int(x) for x in a.seeds.split("-"))` and hard-fails
+        on anything else. Worse, the paired --seed-base derivation took the first number of the
+        first range, so `500000-500009,500020-500029` would have asked the evaluator for 20 seeds
+        starting at 500000 -- half of them never trained on. Dead generality that implied a wrong
+        answer is worse than no generality.
+        """
+        lo, hi = (int(x) for x in str(spec).split("-"))
+        return lo, hi - lo + 1
+    _train_eval_seed_base, _n_seeds = _seed_lo_hi(a.seeds)
+    _train_eval_budget = a.train_eval_budget or _n_seeds
 
     def eval_checkpoint(step, epoch, train_pool=""):
         """Save the head, score it, log it. Returns the metric dict.
@@ -1354,7 +1449,7 @@ def main():
                           % epoch)
         extra = []
         if train_pool:
-            _seed_base = int(str(a.seeds).split("-")[0].split(",")[0])
+            _seed_base = _train_eval_seed_base
             extra = ["--fold", a.fold,
                      "--results", os.path.join(a.fold, "results.csv"),
                      "--pool", train_pool,
@@ -1840,6 +1935,27 @@ def main():
                       f"on the whole structure, logged with status=no-crop-definable.")
             if crop_p:
                 print(f"crop sizes -> {crop_p} (one file per rank; this is rank {rank}'s)")
+
+    if a.pae_scored_pairs:
+        # ACROSS EVERY RANK, same reason as the crop summary: each rank masks its own third of the
+        # units, so one rank's counters describe a third of the run. These were being counted and
+        # printed NOWHERE, which made a mask that covered nothing indistinguishable in the log from
+        # one that covered everything.
+        _mk = ("masked", "unmasked")
+        _ms = dict(_pae_mask_stats)
+        if world > 1:
+            _t = torch.tensor([float(_pae_mask_stats[k]) for k in _mk], dtype=torch.float64)
+            dist.all_reduce(_t, op=dist.ReduceOp.SUM)
+            _ms = {k: int(v) for k, v in zip(_mk, _t.tolist())}
+        if is_main:
+            _tot = _ms["masked"] + _ms["unmasked"]
+            print(f"\nPAE mask: {_ms['masked']}/{_tot} pose-unit(s) masked to scored chain pairs "
+                  f"({_ms['masked'] / _tot * 100:.1f}%) across {world} rank(s), from "
+                  f"{a.pae_scored_pairs}")
+            if _ms["unmasked"]:
+                print(f"  {_ms['unmasked']} fell back to the UNMASKED PAE term -- the structure is "
+                      f"absent from the pool, or no scored pair survived the crop. Those poses "
+                      f"trained the ungraded blocks too.")
 
     if ram_floor["n"]:
         print(f"\nRAM FLOOR was hit on {ram_floor['n']} structure(s): the item cache was capped "
