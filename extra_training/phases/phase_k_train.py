@@ -144,6 +144,42 @@ def main():
                     help="also score every N optimiser steps. 0 disables. A full pass is 5,300 "
                          "validation units at 0.82 s/unit = ~73 min, MEASURED on GATE 1 2026-10-16 (73 units/min over 5,300). An earlier 0.187 s/unit here came from a small probe of small structures with the model already warm and was 4.4x optimistic, so at 97 steps/epoch this "
                          "is normally left off in favour of --eval-every-epoch.")
+    ap.add_argument("--train-eval-pool", default="",
+                    help="score the head on THIS pool of TRAINING interfaces at epoch boundaries, "
+                         "in addition to (or instead of) validation. The question `is the model "
+                         "learning at all` is about the training set, and --eval-every-epoch only "
+                         "knows how to score validation. Uses the run's own --fold and --seeds, so "
+                         "it scores exactly the poses it trained on. Sharded over every card the "
+                         "run was given, with the other ranks parked at a barrier, same as the "
+                         "validation path.")
+    ap.add_argument("--train-eval-every", type=int, default=2,
+                    help="epochs between training-set evaluations. Ignored without "
+                         "--train-eval-pool.")
+    ap.add_argument("--train-eval-budget", type=int, default=0,
+                    help="seeds per interface for the training-set metric. 0 derives it from "
+                         "--seeds, which is the only honest default: the pool has no more depth "
+                         "than the run trained on.")
+    ap.add_argument("--pae-only", action="store_true",
+                    help="train the PAE term ALONE: pLDDT, PDE and resolved are stubbed out, not "
+                         "computed, not trained. ipTM derives entirely from PAE, and at the shipped "
+                         "weights PAE is only ~30%% of the loss (pLDDT 42%%, PDE 27%%), so most of "
+                         "the gradient goes to outputs the metric never reads. THE RISK IS REAL "
+                         "THOUGH: all four outputs come off one shared confidence head, so the "
+                         "auxiliary terms may be regularising the representation PAE reads from. "
+                         "Composes with --pae-scored-pairs, which narrows WHICH PAE pairs count.")
+    ap.add_argument("--pae-scored-pairs", default="",
+                    help="a pool CSV. The PAE term is then computed ONLY on token pairs that cross "
+                         "a chain pair this pool scores -- not on intra-chain pairs, and not on "
+                         "chain pairs nothing grades (H-L above all). chain_pair_iptm reads exactly "
+                         "one cross-block per interface, while the unmasked term averages over "
+                         "every pair in the crop, so most of the PAE gradient is spent on blocks "
+                         "the metric never looks at. Masks the loss, not the crop: same tokens, "
+                         "same forward pass, no extra compute.")
+    ap.add_argument("--pae-scored-roles", default="",
+                    help="chain_roles.csv for --pae-scored-pairs. Defaults to <fold>/chain_roles.csv. "
+                         "Only the SET of scored pairs matters here, and that set is unchanged by "
+                         "swapping the two antibody chains, so the chemically-identical-chain "
+                         "mislabelling that makes roles unusable for SCORING does not reach it.")
     ap.add_argument("--limit-units", type=int, default=0, help="debug: cap the number of units")
     ap.add_argument("--shuffle", default="structure",
                     choices=["structure", "none"],
@@ -490,9 +526,94 @@ def main():
                 return torch.zeros((), device=dev)
         loss_fn.pde_loss = _NoPDE()
         print("PDE term DROPPED: not computed, not trained. ipTM comes only from PAE.")
+    _dropped_terms = set()
+    if a.drop_pde:
+        _dropped_terms.add("pde_loss")
+    if a.pae_only:
+        # SAME STUB TRICK as --drop-pde, for the same reason: a zero weight still runs the module
+        # and still pays for it. Replacing the module is what actually removes the term.
+        class _Zero(torch.nn.Module):
+            def forward(self, *_args, **_kw):
+                return torch.zeros((), device=dev)
+        # ASSERTED, NOT hasattr-GUARDED. A renamed attribute would make this a silent no-op that
+        # still prints "PAE-ONLY" -- an arm that reports one objective and trains another.
+        for _name in ("plddt_loss", "pde_loss", "resolved_loss"):
+            if not hasattr(loss_fn, _name):
+                raise SystemExit(f"STOP: --pae-only cannot drop {_name}: ProtenixLoss has no such "
+                                 f"submodule. It has {sorted(k for k in dir(loss_fn) if 'loss' in k)}. "
+                                 f"Dropping nothing while announcing PAE-only would mislabel the run.")
+            setattr(loss_fn, _name, _Zero())
+            _dropped_terms.add(_name)
+        print("PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. "
+              "Every gradient now goes to the one output ipTM reads.")
+    _pae_keep = {"m": None}
+    _scored_asym = {}
+    _pae_mask_stats = {"masked": 0, "unmasked": 0}
+    if a.pae_scored_pairs:
+        import csv as _csv
+        _roles_p = a.pae_scored_roles or os.path.join(a.fold, "chain_roles.csv")
+        _roles = {}
+        with open(_roles_p) as _fh:
+            for _r in _csv.DictReader(_fh):
+                _roles.setdefault(_r["pdb"], {})[_r["ref_chain"]] = _r["model_chain"]
+        # Model chains are lettered A, B, C... in asym_id order by write_job_cif, so the letter's
+        # position in the alphabet IS the asym index -- the same join phase_k_eval does.
+        _miss = []
+        with open(a.pae_scored_pairs) as _fh:
+            for _r in _csv.DictReader(_fh):
+                _m1 = _roles.get(_r["pdb"], {}).get(_r["chain1"])
+                _m2 = _roles.get(_r["pdb"], {}).get(_r["chain2"])
+                if _m1 is None or _m2 is None:
+                    _miss.append(f"{_r['pdb']}:{_r['chain1']}/{_r['chain2']}")
+                    continue
+                _scored_asym.setdefault(_r["pdb"], set()).add(
+                    (ord(_m1) - ord("A"), ord(_m2) - ord("A")))
+        if _miss:
+            raise SystemExit(f"STOP: {len(_miss)} pool interface(s) have no role mapping, e.g. "
+                             f"{_miss[:4]}. The PAE mask would silently drop their blocks.")
+        _orig_calc = loss_fn.pae_loss.calculate_label
+
+        def _masked_calc(*args, **kw):
+            sq, bins, pm = _orig_calc(*args, **kw)
+            m = _pae_keep["m"]
+            if m is not None:
+                pm = pm * m.to(pm.dtype)
+            return sq, bins, pm
+
+        loss_fn.pae_loss.calculate_label = _masked_calc
+        print(f"PAE term MASKED to scored chain pairs: {len(_scored_asym)} structure(s), "
+              f"{sum(len(v) for v in _scored_asym.values())} interface(s), from "
+              f"{a.pae_scored_pairs}")
+
+    def _set_pae_mask(pdb, asym, has_frame):
+        """[N_frame, N_token] over the CROPPED tokens: keep only scored cross-chain entries.
+
+        Falls back to no mask -- never to an all-zero one. An empty mask would make PAELoss divide
+        by eps and return a meaningless number rather than fail, which is the worst outcome.
+        """
+        if not _scored_asym:
+            return
+        pairs = _scored_asym.get(pdb)
+        if not pairs:
+            _pae_keep["m"] = None
+            _pae_mask_stats["unmasked"] += 1
+            return
+        aa = asym.reshape(-1).long()
+        fa = aa[has_frame.reshape(-1).bool()]
+        keep = torch.zeros((fa.numel(), aa.numel()), dtype=torch.bool, device=aa.device)
+        for x, y in pairs:
+            keep |= ((fa[:, None] == x) & (aa[None, :] == y))
+            keep |= ((fa[:, None] == y) & (aa[None, :] == x))
+        if not bool(keep.any()):
+            _pae_keep["m"] = None
+            _pae_mask_stats["unmasked"] += 1
+            return
+        _pae_keep["m"] = keep
+        _pae_mask_stats["masked"] += 1
+
     w = {k: loss_fn.loss_weight[k] for k in ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss")}
     print("loss weights: " + "  ".join(f"{k.replace('_loss','')} {v:g}" for k, v in w.items()))
-    zero = [k for k, v in w.items() if not v]
+    zero = [k for k, v in w.items() if not v and k not in _dropped_terms]
     if zero:
         raise SystemExit(f"STOP: {', '.join(zero)} carries weight 0, so that term cannot train. "
                          f"FT3 wants alpha_pae = 1 (Protenix's own comment, configs_base.py:402); "
@@ -692,7 +813,8 @@ def main():
         # written with cropping off. So these migrate to the pre-crop defaults and are compared
         # like any other field -- which means a resume that ENABLES cropping shows up as real
         # drift and needs --resume-allow-drift, because it genuinely changes the objective.
-        _PRE_CROP = {"crop_margin": 0.0, "crop_contact": 5.0}
+        _PRE_CROP = {"crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
+                     "pae_only": False}
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
@@ -1078,6 +1200,7 @@ def main():
                                                    device=dev)
                 ld["coordinate_mask"] = torch.as_tensor(
                     lab["label_coordinate_mask"][i].astype(np.float32), device=dev)
+            _set_pae_mask(pdb, feat_head["asym_id"], feat_cache["has_frame"])
             try:
                 cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
             except RuntimeError as _e:
@@ -1096,7 +1219,7 @@ def main():
                 print(_where(feat_cache, "feat"), flush=True)
                 print(_where(pred, "pred"), flush=True)
                 raise
-            absent = [k for k in TERMS if k not in met and not (a.drop_pde and k == "pde_loss")]
+            absent = [k for k in TERMS if k not in met and k not in _dropped_terms]
             if absent:
                 raise SystemExit(f"STOP: the loss produced no {absent} for {pdb}/{arm_seed} pose {i}; "
                                  f"a term that stopped being produced reads as a lower loss, which is "
@@ -1188,8 +1311,30 @@ def main():
         opt.zero_grad(set_to_none=True)
         return gn, outside, True
 
-    def eval_checkpoint(step, epoch):
-        """Save the head, score it on the validation metric, log it. Returns the metric dict.
+    # DERIVED FROM --seeds, NOT FROM --eval-budget. The validation fold holds 100 seeds per
+    # interface; the training fold holds exactly the ones this run trained on, and asking the
+    # evaluator for more than exist makes it refuse rather than quietly report a thinner number.
+    def _seeds_count(spec):
+        n = 0
+        for part in str(spec).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                lo, hi = part.split("-", 1)
+                n += int(hi) - int(lo) + 1
+            else:
+                n += 1
+        return n
+    _train_eval_budget = a.train_eval_budget or _seeds_count(a.seeds)
+
+    def eval_checkpoint(step, epoch, train_pool=""):
+        """Save the head, score it, log it. Returns the metric dict.
+
+        With `train_pool`, scores that pool of TRAINING interfaces using the run's own --fold and
+        --seeds instead of the validation set, and writes metric_train_ep<N>.json. Everything else
+        -- the subprocess, the sharding, the guards -- is the same path, because the two metrics
+        have to be comparable and a second implementation would not stay that way.
 
         RUN AS A SUBPROCESS, not imported. phase_k_eval carries its own guards -- the pool-coverage
         check, the pose-to-sample join by coordinate identity, and the self-check that the SHIPPED
@@ -1204,26 +1349,40 @@ def main():
             return          # the caller already holds the other ranks at a barrier
         torch.save({n: pp.detach().cpu() for n, pp in model.named_parameters()
                     if n in set(trainable)}, cp)
-        mj = os.path.join(a.out, f"metric_ep{epoch}.json")
+        kind = "training-set" if train_pool else "validation"
+        mj = os.path.join(a.out, ("metric_train_ep%d.json" if train_pool else "metric_ep%d.json")
+                          % epoch)
+        extra = []
+        if train_pool:
+            _seed_base = int(str(a.seeds).split("-")[0].split(",")[0])
+            extra = ["--fold", a.fold,
+                     "--results", os.path.join(a.fold, "results.csv"),
+                     "--pool", train_pool,
+                     "--roles", os.path.join(a.fold, "chain_roles.csv"),
+                     "--seed-base", str(_seed_base)]
         # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
         # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
         # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one
         # shard on each card -- ~6 GB beside a parked rank's ~6 GB on a 98 GB card -- and merges.
         cards = a.eval_cards or os.environ.get("CUDA_VISIBLE_DEVICES", "")
-        shard_work = os.path.join(a.out, f"eval_shards_ep{epoch}")
+        shard_work = os.path.join(a.out, ("train_eval_shards_ep%d" if train_pool
+                                           else "eval_shards_ep%d") % epoch)
+        budget = _train_eval_budget if train_pool else a.eval_budget
         if len([c for c in cards.split(",") if c.strip()]) > 1:
             cmd = [sys.executable, "-I",
                    os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "phase_k_eval_sharded.py"),
-                   "--cards", cards, "--ckpt", cp, "--budget", str(a.eval_budget),
+                   "--cards", cards, "--ckpt", cp, "--budget", str(budget),
                    "--work", shard_work, "--out", mj]
+            if extra:
+                cmd += ["--extra", " ".join(extra)]
         else:
             cmd = [sys.executable, "-I", a.eval_script, "--ckpt", cp,
-                   "--budget", str(a.eval_budget), "--out", mj]
+                   "--budget", str(budget), "--out", mj, *extra]
         env = {**os.environ, "LAYERNORM_TYPE": "openfold"}
         sharded = "phase_k_eval_sharded.py" in cmd[2]
         if sharded:
-            print(f"  evaluating epoch {epoch} sharded over GPU(s) {cards}")
+            print(f"  evaluating epoch {epoch} ({kind}) sharded over GPU(s) {cards}")
         elif a.eval_device:
             # ONLY ON THE SINGLE-CARD PATH. Pinning CUDA_VISIBLE_DEVICES here would hand the sharding
             # driver one card and silently undo the split.
@@ -1250,12 +1409,18 @@ def main():
         r = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if r.returncode != 0:
             tail = (r.stdout + r.stderr).strip().splitlines()[-6:]
-            raise SystemExit("STOP: the validation evaluation failed, so this checkpoint cannot be "
-                             "scored and a training curve without it is not interpretable:\n  "
-                             + "\n  ".join(tail))
+            raise SystemExit(f"STOP: the epoch-{epoch} {kind} evaluation failed, so this "
+                             f"checkpoint cannot be scored and a training curve without it is not "
+                             f"interpretable:\n  " + "\n  ".join(tail))
         m = json.load(open(mj))
-        print(f"  epoch {epoch}: mean_dockq {m['mean_dockq']:.4f} (baseline 0.5775)  "
-              f"frac_acc {m['frac_acc']:.4f} (baseline 0.7283)  headroom {m['headroom']:.4f}")
+        if train_pool:
+            print(f"  epoch {epoch} TRAIN: mean_dockq {m['mean_dockq']:.4f}  "
+                  f"frac_acc {m['frac_acc']:.4f}  oracle {m['oracle_mean_dockq']:.4f} / "
+                  f"{m['oracle_frac_acc']:.4f}  headroom {m['headroom']:.4f}  "
+                  f"({m['n_interfaces']} interfaces)")
+        else:
+            print(f"  epoch {epoch}: mean_dockq {m['mean_dockq']:.4f} (baseline 0.5775)  "
+                  f"frac_acc {m['frac_acc']:.4f} (baseline 0.7283)  headroom {m['headroom']:.4f}")
         return m
 
     def shard_by_structure(units):
@@ -1390,6 +1555,8 @@ def main():
                                   "manifest_digest": _manifest_digest,
                                   "crop_size": a.crop_size,
                                   "alpha_confidence": a.alpha_confidence,
+                                  "pae_scored_pairs": a.pae_scored_pairs,
+                                  "pae_only": a.pae_only,
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
@@ -1541,6 +1708,17 @@ def main():
                 if is_main:
                     _flush(traj_p, traj_cols, rows); rows = []
                     eval_checkpoint(step, ep + 1)
+                if world > 1:
+                    dist.barrier()
+            if (a.train_eval_pool and a.train_eval_every
+                    and (ep + 1) % a.train_eval_every == 0 and step > ep_start_step):
+                # SAME BARRIER DISCIPLINE as the validation path above: one evaluator, sharded
+                # over every card, the other ranks parked for its duration.
+                if world > 1:
+                    dist.barrier()
+                if is_main:
+                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    eval_checkpoint(step, ep + 1, train_pool=a.train_eval_pool)
                 if world > 1:
                     dist.barrier()
         # NOTHING MAY BE LEFT HERE. Every epoch flushes its own remainder above, before evaluating,
