@@ -154,6 +154,23 @@ doing real work, the 39-bin one-hot is a nonlinear high-resolution encoding a li
 three components cannot reproduce, and the unit vector deliberately discards magnitude — which
 those paths supply. C is a *third* path, not a substitute.
 
+### Two things found while implementing it
+
+**The target atom is the PAE representative, not the distogram one.** Protenix has two per-token
+representative atoms and they are different atoms. `distogram_rep_atom_mask` is CB, CA for
+glycine (AF3 SI 4.4, `parser.py:add_distogram_rep_atom_mask`); `pae_rep_atom_mask` is the token
+CENTRE atom, CA for standard amino acids. They differ on every non-glycine residue — 1,158 of
+`10fj`'s atoms. `memory_efficient_forward` is handed the DISTOGRAM subset, because that is what
+`cdist` wants, so the obvious implementation feeds directions to CB while the PAE label is built
+on CA. The implementation selects the PAE subset from the full coordinates instead.
+
+**That also makes the self-entry exactly zero.** The frame origin is the middle frame atom, CA,
+so with CA targets `[i][i]` is the zero vector. With the distogram subset it was the CA->CB
+direction at unit length — a near-constant local vector carrying no pose information. The
+self-test caught this: it failed `max|diag| = 1.00` on all three structures before the switch,
+and reads exactly `0.00` after. The two existing distance paths contribute zero on the diagonal
+too, so a zero diagonal is also what the head already sees there.
+
 ### Launching it
 
 **Relaunch from scratch rather than migrating a checkpoint.** Zero-init does not make an
