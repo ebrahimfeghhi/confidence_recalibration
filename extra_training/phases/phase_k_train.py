@@ -1541,6 +1541,24 @@ def main():
         # path too; both the sharded driver (--extra) and the single-card path forward `extra`.
         if a.frame_direction:
             extra = extra + ["--frame-direction"]
+        # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
+        #
+        # --join-cache is the big one. The pose->sample join is a function of the trunk's own
+        # coordinates and the pose cifs on disk, so for a fixed pool it returns the same answer
+        # every time -- and phase_k_eval_sharded's docstring measured it at 3.6 min per shard.
+        # Recomputing a constant on every eval is most of why a 10-structure pool took 8.9 min
+        # when its 156 GB of trunks is only ~1.7 min of I/O. The cache key carries each trunk's
+        # size and mtime, so a refold or rebuild invalidates it rather than silently reusing a
+        # mapping to superseded poses -- which is the exact failure resolve_seed_dir exists to
+        # prevent. It lives beside the POOL, not in the run directory, so the first eval of the
+        # first arm pays for it and every later eval and every later arm is free.
+        #
+        # --pair-iptm-only computes chain_pair_iptm straight from PAE instead of building the
+        # whole Protenix summary and discarding every other field. Measured bit-identical.
+        # --prefetch overlaps the next unit's trunk read with the current unit's compute.
+        _jc = os.path.join(os.path.dirname(os.path.abspath(train_pool or a.train_eval_pool or ".")),
+                           "join_cache.json") if train_pool else os.path.join(a.out, "join_cache.json")
+        extra = extra + ["--join-cache", _jc, "--pair-iptm-only", "--prefetch"]
         # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
         # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
         # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one
