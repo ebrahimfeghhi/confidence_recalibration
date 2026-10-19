@@ -58,13 +58,23 @@ def main():
     from pose_direction import EPS_LEN, direction_tensor
     from protenix.model.modules.primitives import LinearNoBias
 
-    fails = []
-    for pdb in [p for p in a.pdbs.split(",") if p]:
+    # A MISSING FILE IS A FAILURE, NOT A SKIP, and so is checking nothing. The first version
+    # printed "SKIP" per structure and then "all checks passed" on an empty failure list -- review
+    # reproduced all three structures skipping and the script still exiting 0. A checker that
+    # cannot tell "the geometry is correct" from "I did not look" is worse than no checker.
+    fails, checked, missing = [], 0, []
+    wanted = [p for p in a.pdbs.split(",") if p]
+    if not wanted:
+        raise SystemExit("STOP: --pdbs is empty, so there is nothing to check.")
+    for pdb in wanted:
         lp = os.path.join(a.fold, "labels", pdb, a.unit + ".npz")
         tp = os.path.join(a.fold, "trunks", pdb, a.unit + ".npz")
         if not (os.path.exists(lp) and os.path.exists(tp)):
-            print(f"{pdb}: SKIP (no cached {a.unit})")
+            gone = [q for q in (lp, tp) if not os.path.exists(q)]
+            print(f"{pdb}: MISSING {', '.join(gone)}")
+            missing.append(pdb)
             continue
+        checked += 1
         L = np.load(lp, allow_pickle=True)
         T = np.load(tp, allow_pickle=True)
         fai = torch.as_tensor(L["lf_frame_atom_index"]).long()
@@ -120,9 +130,15 @@ def main():
             if not ok:
                 fails.append(f"{pdb}:{n}")
 
+    if missing:
+        raise SystemExit(f"\nSTOP: {len(missing)} requested structure(s) had no cached "
+                         f"{a.unit}: {', '.join(missing)}. Point --fold/--pdbs/--unit at data "
+                         f"that exists rather than reporting a pass over what was found.")
+    if not checked:
+        raise SystemExit("\nSTOP: checked 0 structures, so nothing was verified.")
     if fails:
         raise SystemExit(f"\nFAILED: {', '.join(fails)}")
-    print("\nall checks passed")
+    print(f"\nall checks passed on {checked} structure(s)")
 
 
 if __name__ == "__main__":

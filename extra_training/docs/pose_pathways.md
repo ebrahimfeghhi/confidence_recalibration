@@ -33,7 +33,8 @@ Two details of that encoding, both verified:
   of 0 gives an output of 0. Both existing pose paths therefore contribute exactly zero on the
   diagonal.
 - `x_pred_rep_coords` is selected by `distogram_rep_atom_mask`, which is **one atom per token**
-  (measured: 625 rep atoms for 625 tokens on `10fj`). `cdist` is a CA-only distance matrix.
+  (measured: 625 rep atoms for 625 tokens on `10fj`), and that atom is **CB**, CA only for
+  glycine. So `cdist` is a CB-only distance matrix and holds no backbone frame atom.
 
 ---
 
@@ -46,10 +47,16 @@ ended up from where it should be. `PAELoss.calculate_label` computes exactly tha
 position in i's frame for the predicted structure, do the same for the true structure, take the
 distance between those two vectors.
 
-The head's pose input is a **CA-only** distance matrix. A residue's backbone frame is defined by
-its N, CA and C atoms, and N and C are not in that matrix at all. So the frame's orientation —
-which way the residue is "facing" — is not merely hard to recover from the input, it is
-**absent**, beyond whatever is inferable from neighbouring CA geometry. C supplies it directly.
+The head's pose input is a **CB-only** distance matrix: `cdist` over
+`distogram_rep_atom_mask`, which selects CB for protein residues and CA only for glycine. A
+residue's backbone frame is defined by its N, CA and C atoms, and **none of the three is in that
+matrix**. So the frame's orientation — which way the residue is "facing" — is not merely hard to
+recover from the input, it is **absent**, beyond whatever is inferable from the neighbouring CB
+geometry. C supplies it directly.
+
+This is stronger than the "CA-only" wording an earlier draft of this doc used, which was wrong
+and contradicted the CB-versus-CA correction further down. The input does not hand over backbone
+positions while withholding their orientation — it contains no backbone frame atom at all.
 
 That is the justification. It is about information the input does not contain.
 
