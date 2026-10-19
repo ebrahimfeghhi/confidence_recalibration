@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 LINE = re.compile(r"epoch (\d+) TRAIN: mean_dockq ([0-9.]+)\s+frac_acc ([0-9.]+)")
-COLORS = ["#1f77b4", "#e67e22", "#8e44ad", "#16a085", "#c0392b"]
+COLORS = ["#1f77b4", "#e67e22", "#8e44ad", "#16a085", "#c0392b", "#7f8c8d", "#000000"]
 FULL_STEPS = 18     # 17 full + 1 partial per epoch at accum 85 on 30 structures
 
 
