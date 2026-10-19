@@ -16,7 +16,7 @@ except the validation baseline, which is quoted at its full 100-seed budget.
 | set | structures | interfaces | shipped mean DockQ | shipped frac acc | oracle mean DockQ | oracle frac acc | headroom |
 |---|---|---|---|---|---|---|---|
 | **validation** | 53 | 92 | **0.5775** | 0.7283 | 0.7171 | 0.8696 | 0.1396 |
-| **training fold** | 500 | 1,011 | **0.4202** | 0.5344 | 0.5401 | 0.7023 | 0.1199 |
+| **training fold** | 500 | 1,011 | **0.4202** | 0.5344 | 0.5298-0.5401 | 0.6855-0.7023 | ~0.11-0.12 |
 | `overfit30` | 30 | 77 | 0.0420 | 0.0000 | 0.5098 | 0.8831 | 0.4678 |
 
 *frac acc* = share of interfaces whose selected pose has DockQ >= 0.23. *oracle* = the best pose
@@ -30,6 +30,29 @@ poses are better. The difficulty is in the structures, not in the ranking.
 interfaces where an acceptable pose exists and the shipped head fails to find it — so its 0.0420
 is a property of that selection. Its oracle (0.5098 / 0.8831) is close to the training fold's,
 which is the right reference for it.
+
+### The training-fold oracle is a range, not a point
+
+`training/fold/results.csv` holds **59,145 rows for 50,490 distinct `(iface, seed, sample)`
+keys**: 8,655 keys carry two rows, left behind by a refold. For most the two agree to rounding
+(median DockQ spread 0.002), but 111 interfaces have a disagreement over 0.1, and the worst is
+0.944 — one row is a superseded pose and the other is current.
+
+`results.csv` alone cannot say which. The production path resolves it by coordinate identity
+against the trunk (`resolve_seed_dir`, and the pose->sample join in `phases/phase_k_eval.py`),
+which is why the evaluator's own numbers are unaffected. Any oracle computed straight from
+`results.csv` is therefore bounded, not exact:
+
+| | oracle mean DockQ | oracle frac acc |
+|---|---|---|
+| taking the max of each duplicated key | 0.5401 | 0.7023 |
+| taking the min of each duplicated key | 0.5298 | 0.6855 |
+
+190 of the 1,011 interfaces are touched at all. The spread is ~0.010, so it does not change the
+train/val story — the oracle gap is 0.177 — but a single number here would be the optimistic
+bound presented as fact. The shipped-head figure 0.4202 comes from the evaluator, not from
+`results.csv`, so it is not affected. The same caveat applies to the size bands below, which are
+computed on the optimistic bound.
 
 ## Consequences for reading any result
 
