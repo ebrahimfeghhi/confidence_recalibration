@@ -16,13 +16,13 @@ except the validation baseline, which is quoted at its full 100-seed budget.
 | set | structures | interfaces | shipped mean DockQ | shipped frac acc | oracle mean DockQ | oracle frac acc | headroom |
 |---|---|---|---|---|---|---|---|
 | **validation** | 53 | 92 | **0.5775** | 0.7283 | 0.7171 | 0.8696 | 0.1396 |
-| **training fold** | 500 | 1,011 | **0.4202** | 0.5344 | 0.5298-0.5401 | 0.6855-0.7023 | ~0.11-0.12 |
+| **training fold** | 500 | 1,011 | **0.4202** | 0.5344 | 0.5356 | 0.6944 | 0.1154 |
 | `overfit30` | 30 | 77 | 0.0420 | 0.0000 | 0.5098 | 0.8831 | 0.4678 |
 
 *frac acc* = share of interfaces whose selected pose has DockQ >= 0.23. *oracle* = the best pose
 available, i.e. a perfect selector. *headroom* = oracle minus shipped.
 
-**Validation scores 0.157 higher at the shipped head, and its oracle is 0.177 higher.** Since the
+**Validation scores 0.157 higher at the shipped head, and its oracle is 0.182 higher.** Since the
 oracle moves with it, this is not the selector performing better on validation — the available
 poses are better. The difficulty is in the structures, not in the ranking.
 
@@ -31,28 +31,23 @@ interfaces where an acceptable pose exists and the shipped head fails to find it
 is a property of that selection. Its oracle (0.5098 / 0.8831) is close to the training fold's,
 which is the right reference for it.
 
-### The training-fold oracle is a range, not a point
+### A note on where the training-fold oracle comes from
 
-`training/fold/results.csv` holds **59,145 rows for 50,490 distinct `(iface, seed, sample)`
-keys**: 8,655 keys carry two rows, left behind by a refold. For most the two agree to rounding
-(median DockQ spread 0.002), but 111 interfaces have a disagreement over 0.1, and the worst is
-0.944 — one row is a superseded pose and the other is current.
+`training/fold/results.csv` originally held 59,145 rows for 50,490 distinct
+`(iface, seed, sample)` keys: the 2026-10-15 refold appended its rows and
+`phase_j_drop_superseded_poses.py` quarantined the old pose directories without cleaning the csv.
+A `max` over a pose's rows could therefore pick up a superseded score, which read the oracle 0.0045
+high (0.5401 against the true 0.5356) with 111 interfaces disagreeing by over 0.1 DockQ.
 
-`results.csv` alone cannot say which. The production path resolves it by coordinate identity
-against the trunk (`resolve_seed_dir`, and the pose->sample join in `phases/phase_k_eval.py`),
-which is why the evaluator's own numbers are unaffected. Any oracle computed straight from
-`results.csv` is therefore bounded, not exact:
+`phases/phase_j_drop_superseded_rows.py` resolves it from the quarantined directories' own output
+rather than by guessing at recency, which the csv cannot support since it has no timestamp:
+`ost_json/<sample>.json` gives the superseded DockQ, and
+`predictions/*_summary_confidence_sample_*.json` gives its `chain_pair_iptm` for the 3,058 keys
+where both rows share a DockQ. 8,645 of 8,655 duplicated keys resolve; the remaining 10 agree on
+DockQ **and** on ipTM, so no DockQ-based figure can depend on them.
 
-| | oracle mean DockQ | oracle frac acc |
-|---|---|---|
-| taking the max of each duplicated key | 0.5401 | 0.7023 |
-| taking the min of each duplicated key | 0.5298 | 0.6855 |
-
-190 of the 1,011 interfaces are touched at all. The spread is ~0.010, so it does not change the
-train/val story — the oracle gap is 0.177 — but a single number here would be the optimistic
-bound presented as fact. The shipped-head figure 0.4202 comes from the evaluator, not from
-`results.csv`, so it is not affected. The same caveat applies to the size bands below, which are
-computed on the optimistic bound.
+Every number in this doc is computed on the resolved file. The shipped-head figures come from
+`phases/phase_k_eval.py`, which joins poses by coordinate identity and was never affected.
 
 ## Consequences for reading any result
 
@@ -122,16 +117,16 @@ Size does track difficulty inside the training fold — oracle DockQ over all 1,
 | tokens | n | oracle DockQ | oracle frac acc |
 |---|---|---|---|
 | < 400 | 74 | 0.5849 | 0.7703 |
-| 400-600 | 288 | 0.5904 | 0.7674 |
-| 600-800 | 327 | 0.5885 | 0.7339 |
-| 800-1000 | 138 | 0.4584 | 0.6014 |
-| > 1000 | 184 | 0.4188 | 0.5924 |
+| 400-600 | 288 | 0.5879 | 0.7639 |
+| 600-800 | 327 | 0.5802 | 0.7217 |
+| 800-1000 | 138 | 0.4511 | 0.5797 |
+| > 1000 | 184 | 0.4184 | 0.5924 |
 
-`pearson(token count, oracle DockQ) = -0.225`, with a clear step down above 800 tokens.
+`pearson(token count, oracle DockQ) = -0.222`, with a clear step down above 800 tokens.
 
 But restricting the training fold to validation's size regime barely closes the gap: training
-interfaces at <= 1,000 tokens are n=827, oracle 0.5671 / 0.7267, against validation's 0.7171 /
-0.8696. **Of the 0.177 oracle gap, size accounts for about 0.027.**
+interfaces at <= 1,000 tokens are n=827, oracle 0.5617 / 0.7170, against validation's 0.7171 /
+0.8696. **Of the 0.182 oracle gap, size accounts for about 0.026.**
 
 ## What has been ruled out
 
@@ -139,7 +134,7 @@ Measured, not argued:
 
 | candidate | verdict |
 |---|---|
-| structure size | explains ~0.027 of the 0.177 oracle gap |
+| structure size | explains ~0.026 of the 0.182 oracle gap |
 | polypeptide-antigen filter | **applies to both sets.** `phase_a_define_train_set.py:119,287` applies the same `POLY = ("PROTEIN", "PEPTIDE")` filter inside `training_clusters()` |
 | deposition era | **matched.** All 500 training structures have `release_date >= 2021-09-30` (`training/prep/job_indices.csv`); validation is post-cutoff by construction |
 | mixed vs all-new clusters | **not set-specific.** "Mixed" is a cluster property; 107 of the 533 pool clusters are mixed, validation took 16 and the other 91 are in training |
