@@ -1718,6 +1718,13 @@ def main():
                                   "alpha_confidence": a.alpha_confidence,
                                   "pae_scored_pairs": a.pae_scored_pairs,
                                   "pae_only": a.pae_only,
+                                  # SAVED, NOT ONLY COMPARED. frame_direction went into the
+                                  # comparison side but not here, so a bundle carried no record of
+                                  # it: a resume beside its args.json still matched, because the
+                                  # guard falls back to that file, but a bundle moved on its own
+                                  # fell through to the pre-crop default and read as C DISABLED.
+                                  # Third time a guard field has been half-wired. Found in review.
+                                  "frame_direction": a.frame_direction,
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,

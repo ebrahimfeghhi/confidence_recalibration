@@ -199,9 +199,14 @@ def install(model, loud=True):
 
     def memory_efficient_forward(input_feature_dict, s_trunk, z_pair, pair_mask,
                                  x_pred_rep_coords, **kw):
-        delta = _delta(head, input_feature_dict, x_pred_rep_coords)
+        # ADD, THEN DROP THE REFERENCE, BEFORE THE ORIGINAL HEAD RUNS. The first version passed
+        # `z_pair + delta` as an argument while `delta` stayed a live local in this frame, so a
+        # [N_token, N_token, c_z] tensor was pinned for the whole of the pairformer stack's
+        # forward AND backward: 210 MiB at 656 tokens and 5.5 GiB at the 3,400-token crop cap,
+        # on top of the activations the stack already needs. Found in review.
+        z = z_pair + _delta(head, input_feature_dict, x_pred_rep_coords)
         return orig_mef(input_feature_dict=input_feature_dict, s_trunk=s_trunk,
-                        z_pair=z_pair + delta.to(z_pair.dtype), pair_mask=pair_mask,
+                        z_pair=z, pair_mask=pair_mask,
                         x_pred_rep_coords=x_pred_rep_coords, **kw)
 
     head.forward = forward
@@ -254,13 +259,18 @@ def _delta(head, feat, x_pred_rep_coords):
                            f"{tuple(x_pred_rep_coords.shape)}); the sample index is not tracking "
                            f"forward's loop.")
 
-    # FLOAT32 AND NO AUTOCAST for the geometry. The basis is built from normalised cross products
-    # and a bf16 norm of a near-degenerate frame is not reliable; the upstream code disables
-    # autocast around its own cdist for the same reason.
+    # FLOAT32 AND NO AUTOCAST FOR THE GEOMETRY ONLY. The basis is built from normalised cross
+    # products and a bf16 norm of a near-degenerate frame is not reliable; the upstream code
+    # disables autocast around its own cdist for the same reason. The geometry tensor is
+    # [N_token, N_token, 3] -- 5 MiB at 656 tokens, 132 MiB at 3,400 -- so float32 is cheap there.
+    #
+    # THE PROJECTION IS OUTSIDE THAT BLOCK, so it runs under the caller's autocast and returns
+    # bf16 rather than a float32 [N_token, N_token, c_z]: 110 MiB instead of 210 at 656 tokens,
+    # and it matches the dtype z_pair is already in.
     with torch.amp.autocast("cuda", enabled=False):
         # THE GEOMETRY USES THE PAE REPRESENTATIVE ATOMS, selected from the full coordinates --
         # NOT x_pred_rep_coords, which is the distogram (CB) subset. See the EPS_LEN note.
         full_f = full_i.to(torch.float32)
         d = direction_tensor(full_f[pae_mask], full_f,
                              _UNIT["frame_atom_index"], _UNIT["has_frame"])
-        return head.frame_dir_proj(d)
+    return head.frame_dir_proj(d)
