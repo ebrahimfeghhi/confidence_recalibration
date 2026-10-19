@@ -155,6 +155,19 @@ def main():
     ap.add_argument("--train-eval-every", type=int, default=2,
                     help="epochs between training-set evaluations. Ignored without "
                          "--train-eval-pool.")
+    ap.add_argument("--train-eval-fold", default="",
+                    help="score --train-eval-pool against THIS fold instead of --fold. The point "
+                         "is to watch a held-out signal every few epochs without paying for the "
+                         "whole validation set: a 10-structure validation pool is ~1,000 units "
+                         "against 5,300, so minutes rather than ~25. Defaults to --fold, which is "
+                         "the in-sample training-pool behaviour. Pair it with "
+                         "--train-eval-seed-base, because a different fold was folded at "
+                         "different seeds, and with --train-eval-budget, which otherwise defaults "
+                         "to the count of THIS run's --seeds and would silently score a tenth of "
+                         "a 100-seed fold.")
+    ap.add_argument("--train-eval-seed-base", type=int, default=-1,
+                    help="the first seed of --train-eval-fold. -1 (default) uses this run's own "
+                         "--seeds, which is right only when the pool lives in --fold.")
     ap.add_argument("--train-eval-budget", type=int, default=0,
                     help="seeds per interface for the training-set metric. 0 derives it from "
                          "--seeds, which is the only honest default: the pool has no more depth "
@@ -663,17 +676,24 @@ def main():
         """
         if not a.train_eval_pool:
             return
-        if "," in a.fold:
-            raise SystemExit(f"STOP: --train-eval-pool needs a single --fold; got {a.fold!r}. "
+        # THE POOL'S OWN FOLD, matching what eval_checkpoint will pass. Checking against --fold
+        # when --train-eval-fold overrides it rejected a perfectly good validation pool for
+        # having no trunks in the TRAINING fold, which is exactly where it should not have any.
+        _f = a.train_eval_fold or a.fold
+        if "," in _f:
+            raise SystemExit(f"STOP: --train-eval-pool needs a single fold; got {_f!r}. "
                              f"phase_k_eval treats --fold as one directory, so a comma-separated "
                              f"root would be read as a literal path.")
-        need = [a.train_eval_pool, os.path.join(a.fold, "results.csv"),
-                os.path.join(a.fold, "chain_roles.csv")]
+        need = [a.train_eval_pool, os.path.join(_f, "results.csv"),
+                os.path.join(_f, "chain_roles.csv")]
         gone = [f for f in need if not os.path.exists(f)]
         if gone:
             raise SystemExit(f"STOP: --train-eval-pool needs {gone}, which do not exist.")
         import csv as _csv2
-        skip = {x.strip() for x in (a.manifest_skip or "").split(",") if x.strip()}
+        # --manifest-skip describes the TRAINING manifest, so it says nothing about a pool in
+        # another fold; skipping a structure from training is not a reason it cannot be scored.
+        skip = ({x.strip() for x in (a.manifest_skip or "").split(",") if x.strip()}
+                if not a.train_eval_fold else set())
         pool_pdbs = {r["pdb"] for r in _csv2.DictReader(open(a.train_eval_pool))}
         bad = sorted(pool_pdbs & skip)
         if bad:
@@ -681,7 +701,7 @@ def main():
                              f"from training. The evaluator hard-stops on a structure with no "
                              f"trunk, on rank 0, with the other ranks parked at a barrier.")
         notrunk = sorted(p for p in pool_pdbs
-                         if not os.path.isdir(os.path.join(a.fold, "trunks", p)))
+                         if not os.path.isdir(os.path.join(_f, "trunks", p)))
         if notrunk:
             raise SystemExit(f"STOP: --train-eval-pool names {len(notrunk)} structure(s) with no "
                              f"trunk directory, e.g. {notrunk[:4]}.")
@@ -1495,16 +1515,24 @@ def main():
             return          # the caller already holds the other ranks at a barrier
         torch.save({n: pp.detach().cpu() for n, pp in model.named_parameters()
                     if n in set(trainable)}, cp)
-        kind = "training-set" if train_pool else "validation"
+        kind = ("pool@" + os.path.basename((a.train_eval_fold or a.fold).rstrip("/"))
+                if train_pool else "validation")
         mj = os.path.join(a.out, ("metric_train_ep%d.json" if train_pool else "metric_ep%d.json")
                           % epoch)
         extra = []
         if train_pool:
-            _seed_base = _train_eval_seed_base
-            extra = ["--fold", a.fold,
-                     "--results", os.path.join(a.fold, "results.csv"),
+            # THE POOL'S OWN FOLD, which is not always this run's. Scoring a validation subset
+            # here means --fold, --results, --roles and --seed-base all have to come from that
+            # fold, not from the one being trained on: a results.csv from the wrong fold would
+            # look up DockQ for interfaces it does not contain and the coverage check would fail,
+            # and a wrong --seed-base would ask for seeds the fold never wrote.
+            _tef = a.train_eval_fold or a.fold
+            _seed_base = (a.train_eval_seed_base if a.train_eval_seed_base >= 0
+                          else _train_eval_seed_base)
+            extra = ["--fold", _tef,
+                     "--results", os.path.join(_tef, "results.csv"),
                      "--pool", train_pool,
-                     "--roles", os.path.join(a.fold, "chain_roles.csv"),
+                     "--roles", os.path.join(_tef, "chain_roles.csv"),
                      "--seed-base", str(_seed_base)]
         # THE EVALUATOR MUST RUN THE SAME FUNCTION WE TRAINED. Without this it builds a head with
         # no frame_dir_proj, and its own guard refuses the checkpoint for holding a tensor the

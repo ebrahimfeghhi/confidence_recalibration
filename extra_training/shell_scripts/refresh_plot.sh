@@ -13,7 +13,7 @@ exec /home/ebrahim/Protenix/.venv/bin/python -I run_logging/plot_train_eval.py \
   "krah8z=fresh PAE-only" \
   "dapghi=fresh PAE-only (stopped ep6)" \
   "x5a4uj=PAE masked, lr 1e-2" \
-  "q7nyu6=overfit30 probe, lr 1e-1" \
+  "e4tvxe=lr 1e-1 probe, val10 eval" \
   "hhzddi+jy6sah+uqtnbn=orange forked at ep57, lr 1e-2" \
   --stock-dockq 0.0420 --stock-frac 0.0 \
   --ceiling-dockq 0.4216 --ceiling-frac 0.6883 \
