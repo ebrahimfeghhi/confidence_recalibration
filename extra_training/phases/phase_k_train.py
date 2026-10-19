@@ -159,6 +159,22 @@ def main():
                     help="seeds per interface for the training-set metric. 0 derives it from "
                          "--seeds, which is the only honest default: the pool has no more depth "
                          "than the run trained on.")
+    ap.add_argument("--early-stop-patience", type=int, default=0,
+                    help="stop when this many consecutive epochs fail to beat the best epoch-mean "
+                         "TRAINING loss by --early-stop-min-delta. 0 disables. The decision is made "
+                         "from the cross-rank mean, so every rank reaches it identically -- a stop "
+                         "that differed between ranks would deadlock them at the next barrier.")
+    ap.add_argument("--early-stop-min-delta", type=float, default=0.002,
+                    help="how much an epoch must beat the running best by to count as progress. "
+                         "The loss falls ~0.03/epoch EARLY and the rule compares against the best "
+                         "so far rather than the previous epoch, because individual epochs rise "
+                         "while the trend falls (+0.0255 at ep5, +0.0154 at ep13). 0.01 was the "
+                         "first default and it was too coarse: late in a run the per-epoch gain "
+                         "drops to ~0.003, which is real progress the rule cannot see, so the "
+                         "strike counter can only ever run out. It ended krah8z at ep29 and owdyyp "
+                         "at ep57, both still trending down, and krah8z's ep28 missed resetting "
+                         "the counter by 0.0001 (1.9674 against a 1.9673 threshold). 0.002 is "
+                         "below the late-run gain and still above the epoch-to-epoch noise.")
     ap.add_argument("--pae-only", action="store_true",
                     help="train the PAE term ALONE: pLDDT, PDE and resolved are stubbed out, not "
                          "computed, not trained. ipTM derives entirely from PAE, and at the shipped "
@@ -1547,6 +1563,8 @@ def main():
         for g in opt.param_groups:
             g["lr"] = lr
         rows, t0, step, n_in_accum, item_cache = [], time.time(), from_step, 0, {}
+        ep_loss = {"sum": 0.0, "n": 0}
+        stop_state = {"best": float("inf"), "bad": 0}
         opt.zero_grad(set_to_none=True)
         # LOCAL SUMS OVER THE WINDOW, reduced once per step. Summed rather than averaged so the
         # reduction is exact regardless of how unevenly the ranks are filled.
@@ -1574,6 +1592,12 @@ def main():
                     t = t.cpu()
                 vals = [float(x) for x in t]
             n_tot = int(round(vals[-1]))
+            # THE EPOCH'S LOSS, ACCUMULATED HERE because `vals` is already reduced over every rank
+            # and is therefore bit-identical on all of them. Summing it anywhere rank-local would
+            # give each rank its own epoch mean, and an early-stop decision that differs between
+            # ranks leaves some in the next epoch and the rest at a barrier.
+            ep_loss["sum"] += vals[TERMS.index("loss")]
+            ep_loss["n"] += n_tot
             for k in batch_sum:
                 batch_sum[k] = 0.0
             n_in_accum = 0
@@ -1710,6 +1734,7 @@ def main():
             print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
             ep_start_step = step
             ep_t0 = time.time()
+            ep_loss["sum"], ep_loss["n"] = 0.0, 0
             for ui, (pdb, lab_p, cands) in enumerate(ep_units):
                 trunk_p = resolve_trunk(pdb, lab_p, cands)
                 for _m in run_unit(pdb, lab_p, trunk_p, item_cache):
@@ -1778,15 +1803,45 @@ def main():
                   + (f", {_ep_min * 60 / max(1, len(ep_units) * a.nsample):.2f} s/pose"
                      if ep_units else ""))
 
-            # THE PARTIAL ACCUMULATION IS FLUSHED HERE, BEFORE THE EVALUATION, SO THE HEAD THAT
-            # IS SCORED IS THE HEAD THAT IS SAVED. It used to be flushed after the epoch loop, which
-            # is after the LAST evaluation: at production settings the run evaluated step 292, then
-            # took step 293, then wrote head_final.pt -- so the shipped head was one optimiser step
-            # away from the only head whose validation metric we had, and the number reported for
-            # the run did not belong to the checkpoint the run produced.
+            # THE PARTIAL ACCUMULATION IS FLUSHED HERE, BEFORE THE EARLY-STOP CHECK AND BEFORE
+            # THE EVALUATION, SO THE HEAD THAT IS SCORED IS THE HEAD THAT IS SAVED AND THE EPOCH
+            # LOSS COVERS EVERY POSE. The flush used to sit BELOW the stop check, so `ep_loss`
+            # was read with the epoch's last partial step still unaccumulated: the rule averaged
+            # 1,428 of 1,500 poses and never saw the remaining 72. That step is a handful of
+            # structures and its loss ranged 1.21-2.78 across krah8z's 29 epochs, against ~1.99
+            # for the epoch, so the two differed by up to 0.04 and disagreed in SIGN: epoch 29
+            # read 1.9935 (up, and the eighth strike that ended the run) where the full epoch was
+            # 1.9558, its lowest. The stop rule and the plotted curve were not the same number.
+            #
+            # Before that it sat after the EPOCH LOOP, which is after the last evaluation: at
+            # production settings the run evaluated step 292, then took step 293, then wrote
+            # head_final.pt -- so the shipped head was one optimiser step away from the only head
+            # whose validation metric we had, and the number reported for the run did not belong to
+            # the checkpoint the run produced.
             if n_in_accum:
                 _apply_partial({"epoch": ep + 1, "lr": cur_lr, "pdb": pdb, "unit_i": ui,
                                 "unit": os.path.basename(lab_p)[:-4], "pose": i})
+
+            if a.early_stop_patience and ep_loss["n"]:
+                _ep_loss = ep_loss["sum"] / ep_loss["n"]
+                if _ep_loss < stop_state["best"] - a.early_stop_min_delta:
+                    stop_state["best"], stop_state["bad"] = _ep_loss, 0
+                else:
+                    stop_state["bad"] += 1
+                    # AGAINST THE BEST SO FAR, not the previous epoch: this loss rises on
+                    # individual epochs while still trending down, so a previous-epoch comparison
+                    # would stop a run that is still learning.
+                    print(f"  early stop: epoch {ep + 1} loss {_ep_loss:.4f} did not beat "
+                          f"{stop_state['best']:.4f} by {a.early_stop_min_delta:g} "
+                          f"({stop_state['bad']}/{a.early_stop_patience} without progress)")
+                if stop_state["bad"] >= a.early_stop_patience:
+                    print(f"\nEARLY STOP after epoch {ep + 1}: {stop_state['bad']} consecutive "
+                          f"epoch(s) failed to beat the best training loss "
+                          f"({stop_state['best']:.4f}) by {a.early_stop_min_delta:g}. The epoch "
+                          f"below still evaluates and still writes its resume bundle, so this "
+                          f"stops the run without discarding the epoch that triggered it.")
+                    done = True
+
             # THE RESUME BUNDLE, WRITTEN BEFORE THE EVALUATION. The evaluator is a subprocess that
             # does not touch these weights, so either side would be correct -- but writing first
             # means a crash IN the evaluator still leaves this epoch resumable, and the evaluator
