@@ -175,6 +175,19 @@ def main():
                          "at ep57, both still trending down, and krah8z's ep28 missed resetting "
                          "the counter by 0.0001 (1.9674 against a 1.9673 threshold). 0.002 is "
                          "below the late-run gain and still above the epoch-to-epoch noise.")
+    ap.add_argument("--frame-direction", action="store_true",
+                    help="ADD A THIRD POSE PATHWAY to the confidence head: for each ordered pair "
+                         "(i, j), the UNIT direction of j in i's backbone frame, through one "
+                         "zero-initialised LinearNoBias(3 -> c_z) added into z_pair beside the two "
+                         "distance paths that are already there. See docs/pose_pathways.md. The "
+                         "head's existing view of the pose is cdist over ONE representative atom "
+                         "per token, so the N and C atoms that define a residue's frame are not in "
+                         "its input at all and the frame's orientation is ABSENT, not merely "
+                         "implicit -- while PAE is defined on exactly that orientation. Zero-init "
+                         "means step 0 is bit-identical to the head without it, but it adds a "
+                         "trainable tensor, so an existing resume bundle CANNOT be loaded and the "
+                         "evaluator must be given --frame-direction too (this passes it). "
+                         "phases/phase_k_frame_direction_check.py checks the geometry on CPU.")
     ap.add_argument("--pae-only", action="store_true",
                     help="train the PAE term ALONE: pLDDT, PDE and resolved are stubbed out, not "
                          "computed, not trained. ipTM derives entirely from PAE, and at the shipped "
@@ -534,6 +547,14 @@ def main():
           f"{model.confidence_head.pairformer_stack.blocks_per_ckpt}, chunking off")
     print(f"confidence_head.training = {model.confidence_head.training} "
           f"(trunk stays eval; train_confidence_only={configs.train_confidence_only})")
+    # THE THIRD POSE PATHWAY, INSTALLED BEFORE head_param_names() READS THE MODULE TREE. That
+    # function derives the trainable set from the tree rather than from a hand-written list, so the
+    # new projection is picked up automatically -- but only if it exists by then. Installed after
+    # .train() and the blocks_per_ckpt assignment so neither is applied to a module that is about
+    # to be wrapped.
+    if a.frame_direction:
+        import pose_direction
+        pose_direction.install(model)
     loss_fn = ProtenixLoss(configs)
     if a.drop_pde:
         # A STUB IN PLACE OF THE MODULE, because a zero weight would still run it.
@@ -891,7 +912,12 @@ def main():
                  # AdamW moments. These were added to the saved bundle and to _PRE_CROP but NOT
                  # here, which left the guard inert: it compared neither, and the _PRE_CROP
                  # defaults for them were never consulted.
-                 "pae_scored_pairs": a.pae_scored_pairs, "pae_only": a.pae_only}
+                 "pae_scored_pairs": a.pae_scored_pairs, "pae_only": a.pae_only,
+                 # NOT JUST THE OBJECTIVE -- THE PARAMETER SET. --frame-direction adds a trainable
+                 # tensor, so a bundle written without it is missing one and the _missing check
+                 # below refuses it anyway. It is compared here so the refusal names the setting
+                 # that caused it instead of reporting an absent tensor.
+                 "frame_direction": a.frame_direction}
 
         # A BUNDLE WRITTEN BY OLDER CODE IS NOT DRIFT. The guard grew from four fields to twelve
         # while run 9mfb4y was in flight, so its bundles carry only the original eight: the running
@@ -924,7 +950,8 @@ def main():
         # like any other field -- which means a resume that ENABLES cropping shows up as real
         # drift and needs --resume-allow-drift, because it genuinely changes the objective.
         _PRE_CROP = {"crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
-                     "pae_only": False}
+                     "pae_only": False,
+                     "frame_direction": False}
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
@@ -1242,6 +1269,14 @@ def main():
         # FROM THE HEAD'S FEATURES, which carry asym_id on both paths. feat_cache does not, on the
         # minimal path: the loss never reads it, so it is not in the nine.
         n_tok = int(feat_head["asym_id"].shape[-1]) if "asym_id" in feat_head else -1
+        # ONCE PER UNIT, BEFORE ANY POSE RUNS. From feat_cache, not feat_head: the trunk cache
+        # carries has_frame but neither frame_atom_index nor pae_rep_atom_mask, and all three are
+        # in LOSS_FEATS. Under cropping feat_cache IS crop_feat_loss, so these are the cropped
+        # copies whose atom indices match the cropped coordinates the head is given.
+        if a.frame_direction:
+            import pose_direction
+            pose_direction.set_unit(feat_cache["frame_atom_index"], feat_cache["has_frame"],
+                                    feat_cache["pae_rep_atom_mask"], pdb=pdb)
         if world > 1 and n_pose != a.nsample:
             raise SystemExit(f"STOP: {pdb}/{arm_seed} holds {n_pose} pose(s), not --nsample "
                              f"{a.nsample}. Across ranks that shifts the optimiser step onto a "
@@ -1471,6 +1506,13 @@ def main():
                      "--pool", train_pool,
                      "--roles", os.path.join(a.fold, "chain_roles.csv"),
                      "--seed-base", str(_seed_base)]
+        # THE EVALUATOR MUST RUN THE SAME FUNCTION WE TRAINED. Without this it builds a head with
+        # no frame_dir_proj, and its own guard refuses the checkpoint for holding a tensor the
+        # model does not have -- a loud failure rather than a silently different metric, but a
+        # failure either way. Appended outside the train_pool branch so it reaches the validation
+        # path too; both the sharded driver (--extra) and the single-card path forward `extra`.
+        if a.frame_direction:
+            extra = extra + ["--frame-direction"]
         # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
         # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
         # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one

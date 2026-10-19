@@ -372,6 +372,12 @@ def main():
                     help="how closely the recomputed ipTM must reproduce results.csv with the "
                          "SHIPPED head. bf16 trunk tensors are stored and reloaded and the head runs "
                          "under autocast, so exact equality is not the bar.")
+    ap.add_argument("--frame-direction", action="store_true",
+                    help="the checkpoint was trained with phase_k_train --frame-direction, so the "
+                         "head carries a frame_dir_proj the stock model does not. Installs that "
+                         "pathway before loading, and reads frame_atom_index / pae_rep_atom_mask "
+                         "from the label npz beside each trunk. phase_k_train passes this "
+                         "automatically; without it the checkpoint load refuses the extra tensor.")
     ap.add_argument("--no-self-check", action="store_true")
     ap.add_argument("--allow-roles-fallback", action="store_true",
                     help="use chain_roles.csv when OST's per-pose mapping is unusable. OFF by "
@@ -495,6 +501,14 @@ def main():
         raise SystemExit("STOP: set LAYERNORM_TYPE=openfold (without it coordinates are NaN)")
     dev = torch.device("cuda")
     model, configs = RC.build_model(a.ckpt_dir, a.model_name, dev)
+    # INSTALLED BEFORE THE CHECKPOINT IS LOADED, because a head trained with --frame-direction
+    # carries frame_dir_proj.weight and the guard below refuses any tensor the model does not
+    # have. That refusal is the right behaviour -- scoring a trained head with the pathway absent
+    # would measure a different function than the one trained -- so this flag is how the trainer
+    # keeps the two in step, and phase_k_train passes it automatically.
+    if a.frame_direction:
+        import pose_direction
+        pose_direction.install(model)
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu")
         have = dict(model.named_parameters())
@@ -560,6 +574,23 @@ def main():
             if n < len(units):
                 _pf_future = _pf_pool.submit(_warm, units[n][2])
         feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
+        if a.frame_direction:
+            # FROM THE LABEL NPZ BESIDE THE TRUNK. The trunk cache carries has_frame but not
+            # frame_atom_index or pae_rep_atom_mask, so there is no second source here -- and
+            # guessing them from atom_to_tokatom_idx would be a silent wrong answer rather than a
+            # missing file. Raises if absent: the validation fold currently has 53 trunks and NO
+            # labels, so --frame-direction cannot score the validation set until those exist.
+            _lp = tp.replace(os.sep + "trunks" + os.sep, os.sep + "labels" + os.sep)
+            if _lp == tp or not os.path.exists(_lp):
+                raise SystemExit(
+                    f"STOP: --frame-direction needs frame_atom_index and pae_rep_atom_mask, which "
+                    f"live in the label npz, and {_lp} does not exist. The trunk cache does not "
+                    f"carry either. Build labels for this fold, or score without "
+                    f"--frame-direction -- which would measure a head that has the pathway as "
+                    f"though it did not.")
+            _L = np.load(_lp, allow_pickle=True)
+            pose_direction.set_unit(_L["lf_frame_atom_index"], _L["lf_has_frame"],
+                                    _L["lf_pae_rep_atom_mask"], pdb=pdb)
         summ = (RC.pair_iptm_only if a.pair_iptm_only else RC.confidence)(
             model, configs, feat, s_in, s_tr, z, x, nc)
         summ = summ if isinstance(summ, (list, tuple)) else [summ]
