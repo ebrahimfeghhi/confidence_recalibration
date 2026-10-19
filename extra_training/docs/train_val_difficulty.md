@@ -5,8 +5,9 @@ authority on how the validation set was *chosen*; this doc is about what that ch
 difficulty of the resulting sets, and how to read a number measured on one against a number
 measured on the other.
 
-Status: written 2026-10-19. The difficulty gap is measured. Its cause is only partly explained —
-see *What does not explain it*.
+Status: written 2026-10-19, corrected the same day. The difficulty gap is measured. Its cause is
+NOT explained: size accounts for about 15% of it, and the first replacement hypothesis — a
+validation-only antigen filter — turned out not to exist. See *What does not explain it*.
 
 ## The three sets
 
@@ -86,13 +87,20 @@ remaining 0.150 is something else.
 Size is the only candidate measured so far, and it is not enough. The other differences between
 the two selections, all from `docs/validation_set.md`, are **untested hypotheses**:
 
-1. **Polypeptide-antigen filter.** Validation representatives must have a polypeptide antigen —
-   this was added as a correction, because without it "a hapten pairing could be selected as a
-   representative" (`validation_set.md`, Corrections). The training fold applies no such filter.
-   Protein-protein interfaces are the regime DockQ was designed for; haptens and short peptides
-   are not. **This is the strongest candidate** and it is directly measurable: compare oracle
-   DockQ on training interfaces split by antigen type.
-2. **The 150-token filter**, also applied to validation representatives and not to training.
+1. **Antigen-type composition, not filtering.** An earlier version of this doc claimed the
+   polypeptide-antigen filter was validation-only and called it the strongest candidate. **That
+   was wrong.** `phase_a_define_train_set.py:119` defines `POLY = ("PROTEIN", "PEPTIDE")` and
+   line 287 applies it inside `training_clusters`, which that file calls "THE DEFINITION OF THE
+   TRAINING SET". Both sets require a polypeptide antigen. The 2026-10-12 correction recorded in
+   `validation_set.md` fixed an *inconsistency* — validation's representative-picker had omitted
+   a filter training already had, so a hapten-only pairing could have been picked — rather than
+   adding a filter validation alone has.
+   What survives is weaker: `POLY` admits `PEPTIDE` as well as `PROTEIN`, so short peptide
+   antigens are in both sets, and the two could still differ in how much of each they drew.
+   Measurable by splitting both sets' oracle DockQ by `agtypes`.
+2. **The 150-token filter** on validation representatives. Check whether the training definition
+   applies an equivalent minimum before treating this as a difference — the antigen-filter error
+   above came from assuming a validation rule had no training counterpart.
 3. **R2: clusters with <= 5 post-cutoff structures.** Validation is deliberately built from
    *small* clusters, to preserve training data. `validation_set.md` already flags that "any
    performance claim must be stated for that population, not for antibody-antigen complexes in
@@ -106,7 +114,7 @@ the two selections, all from `docs/validation_set.md`, are **untested hypotheses
    the smallest by token count among eligible); the training fold keeps every structure in a
    cluster, hard ones included.
 
-Note that 1, 2 and 5 all push the same way: validation is filtered toward the easier end of the
+Note that 2 and 5 push the same way: validation is filtered toward the easier end of the
 distribution and training is not. None of this is a flaw in the validation design — R1 and R2
 exist to keep the cache affordable and to preserve training data — but it does mean the two sets
 are not samples from one population, and a difference between them is not evidence about a
@@ -116,10 +124,11 @@ method.
 
 In rough order of value per minute, none needing a GPU:
 
-1. Oracle DockQ on training interfaces **split by antigen type** (polypeptide vs other). Tests
-   hypothesis 1, the strongest candidate.
-2. Validation baseline **split by the all-new / mixed flag**. Tests hypothesis 4, and it is the
-   one with implications beyond difficulty.
+1. Validation baseline **split by the all-new / mixed flag**. Tests hypothesis 4, now the
+   strongest candidate, and it is the one with implications beyond difficulty.
+2. Oracle DockQ on **both** sets split by `agtypes` (PROTEIN vs PEPTIDE). Tests hypothesis 1 in
+   its surviving composition form. Split both sets, not just training — the error this replaced
+   came from comparing one set against an assumption about the other.
 3. Oracle DockQ on training interfaces split by **antigen length**, for hypothesis 2.
 4. A size- and antigen-type-matched subsample of the training fold, scored against validation.
    If a matched subsample still scores well below validation, the remaining gap is in the cluster
