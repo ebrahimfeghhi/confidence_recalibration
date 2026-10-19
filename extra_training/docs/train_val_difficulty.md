@@ -5,9 +5,11 @@ authority on how the validation set was *chosen*; this doc is about what that ch
 difficulty of the resulting sets, and how to read a number measured on one against a number
 measured on the other.
 
-Status: written 2026-10-19, corrected the same day. The difficulty gap is measured. Its cause is
-NOT explained: size accounts for about 15% of it, and the first replacement hypothesis — a
-validation-only antigen filter — turned out not to exist. See *What does not explain it*.
+Status: written 2026-10-19, corrected twice the same day. The difficulty gap is measured. Its
+cause is NOT explained: size accounts for about 15% of it, and two replacement hypotheses — a
+validation-only antigen filter, and an era/mixed-cluster imbalance — were both checked and do
+not exist. See *What does not explain it*, which also records why both were wrong in the same
+way.
 
 ## The three sets
 
@@ -84,56 +86,61 @@ remaining 0.150 is something else.
 
 ## What does not explain it
 
-Size is the only candidate measured so far, and it is not enough. The other differences between
-the two selections, all from `docs/validation_set.md`, are **untested hypotheses**:
+Three candidates have been checked. None closes the gap.
 
-1. **Antigen-type composition, not filtering.** An earlier version of this doc claimed the
-   polypeptide-antigen filter was validation-only and called it the strongest candidate. **That
-   was wrong.** `phase_a_define_train_set.py:119` defines `POLY = ("PROTEIN", "PEPTIDE")` and
-   line 287 applies it inside `training_clusters`, which that file calls "THE DEFINITION OF THE
-   TRAINING SET". Both sets require a polypeptide antigen. The 2026-10-12 correction recorded in
-   `validation_set.md` fixed an *inconsistency* — validation's representative-picker had omitted
-   a filter training already had, so a hapten-only pairing could have been picked — rather than
-   adding a filter validation alone has.
-   What survives is weaker: `POLY` admits `PEPTIDE` as well as `PROTEIN`, so short peptide
-   antigens are in both sets, and the two could still differ in how much of each they drew.
-   Measurable by splitting both sets' oracle DockQ by `agtypes`.
-2. **The 150-token filter** on validation representatives. Check whether the training definition
-   applies an equivalent minimum before treating this as a difference — the antigen-filter error
-   above came from assuming a validation rule had no training counterpart.
-3. **R2: clusters with <= 5 post-cutoff structures.** Validation is deliberately built from
-   *small* clusters, to preserve training data. `validation_set.md` already flags that "any
-   performance claim must be stated for that population, not for antibody-antigen complexes in
-   general."
-4. **R3: 24 all-new + 16 mixed clusters.** A "mixed" cluster is one Protenix has *older*
-   structures of. Those 16 could be systems the trunk has effectively seen relatives of, which
-   would make them easier to fold — in the direction of the observed gap. Worth separating the
-   validation baseline by this flag: if the 16 mixed clusters score well above the 24 all-new
-   ones, part of the gap is leakage-adjacent rather than intrinsic.
-5. **One representative per cluster.** Validation takes the cluster's representative (preferring
-   the smallest by token count among eligible); the training fold keeps every structure in a
-   cluster, hard ones included.
+**1. Structure size — about 15% of it.** Measured above: restricting the training fold to
+validation's <= 1,000-token regime moves its oracle from 0.5401 to 0.5671, against validation's
+0.7171.
 
-Note that 2 and 5 push the same way: validation is filtered toward the easier end of the
-distribution and training is not. None of this is a flaw in the validation design — R1 and R2
-exist to keep the cache affordable and to preserve training data — but it does mean the two sets
-are not samples from one population, and a difference between them is not evidence about a
-method.
+**2. The polypeptide-antigen filter — applies to both sets.** An earlier version of this doc
+called this the strongest candidate, on the reading that validation required a protein antigen
+and training did not. Wrong: `phase_a_define_train_set.py:119` defines
+`POLY = ("PROTEIN", "PEPTIDE")` and line 287 applies it inside `training_clusters`, which that
+file calls "THE DEFINITION OF THE TRAINING SET". The 2026-10-12 correction in
+`validation_set.md` fixed an *inconsistency* — validation's representative-picker had omitted a
+filter training already had — rather than adding a validation-only rule.
 
-## Measurements that would settle it
+**3. Deposition era and the mixed/all-new split — matched.** The next version of this doc
+proposed that R3's 16 "mixed" clusters (systems Protenix holds older structures of) could be
+easier and inflate validation. Also wrong, twice over. "Mixed" is a property of a *cluster*: 107
+of the 533 pool clusters are mixed, validation took 16, and the other 91 are in training. And
+both folds are post-cutoff only — all 500 training structures have `release_date >= 2021-09-30`
+(`training/prep/job_indices.csv`), as validation is by construction. If anything the era
+argument runs the wrong way: pre-cutoff structures are the ones Protenix trained on, so a
+training fold containing them would be *easier*, and it contains none.
 
-In rough order of value per minute, none needing a GPU:
+### The mistake those two have in common
 
-1. Validation baseline **split by the all-new / mixed flag**. Tests hypothesis 4, now the
-   strongest candidate, and it is the one with implications beyond difficulty.
-2. Oracle DockQ on **both** sets split by `agtypes` (PROTEIN vs PEPTIDE). Tests hypothesis 1 in
-   its surviving composition form. Split both sets, not just training — the error this replaced
-   came from comparing one set against an assumption about the other.
-3. Oracle DockQ on training interfaces split by **antigen length**, for hypothesis 2.
-4. A size- and antigen-type-matched subsample of the training fold, scored against validation.
-   If a matched subsample still scores well below validation, the remaining gap is in the cluster
-   selection (hypotheses 3-5) and the two sets should be described as different populations
-   rather than reconciled.
+Both wrong hypotheses came from reading `validation_set.md` — which documents validation's rules
+in detail and training's not at all — and treating each rule as absent from training because that
+doc does not mention it. **A rule described in the validation doc is not evidence of a difference.
+Check the training definition before counting one.**
+
+So the honest state is: the gap is real, size accounts for roughly 15% of it, and nothing checked
+so far accounts for the rest.
+
+### What is left, and the one measurement that would settle it
+
+Still-unchecked differences, all from `docs/validation_set.md`:
+
+- **R2**: validation clusters hold <= 5 post-cutoff structures, so validation is deliberately
+  built from *small* clusters. `validation_set.md` already warns that "any performance claim must
+  be stated for that population, not for antibody-antigen complexes in general."
+- **The 150-token filter** on validation representatives — check for a training counterpart
+  first.
+- **One representative per cluster**, preferring the smallest eligible by token count, against
+  every structure in a training cluster.
+- **Antigen-type composition** within `POLY`: it admits `PEPTIDE` as well as `PROTEIN`, so the
+  two sets could still differ in the mix.
+
+Rather than testing these one at a time from the validation side — which is what produced two
+wrong answers — the measurement to run is a single **side-by-side attribute comparison**: for
+every structure in both folds, pull token count, antigen type, antigen length, cluster size and
+deposition date, and compare the distributions. That says in one pass which attributes actually
+differ, and only those are worth a difficulty breakdown. No GPU needed.
+
+Until that exists, treat the two sets as different populations and do not read a train-versus-val
+difference as evidence about a method.
 
 ## Where the numbers come from
 
