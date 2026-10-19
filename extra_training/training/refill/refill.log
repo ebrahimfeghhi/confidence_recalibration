@@ -1,0 +1,42 @@
+  7sk4_AC  roles ag0-L  candidate model pairs: 1x1
+  7sk4_BC  roles ag1-L  candidate model pairs: 1x1
+  7sk8_AC  roles ag0-L  candidate model pairs: 1x1
+  7sk8_BC  roles ag1-L  candidate model pairs: 1x1
+  7stf_AB  roles H-ag1  candidate model pairs: 1x3 AMBIGUOUS, best-over-symmetry
+  7stf_AD  roles H-ag0  candidate model pairs: 1x1
+  7t82_AD  roles ag0-H  candidate model pairs: 1x1
+  7tr4_AD  roles ag0-H  candidate model pairs: 1x2 AMBIGUOUS, best-over-symmetry
+  7tr4_DE  roles H-ag2  candidate model pairs: 2x1 AMBIGUOUS, best-over-symmetry
+  8dv6_BD  roles ag1-L  candidate model pairs: 2x1 AMBIGUOUS, best-over-symmetry
+  8eed_DJ  roles ag0-L  candidate model pairs: 1x1
+  8r9x_AB  roles ag0-H  candidate model pairs: 1x1
+  8xcd_AC  roles ag0-L  candidate model pairs: 1x1
+  8zh7_AB  roles ag0-H  candidate model pairs: 1x1
+  9cye_JL  roles ag1-L  candidate model pairs: 1x1
+  9mpz_BF  roles ag0-L  candidate model pairs: 1x1
+  9mpz_CF  roles ag1-L  candidate model pairs: 1x1
+  9owf_AF  roles ag0-L  candidate model pairs: 2x1 AMBIGUOUS, best-over-symmetry
+  9pix_AB  roles ag0-H  candidate model pairs: 1x1
+  7stz_AE  roles ag1-H  candidate model pairs: 1x1
+  9blx_CE  roles H-ag2  candidate model pairs: 1x1
+  9blx_DE  roles L-ag2  candidate model pairs: 1x1
+  OST calls queued: 1300
+
+  scored 900 assignment(s) -> 850 best rows -> training/refill/refill_rows.csv
+    7sk4_AC: 50 rows, dockq 0.028-0.752, winning copies {'C+B': 44, 'B+C': 6}
+    7sk4_BC: 50 rows, dockq 0.030-0.882, winning copies {'D+B': 50}
+    7sk8_AC: 50 rows, dockq 0.006-0.876, winning copies {'C+B': 43, 'B+C': 7}
+    7sk8_BC: 50 rows, dockq 0.032-0.872, winning copies {'D+B': 50}
+    7stf_AB: 50 rows, dockq 0.027-0.332, winning copies {'A+D': 50}
+    7stf_AD: 50 rows, dockq 0.007-0.014, winning copies {'C+A': 50}
+    7t82_AD: 50 rows, dockq 0.008-0.032, winning copies {'A+C': 50}
+    7tr4_AD: 50 rows, dockq 0.018-0.195, winning copies {'A+C': 50}
+    7tr4_DE: 50 rows, dockq 0.046-0.796, winning copies {'A+D': 50}
+    8eed_DJ: 50 rows, dockq 0.016-0.336, winning copies {'B+C': 27, 'C+B': 23}
+    8r9x_AB: 50 rows, dockq 0.005-0.065, winning copies {'C+A': 42, 'A+C': 8}
+    9blx_CE: 50 rows, dockq 0.090-0.453, winning copies {'A+C': 50}
+    9blx_DE: 50 rows, dockq 0.065-0.560, winning copies {'B+C': 50}
+    9cye_JL: 50 rows, dockq 0.027-0.838, winning copies {'C+B': 47, 'B+C': 3}
+    9mpz_BF: 50 rows, dockq 0.013-0.960, winning copies {'C+B': 50}
+    9mpz_CF: 50 rows, dockq 0.018-0.843, winning copies {'D+B': 38, 'B+D': 12}
+    9pix_AB: 50 rows, dockq 0.011-0.134, winning copies {'A+C': 50}
