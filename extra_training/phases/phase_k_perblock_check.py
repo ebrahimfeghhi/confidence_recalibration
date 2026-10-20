@@ -20,6 +20,12 @@ actually happened in pathway C and would happen here the same way.
    injection.
 6. NO TENSOR IS LEFT REACHABLE between poses. The shared one-hot is 67 MB at 656 tokens; leaving
    it live after the forward is what a per-pose leak looks like from the outside.
+7. BACKWARD SURVIVES ACTIVATION CHECKPOINTING. The check that was missing, and the bug it catches
+   was real: with blocks_per_ckpt set, a block's forward is RE-RUN during backward, and the
+   wrapper used to read the shared one-hot out of a module global that the forward's `finally`
+   had already cleared -- so backward raised _NoPose. Checks 1-6 all run under no_grad with
+   checkpointing off and could never see it. This one runs WITH grad, WITH blocks_per_ckpt=1, and
+   calls backward.
 
 Run: /home/ebrahim/Protenix/.venv/bin/python -I phases/phase_k_perblock_check.py
 """
@@ -28,6 +34,11 @@ import os
 import sys
 
 import torch
+# EXPLICIT, because check 7 is the only thing here that reaches the checkpointing path and
+# Protenix's get_checkpoint_fn does `torch.utils.checkpoint.checkpoint` without importing the
+# submodule -- it relies on something else having imported it first, which nothing does in a
+# standalone script.
+import torch.utils.checkpoint  # noqa: F401
 
 sys.path.insert(0, "/home/ebrahim/Protenix")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -142,6 +153,30 @@ def main():
         tt_s, tt_z = mt.confidence_head.memory_efficient_forward({}, s, z, None, x)
     ok5 = ok5 and not torch.equal(tt_z, bb_z)
 
+    # 7. backward under activation checkpointing, which is how this project trains
+    torch.manual_seed(2)
+    mc = FakeModel(**kw)
+    mc.confidence_head.pairformer_stack.blocks_per_ckpt = 1
+    pose_perblock.install(mc, tied=False, loud=False)
+    with torch.no_grad():
+        for pr in mc.confidence_head.pose_perblock_proj:
+            pr.weight.normal_(0.0, 0.05)
+    gs, gz, gx = inputs()
+    gz = gz.clone().requires_grad_(True)
+    ok7, why7 = True, "backward ok, grads flowed"
+    try:
+        o_s, o_z = mc.confidence_head.memory_efficient_forward({}, gs, gz, None, gx)
+        o_z.square().sum().backward()
+        got = [pr.weight.grad for pr in mc.confidence_head.pose_perblock_proj]
+        if any(gg is None for gg in got):
+            ok7, why7 = False, "a projection got no gradient"
+        elif all(float(gg.abs().max()) == 0.0 for gg in got):
+            ok7, why7 = False, "every projection gradient is zero"
+        elif gz.grad is None:
+            ok7, why7 = False, "z got no gradient"
+    except Exception as e:
+        ok7, why7 = False, f"{type(e).__name__}: {str(e)[:60]}"
+
     print(f"stack: {a.n_blocks} blocks, c_z {a.c_z}, {a.num_bins} bins, {a.n_token} tokens")
     print(f"  1 zero-init exact      max|w| {worst:.1e}                      {'ok' if ok1 else 'FAIL'}")
     print(f"  2 bit-identical at 0   max|dz| {dmax:.1e}                     {'ok' if ok2 else 'FAIL'}")
@@ -149,7 +184,8 @@ def main():
     print(f"  4 trained weight acts  max|dz| {tdiff:.3f}                   {'ok' if ok4 else 'FAIL'}")
     print(f"  5 tied shares storage  {it['params']} params, 1 matrix          {'ok' if ok5 else 'FAIL'}")
     print(f"  6 one-hot released     {pose_perblock._CALL['onehot']}                        {'ok' if ok6 else 'FAIL'}")
-    for i, ok in ((1, ok1), (2, ok2), (3, ok3), (4, ok4), (5, ok5), (6, ok6)):
+    print(f"  7 ckpt backward        {why7:34.34s}{'ok' if ok7 else 'FAIL'}")
+    for i, ok in ((1, ok1), (2, ok2), (3, ok3), (4, ok4), (5, ok5), (6, ok6), (7, ok7)):
         if not ok:
             fails.append(str(i))
     if fails:

@@ -107,15 +107,28 @@ def install(model, tied=False, loud=True):
 
     def _prep_blocks(pair_mask=None, **kw):
         blocks = orig_prep(pair_mask=pair_mask, **kw)
+        # CAPTURED HERE, ONCE PER FORWARD, NOT READ FROM THE GLOBAL INSIDE THE BLOCK.
+        #
+        # With activation checkpointing -- which this project runs, --blocks-per-ckpt 1 -- a
+        # block's forward is RE-RUN during backward. Reading _CALL["onehot"] inside the block
+        # therefore read it twice: once in the real forward, and again in the recomputation, by
+        # which time the `finally` in memory_efficient_forward had already set it to None. That
+        # raised _NoPose on the backward pass. Review reproduced it: backward succeeded with
+        # checkpointing off and failed with it on, and the old checker missed it because it ran
+        # under no_grad with blocks_per_ckpt=None.
+        #
+        # Binding it to a local makes each closure hold its own reference, which the blocks list
+        # holds, which checkpoint_blocks' graph holds until that graph's backward is done. Clearing
+        # the dict slot afterwards is then harmless -- it drops the dict's reference, not this one.
+        oh = _CALL["onehot"]
+        if oh is None:
+            raise _NoPose(
+                "STOP: the pair stack was prepared without the pose embedding set. A is installed "
+                "but memory_efficient_forward did not run, so the stack was reached by some other "
+                "path and the pose would be silently absent.")
 
         def wrap(i, fn):
             def run(s, z):
-                oh = _CALL["onehot"]
-                if oh is None:
-                    raise _NoPose(
-                        "STOP: a pairformer block ran without the pose embedding set. A is "
-                        "installed but memory_efficient_forward did not run, so the stack was "
-                        "reached by some other path and the pose would be silently absent.")
                 proj = (head.pose_perblock_proj[0] if head._pose_perblock_tied
                         else head.pose_perblock_proj[i - 1])
                 # ADD, THEN DROP THE REFERENCE, BEFORE THE BLOCK RUNS. Passing `z + delta` as an
