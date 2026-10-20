@@ -32,7 +32,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("runs")
     ap.add_argument("--root", default="training/runs")
-    ap.add_argument("--full-steps", type=int, default=250)
+    ap.add_argument("--full-steps", type=int, default=285,
+                    help="steps that make an epoch COMPLETE. An epoch is 290 full steps plus a "
+                         "remainder, 289 optimiser steps in practice. This was 250 to admit a "
+                         "short last shard, and that let a MID-EPOCH read through: epoch 3 was "
+                         "published as 2.5880 from a 265-step snapshot when its complete value is "
+                         "2.6061. A threshold must exclude partial epochs, not only short ones.")
     ap.add_argument("--out", default="docs/full_train_results.md")
     ap.add_argument("--budget", type=int, default=30,
                     help="the seed budget these DockQ numbers must belong to; a metric json at a "

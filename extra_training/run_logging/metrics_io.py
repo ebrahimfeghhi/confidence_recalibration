@@ -63,7 +63,7 @@ class Metrics:
         return True
 
 
-def load(root, runs, budget, full_steps=250):
+def load(root, runs, budget, full_steps=285):
     """Read a '+'-joined lineage. `budget` is the seed budget the DockQ numbers must belong to."""
     m = Metrics()
     for part in runs.split("+"):
