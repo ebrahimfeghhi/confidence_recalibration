@@ -123,10 +123,16 @@ def derive_frames(feat):
     tat = torch.as_tensor(feat["atom_to_tokatom_idx"]).long().reshape(-1)
     n_atom = int(tok.shape[0])
     n_token = int(torch.as_tensor(feat["has_frame"]).reshape(-1).shape[0])
-    fai = torch.full((n_token, 3), -1, dtype=torch.long)
+    # ALLOCATED ON THE INDICES' OWN DEVICE. phase_j_rescore_cache.load_unit puts the features on
+    # the run's cuda device, so a CPU `torch.full` here was indexed with cuda indices on the very
+    # next line -- which raises, and would have raised on C's FIRST validation pass. The earlier
+    # test missed it because it loaded the unit onto torch.device("cpu"), where the mismatch
+    # cannot occur. Found in review.
+    dev = tok.device
+    fai = torch.full((n_token, 3), -1, dtype=torch.long, device=dev)
     sel = tat < 3
     fai[tok[sel], tat[sel]] = torch.nonzero(sel, as_tuple=True)[0]
-    pae = torch.zeros(n_atom, dtype=torch.bool)
+    pae = torch.zeros(n_atom, dtype=torch.bool, device=dev)
     pae[tat == 1] = True
     return fai, pae
 

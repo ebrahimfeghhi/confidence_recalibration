@@ -32,7 +32,7 @@ Seeds **500000-500009**, 5 poses each, so 10 seeds x 5 = 50 poses per interface 
 per epoch. Trunks and labels in `training/fold/`, per-pose DockQ and chain-pair ipTM in
 `training/fold/results.csv`.
 
-### Validation — 10 held-out structures, 18 interfaces
+### Validation — a DIAGNOSTIC subset: 10 held-out structures, 18 interfaces
 
 `training/val10/pool.csv`:
 
@@ -58,7 +58,15 @@ Every interface has an acceptable pose available and the shipped head finds 9, s
 winnable** and anything above 0.2626 / 0.5000 is the head beating the baseline on structures it
 has never trained on.
 
-Two things that must travel with every number from this pool:
+**This is a diagnostic subset, not an estimate of validation performance.** Selecting structures
+for high headroom makes the pool sensitive -- an improvement shows up here that would be lost in
+the average over all 53 -- but a gain on it says nothing about the full validation population,
+because the population was chosen to exclude the cases where there is nothing to gain. **Whichever
+arm wins must be confirmed on all 53 validation structures (92 interfaces) before the result is
+stated.** That full pass is ~25 min sharded at budget 100 and is the number that goes in a paper;
+val10 is the instrument used to decide which arms deserve it.
+
+Three things that must travel with every number from this pool:
 
 - **`9qrv` and `9bx7` are two of the three interfaces that carried 85-88% of every earlier arm's
   validation gain.** Ranking by headroom necessarily selects them, so a gain must be decomposed
@@ -88,6 +96,7 @@ Every arm is identical except for the pathway it adds.
 | start | fresh from the shipped head | the pathways add trainable tensors, so no existing bundle can be resumed |
 | checkpoints | a resume bundle every epoch | any epoch can be scored afterwards |
 | **eval** | **val10, every 2 epochs, budget 100**, sharded over 3 cards | 5.1 min each with the join cache, down from 8.9 |
+| final check | the winning arm, **all 53 validation structures**, budget 100 | val10 is diagnostic; the full pass is the reportable number, ~25 min |
 
 Cost: **~6.5 h per arm** — 4.3 h training at 5.2 min/epoch plus 2.1 h of evals.
 
@@ -106,13 +115,18 @@ was stopped before producing a loss trajectory. It is the natural next rate to t
 - **Ten-epoch minimum.** No arm is stopped, relaunched, or called stable / unstable / plateaued
   before 10 complete epochs. One epoch's rise is not instability. Exceptions: non-finite
   gradients, skipped optimiser steps, the gradient norm hitting the clip, a crash.
-- **Compare at matched epochs**, not best-ever. Every arm runs 18 steps/epoch, so epoch number is
-  a fair axis; "best seen" has previously just tracked which arm ran longest.
-- **The loss is the smoother signal.** DockQ over 18 interfaces is noisy; pose-weighted epoch PAE
-  is not. Pose-weighted means `sum(batch_pae_loss * batch_n) / sum(batch_n)` over steps — never a
+- **Epoch 50 is the primary comparison.** Matched-epoch curves are for watching, not deciding:
+  each arm gets the same 50 epochs and the comparison is made at the end. An arm that looks ahead
+  at ep6 and behind at ep20 has told us nothing yet.
+- **The two signals answer different questions.** Training PAE diagnoses OPTIMISATION — is the arm
+  fitting at all, is it faster, has it stalled. Held-out selection on val10 decides WHICH ARM
+  HELPS. They can disagree, and when they do the held-out metric is the one that matters. Use
+  pose-weighted epoch PAE, `sum(batch_pae_loss * batch_n) / sum(batch_n)` over steps — never a
   mean of per-step means, never a partial epoch.
-- Gradient norm is a **weak** instability detector under AdamW, whose update is roughly
-  `lr x sign(gradient)` per parameter, so the clip only catches extreme outliers.
+- **One clipping event is not instability.** Gradient clipping working as designed is not a
+  failure, and gradient norm is a weak detector anyway under AdamW, whose update is roughly
+  `lr x sign(gradient)` per parameter. Stop for: persistent divergence of the loss, non-finite
+  gradients, or failed optimiser updates (`step_ok == 0`). Not for a single clip.
 
 ## Arm 1 — baseline
 
