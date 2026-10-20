@@ -24,6 +24,9 @@ import csv
 import os
 import re
 
+import glob
+import json
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -58,15 +61,37 @@ def val_pae(root, rid):
 
 
 def dockq(root, rid):
-    byep = {}
+    """Held-out DockQ per epoch, from the run log AND from any metric_train_ep<N>.json beside it.
+
+    TWO SOURCES BECAUSE THERE ARE TWO WAYS THE NUMBER ARRIVES. In-run, the --train-eval-pool hook
+    prints an "epoch N TRAIN:" line. Scored after the fact -- which is how every checkpoint of a
+    finished run gets measured, and how x3k2m4's epoch 1 was recovered after a crash killed the
+    run before its eval ran -- phase_k_eval writes a metric json and touches no log. A plot that
+    read only the log silently omitted the second kind.
+
+    THE JSON WINS ON A CONFLICT, because it is the file an explicit re-score writes: if a later
+    pass at a different budget replaced an in-run number, that later pass is the one meant.
+    Budget is checked rather than assumed -- a budget-100 json on a budget-30 plot would put two
+    different pool depths on one axis, which is the error the reference lines exist to prevent.
+    """
+    byep, skipped = {}, []
     for part in rid.split("+"):
-        log = os.path.join(root, part, "run.log")
-        if not os.path.exists(log):
-            continue
-        for m in DOCKQ.finditer(open(log, errors="replace").read()):
-            byep[int(m.group(1))] = (float(m.group(2)), float(m.group(3)))
+        d = os.path.join(root, part)
+        log = os.path.join(d, "run.log")
+        if os.path.exists(log):
+            for m in DOCKQ.finditer(open(log, errors="replace").read()):
+                byep[int(m.group(1))] = (float(m.group(2)), float(m.group(3)))
+        for jp in sorted(glob.glob(os.path.join(d, "metric_train_ep*.json"))):
+            try:
+                j = json.load(open(jp))
+                ep = int(re.search(r"ep(\d+)\.json$", jp).group(1))
+            except (ValueError, OSError, AttributeError):
+                continue
+            byep[ep] = (float(j["mean_dockq"]), float(j["frac_acc"]))
+            if "budget" in j:
+                skipped.append((ep, int(j["budget"])))
     ks = sorted(byep)
-    return ks, [byep[k][0] for k in ks], [byep[k][1] for k in ks]
+    return ks, [byep[k][0] for k in ks], [byep[k][1] for k in ks], skipped
 
 
 def train_pae(root, rid, full_steps):
@@ -105,6 +130,9 @@ def main():
     # BUDGET 30, which is NOT the budget-100 pool. Derived from validation/fold/results.csv over
     # the same 18 interfaces: at 100 seeds the baseline is 0.2626 / 0.5000 and the oracle
     # 0.6662 / 1.0000. Quoting one against the other is a real error and these are the 30-seed set.
+    ap.add_argument("--budget", type=int, default=30,
+                    help="the seed budget the reference lines belong to; a metric json recorded at "
+                         "a different budget is flagged in the subtitle rather than plotted silently")
     ap.add_argument("--shipped-dockq", type=float, default=0.2909)
     ap.add_argument("--shipped-frac", type=float, default=0.5556)
     ap.add_argument("--oracle-dockq", type=float, default=0.5968)
@@ -165,7 +193,13 @@ def main():
                          label=label if vx else f"{label} (epoch 0 only)")
         if vx and len(set(vn)) > 1:
             notes.append(f"{label}: held-out pose count varies {min(vn)}-{max(vn)}")
-        ex, dq, fa = dockq(a.root, rid)
+        ex, dq, fa, budgets = dockq(a.root, rid)
+        # A JSON AT ANOTHER BUDGET IS NOT THE SAME METRIC. Said in the subtitle rather than
+        # quietly plotted: 0.2626/0.5000 at 100 seeds and 0.2909/0.5556 at 30 are different pools.
+        _wrong = sorted({b for _e, b in budgets if b != a.budget})
+        if _wrong:
+            notes.append(f"{label}: metric json(s) at budget {_wrong} plotted against "
+                         f"budget-{a.budget} reference lines")
         for ax, ys, base in ((axes[2], dq, a.shipped_dockq), (axes[3], fa, a.shipped_frac)):
             _x, _y = _with_ep0(ex, ys, base)
             if _x:
