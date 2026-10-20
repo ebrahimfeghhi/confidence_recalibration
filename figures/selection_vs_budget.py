@@ -32,6 +32,7 @@ import argparse
 import collections
 import csv
 import os
+import random
 
 import matplotlib
 matplotlib.use("Agg")
@@ -73,8 +74,21 @@ def sem(p, n):
     return (p * (1.0 - p) / n) ** 0.5 if n else 0.0
 
 
-def curves(path, ic, sc, smc, dc, qc, max_budget):
-    """Fractions in each category for N = 1..max_budget. One pass, then an incremental sweep."""
+def curves(path, ic, sc, smc, dc, qc, max_budget, draws, rng_seed=0):
+    """Fractions in each category for N = 1..max_budget, BOOTSTRAPPED over random seed subsets.
+
+    WHY NOT THE FIRST N SEEDS. The first version of this figure took seeds in sorted order, which
+    is one deterministic draw rather than an expectation over which N seeds you happen to have.
+    Checked against Protenix's published FoldBench-AB curve (104/160, the same set): first-N gave
+    45.6% at N=1 against a bootstrap's 50.6%, and the two agree only once N is large enough that
+    the particular subset stops mattering. The published curve carries a shaded band, which is a
+    bootstrap by construction. At N=100 both methods give the same answer because the subset IS
+    the pool.
+
+    ONE PERMUTATION, SWEPT INCREMENTALLY. For each draw the interface's seeds are shuffled once and
+    N walks 1..max_budget, carrying the running best DockQ and the running ipTM-selected pose.
+    Re-pooling at every N would be max_budget times the work for the same answer.
+    """
     by = collections.defaultdict(list)
     with open(path) as fh:
         for r in csv.DictReader(fh):
@@ -88,37 +102,35 @@ def curves(path, ic, sc, smc, dc, qc, max_budget):
     kept = {}
     for ifc, rows in by.items():
         if len({t[0] for t in rows}) >= max_budget:
-            kept[ifc] = sorted(rows)            # by seed, then sample
-    acc = [0] * (max_budget + 1)
-    dec = [0] * (max_budget + 1)
-    non = [0] * (max_budget + 1)
+            kept[ifc] = rows
+    acc = [0.0] * (max_budget + 1)
+    dec = [0.0] * (max_budget + 1)
+    non = [0.0] * (max_budget + 1)
+    rng = random.Random(rng_seed)
     for ifc, rows in kept.items():
-        seeds = sorted({t[0] for t in rows})[:max_budget]
-        pos = {s: i + 1 for i, s in enumerate(seeds)}
-        # INCREMENTAL: walk the poses in seed order, carrying the running best DockQ and the
-        # running ipTM-selected pose. Recomputing the pool for each N would be 100x the work.
-        best_dq = -1.0
-        sel = None                               # (iptm, -seed, -sample, dockq)
-        nxt = 1
-        for sd, sm, ip, dq in rows:
-            n = pos.get(sd)
-            if n is None:
-                continue
-            while nxt < n:                       # close out budgets with no new pose
-                _tally(acc, dec, non, nxt, best_dq, sel)
-                nxt += 1
-            if dq > best_dq:
-                best_dq = dq
-            cand = (ip, -sd, -sm, dq)
-            if sel is None or cand[:3] > sel[:3]:
-                sel = cand
-        while nxt <= max_budget:
-            _tally(acc, dec, non, nxt, best_dq, sel)
-            nxt += 1
+        byseed = collections.defaultdict(list)
+        for t in rows:
+            byseed[t[0]].append(t)
+        seeds = sorted(byseed)
+        for _ in range(draws):
+            order = seeds[:]
+            rng.shuffle(order)
+            best_dq = -1.0
+            sel = None
+            for n in range(1, max_budget + 1):
+                for sd, sm, ip, dq in byseed[order[n - 1]]:
+                    if dq > best_dq:
+                        best_dq = dq
+                    cand = (ip, -sd, -sm, dq)
+                    if sel is None or cand[:3] > sel[:3]:
+                        sel = cand
+                _tally(acc, dec, non, n, best_dq, sel)
     n_if = len(kept)
+    denom = n_if * draws
     xs = list(range(1, max_budget + 1))
     return (n_if, xs,
-            [acc[n] / n_if for n in xs], [dec[n] / n_if for n in xs], [non[n] / n_if for n in xs])
+            [acc[n] / denom for n in xs], [dec[n] / denom for n in xs],
+            [non[n] / denom for n in xs])
 
 
 def _tally(acc, dec, non, n, best_dq, sel):
@@ -134,6 +146,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--max-budget", type=int, default=100)
+    ap.add_argument("--draws", type=int, default=40,
+                    help="bootstrap draws per interface. The curve is an expectation over which N "
+                         "seeds you happen to have, not over the first N by seed number.")
     ap.add_argument("--out", default="figures/selection_vs_budget.png")
     a = ap.parse_args()
 
@@ -143,11 +158,11 @@ def main():
         if not os.path.exists(path):
             print(f"{name}: {path} absent, skipped")
             continue
-        series.append((name,) + curves(path, ic, sc, smc, dc, qc, a.max_budget))
+        series.append((name,) + curves(path, ic, sc, smc, dc, qc, a.max_budget, a.draws))
 
     # The numbers, printed as well as drawn -- a figure is read off axes, a table is read exactly.
     for name, n_if, xs, acc, dec, non in series:
-        print(f"\n{name}: {n_if} interfaces   (value % +/- SEM)")
+        print(f"\n{name}: {n_if} interfaces, {a.draws} bootstrap draws   (value % +/- SEM)")
         print(f"{'N':>4}  {'acceptable':>16} {'decoy':>16} {'none':>16}   {'oracle':>7}")
         for n in (1, 5, 10, 25, 50, 75, 100):
             if n > len(xs):

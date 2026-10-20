@@ -25,31 +25,57 @@ Read at 50 seeds, the free budget, as % of interfaces +/- SEM:
 
 | benchmark | interfaces | selected | decoy | none | oracle |
 |---|---|---|---|---|---|
-| Validation | 92 | 72.8 ± 4.6 | 13.0 ± 3.5 | 14.1 ± 3.6 | 85.9 |
-| FoldBench | 160 | 74.4 ± 3.5 | 17.5 ± 3.0 | 8.1 ± 2.2 | 91.9 |
-| PXM-2025 | 292 | 48.6 ± 2.9 | 30.5 ± 2.7 | 20.9 ± 2.4 | 79.1 |
+| Validation | 92 | 72.0 ± 4.7 | 13.7 ± 3.6 | 14.3 ± 3.6 | 85.7 |
+| FoldBench | 160 | 71.5 ± 3.6 | 17.4 ± 3.0 | 11.1 ± 2.5 | 88.9 |
+| PXM-2025 | 292 | 50.4 ± 2.9 | 27.9 ± 2.6 | 21.7 ± 2.4 | 78.3 |
 
-**PXM-2025 is where the headroom is**: 30.5% of its interfaces have an acceptable pose that ipTM
-fails to pick, against 13.0% on Validation — and the gap is far larger than either SEM. A
-selection method evaluated only on the validation split is being measured where there is least to
-win.
+**PXM-2025 is where the headroom is**: 27.9% of its interfaces have an acceptable pose that ipTM
+fails to pick, against 13.7% on Validation — a gap far larger than either SEM. A selection method
+evaluated only on the validation split is being measured where there is least to win.
 
-**The `selected` curve is not monotonic in N, and the `oracle` is.** Validation runs 73.9 at N=25,
-72.8 at 50, 71.7 at 75, 72.8 at 100; FoldBench 66.9 → 74.4 → 73.1 → 74.4. Adding seeds can
-*lower* the fraction where ipTM selects an acceptable pose, because a new pose with higher ipTM and
-lower DockQ displaces the previous pick. Meanwhile the oracle only rises, so the decoy band widens
-with budget: 12.0 → 14.1 on Validation, 18.2 → 30.8 on PXM between N=5 and N=100.
+**The decoy band widens with budget while the selected band flattens.** FoldBench runs 6.9% decoy
+at N=1 to 17.5% at N=100 while selected goes 50.4 → 73.9; PXM runs 4.6% → 30.1% while selected
+goes 38.4 → 51.5. So the oracle rises faster than ipTM can follow, and the difference is
+accumulating selection failure — the quantity a better confidence head would convert.
 
-That is the figure's central claim. **More candidates reliably improve what is achievable and not
-what ipTM achieves**, and every bit of that growing gap is selection failure — exactly the quantity
-a better confidence head would convert.
+### A claim withdrawn
+
+An earlier version of this figure took the FIRST N seeds in sorted order, and on that basis I
+reported the selected curve as non-monotonic — Validation 73.9 at N=25 falling to 71.7 at N=75 —
+and called it the figure's central finding. **That was an artefact of the single deterministic
+draw.** Under the bootstrap the largest decrease anywhere on any benchmark is 0.14 pp, which is
+draw noise. The mechanism is real (a pose with higher ipTM and lower DockQ can displace the
+previous pick) but it does not produce a net decrease in expectation, and the figure should not be
+cited for it.
+
+### Against the published Protenix curve
+
+Checked against the Protenix-v2 FoldBench-AB panel, the same 104 complexes / 160 interfaces:
+
+| N | ours (bootstrap) | ours (first-N) | published |
+|---|---|---|---|
+| 1 | 50.4% | 45.6% | ~56% |
+| 5 | 62.3% | 60.6% | ~65% |
+| 10 | 65.8% | 63.7% | ~67% |
+| 20 | ~68% | 68.1% | ~68.5% |
+| 50 | 71.5% | 74.4% | ~70.5% |
+| 100 | 73.9% | 74.4% | ~71% |
+
+From N=20 upward we agree with the published curve, slightly above it. A ~5 point gap remains at
+N<=10. Two candidate explanations were tested and **rejected**: aggregating per complex instead of
+per interface moves the number the wrong way (46.7% at N=1), and the first-N/bootstrap difference
+is already accounted for above. What remains is a difference in the underlying poses or in how
+DockQ is computed, neither of which can be settled without their exact protocol — so the low-N end
+of our curve should not be quoted as a reproduction of theirs.
 
 ## Method notes that matter
 
 - **Selection is `max` by `(pair_iptm, -seed, -sample)`**, the same explicit tie-break
   `phase_k_eval._pick` uses, so a pose cannot be resolved differently here than in the evaluator.
 - **Acceptable is DockQ >= 0.23.**
-- **The pool at budget N is the first N seeds by sorted seed number**, every sample included. The
+- **The pool at budget N is a RANDOM subset of N seeds**, bootstrapped over `--draws` draws
+  (default 40), every sample of those seeds included. Not the first N by seed number: that is one
+  deterministic draw and it disagrees with a bootstrap by ~5 points at N=1. The
   benchmarks use different seed ranges — Validation 400000+, FoldBench a mix of 101–200, 501–510
   and 600000+, PXM its own — so N is a position, not a seed value.
 - **The shaded band is the SEM of a proportion**, sqrt(p(1-p)/n) over the interface count — the
