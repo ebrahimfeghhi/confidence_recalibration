@@ -1522,7 +1522,9 @@ def main():
             item_build_s.append(time.time() - _t)
         if not a.minimal_items:
             feat_ds, label_dict, label_full = item_cache[pdb]
+        _t_lab = time.perf_counter()
         lab = np.load(lab_p, allow_pickle=True)
+        _tick("label_open", _t_lab)
         # THE CACHE'S PROVENANCE IS REQUIRED, NOT OPTIONAL. build_cache stores a `fingerprint` of
         # the job cif, bioassembly, index rows, trunk and code the label was built from, plus a
         # `schema`. Training read neither, so a label written by older code or from inputs that have
@@ -1610,6 +1612,8 @@ def main():
             crop_feat_loss = crop_labels = None
             feat_head, s_inputs, s_trunk, zt, poses, _nc = RC.load_unit(trunk_p, dev)
 
+        _t_fc = time.perf_counter()
+
         def to_dev(d):
             return {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in d.items()}
         if crop_feat_loss is not None:
@@ -1664,6 +1668,14 @@ def main():
         # A called function's frame is destroyed on return, so every large tensor here is freed before
         # the next pose allocates. backward() happens inside and only Python floats come out; the
         # optimiser step stays with the caller, which owns the accumulation count.
+        #
+        # EVERYTHING FROM to_dev's DEFINITION TO HERE is per-unit loss-feature preparation, which
+        # sat entirely in the unaccounted residual. Review was right that BC.minimal_loss_inputs
+        # was the wrong suspect for it: with every one of the 4,860 units cropping successfully,
+        # crop_feat_loss is always set and both the per-unit and per-pose minimal_loss_inputs
+        # branches are dead code for this workload.
+        _tick("loss_feature_prep", _t_fc)
+
         def _one_pose(i):
             x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
                 else torch.as_tensor(poses[i:i + 1], dtype=torch.float32, device=dev)
@@ -2357,6 +2369,14 @@ def main():
                 if ui + 1 < len(ep_units):
                     _n_pdb, _n_lab, _n_cands = ep_units[ui + 1]
                     _t_pf = time.perf_counter()
+                    # EXCLUSIVE OF THE HASH NESTED INSIDE IT. resolve_trunk computes
+                    # unit_fingerprint, which accumulates into fingerprint_hash -- and because the
+                    # prefetch reaches unit i+1 before the main loop does, it pays EVERY first-touch
+                    # hash. Epoch 1 of x3k2m4 therefore reported fingerprint_hash 8.1m and
+                    # prefetch_issue 8.1m as if they were separate costs when they are the same
+                    # 8.1 minutes; across ranks the pairs were 8.1/8.1, 7.6/7.6, 8.5/8.6. The
+                    # budget subtracted it twice and understated the residual by ~8 min.
+                    _h0 = _T["fingerprint_hash"]
                     try:
                         _prefetch(resolve_trunk(_n_pdb, _n_lab, _n_cands))
                     except SystemExit:
@@ -2366,6 +2386,7 @@ def main():
                         # diagnostics. Swallowing it here only declines to prefetch.
                         pass
                     _tick("prefetch_issue", _t_pf)
+                    _T["prefetch_issue"] -= _T["fingerprint_hash"] - _h0
                 for _m in run_unit(pdb, lab_p, trunk_p, item_cache):
                     i, met = _m["pose"], _m      # floats only; the tensors are already freed
                     cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
@@ -2383,8 +2404,19 @@ def main():
                         # REDUCED BEFORE THE STEP IS TAKEN, so the numbers logged are the numbers
                         # the step was taken on even if the step is then refused. _batch_means
                         # resets the accumulator and n_in_accum, so neither is reset again below.
+                        # TIMED SEPARATELY, because it is the step's FIRST collective and it was
+                        # invisible. _batch_means all_reduces the loss statistics before
+                        # _apply_step touches gradients, so an early-arriving rank blocks HERE, not
+                        # at the gradient reduction -- and none of that wait appeared in
+                        # grad_collective_plus_wait. That is why 0.6 min of 77.9 could not be read
+                        # as "synchronisation is cheap": the expensive-looking collective was timed
+                        # and the one that absorbs the straggler was not.
+                        _t_bm = time.perf_counter()
                         means, _n_tot = _batch_means()
+                        _tick("loss_stats_collective_plus_wait", _t_bm)
+                        _t_as = time.perf_counter()
                         gn, outside, ok = _apply_step(step)
+                        _tick("apply_step_total", _t_as)
                         took = 1
                         if not ok:
                             bad_grad = 1
@@ -2489,7 +2521,19 @@ def main():
             _shown = "  ".join(
                 (f"{k} mean {v/c:.0f}" if k == "cropped_tokens" else f"{k} {v/60:.1f}m/{c}")
                 for k, v, c in _parts if c)
+            # THE RESIDUAL, COMPUTED HERE RATHER THAN BY HAND. The buckets below are mutually
+            # exclusive and sum to accounted time; gpu_forward/gpu_backward are NOT included
+            # because they are CUDA-event spans that overlap pose_total rather than adding to it.
+            # Printing the residual stops a reader summing the wrong subset -- which is how an
+            # ~8 min double-count of the fingerprint hash survived into a committed document.
+            _EXCL = ("pose_total", "crop_slice", "fingerprint_hash", "prefetch_issue",
+                     "trunk_read_plus_crop_tokens", "label_open", "loss_feature_prep",
+                     "loss_stats_collective_plus_wait", "apply_step_total")
+            _acc = sum(v for k, v, c in _parts if k in _EXCL and c)
             print(f"  [rank {rank}] epoch {ep + 1} took {_ep_s/60:.1f} min -- {_shown}", flush=True)
+            print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
+                  f"residual {(_ep_s - _acc)/60:.1f}m "
+                  f"(exclusive buckets only; gpu_* overlap pose_total)", flush=True)
             if is_main and write_traj:
                 _save_resume(ep + 1, step)
             # NO write_traj IN THIS CONDITION. It is `is_main`, so including it meant ranks 1

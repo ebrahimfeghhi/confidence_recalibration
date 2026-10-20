@@ -45,21 +45,25 @@ Run `x3k2m4`, commit `947fb1fb`. 488 structures, 4880 units, 1620 units/rank, 81
 [rank 2] epoch 1 took 77.9 min -- crop_slice 15.0m/1620  cropped_tokens mean 319  fingerprint_hash 8.5m/1620  gpu_backward 19.1m/8100  gpu_forward 6.1m/8100  grad_collective_plus_wait 0.7m/290  pose_total 23.1m/8100  prefetch_issue 8.6m/1619  trunk_read_plus_crop_tokens 2.6m/1620
 ```
 
-Rank 0, as a budget of 77.9 min:
+Rank 0, as an **exclusive** budget of 77.9 min. The first version of this table was not
+exclusive and double-counted ~8 min; see *Review round 1* below.
 
 | bucket | min | per | note |
 |---|---|---|---|
-| `pose_total` | 25.0 | 8100 poses | wall clock in the pose loop, GPU-inclusive |
-| ├ `gpu_forward` | 6.7 | 8100 | CUDA events; overlaps `pose_total`, not additive |
-| └ `gpu_backward` | 20.7 | 8100 | CUDA events; GPU busy totals 27.4 min |
+| `pose_total` | 25.0 | 8100 poses | wall clock in the pose loop |
 | `crop_slice` | 12.9 | 1620 units | **recurs every epoch** |
-| `fingerprint_hash` | 8.1 | 1620 units | **first touch only**, see below |
-| `prefetch_issue` | 8.1 | 1619 units | **my own overhead**, since fixed |
+| `prefetch_issue` | 8.1 | 1619 units | **contains `fingerprint_hash` entirely** |
+| ├ `fingerprint_hash` | 8.1 | 1620 units | nested, not additional |
+| └ fadvise + resolve | ~0.0 | | the syscall itself is free |
 | `trunk_read_plus_crop_tokens` | 2.5 | 1620 units | `np.load` + `interface_crop_tokens` |
-| `grad_collective_plus_wait` | 0.6 | 290 steps | |
-| **unaccounted** | **~20.7** | | **the largest single bucket, and unknown** |
+| `grad_collective_plus_wait` | 0.6 | 290 steps | **not the only collective — see below** |
+| **accounted** | **49.1** | | |
+| **residual** | **28.8** | | **the largest single bucket, and unknown** |
 
-GPU busy is 27.4 min of 77.9, so the cards are idle ~65% of the epoch.
+Not in the budget, because they are CUDA-event spans that overlap `pose_total` rather than adding
+to it: `gpu_forward` 6.7 min and `gpu_backward` 20.7 min over 8100 poses each. Their **ratio**
+(3.1x) is the usable signal. Their sum is **not** a validated GPU-busy figure -- see *Review
+round 1*.
 
 ## The cropped-token distribution, all 4860 units
 
@@ -90,17 +94,47 @@ Both landed in `947fb1fb`; the third in `9db84d64`, after epoch 1 exposed it.
 3. **`resolve_trunk` caches its choice**, because the prefetch called it on the next unit and cost
    8.1 min of 77.9 -- more than the trunk read it exists to hide.
 
-Projected epoch 2: ~78 - 8.1 - ~7 = **~63 min**. If it comes in materially above that, the
-unaccounted bucket is bigger than this table implies. **Unverified at the time of writing.**
+**No epoch-2 projection.** The first version of this document predicted ~63 min by subtracting
+8.1 (hash) and ~7 (prefetch) from 77.9. Those are the same work, so it subtracted it twice; the
+arithmetic a non-exclusive table invites.
+
+Worse, the projection cannot hold at all for a **resumed** run. `_fp_cache` is in-memory and is not
+persisted in the resume bundle, so a new process starts it empty and re-pays every first-touch
+hash. `x3k2m4` died after epoch 1 and `jhgfxy` resumed from its bundle in a fresh process, so
+**epoch 2 pays the hashing again** and only epochs 3+ within that process see the benefit. The
+`resolve_trunk` choice cache has the same lifetime.
+
+That reframes the fix: the shared fingerprint cache saves ~8 min per epoch *after the first of each
+process*, and this project has restarted four times in one day. A cache persisted beside the fold
+-- keyed on each input's size and mtime plus `code_fp`/`loss_fp`, the pattern the evaluator's
+`--join-cache` already uses -- would make restarts free. Not implemented; it trades away the
+re-verification a fresh process currently performs, so it needs its own invalidation story.
+
+Epoch 2 should be treated as a **new baseline**, not as a test of a prediction.
 
 ## Remaining, ranked by measured size
 
-### 1. Instrument the unaccounted ~21 min — do this first
+### 1. Fix the accounting and find the hidden synchronisation — do this first
 
-It is the largest bucket and I cannot name it. Prime suspect: `BC.minimal_loss_inputs` is called
-**per pose**, 8100 times per epoch, not per unit. Also unaccounted: the label `np.load`, device
-transfers, and Python overhead in the pose loop. A two-line change, and a 21-minute bucket could
-dwarf items 2 and 3 — so optimising them first risks a careful fix to a small cost.
+Two things are measured but wrong, and one is unmeasured:
+
+- **The residual is 28.8 min, not 20.7**, once the hash is counted once. It is the largest bucket
+  by far and it is not all optimisable CPU work -- it also contains GPU execution that completes
+  outside `pose_total` and synchronisation that no timer covers.
+- **`BC.minimal_loss_inputs` is NOT the suspect.** The first version of this document named it,
+  reasoning that it runs per pose. It does not run at all here: with all 4,860 units cropping
+  successfully, `crop_feat_loss` is always set, so both the per-unit (line 1624) and per-pose
+  (line 1707) `minimal_loss_inputs` branches are dead code for this workload.
+- **`_batch_means()` was entirely untimed, and it is the step's FIRST collective.** It all-reduces
+  the loss statistics before `_apply_step` touches gradients, so an early-arriving rank blocks
+  *there*, and none of that wait appeared in `grad_collective_plus_wait`. The 0.6 min figure
+  therefore cannot be read as "synchronisation is cheap" -- the collective that was timed is not
+  the one that absorbs the straggler.
+
+Now instrumented, pending the next epoch: `label_open`, `loss_feature_prep` (everything between
+the loss-feature construction and the per-pose loop), `loss_stats_collective_plus_wait`,
+`apply_step_total`, an exclusive `prefetch_issue`, and a printed residual so no reader has to sum
+the buckets by hand.
 
 ### 2. Disable activation checkpointing entirely — ~6.7 min/epoch
 
@@ -126,23 +160,62 @@ schema and the source fingerprints, and a disk bound: `/home` is at 80% and the 
 barrier wait. **But the quadratic workload is already balanced**: sum of (cropped tokens)² per rank
 is 2.113e8 / 1.973e8 / 1.956e8, an 8% spread, and the mean token counts are 334 / 324 / 319.
 
-So balancing by structure size — the proposed fix — would not address this. A 92% spread in time
+So balancing by structure size -- the proposed fix -- would not address this. A 92% spread in time
 against an 8% spread in work points at I/O rather than compute: which trunks each rank happened to
-read, and whose bytes were still in page cache. Worth confirming before acting, by timing
-`slice_cached_unit` separately from the `np.load` inside it.
+read, and whose bytes were still in page cache.
+
+**But the destination of the wasted time is not established.** The first version of this document
+said the fastest rank burns the gap at the gradient collective; that cannot be right when the
+gradient collective is 0.6 min. With `_batch_means` now timed, the next epoch will show whether the
+wait lands there instead. Test the page-cache hypothesis before reassigning any structures.
 
 ## Closed
 
-- **The gradient collective.** 0.6 min of 77.9. My earlier `--accum 256` recommendation for the
-  full fold rested on an unsplit 3.10 s/step number and is withdrawn.
-- **Per-epoch trunk fingerprint hashing.** Fixed, pending epoch-2 confirmation.
+- **Per-epoch trunk fingerprint hashing**, within one process. Fixed; across restarts it is still
+  paid once per process.
+
+## Reopened
+
+- **The gradient collective is cheap; total synchronisation is not established.** 0.6 min of 77.9
+  covers only the gradient reduction. `_batch_means`'s collective ran before that timer started and
+  was invisible. The `--accum 256` recommendation stays withdrawn -- it rested on an unsplit
+  3.10 s/step number -- but "synchronisation costs 0.6 min" was overstated and the question is open
+  until both collectives are measured.
 
 ## Trust boundaries
 
-- `gpu_forward` / `gpu_backward` are CUDA-event based and trustworthy. The earlier coarse version
-  in run `sa9y4m` timed `.backward()` with wall clock and measured the launch; those numbers were
-  never quoted.
-- `grad_collective_plus_wait` bundles collective and straggler by construction.
-- `pose_total` is honest because of the implicit sync inside it.
-- The ~21 min is a residual, not a measurement.
-- Everything here is **one epoch, one run**. Epoch 1 pays first-touch costs the other 499 do not.
+- `gpu_forward` / `gpu_backward` are CUDA events and their **ratio** is trustworthy. Their **sum is
+  not a GPU-busy total**, and the earlier claim that the cards were idle ~65% of the epoch is
+  withdrawn. `_one_pose` can return before its backward's kernels finish, so `pose_total` need not
+  contain all of a pose's GPU work, and an event interval is elapsed stream time rather than kernel
+  occupancy -- which is why 6.7 + 20.7 exceeds a 25.0 min pose wall clock. Sampling `nvidia-smi`
+  ten times during epoch 2 gave mostly 0% with bursts to 100%, which is suggestive of substantial
+  idle but is not a measurement of it. A profiler is needed for that number.
+- `grad_collective_plus_wait` bundles collective and straggler by construction, and covers only
+  the gradient reduction.
+- `pose_total` is wall clock and includes an implicit sync, but not necessarily all trailing GPU
+  work.
+- The residual is a subtraction, not a measurement.
+- Everything here is **one epoch of one run**, and epoch 1 pays first-touch costs.
+
+## Review round 1 (2026-10-20)
+
+An external review of this document at `ef2c2af1` found five errors. All five were verified against
+the code and all five were real.
+
+1. **~8 min double-counted.** `prefetch_issue` nests `fingerprint_hash`: the prefetch resolves unit
+   *i+1* before the main loop reaches it, so it pays every first-touch hash. The per-rank pairs --
+   8.1/8.1, 7.6/7.6, 8.5/8.6 -- are what full nesting predicts. Residual corrected 20.7 -> 28.8.
+   `prefetch_issue` is now exclusive.
+2. **The 63-minute projection was unsound**, both from that double subtraction and because a
+   resumed process re-pays the hashing. Withdrawn.
+3. **`minimal_loss_inputs` is bypassed** on the cropped path, so it cannot be the residual.
+   Corrected, and the actual cropped path is now instrumented.
+4. **`_batch_means`'s collective was untimed** and is the step's first, so the straggler's wait was
+   invisible. Now timed.
+5. **GPU-busy and 65%-idle were overclaims** from CUDA-event sums. Withdrawn.
+
+Revised order, which this document adopts: fix the accounting and expose the hidden
+synchronisation; instrument the cropped data path; run a controlled checkpointing on/off
+comparison; only then decide the cache representation; investigate the imbalance with the finer
+numbers rather than rebalancing by size.
