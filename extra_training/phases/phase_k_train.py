@@ -1370,6 +1370,16 @@ def main():
     #
     # RAM: one short string per (pdb, trunk path), 4880 keys on the full set -- about 1 MB.
     _fp_cache = {}
+    # THE RESOLVED TRUNK PATH, per (pdb, label). resolve_trunk is a pure function of the label's
+    # stored fingerprint and the candidate trunks' own, and the per-unit re-assertion in run_unit
+    # still checks the chosen trunk every epoch -- so caching the CHOICE skips a label npz open
+    # and a dict comparison, not a safety check.
+    #
+    # MEASURED: the one-unit-ahead prefetch calls resolve_trunk on the next unit, and epoch 1 of
+    # x3k2m4 spent 8.1 min of 77.9 inside prefetch_issue doing exactly that -- my own overhead,
+    # larger than the trunk read it was meant to hide. With the choice cached it is a dict lookup
+    # plus one fadvise syscall.
+    _trunk_choice = {}
 
     def _prefetch(path):
         """Ask the kernel to read a trunk ahead, so its I/O overlaps the current unit's compute.
@@ -1398,6 +1408,9 @@ def main():
             os.close(fd)
 
     def resolve_trunk(pdb, lab_p, cands, want_fp_cache=None):
+        _ck = (pdb, lab_p)
+        if _ck in _trunk_choice:
+            return _trunk_choice[_ck]
         want_fp_cache = _fp_cache if want_fp_cache is None else want_fp_cache
         """Pick the trunk whose PROVENANCE matches this label, not the first filename that exists.
 
@@ -1421,6 +1434,7 @@ def main():
             if want_fp_cache[key] == stored:
                 ok.append(tp)
         if len(ok) == 1:
+            _trunk_choice[_ck] = ok[0]
             return ok[0]
         if not ok:
             # WHICH FIELD DIFFERS IS THE ACTIONABLE PART. "stale" with no detail cannot be acted on,
@@ -1866,7 +1880,7 @@ def main():
     _train_eval_seed_base, _n_seeds = _seed_lo_hi(a.seeds)
     _train_eval_budget = a.train_eval_budget or _n_seeds
 
-    def val_loss_checkpoint(epoch, bundle):
+    def val_loss_checkpoint(epoch, bundle, step):
         """Held-out PAE for the bundle this epoch just wrote. Returns the pose mean, or None.
 
         A SUBPROCESS, for the same reason eval_checkpoint is one: --loss-only carries its own
@@ -1965,15 +1979,25 @@ def main():
         # the step_taken==1 windows: --accum leaves a tail outside the last complete window, which
         # a training epoch re-traverses next epoch and this single pass never does.
         mean = sum(vals) / len(vals)
-        vp = os.path.join(a.out, "val_loss.csv")
-        new_file = not os.path.exists(vp)
-        with open(vp, "a", newline="") as fh:
-            w = csv.writer(fh)
-            if new_file:
-                w.writerow(["epoch", "step", "n_poses", "val_pae", "bundle"])
-            w.writerow([epoch, step, len(vals), f"{mean:.6f}", os.path.basename(bundle)])
-        # PARSEABLE, in the same shape as the TRAIN: line the plot already reads.
+        # PARSEABLE, in the same shape as the TRAIN: line the plot already reads. PRINTED BEFORE
+        # the csv append, so the number survives any failure in the bookkeeping that follows it.
         print(f"epoch {epoch} VALLOSS: pae {mean:.4f}  poses {len(vals)}", flush=True)
+        # RECORDING THE MEASUREMENT MUST NOT BE ABLE TO END THE RUN. A NameError on this exact
+        # line killed epoch 1 of x3k2m4 at 09:34 after the pass had already succeeded: `step` was
+        # not in scope, the mean was computed, and 78 minutes of training died on the bookkeeping.
+        # The subprocess's own trajectory.csv is the durable record either way -- that is where the
+        # lost number was recovered from -- so a failure here is reported and dropped.
+        try:
+            vp = os.path.join(a.out, "val_loss.csv")
+            new_file = not os.path.exists(vp)
+            with open(vp, "a", newline="") as fh:
+                w = csv.writer(fh)
+                if new_file:
+                    w.writerow(["epoch", "step", "n_poses", "val_pae", "bundle"])
+                w.writerow([epoch, step, len(vals), f"{mean:.6f}", os.path.basename(bundle)])
+        except Exception as e:
+            print(f"  WARNING: could not append to val_loss.csv ({type(e).__name__}: {e}); the "
+                  f"number is in the line above and in {tp}", flush=True)
         return mean
 
     def eval_checkpoint(step, epoch, train_pool=""):
@@ -2496,7 +2520,7 @@ def main():
                         for _n2 in trainable:
                             _before.update(dict(model.named_parameters())[_n2]
                                            .detach().cpu().numpy().tobytes())
-                        val_loss_checkpoint(ep + 1, _bundle)
+                        val_loss_checkpoint(ep + 1, _bundle, step)
                         _after = hashlib.sha256()
                         for _n2 in trainable:
                             _after.update(dict(model.named_parameters())[_n2]
