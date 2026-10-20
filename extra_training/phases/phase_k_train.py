@@ -1542,23 +1542,56 @@ def main():
                     continue
 
     _pf_pending = {}
+    # HIT/MISS IS REPORTED, because "crop_slice did not move" is how the first version's total
+    # failure went unnoticed -- the inline fallback ticks the same counter as the fast path.
+    _pf_stat = {"hit": 0, "miss": 0, "wait_s": 0.0}
 
-    def _pf_take(lab_p):
-        """The prefetched result for this unit, or None.
+    def _pf_take(lab_p, budget_s=120.0):
+        """The prefetched result for this unit, WAITING for the worker if it is not ready yet.
 
-        IN ORDER, WITH A SMALL HOLDING BUFFER. The worker walks the epoch's units in the order the
-        main loop will, so the head of the queue is almost always the one wanted. It can be off by
-        a unit when the main loop skips one, so results that arrive early are held by lab_p rather
+        IT MUST BLOCK, AND get_nowait() IS WHY THE FIRST VERSION DID NOTHING. Measured on the
+        smoke test: crop_slice 0.70 s/unit with the prefetch on against 0.71 s/unit with it off.
+        A non-blocking take gives up the instant the queue is empty, which at a cold start is a
+        PERMANENT MISS CASCADE:
+
+          unit 0  queue empty (worker just started) -> None -> main thread crops unit 0 inline,
+                  0.70 s, while the worker crops the same unit 0
+          unit 1  queue holds unit 0's result; k != lab_p so it is stashed and the loop goes round;
+                  queue now empty -> None -> main thread crops unit 1 inline
+          ...     the worker stays exactly one unit behind forever, every take misses, and a core
+                  is burned recomputing what the main thread just computed
+
+        The main thread never waited even once, so the worker never got the head start it needed
+        to pull ahead. Blocking costs nothing against the alternative -- the worker is already
+        partway through this very unit, and doing it inline means doing the whole thing -- and
+        after one wait the main thread is on the GPU for ~0.84 s/unit while the worker fills the
+        queue to --prefetch-units and every later take is a hit.
+
+        THE BUDGET IS A DEADLOCK GUARD, NOT A TUNABLE. The worker emits exactly one result per
+        unit, in the main loop's own order, and hands back ("error", ...) rather than dying, so
+        the awaited result always comes. 120 s against a 0.7 s crop means the worker is gone;
+        then this returns None and the unit is cropped inline exactly as before.
+
+        IN ORDER, WITH A SMALL HOLDING BUFFER. Results that arrive early are held by lab_p rather
         than discarded.
         """
         if lab_p in _pf_pending:
+            _pf_stat["hit"] += 1
             return _pf_pending.pop(lab_p)
+        if _pf_q is None:
+            return None
+        _t_w = time.perf_counter()
+        deadline = _t_w + budget_s
         while True:
             try:
-                k, v = _pf_q.get_nowait()
+                k, v = _pf_q.get(timeout=max(0.05, deadline - time.perf_counter()))
             except (queue.Empty, AttributeError):
+                _pf_stat["miss"] += 1
+                _pf_stat["wait_s"] += time.perf_counter() - _t_w
                 return None
             if k == lab_p:
+                _pf_stat["hit"] += 1
+                _pf_stat["wait_s"] += time.perf_counter() - _t_w
                 return v
             _pf_pending[k] = v
             if len(_pf_pending) > 8:        # bounded: never a silent memory sink
@@ -1569,6 +1602,7 @@ def main():
         if not a.prefetch_units:
             return
         _pf_stop.clear(); _pf_pending.clear()
+        _pf_stat.update(hit=0, miss=0, wait_s=0.0)
         _pf_q = queue.Queue(maxsize=max(1, a.prefetch_units))
         _pf_thread = threading.Thread(target=_pf_worker, args=(units,), daemon=True)
         _pf_thread.start()
@@ -2794,6 +2828,14 @@ def main():
                      "loss_stats_collective_plus_wait", "apply_step_total")
             _acc = sum(v for k, v, c in _parts if k in _EXCL and c)
             print(f"  [rank {rank}] epoch {ep + 1} took {_ep_s/60:.1f} min -- {_shown}", flush=True)
+            # DID THE PREFETCH ACTUALLY FIRE? crop_slice alone cannot answer it: a miss falls back
+            # to the inline crop and ticks the same counter, which is exactly how the first
+            # version's 100% miss rate looked identical to no prefetch at all.
+            if a.prefetch_units:
+                _pf_n = _pf_stat["hit"] + _pf_stat["miss"]
+                print(f"  [rank {rank}] epoch {ep + 1} prefetch: {_pf_stat['hit']}/{_pf_n} hit "
+                      f"({100.0 * _pf_stat['hit'] / max(1, _pf_n):.1f}%), "
+                      f"{_pf_stat['wait_s']/60:.1f} min waiting on the worker", flush=True)
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
                   f"residual {(_ep_s - _acc)/60:.1f}m "
                   f"(exclusive buckets only; gpu_* overlap pose_total)", flush=True)
