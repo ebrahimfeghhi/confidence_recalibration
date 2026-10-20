@@ -10,6 +10,7 @@ Run from the repository root.
 | figure | script | what it shows |
 |---|---|---|
 | `within_vs_between_trunk.png` | `within_vs_between_trunk.py` | **Figure 2.** ipTM's pairwise ranking accuracy within one trunk versus across trunks, conditioned on how far apart the two poses actually are. The mechanism behind Figure 1's selection gap. |
+| `commitment_vs_iptm.png` | `commitment_vs_iptm.py` | **Figure 3.** Mean ipTM of committed vs diffuse seeds at matched true DockQ. A seed that commits scores far higher confidence, including when it is wrong. |
 | `supp_selection_vs_budget_bands.png` | `selection_vs_budget.py --bands` | Supplementary: the same curves with the full 95% cluster-bootstrap ribbons. |
 | `supp_dockq_vs_budget_bands.png` | `dockq_vs_budget.py --bands` | Supplementary: continuous version with ribbons. |
 | `dockq_vs_budget.png` | `dockq_vs_budget.py` | The same three benchmarks, continuous: **mean** oracle DockQ against **mean** ipTM-selected DockQ per budget. Shows whether the ranking deficit persists above the 0.23 cutoff. |
@@ -243,3 +244,39 @@ the measurement they should be judged against.
 Within-trunk pairs with very large |dDockQ| may be systematically unusual — one pose badly broken
 rather than two plausible alternatives. That would soften the interpretation without changing the
 measurement. Testing it needs the pose geometry, not just the score table.
+
+## Figure 3: commitment buys confidence, correctness or not
+
+Group each seed by how tightly its 5 poses agree, then compare ipTM **within a narrow band of true
+mean DockQ** so quality is matched. If ipTM measured correctness the two groups would score alike.
+
+| SAbDab2, true DockQ 0.05–0.10 | mean ipTM | mean DockQ |
+|---|---|---|
+| committed (lowest-spread quartile) | **0.6509** | 0.066 |
+| diffuse (highest-spread quartile) | 0.2520 | 0.074 |
+
+The diffuse group is slightly BETTER in DockQ and scores 0.40 lower in ipTM. PXM's 0.10–0.16 band
+is starker: 0.7604 at DockQ 0.132 against 0.2138 at DockQ 0.130 — essentially identical quality,
+0.55 apart in confidence. An ipTM of 0.76 on a wrong pose outranks most correct ones.
+
+Composed with Figure 2 this is one story: the head is near-blind within a trunk, so what it scores
+is a trunk-level property; commitment is such a property; and it is rewarded regardless of
+correctness. That is a generator for confident decoys — not random errors but trunks that are
+certain and wrong, the worst case for an argmax selector.
+
+### The measure is a proxy, and it is the wrong one
+
+**"Commitment" here is the standard deviation of the five poses' DockQ, and DockQ is
+pose-versus-REFERENCE.** So this measures whether the samples miss the target by similar amounts,
+not whether they are near each other. Five poses in two distinct wrong basins that happen to score
+alike register as committed when they are not.
+
+**The right measure is pose-to-pose distance, never touching the reference.** `dockq_torch.py` on
+the `reorg/declutter` branch computes exact all-pairs DockQ on GPU for poses of one interface, and
+`metrics.py` adds epitope-Jaccard and FCC on a common signature. Those need the pose files rather
+than this score table, and until that version is run **this figure is suggestive, not settled**.
+
+A **floor effect** compounds it: in the 0.00–0.05 band spread cannot be large, so low spread is
+partly forced, and that band holds 16,334 of PXM's 35,475 seeds. What argues against a pure
+artefact is that the effect is largest away from the floor — PXM's 0.10–0.16 band shows +0.55,
+bigger than any near-zero band — but that is an argument, not a control.
