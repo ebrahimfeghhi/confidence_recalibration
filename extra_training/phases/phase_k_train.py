@@ -610,6 +610,29 @@ def main():
     if a.drop_pde:
         _dropped_terms.add("pde_loss")
     if a.pae_only:
+        # DO NOT COMPUTE THE ALL-ATOM LDDT WE THEN THROW AWAY.
+        #
+        # ProtenixLoss computes per_atom_lddt unconditionally -- `if all(x in pred_dict for x in
+        # ["plddt","pde","pae","resolved"])`, which is always true because the head returns all
+        # four -- and those values feed ONLY the plddt_loss lambda, which --pae-only stubs to
+        # zeros. So it is pure waste. MEASURED on an idle card: 3.4 ms per pose at 11,504 atoms,
+        # about 1% of the 0.300 s/pose, but up to 1.66 GB of TRANSIENT allocation, which is the
+        # actual reason to remove it -- that headroom is what a larger crop or a larger accum
+        # would need. Found in review.
+        #
+        # Patched at the module where loss.py looks it up, and ONLY under --pae-only, where the
+        # consumer is already a stub that ignores both return values. The zeros are shaped from
+        # pred_coordinate so nothing downstream can trip over them if it ever does read.
+        import protenix.model.loss as _PL
+        _orig_lddt = _PL.calculate_atom_bespoke_lddt
+
+        def _no_lddt(pred_coordinate, true_coordinate, *_args, **_kw):
+            z = torch.zeros(pred_coordinate.shape[:-1], dtype=pred_coordinate.dtype,
+                            device=pred_coordinate.device)
+            return z, z
+        _PL.calculate_atom_bespoke_lddt = _no_lddt
+        print("  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); "
+              "measured 3.4 ms and up to 1.66 GB per pose")
         # SAME STUB TRICK as --drop-pde, for the same reason: a zero weight still runs the module
         # and still pays for it. Replacing the module is what actually removes the term.
         #
