@@ -64,9 +64,17 @@ Checked against the Protenix-v2 FoldBench-AB panel, the same 104 complexes / 160
 From N=20 upward we agree with the published curve, slightly above it. A ~5 point gap remains at
 N<=10. Two candidate explanations were tested and **rejected**: aggregating per complex instead of
 per interface moves the number the wrong way (46.7% at N=1), and the first-N/bootstrap difference
-is already accounted for above. What remains is a difference in the underlying poses or in how
-DockQ is computed, neither of which can be settled without their exact protocol — so the low-N end
-of our curve should not be quoted as a reproduction of theirs.
+is already accounted for above.
+
+**The informative number is our ORACLE at N=1: 57.3%.** Their *selected* rate at N=1 is ~56%, so
+on our poses no ranker whatsoever could reach their N=1 figure — a perfect oracle gets 57.3%. The
+difference therefore cannot be in the ranking statistic; it has to be in the pool. Either their
+poses are better at a single seed, or their N=1 pool is larger than ours (we have 5 diffusion
+samples per seed, so our N=1 is 5 poses). That the gap closes by N=20 is consistent with both
+curves saturating toward a similar oracle ceiling, where pool differences compress.
+
+Until that is settled against their protocol, **the low-N end of our curve is not a reproduction
+of theirs** and should not be presented as one.
 
 ## Method notes that matter
 
