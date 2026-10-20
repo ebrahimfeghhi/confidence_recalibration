@@ -51,6 +51,15 @@ def main():
                          "WHICH N seeds you have, not over the first N by seed number")
     ap.add_argument("--n-boot", type=int, default=2000,
                     help="cluster bootstrap replicates. 2,000 rather than 400 because the\n                         bands are PERCENTILE intervals, which depend on the tails and need\n                         far more replicates than a standard deviation does.")
+    ap.add_argument("--bands", action="store_true",
+                    help="draw the 95%% confidence ribbons. OFF for the main figure and ON for the "
+                         "supplementary one: the ribbons around the two CURVES are much wider than "
+                         "the interval on their paired DIFFERENCE, because complex difficulty moves "
+                         "both curves together and cancels in the difference. Overlapping ribbons "
+                         "therefore read as 'the gap is uncertain' when the paired gap's 95%% "
+                         "interval excludes zero on every benchmark. The uncertainty is not hidden "
+                         "-- the gap's interval is annotated on every panel and the supplementary "
+                         "figure carries the ribbons.")
     ap.add_argument("--binomial-band", action="store_true",
                     help="also draw the naive per-interface binomial SEM, for comparison")
     ap.add_argument("--out", default="figures/selection_vs_budget.png")
@@ -103,9 +112,10 @@ def main():
         xs = sw["budgets"]
         curves = [(PS.mean_curve(sw, "sel_acc"), PS.cluster_ci(sw, "sel_acc", a.n_boot)),
                   (PS.mean_curve(sw, "orc_acc"), PS.cluster_ci(sw, "orc_acc", a.n_boot))]
-        for (ms, (lo, hi)), c in zip(curves, COLORS):
-            ax.fill_between(xs, [v * 100 for v in lo], [v * 100 for v in hi],
-                            color=c, alpha=0.15, linewidth=0, zorder=1)
+        if a.bands:
+            for (ms, (lo, hi)), c in zip(curves, COLORS):
+                ax.fill_between(xs, [v * 100 for v in lo], [v * 100 for v in hi],
+                                color=c, alpha=0.15, linewidth=0, zorder=1)
         if a.binomial_band:
             bs = PS.binomial_sem(sw, "sel_acc")
             ms = curves[0][0]
@@ -116,8 +126,12 @@ def main():
         for i, ((ms, _ci), c, lbl) in enumerate(zip(curves, COLORS, LABELS)):
             ax.plot(xs, [m * 100 for m in ms], color=c, label=lbl, lw=1.9, ls="-",
                     marker=MARKERS[i], ms=4.0, markevery=MARKEVERY[i], zorder=5 - i)
-        ylo = min(v * 100 for _ms, (lo_, _hi) in curves for v in lo_)
-        yhi = max(v * 100 for _ms, (_lo, hi_) in curves for v in hi_)
+        if a.bands:
+            ylo = min(v * 100 for _ms, (lo_, _hi) in curves for v in lo_)
+            yhi = max(v * 100 for _ms, (_lo, hi_) in curves for v in hi_)
+        else:
+            ylo = min(m * 100 for ms, _ci in curves for m in ms)
+            yhi = max(m * 100 for ms, _ci in curves for m in ms)
         pad = max(1.0, (yhi - ylo) * 0.08)
         ax.set_ylim(max(0.0, ylo - pad), min(100.0, yhi + pad))
         ax.set_title(f"{name}  (n={len(sw['ifaces'])} interfaces, "
@@ -126,6 +140,16 @@ def main():
         ax.set_xlim(1, a.max_budget)
         # >= rather than >: ACCEPTABLE is 0.23 and the comparison is dq >= ACCEPTABLE.
         ax.set_ylabel("DockQ ≥ 0.23 (%)")
+        # THE PAIRED GAP AND ITS INTERVAL, on every panel. This is the quantity the paper is
+        # about, and it is better determined than either curve: complex difficulty moves oracle
+        # and selected together and cancels in their difference.
+        g, glo, ghi = gap_all[name]
+        j50 = min(len(xs), 50) - 1
+        ax.annotate(f"selection gap @ 50 seeds\n{g[j50]*100:.1f} pp  "
+                    f"[{glo[j50]*100:.1f}, {ghi[j50]*100:.1f}]",
+                    xy=(0.96, 0.05), xycoords="axes fraction", ha="right", va="bottom",
+                    fontsize=8.5, color="#222222",
+                    bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="#bbbbbb", lw=0.7))
         ax.grid(True, alpha=0.3)
     h, l = axes[0].get_legend_handles_labels()
     fig.legend(h, l, loc="upper center", bbox_to_anchor=(0.5, 0.045), ncol=3, fontsize=9,
