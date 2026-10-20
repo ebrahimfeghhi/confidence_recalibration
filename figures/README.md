@@ -9,9 +9,13 @@ Run from the repository root.
 
 | figure | script | what it shows |
 |---|---|---|
-| `selection_vs_budget.png` | `selection_vs_budget.py` | For Validation, FoldBench and PXM-2025: the fraction of interfaces where ipTM selects an acceptable pose, where an acceptable pose exists but ipTM picks a decoy, and where the pool holds no acceptable pose — against candidate budget 1–100 seeds. |
+| `selection_vs_budget.png` | `selection_vs_budget.py` | For the SAbDab2 held-out partition, FoldBench and PXM-2025: the fraction of interfaces where ipTM selects an acceptable pose, where an acceptable pose exists but ipTM picks a decoy, and where the pool holds no acceptable pose — against candidate budget 1–100 seeds. |
 
 ## What `selection_vs_budget` is for
+
+The first panel is the **held-out partition of SAbDab2** this project trains against — 53
+structures, 92 interfaces — not a generic validation split. The other two are published
+benchmarks.
 
 The three categories partition the interfaces, and the split between the last two is the point:
 
@@ -25,12 +29,12 @@ Read at 50 seeds, the free budget, as % of interfaces +/- SEM:
 
 | benchmark | interfaces | selected | decoy | none | oracle |
 |---|---|---|---|---|---|
-| Validation | 92 | 72.0 ± 4.7 | 13.7 ± 3.6 | 14.3 ± 3.6 | 85.7 |
+| SAbDab2 partition | 92 | 72.0 ± 4.7 | 13.7 ± 3.6 | 14.3 ± 3.6 | 85.7 |
 | FoldBench | 160 | 71.5 ± 3.6 | 17.4 ± 3.0 | 11.1 ± 2.5 | 88.9 |
 | PXM-2025 | 292 | 50.4 ± 2.9 | 27.9 ± 2.6 | 21.7 ± 2.4 | 78.3 |
 
 **PXM-2025 is where the headroom is**: 27.9% of its interfaces have an acceptable pose that ipTM
-fails to pick, against 13.7% on Validation — a gap far larger than either SEM. A selection method
+fails to pick, against 13.7% on the SAbDab2 partition — a gap far larger than either SEM. A selection method
 evaluated only on the validation split is being measured where there is least to win.
 
 **The decoy band widens with budget while the selected band flattens.** FoldBench runs 6.9% decoy
@@ -41,7 +45,7 @@ accumulating selection failure — the quantity a better confidence head would c
 ### A claim withdrawn
 
 An earlier version of this figure took the FIRST N seeds in sorted order, and on that basis I
-reported the selected curve as non-monotonic — Validation 73.9 at N=25 falling to 71.7 at N=75 —
+reported the selected curve as non-monotonic — SAbDab2 partition 73.9 at N=25 falling to 71.7 at N=75 —
 and called it the figure's central finding. **That was an artefact of the single deterministic
 draw.** Under the bootstrap the largest decrease anywhere on any benchmark is 0.14 pp, which is
 draw noise. The mechanism is real (a pose with higher ipTM and lower DockQ can displace the
@@ -84,7 +88,7 @@ of theirs** and should not be presented as one.
 - **The pool at budget N is a RANDOM subset of N seeds**, bootstrapped over `--draws` draws
   (default 40), every sample of those seeds included. Not the first N by seed number: that is one
   deterministic draw and it disagrees with a bootstrap by ~5 points at N=1. The
-  benchmarks use different seed ranges — Validation 400000+, FoldBench a mix of 101–200, 501–510
+  benchmarks use different seed ranges — SAbDab2 partition 400000+, FoldBench a mix of 101–200, 501–510
   and 600000+, PXM its own — so N is a position, not a seed value.
 - **The shaded band is the SEM of a proportion**, sqrt(p(1-p)/n) over the interface count — the
   uncertainty of a fraction of interfaces, not a spread over seeds. n is constant across the axis,

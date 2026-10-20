@@ -43,7 +43,10 @@ ACCEPTABLE = 0.23
 # Each benchmark's table and the column names it happens to use. The schemas differ; the maths
 # does not.
 BENCH = [
-    ("Validation", "extra_training/validation/fold/results.csv", "iface", "seed", "sample",
+    # NOT "Validation": that reads like a generic split, when it is specifically the held-out
+    # partition of SAbDab2 this project trains against -- 53 structures, 92 interfaces -- and the
+    # other two panels are named benchmarks.
+    ("SAbDab2 partition", "extra_training/validation/fold/results.csv", "iface", "seed", "sample",
      "dockq", "iptm"),
     ("FoldBench", "experimental_data/protenix/foldbench/foldbench_baseline_results.csv", "iface",
      "seed", "sample", "dockq", "pair_iptm"),
