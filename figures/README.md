@@ -28,24 +28,29 @@ ranking then lost. It is the entire headroom available to a confidence head. Eve
 oracle curve is a generation failure that no reranking can reach, so the oracle is the ceiling and
 the gap is the prize.
 
-Internally the code still partitions into three categories — selected, decoy, none — and oracle is
-selected + decoy. The printed table carries all three; the figure plots the two that frame the gap.
+Internally the sweep still partitions into three categories — selected, decoy, none — and oracle is
+selected + decoy. The printed table carries selected, oracle and their **paired** gap, each with a
+95% interval; the figure plots the two curves that frame the gap and annotates the gap at 50 seeds.
 
-Read at 50 seeds, the free budget, with **cluster-bootstrap SEMs over complexes**:
+Read at 50 seeds, the free budget, with **95% cluster-bootstrap CIs**. The gap is bootstrapped
+**paired** — the same interfaces carry both curves and move together, so differencing two
+independently-banded curves would misstate its uncertainty:
 
-| benchmark | interfaces / complexes | selected | oracle | selection gap |
+| benchmark | interfaces / complexes | selected | oracle | paired selection gap |
 |---|---|---|---|---|
-| SAbDab2 partition | 92 / 53 | 72.0 ± 5.8 | 85.7 ± 4.9 | 13.7 ± 4.1 |
-| FoldBench | 160 / 104 | 71.5 ± 4.1 | 88.9 ± 2.8 | 17.4 ± 3.1 |
-| PXM-2025 | 292 / 123 | 50.4 ± 5.6 | 78.3 ± 4.9 | 27.9 ± 4.1 |
+| SAbDab2 partition | 92 / 53 | 72.0 [60.9, 82.6] | 85.7 [76.1, 94.6] | **13.7 [8.7, 19.6]** |
+| FoldBench | 160 / 104 | 71.5 [63.5, 79.4] | 88.9 [83.3, 93.8] | **17.4 [11.4, 23.8]** |
+| PXM-2025 | 292 / 123 | 50.4 [39.9, 61.3] | 78.3 [68.4, 87.3] | **27.9 [20.1, 36.5]** |
 
 Continuous, same budget, mean DockQ:
 
-| benchmark | selected | oracle | gap |
+| benchmark | selected | oracle | paired gap |
 |---|---|---|---|
-| SAbDab2 partition | 0.576 ± 0.050 | 0.702 ± 0.043 | 0.126 ± 0.019 |
-| FoldBench | 0.524 ± 0.033 | 0.700 ± 0.028 | 0.175 ± 0.015 |
-| PXM-2025 | 0.365 ± 0.043 | 0.531 ± 0.038 | 0.165 ± 0.016 |
+| SAbDab2 partition | 0.576 [0.479, 0.673] | 0.702 [0.619, 0.785] | **0.126 [0.091, 0.165]** |
+| FoldBench | 0.524 [0.459, 0.590] | 0.700 [0.645, 0.754] | **0.175 [0.146, 0.207]** |
+| PXM-2025 | 0.365 [0.285, 0.450] | 0.531 [0.457, 0.602] | **0.165 [0.134, 0.199]** |
+
+Every gap interval excludes zero on both measures and on all three benchmarks.
 
 **The deficit is not a threshold artefact.** If the gap were marginal crossings of 0.23, the
 continuous means would converge while the acceptable fractions diverged. They do not: the mean
@@ -139,9 +144,11 @@ of theirs** and should not be presented as one.
   deterministic draw and it disagrees with a bootstrap by ~5 points at N=1. The
   benchmarks use different seed ranges — SAbDab2 partition 400000+, FoldBench a mix of 101–200, 501–510
   and 600000+, PXM its own — so N is a position, not a seed value.
-- **The shaded band is the SEM of a proportion**, sqrt(p(1-p)/n) over the interface count — the
-  uncertainty of a fraction of interfaces, not a spread over seeds. n is constant across the axis,
-  so a band narrows only as p approaches 0 or 1.
+- **The shaded band is a 95% cluster-bootstrap confidence interval**, taken as the 2.5th/97.5th
+  percentiles of 2,000 replicates that resample COMPLEXES with replacement. Not a binomial SEM over
+  interfaces (that is what this file used to say and the code used to do — see below), and not a
+  +/-1 SEM band: percentiles do not assume symmetry, which matters where a proportion is bounded —
+  FoldBench's oracle runs above 90% and a symmetric band there would extend past 100%.
 - **The interface set is fixed across the axis.** Only interfaces with at least 100 seeds are
   counted, so the denominator does not change with N. Every interface of all three benchmarks
   clears 100, so nothing is dropped — but only after FoldBench's top-off was merged: 28 of its 160

@@ -124,33 +124,82 @@ def mean_curve(sw, key):
     return [sum(r[j] for r in rows) / n for j in range(len(sw["budgets"]))]
 
 
-def cluster_sem(sw, key, n_boot=400, rng_seed=1):
-    """SEM of the mean, resampling COMPLEXES with replacement.
-
-    The statistic is recomputed on each replicate from whichever interfaces the resampled
-    complexes carry, so a complex contributing ten interfaces moves the replicate ten times -- the
-    correlation a per-interface binomial SEM assumes away.
-    """
+def _complex_sums(sw, key):
+    """Per-complex summed curves and interface counts, so a bootstrap replicate is a sum over
+    ~100 complexes instead of ~300 interfaces. Makes 2,000 replicates as cheap as 400 were."""
     rows = sw[key]
     nb = len(sw["budgets"])
-    groups = collections.defaultdict(list)
+    sums, counts = {}, {}
     for i, pdb in enumerate(sw["pdb"]):
-        groups[pdb].append(i)
-    keys = list(groups)
-    rng = random.Random(rng_seed)
-    acc = [[] for _ in range(nb)]
-    for _ in range(n_boot):
-        idx = []
-        for _ in range(len(keys)):
-            idx.extend(groups[keys[rng.randrange(len(keys))]])
-        m = len(idx)
+        if pdb not in sums:
+            sums[pdb] = [0.0] * nb
+            counts[pdb] = 0
+        acc = sums[pdb]
+        r = rows[i]
         for j in range(nb):
-            acc[j].append(sum(rows[i][j] for i in idx) / m)
+            acc[j] += r[j]
+        counts[pdb] += 1
+    keys = list(sums)
+    return keys, sums, counts, nb
+
+
+def _replicates(sw, key, n_boot, rng_seed):
+    """n_boot interface-weighted means, each over complexes resampled with replacement.
+
+    THE ESTIMAND IS UNCHANGED. A replicate sums the interfaces of its sampled complexes and
+    divides by how many interfaces that is, so it stays the interface-weighted mean the point
+    estimate uses -- resampling changes the UNCERTAINTY model, not what is being measured.
+    """
+    keys, sums, counts, nb = _complex_sums(sw, key)
+    rng = random.Random(rng_seed)
+    n_k = len(keys)
+    out = [[0.0] * n_boot for _ in range(nb)]
+    for b in range(n_boot):
+        tot = [0.0] * nb
+        m = 0
+        for _ in range(n_k):
+            k = keys[rng.randrange(n_k)]
+            sk = sums[k]
+            for j in range(nb):
+                tot[j] += sk[j]
+            m += counts[k]
+        for j in range(nb):
+            out[j][b] = tot[j] / m
+    return out
+
+
+def cluster_ci(sw, key, n_boot=2000, rng_seed=1, alpha=0.05):
+    """95% percentile confidence interval from the cluster bootstrap, as (lo, hi) per budget.
+
+    PERCENTILES, NOT +/- SEM. A +/-1 standard error band is about 68% and is not the convention
+    these curves are read against; the 2.5th/97.5th percentiles of the replicate distribution are.
+    They also do not assume the distribution is symmetric, which matters near the ends of the
+    range where a proportion is bounded -- the oracle curve runs above 90% on FoldBench and a
+    symmetric band there would extend past 100%.
+
+    n_boot defaults to 2,000: percentile estimates need far more replicates than a standard
+    deviation does, because they depend on the tails rather than the spread.
+    """
+    reps = _replicates(sw, key, n_boot, rng_seed)
+    lo_i = max(0, int((alpha / 2) * n_boot) - 1)
+    hi_i = min(n_boot - 1, int((1 - alpha / 2) * n_boot))
+    lo, hi = [], []
+    for j in range(len(sw["budgets"])):
+        v = sorted(reps[j])
+        lo.append(v[lo_i])
+        hi.append(v[hi_i])
+    return lo, hi
+
+
+def cluster_sem(sw, key, n_boot=400, rng_seed=1):
+    """SD across cluster-bootstrap replicates. Kept for the printed table and for comparing
+    against the naive binomial SEM; the FIGURE draws cluster_ci instead."""
+    reps = _replicates(sw, key, n_boot, rng_seed)
     out = []
-    for j in range(nb):
-        vals = acc[j]
-        mu = sum(vals) / len(vals)
-        out.append((sum((v - mu) ** 2 for v in vals) / (len(vals) - 1)) ** 0.5)
+    for j in range(len(sw["budgets"])):
+        v = reps[j]
+        mu = sum(v) / len(v)
+        out.append((sum((x - mu) ** 2 for x in v) / (len(v) - 1)) ** 0.5)
     return out
 
 
