@@ -111,6 +111,19 @@ def main():
     ap.add_argument("--oracle-frac", type=float, default=1.0000)
     # The shipped head's held-out PAE, measured by analysis/oneoff/06_val10_loss_shipped.sh.
     ap.add_argument("--shipped-val-pae", type=float, default=2.9756)
+    # EPOCH 0 IS THE SHIPPED HEAD, and plotting it as a POINT rather than only as a dashed line
+    # makes each curve start where the untrained head sits -- so "is training helping at all" is
+    # read off the first segment instead of inferred from a line's position.
+    #
+    # PANEL 1 HAS NO EPOCH-0 POINT and is not given a default. The training-set PAE of the
+    # shipped head over these 488 structures has never been measured: it needs a --loss-only pass
+    # over all 4880 units, ~24,400 poses, which is hours rather than the 3 minutes val10 costs.
+    # A number borrowed from a different structure set would not be the same quantity, and
+    # inventing one to make the panel symmetric is exactly the error the hardcoded 0.5775
+    # baseline was. Pass --shipped-train-pae once it is measured.
+    ap.add_argument("--shipped-train-pae", type=float, default=None,
+                    help="the SHIPPED head's pose-weighted PAE over the TRAINING set. Unmeasured; "
+                         "panel 1 shows no epoch-0 point until this is given.")
     ap.add_argument("--title", default="full training set (488 structures) -- held-out val10: "
                                       "10 validation structures, 18 interfaces, budget 30")
     ap.add_argument("--out", default="training/runs/full_train_plot.png")
@@ -134,6 +147,22 @@ def main():
         for ax, ys in ((axes[2], dq), (axes[3], fa)):
             if ex:
                 ax.plot(ex, ys, marker="o", ms=5, lw=1.8, color=c, label=label)
+
+    # ---- EPOCH 0, the shipped head, as a point on every panel whose value is measured.
+    EP0 = "#7f7f7f"
+    _ep0 = ((axes[1], a.shipped_val_pae), (axes[2], a.shipped_dockq), (axes[3], a.shipped_frac))
+    if a.shipped_train_pae is not None:
+        _ep0 = ((axes[0], a.shipped_train_pae),) + _ep0
+    for ax, v in _ep0:
+        ax.plot([0], [v], marker="*", ms=13, color=EP0, ls="none", zorder=5,
+                label="epoch 0 (shipped head)")
+    if a.shipped_train_pae is None:
+        # SAID, NOT LEFT BLANK. An empty epoch-0 slot on panel 1 reads as "no baseline exists"
+        # rather than "this one costs hours and has not been paid for".
+        axes[0].annotate("no epoch-0 point: the shipped head's TRAIN PAE\nover these 488 "
+                         "structures is unmeasured\n(needs a --loss-only pass over 4,880 units)",
+                         xy=(0.02, 0.03), xycoords="axes fraction", fontsize=7.5, color=EP0,
+                         va="bottom", ha="left")
 
     axes[0].set_title("1. TRAIN PAE (pose-weighted)\nwhat the optimiser minimises")
     axes[0].set_ylabel("PAE loss")
