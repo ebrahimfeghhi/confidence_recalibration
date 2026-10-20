@@ -1381,6 +1381,92 @@ def main():
     # plus one fadvise syscall.
     _trunk_choice = {}
 
+    # ---- THE FINGERPRINT CACHE, PERSISTED BESIDE THE FOLD -------------------------------------
+    #
+    # WHY. The in-memory cache above saves ~8 min per epoch, but only after the FIRST epoch of each
+    # PROCESS: it is not in the resume bundle, so every restart re-pays the hashing of 4,880
+    # trunks, cifs and bioassembly pickles. Review caught this, and it matters more than it looks
+    # -- this project restarted four times in one day, and a 500-epoch run will restart again.
+    #
+    # WHAT IT TRUSTS, AND WHAT THAT GIVES UP. unit_fingerprint is a pure function of SCHEMA,
+    # code_fp, loss_fp, the job cif, the bioassembly pickle, the indices row and the trunk. A fresh
+    # process currently re-reads all of those, which re-verifies them. Persisting replaces that
+    # with a stat signature -- size and mtime_ns of every file the fingerprint covers -- plus an
+    # exact match on code_fp and loss_fp. That is the same bargain phase_k_eval's --join-cache
+    # already makes ("the cache key carries each trunk's size and mtime, so a refold or rebuild
+    # invalidates it"), and it is a real reduction in checking: a file rewritten with its size and
+    # mtime preserved would go unnoticed. Everything that rewrites these files -- a refold, a
+    # rebuild, the 2026-10-14 geometry fix -- changes mtime.
+    #
+    # PER RANK, AND ALL RANKS' FILES ARE READ. Each rank sees a third of the units and the shuffle
+    # moves that third every epoch, so one rank's file covers only part of the manifest. Writing
+    # one file per rank and loading every one of them accumulates coverage across epochs and across
+    # runs without any rank having to write what another measured.
+    _FP_CACHE_VER = 1
+    _fp_disk = os.path.join(roots[0], f"unit_fingerprints.r{rank}.json")
+
+    def _fp_sig(pdb, trunk_p):
+        out = []
+        for path in (trunk_p,
+                     os.path.join(a.mmcif_dir, f"{pdb}.cif"),
+                     os.path.join(a.bio_dir, f"{pdb}.pkl.gz"),
+                     a.indices):
+            try:
+                st = os.stat(path)
+                out.append(f"{st.st_size}:{st.st_mtime_ns}")
+            except OSError:
+                out.append("absent")
+        return "|".join(out)
+
+    def _fp_cache_load():
+        kept = dropped = 0
+        for fp_path in sorted(glob.glob(os.path.join(roots[0], "unit_fingerprints.r*.json"))):
+            try:
+                blob = json.load(open(fp_path))
+            except (OSError, ValueError):
+                continue
+            # A STALE SCHEMA OR A DIFFERENT CODE/LOSS FINGERPRINT INVALIDATES THE WHOLE FILE, not
+            # entry by entry: those three are in every fingerprint the file holds.
+            if (blob.get("ver") != _FP_CACHE_VER or blob.get("code_fp") != code_fp
+                    or blob.get("loss_fp") != loss_fp):
+                dropped += len(blob.get("entries", {}))
+                continue
+            for key, ent in blob.get("entries", {}).items():
+                pdb, _, tp = key.partition("\t")
+                if not tp or (pdb, tp) in _fp_cache:
+                    continue
+                if ent.get("sig") == _fp_sig(pdb, tp):
+                    _fp_cache[(pdb, tp)] = ent["fp"]
+                    kept += 1
+                else:
+                    dropped += 1
+        if kept or dropped:
+            print(f"fingerprint cache: {kept} entry(ies) reused from {roots[0]}, {dropped} "
+                  f"invalidated by a changed input, code_fp or schema", flush=True)
+        return kept
+
+    def _fp_cache_save():
+        """Atomic, and only ever ADDS to what this rank already had on disk."""
+        try:
+            prev = json.load(open(_fp_disk))
+            entries = (prev.get("entries", {})
+                       if (prev.get("ver") == _FP_CACHE_VER and prev.get("code_fp") == code_fp
+                           and prev.get("loss_fp") == loss_fp) else {})
+        except (OSError, ValueError):
+            entries = {}
+        for (pdb, tp), fp in _fp_cache.items():
+            entries[f"{pdb}\t{tp}"] = {"fp": fp, "sig": _fp_sig(pdb, tp)}
+        tmp = _fp_disk + ".tmp"
+        try:
+            with open(tmp, "w") as fh:
+                json.dump({"ver": _FP_CACHE_VER, "code_fp": code_fp, "loss_fp": loss_fp,
+                           "entries": entries}, fh)
+            os.replace(tmp, _fp_disk)
+        except OSError as e:
+            # A CACHE IS NOT WORTH A RUN. Reported and dropped.
+            print(f"  WARNING: could not write {_fp_disk} ({e}); the next process re-hashes",
+                  flush=True)
+
     def _prefetch(path):
         """Ask the kernel to read a trunk ahead, so its I/O overlaps the current unit's compute.
 
@@ -1406,6 +1492,11 @@ def main():
             pass
         finally:
             os.close(fd)
+
+    # LOADED HERE, after the helpers above are bound and before the first resolve_trunk call.
+    # Calling it beside DS.build_configs raised UnboundLocalError: the name is local to main() and
+    # that line runs ~280 lines before the def.
+    _fp_cache_load()
 
     def resolve_trunk(pdb, lab_p, cands, want_fp_cache=None):
         _ck = (pdb, lab_p)
@@ -2534,6 +2625,9 @@ def main():
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
                   f"residual {(_ep_s - _acc)/60:.1f}m "
                   f"(exclusive buckets only; gpu_* overlap pose_total)", flush=True)
+            # EVERY RANK SAVES ITS OWN, at the boundary rather than at exit: x3k2m4 died after
+            # epoch 1 and would have discarded all 4,880 hashes it had just computed.
+            _fp_cache_save()
             if is_main and write_traj:
                 _save_resume(ep + 1, step)
             # NO write_traj IN THIS CONDITION. It is `is_main`, so including it meant ranks 1
