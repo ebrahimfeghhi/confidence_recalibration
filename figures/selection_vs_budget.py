@@ -52,8 +52,18 @@ BENCH = [
 # acceptable / decoy / no-acceptable. Green for what works, amber for what a better head could
 # recover, grey for what it could not.
 COLORS = ["#2ca02c", "#e8a33d", "#9aa0a6"]
-LABELS = ["ipTM selects an acceptable pose", "acceptable pose exists, ipTM picks a decoy",
-          "no acceptable pose in the pool"]
+LABELS = ["ipTM selects acceptable", "acceptable exists, ipTM picks decoy", "no acceptable in pool"]
+
+
+def sem(p, n):
+    """Standard error of a proportion over n interfaces: sqrt(p(1-p)/n).
+
+    The quantity on each curve is a fraction of interfaces, so its uncertainty is binomial in the
+    interface count -- not a spread over seeds. n is fixed across the axis by construction (only
+    interfaces reaching --max-budget are counted), so the band narrows only where p approaches 0
+    or 1, which is the honest behaviour: a category at 5% is better determined than one at 50%.
+    """
+    return (p * (1.0 - p) / n) ** 0.5 if n else 0.0
 
 
 def curves(path, ic, sc, smc, dc, qc, max_budget):
@@ -120,37 +130,57 @@ def main():
     ap.add_argument("--out", default="figures/selection_vs_budget.png")
     a = ap.parse_args()
 
-    fig, axes = plt.subplots(1, 3, figsize=(16.5, 4.8), sharey=True)
-    for ax, (name, rel, ic, sc, smc, dc, qc) in zip(axes, BENCH):
+    series = []
+    for name, rel, ic, sc, smc, dc, qc in BENCH:
         path = os.path.join(a.root, rel)
         if not os.path.exists(path):
-            ax.set_title(f"{name}\n(table absent)")
+            print(f"{name}: {path} absent, skipped")
             continue
-        n_if, xs, acc, dec, non = curves(path, ic, sc, smc, dc, qc, a.max_budget)
-        ax.stackplot(xs, acc, dec, non, colors=COLORS, labels=LABELS, edgecolor="none")
-        ax.set_title(f"{name} — {n_if} interfaces")
-        ax.set_xlabel("candidate budget (seeds)")
+        series.append((name,) + curves(path, ic, sc, smc, dc, qc, a.max_budget))
+
+    # The numbers, printed as well as drawn -- a figure is read off axes, a table is read exactly.
+    for name, n_if, xs, acc, dec, non in series:
+        print(f"\n{name}: {n_if} interfaces   (value % +/- SEM)")
+        print(f"{'N':>4}  {'acceptable':>16} {'decoy':>16} {'none':>16}   {'oracle':>7}")
+        for n in (1, 5, 10, 25, 50, 75, 100):
+            if n > len(xs):
+                continue
+            i = n - 1
+            print(f"{n:>4}  {acc[i]*100:>8.1f}+/-{sem(acc[i], n_if)*100:<5.1f} "
+                  f"{dec[i]*100:>8.1f}+/-{sem(dec[i], n_if)*100:<5.1f} "
+                  f"{non[i]*100:>8.1f}+/-{sem(non[i], n_if)*100:<5.1f}   "
+                  f"{(acc[i]+dec[i])*100:>6.1f}")
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6), sharey=True)
+
+    def band(ax, xs, ys, n_if, color):
+        lo = [(y - sem(y, n_if)) * 100 for y in ys]
+        hi = [(y + sem(y, n_if)) * 100 for y in ys]
+        ax.fill_between(xs, lo, hi, color=color, alpha=0.15, linewidth=0)
+
+    for ax, (name, n_if, xs, acc, dec, non) in zip(axes, series):
+        for ys, c, lbl in zip((acc, dec, non), COLORS, LABELS):
+            # MARKERS EVERY 10 SEEDS, not on all 100: a marker per point turns a 100-wide axis
+            # into a solid band and hides the line it is meant to mark.
+            ax.plot(xs, [y * 100 for y in ys], "-o", color=c, label=lbl, lw=1.8, ms=3.5,
+                    markevery=10)
+            band(ax, xs, ys, n_if, c)
+        ax.set_title(f"{name}  (n={n_if})", fontsize=10)
+        ax.set_xlabel("seeds")
         ax.set_xlim(1, a.max_budget)
-        ax.set_ylim(0, 1)
-        ax.grid(alpha=0.2, color="white", lw=0.6)
-        # THE TWO NUMBERS WORTH READING OFF: the selection headroom at the free budget, and what
-        # is unreachable by selection at all.
-        i50 = min(len(xs), 50) - 1
-        ax.annotate(f"at 50 seeds: {acc[i50]*100:.0f}% selected, {dec[i50]*100:.0f}% decoy, "
-                    f"{non[i50]*100:.0f}% none",
-                    xy=(0.5, -0.19), xycoords="axes fraction", ha="center", fontsize=8)
-    axes[0].set_ylabel("fraction of interfaces")
+        ax.set_ylim(0, 100)
+        ax.grid(True, alpha=0.3)
+    axes[0].set_ylabel("% of interfaces")
+    # ONE LEGEND, BELOW THE PANELS. Three legends inside three axes was what overlapped the data;
+    # a figure-level legend under the row cannot collide with anything.
     h, l = axes[0].get_legend_handles_labels()
-    fig.legend(h, l, loc="upper center", ncol=3, fontsize=9, frameon=False,
-               bbox_to_anchor=(0.5, 1.005))
-    fig.suptitle("Pose selection against candidate budget: the amber band is what a better "
-                 "confidence head could recover; the grey band is what it could not",
-                 fontsize=10, y=0.90)
-    fig.tight_layout(rect=(0, 0.04, 1, 0.86))
+    fig.legend(h, l, loc="upper center", bbox_to_anchor=(0.5, 0.045), ncol=3, fontsize=9,
+               frameon=False)
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
     tmp = a.out + ".tmp.png"
-    fig.savefig(tmp, dpi=130)
+    fig.savefig(tmp, dpi=150, bbox_inches="tight")
     os.replace(tmp, a.out)
-    print(f"wrote {a.out}")
+    print(f"\nwrote {a.out}")
 
 
 if __name__ == "__main__":
