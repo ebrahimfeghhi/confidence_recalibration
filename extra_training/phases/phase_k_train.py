@@ -555,6 +555,18 @@ def main():
               f"x seeds {_lo}-{_hi} = {len(_pdbs) * (_hi - _lo + 1)} unit(s), masked by "
               f"{a.val_loss_pool}")
 
+    if a.loss_only and int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        # DEFENCE IN DEPTH, on the child's side of the same bug. The parent now strips the
+        # distributed environment before launching this, but an inherited WORLD_SIZE used to make
+        # this process join a group whose members were all already present -- it hung inside
+        # init_process_group holding a card while the parent sat at a barrier waiting for it, which
+        # reads as "training stopped" with no error anywhere. Refusing is a message; hanging is not.
+        raise SystemExit(
+            f"STOP: --loss-only is a single-process measurement but WORLD_SIZE is "
+            f"{os.environ['WORLD_SIZE']}. Launched under torchrun, or with the parent run's "
+            f"distributed environment inherited, it would block in init_process_group. Clear "
+            f"WORLD_SIZE/RANK/LOCAL_RANK/MASTER_ADDR/MASTER_PORT, or run it outside torchrun.")
+
     if a.loss_only:
         # A MEASUREMENT MUST NOT LOOK LIKE A RUN. Everything that would persist a head is refused
         # rather than quietly skipped: a loss-only pass that dropped a head_step*.pt or a
@@ -1776,7 +1788,24 @@ def main():
             cmd += ["--indices", os.path.join(a.val_loss_prep, "job_indices.csv"),
                     "--bio-dir", os.path.join(a.val_loss_prep, "job_bioassembly"),
                     "--mmcif-dir", os.path.join(a.val_loss_prep, "job_cifs")]
-        env = {**os.environ, "LAYERNORM_TYPE": "openfold"}
+        # A SINGLE-PROCESS CHILD, SO THE PARENT'S DISTRIBUTED ENVIRONMENT MUST GO. This script
+        # reads WORLD_SIZE/RANK/LOCAL_RANK at startup, so an inherited WORLD_SIZE=3 makes the
+        # monitor try to join a process group that already has all three of its members -- it
+        # hangs on init_process_group holding a card, and the parent is parked at a barrier
+        # waiting for it. eval_checkpoint never hit this because phase_k_eval.py reads none of
+        # these; this child is phase_k_train.py itself.
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("WORLD_SIZE", "RANK", "LOCAL_RANK", "GROUP_RANK", "ROLE_RANK",
+                            "ROLE_NAME", "LOCAL_WORLD_SIZE", "ROLE_WORLD_SIZE", "MASTER_ADDR",
+                            "MASTER_PORT", "TORCHELASTIC_RESTART_COUNT",
+                            "TORCHELASTIC_MAX_RESTARTS", "TORCHELASTIC_RUN_ID",
+                            "TORCHELASTIC_USE_AGENT_STORE", "TORCHELASTIC_ERROR_FILE",
+                            "TORCH_NCCL_ASYNC_ERROR_HANDLING")
+               and not k.startswith("TORCHELASTIC_")}
+        env["LAYERNORM_TYPE"] = "openfold"
+        env["WORLD_SIZE"] = "1"
+        env["RANK"] = "0"
+        env["LOCAL_RANK"] = "0"
         if a.val_loss_card:
             env["CUDA_VISIBLE_DEVICES"] = str(a.val_loss_card)
         print(f"  held-out PAE for epoch {epoch} "
@@ -2281,8 +2310,14 @@ def main():
             # has crashed before (OST chain mapping, a card with no free memory).
             if is_main and write_traj:
                 _save_resume(ep + 1, step)
+            # NO write_traj IN THIS CONDITION. It is `is_main`, so including it meant ranks 1
+            # and 2 skipped the whole block INCLUDING both barriers, while rank 0 entered them.
+            # dist.barrier() is untagged, so rank 0's two calls paired with the other ranks' two
+            # train-eval calls and rank 0 then blocked forever on its third -- a deadlock at the
+            # first epoch boundary, not a dropped measurement. Every rank enters the barriers;
+            # only rank 0 does the work inside, exactly as the two evaluation paths below.
             if (a.val_loss_every and (ep + 1) % a.val_loss_every == 0
-                    and step > ep_start_step and write_traj):
+                    and step > ep_start_step):
                 # SAME BARRIER DISCIPLINE as the two evaluation paths: one measuring process, the
                 # other ranks parked for its duration. Without the second barrier rank 0 re-enters
                 # training a whole pass behind the others.
