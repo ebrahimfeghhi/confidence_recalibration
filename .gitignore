@@ -221,3 +221,6 @@ extra_training/run_logging/*.log
 # tracking them leaves the tree permanently dirty and launch.py then records every run as not
 # reproducible from its commit. The records they are built from are the provenance, not these.
 extra_training/run_logging/reports/
+
+# figure scripts are imported by the comparison checks; their bytecode is not an artefact
+figures/__pycache__/
