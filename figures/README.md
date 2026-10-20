@@ -9,6 +9,7 @@ Run from the repository root.
 
 | figure | script | what it shows |
 |---|---|---|
+| `dockq_vs_budget.png` | `dockq_vs_budget.py` | The same three benchmarks, continuous: **mean** oracle DockQ against **mean** ipTM-selected DockQ per budget. Shows whether the ranking deficit persists above the 0.23 cutoff. |
 | `selection_vs_budget.png` | `selection_vs_budget.py` | For the SAbDab2 held-out partition, FoldBench and PXM-2025: the % of interfaces reaching DockQ ≥ 0.23 by ipTM selection and by an oracle over the same pool, against candidate budget 1–100 seeds. The distance between them is the selection gap. |
 
 ## What `selection_vs_budget` is for
@@ -30,22 +31,65 @@ the gap is the prize.
 Internally the code still partitions into three categories — selected, decoy, none — and oracle is
 selected + decoy. The printed table carries all three; the figure plots the two that frame the gap.
 
-Read at 50 seeds, the free budget, as % of interfaces +/- SEM:
+Read at 50 seeds, the free budget, with **cluster-bootstrap SEMs over complexes**:
 
-| benchmark | interfaces | selected | decoy | none | oracle |
-|---|---|---|---|---|---|
-| SAbDab2 partition | 92 | 72.0 ± 4.7 | 13.7 ± 3.6 | 14.3 ± 3.6 | 85.7 |
-| FoldBench | 160 | 71.5 ± 3.6 | 17.4 ± 3.0 | 11.1 ± 2.5 | 88.9 |
-| PXM-2025 | 292 | 50.4 ± 2.9 | 27.9 ± 2.6 | 21.7 ± 2.4 | 78.3 |
+| benchmark | interfaces / complexes | selected | oracle | selection gap |
+|---|---|---|---|---|
+| SAbDab2 partition | 92 / 53 | 72.0 ± 5.8 | 85.7 ± 4.9 | 13.7 ± 4.1 |
+| FoldBench | 160 / 104 | 71.5 ± 4.1 | 88.9 ± 2.8 | 17.4 ± 3.1 |
+| PXM-2025 | 292 / 123 | 50.4 ± 5.6 | 78.3 ± 4.9 | 27.9 ± 4.1 |
 
-**PXM-2025 is where the headroom is**: 27.9% of its interfaces have an acceptable pose that ipTM
-fails to pick, against 13.7% on the SAbDab2 partition — a gap far larger than either SEM. A selection method
-evaluated only on the validation split is being measured where there is least to win.
+Continuous, same budget, mean DockQ:
 
-**The decoy band widens with budget while the selected band flattens.** FoldBench runs 6.9% decoy
-at N=1 to 17.5% at N=100 while selected goes 50.4 → 73.9; PXM runs 4.6% → 30.1% while selected
-goes 38.4 → 51.5. So the oracle rises faster than ipTM can follow, and the difference is
-accumulating selection failure — the quantity a better confidence head would convert.
+| benchmark | selected | oracle | gap |
+|---|---|---|---|
+| SAbDab2 partition | 0.576 ± 0.050 | 0.702 ± 0.043 | 0.126 ± 0.019 |
+| FoldBench | 0.524 ± 0.033 | 0.700 ± 0.028 | 0.175 ± 0.015 |
+| PXM-2025 | 0.365 ± 0.043 | 0.531 ± 0.038 | 0.165 ± 0.016 |
+
+**The deficit is not a threshold artefact.** If the gap were marginal crossings of 0.23, the
+continuous means would converge while the acceptable fractions diverged. They do not: the mean
+DockQ gap is 0.13–0.18 and grows with budget on all three. ipTM is leaving pose quality on the
+table across the range, not only at the acceptable boundary.
+
+**PXM-2025 has the largest gap**, 27.9% against the SAbDab2 partition's 13.7% — a difference of
+14.2 points at **2.4 sigma** on the cluster bootstrap. Real, but an earlier version of this file
+called it "far larger than either SEM" on the strength of binomial bands that were too narrow. It
+is a difference worth acting on and not one to overstate.
+
+### Error bars: cluster bootstrap, not binomial SEM
+
+The bands resample **complexes** with replacement, because interfaces within a complex are not
+independent draws — 39 of SAbDab2's 53 complexes, 52 of FoldBench's 104 and 73 of PXM's 123
+contribute more than one interface, and PXM has complexes contributing ten. A per-interface
+binomial SEM assumes that away and is optimistic, most severely where the clustering is worst:
+
+| benchmark | binomial SEM | cluster SEM | ratio |
+|---|---|---|---|
+| SAbDab2 partition | 4.7 | 5.8 | 1.2x |
+| FoldBench | 3.6 | 4.1 | 1.1x |
+| PXM-2025 | 2.9 | 5.6 | **1.9x** |
+
+PXM's effective sample size is nearer its 123 complexes than its 292 interfaces. `--binomial-band`
+draws the naive interval alongside for comparison.
+
+**No homology clusters are available** — none of the three registries carries a cluster column, so
+the unit is the complex. That is a lower bound on the true correlation, since homologous complexes
+under different PDB ids remain correlated, so these bands are conservative against a binomial SEM
+and still optimistic against truth.
+
+### Seed subsampling is reported separately, and is not an error bar
+
+Two different questions, kept apart:
+
+- **seed subsampling** — "if I had drawn a different N seeds for these same interfaces?" Measured
+  within an interface across draws. It is large at small N (FoldBench 21.6 points at N=1) and
+  collapses as N approaches the pool depth (2.5 at N=100, and exactly 0 on SAbDab2 where every
+  interface has exactly 100 seeds, so the subset *is* the pool). It is a property of the budget.
+- **test-set uncertainty** — "if I had a different sample of complexes?" This is the cluster
+  bootstrap, and it is what the shaded bands show.
+
+Only the second belongs on the plot as an interval around the mean.
 
 ### A claim withdrawn
 
