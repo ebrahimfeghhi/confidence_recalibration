@@ -219,6 +219,12 @@ def main():
                          "different projection of distance, so a win is ambiguous between the "
                          "two. NOT equivalent to scaling a single injection: each block "
                          "transforms z before the next add. Requires --pose-perblock.")
+    ap.add_argument("--allow-unmasked-fallback", action="store_true",
+                    help="accept training structures that --pae-scored-pairs does not name, whose "
+                         "poses then train the UNMASKED PAE term. Refused by default: the running "
+                         "guard only fires while nothing has been masked yet, so after one "
+                         "successful unit any number of silent fallbacks can follow, and review "
+                         "reproduced exactly that. Use it only when the mismatch is intended.")
     ap.add_argument("--pae-only", action="store_true",
                     help="train the PAE term ALONE: pLDDT, PDE and resolved are stubbed out, not "
                          "computed, not trained. ipTM derives entirely from PAE, and at the shipped "
@@ -731,6 +737,34 @@ def main():
                              f"trunk directory, e.g. {notrunk[:4]}.")
         print(f"train-eval pool: {len(pool_pdbs)} structure(s), all present, none skipped")
 
+    def _pae_mask_coverage(units):
+        """Every structure this run trains on must be named by the pool, checked BEFORE training.
+
+        The running guard below only fires while NOTHING has been masked yet, so once a single
+        unit masks successfully an unlimited number of later units can fall back to the UNMASKED
+        PAE term in silence. Review reproduced one masked call followed by 100 unmasked ones with
+        no error. A per-structure coverage check at startup closes that: a structure missing from
+        the pool is a manifest/pool mismatch, which is a setup error, and it is cheap to find here
+        rather than impossible to notice later.
+        """
+        if not _scored_asym:
+            return
+        want = sorted({t[0] for t in units})
+        gone = [p for p in want if not _scored_asym.get(p)]
+        if not gone:
+            print(f"  PAE mask: all {len(want)} training structure(s) are named by "
+                  f"{a.pae_scored_pairs}")
+            return
+        if not a.allow_unmasked_fallback:
+            raise SystemExit(
+                f"STOP: {len(gone)} of {len(want)} training structure(s) are NOT in "
+                f"{a.pae_scored_pairs}, so their poses would train the UNMASKED PAE term while "
+                f"this run is labelled masked: {gone[:8]}. Fix the pool, drop them from "
+                f"--manifest-selection, or pass --allow-unmasked-fallback to accept it "
+                f"deliberately -- it is recorded in args.json either way.")
+        print(f"  PAE mask: ACCEPTING UNMASKED FALLBACK for {len(gone)} of {len(want)} "
+              f"structure(s) (--allow-unmasked-fallback): {gone[:8]}")
+
     def _pae_mask_check():
         """A mask that never fires is a baseline arm wearing the masked arm's label.
 
@@ -857,10 +891,24 @@ def main():
     # produced it: --manifest-selection, --manifest-skip, --seeds and --limit-units can all change
     # which units exist, and a guard that checked the flags would still miss a rewritten selection
     # csv. Review 2026-10-16 reproduced a resume accepted after the exclusions changed.
+    # --eval-every IS PARSED AND NEVER READ. Found in review: the flag has no effect anywhere in
+    # this file, so launch_lr_probe_full.sh asked for validation every 1,452 steps and would never
+    # have produced a single pass. Refused rather than implemented: a second eval trigger has to
+    # reproduce the barrier discipline of the epoch path exactly -- rank 0 evaluates while the
+    # others wait -- and a mistake there deadlocks rather than fails. The two working triggers do
+    # cover the need.
+    if a.eval_every:
+        raise SystemExit(
+            f"STOP: --eval-every {a.eval_every} has no effect -- it is parsed and never read, so "
+            f"it would promise a validation pass that never happens. Use --eval-every-epoch for "
+            f"the validation set every epoch, or --train-eval-pool with --train-eval-every N "
+            f"(optionally --train-eval-fold / --train-eval-seed-base / --train-eval-budget) to "
+            f"score any pool every N epochs. Both are exercised by the current arms.")
     _manifest_digest = hashlib.sha256(
         "\n".join(f"{p}/{os.path.basename(lp)}" for p, lp, _c in sorted(flat)).encode()
     ).hexdigest()[:16]
     print(f"  manifest digest {_manifest_digest} over {len(flat)} unit(s)")
+    _pae_mask_coverage(flat)
     # THE PREFLIGHT IS REQUIRED, AND IT MUST BE THIS POPULATION'S. A marker from a different
     # manifest proves nothing about the structures this run will train on.
     if a.minimal_items:
