@@ -9,7 +9,7 @@ Run from the repository root.
 
 | figure | script | what it shows |
 |---|---|---|
-| `selection_vs_budget.png` | `selection_vs_budget.py` | For the SAbDab2 held-out partition, FoldBench and PXM-2025: the fraction of interfaces where ipTM selects an acceptable pose, where an acceptable pose exists but ipTM picks a decoy, and where the pool holds no acceptable pose — against candidate budget 1–100 seeds. |
+| `selection_vs_budget.png` | `selection_vs_budget.py` | For the SAbDab2 held-out partition, FoldBench and PXM-2025: the % of interfaces reaching DockQ ≥ 0.23 by ipTM selection and by an oracle over the same pool, against candidate budget 1–100 seeds. The shaded band between them is the selection gap. |
 
 ## What `selection_vs_budget` is for
 
@@ -17,13 +17,18 @@ The first panel is the **held-out partition of SAbDab2** this project trains aga
 structures, 92 interfaces — not a generic validation split. The other two are published
 benchmarks.
 
-The three categories partition the interfaces, and the split between the last two is the point:
+Each panel has two curves over the same pool of N seeds:
 
-- **no acceptable pose in the pool** — a *generation* failure. More or better folding is the only
-  fix; no confidence head can reach it.
-- **acceptable pose exists, ipTM picks a decoy** — a *selection* failure. This band is the entire
-  headroom available to this project, and its size at the free 50-seed budget is the ceiling on
-  any reranking method.
+- **oracle** — an acceptable pose (DockQ >= 0.23) is somewhere in the pool, whoever finds it.
+- **ipTM-selected** — the pose ipTM actually picks is acceptable.
+
+**The shaded distance between them is the selection gap**: interfaces the folding solved and the
+ranking then lost. It is the entire headroom available to a confidence head. Everything below the
+oracle curve is a generation failure that no reranking can reach, so the oracle is the ceiling and
+the gap is the prize.
+
+Internally the code still partitions into three categories — selected, decoy, none — and oracle is
+selected + decoy. The printed table carries all three; the figure plots the two that frame the gap.
 
 Read at 50 seeds, the free budget, as % of interfaces +/- SEM:
 
