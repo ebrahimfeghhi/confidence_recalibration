@@ -40,6 +40,9 @@ def main():
     ap.add_argument("--draws", type=int, default=40)
     ap.add_argument("--n-boot", type=int, default=2000,
                     help="cluster bootstrap replicates; percentile intervals need more than a standard deviation does")
+    ap.add_argument("--bands", action="store_true",
+                    help="draw the 95%% confidence ribbons; off for the main figure, on for the "
+                         "supplementary one. Same reasoning as selection_vs_budget.py.")
     ap.add_argument("--out", default="figures/dockq_vs_budget.png")
     a = ap.parse_args()
 
@@ -78,13 +81,18 @@ def main():
         xs = sw["budgets"]
         curves = [(PS.mean_curve(sw, "sel_dq"), PS.cluster_ci(sw, "sel_dq", a.n_boot)),
                   (PS.mean_curve(sw, "orc_dq"), PS.cluster_ci(sw, "orc_dq", a.n_boot))]
-        for (ms, (lo_, hi_)), c in zip(curves, COLORS):
-            ax.fill_between(xs, lo_, hi_, color=c, alpha=0.15, linewidth=0, zorder=1)
+        if a.bands:
+            for (ms, (lo_, hi_)), c in zip(curves, COLORS):
+                ax.fill_between(xs, lo_, hi_, color=c, alpha=0.15, linewidth=0, zorder=1)
         for i, ((ms, _ci), c, lbl) in enumerate(zip(curves, COLORS, LABELS)):
             ax.plot(xs, ms, color=c, label=lbl, lw=1.9, ls="-", marker=MARKERS[i], ms=4.0,
                     markevery=MARKEVERY[i], zorder=5 - i)
-        ylo = min(v for _ms, (lo_, _h) in curves for v in lo_)
-        yhi = max(v for _ms, (_l, hi_) in curves for v in hi_)
+        if a.bands:
+            ylo = min(v for _ms, (lo_, _h) in curves for v in lo_)
+            yhi = max(v for _ms, (_l, hi_) in curves for v in hi_)
+        else:
+            ylo = min(m for ms, _ci in curves for m in ms)
+            yhi = max(m for ms, _ci in curves for m in ms)
         pad = max(0.005, (yhi - ylo) * 0.08)
         ax.set_ylim(max(0.0, ylo - pad), min(1.0, yhi + pad))
         ax.set_title(f"{name}  (n={len(sw['ifaces'])} interfaces, "
@@ -92,6 +100,13 @@ def main():
         ax.set_xlabel("# of seeds")
         ax.set_xlim(1, a.max_budget)
         ax.set_ylabel("mean DockQ")
+        g = PS.mean_curve(sw, "gap_dq")
+        glo, ghi = PS.cluster_ci(sw, "gap_dq", a.n_boot)
+        j50 = min(len(xs), 50) - 1
+        ax.annotate(f"quality gap @ 50 seeds\n{g[j50]:.3f}  [{glo[j50]:.3f}, {ghi[j50]:.3f}]",
+                    xy=(0.96, 0.05), xycoords="axes fraction", ha="right", va="bottom",
+                    fontsize=8.5, color="#222222",
+                    bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="#bbbbbb", lw=0.7))
         ax.grid(True, alpha=0.3)
     h, l = axes[0].get_legend_handles_labels()
     fig.legend(h, l, loc="upper center", bbox_to_anchor=(0.5, 0.045), ncol=2, fontsize=9,

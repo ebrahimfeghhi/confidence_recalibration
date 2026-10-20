@@ -9,6 +9,8 @@ Run from the repository root.
 
 | figure | script | what it shows |
 |---|---|---|
+| `supp_selection_vs_budget_bands.png` | `selection_vs_budget.py --bands` | Supplementary: the same curves with the full 95% cluster-bootstrap ribbons. |
+| `supp_dockq_vs_budget_bands.png` | `dockq_vs_budget.py --bands` | Supplementary: continuous version with ribbons. |
 | `dockq_vs_budget.png` | `dockq_vs_budget.py` | The same three benchmarks, continuous: **mean** oracle DockQ against **mean** ipTM-selected DockQ per budget. Shows whether the ranking deficit persists above the 0.23 cutoff. |
 | `selection_vs_budget.png` | `selection_vs_budget.py` | For the SAbDab2 held-out partition, FoldBench and PXM-2025: the % of interfaces reaching DockQ ≥ 0.23 by ipTM selection and by an oracle over the same pool, against candidate budget 1–100 seeds. The distance between them is the selection gap. |
 
@@ -61,6 +63,31 @@ table across the range, not only at the acceptable boundary.
 14.2 points at **2.4 sigma** on the cluster bootstrap. Real, but an earlier version of this file
 called it "far larger than either SEM" on the strength of binomial bands that were too narrow. It
 is a difference worth acting on and not one to overstate.
+
+### Why the curve ribbons are wide and the gap interval is not
+
+Three multiplicative causes, all legitimate, none a bug:
+
+1. **A 95% interval is ~1.96x a +/-1 SEM band.** Measured: x1.96, x2.04, x1.90 on the three
+   benchmarks. Most of the widening against the earlier figures is this alone.
+2. **Clustering costs effective sample size** -- x1.23, x1.14 and **x1.93**, the last because
+   PXM's 292 interfaces come from 123 complexes.
+3. **The quantity really is that variable.** The per-complex selected rate has an sd of 40-44
+   points, because **69-89% of complexes sit at exactly 0% or 100%** -- ipTM either finds an
+   acceptable pose for that complex or never does. With 53-123 complexes the mean cannot be
+   pinned tighter.
+
+But the two curves are measured on the SAME interfaces, so all of that variation cancels in their
+difference:
+
+| benchmark | selected CI half-width | paired gap | gap CI half-width |
+|---|---|---|---|
+| SAbDab2 partition | +/-11.3 | 13.7 | +/-8.3 |
+| FoldBench | +/-8.3 | 17.4 | +/-6.2 |
+| PXM-2025 | +/-10.7 | 27.9 | +/-8.2 |
+
+**A reader who judges significance from the overlapping ribbons reaches the wrong conclusion.**
+That is why the main figure drops them and annotates the paired gap instead.
 
 ### Error bars: cluster bootstrap, not binomial SEM
 
@@ -144,7 +171,13 @@ of theirs** and should not be presented as one.
   deterministic draw and it disagrees with a bootstrap by ~5 points at N=1. The
   benchmarks use different seed ranges — SAbDab2 partition 400000+, FoldBench a mix of 101–200, 501–510
   and 600000+, PXM its own — so N is a position, not a seed value.
-- **The shaded band is a 95% cluster-bootstrap confidence interval**, taken as the 2.5th/97.5th
+- **The MAIN figures carry no ribbons; the supplementary ones do.** The ribbons around the two
+  curves are far wider than the interval on their paired difference, because complex difficulty
+  moves oracle and selected together and cancels when they are differenced. Overlapping ribbons
+  therefore read as "the gap is uncertain" when every paired gap interval excludes zero. The
+  uncertainty is not hidden: the paired gap and its 95% interval are annotated on every panel, and
+  `--bands` regenerates the ribboned version.
+- **When drawn, the shaded band is a 95% cluster-bootstrap confidence interval**, taken as the 2.5th/97.5th
   percentiles of 2,000 replicates that resample COMPLEXES with replacement. Not a binomial SEM over
   interfaces (that is what this file used to say and the code used to do — see below), and not a
   +/-1 SEM band: percentiles do not assume symmetry, which matters where a proportion is bounded —
