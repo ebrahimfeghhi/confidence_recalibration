@@ -526,14 +526,44 @@ def main():
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu")
         have = dict(model.named_parameters())
-        missing = [k for k in sd if k not in have]
-        if missing:
-            raise SystemExit(f"STOP: {a.ckpt} has {len(missing)} tensor(s) absent from the model, "
-                             f"e.g. {missing[:4]}")
+        # BOTH DIRECTIONS, OR THE ARCHITECTURE CAN DIFFER SILENTLY.
+        #
+        # This used to check only that every checkpoint key exists in the model. The other
+        # direction was unchecked, so a head whose confidence_head has MORE trainable tensors than
+        # the checkpoint loaded cleanly and left the extras at their initial values -- and because
+        # both pose pathways are zero-init, "initial" means zero, i.e. the pathway silently
+        # absent. Review reproduced a TIED pathway-A checkpoint, which holds one projection,
+        # loading into an UNTIED model, which wants three, leaving two at zero and the run
+        # reporting a number for an architecture it was not given.
+        #
+        # The checkpoint is written as exactly the trainable head tensors, so set equality against
+        # the model's own head parameters is the right test and needs no extra metadata.
+        prefixes = [n for n, _m in model.named_modules() if n.endswith("confidence_head")]
+        if not prefixes:
+            raise SystemExit("STOP: the model has no module named *confidence_head, so the head "
+                             "parameter set cannot be established to check the checkpoint "
+                             "against.")
+        head_names = {n for n in have
+                      if any(n == pr or n.startswith(pr + ".") for pr in prefixes)}
+        extra = sorted(set(sd) - set(have))
+        absent = sorted(head_names - set(sd))
+        if extra or absent:
+            raise SystemExit(
+                f"STOP: {a.ckpt} does not match this model's head.\n"
+                + (f"  {len(extra)} checkpoint tensor(s) the model does not have, e.g. "
+                   f"{extra[:4]}\n" if extra else "")
+                + (f"  {len(absent)} head tensor(s) the checkpoint does not supply, e.g. "
+                   f"{absent[:4]}\n" if absent else "")
+                + f"  The head has {len(head_names)} trainable tensor(s); the checkpoint has "
+                  f"{len(sd)}.\n"
+                  f"  Pass the same pathway flags the run trained with -- --frame-direction, "
+                  f"--pose-perblock, --pose-perblock-tied -- or the pathway is scored as though "
+                  f"it were absent.")
         with torch.no_grad():
             for k, v in sd.items():
                 have[k].data.copy_(v.to(have[k].device))
-        print(f"loaded {len(sd)} head tensor(s) from {a.ckpt}")
+        print(f"loaded {len(sd)} head tensor(s) from {a.ckpt}, exact match against "
+              f"{len(head_names)} head parameter(s)")
     else:
         print("using the SHIPPED head (no --ckpt)")
 

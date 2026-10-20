@@ -24,8 +24,10 @@
 # to 0.
 #
 # CADENCE: 377 structures x 10 seeds x 5 poses = 18,850 poses/epoch at accum 84 = 224 steps/epoch.
-# So --eval-every 1122 is validation every 5 epochs and --save-every 224 is a checkpoint every
-# epoch. Resume bundles are written every epoch regardless of --save-every.
+# --eval-every WAS 1122 HERE AND DID NOTHING -- parsed and never read, so this script
+# promised validation every 5 epochs and would never have produced one. Found in review;
+# the trainer now refuses the flag. --eval-every-epoch is the working trigger, and
+# --save-every 224 is a checkpoint every epoch. Resume bundles are written every epoch regardless of --save-every.
 #
 # BUDGET: 50 epochs = 11,220 optimiser steps, ~31 h at the 360 steps/h measured on cached data,
 # plus 10 validation passes at ~25 min sharded over the three cards = ~35 h. THE I/O RISK IS
@@ -44,7 +46,7 @@ LAYERNORM_TYPE=openfold /home/ebrahim/Protenix/.venv/bin/python -I run_logging/l
   --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0 --crop-size 3400 \
   --save-every 224 \
   --pae-scored-pairs training/solved_cut/pool.csv --pae-only \
-  --eval-every 1122 --eval-budget 100 \
+  --eval-every-epoch --eval-budget 100 \
   --shuffle structure --seeds 500000-500009 \
   --blocks-per-ckpt 1 --dist-backend gloo --dist-timeout-min 240 \
   --max-rss-gb 80 --preload-min-free-gb 260 \
