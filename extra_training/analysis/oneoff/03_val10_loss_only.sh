@@ -15,7 +15,7 @@ CUDA_VISIBLE_DEVICES=$CARD LAYERNORM_TYPE=openfold \
   --epochs 1 --accum 85 --nsample 5 --save-every 0 --warmup-steps 0 \
   --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0 \
   --pae-scored-pairs training/val10/pool.csv --pae-only \
-  --shuffle structure --seeds 400000-400009 \
+  --shuffle structure --seeds 400000-400029 \
   --blocks-per-ckpt 1 \
   --indices validation/prep/job_indices.csv \
   --bio-dir validation/prep/job_bioassembly \
