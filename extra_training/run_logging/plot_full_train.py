@@ -135,27 +135,44 @@ def main():
         rid, _, label = spec.partition("=")
         label = label or rid
         c = COLORS[ci % len(COLORS)]
+        # EPOCH 0 IS THE FIRST POINT OF THE CURVE, not a separate symbol. The shipped head is
+        # what every one of these metrics starts from, so joining it to epoch 1 with the same
+        # line makes the first segment answer "did training help at all" directly -- an isolated
+        # marker leaves the reader to judge a distance by eye.
+        #
+        # Panel 1 is not prepended: the shipped head's TRAIN PAE over these 488 structures is
+        # unmeasured, and a fabricated start would misstate the one panel the optimiser drives.
+        def _with_ep0(xs, ys, base):
+            # WITH NO TRAINED EPOCHS YET, the epoch-0 point is still drawn on its own. The
+            # baseline is a measurement, not a consequence of the run, so a panel waiting for its
+            # first eval should show where the untrained head sits rather than render blank.
+            if base is None:
+                return xs, ys
+            if not xs:
+                return [0], [base]
+            if xs[0] == 0:
+                return xs, ys
+            return [0] + list(xs), [base] + list(ys)
+
         tx, ty = train_pae(a.root, rid, a.full_steps)
+        tx, ty = _with_ep0(tx, ty, a.shipped_train_pae)
         if tx:
             axes[0].plot(tx, ty, marker="o", ms=4.5, lw=1.8, color=c, label=label)
         vx, vy, vn = val_pae(a.root, rid)
-        if vx:
-            axes[1].plot(vx, vy, marker="o", ms=4.5, lw=1.8, color=c, label=label)
-            if len(set(vn)) > 1:
-                notes.append(f"{label}: held-out pose count varies {min(vn)}-{max(vn)}")
+        _x, _y = _with_ep0(vx, vy, a.shipped_val_pae)
+        if _x:
+            axes[1].plot(_x, _y, marker="o", ms=4.5, lw=1.8, color=c,
+                         label=label if vx else f"{label} (epoch 0 only)")
+        if vx and len(set(vn)) > 1:
+            notes.append(f"{label}: held-out pose count varies {min(vn)}-{max(vn)}")
         ex, dq, fa = dockq(a.root, rid)
-        for ax, ys in ((axes[2], dq), (axes[3], fa)):
-            if ex:
-                ax.plot(ex, ys, marker="o", ms=5, lw=1.8, color=c, label=label)
+        for ax, ys, base in ((axes[2], dq, a.shipped_dockq), (axes[3], fa, a.shipped_frac)):
+            _x, _y = _with_ep0(ex, ys, base)
+            if _x:
+                ax.plot(_x, _y, marker="o", ms=5, lw=1.8, color=c,
+                        label=label if ex else f"{label} (epoch 0 only)")
 
-    # ---- EPOCH 0, the shipped head, as a point on every panel whose value is measured.
     EP0 = "#7f7f7f"
-    _ep0 = ((axes[1], a.shipped_val_pae), (axes[2], a.shipped_dockq), (axes[3], a.shipped_frac))
-    if a.shipped_train_pae is not None:
-        _ep0 = ((axes[0], a.shipped_train_pae),) + _ep0
-    for ax, v in _ep0:
-        ax.plot([0], [v], marker="*", ms=13, color=EP0, ls="none", zorder=5,
-                label="epoch 0 (shipped head)")
     if a.shipped_train_pae is None:
         # SAID, NOT LEFT BLANK. An empty epoch-0 slot on panel 1 reads as "no baseline exists"
         # rather than "this one costs hours and has not been paid for".
@@ -186,6 +203,9 @@ def main():
             ax.annotate(f"{lab} {v:.4f}", xy=(1, v), xycoords=("axes fraction", "data"),
                         xytext=(-4, 3), textcoords="offset points",
                         ha="right", va="bottom", fontsize=8, color=col)
+    for ax in (axes[1], axes[2], axes[3]):
+        ax.annotate("epoch 0 = shipped head", xy=(0.02, 0.97), xycoords="axes fraction",
+                    fontsize=7.5, color=EP0, va="top", ha="left")
     for ax in axes:
         ax.set_xlabel("epoch")
         ax.grid(alpha=0.25)
