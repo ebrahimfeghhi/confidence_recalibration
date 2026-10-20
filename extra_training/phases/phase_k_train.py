@@ -1323,6 +1323,36 @@ def main():
     def _tick(key, t0):
         _T[key] += time.perf_counter() - t0
         _TN[key] += 1
+
+    # GPU TIME NEEDS CUDA EVENTS, NOT WALL CLOCK. A kernel launch returns before the kernel runs,
+    # so perf_counter around .backward() times the launch and reports a few milliseconds for work
+    # that takes hundreds. `pose_total` happens to be honest because float(met["loss"]) inside it
+    # forces a device sync, but the forward/backward split is not, and that split is what decides
+    # whether disabling activation checkpointing could pay.
+    #
+    # DRAINED ONCE PER STEP, not per pose. elapsed_time() requires the events to have completed, so
+    # querying per pose would impose ~84 syncs per step and distort exactly what it measures. The
+    # pairs are held and read at the step boundary, where the gradient reduction synchronises
+    # anyway.
+    _ev_pending = []
+
+    def _gpu_span(key):
+        if not torch.cuda.is_available():
+            return None, None
+        e0 = torch.cuda.Event(enable_timing=True)
+        e1 = torch.cuda.Event(enable_timing=True)
+        e0.record()
+        _ev_pending.append((key, e0, e1))
+        return e0, e1
+
+    def _drain_gpu_spans():
+        if not _ev_pending:
+            return
+        torch.cuda.synchronize()
+        for key, e0, e1 in _ev_pending:
+            _T[key] += e0.elapsed_time(e1) / 1000.0
+            _TN[key] += 1
+        _ev_pending.clear()
     nonfinite = {"n": 0}
     ram_floor = {"hit": False, "n": 0}
     code_drift = {"n": 0, "warned": False}
@@ -1485,16 +1515,27 @@ def main():
         # structure then, counted, rather than guessing at a window.
         crop_slice = None
         if a.crop_margin > 0:
+            # SEPARATELY, because they argue for different fixes: a trunk read that dominates
+            # argues for caching the cropped tensors on disk, while crop PREPARATION dominating
+            # argues for caching the crop indices and nothing else.
             _t0 = time.perf_counter()
             _zc = np.load(trunk_p)
             _kt, _ka = BC.interface_crop_tokens(_zc, lab, a.crop_contact, a.crop_margin)
-            _tick("trunk_read_and_crop", _t0)
+            _tick("trunk_read_plus_crop_tokens", _t0)
             if _kt is None:
                 crop_stats["undefined"] += 1
                 crop_rows.append({"pdb": pdb, "unit": arm_seed, "n_tok": "", "kept_tok": "",
                                   "frames_cleared": "", "status": "no-crop-definable"})
             else:
+                _t1 = time.perf_counter()
                 crop_slice = BC.slice_cached_unit(_zc, lab, _kt, _ka, dev, torch)
+                _tick("crop_slice", _t1)
+                # THE CROPPED TOKEN COUNT, which is the workload. Equal structure counts per rank
+                # do not mean equal compute, and this is what shows it: the pair track is
+                # quadratic in tokens, so a rank handed the large end of 481-2,289 does several
+                # times the work for the same unit count.
+                _T["cropped_tokens"] += float(_kt.sum())
+                _TN["cropped_tokens"] += 1
                 crop_stats["n"] += 1
                 crop_stats["tok"] += int(_kt.shape[0])
                 crop_stats["kept"] += int(_kt.sum())
@@ -1566,6 +1607,7 @@ def main():
         def _one_pose(i):
             x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
                 else torch.as_tensor(poses[i:i + 1], dtype=torch.float32, device=dev)
+            _fe0, _fe1 = _gpu_span("gpu_forward")
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 plddt, pae, pde, resolved = model.run_confidence_head(
                     input_feature_dict=feat_head, s_inputs=s_inputs, s_trunk=s_trunk, z_trunk=zt,
@@ -1576,6 +1618,8 @@ def main():
                     # measurable memory, and Protenix's own config says chunk_size "should set to
                     # null for normal training".
                     chunk_size=None)
+            if _fe1 is not None:
+                _fe1.record()
             # WHERE THE HEAD'S OUTPUTS LANDED. Compared BY INDEX, because torch.device("cuda") is not
             # equal to torch.device("cuda:0") and the first version of this check fired on every pose
             # of a single-GPU run -- it killed the memory probe before it printed a single number.
@@ -1648,9 +1692,10 @@ def main():
             # NOT UNDER --loss-only: there are no gradients to accumulate, and calling backward
             # would be the one way this mode could change the weights it is supposed to measure.
             if not a.loss_only:
-                _t0 = time.perf_counter()
+                _be0, _be1 = _gpu_span("gpu_backward")
                 (cum / accum_eff).backward()
-                _tick("backward", _t0)
+                if _be1 is not None:
+                    _be1.record()
             # Explicit, though the return would free them anyway: this is the function's whole purpose,
             # and naming them stops a later edit from quietly hoisting one into the enclosing scope.
             del cum, met, pred, ld, x, plddt, pae, pde, resolved
@@ -1710,6 +1755,11 @@ def main():
             # ONE COLLECTIVE, NOT 248. The head's gradients are flattened into a single buffer, so
             # the per-call latency is paid once per step rather than once per tensor. gloo is a CPU
             # backend, so that buffer is staged through host memory and copied back.
+            # ONE SYNC PER STEP, BEFORE THE TIMER STARTS. Without it the collective's timer
+            # absorbs every queued kernel this rank has not finished, and the "collective" number
+            # becomes mostly local compute. One sync per 290-step epoch is not the per-operation
+            # synchronisation that would distort the measurement.
+            _drain_gpu_spans()
             _t0 = time.perf_counter()
             flat = torch.cat([pp.grad.reshape(-1) for pp in params])
             if a.dist_backend == "gloo":
@@ -2343,9 +2393,17 @@ def main():
             # WHERE THIS EPOCH'S WALL CLOCK WENT, per rank, as deltas over the epoch rather than
             # run totals -- the first-touch costs (the per-unit fingerprint hash, the item cache)
             # land entirely in epoch 1 and would otherwise contaminate every later epoch's figure.
+            # ANY EVENTS LEFT FROM THE EPOCH'S TAIL, so the last partial accumulation window's
+            # GPU time is not carried silently into the next epoch's figures.
+            _drain_gpu_spans()
             _ep_s = time.time() - ep_t0
             _parts = [(k, _T[k] - _T0.get(k, 0.0), _TN[k] - _TN0.get(k, 0)) for k in sorted(_T)]
-            _shown = "  ".join(f"{k} {v/60:.1f}m/{c}" for k, v, c in _parts if c)
+            # cropped_tokens is a WORKLOAD counter, not a duration: reported as a mean so the
+            # per-rank imbalance is readable directly. The pair track is quadratic in tokens, so
+            # equal unit counts across ranks still means unequal compute.
+            _shown = "  ".join(
+                (f"{k} mean {v/c:.0f}" if k == "cropped_tokens" else f"{k} {v/60:.1f}m/{c}")
+                for k, v, c in _parts if c)
             print(f"  [rank {rank}] epoch {ep + 1} took {_ep_s/60:.1f} min -- {_shown}", flush=True)
             if is_main and write_traj:
                 _save_resume(ep + 1, step)
