@@ -9,6 +9,7 @@ Run from the repository root.
 
 | figure | script | what it shows |
 |---|---|---|
+| `within_vs_between_trunk.png` | `within_vs_between_trunk.py` | **Figure 2.** ipTM's pairwise ranking accuracy within one trunk versus across trunks, conditioned on how far apart the two poses actually are. The mechanism behind Figure 1's selection gap. |
 | `supp_selection_vs_budget_bands.png` | `selection_vs_budget.py --bands` | Supplementary: the same curves with the full 95% cluster-bootstrap ribbons. |
 | `supp_dockq_vs_budget_bands.png` | `dockq_vs_budget.py --bands` | Supplementary: continuous version with ribbons. |
 | `dockq_vs_budget.png` | `dockq_vs_budget.py` | The same three benchmarks, continuous: **mean** oracle DockQ against **mean** ipTM-selected DockQ per budget. Shows whether the ranking deficit persists above the 0.23 cutoff. |
@@ -187,3 +188,58 @@ of theirs** and should not be presented as one.
   clears 100, so nothing is dropped — but only after FoldBench's top-off was merged: 28 of its 160
   interfaces sat at 60–93 seeds until then, and without the merge they would have been silently
   excluded and the panel would read 132 interfaces instead of 160.
+
+## Figure 2: where the ranking fails
+
+A seed produces ONE trunk representation and diffusion draws 5 poses from it, so the existing data
+already contains two populations: **within-trunk** pairs (two samples of one seed, same
+representation) and **between-trunk** pairs (poses from different seeds). The confidence head sees
+the pose only through a `cdist` over representative atoms added into `z_pair` once before the
+pairformer stack; everything else it reads is the trunk.
+
+**Variance is trunk-dominated for both quantities, more so for ipTM:**
+
+| | ipTM % between-trunk | DockQ % between-trunk |
+|---|---|---|
+| SAbDab2 partition | 97% | 91% |
+| FoldBench | 95% | 85% |
+| PXM-2025 | 90% | 80% |
+
+That alone is not enough. Within-trunk DockQ variance is itself small (0.002–0.005 against
+0.016–0.029 between), so a low within-trunk correlation could mean "less to rank" rather than
+"cannot see the pose". **Conditioning on pairs that genuinely differ removes the confound** —
+among pairs differing by at least 0.4 DockQ, does ipTM pick the better one?
+
+| | within trunk | between trunks |
+|---|---|---|
+| SAbDab2 partition | 0.768 | 0.969 |
+| FoldBench | 0.660 | 0.905 |
+| PXM-2025 | 0.805 | 0.930 |
+
+### What this supports, and what it does not
+
+**Supported:** the head's pose sensitivity is much weaker than its trunk sensitivity. Given two
+poses of wildly different quality, it is nearly always right across trunks and wrong a fifth to a
+third of the time within one.
+
+**NOT supported — "the head ignores pose coordinates."** 66–81% is well above chance, so it uses
+them. The strong version of the claim is false and should not be written.
+
+**The deficit is specific to large differences.** At |dDockQ| 0.05–0.1 within-trunk accuracy is
+slightly HIGHER than between-trunk (0.570 vs 0.532 on SAbDab2, 0.591 vs 0.573 on PXM), because
+between-trunk pairs are confounded by trunk-level ipTM offsets that do not track small quality
+differences. The failure is concentrated exactly where selections are won and lost.
+
+### Why it matters for the training experiments
+
+It turns "train on multiple poses per cached trunk" from a tweak into a prediction, and it gives a
+sharper success criterion than overall Spearman: a method that fixes this should raise
+**within-trunk accuracy at large |dDockQ|** specifically. Pathways C (frame-relative direction)
+and A (per-block re-injection) are both built and tested and neither has run on real data; this is
+the measurement they should be judged against.
+
+### Caveat not yet ruled out
+
+Within-trunk pairs with very large |dDockQ| may be systematically unusual — one pose badly broken
+rather than two plausible alternatives. That would soften the interpretation without changing the
+measurement. Testing it needs the pose geometry, not just the score table.
