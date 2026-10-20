@@ -22,19 +22,21 @@
 # EPOCH 2'S METRICS ARE SAFE: train PAE 2.6623, held-out PAE 2.6779, and its DockQ pass completed
 # before this run was launched. The series is x3k2m4+jhgfxy+this, one experiment in three parts.
 #
-# RESUME of the full-set run from its epoch-1 bundle, which is all x3k2m4 managed to write.
+# WHAT THIS RESUMES FROM. jhgfxy/resume_ep2.pt -- epoch 2's bundle, written at its boundary
+# before the val hooks ran. Epochs 1 and 2 are not repeated.
 #
-# WHY A RESUME AND NOT A FRESH START. x3k2m4 completed epoch 1 in 77.9 min and wrote
-# resume_ep1.pt, then died on the NEXT line -- a NameError in the held-out monitor's csv append,
-# after that pass had already computed its number (9db84d64). The bundle is complete and atomic,
-# so those 78 minutes are recoverable and there is no reason to spend them again.
+# THE SERIES IS x3k2m4 + jhgfxy + THIS RUN, one experiment in THREE parts, and any curve must join
+# all three the way 335psh+2u8tf4 had to be joined. x3k2m4 ran epoch 1 and died on a NameError in
+# the held-out monitor; jhgfxy resumed and ran epoch 2; this runs epoch 3 onward. The segments do
+# not share an implementation -- this one has checkpointing off, the persistent fingerprint cache,
+# empty_cache at the boundary and exclusive timers -- so THROUGHPUT AND MEMORY ARE NOT COMPARABLE
+# ACROSS SEGMENTS even though the metrics are. docs/full_train_results.md states which segment
+# produced each epoch for exactly that reason.
 #
-# ITS TWO EPOCH-1 NUMBERS, both recovered: train PAE 2.7384, held-out val10 PAE 2.6953. The
-# held-out figure is BELOW the training one and already beats both the shipped head (2.9756) and
-# the best the 30-structure arm ever reached (2.7231 at epoch 5). One epoch, so not a trend.
-#
-# THE SERIES IS x3k2m4 + THIS RUN, one experiment in two parts. Any curve must join them, the way
-# 335psh+2u8tf4 had to be joined.
+# EPOCH 1 AND 2'S NUMBERS, all recorded before this launch:
+#   ep1  train PAE 2.7384  held-out PAE 2.6953  DockQ 0.2999 / 0.5556
+#   ep2  train PAE 2.6623  held-out PAE 2.6779  DockQ 0.2543 / 0.3333
+# against a shipped head of held-out PAE 2.9756 and DockQ 0.2909 / 0.5556 at budget 30.
 #
 # THE FULL TRAINING SET, with every metric that matters measured every epoch.
 #
