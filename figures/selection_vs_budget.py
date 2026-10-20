@@ -53,6 +53,13 @@ BENCH = [
 # recover, grey for what it could not.
 COLORS = ["#2ca02c", "#e8a33d", "#9aa0a6"]
 LABELS = ["ipTM selects acceptable", "acceptable exists, ipTM picks decoy", "no acceptable in pool"]
+# DISTINGUISHABLE WHERE THEY OVERLAP, which they do: on Validation the decoy and no-acceptable
+# curves converge around 13-14% and sit on top of each other, so colour alone loses one of them.
+# Three defences -- a different dash pattern each, markers staggered so they do not stack at the
+# same x, and an explicit draw order -- and any two coincident curves stay separable.
+STYLES = ["-", "--", ":"]
+MARKEVERY = [(0, 10), (3, 10), (6, 10)]
+MARKERS = ["o", "s", "^"]
 
 
 def sem(p, n):
@@ -156,15 +163,22 @@ def main():
     def band(ax, xs, ys, n_if, color):
         lo = [(y - sem(y, n_if)) * 100 for y in ys]
         hi = [(y + sem(y, n_if)) * 100 for y in ys]
-        ax.fill_between(xs, lo, hi, color=color, alpha=0.15, linewidth=0)
+        # 0.12 rather than 0.15: three bands that overlap at 0.15 each stack to a muddy block in
+        # which none of the three is readable.
+        ax.fill_between(xs, lo, hi, color=color, alpha=0.12, linewidth=0, zorder=1)
 
     for ax, (name, n_if, xs, acc, dec, non) in zip(axes, series):
-        for ys, c, lbl in zip((acc, dec, non), COLORS, LABELS):
-            # MARKERS EVERY 10 SEEDS, not on all 100: a marker per point turns a 100-wide axis
-            # into a solid band and hides the line it is meant to mark.
-            ax.plot(xs, [y * 100 for y in ys], "-o", color=c, label=lbl, lw=1.8, ms=3.5,
-                    markevery=10)
+        # BANDS FIRST, ALL OF THEM, then the lines on top: interleaving them lets a later band
+        # wash out an earlier line where the curves cross.
+        for ys, c in zip((acc, dec, non), COLORS):
             band(ax, xs, ys, n_if, c)
+        for i, (ys, c, lbl) in enumerate(zip((acc, dec, non), COLORS, LABELS)):
+            # MARKERS EVERY 10 SEEDS, not on all 100: a marker per point turns a 100-wide axis
+            # into a solid band and hides the line it is meant to mark. The offsets stagger them
+            # so three coincident curves do not pile markers on the same x.
+            ax.plot(xs, [y * 100 for y in ys], color=c, label=lbl, lw=1.9,
+                    ls=STYLES[i], marker=MARKERS[i], ms=4.0, markevery=MARKEVERY[i],
+                    zorder=5 - i)
         ax.set_title(f"{name}  (n={n_if})", fontsize=10)
         ax.set_xlabel("seeds")
         ax.set_xlim(1, a.max_budget)
