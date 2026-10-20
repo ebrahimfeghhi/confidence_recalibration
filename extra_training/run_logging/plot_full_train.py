@@ -24,98 +24,18 @@ import csv
 import os
 import re
 
-import glob
-import json
+import os
+import sys
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import metrics_io as MIO
+
 # The held-out DockQ eval reuses the train-eval code path, so it still prints "TRAIN:".
-DOCKQ = re.compile(r"epoch (\d+) TRAIN: mean_dockq ([0-9.]+)\s+frac_acc ([0-9.]+)")
 COLORS = ["#1f77b4", "#e67e22", "#16a085", "#c0392b", "#000000"]
-
-
-def val_pae(root, rid):
-    """Held-out PAE per epoch, from val_loss.csv -- written by --val-loss-every.
-
-    Prefers the csv over scraping the log: the csv is written by the hook itself and carries the
-    pose count, so a pass that measured fewer poses than intended is visible rather than silently
-    averaged in.
-    """
-    byep = {}
-    for part in rid.split("+"):
-        p = os.path.join(root, part, "val_loss.csv")
-        if not os.path.exists(p):
-            continue
-        with open(p) as fh:
-            for r in csv.DictReader(fh):
-                try:
-                    byep[int(r["epoch"])] = (float(r["val_pae"]), int(r["n_poses"]))
-                except (ValueError, KeyError, TypeError):
-                    continue
-    if not byep:
-        return [], [], []
-    ks = sorted(byep)
-    return ks, [byep[k][0] for k in ks], [byep[k][1] for k in ks]
-
-
-def dockq(root, rid):
-    """Held-out DockQ per epoch, from the run log AND from any metric_train_ep<N>.json beside it.
-
-    TWO SOURCES BECAUSE THERE ARE TWO WAYS THE NUMBER ARRIVES. In-run, the --train-eval-pool hook
-    prints an "epoch N TRAIN:" line. Scored after the fact -- which is how every checkpoint of a
-    finished run gets measured, and how x3k2m4's epoch 1 was recovered after a crash killed the
-    run before its eval ran -- phase_k_eval writes a metric json and touches no log. A plot that
-    read only the log silently omitted the second kind.
-
-    THE JSON WINS ON A CONFLICT, because it is the file an explicit re-score writes: if a later
-    pass at a different budget replaced an in-run number, that later pass is the one meant.
-    Budget is checked rather than assumed -- a budget-100 json on a budget-30 plot would put two
-    different pool depths on one axis, which is the error the reference lines exist to prevent.
-    """
-    byep, skipped = {}, []
-    for part in rid.split("+"):
-        d = os.path.join(root, part)
-        log = os.path.join(d, "run.log")
-        if os.path.exists(log):
-            for m in DOCKQ.finditer(open(log, errors="replace").read()):
-                byep[int(m.group(1))] = (float(m.group(2)), float(m.group(3)))
-        for jp in sorted(glob.glob(os.path.join(d, "metric_train_ep*.json"))):
-            try:
-                j = json.load(open(jp))
-                ep = int(re.search(r"ep(\d+)\.json$", jp).group(1))
-            except (ValueError, OSError, AttributeError):
-                continue
-            byep[ep] = (float(j["mean_dockq"]), float(j["frac_acc"]))
-            if "budget" in j:
-                skipped.append((ep, int(j["budget"])))
-    ks = sorted(byep)
-    return ks, [byep[k][0] for k in ks], [byep[k][1] for k in ks], skipped
-
-
-def train_pae(root, rid, full_steps):
-    """Pose-weighted PAE per epoch. WEIGHTED BY batch_n, never a mean of per-step means.
-
-    An epoch's last step is a remainder, so averaging step means over-weights it. That bias once
-    made a stop rule and a curve disagree in sign.
-    """
-    d = collections.defaultdict(lambda: [0.0, 0, 0])
-    for part in rid.split("+"):
-        traj = os.path.join(root, part, "trajectory.csv")
-        if not os.path.exists(traj):
-            continue
-        with open(traj) as fh:
-            for r in csv.DictReader(fh):
-                if r.get("step_taken") != "1":
-                    continue
-                try:
-                    e, v, n = int(r["epoch"]), float(r["batch_pae_loss"]), int(r["batch_n"])
-                except (ValueError, KeyError, TypeError):
-                    continue
-                d[e][0] += v * n; d[e][1] += n; d[e][2] += 1
-    xs = sorted(e for e, v in d.items() if v[2] >= full_steps and v[1] > 0)
-    return xs, [d[e][0] / d[e][1] for e in xs]
 
 
 def main():
@@ -182,24 +102,28 @@ def main():
                 return xs, ys
             return [0] + list(xs), [base] + list(ys)
 
-        tx, ty = train_pae(a.root, rid, a.full_steps)
-        tx, ty = _with_ep0(tx, ty, a.shipped_train_pae)
+        M = MIO.load(a.root, rid, a.budget, a.full_steps)
+        for _p, _why in M.rejected:
+            notes.append(f"REJECTED {os.path.basename(_p)}: {_why}")
+        _te = sorted(M.train_pae)
+        tx, ty = _with_ep0(_te, [M.train_pae[e] for e in _te], a.shipped_train_pae)
         if tx:
             axes[0].plot(tx, ty, marker="o", ms=4.5, lw=1.8, color=c, label=label)
-        vx, vy, vn = val_pae(a.root, rid)
+        _ve = sorted(M.val_pae)
+        vx = _ve
+        vy = [M.val_pae[e][0] for e in _ve]
+        vn = [M.val_pae[e][1] for e in _ve]
         _x, _y = _with_ep0(vx, vy, a.shipped_val_pae)
         if _x:
             axes[1].plot(_x, _y, marker="o", ms=4.5, lw=1.8, color=c,
                          label=label if vx else f"{label} (epoch 0 only)")
         if vx and len(set(vn)) > 1:
             notes.append(f"{label}: held-out pose count varies {min(vn)}-{max(vn)}")
-        ex, dq, fa, budgets = dockq(a.root, rid)
-        # A JSON AT ANOTHER BUDGET IS NOT THE SAME METRIC. Said in the subtitle rather than
-        # quietly plotted: 0.2626/0.5000 at 100 seeds and 0.2909/0.5556 at 30 are different pools.
-        _wrong = sorted({b for _e, b in budgets if b != a.budget})
-        if _wrong:
-            notes.append(f"{label}: metric json(s) at budget {_wrong} plotted against "
-                         f"budget-{a.budget} reference lines")
+        # A JSON AT ANOTHER BUDGET NEVER REACHES HERE: metrics_io rejects it and the rejection is
+        # already in `notes` above. The plot used to warn and plot it anyway.
+        ex = sorted(M.dockq)
+        dq = [M.dockq[e][0] for e in ex]
+        fa = [M.dockq[e][1] for e in ex]
         for ax, ys, base in ((axes[2], dq, a.shipped_dockq), (axes[3], fa, a.shipped_frac)):
             _x, _y = _with_ep0(ex, ys, base)
             if _x:
