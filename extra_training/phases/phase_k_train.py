@@ -1357,7 +1357,48 @@ def main():
     ram_floor = {"hit": False, "n": 0}
     code_drift = {"n": 0, "warned": False}
 
-    def resolve_trunk(pdb, lab_p, cands, want_fp_cache={}):
+    # ONE FINGERPRINT CACHE, SHARED BY BOTH CALLERS. unit_fingerprint SHAs the trunk (~205 MB),
+    # the job cif and the bioassembly pickle. resolve_trunk memoised it privately in a default
+    # argument, but run_unit re-asserts it per unit and did NOT, so a full SHA of all three ran on
+    # every unit of every epoch: at 1620 units per rank that is roughly half of this rank's trunk
+    # I/O spent re-proving something proved in epoch 1.
+    #
+    # THE SAFETY PROPERTY IS UNCHANGED. The re-assertion exists so the check cannot be skipped if
+    # resolve_trunk is ever bypassed -- and a bypass leaves this cache without the key, so it still
+    # computes and still asserts. What is skipped is only the SECOND and later computations of a
+    # value that is a pure function of files this process has already read.
+    #
+    # RAM: one short string per (pdb, trunk path), 4880 keys on the full set -- about 1 MB.
+    _fp_cache = {}
+
+    def _prefetch(path):
+        """Ask the kernel to read a trunk ahead, so its I/O overlaps the current unit's compute.
+
+        posix_fadvise(WILLNEED) rather than a thread and a queue: it is one syscall, it cannot
+        race anything, and it adds no Python-side buffer. The bytes land in PAGE CACHE, which is
+        reclaimable -- so this does not raise this process's RSS against --max-rss-gb and does not
+        lower MemAvailable in the way that matters to other users of the box. Under memory pressure
+        the kernel simply drops the readahead and the subsequent read is a normal cold read.
+
+        BOUNDED AT ONE UNIT AHEAD, deliberately. A deeper queue would have several ~205 MB trunks
+        in flight per rank for a loader that consumes them strictly in order, which buys nothing
+        and evicts cache that the three ranks are competing for.
+        """
+        if not hasattr(os, "posix_fadvise") or not path:
+            return
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_WILLNEED)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+    def resolve_trunk(pdb, lab_p, cands, want_fp_cache=None):
+        want_fp_cache = _fp_cache if want_fp_cache is None else want_fp_cache
         """Pick the trunk whose PROVENANCE matches this label, not the first filename that exists.
 
         THE FIRST MATCHING FILENAME IS NOT THE RIGHT TRUNK. The multi-root lookup took it, so a
@@ -1485,7 +1526,12 @@ def main():
         # THE FINGERPRINT IS COMPARED, NOT MERELY PRESENT. resolve_trunk already proved one trunk
         # reproduces it; this re-asserts against the trunk actually being used, so the two cannot
         # come apart if resolve_trunk is ever bypassed.
-        _want = BC.unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp)
+        _fp_key = (pdb, trunk_p)
+        if _fp_key not in _fp_cache:
+            _t_fp = time.perf_counter()
+            _fp_cache[_fp_key] = BC.unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp)
+            _tick("fingerprint_hash", _t_fp)
+        _want = _fp_cache[_fp_key]
         _got = str(np.asarray(lab["fingerprint"]))
         if _got != _want:
             _dw = dict(x.split("=", 1) for x in _want.split("|") if "=" in x)
@@ -2281,6 +2327,21 @@ def main():
             ep_loss["sum"], ep_loss["n"] = 0.0, 0
             for ui, (pdb, lab_p, cands) in enumerate(ep_units):
                 trunk_p = resolve_trunk(pdb, lab_p, cands)
+                # THE NEXT UNIT'S TRUNK, WARMED WHILE THIS ONE COMPUTES. Resolving it is cheap
+                # after epoch 1 because the fingerprint is cached; on the first epoch it pays the
+                # hash it would have paid a moment later anyway.
+                if ui + 1 < len(ep_units):
+                    _n_pdb, _n_lab, _n_cands = ep_units[ui + 1]
+                    _t_pf = time.perf_counter()
+                    try:
+                        _prefetch(resolve_trunk(_n_pdb, _n_lab, _n_cands))
+                    except SystemExit:
+                        # A BAD NEXT UNIT MUST NOT KILL THE CURRENT ONE HERE. resolve_trunk raises
+                        # SystemExit on an unresolvable fingerprint, which is the right behaviour
+                        # when that unit is reached for real -- one iteration later, with its own
+                        # diagnostics. Swallowing it here only declines to prefetch.
+                        pass
+                    _tick("prefetch_issue", _t_pf)
                 for _m in run_unit(pdb, lab_p, trunk_p, item_cache):
                     i, met = _m["pose"], _m      # floats only; the tensors are already freed
                     cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
