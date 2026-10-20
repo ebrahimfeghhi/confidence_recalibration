@@ -2449,6 +2449,12 @@ def main():
                 ep_units = ep_units[:max(1, int(len(ep_units) * frac))]
             print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
             _T0, _TN0 = dict(_T), dict(_TN)
+            # PEAK MEMORY PER EPOCH, reset here so each epoch reports its own rather than the
+            # high-water mark of the whole run. This is the number that decides whether activation
+            # checkpointing can stay off: --mem-log answers it too but emits one line per pose,
+            # 8,100 per rank per epoch.
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
             ep_start_step = step
             ep_t0 = time.time()
             ep_loss["sum"], ep_loss["n"] = 0.0, 0
@@ -2625,9 +2631,27 @@ def main():
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
                   f"residual {(_ep_s - _acc)/60:.1f}m "
                   f"(exclusive buckets only; gpu_* overlap pose_total)", flush=True)
+            if torch.cuda.is_available():
+                _gb = 1 << 30
+                print(f"  [rank {rank}] epoch {ep + 1} memory: peak allocated "
+                      f"{torch.cuda.max_memory_allocated()/_gb:.2f} GB, peak reserved "
+                      f"{torch.cuda.max_memory_reserved()/_gb:.2f} GB, "
+                      f"blocks_per_ckpt={model.confidence_head.pairformer_stack.blocks_per_ckpt}",
+                      flush=True)
             # EVERY RANK SAVES ITS OWN, at the boundary rather than at exit: x3k2m4 died after
             # epoch 1 and would have discarded all 4,880 hashes it had just computed.
             _fp_cache_save()
+            # HAND THE ALLOCATOR'S CACHE BACK BEFORE THE VAL HOOKS RUN. The ranks are parked at a
+            # barrier for the held-out pass and the DockQ eval, not computing -- but PyTorch holds
+            # freed activation blocks as *reserved*, so a parked rank still looks ~20-30 GB wide to
+            # the subprocesses that have to fit beside it. Measured at the p100 crop: allocated
+            # 2.28 GB against reserved 30.66, so ~28 GB per card is cached-but-free.
+            #
+            # THIS MATTERS MORE WITHOUT ACTIVATION CHECKPOINTING, where the stored activations push
+            # the peak up and therefore the reserved pool with it. Costs a few hundred ms of
+            # re-allocation on the next epoch's first poses, at an epoch boundary, once per epoch.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             if is_main and write_traj:
                 _save_resume(ep + 1, step)
             # NO write_traj IN THIS CONDITION. It is `is_main`, so including it meant ranks 1
