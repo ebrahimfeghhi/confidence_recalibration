@@ -225,6 +225,39 @@ def main():
                          "guard only fires while nothing has been masked yet, so after one "
                          "successful unit any number of silent fallbacks can follow, and review "
                          "reproduced exactly that. Use it only when the mismatch is intended.")
+    ap.add_argument("--val-loss-every", type=int, default=0,
+                    help="EPOCHS BETWEEN HELD-OUT PAE PASSES; 0 is off. This is the monitor the "
+                         "run had no way to compute: measured 2026-10-20, the lr 1e-2 anchor's "
+                         "training PAE fell 38% from epoch 1 to 142 while its val10 PAE ROSE 51% "
+                         "(2.8290 -> 4.2639), and nothing in the run could see it -- the DockQ "
+                         "metric stayed inside its noise band the whole time because ipTM barely "
+                         "orders poses within an interface (rho 0.20 even for the shipped head). "
+                         "At 500 poses it costs ~3 min against a 37-min full-set epoch.")
+    ap.add_argument("--val-loss-fold", default="", help="fold root for the held-out pass")
+    ap.add_argument("--val-loss-labels", default="", help="defaults to <val-loss-fold>/labels")
+    ap.add_argument("--val-loss-selection", default="", help="selection csv; needs a `tokens` column")
+    ap.add_argument("--val-loss-pool", default="", help="pool csv for the PAE mask on the held-out side")
+    ap.add_argument("--val-loss-preflight", default="", help="that fold's alignment preflight marker")
+    ap.add_argument("--val-loss-seeds", default="", help="e.g. 400000-400009")
+    ap.add_argument("--val-loss-prep", default="",
+                    help="prep root holding job_indices.csv, job_bioassembly and job_cifs for that "
+                         "fold. The dataset config defaults to the TRAINING prep, and pointing it "
+                         "at the wrong one fails loudly -- 10 structures with no datapoint -- "
+                         "rather than measuring the wrong molecules.")
+    ap.add_argument("--val-loss-card", default="",
+                    help="card for the held-out pass. Empty shares the trainer's; it loads a second "
+                         "464M-parameter model, so the free-memory floor below applies.")
+    ap.add_argument("--loss-only", action="store_true",
+                    help="FORWARD AND LOSS ONLY, no backward, no optimiser, no weight change -- one "
+                         "pass over the manifest. For measuring a saved head's loss on a HELD-OUT "
+                         "fold, which nothing else could do: the eval path reports DockQ selection "
+                         "and never the loss, so a 37% drop in training PAE had no held-out "
+                         "counterpart to compare against. Runs in the trainer rather than a second "
+                         "script so the crop, the --pae-scored-pairs mask, the --pae-only stub and "
+                         "the loss weights are the SAME code -- a reimplementation would drift and "
+                         "the two numbers would stop being comparable, which is the only thing this "
+                         "measurement is for. Writes a trajectory like any run, so the pose-weighted "
+                         "epoch PAE is computed from it by the identical formula.")
     ap.add_argument("--pae-only", action="store_true",
                     help="train the PAE term ALONE: pLDDT, PDE and resolved are stubbed out, not "
                          "computed, not trained. ipTM derives entirely from PAE, and at the shipped "
@@ -468,6 +501,75 @@ def main():
             "residues. Pass --minimal-items with its --alignment-preflight marker.")
     if a.crop_margin < 0:
         raise SystemExit("STOP: --crop-margin cannot be negative.")
+    if a.val_loss_every:
+        # CHECKED AT LAUNCH, NOT AT THE FIRST EPOCH BOUNDARY. On the full training set that
+        # boundary is 37 minutes in, and a monitor that fails there is a monitor nobody has for
+        # the one epoch where it would have mattered most.
+        if a.loss_only:
+            raise SystemExit("STOP: --val-loss-every inside --loss-only would have a measurement "
+                             "measure itself, recursively.")
+        _need = {"--val-loss-fold": a.val_loss_fold,
+                 "--val-loss-selection": a.val_loss_selection,
+                 "--val-loss-pool": a.val_loss_pool,
+                 "--val-loss-preflight": a.val_loss_preflight,
+                 "--val-loss-seeds": a.val_loss_seeds}
+        _unset = sorted(k for k, v in _need.items() if not v)
+        if _unset:
+            raise SystemExit(f"STOP: --val-loss-every {a.val_loss_every} needs {_unset}. A "
+                             f"held-out pass with no fold, selection, mask pool, preflight marker "
+                             f"or seed range has nothing to measure.")
+        _labels = a.val_loss_labels or os.path.join(a.val_loss_fold, "labels")
+        _paths = {"--val-loss-fold": a.val_loss_fold, "labels": _labels,
+                  "--val-loss-selection": a.val_loss_selection,
+                  "--val-loss-pool": a.val_loss_pool,
+                  "--val-loss-preflight": a.val_loss_preflight}
+        if a.val_loss_prep:
+            _paths["--val-loss-prep"] = a.val_loss_prep
+        _gone = sorted(f"{k} -> {v}" for k, v in _paths.items() if not os.path.exists(v))
+        if _gone:
+            raise SystemExit("STOP: the held-out PAE monitor points at path(s) that do not "
+                             "exist:\n  " + "\n  ".join(_gone))
+        # THE LABELS MUST COVER THE SEED RANGE. An empty or partial label directory makes the
+        # subprocess fail every epoch with "the training set is INCOMPLETE", which is correct but
+        # 37 minutes too late to be useful. validation/fold/labels was EMPTY until 2026-10-20.
+        try:
+            _lo, _hi = (int(x) for x in a.val_loss_seeds.split("-"))
+        except ValueError:
+            raise SystemExit(f"STOP: --val-loss-seeds {a.val_loss_seeds!r} is not <lo>-<hi>.")
+        with open(a.val_loss_selection) as _fh:
+            _pdbs = sorted({r["pdb"] for r in csv.DictReader(_fh)
+                            if r.get("tokens", "").isdigit()})
+        if not _pdbs:
+            raise SystemExit(f"STOP: {a.val_loss_selection} yielded 0 structure(s). Rows are kept "
+                             f"only when `tokens` is a digit -- a selection csv without that "
+                             f"column drops every row silently.")
+        _miss = [f"{q}/free_{sd}" for q in _pdbs for sd in range(_lo, _hi + 1)
+                 if not os.path.exists(os.path.join(_labels, q, f"free_{sd}.npz"))]
+        if _miss:
+            raise SystemExit(
+                f"STOP: {len(_miss)} of {len(_pdbs) * (_hi - _lo + 1)} held-out label(s) are "
+                f"missing under {_labels}, e.g. {_miss[:4]}. Build them with "
+                f"phases/phase_j_build_cache.py --fold {a.val_loss_fold}; see "
+                f"analysis/oneoff/01_build_val10_labels.sh.")
+        print(f"held-out PAE monitor: every {a.val_loss_every} epoch(s), {len(_pdbs)} structure(s) "
+              f"x seeds {_lo}-{_hi} = {len(_pdbs) * (_hi - _lo + 1)} unit(s), masked by "
+              f"{a.val_loss_pool}")
+
+    if a.loss_only:
+        # A MEASUREMENT MUST NOT LOOK LIKE A RUN. Everything that would persist a head is refused
+        # rather than quietly skipped: a loss-only pass that dropped a head_step*.pt or a
+        # resume_ep*.pt into a run directory would leave a checkpoint nobody could tell apart from
+        # a trained one, and the whole point of the mode is that the weights do not move.
+        if a.epochs > 1:
+            raise SystemExit(f"STOP: --loss-only is one pass over the manifest; --epochs "
+                             f"{a.epochs:g} would measure the same frozen head {a.epochs:g} times "
+                             f"and report the mean as though it were an epoch curve.")
+        if a.save_every:
+            raise SystemExit("STOP: --loss-only with --save-every would write checkpoints of a "
+                             "head it never trained. Drop --save-every.")
+        if a.warmup_steps:
+            raise SystemExit("STOP: --loss-only with --warmup-steps is meaningless -- there is no "
+                             "optimiser to warm up, and the logged lr would imply one ran.")
     if a.crop_log and a.crop_margin == 0:
         raise SystemExit("STOP: --crop-log was given but --crop-margin is 0, so nothing is cropped.")
 
@@ -483,7 +585,13 @@ def main():
     # THE GATE. A cached-training run is only an FT3 run if the cached halves reproduce what the live
     # code computes. That is phase_j_replay.py's job and it PASSES; requiring its result here is what
     # stops a future run from quietly skipping it.
-    if a.require_replay != "skip":
+    # EXEMPT UNDER --loss-only, AND NOT BECAUSE IT IS INCONVENIENT. The gate asserts that cached
+    # TRAINING reproduces FT3, and its log is about the fold being trained on. A loss-only pass
+    # trains nothing, and the fold it measures is usually a different one -- passing the training
+    # fold's replay log there would assert something about validation trunks that nobody checked,
+    # which is worse than not asking. The replay that matters for a measurement is the shipped-head
+    # self-check phase_k_eval already runs against results.csv on the same fold.
+    if a.require_replay != "skip" and not a.loss_only:
         if not a.require_replay:
             raise SystemExit(
                 "STOP: --require-replay not given. Run\n"
@@ -1129,7 +1237,11 @@ def main():
                   "not a continuation of it:")
             for k, (b, m) in _bad.items():
                 print(f"  {k}: bundle {b!r} -> this run {m!r}")
-        if _b["epoch"] >= max(1, math.ceil(a.epochs)):
+        # NOT UNDER --loss-only. A measurement does not continue the bundle's schedule, it reads
+        # the bundle's weights: "the bundle has 141 epochs done and --epochs is 1" is a refusal
+        # about training that is not happening, and the epoch counter below is reset to 0 so the
+        # single pass actually runs rather than falling into range(141, 1) and measuring nothing.
+        if not a.loss_only and _b["epoch"] >= max(1, math.ceil(a.epochs)):
             raise SystemExit(f"STOP: the bundle has {_b['epoch']} epoch(s) done and --epochs is "
                              f"{a.epochs}; there is nothing left to run.")
         _tset = set(trainable)
@@ -1143,6 +1255,9 @@ def main():
                     _p.data.copy_(_b["head"][_n].to(_p.device, _p.dtype))
         opt.load_state_dict(_b["opt"])
         start_epoch, start_step = int(_b["epoch"]), int(_b["step"])
+        if a.loss_only:
+            _measured_epoch, _measured_step = start_epoch, start_step
+            start_epoch, start_step = 0, 0
         if is_main:
             print(f"RESUMED from {a.resume}: {start_epoch} epoch(s) done, step {start_step}, "
                   f"AdamW state for {len(_b['opt'].get('state', {}))} tensor(s) restored; "
@@ -1497,14 +1612,24 @@ def main():
             out["loss"] = float(met["loss"])
             out["pose"] = i
             # SCALED BY THE EFFECTIVE BATCH, so summing the ranks reconstructs the full-batch mean.
-            (cum / accum_eff).backward()
+            # NOT UNDER --loss-only: there are no gradients to accumulate, and calling backward
+            # would be the one way this mode could change the weights it is supposed to measure.
+            if not a.loss_only:
+                (cum / accum_eff).backward()
             # Explicit, though the return would free them anyway: this is the function's whole purpose,
             # and naming them stops a later edit from quietly hoisting one into the enclosing scope.
             del cum, met, pred, ld, x, plddt, pae, pde, resolved
             return out
 
         for i in range(n_pose):
-            m = _one_pose(i)
+            # NO GRAPH UNDER --loss-only. Skipping only the backward would still build the
+            # autograd graph for every pose and free it unused -- correct, but it pays the
+            # activation memory of training for a measurement that needs none.
+            if a.loss_only:
+                with torch.no_grad():
+                    m = _one_pose(i)
+            else:
+                m = _one_pose(i)
             if a.mem_log:
                 # AT A CONSISTENT BOUNDARY: after backward, and after the pose's tensors are gone.
                 # allocated = live tensors. reserved = what the allocator holds, which is what
@@ -1529,6 +1654,13 @@ def main():
         exponential averages and never recover. The gradients are dropped and the run continues,
         counted, rather than the step being taken.
         """
+        if a.loss_only:
+            # THE WINDOW STILL CLOSES, so the trajectory keeps its step_taken==1 rows and the
+            # pose-weighted epoch PAE is computed from them exactly as for a training run. What is
+            # skipped is the clip, the all-reduce of gradients that do not exist, and AdamW.
+            # grad_norm is reported as nan rather than 0.0: zero is a measurement, nan is "not
+            # measured", and a 0.0 here would read as a vanished gradient in the usual summaries.
+            return float("nan"), 0, True
         params = [pp for n, pp in model.named_parameters() if n in set(trainable)]
         if world > 1:
             # BEFORE THE CLIP, NOT AFTER. Clipping each rank's partial gradient to norm 1 and then
@@ -1594,6 +1726,99 @@ def main():
         return lo, hi - lo + 1
     _train_eval_seed_base, _n_seeds = _seed_lo_hi(a.seeds)
     _train_eval_budget = a.train_eval_budget or _n_seeds
+
+    def val_loss_checkpoint(epoch, bundle):
+        """Held-out PAE for the bundle this epoch just wrote. Returns the pose mean, or None.
+
+        A SUBPROCESS, for the same reason eval_checkpoint is one: --loss-only carries its own
+        guards -- the alignment preflight, the mask-coverage check, the manifest completeness
+        check, the refusal to write a checkpoint -- and running it as the script keeps all of
+        them. It also means the held-out fold's dataset config, labels and crop live entirely in
+        another process, so there is no path by which measuring can perturb the weights being
+        measured. That property is asserted by the caller rather than assumed.
+
+        IT READS THE BUNDLE FROM DISK, not the live parameters. The epoch boundary has already
+        written resume_ep<N>.pt, which carries all 248 head tensors, so the thing measured is
+        exactly the thing a later scorer would load -- not a copy made by a different code path.
+        """
+        import json
+        import subprocess
+        out = os.path.join(a.out, f"val_loss_ep{epoch}")
+        labels = a.val_loss_labels or os.path.join(a.val_loss_fold, "labels")
+        cmd = [sys.executable, "-I", os.path.abspath(__file__),
+               "--loss-only", "--resume", bundle, "--resume-allow-drift",
+               "--fold", a.val_loss_fold, "--labels", labels,
+               "--manifest-selection", a.val_loss_selection,
+               "--alignment-preflight", a.val_loss_preflight, "--minimal-items",
+               "--pae-scored-pairs", a.val_loss_pool,
+               "--seeds", a.val_loss_seeds,
+               # THE RUN'S OWN GEOMETRY AND WEIGHTS. A different crop or a different alpha would
+               # make the held-out number incomparable to the training curve it is read against,
+               # which is the only thing it is for.
+               "--crop-margin", str(a.crop_margin), "--crop-contact", str(a.crop_contact),
+               "--crop-size", str(a.crop_size), "--accum", str(a.accum),
+               "--nsample", str(a.nsample), "--alpha-pae", str(a.alpha_pae),
+               "--alpha-confidence", str(a.alpha_confidence), "--clip-norm", str(a.clip_norm),
+               "--blocks-per-ckpt", str(a.blocks_per_ckpt),
+               "--epochs", "1", "--save-every", "0", "--warmup-steps", "0",
+               "--shuffle", "structure", "--out", out]
+        if a.pae_only:
+            cmd.append("--pae-only")
+        if a.drop_pde:
+            cmd.append("--drop-pde")
+        if a.frame_direction:
+            cmd.append("--frame-direction")
+        if a.pose_perblock:
+            cmd.append("--pose-perblock")
+            if a.pose_perblock_tied:
+                cmd.append("--pose-perblock-tied")
+        if a.val_loss_prep:
+            cmd += ["--indices", os.path.join(a.val_loss_prep, "job_indices.csv"),
+                    "--bio-dir", os.path.join(a.val_loss_prep, "job_bioassembly"),
+                    "--mmcif-dir", os.path.join(a.val_loss_prep, "job_cifs")]
+        env = {**os.environ, "LAYERNORM_TYPE": "openfold"}
+        if a.val_loss_card:
+            env["CUDA_VISIBLE_DEVICES"] = str(a.val_loss_card)
+        print(f"  held-out PAE for epoch {epoch} "
+              f"({'card ' + str(a.val_loss_card) if a.val_loss_card else 'the training card'})",
+              flush=True)
+        r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if r.returncode != 0:
+            # LOUD, BUT NOT FATAL. Training is the run; a monitor that cannot compute its number
+            # must not destroy 37 minutes of epoch because a card was momentarily full. The next
+            # epoch tries again and the gap is visible in val_loss.csv.
+            tail = (r.stdout + r.stderr).strip().splitlines()[-6:]
+            print(f"  WARNING: the epoch-{epoch} held-out PAE pass failed; training continues and "
+                  f"this epoch has no held-out point:\n    " + "\n    ".join(tail), flush=True)
+            return None
+        tp = os.path.join(out, "trajectory.csv")
+        vals = []
+        try:
+            with open(tp) as fh:
+                for row in csv.DictReader(fh):
+                    if row.get("pae_loss"):
+                        vals.append(float(row["pae_loss"]))
+        except OSError as e:
+            print(f"  WARNING: the epoch-{epoch} held-out pass wrote no readable trajectory ({e})",
+                  flush=True)
+            return None
+        if not vals:
+            print(f"  WARNING: the epoch-{epoch} held-out trajectory has no pae_loss rows", flush=True)
+            return None
+        # EVERY POSE EXACTLY ONCE, so the plain mean IS the pose-weighted figure. Deliberately not
+        # the step_taken==1 windows: --accum leaves a tail outside the last complete window, which
+        # a training epoch re-traverses next epoch and this single pass never does.
+        mean = sum(vals) / len(vals)
+        vp = os.path.join(a.out, "val_loss.csv")
+        new_file = not os.path.exists(vp)
+        with open(vp, "a", newline="") as fh:
+            w = csv.writer(fh)
+            if new_file:
+                w.writerow(["epoch", "step", "n_poses", "val_pae", "bundle"])
+            w.writerow([epoch, step, len(vals), f"{mean:.6f}", os.path.basename(bundle)])
+        # PARSEABLE, in the same shape as the TRAIN: line the plot already reads.
+        print(f"epoch {epoch} VALLOSS: pae {mean:.4f}  poses {len(vals)}", flush=True)
+        return mean
 
     def eval_checkpoint(step, epoch, train_pool=""):
         """Save the head, score it, log it. Returns the metric dict.
@@ -1845,6 +2070,10 @@ def main():
         def _save_resume(epochs_done, step_now):
             """Everything needed to continue: the head, AdamW's moments, the step, and a guard.
 
+            UNDER --loss-only THIS WRITES NOTHING. AdamW never stepped, so the moments are the
+            resumed bundle's or empty, and a bundle carrying them under a new epoch number would
+            be a forgery of training that did not happen.
+
             THE OPTIMISER STATE IS THE POINT. AdamW carries a per-parameter exp_avg and exp_avg_sq,
             which is what makes its steps adaptive; restoring weights alone restarts those from zero
             and the first steps after a resume are effectively un-adapted. It roughly triples the
@@ -1854,6 +2083,8 @@ def main():
             The guard records what determines batch composition, so a resume into different settings
             is refused rather than silently training with moments that belong elsewhere.
             """
+            if a.loss_only:
+                return
             p = os.path.join(a.out, f"resume_ep{epochs_done}.pt")
             tmp = p + ".tmp"
             torch.save({"head": {n: pp.detach().cpu() for n, pp in model.named_parameters()
@@ -2050,6 +2281,41 @@ def main():
             # has crashed before (OST chain mapping, a card with no free memory).
             if is_main and write_traj:
                 _save_resume(ep + 1, step)
+            if (a.val_loss_every and (ep + 1) % a.val_loss_every == 0
+                    and step > ep_start_step and write_traj):
+                # SAME BARRIER DISCIPLINE as the two evaluation paths: one measuring process, the
+                # other ranks parked for its duration. Without the second barrier rank 0 re-enters
+                # training a whole pass behind the others.
+                if world > 1:
+                    dist.barrier()
+                if is_main:
+                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    _bundle = os.path.join(a.out, f"resume_ep{ep + 1}.pt")
+                    if not os.path.exists(_bundle):
+                        print(f"  WARNING: no {_bundle}; skipping the held-out PAE for this epoch")
+                    else:
+                        # THE WEIGHTS MUST BE UNTOUCHED, ASSERTED NOT ASSUMED. The measuring
+                        # process reads a bundle off disk and shares nothing with this one, so it
+                        # cannot reach these tensors -- but "cannot" is the kind of claim that
+                        # stops being true after an edit, and a monitor that silently perturbed
+                        # the run it monitors would invalidate every number after it.
+                        _before = hashlib.sha256()
+                        for _n2 in trainable:
+                            _before.update(dict(model.named_parameters())[_n2]
+                                           .detach().cpu().numpy().tobytes())
+                        val_loss_checkpoint(ep + 1, _bundle)
+                        _after = hashlib.sha256()
+                        for _n2 in trainable:
+                            _after.update(dict(model.named_parameters())[_n2]
+                                          .detach().cpu().numpy().tobytes())
+                        if _before.digest() != _after.digest():
+                            raise SystemExit(
+                                f"STOP: the head changed across the epoch-{ep + 1} held-out PAE "
+                                f"pass. It runs as a subprocess precisely so it cannot do that, so "
+                                f"something now shares state with it and every number after this "
+                                f"point is suspect.")
+                if world > 1:
+                    dist.barrier()
             if a.eval_every_epoch and step > ep_start_step:
                 # RANK 0 EVALUATES, THE OTHERS WAIT. The evaluator is a separate process holding
                 # its own model, so letting every rank launch one would put three on the cards at
@@ -2233,7 +2499,15 @@ def main():
     # the content would be identical, but two processes writing one path concurrently can interleave
     # and leave a truncated file -- the smoke test showed both ranks reporting the same save.
     cp = os.path.join(a.out, "head_final.pt")
-    if is_main or a.debug_save_rank_heads:
+    if a.loss_only:
+        # NOTHING TRAINED, SO NOTHING IS SAVED. --save-every is already refused for this mode, but
+        # this save is unconditional and wrote head_final.pt on the first --loss-only pass: a file
+        # indistinguishable from a trained head, holding the resumed bundle's weights under a name
+        # that says otherwise. The measurement's output is the trajectory.
+        _src = a.resume or "the shipped head"
+        print(f"\n--loss-only: no checkpoint written -- {cp} would duplicate {_src} under a name "
+              f"implying it was trained")
+    elif is_main or a.debug_save_rank_heads:
         import torch as _t
         _sd = {n: p.detach().cpu() for n, p in model.named_parameters() if n in set(trainable)}
         if is_main:
@@ -2243,9 +2517,21 @@ def main():
             _rp = os.path.join(a.out, f"head_final_rank{rank}.pt")
             _t.save(_sd, _rp)
             print(f"saved {_rp}")
-    print("THE LOSS IS NOT THE RESULT. Score this checkpoint with "
-          "analysis/val_selection_metric.py after rescoring the validation poses with it; the target "
-          "is mean DockQ 0.5775 and frac-acceptable 0.7283 at 100 seeds.")
+    if a.loss_only:
+        print("THE LOSS IS THE RESULT HERE, and only that: this mode measures a frozen head's loss "
+              "on the fold it was pointed at. Aggregate the per-pose pae_loss column of "
+              f"{os.path.join(a.out, 'trajectory.csv')} -- every pose is measured exactly once, so "
+              "the plain mean over all rows is the pose-weighted figure. Do NOT use the "
+              "step_taken==1 windows: --accum leaves a tail of poses outside the last complete "
+              "window, which a training run re-traverses next epoch and this single pass does not.")
+    else:
+        # NO HARDCODED TARGET. This printed "the target is mean DockQ 0.5775 and frac-acceptable
+        # 0.7283 at 100 seeds" after every run, which are the FULL validation pool's numbers --
+        # wrong for any run scored on a subset, and val10's are 0.2626 / 0.5000. The same string
+        # was hardcoded in phase_k_eval and is now derived there from the pool actually scored, so
+        # the baseline belongs in that output, not in a constant here.
+        print("THE LOSS IS NOT THE RESULT. Score this checkpoint with phases/phase_k_eval.py, which "
+              "reports the shipped head's baseline over the pool it scored alongside the metric.")
     # Tear the group down so the ranks exit together rather than on NCCL's timeout.
     if world > 1:
         dist.barrier()

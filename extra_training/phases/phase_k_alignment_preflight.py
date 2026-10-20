@@ -67,6 +67,18 @@ def main():
     units = sorted(f"{p}/free_{s}.npz" for p in pdbs for s in range(lo, hi + 1))
     digest = hashlib.sha256("\n".join(units).encode()).hexdigest()[:16]
     print(f"manifest digest {digest} over {len(units)} unit(s), {len(pdbs)} structure(s)")
+    if not pdbs:
+        # A PASS OVER NOTHING IS THE WORST POSSIBLE OUTCOME HERE, because the marker it writes is
+        # what --minimal-items trusts instead of checking alignment itself. This fired for real:
+        # a selection csv carrying only pdb and instance has no `tokens` column, the filter above
+        # dropped every row, and the script printed "PREFLIGHT PASSED: 0 structure(s) aligned"
+        # with the sha256 of the empty string as its digest. Had that marker been used, every
+        # structure would have gone unchecked with a green light on file.
+        raise SystemExit(
+            f"STOP: {a.manifest_selection} yielded 0 structure(s), so this would write a marker "
+            f"asserting alignment over an empty manifest. Rows are kept only when `tokens` is a "
+            f"digit and the pdb is not in --manifest-skip -- a selection csv without a `tokens` "
+            f"column drops every row silently.")
 
     cfg = DS.build_configs(a.crop_size, a.indices, a.bio_dir, a.mmcif_dir, a.msa_root,
                            a.seq_index, a.msa_root)
