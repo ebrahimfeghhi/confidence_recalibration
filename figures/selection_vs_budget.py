@@ -55,13 +55,20 @@ BENCH = [
 ]
 # acceptable / decoy / no-acceptable. Green for what works, amber for what a better head could
 # recover, grey for what it could not.
-# TWO CURVES, NOT THREE. The three categories partition the interfaces, so the third is
-# 100 - selected - decoy and carries no information the other two do not. Dropping it also removes
-# the only pair that overlapped.
-COLORS = ["#2ca02c", "#e8a33d"]
-LABELS = ["ipTM selects acceptable", "acceptable exists, ipTM picks decoy"]
-MARKERS = ["o", "s"]
+# ORACLE AND SELECTED, with the gap between them as the point of the figure.
+#
+#   oracle   = an acceptable pose is somewhere in the pool of N seeds
+#   selected = the pose ipTM actually picks is acceptable
+#
+# Their DIFFERENCE is the selection gap: interfaces the folding solved and the ranking then lost.
+# That is the entire headroom available to a confidence head, and drawing both curves puts it on
+# the page as a vertical distance instead of asking the reader to subtract. Everything below the
+# oracle line is a generation failure no reranking can reach.
+COLORS = ["#1f77b4", "#444444"]          # selected, oracle
+LABELS = ["ipTM-selected", "oracle (best pose in pool)"]
+MARKERS = ["o", "^"]
 MARKEVERY = [(0, 10), (5, 10)]
+GAP_COLOR = "#e8a33d"
 
 
 def sem(p, n):
@@ -184,12 +191,17 @@ def main():
         ax.fill_between(xs, lo, hi, color=color, alpha=0.15, linewidth=0, zorder=1)
 
     for ax, (name, n_if, xs, acc, dec, non) in zip(axes, series):
-        shown = (acc, dec)
+        # ORACLE = selected + decoy: an acceptable pose is in the pool, whoever picks it.
+        orc = [a_ + d_ for a_, d_ in zip(acc, dec)]
+        shown = (acc, orc)
+        # THE GAP ITSELF, shaded between the curves and drawn first so both lines and both SEM
+        # bands sit on top of it.
+        ax.fill_between(xs, [y * 100 for y in acc], [y * 100 for y in orc],
+                        color=GAP_COLOR, alpha=0.22, linewidth=0, zorder=0,
+                        label="selection gap")
         for ys, c in zip(shown, COLORS):
             band(ax, xs, ys, n_if, c)
         for i, (ys, c, lbl) in enumerate(zip(shown, COLORS, LABELS)):
-            # SOLID THROUGHOUT. The dash patterns existed to separate three curves where two of
-            # them coincided; with the grey curve gone nothing overlaps.
             ax.plot(xs, [y * 100 for y in ys], color=c, label=lbl, lw=1.9, ls="-",
                     marker=MARKERS[i], ms=4.0, markevery=MARKEVERY[i], zorder=5 - i)
         # LIMITS FROM THE DATA PLUS THE BANDS, so a SEM band is never clipped at the frame.
@@ -200,7 +212,7 @@ def main():
         ax.set_title(f"{name}  (n={n_if})", fontsize=10)
         ax.set_xlabel("# of seeds")
         ax.set_xlim(1, a.max_budget)
-        ax.set_ylabel("% of interfaces")
+        ax.set_ylabel("DockQ \u2265 0.23 (%)")
         ax.grid(True, alpha=0.3)
     # ONE LEGEND, BELOW THE PANELS. Three legends inside three axes was what overlapped the data;
     # a figure-level legend under the row cannot collide with anything.
