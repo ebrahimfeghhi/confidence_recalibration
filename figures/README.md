@@ -9,7 +9,7 @@ Run from the repository root.
 
 | figure | script | what it shows |
 |---|---|---|
-| `selection_vs_budget.png` | `selection_vs_budget.py` | For the SAbDab2 held-out partition, FoldBench and PXM-2025: the % of interfaces reaching DockQ ≥ 0.23 by ipTM selection and by an oracle over the same pool, against candidate budget 1–100 seeds. The shaded band between them is the selection gap. |
+| `selection_vs_budget.png` | `selection_vs_budget.py` | For the SAbDab2 held-out partition, FoldBench and PXM-2025: the % of interfaces reaching DockQ ≥ 0.23 by ipTM selection and by an oracle over the same pool, against candidate budget 1–100 seeds. The distance between them is the selection gap. |
 
 ## What `selection_vs_budget` is for
 
@@ -22,7 +22,7 @@ Each panel has two curves over the same pool of N seeds:
 - **oracle** — an acceptable pose (DockQ >= 0.23) is somewhere in the pool, whoever finds it.
 - **ipTM-selected** — the pose ipTM actually picks is acceptable.
 
-**The shaded distance between them is the selection gap**: interfaces the folding solved and the
+**The distance between them is the selection gap**: interfaces the folding solved and the
 ranking then lost. It is the entire headroom available to a confidence head. Everything below the
 oracle curve is a generation failure that no reranking can reach, so the oracle is the ceiling and
 the gap is the prize.

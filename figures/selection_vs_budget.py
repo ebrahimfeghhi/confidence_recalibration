@@ -68,7 +68,6 @@ COLORS = ["#1f77b4", "#444444"]          # selected, oracle
 LABELS = ["ipTM-selected", "oracle (best pose in pool)"]
 MARKERS = ["o", "^"]
 MARKEVERY = [(0, 10), (5, 10)]
-GAP_COLOR = "#e8a33d"
 
 
 def sem(p, n):
@@ -194,11 +193,10 @@ def main():
         # ORACLE = selected + decoy: an acceptable pose is in the pool, whoever picks it.
         orc = [a_ + d_ for a_, d_ in zip(acc, dec)]
         shown = (acc, orc)
-        # THE GAP ITSELF, shaded between the curves and drawn first so both lines and both SEM
-        # bands sit on top of it.
-        ax.fill_between(xs, [y * 100 for y in acc], [y * 100 for y in orc],
-                        color=GAP_COLOR, alpha=0.22, linewidth=0, zorder=0,
-                        label="selection gap")
+        # THE GAP IS NOT SHADED. It was, and that was a mistake: this panel already uses shading
+        # to mean UNCERTAINTY (the SEM bands), so filling a region that is not an uncertainty in
+        # the same visual language invites reading it as a confidence interval. Two curves show
+        # the distance between them without help.
         for ys, c in zip(shown, COLORS):
             band(ax, xs, ys, n_if, c)
         for i, (ys, c, lbl) in enumerate(zip(shown, COLORS, LABELS)):
