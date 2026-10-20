@@ -36,6 +36,7 @@ expensive to build, so units are grouped by structure and the item is built once
 which also means the unit order is not shuffled freely; see --shuffle.
 """
 import argparse
+import collections
 import copy
 import csv
 import functools
@@ -1306,6 +1307,22 @@ def main():
     # the per-structure item build is the cost --preload-items exists to amortise, so it is measured
     # rather than assumed; reported at the end against the number of structures actually visited.
     item_build_s = []
+    # WHERE AN EPOCH'S WALL CLOCK ACTUALLY GOES, accumulated per rank and printed at every epoch
+    # boundary. Always on: a perf_counter pair is ~100 ns against a 0.58 s pose, and the last time
+    # this was guessed at rather than measured, 0.67 s of a 3.10 s step attributed to the collective
+    # turned out to be straggler wait (b829879d). The point is to order the optimisations by
+    # measurement instead of by which is easiest to write.
+    #
+    # READ EPOCH 2, NOT EPOCH 1. Two costs are first-touch only: resolve_trunk memoises
+    # unit_fingerprint in a mutable default argument, so the full-trunk hash runs once per unit per
+    # PROCESS, and the dataset item cache fills on first use. Epoch 1 pays both for all 4880 units
+    # and is not representative of the 499 that follow.
+    _T = collections.defaultdict(float)
+    _TN = collections.defaultdict(int)
+
+    def _tick(key, t0):
+        _T[key] += time.perf_counter() - t0
+        _TN[key] += 1
     nonfinite = {"n": 0}
     ram_floor = {"hit": False, "n": 0}
     code_drift = {"n": 0, "warned": False}
@@ -1327,7 +1344,9 @@ def main():
         for tp in cands:
             key = (pdb, tp)
             if key not in want_fp_cache:
+                _t0 = time.perf_counter()
                 want_fp_cache[key] = BC.unit_fingerprint(a, pdb, tp, code_fp, loss_fp)
+                _tick("fingerprint_hash", _t0)
             if want_fp_cache[key] == stored:
                 ok.append(tp)
         if len(ok) == 1:
@@ -1466,8 +1485,10 @@ def main():
         # structure then, counted, rather than guessing at a window.
         crop_slice = None
         if a.crop_margin > 0:
+            _t0 = time.perf_counter()
             _zc = np.load(trunk_p)
             _kt, _ka = BC.interface_crop_tokens(_zc, lab, a.crop_contact, a.crop_margin)
+            _tick("trunk_read_and_crop", _t0)
             if _kt is None:
                 crop_stats["undefined"] += 1
                 crop_rows.append({"pdb": pdb, "unit": arm_seed, "n_tok": "", "kept_tok": "",
@@ -1627,13 +1648,16 @@ def main():
             # NOT UNDER --loss-only: there are no gradients to accumulate, and calling backward
             # would be the one way this mode could change the weights it is supposed to measure.
             if not a.loss_only:
+                _t0 = time.perf_counter()
                 (cum / accum_eff).backward()
+                _tick("backward", _t0)
             # Explicit, though the return would free them anyway: this is the function's whole purpose,
             # and naming them stops a later edit from quietly hoisting one into the enclosing scope.
             del cum, met, pred, ld, x, plddt, pae, pde, resolved
             return out
 
         for i in range(n_pose):
+            _t_pose = time.perf_counter()
             # NO GRAPH UNDER --loss-only. Skipping only the backward would still build the
             # autograd graph for every pose and free it unused -- correct, but it pays the
             # activation memory of training for a measurement that needs none.
@@ -1642,6 +1666,7 @@ def main():
                     m = _one_pose(i)
             else:
                 m = _one_pose(i)
+            _tick("pose_total", _t_pose)
             if a.mem_log:
                 # AT A CONSISTENT BOUNDARY: after backward, and after the pose's tensors are gone.
                 # allocated = live tensors. reserved = what the allocator holds, which is what
@@ -1685,6 +1710,7 @@ def main():
             # ONE COLLECTIVE, NOT 248. The head's gradients are flattened into a single buffer, so
             # the per-call latency is paid once per step rather than once per tensor. gloo is a CPU
             # backend, so that buffer is staged through host memory and copied back.
+            _t0 = time.perf_counter()
             flat = torch.cat([pp.grad.reshape(-1) for pp in params])
             if a.dist_backend == "gloo":
                 host = flat.cpu()
@@ -1697,6 +1723,11 @@ def main():
                 k = pp.grad.numel()
                 pp.grad.copy_(flat[off:off + k].view_as(pp.grad))
                 off += k
+            # COLLECTIVE PLUS STRAGGLER WAIT, and the two cannot be separated from inside one rank:
+            # a rank that arrives early blocks here until the slowest arrives. The per-rank
+            # pose_total totals printed below are what separates them -- their spread IS the
+            # straggler share.
+            _tick("grad_collective_plus_wait", _t0)
         try:
             gn = float(torch.nn.utils.clip_grad_norm_(params, a.clip_norm,
                                                       error_if_nonfinite=True))
@@ -2194,6 +2225,7 @@ def main():
                 frac = a.epochs - (n_epochs - 1)
                 ep_units = ep_units[:max(1, int(len(ep_units) * frac))]
             print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
+            _T0, _TN0 = dict(_T), dict(_TN)
             ep_start_step = step
             ep_t0 = time.time()
             ep_loss["sum"], ep_loss["n"] = 0.0, 0
@@ -2308,6 +2340,13 @@ def main():
             # does not touch these weights, so either side would be correct -- but writing first
             # means a crash IN the evaluator still leaves this epoch resumable, and the evaluator
             # has crashed before (OST chain mapping, a card with no free memory).
+            # WHERE THIS EPOCH'S WALL CLOCK WENT, per rank, as deltas over the epoch rather than
+            # run totals -- the first-touch costs (the per-unit fingerprint hash, the item cache)
+            # land entirely in epoch 1 and would otherwise contaminate every later epoch's figure.
+            _ep_s = time.time() - ep_t0
+            _parts = [(k, _T[k] - _T0.get(k, 0.0), _TN[k] - _TN0.get(k, 0)) for k in sorted(_T)]
+            _shown = "  ".join(f"{k} {v/60:.1f}m/{c}" for k, v, c in _parts if c)
+            print(f"  [rank {rank}] epoch {ep + 1} took {_ep_s/60:.1f} min -- {_shown}", flush=True)
             if is_main and write_traj:
                 _save_resume(ep + 1, step)
             # NO write_traj IN THIS CONDITION. It is `is_main`, so including it meant ranks 1
