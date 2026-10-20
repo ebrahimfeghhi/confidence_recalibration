@@ -142,6 +142,73 @@ def read_run(out_dir, baseline_path=""):
     return out
 
 
+def epoch_means(steps):
+    """Mean objective per epoch, from the same windows chart 1 plots.
+
+    THE PER-EPOCH NUMBER IS WHAT THE PER-STEP CURVE CANNOT SHOW. A structure's poses land in a mean
+    1.53 optimiser steps at ~19.6% weight each, so any single step is dominated by whichever few
+    structures it happened to draw and the step curve is mostly that sampling noise. Averaging the
+    windows an epoch contains removes it, which is why a flat-looking step curve and a falling
+    epoch curve are not a contradiction.
+
+    Returned with n, because an epoch cut short by a kill has fewer windows behind its mean and the
+    reader cannot tell that from the value.
+    """
+    by = {}
+    for p_ in steps:
+        if p_.get("loss") is None:
+            continue
+        by.setdefault(int(p_.get("epoch") or 0), []).append(p_)
+    out = []
+    for ep in sorted(by):
+        w = by[ep]
+        row = {"epoch": ep, "n_steps": len(w),
+               "last_step_index": max(x["step_index"] for x in w)}
+        for k in ("loss", "plddt_loss", "pae_loss", "pde_loss", "resolved_loss"):
+            vals = [x[k] for x in w if x.get(k) is not None]
+            row[k] = sum(vals) / len(vals) if vals else None
+        out.append(row)
+    return out
+
+
+def iface_selected_dockq(out_dir):
+    """{epoch: {interface: DockQ of the pose the head selected}} from the eval shard rows.
+
+    THE SELECTION RULE IS THE EVALUATOR'S OWN, not a re-invention: top pair ipTM, ties broken by
+    the lowest seed then the lowest sample, exactly as phase_k_eval.aggregate does
+    (`max(v, key=lambda t: (t[0], -t[2], -t[3]))`). A figure that selected differently would not be
+    showing the metric the run is judged on.
+
+    metric_ep<N>.json keeps only aggregates, so the per-interface values come from the shard rows
+    the evaluator leaves behind -- every shard of an epoch, merged, since a shard holds a slice by
+    construction and one shard's interfaces are not the population.
+    """
+    import glob
+    out = {}
+    for d in sorted(glob.glob(os.path.join(out_dir, "eval_shards_ep*"))):
+        base = os.path.basename(d)
+        digits = "".join(c for c in base.replace("eval_shards_ep", "") if c.isdigit())
+        if not digits:
+            continue
+        ep = int(digits)
+        byif = {}
+        for f in sorted(glob.glob(os.path.join(d, "rows_*.csv"))):
+            try:
+                with open(f) as fh:
+                    for r in csv.DictReader(fh):
+                        dq, ip = _num(r.get("dockq")), _num(r.get("iptm"))
+                        if dq is None or ip is None:
+                            continue
+                        byif.setdefault(r["iface"], []).append(
+                            (ip, dq, int(_num(r.get("seed"), 0)), int(_num(r.get("sample"), 0))))
+            except (OSError, csv.Error):
+                continue
+        if byif:
+            out[ep] = {k: max(v, key=lambda t: (t[0], -t[2], -t[3]))[1]
+                       for k, v in byif.items()}
+    return out
+
+
 def _window_means(poses, run_ended=False):
     """One record per optimiser step, averaging the loss terms over that step's accumulation window.
 
