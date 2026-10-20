@@ -38,6 +38,8 @@ which also means the unit order is not shuffled freely; see --shuffle.
 import argparse
 import collections
 import copy
+import queue
+import threading
 import csv
 import functools
 import glob
@@ -128,6 +130,12 @@ def main():
                          "2,000 steps of a 100,000-step run (2%%). At batch 256 three epochs of our "
                          "cache is 292 optimiser steps, so 2,000 would be 685%% of the run and the "
                          "learning rate would never reach its set value. 20 is 6.8%%.")
+    ap.add_argument("--structures-per-step", type=int, default=0,
+                    help="K: WHOLE STRUCTURES PER OPTIMISER STEP. Each rank takes ONE seed of each "
+                         "of the same K structures, so a step is K x world x --nsample poses. 0 "
+                         "derives K from --accum as the nearest whole number of structures, which "
+                         "is what every existing launch script wants: --accum 85 over 3 ranks at "
+                         "nsample 5 resolves to K=6 and 90 poses per step.")
     ap.add_argument("--accum", type=int, default=256,
                     help="POSES PER OPTIMISER STEP -- the effective batch. The micro-batch is forced "
                          "to 1: token counts run 263-3,400 across our structures, so poses cannot be "
@@ -226,6 +234,13 @@ def main():
                          "guard only fires while nothing has been masked yet, so after one "
                          "successful unit any number of silent fallbacks can follow, and review "
                          "reproduced exactly that. Use it only when the mismatch is intended.")
+    ap.add_argument("--prefetch-units", type=int, default=0,
+                    help="prepare this many units ahead on a worker thread, overlapping the CPU "
+                         "crop with the GPU's work on the previous unit. 0 disables it. Measured "
+                         "on epoch 5 of the full set: crop_slice is 23.0 min of a 73.1 min epoch "
+                         "with the GPU idle throughout, and GPU busy time is only ~20 min of 73. "
+                         "The worker never touches CUDA -- it hands back host tensors and the main "
+                         "thread moves them -- so only one thread ever issues CUDA work.")
     ap.add_argument("--val-loss-every", type=int, default=0,
                     help="EPOCHS BETWEEN HELD-OUT PAE PASSES; 0 is off. This is the monitor the "
                          "run had no way to compute: measured 2026-10-20, the lr 1e-2 anchor's "
@@ -664,11 +679,18 @@ def main():
     # The effective batch is what the ranks actually sum to, which is not --accum when the world
     # size does not divide it. It is reported rather than silently assumed, and it is what the loss
     # is scaled by, so the gradient is a true mean over the poses that contributed.
-    accum_local = max(1, a.accum // world)
+    # THE STEP IS K WHOLE STRUCTURES, ONE SEED OF EACH PER RANK. Every seed of a structure crops
+    # to the IDENTICAL token count -- the interface crop is defined on the ground-truth interface,
+    # not on the predicted pose, and 0 of 488 structures disagree across their ten seeds -- so
+    # giving each rank one seed of the same K structures makes the per-step work equal across
+    # ranks BY CONSTRUCTION rather than on average. --accum is honoured as a REQUEST: K is the
+    # nearest whole number of structures to it.
+    structs_per_step = a.structures_per_step or max(
+        1, int(round(a.accum / float(world * a.nsample))))
+    accum_local = structs_per_step * a.nsample
     accum_eff = accum_local * world
-    if world > 1:
-        print(f"  accum: {a.accum} requested -> {accum_local}/rank x {world} ranks = {accum_eff} "
-              f"poses per optimiser step")
+    print(f"  accum: {a.accum} requested -> K={structs_per_step} structure(s)/step x {world} "
+          f"rank(s) x {a.nsample} pose(s) = {accum_eff} poses per step ({accum_local}/rank)")
     model, configs = RC.build_model(a.ckpt_dir, a.model_name, dev)
     configs.train_confidence_only = True
     configs.loss.weight.alpha_pae = float(a.alpha_pae)
@@ -1467,6 +1489,113 @@ def main():
             print(f"  WARNING: could not write {_fp_disk} ({e}); the next process re-hashes",
                   flush=True)
 
+    # ---- UNIT PREFETCH: the CPU half of the crop, run ahead on a worker thread ---------------
+    #
+    # WHY. Measured on epoch 5: crop_slice is 23.0 min of a 73.1 min epoch and the GPU is idle for
+    # all of it -- each rank prepares a unit on ONE core (90% of one core on a 288-core box),
+    # then runs that unit's 5 poses on the GPU, then prepares the next. GPU busy time is ~20 min
+    # of 73. The two phases take turns when they could overlap.
+    #
+    # NOT PARALLELISM -- OVERLAP. Threading the slice itself does not help: measured 0.088 s at
+    # OMP=1, 0.084 at 4, 0.144 at 16. It is memory-bound numpy indexing, not BLAS. What helps is
+    # doing it while the GPU is busy with the previous unit.
+    #
+    # THE WORKER NEVER TOUCHES CUDA. It calls slice_cached_unit with dev=cpu and hands back host
+    # tensors; the main thread moves them. Only one thread ever issues CUDA work, which is the
+    # whole reason this is safe to do with a thread rather than a process.
+    #
+    # BOUNDED AT --prefetch-units, default 1. Each cached slice is ~30 MB at our crop sizes, so a
+    # depth of 1 costs ~30 MB per rank and a depth of 4 ~120 MB -- nothing against 250 GB, but the
+    # queue is bounded anyway so a fast worker cannot run away with memory while the GPU lags.
+    _pf_q = None
+    _pf_thread = None
+    _pf_stop = threading.Event()
+
+    def _cpu_crop(pdb, lab_p, trunk_p):
+        """The expensive CPU half, with no device in sight. Returns None if no crop is definable."""
+        lab_l = np.load(lab_p, allow_pickle=True)
+        zc = np.load(trunk_p)
+        kt, ka = BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin)
+        if kt is None:
+            return ("nocrop", None, None)
+        sl = BC.slice_cached_unit(zc, lab_l, kt, ka, torch.device("cpu"), torch)
+        return ("ok", kt, sl)
+
+    def _pf_worker(units):
+        for t in units:
+            if _pf_stop.is_set():
+                break
+            pdb_, lab_p_, cands_ = t
+            try:
+                trunk_p_ = resolve_trunk(pdb_, lab_p_, cands_)
+                res = _cpu_crop(pdb_, lab_p_, trunk_p_)
+            except BaseException as e:            # noqa: BLE001 -- see below
+                # THE WORKER NEVER KILLS THE RUN. Anything it fails on is handed back as a miss
+                # and the main thread redoes that unit inline, where the real error surfaces with
+                # its own diagnostics. A prefetcher that can crash training is worse than none.
+                res = ("error", type(e).__name__, str(e)[:120])
+            while not _pf_stop.is_set():
+                try:
+                    _pf_q.put((lab_p_, res), timeout=1.0)
+                    break
+                except queue.Full:
+                    continue
+
+    _pf_pending = {}
+
+    def _pf_take(lab_p):
+        """The prefetched result for this unit, or None.
+
+        IN ORDER, WITH A SMALL HOLDING BUFFER. The worker walks the epoch's units in the order the
+        main loop will, so the head of the queue is almost always the one wanted. It can be off by
+        a unit when the main loop skips one, so results that arrive early are held by lab_p rather
+        than discarded.
+        """
+        if lab_p in _pf_pending:
+            return _pf_pending.pop(lab_p)
+        while True:
+            try:
+                k, v = _pf_q.get_nowait()
+            except (queue.Empty, AttributeError):
+                return None
+            if k == lab_p:
+                return v
+            _pf_pending[k] = v
+            if len(_pf_pending) > 8:        # bounded: never a silent memory sink
+                _pf_pending.pop(next(iter(_pf_pending)))
+
+    def _pf_start(units):
+        nonlocal _pf_q, _pf_thread
+        if not a.prefetch_units:
+            return
+        _pf_stop.clear(); _pf_pending.clear()
+        _pf_q = queue.Queue(maxsize=max(1, a.prefetch_units))
+        _pf_thread = threading.Thread(target=_pf_worker, args=(units,), daemon=True)
+        _pf_thread.start()
+
+    def _pf_end():
+        nonlocal _pf_q, _pf_thread
+        if _pf_thread is None:
+            return
+        _pf_stop.set()
+        while True:                          # drain so the worker is not blocked on put()
+            try:
+                _pf_q.get_nowait()
+            except queue.Empty:
+                break
+        _pf_thread.join(timeout=30)
+        _pf_thread = None; _pf_q = None; _pf_pending.clear()
+
+    def _to_dev(x):
+        """Move a slice_cached_unit payload onto the device, structure preserved."""
+        if torch.is_tensor(x):
+            return x.to(dev, non_blocking=True)
+        if isinstance(x, dict):
+            return {k: _to_dev(v) for k, v in x.items()}
+        if isinstance(x, (list, tuple)):
+            return type(x)(_to_dev(v) for v in x)
+        return x
+
     def _prefetch(path):
         """Ask the kernel to read a trunk ahead, so its I/O overlaps the current unit's compute.
 
@@ -1668,34 +1797,65 @@ def main():
         # structure then, counted, rather than guessing at a window.
         crop_slice = None
         if a.crop_margin > 0:
-            # SEPARATELY, because they argue for different fixes: a trunk read that dominates
-            # argues for caching the cropped tensors on disk, while crop PREPARATION dominating
-            # argues for caching the crop indices and nothing else.
-            _t0 = time.perf_counter()
-            _zc = np.load(trunk_p)
-            _kt, _ka = BC.interface_crop_tokens(_zc, lab, a.crop_contact, a.crop_margin)
-            _tick("trunk_read_plus_crop_tokens", _t0)
-            if _kt is None:
-                crop_stats["undefined"] += 1
-                crop_rows.append({"pdb": pdb, "unit": arm_seed, "n_tok": "", "kept_tok": "",
-                                  "frames_cleared": "", "status": "no-crop-definable"})
-            else:
+            # THE PREFETCHED SLICE, IF THE WORKER GOT THERE FIRST. A hit skips straight to the
+            # device move; a miss falls through to the inline path below, so a worker that is
+            # behind, failed, or disabled costs correctness nothing.
+            _pre = _pf_take(lab_p) if a.prefetch_units else None
+            if _pre is not None and _pre[0] == "ok":
                 _t1 = time.perf_counter()
-                crop_slice = BC.slice_cached_unit(_zc, lab, _kt, _ka, dev, torch)
+                crop_slice = _to_dev(_pre[2])
                 _tick("crop_slice", _t1)
-                # THE CROPPED TOKEN COUNT, which is the workload. Equal structure counts per rank
-                # do not mean equal compute, and this is what shows it: the pair track is
-                # quadratic in tokens, so a rank handed the large end of 481-2,289 does several
-                # times the work for the same unit count.
-                _T["cropped_tokens"] += float(_kt.sum())
+                _T["cropped_tokens"] += float(_pre[1].sum())
                 _TN["cropped_tokens"] += 1
+                _TN["prefetch_hit"] += 1
                 crop_stats["n"] += 1
-                crop_stats["tok"] += int(_kt.shape[0])
-                crop_stats["kept"] += int(_kt.sum())
+                crop_stats["tok"] += int(_pre[1].shape[0])
+                crop_stats["kept"] += int(_pre[1].sum())
                 crop_stats["frames"] += int(crop_slice[8])
-                crop_rows.append({"pdb": pdb, "unit": arm_seed, "n_tok": int(_kt.shape[0]),
-                                  "kept_tok": int(_kt.sum()),
+                crop_rows.append({"pdb": pdb, "unit": arm_seed, "n_tok": int(_pre[1].shape[0]),
+                                  "kept_tok": int(_pre[1].sum()),
                                   "frames_cleared": int(crop_slice[8]), "status": "cropped"})
+                _kt = None          # the inline branches below must not run
+                _skip_inline_crop = True
+            else:
+                _skip_inline_crop = False
+                if _pre is not None and _pre[0] == "error":
+                    # REPORTED, NOT SWALLOWED. The inline path will hit the same unit and raise
+                    # properly if it is a real problem; this says the worker saw it first.
+                    print(f"  prefetch miss on {pdb}/{arm_seed}: {_pre[1]} {_pre[2]}", flush=True)
+                _TN["prefetch_miss"] += 1
+            if not _skip_inline_crop:
+                # SEPARATELY, because they argue for different fixes: a trunk read that dominates
+                # argues for caching the cropped tensors on disk, while crop PREPARATION dominating
+                # argues for caching the crop indices and nothing else.
+                _t0 = time.perf_counter()
+                _zc = np.load(trunk_p)
+                _kt, _ka = BC.interface_crop_tokens(_zc, lab, a.crop_contact, a.crop_margin)
+                _tick("trunk_read_plus_crop_tokens", _t0)
+                if _kt is None:
+                    crop_stats["undefined"] += 1
+                    crop_rows.append({"pdb": pdb, "unit": arm_seed, "n_tok": "", "kept_tok": "",
+                                      "frames_cleared": "", "status": "no-crop-definable"})
+                else:
+                    _t1 = time.perf_counter()
+                    crop_slice = BC.slice_cached_unit(_zc, lab, _kt, _ka, dev, torch)
+                    _tick("crop_slice", _t1)
+                    # THE CROPPED TOKEN COUNT, which is the workload. Equal structure counts per
+                    # rank do not mean equal compute, and this is what shows it: the pair track is
+                    # quadratic in tokens, so a rank handed the large end of 481-2,289 does
+                    # several times the work for the same unit count.
+                    #
+                    # INSIDE THE else, NOT BESIDE IT. A patch left this block one level out, where
+                    # a unit with no definable crop reaches _kt.sum() on None.
+                    _T["cropped_tokens"] += float(_kt.sum())
+                    _TN["cropped_tokens"] += 1
+                    crop_stats["n"] += 1
+                    crop_stats["tok"] += int(_kt.shape[0])
+                    crop_stats["kept"] += int(_kt.sum())
+                    crop_stats["frames"] += int(crop_slice[8])
+                    crop_rows.append({"pdb": pdb, "unit": arm_seed, "n_tok": int(_kt.shape[0]),
+                                      "kept_tok": int(_kt.sum()),
+                                      "frames_cleared": int(crop_slice[8]), "status": "cropped"})
         if crop_slice is not None:
             (feat_head, s_inputs, s_trunk, zt, poses, _nc,
              crop_feat_loss, crop_labels, _nb) = crop_slice
@@ -2235,30 +2395,48 @@ def main():
                   f"frac_acc {m['frac_acc']:.4f} (baseline 0.7283)  headroom {m['headroom']:.4f}")
         return m
 
-    def shard_by_structure(units):
-        """Split `units` across ranks by WHOLE STRUCTURE, equal in count on every rank.
+    def build_epoch(ep):
+        """This epoch's unit sequence FOR THIS RANK: K structures per step, one seed of each.
 
-        By structure, not by unit, because --shuffle=structure keeps a structure's units
-        consecutive so one built dataset item serves all of them; sharding by unit would make every
-        rank build every structure and multiply the item cache by the world size for nothing.
+        Every rank walks the SAME structures in the SAME order and differs only in WHICH seed of
+        each it takes. Every seed of a structure crops to an identical token count -- the interface
+        crop is defined on the ground-truth interface rather than the predicted pose, and 0 of 488
+        structures disagree across their ten seeds -- so the ranks do equal work per step and the
+        collective has nothing to wait for.
 
-        Truncated to the smallest rank's share so all ranks run the same number of steps. 500
-        structures over 3 ranks is 167/167/166, so one structure is dropped from an epoch; the
-        per-epoch reshuffle means it is a different one each time rather than the same data being
-        excluded from training.
+        THIS REPLACES --shuffle structure PLUS shard_by_structure, which handed each rank ten
+        CONSECUTIVE seeds of ONE structure. Simulated on this run's own kept_tok values that order
+        leaves a 111% median per-step spread (p90 186%) and spends 38% of the critical path in
+        straggler wait -- epoch 6 of 2w5to5 burned 22.6 min of 65.4 in loss_stats_collective. This
+        order measures 0.0% and 0.0%, and a step spans K structures rather than `world`, so the
+        gradient is built from MORE structures than before, not fewer.
+
+        `world` does not divide ten seeds, so floor(10/world) whole groups are used and the
+        remainder -- one seed per structure at world 3 -- sits out. The rng is reseeded per epoch,
+        so a different seed sits out each time rather than a fixed tenth of the data never being
+        trained on.
         """
-        if world == 1:
-            return units, []
-        by, seen = {}, []
-        for t in units:
-            if t[0] not in by:
-                by[t[0]] = []
-                seen.append(t[0])
-            by[t[0]].append(t)
-        keep = min(len(seen[r::world]) for r in range(world))
-        mine = seen[rank::world]
-        dropped = mine[keep:]
-        return [t for k in mine[:keep] for t in by[k]], dropped
+        by = {}
+        for _p, _lp, _c in flat:
+            by.setdefault(_p, []).append((_lp, _c))
+        rng_e = random.Random(a.seed + ep)
+        order = sorted(by)
+        rng_e.shuffle(order)
+        # A GROUP IS `world` SEEDS OF ONE STRUCTURE -- the unit of equal work.
+        groups = []
+        for _p in order:
+            u = by[_p][:]
+            rng_e.shuffle(u)
+            for g in range(len(u) // world):
+                groups.append([(_p, _lp, _c) for _lp, _c in u[g * world:(g + 1) * world]])
+        rng_e.shuffle(groups)
+        nsteps = len(groups) // structs_per_step
+        mine = []
+        for i in range(nsteps):
+            for gi, grp in enumerate(groups[i * structs_per_step:(i + 1) * structs_per_step]):
+                # ROTATED BY POSITION so a rank is not always handed the same seed slot.
+                mine.append(grp[(rank + gi) % world])
+        return mine
 
     def train_loop(steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
         for g in opt.param_groups:
@@ -2414,24 +2592,8 @@ def main():
         for ep in range(from_epoch, n_epochs):
             if done:
                 break
-            ep_units = list(flat)
-            if a.shuffle == "structure" and ep:
-                # reshuffle BY STRUCTURE, keeping each structure's units together, so a preloaded
-                # item is still used for all of them
-                _by = {}
-                for _t in ep_units:
-                    _by.setdefault(_t[0], []).append(_t)
-                _o = list(_by)
-                _r = random.Random(a.seed + ep)
-                _r.shuffle(_o)
-                for _k in _o:
-                    _r.shuffle(_by[_k])
-                ep_units = [t for _k in _o for t in _by[_k]]
-            ep_units, _dropped = shard_by_structure(ep_units)
+            ep_units = build_epoch(ep)
             if world > 1:
-                if _dropped:
-                    print(f"  [rank {rank}] epoch {ep + 1}: dropped {_dropped} to keep the ranks "
-                          f"equal; the reshuffle means a different structure each epoch")
                 # THE RANKS MUST AGREE ON THE UNIT COUNT. If they do not, they take a different
                 # number of optimiser steps and the first mismatched all-reduce hangs forever
                 # rather than failing, so it is checked here where it can still be reported.
@@ -2448,6 +2610,9 @@ def main():
                 frac = a.epochs - (n_epochs - 1)
                 ep_units = ep_units[:max(1, int(len(ep_units) * frac))]
             print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
+            # STARTED PER EPOCH, over THIS epoch's shuffled order, so the worker walks the units
+            # in the order the main loop will consume them.
+            _pf_start(ep_units)
             _T0, _TN0 = dict(_T), dict(_TN)
             # PEAK MEMORY PER EPOCH, reset here so each epoch reports its own rather than the
             # high-water mark of the whole run. This is the number that decides whether activation
@@ -2607,6 +2772,7 @@ def main():
             # WHERE THIS EPOCH'S WALL CLOCK WENT, per rank, as deltas over the epoch rather than
             # run totals -- the first-touch costs (the per-unit fingerprint hash, the item cache)
             # land entirely in epoch 1 and would otherwise contaminate every later epoch's figure.
+            _pf_end()
             # ANY EVENTS LEFT FROM THE EPOCH'S TAIL, so the last partial accumulation window's
             # GPU time is not carried silently into the next epoch's figures.
             _drain_gpu_spans()
