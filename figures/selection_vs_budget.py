@@ -49,7 +49,8 @@ def main():
     ap.add_argument("--draws", type=int, default=40,
                     help="seed subsets drawn per interface; the curve is an expectation over "
                          "WHICH N seeds you have, not over the first N by seed number")
-    ap.add_argument("--n-boot", type=int, default=400, help="cluster bootstrap replicates")
+    ap.add_argument("--n-boot", type=int, default=2000,
+                    help="cluster bootstrap replicates. 2,000 rather than 400 because the\n                         bands are PERCENTILE intervals, which depend on the tails and need\n                         far more replicates than a standard deviation does.")
     ap.add_argument("--binomial-band", action="store_true",
                     help="also draw the naive per-interface binomial SEM, for comparison")
     ap.add_argument("--out", default="figures/selection_vs_budget.png")
@@ -61,36 +62,49 @@ def main():
         if not os.path.exists(path):
             print(f"{name}: {path} absent, skipped")
             continue
-        sw = PS.sweep(path, ic, sc, smc, dc, qc, a.max_budget, a.draws, pdb_col=pc)
+        sw = PS.add_gap(PS.sweep(path, ic, sc, smc, dc, qc, a.max_budget, a.draws,
+                                 pdb_col=pc))
         series.append((name, sw))
 
     for name, sw in series:
         xs = sw["budgets"]
         sel, orc = PS.mean_curve(sw, "sel_acc"), PS.mean_curve(sw, "orc_acc")
-        sel_e = PS.cluster_sem(sw, "sel_acc", a.n_boot)
-        orc_e = PS.cluster_sem(sw, "orc_acc", a.n_boot)
+        sel_lo, sel_hi = PS.cluster_ci(sw, "sel_acc", a.n_boot)
+        orc_lo, orc_hi = PS.cluster_ci(sw, "orc_acc", a.n_boot)
+        # THE GAP IS THE CLAIM, SO IT CARRIES ITS OWN PAIRED INTERVAL. Differencing two aggregate
+        # curves and eyeballing their separate bands ignores that the two are measured on the SAME
+        # interfaces and move together; the paired bootstrap keeps that pairing.
+        gap = PS.mean_curve(sw, "gap_acc")
+        gap_lo, gap_hi = PS.cluster_ci(sw, "gap_acc", a.n_boot)
         sel_b = PS.binomial_sem(sw, "sel_acc")
         seed_sd = PS.mean_seed_sd(sw, "seed_sd_acc")
         print(f"\n{name}: {len(sw['ifaces'])} interfaces over {len(set(sw['pdb']))} complexes, "
-              f"{a.draws} seed draws, {a.n_boot} cluster-bootstrap replicates")
-        print(f"{'N':>4}  {'selected':>18} {'oracle':>18}  {'gap':>6}  {'binomSEM':>8} "
+              f"{a.draws} seed draws, {a.n_boot} cluster-bootstrap replicates, 95% percentile CIs")
+        print(f"{'N':>4}  {'selected':>22} {'oracle':>22}  {'paired gap':>22}  {'binomSEM':>8} "
               f"{'seedSD':>7}")
         for n in (1, 5, 10, 25, 50, 75, 100):
             if n > len(xs):
                 continue
             j = n - 1
-            print(f"{n:>4}  {sel[j]*100:>8.1f}+/-{sel_e[j]*100:<7.1f} "
-                  f"{orc[j]*100:>8.1f}+/-{orc_e[j]*100:<7.1f}  {(orc[j]-sel[j])*100:>6.1f}  "
+            print(f"{n:>4}  {sel[j]*100:>6.1f} [{sel_lo[j]*100:>5.1f},{sel_hi[j]*100:>5.1f}] "
+                  f"{orc[j]*100:>6.1f} [{orc_lo[j]*100:>5.1f},{orc_hi[j]*100:>5.1f}]  "
+                  f"{gap[j]*100:>6.1f} [{gap_lo[j]*100:>5.1f},{gap_hi[j]*100:>5.1f}]  "
                   f"{sel_b[j]*100:>8.1f} {seed_sd[j]*100:>7.1f}")
+
+    # PAIRED GAPS, computed once, so the annotation and the printed table cannot disagree.
+    gap_all = {}
+    for name, sw in series:
+        g = PS.mean_curve(sw, "gap_acc")
+        glo, ghi = PS.cluster_ci(sw, "gap_acc", a.n_boot)
+        gap_all[name] = (g, glo, ghi)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
     for ax, (name, sw) in zip(axes, series):
         xs = sw["budgets"]
-        curves = [(PS.mean_curve(sw, "sel_acc"), PS.cluster_sem(sw, "sel_acc", a.n_boot)),
-                  (PS.mean_curve(sw, "orc_acc"), PS.cluster_sem(sw, "orc_acc", a.n_boot))]
-        for (ms, es), c in zip(curves, COLORS):
-            ax.fill_between(xs, [(m - e) * 100 for m, e in zip(ms, es)],
-                            [(m + e) * 100 for m, e in zip(ms, es)],
+        curves = [(PS.mean_curve(sw, "sel_acc"), PS.cluster_ci(sw, "sel_acc", a.n_boot)),
+                  (PS.mean_curve(sw, "orc_acc"), PS.cluster_ci(sw, "orc_acc", a.n_boot))]
+        for (ms, (lo, hi)), c in zip(curves, COLORS):
+            ax.fill_between(xs, [v * 100 for v in lo], [v * 100 for v in hi],
                             color=c, alpha=0.15, linewidth=0, zorder=1)
         if a.binomial_band:
             bs = PS.binomial_sem(sw, "sel_acc")
@@ -99,13 +113,13 @@ def main():
                     ls=":", zorder=2)
             ax.plot(xs, [(m + e) * 100 for m, e in zip(ms, bs)], color=COLORS[0], lw=0.8,
                     ls=":", zorder=2, label="binomial SEM (naive)")
-        for i, ((ms, es), c, lbl) in enumerate(zip(curves, COLORS, LABELS)):
+        for i, ((ms, _ci), c, lbl) in enumerate(zip(curves, COLORS, LABELS)):
             ax.plot(xs, [m * 100 for m in ms], color=c, label=lbl, lw=1.9, ls="-",
                     marker=MARKERS[i], ms=4.0, markevery=MARKEVERY[i], zorder=5 - i)
-        lo = min((m - e) * 100 for ms, es in curves for m, e in zip(ms, es))
-        hi = max((m + e) * 100 for ms, es in curves for m, e in zip(ms, es))
-        pad = max(1.0, (hi - lo) * 0.08)
-        ax.set_ylim(max(0.0, lo - pad), min(100.0, hi + pad))
+        ylo = min(v * 100 for _ms, (lo_, _hi) in curves for v in lo_)
+        yhi = max(v * 100 for _ms, (_lo, hi_) in curves for v in hi_)
+        pad = max(1.0, (yhi - ylo) * 0.08)
+        ax.set_ylim(max(0.0, ylo - pad), min(100.0, yhi + pad))
         ax.set_title(f"{name}  (n={len(sw['ifaces'])} interfaces, "
                      f"{len(set(sw['pdb']))} complexes)", fontsize=9.5)
         ax.set_xlabel("# of seeds")
