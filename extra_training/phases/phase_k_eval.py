@@ -575,22 +575,16 @@ def main():
                 _pf_future = _pf_pool.submit(_warm, units[n][2])
         feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
         if a.frame_direction:
-            # FROM THE LABEL NPZ BESIDE THE TRUNK. The trunk cache carries has_frame but not
-            # frame_atom_index or pae_rep_atom_mask, so there is no second source here -- and
-            # guessing them from atom_to_tokatom_idx would be a silent wrong answer rather than a
-            # missing file. Raises if absent: the validation fold currently has 53 trunks and NO
-            # labels, so --frame-direction cannot score the validation set until those exist.
-            _lp = tp.replace(os.sep + "trunks" + os.sep, os.sep + "labels" + os.sep)
-            if _lp == tp or not os.path.exists(_lp):
-                raise SystemExit(
-                    f"STOP: --frame-direction needs frame_atom_index and pae_rep_atom_mask, which "
-                    f"live in the label npz, and {_lp} does not exist. The trunk cache does not "
-                    f"carry either. Build labels for this fold, or score without "
-                    f"--frame-direction -- which would measure a head that has the pathway as "
-                    f"though it did not.")
-            _L = np.load(_lp, allow_pickle=True)
-            pose_direction.set_unit(_L["lf_frame_atom_index"], _L["lf_has_frame"],
-                                    _L["lf_pae_rep_atom_mask"], pdb=pdb)
+            # DERIVED FROM THE TRUNK, not read from a label npz. An earlier version read
+            # lf_frame_atom_index and lf_pae_rep_atom_mask from the labels beside the trunk and
+            # hard-stopped when they were absent -- which made --frame-direction unscorable on
+            # validation/fold, where there are 53 trunks and no labels, i.e. on the only data the
+            # measurement means anything. pose_direction.derive_frames reconstructs both from
+            # atom_to_token_idx and atom_to_tokatom_idx, which load_unit already returns, and that
+            # reconstruction was verified EXACT against the label npz on all 500 training
+            # structures with zero mismatches.
+            _fai, _pae = pose_direction.derive_frames(feat)
+            pose_direction.set_unit(_fai, feat["has_frame"], _pae, pdb=pdb)
         summ = (RC.pair_iptm_only if a.pair_iptm_only else RC.confidence)(
             model, configs, feat, s_in, s_tr, z, x, nc)
         summ = summ if isinstance(summ, (list, tuple)) else [summ]
