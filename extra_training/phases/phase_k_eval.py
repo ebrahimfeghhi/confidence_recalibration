@@ -344,7 +344,45 @@ def aggregate(a, rows, selfchk, want_ifaces):
     print(f"  mean_dockq {out['mean_dockq']:.4f}   frac_acc {out['frac_acc']:.4f}")
     print(f"  oracle     {out['oracle_mean_dockq']:.4f}   {out['oracle_frac_acc']:.4f}   "
           f"headroom {out['headroom']:.4f}")
-    print(f"  baseline to beat: mean_dockq 0.5775  frac_acc 0.7283  (shipped head, 100 seeds,\n           THIS evaluator -- results.csv rounds ipTM to 4dp and reads 0.5779)")
+    # THE BASELINE IS THE SHIPPED HEAD OVER *THIS* POOL, DERIVED, NEVER HARDCODED.
+    #
+    # It used to be a fixed string -- 0.5775 / 0.7283, the FULL validation pool's numbers --
+    # printed whatever --pool was actually scored. Every val10 log therefore invited the reader to
+    # compare an 18-interface result against a 1,011-interface baseline: epoch 133 of the lr 1e-2
+    # anchor read 0.2251, which looks like a collapse against 0.5775 and is in fact flat against
+    # val10's own 0.2626. A baseline that does not move with --pool is worse than none.
+    #
+    # results.csv's `iptm` IS the shipped head's selection statistic, so the baseline is this same
+    # selection run over the stored column instead of the recomputed one -- same _pick, same
+    # tie-break, same interfaces, same budget, no second forward pass. It is the stored value at
+    # 4dp rather than a fresh computation, which moved the full pool's mean by 0.0004 (0.5779
+    # stored against 0.5775 recomputed), so it is labelled as the stored one.
+    base_iptm = {(ifc, sd_, k): sv for _d, ifc, sd_, k, _v, sv in selfchk}
+    b_by = collections.defaultdict(list)
+    n_nobase = 0
+    for iface, sd_, k, _v, dq in rows:
+        if dq is None:
+            continue
+        sv = base_iptm.get((iface, sd_, k))
+        if sv is None:
+            n_nobase += 1
+        else:
+            b_by[iface].append((sv, dq, sd_, k))
+    if n_nobase or set(b_by) != set(byif):
+        # NO NUMBER RATHER THAN A PARTIAL ONE. A baseline over fewer poses, or over fewer
+        # interfaces, is not the thing this result is being compared against -- and a silently
+        # narrower baseline is the same class of error as the hardcoded one it replaced.
+        print(f"  baseline to beat: UNAVAILABLE -- {n_nobase} scored pose(s) carry no stored ipTM "
+              f"in {a.results}, and {len(set(byif) - set(b_by))} interface(s) carry none at all, "
+              f"so the shipped head's selection cannot be reproduced over this pool.")
+    else:
+        b_sel = [_pick(v)[1] for v in b_by.values()]
+        out["baseline_mean_dockq"] = round(statistics.mean(b_sel), 4)
+        out["baseline_frac_acc"] = round(
+            sum(1 for d in b_sel if d >= ACCEPTABLE) / len(b_sel), 4)
+        print(f"  baseline   {out['baseline_mean_dockq']:.4f}   "
+              f"{out['baseline_frac_acc']:.4f}   (shipped head over THESE {n} interface(s) at "
+              f"budget {a.budget}, from results.csv's recorded ipTM at 4dp)")
     if a.out:
         with open(a.out, "w") as fh:
             import json
