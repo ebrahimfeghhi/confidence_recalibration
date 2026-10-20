@@ -5,5 +5,6 @@
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 exec /home/ebrahim/Protenix/.venv/bin/python -I run_logging/plot_val10.py \
-  "e4tvxe=lr 1e-1, warmup 20" \
+  "e4tvxe+f8rqck=lr 1e-1" \
+  "335psh=lr 1e-2 (anchor)" \
   --out training/runs/val10_plot.png "$@"

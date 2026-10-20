@@ -28,12 +28,21 @@ COLORS = ["#000000", "#e67e22", "#1f77b4", "#16a085", "#c0392b"]
 
 
 def metrics(root, rid):
-    log = os.path.join(root, rid, "run.log")
-    if not os.path.exists(log):
-        return [], [], []
+    """One curve across a JOINED lineage: "a+b" reads both logs into one series.
+
+    A run relaunched to pick up a code change is still one experiment -- f8rqck resumed e4tvxe at
+    epoch 6 with identical settings -- and plotting it as a second curve starting at epoch 7 would
+    read as a new arm.
+    """
     xs, dq, fa = [], [], []
-    for m in LINE.finditer(open(log, errors="replace").read()):
-        xs.append(int(m.group(1))); dq.append(float(m.group(2))); fa.append(float(m.group(3)))
+    for part in rid.split("+"):
+        log = os.path.join(root, part, "run.log")
+        if not os.path.exists(log):
+            continue
+        for m in LINE.finditer(open(log, errors="replace").read()):
+            xs.append(int(m.group(1))); dq.append(float(m.group(2))); fa.append(float(m.group(3)))
+    if not xs:
+        return [], [], []
     # one point per epoch, last write wins -- a resumed run can repeat an epoch line
     byep = {}
     for e, d, f in zip(xs, dq, fa):
@@ -50,19 +59,20 @@ def pae(root, rid, full_steps):
     when the pose-weighted number was flat, which is how a stop rule and a curve ended up
     disagreeing in sign.
     """
-    traj = os.path.join(root, rid, "trajectory.csv")
-    if not os.path.exists(traj):
-        return [], []
     d = collections.defaultdict(lambda: [0.0, 0, 0])
-    with open(traj) as fh:
-        for r in csv.DictReader(fh):
-            if r.get("step_taken") != "1":
-                continue
-            try:
-                e, v, n = int(r["epoch"]), float(r["batch_pae_loss"]), int(r["batch_n"])
-            except (ValueError, KeyError, TypeError):
-                continue
-            d[e][0] += v * n; d[e][1] += n; d[e][2] += 1
+    for part in rid.split("+"):
+        traj = os.path.join(root, part, "trajectory.csv")
+        if not os.path.exists(traj):
+            continue
+        with open(traj) as fh:
+            for r in csv.DictReader(fh):
+                if r.get("step_taken") != "1":
+                    continue
+                try:
+                    e, v, n = int(r["epoch"]), float(r["batch_pae_loss"]), int(r["batch_n"])
+                except (ValueError, KeyError, TypeError):
+                    continue
+                d[e][0] += v * n; d[e][1] += n; d[e][2] += 1
     xs = sorted(e for e, v in d.items() if v[2] >= full_steps and v[1] > 0)
     return xs, [d[e][0] / d[e][1] for e in xs]
 
