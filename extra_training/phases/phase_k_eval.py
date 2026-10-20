@@ -378,6 +378,15 @@ def main():
                          "pathway before loading, and reads frame_atom_index / pae_rep_atom_mask "
                          "from the label npz beside each trunk. phase_k_train passes this "
                          "automatically; without it the checkpoint load refuses the extra tensor.")
+    ap.add_argument("--pose-perblock", action="store_true",
+                    help="the checkpoint was trained with phase_k_train --pose-perblock, so the "
+                         "head carries pose_perblock_proj tensors the stock model does not. "
+                         "phase_k_train passes this automatically; without it the checkpoint load "
+                         "refuses the extra tensors.")
+    ap.add_argument("--pose-perblock-tied", action="store_true",
+                    help="the checkpoint was trained with weight sharing across injected blocks. "
+                         "The tensor COUNT differs between tied and untied, so this must match "
+                         "how the head was trained or the load fails.")
     ap.add_argument("--no-self-check", action="store_true")
     ap.add_argument("--allow-roles-fallback", action="store_true",
                     help="use chain_roles.csv when OST's per-pose mapping is unusable. OFF by "
@@ -509,6 +518,11 @@ def main():
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
+    # SAME REASON, SAME PLACE: a head trained with --pose-perblock carries pose_perblock_proj
+    # tensors the stock model does not, and the guard below refuses any tensor the model lacks.
+    if a.pose_perblock:
+        import pose_perblock
+        pose_perblock.install(model, tied=a.pose_perblock_tied)
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu")
         have = dict(model.named_parameters())

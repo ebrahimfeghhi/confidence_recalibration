@@ -201,6 +201,24 @@ def main():
                          "trainable tensor, so an existing resume bundle CANNOT be loaded and the "
                          "evaluator must be given --frame-direction too (this passes it). "
                          "phases/phase_k_frame_direction_check.py checks the geometry on CPU.")
+    ap.add_argument("--pose-perblock", action="store_true",
+                    help="PATHWAY A: re-inject the pose embedding before EVERY pairformer block "
+                         "instead of only before the first. One zero-initialised "
+                         "LinearNoBias(num_bins -> c_z) per injected block -- 3 matrices at "
+                         "39x128 = 14,976 parameters on a 4-block stack. Adds ACCESS, not "
+                         "information: the one-hot is the same tensor each time, so the "
+                         "hypothesis is that the pose signal degrades crossing the stack, which "
+                         "with 4 blocks is thin and is why --frame-direction was built first. "
+                         "Zero-init makes step 0 bit-identical, but it adds trainable tensors, so "
+                         "an existing resume bundle CANNOT be loaded and the evaluator must be "
+                         "given --pose-perblock too (this passes it). See docs/pose_pathways.md.")
+    ap.add_argument("--pose-perblock-tied", action="store_true",
+                    help="share ONE matrix across every injected block instead of one each. The "
+                         "sharper test of A's actual hypothesis -- the identical embedding "
+                         "re-presented at each depth -- where untied also lets each depth learn a "
+                         "different projection of distance, so a win is ambiguous between the "
+                         "two. NOT equivalent to scaling a single injection: each block "
+                         "transforms z before the next add. Requires --pose-perblock.")
     ap.add_argument("--pae-only", action="store_true",
                     help="train the PAE term ALONE: pLDDT, PDE and resolved are stubbed out, not "
                          "computed, not trained. ipTM derives entirely from PAE, and at the shipped "
@@ -568,6 +586,12 @@ def main():
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
+    if a.pose_perblock:
+        import pose_perblock
+        pose_perblock.install(model, tied=a.pose_perblock_tied)
+    elif a.pose_perblock_tied:
+        raise SystemExit("STOP: --pose-perblock-tied without --pose-perblock does nothing. It "
+                         "selects how A shares its weights, not whether A is installed.")
     loss_fn = ProtenixLoss(configs)
     if a.drop_pde:
         # A STUB IN PLACE OF THE MODULE, because a zero weight would still run it.
@@ -937,7 +961,12 @@ def main():
                  # tensor, so a bundle written without it is missing one and the _missing check
                  # below refuses it anyway. It is compared here so the refusal names the setting
                  # that caused it instead of reporting an absent tensor.
-                 "frame_direction": a.frame_direction}
+                 "frame_direction": a.frame_direction,
+                 # SAME REASON AS frame_direction: A adds trainable tensors, so a bundle written
+                 # without it is missing some and the _missing check below refuses it anyway.
+                 # Compared here so the refusal names the setting rather than an absent tensor.
+                 "pose_perblock": a.pose_perblock,
+                 "pose_perblock_tied": a.pose_perblock_tied}
 
         # A BUNDLE WRITTEN BY OLDER CODE IS NOT DRIFT. The guard grew from four fields to twelve
         # while run 9mfb4y was in flight, so its bundles carry only the original eight: the running
@@ -971,7 +1000,8 @@ def main():
         # drift and needs --resume-allow-drift, because it genuinely changes the objective.
         _PRE_CROP = {"crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
                      "pae_only": False,
-                     "frame_direction": False}
+                     "frame_direction": False,
+                     "pose_perblock": False, "pose_perblock_tied": False}
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
@@ -1541,6 +1571,10 @@ def main():
         # path too; both the sharded driver (--extra) and the single-card path forward `extra`.
         if a.frame_direction:
             extra = extra + ["--frame-direction"]
+        if a.pose_perblock:
+            extra = extra + ["--pose-perblock"]
+            if a.pose_perblock_tied:
+                extra = extra + ["--pose-perblock-tied"]
         # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
         #
         # --join-cache is the big one. The pose->sample join is a function of the trunk's own
@@ -1771,6 +1805,8 @@ def main():
                                   # fell through to the pre-crop default and read as C DISABLED.
                                   # Third time a guard field has been half-wired. Found in review.
                                   "frame_direction": a.frame_direction,
+                                  "pose_perblock": a.pose_perblock,
+                                  "pose_perblock_tied": a.pose_perblock_tied,
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
