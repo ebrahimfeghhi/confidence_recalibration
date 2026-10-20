@@ -1,6 +1,6 @@
 # Full training set: the four metrics, per epoch
 
-Generated 2026-10-20 11:41 PDT by `run_logging/results_table.py` from `x3k2m4+jhgfxy+2w5to5`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
+Generated 2026-10-20 12:45 PDT by `run_logging/results_table.py` from `x3k2m4+jhgfxy+2w5to5`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
 
 ## The lineage is one experiment in three parts
 
@@ -10,7 +10,7 @@ Epoch numbers are continuous, but the segments do NOT share an implementation, s
 |---|---|---|
 | `x3k2m4` | 1 | checkpointing ON (blocks_per_ckpt=1); per-epoch fingerprint hashing; prefetch_issue double-counted the hash |
 | `jhgfxy` | 2 | checkpointing ON; fresh process so hashing re-paid; prefetch choice-cache added |
-| `2w5to5` | — | checkpointing OFF (blocks_per_ckpt=None); persistent fingerprint cache; empty_cache at the boundary; exclusive timers + residual + memory peaks |
+| `2w5to5` | 3 | checkpointing OFF (blocks_per_ckpt=None); persistent fingerprint cache; empty_cache at the boundary; exclusive timers + residual + memory peaks |
 
 ## Epoch 0 is the shipped head
 
@@ -29,6 +29,7 @@ Budget 30, 18 interfaces, 10 validation structures. **Not** the budget-100 figur
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | `x3k2m4` | yes | 2.7384 | 2.6953 | -0.2803 | 0.2999 | +0.0090 | 0.5556 | +0.0000 |
 | 2 | `jhgfxy` | yes | 2.6623 | 2.6779 | -0.2977 | 0.2543 | -0.0366 | 0.3333 | -0.2223 |
+| 3 | `2w5to5` | yes | 2.6061 | 2.7359 | -0.2397 | 0.2864 | -0.0045 | 0.4444 | -0.1112 |
 
 Held-out PAE is a loss, so **lower is better** and a negative delta is an improvement. DockQ and frac-acceptable are the opposite.
 
@@ -46,6 +47,7 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 |---|---|---|---|---|---|---|---|---|
 | 1 | `x3k2m4` | 2 | 77.9 | — | — | — | — | — |
 | 2 | `jhgfxy` | 0 | 79.4 | — | — | — | — | — |
+| 3 | `2w5to5` | 2 | 78.3 | 78.2m | 0.1m | 65.70 | 66.80 | None |
 
 **Wall, accounted and residual all come from the SAME rank** — the one with the longest wall clock — so accounted + residual equals wall. Taking each column's maximum independently produced a row that did not add up under a heading that said 'worst rank'. Memory stays an across-rank maximum on purpose: there the question is whether ANY rank came near the card.
 
@@ -64,4 +66,10 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 - rank 0: crop_slice 10.1m/1620  cropped_tokens mean 325  fingerprint_hash 9.5m/1620  gpu_backward 20.2m/8100  gpu_forward 6.5m/8100  grad_collective_plus_wait 0.7m/290  pose_total 24.5m/8100  prefetch_issue 9.5m/1619  trunk_read_plus_crop_tokens 2.8m/1620
 - rank 1: crop_slice 14.3m/1620  cropped_tokens mean 320  fingerprint_hash 9.3m/1620  gpu_backward 19.1m/8100  gpu_forward 6.2m/8100  grad_collective_plus_wait 0.8m/290  pose_total 23.2m/8100  prefetch_issue 9.3m/1619  trunk_read_plus_crop_tokens 2.6m/1620
 - rank 2: crop_slice 11.8m/1620  cropped_tokens mean 333  fingerprint_hash 9.2m/1620  gpu_backward 21.9m/8100  gpu_forward 7.0m/8100  grad_collective_plus_wait 0.7m/290  pose_total 26.8m/8100  prefetch_issue 9.2m/1619  trunk_read_plus_crop_tokens 2.7m/1620
+
+**epoch 3** (`2w5to5`)
+
+- rank 0: apply_step_total 1.0m/289  crop_slice 19.5m/1620  cropped_tokens mean 316  fingerprint_hash 9.5m/1620  gpu_backward 12.7m/8100  gpu_forward 5.6m/8100  grad_collective_plus_wait 0.8m/290  label_open 0.0m/1620  loss_feature_prep 0.0m/1620  loss_stats_collective_plus_wait 29.5m/289  pose_total 16.2m/8100  prefetch_issue 0.0m/1619  trunk_read_plus_crop_tokens 2.6m/1620
+- rank 1: apply_step_total 1.0m/289  crop_slice 20.2m/1620  cropped_tokens mean 336  fingerprint_hash 9.3m/1610  gpu_backward 14.7m/8100  gpu_forward 6.5m/8100  grad_collective_plus_wait 0.7m/290  label_open 0.0m/1620  loss_feature_prep 0.0m/1620  loss_stats_collective_plus_wait 26.6m/289  pose_total 18.6m/8100  prefetch_issue 0.0m/1619  trunk_read_plus_crop_tokens 2.5m/1620
+- rank 2: apply_step_total 1.0m/289  crop_slice 19.7m/1620  cropped_tokens mean 328  fingerprint_hash 9.5m/1610  gpu_backward 14.4m/8100  gpu_forward 6.4m/8100  grad_collective_plus_wait 0.7m/290  label_open 0.0m/1620  loss_feature_prep 0.0m/1620  loss_stats_collective_plus_wait 27.3m/289  pose_total 18.2m/8100  prefetch_issue 0.0m/1619  trunk_read_plus_crop_tokens 2.5m/1620
 
