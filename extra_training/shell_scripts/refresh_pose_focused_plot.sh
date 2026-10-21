@@ -21,7 +21,7 @@ if [ -z "$RID" ] && [ -f training/runs/pose_focused_rid ]; then RID=$(cat traini
 if [ -z "$RID" ]; then RID=$(ls -1dt training/runs/*/ | grep -v '/latest/' | head -1 | xargs basename); fi
 echo "run id: $RID"
 $PY -I run_logging/plot_full_train.py \
-  "$RID=pose-focused, 30 structures, lr 1e-2 (13,312 params)" \
+  "$RID=pose-focused, 30 structures, lr 1e-2 (26,624 params)" \
   --budget 30 \
   --shipped-dockq 0.2909 --shipped-frac 0.5556 \
   --oracle-dockq 0.5968 --oracle-frac 1.0000 \
