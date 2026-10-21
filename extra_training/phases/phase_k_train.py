@@ -1068,6 +1068,37 @@ def main():
         for n in _kept:
             print(f"    {_rel[n]:46} {tuple(dict(model.named_parameters())[n].shape)}")
 
+    # A LoRA BUNDLE HOLDS ADAPTERS, NOT HEAD TENSORS, and the held-out monitor spawns itself
+    # without --lora-rank -- the running trainer builds that command from its in-memory arguments,
+    # so adding the flag there cannot reach a trainer already running. Its trainable set was
+    # therefore the 248 plain head tensors, none of which a rank-8 bundle contains, and every
+    # measurement died on
+    #     STOP: the bundle is missing 248 trainable tensor(s)
+    # Arm m8rote trained three epochs and produced ZERO held-out points before this was caught --
+    # the same failure as ggfhj5 epoch 1, which was --train-only instead of LoRA.
+    #
+    # So under --loss-only, inherit the bundle's own LoRA configuration. The guard already records
+    # all four fields for exactly this reason ("resuming one as the other fails on the
+    # missing-tensor check"). Only when this run named no rank of its own, so an explicit
+    # --lora-rank still wins and a non-LoRA bundle is untouched.
+    if a.loss_only and a.resume and not a.lora_rank:
+        try:
+            _g = (torch.load(a.resume, map_location="cpu", weights_only=False).get("guard")
+                  or {})
+        except Exception as _e:                              # noqa: BLE001
+            _g = {}
+            print(f"  (could not read {a.resume} for its LoRA config: {type(_e).__name__})")
+        if int(_g.get("lora_rank") or 0):
+            a.lora_rank = int(_g["lora_rank"])
+            a.lora_alpha = float(_g.get("lora_alpha") or 0.0)
+            a.lora_targets = _g.get("lora_targets") or ""
+            a.lora_dropout = float(_g.get("lora_dropout") or 0.0)
+            if is_main:
+                print(f"  --loss-only: inheriting the bundle's LoRA configuration "
+                      f"(rank {a.lora_rank}, alpha {a.lora_alpha:g}, dropout {a.lora_dropout:g}) "
+                      f"-- it holds adapter tensors, so the model must carry the same adapters "
+                      f"for its weights to load at all.")
+
     lora_report = None
     if a.lora_rank:
         import lora as LORA
@@ -1537,8 +1568,14 @@ def main():
             _measured_epoch, _measured_step = start_epoch, start_step
             start_epoch, start_step = 0, 0
         if is_main:
+            # SAY WHAT ACTUALLY HAPPENED TO THE OPTIMISER. This line claimed "AdamW state for 298
+            # tensor(s) restored" on a --loss-only pass that deliberately does NOT restore it --
+            # a log that misreports its own run is worse than a quiet one.
+            _opt_note = (f"AdamW state for {len(_b['opt'].get('state', {}))} tensor(s) restored"
+                         if not a.loss_only else
+                         "AdamW state NOT restored (measurement takes no step)")
             print(f"RESUMED from {a.resume}: {start_epoch} epoch(s) done, step {start_step}, "
-                  f"AdamW state for {len(_b['opt'].get('state', {}))} tensor(s) restored; "
+                  f"{_opt_note}; "
                   f"continuing at epoch {start_epoch + 1}/{max(1, math.ceil(a.epochs))}")
             print(f"  bundle commit {_g.get('commit', '?')[:8]}, written {_g.get('written', '?')}")
 

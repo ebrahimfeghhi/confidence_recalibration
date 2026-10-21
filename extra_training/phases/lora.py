@@ -70,6 +70,32 @@ class LoRALinear(nn.Module):
         h = self.drop(x).to(self.lora_A.dtype)
         return y + (h @ self.lora_A.t() @ self.lora_B.t()) * self.scaling
 
+    @property
+    def weight(self):
+        """The EFFECTIVE weight, adapter folded in, DIFFERENTIABLE.
+
+        NOT COSMETIC. Some parents never call their child's forward: TriangleMultiplication
+        fuses its two projections with
+
+            torch.cat([self.linear_a_p.weight, self.linear_b_p.weight], 0)
+
+        (protenix/model/triangular/triangular.py:504) and does one matmul. Wrapping those
+        modules and delegating forward() is invisible to that path, which read .weight straight
+        off the wrapper and raised
+            AttributeError: 'LoRALinear' object has no attribute 'weight'
+        on the first forward of arm a4afho -- after the adapter report had already printed, so
+        the run looked healthy right up to the crash.
+
+        Returning the merged weight makes the fused path apply the adapter instead of ignoring
+        it, and because this is built from lora_A/lora_B WITHOUT no_grad, the gradient reaches
+        them through the parent's own matmul. The two routes agree: forward() adds the adapter to
+        the base output, this folds it into the matrix, and both give W + (alpha/r) B@A.
+
+        It is a plain tensor, not an nn.Parameter -- anything that tries to ASSIGN .weight or
+        treat it as a leaf will fail loudly rather than silently training the wrong thing.
+        """
+        return self.base.weight + (self.lora_B @ self.lora_A) * self.scaling
+
     @torch.no_grad()
     def merged_weight(self):
         """The base weight with the adapter folded in. Used to write a plain head checkpoint."""
