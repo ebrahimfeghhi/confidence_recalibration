@@ -1492,6 +1492,32 @@ def main():
         if not a.loss_only and _b["epoch"] >= max(1, math.ceil(a.epochs)):
             raise SystemExit(f"STOP: the bundle has {_b['epoch']} epoch(s) done and --epochs is "
                              f"{a.epochs}; there is nothing left to run.")
+        # A --train-only BUNDLE CARRIES ONLY THE TENSORS IT TRAINED, which is correct: the ones it
+        # omits were never updated, so they are still the shipped head's. But the held-out monitor
+        # spawns itself WITHOUT --train-only -- the running trainer builds that command from its
+        # own in-memory arguments, so adding the flag there cannot reach a trainer already running
+        # -- and its trainable set is therefore all 248. This guard then refused every measurement
+        # of a --train-only run: "the bundle is missing 245 trainable tensor(s)". It killed panel
+        # 2, the only panel that matters, on arm ggfhj5 at epoch 1.
+        #
+        # SO INHERIT THE BUNDLE'S OWN SET, and only under --loss-only, where there is no optimiser
+        # to keep consistent and no checkpoint to write. THIS IS NOT A BLANKET WEAKENING: the
+        # bundle must carry EXACTLY what its own recorded train_only selects, so a TRUNCATED
+        # bundle -- the case this check exists for -- is still refused.
+        _b_only = (_b.get("guard") or {}).get("train_only") or ""
+        if a.loss_only and _b_only and not a.train_only:
+            import re as _re_i
+            _pfx_i = prefixes[0]
+            _pats_i = [t.strip() for t in _b_only.split(",") if t.strip()]
+            _want_i = {_n for _n in trainable
+                       if any(_re_i.search(_p, _n[len(_pfx_i) + 1:]) for _p in _pats_i)}
+            if _want_i and _want_i == set(_b["head"]):
+                trainable = sorted(_want_i)
+                if is_main:
+                    print(f"  --loss-only: inheriting the bundle's --train-only '{_b_only}'. It "
+                          f"carries exactly the {len(_want_i)} tensor(s) that selects; the rest of "
+                          f"the head was never trained and stays at the shipped weights, which is "
+                          f"the head this measures.")
         _tset = set(trainable)
         _missing = _tset - set(_b["head"])
         if _missing:
@@ -1501,7 +1527,11 @@ def main():
             for _n, _p in model.named_parameters():
                 if _n in _tset:
                     _p.data.copy_(_b["head"][_n].to(_p.device, _p.dtype))
-        opt.load_state_dict(_b["opt"])
+        # THE OPTIMISER IS NOT RESTORED FOR A MEASUREMENT. AdamW never steps under --loss-only, so
+        # its moments are dead weight -- and after inheriting a 3-tensor set above, the live param
+        # group still holds 248, so load_state_dict would raise on the size mismatch.
+        if not a.loss_only:
+            opt.load_state_dict(_b["opt"])
         start_epoch, start_step = int(_b["epoch"]), int(_b["step"])
         if a.loss_only:
             _measured_epoch, _measured_step = start_epoch, start_step
