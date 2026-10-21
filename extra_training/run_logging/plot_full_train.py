@@ -42,7 +42,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("runs", nargs="+", help="run id or run_id=label; a+b joins a lineage")
     ap.add_argument("--root", default="training/runs")
-    ap.add_argument("--full-steps", type=int, default=285,
+    ap.add_argument("--full-steps", type=int, default=0,
                     help="steps that make an epoch COMPLETE; incomplete epochs are dropped from "
                          "panel 1 because a partial mean is not comparable. 488 structures x 10 "
                          "seeds x 5 poses at 84/step is ~290, so 250 admits a short last shard "

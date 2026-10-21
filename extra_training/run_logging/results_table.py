@@ -32,7 +32,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("runs")
     ap.add_argument("--root", default="training/runs")
-    ap.add_argument("--full-steps", type=int, default=285,
+    ap.add_argument("--full-steps", type=int, default=0,
                     help="steps that make an epoch COMPLETE. An epoch is 290 full steps plus a "
                          "remainder, 289 optimiser steps in practice. This was 250 to admit a "
                          "short last shard, and that let a MID-EPOCH read through: epoch 3 was "
