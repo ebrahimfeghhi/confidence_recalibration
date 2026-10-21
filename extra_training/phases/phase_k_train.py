@@ -2604,10 +2604,16 @@ def main():
             for g in range(len(u) // world):
                 groups.append([(_p, _lp, _c) for _lp, _c in u[g * world:(g + 1) * world]])
         rng_e.shuffle(groups)
-        nsteps = len(groups) // structs_per_step
+        # THE REMAINDER IS KEPT, as a short final step. Truncating to a whole number of steps
+        # drops units, and for TRAINING that is invisible -- 1,464 groups over K=6 divides
+        # exactly -- but --loss-only runs world=1 over 300 units at K=17 and 300//17*17 is 289,
+        # so a held-out pass would have measured 1,445 poses instead of 1,500 and the epoch
+        # would have been marked incomplete for missing its expected count. The accumulator
+        # already flushes a short step with the gradient scaled to the poses that contributed,
+        # and on a measurement pass no step is taken at all.
         mine = []
-        for i in range(nsteps):
-            for gi, grp in enumerate(groups[i * structs_per_step:(i + 1) * structs_per_step]):
+        for i in range(0, len(groups), structs_per_step):
+            for gi, grp in enumerate(groups[i:i + structs_per_step]):
                 # ROTATED BY POSITION so a rank is not always handed the same seed slot.
                 mine.append(grp[(rank + gi) % world])
         return mine
