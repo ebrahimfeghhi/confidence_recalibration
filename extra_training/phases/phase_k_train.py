@@ -131,6 +131,41 @@ def main():
                          "2,000 steps of a 100,000-step run (2%%). At batch 256 three epochs of our "
                          "cache is 292 optimiser steps, so 2,000 would be 685%% of the run and the "
                          "learning rate would never reach its set value. 20 is 6.8%%.")
+    ap.add_argument("--train-only", default="",
+                    help="SELECTIVE FINETUNING: comma-separated REGEXES matched against parameter "
+                         "names inside the confidence head; only matching tensors train and "
+                         "everything else is frozen. Empty (default) trains the whole head.\n"
+                         "POSE-FOCUSED ADAPTATION is the motivating case: "
+                         "'linear_no_bias_d,linear_no_bias_d_wo_onehot,linear_no_bias_pae' is "
+                         "13,312 parameters -- 0.07%% of the head -- and is the COMPLETE pose "
+                         "pathway plus the PAE readout. Pose enters the head exactly once, as "
+                         "cdist over representative atoms feeding those two distance embeddings "
+                         "(both, not either), and leaves as linear_no_bias_pae(pae_ln(z_pair)). "
+                         "Freezing the four pairformer blocks keeps the pretrained structural "
+                         "representation and adapts only how geometry ENTERS and how PAE is READ "
+                         "OUT -- a constraint on which computation may change, not merely on how "
+                         "much. Add 'pae_ln' to make the readout's scale and shift learnable too "
+                         "(+256 parameters).")
+    ap.add_argument("--lora-rank", type=int, default=0,
+                    help="LoRA RANK; 0 (default) trains the head the way every run so far has. "
+                         "Above 0, every matched weight is FROZEN and learns a rank-r additive "
+                         "update instead: W + (alpha/r) B@A. B is zero-initialised, so step 0 is "
+                         "bit-identical to the shipped head and LoRA-on against LoRA-off is a "
+                         "clean single variable. The point is capacity: full FT3 moves 19.8M "
+                         "parameters on 488 structures, and the 30-structure anchor showed what "
+                         "that does -- train PAE -38%% while held-out PAE rose 51%%. Rank 8 over "
+                         "the whole head is ~4.4%% of its parameters.")
+    ap.add_argument("--lora-alpha", type=float, default=0.0,
+                    help="LoRA scaling numerator; the update is multiplied by alpha/rank. 0 "
+                         "(default) means 2*rank, the usual choice, so the effective scale is 2.")
+    ap.add_argument("--lora-targets", default="",
+                    help="comma-separated REGEXES matched against module names inside the "
+                         "confidence head; empty adapts every module with a 2-D weight. Matching "
+                         "on the name rather than the class is deliberate -- 54 modules are "
+                         "Linear/LinearNoBias but the ~96 matrices in tri_mul_* and tri_att_* are "
+                         "a different class and hold 1.57M parameters between them.")
+    ap.add_argument("--lora-dropout", type=float, default=0.0,
+                    help="dropout on the adapter input only; the frozen path is untouched.")
     ap.add_argument("--structures-per-step", type=int, default=0,
                     help="K: WHOLE STRUCTURES PER OPTIMISER STEP. Each rank takes ONE seed of each "
                          "of the same K structures, so a step is K x world x --nsample poses. 0 "
@@ -245,7 +280,7 @@ def main():
     ap.add_argument("--val-loss-every", type=int, default=0,
                     help="EPOCHS BETWEEN HELD-OUT PAE PASSES; 0 is off. This is the monitor the "
                          "run had no way to compute: measured 2026-10-20, the lr 1e-2 anchor's "
-                         "training PAE fell 38% from epoch 1 to 142 while its val10 PAE ROSE 51% "
+                         "training PAE fell 38%% from epoch 1 to 142 while its val10 PAE ROSE 51%% "
                          "(2.8290 -> 4.2639), and nothing in the run could see it -- the DockQ "
                          "metric stayed inside its noise band the whole time because ipTM barely "
                          "orders poses within an interface (rho 0.20 even for the shipped head). "
@@ -268,7 +303,7 @@ def main():
                     help="FORWARD AND LOSS ONLY, no backward, no optimiser, no weight change -- one "
                          "pass over the manifest. For measuring a saved head's loss on a HELD-OUT "
                          "fold, which nothing else could do: the eval path reports DockQ selection "
-                         "and never the loss, so a 37% drop in training PAE had no held-out "
+                         "and never the loss, so a 37%% drop in training PAE had no held-out "
                          "counterpart to compare against. Runs in the trainer rather than a second "
                          "script so the crop, the --pae-scored-pairs mask, the --pae-only stub and "
                          "the loss weights are the SAME code -- a reimplementation would drift and "
@@ -1000,6 +1035,51 @@ def main():
                          f"at 0 the ipTM this project is judged on cannot move.")
 
     prefixes, trainable = head_param_names(model)
+    # LoRA REPLACES THE TRAINABLE SET, it does not add to it. Applied to the confidence head only
+    # -- head_param_names already established that module is the honest boundary -- and after the
+    # head is built so the adapters inherit its device and dtype.
+    if a.train_only:
+        import re as _re
+        _pats = [t.strip() for t in a.train_only.split(",") if t.strip()]
+        _pfx = prefixes[0]
+        _rel = {n: n[len(_pfx) + 1:] for n in trainable}
+        _kept = [n for n in trainable if any(_re.search(_p, _rel[n]) for _p in _pats)]
+        if not _kept:
+            raise SystemExit(
+                f"STOP: --train-only matched no parameter, so the optimiser would be empty and "
+                f"the run would report success while training nothing.\n"
+                f"  patterns: {_pats}\n"
+                f"  head has {len(trainable)} tensor(s), e.g. "
+                f"{[_rel[n] for n in trainable[:6]]}")
+        _before = sum(p.numel() for n, p in model.named_parameters() if n in set(trainable))
+        trainable = _kept
+        _after = sum(p.numel() for n, p in model.named_parameters() if n in set(trainable))
+        print(f"--train-only {_pats}: {len(_kept)} of {len(_rel)} head tensor(s), "
+              f"{_after:,} of {_before:,} parameters ({100.0*_after/max(1,_before):.3f}% of the "
+              f"head). Everything else is FROZEN.")
+        for n in _kept:
+            print(f"    {_rel[n]:46} {tuple(dict(model.named_parameters())[n].shape)}")
+
+    lora_report = None
+    if a.lora_rank:
+        import lora as LORA
+        _hm = dict(model.named_modules())[prefixes[0]]
+        _lnames, lora_report = LORA.apply_lora(
+            _hm, a.lora_rank, a.lora_alpha or 2.0 * a.lora_rank,
+            [t.strip() for t in a.lora_targets.split(",") if t.strip()], a.lora_dropout)
+        trainable = [f"{prefixes[0]}.{n}" for n in _lnames]
+        print(f"LoRA rank {a.lora_rank} alpha {a.lora_alpha or 2.0*a.lora_rank:g} "
+              f"dropout {a.lora_dropout:g}: {lora_report['modules_adapted']} module(s) adapted, "
+              f"{lora_report['lora_params']/1e6:.3f}M adapter parameters against "
+              f"{lora_report['frozen_params']/1e6:.2f}M frozen "
+              f"({100*lora_report['fraction_of_head']:.2f}% of the head)")
+        if lora_report["skipped_rank_too_high"]:
+            print(f"  {len(lora_report['skipped_rank_too_high'])} module(s) skipped: rank "
+                  f"{a.lora_rank} exceeds a dimension, e.g. "
+                  f"{lora_report['skipped_rank_too_high'][:3]}")
+        if lora_report["adapted_with_bias"]:
+            print(f"  NOTE {len(lora_report['adapted_with_bias'])} adapted module(s) have a bias; "
+                  f"it stays FROZEN -- the adapter is the only thing that moves.")
     head_ids = {id(p) for n, p in model.named_parameters() if n in set(trainable)}
     n_head = sum(p.numel() for n, p in model.named_parameters() if n in set(trainable))
     n_all = sum(p.numel() for _n, p in model.named_parameters())
@@ -1007,6 +1087,33 @@ def main():
           f"({n_head/n_all:.1%}), under {prefixes}")
     for n, p in model.named_parameters():
         p.requires_grad_(id(p) in head_ids)
+
+    _head_names = {n for n, _p in model.named_parameters()
+                   if any(n == pr or n.startswith(pr + ".") for pr in prefixes)}
+
+    def _head_ckpt_tensors():
+        """The head checkpoint, ALWAYS in the shipped head's tensor names and shapes.
+
+        Under LoRA the wrapper renames `blk.linear.weight` to `blk.linear.base.weight`, so
+        saving named_parameters() straight would write a file phase_k_eval cannot load -- it
+        knows nothing about adapters. Merging here keeps every downstream scorer unchanged and
+        makes a LoRA checkpoint indistinguishable from a full-finetune one. Without LoRA this is
+        exactly the dict that was saved before.
+        """
+        if a.lora_rank:
+            import lora as LORA
+            _pfx = prefixes[0]
+            return {f"{_pfx}.{k}": v
+                    for k, v in LORA.merged_head_tensors(
+                        dict(model.named_modules())[_pfx]).items()}
+        # EVERY HEAD TENSOR, NOT JUST THE TRAINABLE ONES. phase_k_eval requires SET EQUALITY
+        # between the checkpoint's keys and the model's head parameters -- deliberately, so a
+        # checkpoint from a different architecture cannot load with tensors left at their
+        # initial values. Under --train-only the trainable set is three tensors, and writing
+        # only those would be refused at the first eval. Identical to the old behaviour when the
+        # whole head trains, which is every run so far.
+        return {n: pp.detach().cpu() for n, pp in model.named_parameters()
+                if n in _head_names}
 
     # NO EXPERIMENT TRACKER. Runs are recorded by the files this script already writes --
     # trajectory.csv, metric_ep<N>.json, args.json -- and rendered by run_logging/render_report.py.
@@ -1193,7 +1300,14 @@ def main():
                  # without it is missing some and the _missing check below refuses it anyway.
                  # Compared here so the refusal names the setting rather than an absent tensor.
                  "pose_perblock": a.pose_perblock,
-                 "pose_perblock_tied": a.pose_perblock_tied}
+                 "pose_perblock_tied": a.pose_perblock_tied,
+                 # THE PARAMETER SET ITSELF. A bundle written at rank 8 holds 282 adapter
+                 # tensors and one written without LoRA holds 248 head tensors; resuming one as
+                 # the other fails on the missing-tensor check with a message about tensors
+                 # rather than about the setting that changed.
+                 "lora_rank": a.lora_rank, "lora_alpha": a.lora_alpha,
+                 "lora_targets": a.lora_targets, "lora_dropout": a.lora_dropout,
+                 "train_only": a.train_only}
 
         # A BUNDLE WRITTEN BY OLDER CODE IS NOT DRIFT. The guard grew from four fields to twelve
         # while run 9mfb4y was in flight, so its bundles carry only the original eight: the running
@@ -1225,7 +1339,9 @@ def main():
         # written with cropping off. So these migrate to the pre-crop defaults and are compared
         # like any other field -- which means a resume that ENABLES cropping shows up as real
         # drift and needs --resume-allow-drift, because it genuinely changes the objective.
-        _PRE_CROP = {"crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
+        _PRE_CROP = {"lora_rank": 0, "lora_alpha": 0.0, "lora_targets": "", "lora_dropout": 0.0,
+                 "train_only": "",
+                     "crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
                      "pae_only": False,
                      "frame_direction": False,
                      "pose_perblock": False, "pose_perblock_tied": False}
@@ -2328,8 +2444,7 @@ def main():
         cp = os.path.join(a.out, f"head_ep{epoch}_step{step}.pt")
         if not is_main:
             return          # the caller already holds the other ranks at a barrier
-        torch.save({n: pp.detach().cpu() for n, pp in model.named_parameters()
-                    if n in set(trainable)}, cp)
+        torch.save(_head_ckpt_tensors(), cp)
         kind = ("pool@" + os.path.basename((a.train_eval_fold or a.fold).rstrip("/"))
                 if train_pool else "validation")
         mj = os.path.join(a.out, ("metric_train_ep%d.json" if train_pool else "metric_ep%d.json")
@@ -2599,6 +2714,10 @@ def main():
                         "opt": opt.state_dict(),
                         "epoch": epochs_done, "step": step_now,
                         "guard": {"drift_history": _drift_history,
+                                  "lora_rank": a.lora_rank, "lora_alpha": a.lora_alpha,
+                                  "lora_targets": a.lora_targets,
+                                  "lora_dropout": a.lora_dropout,
+                                  "train_only": a.train_only,
                                   "world": world, "seed": a.seed, "accum": a.accum,
                                   "nsample": a.nsample, "lr": a.lr,
                                   "warmup_steps": a.warmup_steps, "epochs": a.epochs,
@@ -2740,8 +2859,7 @@ def main():
                         step += 1
                         if a.save_every and step % a.save_every == 0 and write_traj:
                             cp = os.path.join(a.out, f"head_step{step}.pt")
-                            torch.save({n: pp.detach().cpu() for n, pp in model.named_parameters()
-                                        if n in set(trainable)}, cp)
+                            torch.save(_head_ckpt_tensors(), cp)
                             print(f"  saved {cp}")
                     rows.append({"wall_s": round(time.time() - t0, 1), "step": step, "unit_i": ui,
                                  "pdb": pdb, "unit": os.path.basename(lab_p)[:-4], "pose": i,
