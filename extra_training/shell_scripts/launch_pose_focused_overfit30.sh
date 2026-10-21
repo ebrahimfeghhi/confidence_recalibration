@@ -18,14 +18,14 @@
 # --train-eval-every 1, so it produces a per-epoch curve the control never had. To compare
 # properly, backfill more of 2u8tf4's bundles with shell_scripts/backfill_val_pae.sh.
 #
-# WHAT TRAINS: 13,312 parameters, 0.104% of the head -- linear_no_bias_d (128x39),
-# linear_no_bias_d_wo_onehot (128x1) and linear_no_bias_pae (64x128). Pose enters the head exactly
+# WHAT TRAINS: 26,624 parameters, 0.135% of the head -- linear_no_bias_d (256x39),
+# linear_no_bias_d_wo_onehot (256x1) and linear_no_bias_pae (64x256). Pose enters the head exactly
 # once, as cdist over the distogram representative atom, and reaches z_pair through BOTH distance
 # embeddings added together; it leaves as the PAE projection. The four pairformer blocks, both
 # s_inputs embeddings and the pde/plddt/resolved weights are FROZEN, so the pretrained structural
 # representation is preserved and only how geometry enters and how PAE is read out can adapt.
 # --train-only matches with re.search on the relative name, and the launch prints every matched
-# tensor; CHECK THAT PRINT says 3 tensors / 13,312 parameters before trusting the run.
+# tensor; CHECK THAT PRINT says 3 tensors / 26,624 parameters before trusting the run.
 #
 # pae_ln IS DELIBERATELY NOT INCLUDED, and the reason is not just "the spec said three layers".
 # Its gamma is redundant: W @ (gamma * z) = (W diag(gamma)) @ z, absorbable into
@@ -33,13 +33,13 @@
 # bias that a no-bias projection otherwise cannot express. That is a bias-term question, not a
 # pose-pathway one, and it is a separate 256-parameter variant if wanted.
 #
-# LEARNING RATE IS INHERITED, NOT TUNED -- 1e-2 was chosen for 19.8M parameters and 13,312 is a
+# LEARNING RATE IS INHERITED, NOT TUNED -- 1e-2 was chosen for 19.8M parameters and 26,624 is a
 # different optimisation problem. Kept identical so this is ONE variable against 2u8tf4. If the
 # curve is flat, lr is the FIRST thing to vary before concluding anything about the method.
 #
 # HOW TO READ IT, AND THE TRAP: a flat val10 curve is as consistent with underfitting as with a
 # genuine ceiling. The TRAINING PAE curve is what separates them. If train PAE also barely moves,
-# 13,312 parameters were too few and the method was never tested. The hypothesis being tested is
+# 26,624 parameters were too few and the method was never tested. The hypothesis being tested is
 # train improves LESS, val10 improves MORE and stays stable LONGER.
 #
 # --prefetch-workers 4 RUNS FOR THE FIRST TIME HERE. It has never executed on a GPU. Its worst
@@ -64,7 +64,7 @@ if [ "$BUSY" != "0" ]; then
     exit 1
 fi
 LAYERNORM_TYPE=openfold /home/ebrahim/Protenix/.venv/bin/python -I run_logging/launch.py \
-  --cards 4,5,7 --note "POSE-FOCUSED ADAPTATION on the 30-structure set against val10, fresh from the shipped head. Trains only linear_no_bias_d, linear_no_bias_d_wo_onehot and linear_no_bias_pae -- the complete pose pathway plus the PAE readout, 13,312 parameters, 0.104% of the head; the four pairformer blocks and everything else frozen. ONE VARIABLE against 2u8tf4, full-head FT3 on these same 30 structures at this same lr, which went train -38% / val10 +51% over 142 epochs. Per-epoch val10 PAE and DockQ, which the control never had. lr 1e-2 is inherited from a 19.8M-parameter problem and is NOT tuned for 13,312. ALSO the first run of --prefetch-workers 4." \
+  --cards 4,5,7 --note "POSE-FOCUSED ADAPTATION on the 30-structure set against val10, fresh from the shipped head. Trains only linear_no_bias_d, linear_no_bias_d_wo_onehot and linear_no_bias_pae -- the complete pose pathway plus the PAE readout, 26,624 parameters, 0.135% of the head; the four pairformer blocks and everything else frozen. ONE VARIABLE against 2u8tf4, full-head FT3 on these same 30 structures at this same lr, which went train -38% / val10 +51% over 142 epochs. Per-epoch val10 PAE and DockQ, which the control never had. lr 1e-2 is inherited from a 19.8M-parameter problem and is NOT tuned for 26,624. ALSO the first run of --prefetch-workers 4." \
   -- --train-only 'linear_no_bias_d,linear_no_bias_d_wo_onehot,linear_no_bias_pae' \
   --fold training/fold \
   --crop-margin 10 --crop-contact 5 \

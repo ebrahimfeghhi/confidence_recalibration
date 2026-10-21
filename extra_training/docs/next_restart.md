@@ -32,8 +32,8 @@ and ignored.
 ## 3. Two capacity-control arms, neither started
 
 `shell_scripts/launch_pose_focused_arm.sh` — **run this one first**. `--train-only` on the
-complete pose pathway plus the PAE readout: 13,312 parameters, 0.104% of the head. Consider
-appending `,pae_ln` (+256 params), and note lr 1e-2 is inherited from a 19.8M-parameter problem
+complete pose pathway plus the PAE readout: 26,624 parameters, 0.135% of the head. Consider
+appending `,pae_ln` (+512 params), and note lr 1e-2 is inherited from a 19.8M-parameter problem
 and is untuned for this one. A flat held-out curve will not distinguish success from
 underfitting — the training-PAE curve is what separates them.
 

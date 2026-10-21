@@ -15,23 +15,23 @@
 # Nothing else in the head sees coordinates. The four pairformer blocks, both s_inputs
 # embeddings, the pde head and the plddt/resolved weights are all frozen.
 #
-#   13,312 parameters -- 0.104% of the head -- against 19.8M for full FT3.
+#   26,624 parameters -- 0.135% of the head -- against 19.8M for full FT3.
 #
 # pae_ln IS NOT IN THIS ARM, and arguably should be. It is a LayerNorm sitting directly between
 # z_pair and the PAE projection, so it is part of "how PAE is predicted" by any reading, and it
-# is 256 more parameters (0.106% total). Left out here to run the experiment as specified; add
+# is 512 more parameters (0.138% total). Left out here to run the experiment as specified; add
 # it by appending ',pae_ln' to --train-only.
 #
 # THE HYPOTHESIS: training PAE improves less, held-out PAE improves more and stays stable
 # longer. Read against the full-head arm epochs 1-6, which gave train -7.6% and held-out -0.9%.
 #
-# THE RISK, SAID PLAINLY: 13,312 parameters may simply be too few to move ipTM at all, and the
+# THE RISK, SAID PLAINLY: 26,624 parameters may simply be too few to move ipTM at all, and the
 # frozen pairformer was trained jointly with the distance embedding it is now being fed a
 # modified version of. A flat held-out curve here is as consistent with underfitting as with a
 # genuine ceiling, so the training-PAE curve is what distinguishes them: if train PAE also
 # barely moves, the arm underfit rather than generalised.
 #
-# LEARNING RATE IS INHERITED, NOT TUNED. lr 1e-2 was chosen for 19.8M parameters; 13,312 is a
+# LEARNING RATE IS INHERITED, NOT TUNED. lr 1e-2 was chosen for 19.8M parameters; 26,624 is a
 # different optimisation problem and the right rate for it has not been measured. Kept the same
 # so this is ONE variable against the full-head arm -- but if the curve is flat, the lr is the
 # first thing to vary before concluding anything about the method.
@@ -49,7 +49,7 @@
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 LAYERNORM_TYPE=openfold /home/ebrahim/Protenix/.venv/bin/python -I run_logging/launch.py \
-  --cards 4,5,7 --note "POSE-FOCUSED ADAPTATION: train only linear_no_bias_d, linear_no_bias_d_wo_onehot and linear_no_bias_pae -- the complete pose pathway plus the PAE readout, 13,312 parameters, 0.104% of the head. The four pairformer blocks and everything else are frozen, so the pretrained structural representation is preserved and only how geometry enters and how PAE is read out can adapt. Fresh from the shipped head. One variable against the full-head arm; lr 1e-2 is inherited from a 19.8M-parameter problem and is NOT tuned for this one." \
+  --cards 4,5,7 --note "POSE-FOCUSED ADAPTATION: train only linear_no_bias_d, linear_no_bias_d_wo_onehot and linear_no_bias_pae -- the complete pose pathway plus the PAE readout, 26,624 parameters, 0.135% of the head. The four pairformer blocks and everything else are frozen, so the pretrained structural representation is preserved and only how geometry enters and how PAE is read out can adapt. Fresh from the shipped head. One variable against the full-head arm; lr 1e-2 is inherited from a 19.8M-parameter problem and is NOT tuned for this one." \
   -- --train-only 'linear_no_bias_d,linear_no_bias_d_wo_onehot,linear_no_bias_pae' \
   --fold training/fold \
   --crop-margin 10 --crop-contact 5 \

@@ -8,9 +8,9 @@
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 /home/ebrahim/Protenix/.venv/bin/python -I run_logging/plot_full_train.py \
-  "x3k2m4+jhgfxy+2w5to5=full set, lr 1e-2" \
+  "x3k2m4+jhgfxy+2w5to5+ocqtyt=full set, lr 1e-2" \
   --out training/runs/full_train_plot.png
 
 /home/ebrahim/Protenix/.venv/bin/python -I run_logging/results_table.py \
-  x3k2m4+jhgfxy+2w5to5 \
+  x3k2m4+jhgfxy+2w5to5+ocqtyt \
   --out docs/full_train_results.md
