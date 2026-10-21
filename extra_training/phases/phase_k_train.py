@@ -1424,8 +1424,21 @@ def main():
                   "  (--resume-allow-drift accepts everything at once, including what you did not\n"
                   "  intend). Either way it is recorded in resume_drift.json and carried forward in\n"
                   "  every bundle this run writes.")
-        # AN UNEXPLAINED DEVIATION IS THE ONE A LATER READER CANNOT TELL FROM A MISTAKE.
-        if _bad and not a.resume_note.strip():
+        # AN UNEXPLAINED DEVIATION IS THE ONE A LATER READER CANNOT TELL FROM A MISTAKE --
+        # EXCEPT UNDER --loss-only, WHICH IS NOT A DEVIATION AT ALL. A measurement does not
+        # continue the bundle's schedule; it reads the bundle's weights, writes no checkpoint and
+        # takes no step, so there is nothing for a later reader to mistake. The same reasoning
+        # already exempts it from the epoch-count refusal below.
+        #
+        # THIS WAS LEARNED THE EXPENSIVE WAY, on the live run. The epoch-7 held-out pass died
+        # with "accepts 5 changed setting(s) (lr, manifest_digest, pae_scored_pairs,
+        # warmup_steps, world) and --resume-note is empty" -- a held-out fold legitimately
+        # differs from the training bundle in all five. Passing the note from the subprocess
+        # command does NOT fix it: the trainer that spawns that subprocess has its own code
+        # loaded in memory and keeps sending the old argument list, while the subprocess reads
+        # this file fresh from disk. Any mandatory flag added here breaks every RUNNING trainer's
+        # monitor the moment the file is saved. A measurement must never be able to do that.
+        if _bad and not a.resume_note.strip() and not a.loss_only:
             raise SystemExit(
                 f"STOP: this resume accepts {len(_bad)} changed setting(s) "
                 f"({', '.join(sorted(_bad))}) and --resume-note is empty.\n"
