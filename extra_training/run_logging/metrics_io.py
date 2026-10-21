@@ -42,6 +42,7 @@ class Metrics:
         self.resid = {}            # epoch -> {rank: (accounted, wall, residual)}
         self.mem = {}              # epoch -> {rank: (peak_alloc, peak_reserved, ckpt)}
         self.rejected = []         # (path, reason)
+        self.expected_steps = {}   # segment -> (full-epoch steps observed, threshold used)
 
     def epochs(self):
         return sorted(set(self.train_pae) | set(self.val_pae) | set(self.dockq))
@@ -63,8 +64,20 @@ class Metrics:
         return True
 
 
-def load(root, runs, budget, full_steps=285):
-    """Read a '+'-joined lineage. `budget` is the seed budget the DockQ numbers must belong to."""
+def load(root, runs, budget, full_steps=0):
+    """Read a '+'-joined lineage. `budget` is the seed budget the DockQ numbers must belong to.
+
+    `full_steps` is an ABSOLUTE floor; 0 means derive the expectation per segment, which is now
+    the only thing that works. The threshold used to be a flat 285 against a 290-step epoch, and
+    when K-structures-per-step made an epoch 244 steps EVERY epoch of the new segment was
+    silently rejected as partial -- epoch 7 reported a train PAE of "--" with 244 complete steps
+    behind it. Segments do not share a step count, so no single number can serve them.
+
+    Derived as the maximum steps any epoch of that segment reached, which is the full-epoch
+    length by construction, minus 2% of slack. A partial final epoch falls below it and is still
+    dropped, which is the behaviour that matters: an epoch's last step is a remainder and
+    averaging it in is how a 265/290-step read once got published as a finished number.
+    """
     m = Metrics()
     for part in runs.split("+"):
         d = os.path.join(root, part)
@@ -80,11 +93,25 @@ def load(root, runs, budget, full_steps=285):
                     except (ValueError, KeyError, TypeError):
                         continue
                     acc[e][0] += v * n; acc[e][1] += n; acc[e][2] += 1
+            seg_full = max((k for _s, _n, k in acc.values()), default=0)
+            need = full_steps if full_steps else max(1, int(0.98 * seg_full))
+            m.expected_steps[part] = (seg_full, need)
+            # AN EPOCH IS NOT SETTLED UNTIL A LATER ONE EXISTS. A step threshold alone cannot
+            # tell a finished epoch from one a few steps short: epoch 6 of 2w5to5 cleared the
+            # flat 285 at 285/289 steps and its train PAE was published as 2.5301, which became
+            # 2.5270 once the last four steps landed. The same near-miss is possible against any
+            # threshold, so the threshold is no longer the only test.
+            #
+            # Settled means: a LATER epoch of this segment has started, or this segment is not
+            # the newest in the lineage, or the run has written status.json and is over.
+            _last_ep = max(acc) if acc else 0
+            _is_newest = (part == runs.split("+")[-1])
+            _ended = os.path.exists(os.path.join(d, "status.json"))
             for e, (s, n, k) in acc.items():
                 # WEIGHTED BY POSE COUNT, never a mean of per-step means, and a partial epoch is
                 # dropped rather than averaged -- an epoch's last step is a remainder.
                 m.train_steps[e] = m.train_steps.get(e, 0) + k
-                if k >= full_steps and n > 0:
+                if k >= need and n > 0 and (e < _last_ep or not _is_newest or _ended):
                     m.train_pae[e] = s / n
                     m.segment[e] = part
         p = os.path.join(d, "val_loss.csv")
