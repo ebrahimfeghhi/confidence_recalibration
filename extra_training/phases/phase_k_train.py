@@ -270,6 +270,14 @@ def main():
                          "guard only fires while nothing has been masked yet, so after one "
                          "successful unit any number of silent fallbacks can follow, and review "
                          "reproduced exactly that. Use it only when the mismatch is intended.")
+    ap.add_argument("--prefetch-workers", type=int, default=1,
+                    help="HOW MANY crop workers run concurrently. One is not enough: epochs 7 "
+                         "and 8 hit a 100%% prefetch hit rate and still reported 11-16 min per "
+                         "epoch WAITING on the worker, because a single thread needs ~0.7 s per "
+                         "unit against ~0.84 s of GPU and the GIL eats that margin. The crop did "
+                         "not disappear, it moved from the main thread into the wait. Workers "
+                         "take units round-robin, so results arrive out of order and the holding "
+                         "buffer is sized for it.")
     ap.add_argument("--prefetch-units", type=int, default=0,
                     help="prepare this many units ahead on a worker thread, overlapping the CPU "
                          "crop with the GPU's work on the previous unit. 0 disables it. Measured "
@@ -1725,6 +1733,9 @@ def main():
         return ("ok", kt, sl)
 
     def _pf_worker(units):
+        # ROUND-ROBIN SLICES, so worker w takes units[w::W] and the queue is fed in roughly the
+        # order the main loop consumes. Roughly, not exactly: with W workers the arrival order
+        # can run ahead by up to W units, which is what _pf_pending absorbs.
         for t in units:
             if _pf_stop.is_set():
                 break
@@ -1797,7 +1808,11 @@ def main():
                 _pf_stat["wait_s"] += time.perf_counter() - _t_w
                 return v
             _pf_pending[k] = v
-            if len(_pf_pending) > 8:        # bounded: never a silent memory sink
+            # SIZED FOR THE WORKERS, not a flat 8. W workers racing can deliver up to ~W units
+            # ahead of the one wanted, and evicting a result that has not been consumed yet
+            # turns into a miss and an inline recrop -- the very work the prefetch exists to
+            # avoid. Each held slice is ~30 MB, so this is tens of MB per rank.
+            if len(_pf_pending) > max(16, 8 * max(1, a.prefetch_workers)):
                 _pf_pending.pop(next(iter(_pf_pending)))
 
     def _pf_start(units):
@@ -1806,21 +1821,30 @@ def main():
             return
         _pf_stop.clear(); _pf_pending.clear()
         _pf_stat.update(hit=0, miss=0, wait_s=0.0)
-        _pf_q = queue.Queue(maxsize=max(1, a.prefetch_units))
-        _pf_thread = threading.Thread(target=_pf_worker, args=(units,), daemon=True)
-        _pf_thread.start()
+        _w = max(1, a.prefetch_workers)
+        # DEEP ENOUGH FOR EVERY WORKER TO BE IN FLIGHT. At maxsize 1 with W workers, W-1 of them
+        # block on put() and the extra threads buy nothing.
+        _pf_q = queue.Queue(maxsize=max(1, a.prefetch_units) * _w)
+        _pf_thread = [threading.Thread(target=_pf_worker, args=(units[i::_w],), daemon=True)
+                      for i in range(_w)]
+        for _t in _pf_thread:
+            _t.start()
 
     def _pf_end():
         nonlocal _pf_q, _pf_thread
         if _pf_thread is None:
             return
         _pf_stop.set()
-        while True:                          # drain so the worker is not blocked on put()
-            try:
-                _pf_q.get_nowait()
-            except queue.Empty:
-                break
-        _pf_thread.join(timeout=30)
+        for _t in _pf_thread:
+            # DRAIN BETWEEN JOINS, not once before them. A worker blocked on a full put() never
+            # sees the stop flag, so draining once and then joining W threads deadlocks on the
+            # second one as soon as the first refills the queue.
+            while True:
+                try:
+                    _pf_q.get_nowait()
+                except queue.Empty:
+                    break
+            _t.join(timeout=30)
         _pf_thread = None; _pf_q = None; _pf_pending.clear()
 
     def _to_dev(x):
@@ -2983,7 +3007,8 @@ def main():
             # version's 100% miss rate looked identical to no prefetch at all.
             if a.prefetch_units:
                 _pf_n = _pf_stat["hit"] + _pf_stat["miss"]
-                print(f"  [rank {rank}] epoch {ep + 1} prefetch: {_pf_stat['hit']}/{_pf_n} hit "
+                print(f"  [rank {rank}] epoch {ep + 1} prefetch "
+                      f"({max(1, a.prefetch_workers)} worker(s)): {_pf_stat['hit']}/{_pf_n} hit "
                       f"({100.0 * _pf_stat['hit'] / max(1, _pf_n):.1f}%), "
                       f"{_pf_stat['wait_s']/60:.1f} min waiting on the worker", flush=True)
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
