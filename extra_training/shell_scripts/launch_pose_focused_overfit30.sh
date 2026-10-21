@@ -53,18 +53,14 @@
 # 30 structures x floor(10/3) = 90 group(s) / K=6 = 15 step(s)/epoch, 90 unit(s)/rank, 1,350 poses.
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
-BUSY=$(/home/ebrahim/Protenix/.venv/bin/python -I -c "
-import os,glob
-me=os.getpid(); n=0
-for d in glob.glob('/proc/[0-9]*'):
-    pid=int(d.split('/')[-1])
-    if pid==me: continue
-    try: c=open(d+'/cmdline','rb').read().decode('utf8','replace')
-    except Exception: continue
-    if 'phase_k_train.py' in c: n+=1
-print(n)")
+# THE GUARD READS GPU OCCUPANCY, NOT COMMAND-LINE TEXT. A text check cannot work here: the
+# string it searches for is present in the SEARCHING command's own argv, so both `grep` and a
+# /proc cmdline scan report processes that are nothing but the check itself. That is what made
+# the queued launch refuse against an idle box at 07:51:01. cards_busy.py counts compute apps on
+# the cards the three GPU holders sit on, excluding the holders.
+BUSY=$(/home/ebrahim/Protenix/.venv/bin/python -I run_logging/cards_busy.py)
 if [ "$BUSY" != "0" ]; then
-    echo "REFUSING: $BUSY phase_k_train process(es) are live and this wants cards 4,5,7."
+    echo "REFUSING: $BUSY process(es) occupy cards 4,5,7 besides the holders."
     exit 1
 fi
 LAYERNORM_TYPE=openfold /home/ebrahim/Protenix/.venv/bin/python -I run_logging/launch.py \
