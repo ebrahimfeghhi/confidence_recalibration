@@ -41,6 +41,7 @@ import copy
 import queue
 import threading
 import csv
+import datetime as _dt
 import functools
 import glob
 import hashlib
@@ -457,7 +458,7 @@ def main():
                          "from this run's: all four change which poses land in which batch, so the "
                          "optimiser state would belong to a different problem.")
     ap.add_argument("--minimal-items", action="store_true",
-                    help="DO NOT build the full dataset item for each structure. MEASURED "
+                    help="ACCEPTED AND IGNORED -- this is now the only path, and --alignment-preflight is required whether or not it is passed. Kept so the launch scripts that pass it keep working. MEASURED "
                          "2026-10-17 by recording every key access during a real "
                          "calculate_losses call on four structures spanning 128-1,581 tokens and "
                          "2-5 chains: the loss reads nine feature keys and two label keys, and all "
@@ -477,10 +478,22 @@ def main():
                          "it: that check is the one failure that would pair a pose with another "
                          "molecule's label, and skipping it silently is not a trade worth making.")
     ap.add_argument("--resume-allow-drift", action="store_true",
-                    help="accept a resume bundle whose settings differ from this run's, recording "
-                         "what changed. Without it the differences are refused. Use it to FORK a "
-                         "run deliberately -- continuing at a lower lr, say -- never to paper over "
-                         "a mismatch you did not intend.")
+                    help="BLANKET override: accept EVERY setting that differs from the bundle. "
+                         "Prefer --resume-override, which names the fields and so still refuses "
+                         "the difference you did not expect. Both record identically.")
+    ap.add_argument("--resume-override", default="",
+                    help="comma-separated GUARD FIELDS this resume may change, e.g. "
+                         "'lr,warmup_steps'. A difference in any field NOT named here is still "
+                         "refused, which is the whole point: a blanket --resume-allow-drift also "
+                         "accepts the change you did not intend. Naming a field that does not "
+                         "actually differ is an error too -- a stale override silently weakens "
+                         "the guard on the next resume that reuses the command line.")
+    ap.add_argument("--resume-note", default="",
+                    help="why this resume deviates, recorded beside the accepted fields in "
+                         "resume_drift.json and carried forward in every bundle this run writes. "
+                         "Required when --resume-override or --resume-allow-drift accepts "
+                         "anything: an unexplained deviation is the one a later reader cannot "
+                         "tell from a mistake.")
     ap.add_argument("--crop-margin", type=float, default=0.0,
                     help="interface-plus-margin cropping: train on the window within this many "
                          "angstroms of an interface token instead of the whole structure. 0 "
@@ -638,7 +651,6 @@ def main():
     import phase_j_dataset as DS
     import phase_j_build_cache as BC
     import phase_j_rescore_cache as RC
-    from protenix.data.pipeline.dataset import get_datasets
     from protenix.model.loss import ProtenixLoss
     from protenix.utils.permutation.permutation import SymmetricPermutation
 
@@ -1077,7 +1089,11 @@ def main():
     _pae_mask_coverage(flat)
     # THE PREFLIGHT IS REQUIRED, AND IT MUST BE THIS POPULATION'S. A marker from a different
     # manifest proves nothing about the structures this run will train on.
-    if a.minimal_items:
+    # UNCONDITIONAL NOW, NOT GATED ON --minimal-items. The dataset-item path is gone, so the
+    # minimal path is the ONLY path and check_alignment can no longer run per structure. Leaving
+    # this behind the flag meant omitting --minimal-items silently dropped the alignment check
+    # altogether instead of falling back to the per-structure one that used to exist.
+    if True:
         if not a.alignment_preflight:
             raise SystemExit(
                 "STOP: --minimal-items needs --alignment-preflight. Skipping the full dataset item "
@@ -1119,20 +1135,12 @@ def main():
                            a.seq_index, a.msa_root)
     cfg.train_confidence_only = True
     err = os.path.join(ROOT, "training", "prep", "dataset_errors")
-    train_ds, _ = get_datasets(cfg, err)
-    byp = BC.merged_lookup(train_ds)
     perm = SymmetricPermutation(cfg, error_dir=err)
     # THE SAME FINGERPRINT CONTEXT build_cache USES, imported rather than reimplemented. A
     # reimplementation that drifted would reject every label or accept every label; round 8 found
     # the latter, because `fingerprint` was required to be PRESENT and never compared.
     code_fp, loss_fp = BC.fingerprint_context(cfg)
     print(f"fingerprint context: code={code_fp} loss={loss_fp}")
-    # EVERY STRUCTURE IN THE MANIFEST MUST HAVE A DATASET ENTRY, asserted here rather than
-    # discovered per unit and skipped.
-    nodata = sorted({pdb for pdb, _lp, _cands in flat if pdb not in byp})
-    if nodata:
-        raise SystemExit(f"STOP: {len(nodata)} structure(s) in the manifest have no dataset "
-                         f"datapoint: {nodata[:8]}. Their units would be skipped silently.")
 
     opt = torch.optim.AdamW([p for n, p in model.named_parameters() if n in set(trainable)],
                             lr=a.lr, betas=(0.9, 0.95), weight_decay=0.0)
@@ -1145,11 +1153,16 @@ def main():
     # initial weights would contribute a gradient computed at a different point in parameter space
     # and quietly corrupt the averaged step.
     start_epoch, start_step = 0, 0
+    _drift_history = []
     if a.resume:
         if not os.path.exists(a.resume):
             raise SystemExit(f"STOP: no resume bundle at {a.resume}")
         _b = torch.load(a.resume, map_location="cpu", weights_only=False)
         _g = _b.get("guard", {})
+        # INHERITED ON EVERY RESUME, NOT ONLY A DRIFTING ONE. A clean continuation of a run that
+        # was itself a fork is still a fork's descendant, and a chain that dropped its history at
+        # the first non-drifting link would read as pristine two bundles later.
+        _drift_history = list(_g.get("drift_history") or [])
         # WHAT MUST MATCH, in two groups. The first changes which poses land in which batch, so the
         # saved moments describe a different problem. The second changes the objective or the
         # schedule, so continuing would silently blend two experiments. Checking only the first four
@@ -1257,21 +1270,84 @@ def main():
             print(f"    manifest_digest is a hash of the unit list; manifest_skip "
                   f"({_g.get('manifest_skip')!r}) and the selection file determine that list and "
                   f"manifest_skip is compared, so the population is checked by its inputs.")
-        if _bad and not a.resume_allow_drift:
+        # NAMED OVERRIDES, NOT A BLANKET ONE. --resume-allow-drift accepts every difference,
+        # including the one you did not know you had made -- which is how a resume that was meant
+        # to change only the lr can also silently change the crop. --resume-override names the
+        # fields, so an unnamed difference is still refused.
+        _ovr = {f.strip() for f in a.resume_override.split(",") if f.strip()}
+        _unknown_ovr = sorted(_ovr - set(_mine))
+        if _unknown_ovr:
+            raise SystemExit(
+                f"STOP: --resume-override names {len(_unknown_ovr)} field(s) the guard does not "
+                f"have: {_unknown_ovr}.\n"
+                f"  A typo here protects nothing -- the field it was meant to allow stays refused "
+                f"and the one it mistyped is not a field at all.\n"
+                f"  The guard's fields are: {', '.join(sorted(_mine))}")
+        # A STALE OVERRIDE IS ALSO AN ERROR. A name left on the command line after the setting it
+        # covered went back to matching still disarms the guard for that field on the NEXT resume
+        # that reuses the line, and nothing would say so.
+        _stale = sorted(_ovr - set(_bad))
+        if _stale and not a.resume_allow_drift:
+            raise SystemExit(
+                f"STOP: --resume-override names {len(_stale)} field(s) that do not differ from the "
+                f"bundle: {_stale}.\n"
+                f"  Drop them. Left in place they disarm the guard for those fields on the next "
+                f"resume that reuses this command line.")
+        _unnamed = {k: v for k, v in _bad.items() if k not in _ovr}
+        if _unnamed and not a.resume_allow_drift:
             raise SystemExit(
                 "STOP: this resume bundle was written under different settings:\n"
-                + "".join(f"  {k}: bundle {b!r} vs this run {m!r}\n" for k, (b, m) in _bad.items())
+                + "".join(f"  {k}: bundle {b!r} vs this run {m!r}\n"
+                          for k, (b, m) in _unnamed.items())
                 + "  Changes to world/seed/accum/nsample/manifest_digest/crop_size move which poses\n"
                   "  land in which batch, so the saved AdamW moments belong to a different problem.\n"
                   "  Changes to the alphas, drop_pde, clip_norm, lr or warmup change the objective or\n"
                   "  the schedule, so continuing would blend two experiments into one curve.\n"
-                  "  Match the settings, relaunch from scratch, or pass --resume-allow-drift to\n"
-                  "  accept this deliberately -- it is recorded in args.json either way.")
+                  "  Match the settings, relaunch from scratch, or accept these deliberately with\n"
+                  f"    --resume-override {','.join(sorted(_unnamed))} --resume-note '<why>'\n"
+                  "  (--resume-allow-drift accepts everything at once, including what you did not\n"
+                  "  intend). Either way it is recorded in resume_drift.json and carried forward in\n"
+                  "  every bundle this run writes.")
+        # AN UNEXPLAINED DEVIATION IS THE ONE A LATER READER CANNOT TELL FROM A MISTAKE.
+        if _bad and not a.resume_note.strip():
+            raise SystemExit(
+                f"STOP: this resume accepts {len(_bad)} changed setting(s) "
+                f"({', '.join(sorted(_bad))}) and --resume-note is empty.\n"
+                f"  Say why in one line. It is written to resume_drift.json and travels in every "
+                f"bundle this run writes, which is what lets the next reader tell a deliberate "
+                f"fork from a mismatch nobody noticed.")
         if _bad:
-            print("ACCEPTING RESUME DRIFT (--resume-allow-drift); this run is a FORK of the bundle, "
-                  "not a continuation of it:")
+            _via = "--resume-allow-drift" if (a.resume_allow_drift and _unnamed) \
+                else "--resume-override"
+            print(f"ACCEPTING RESUME DRIFT ({_via}); this run is a FORK of the bundle, "
+                  f"not a continuation of it:")
             for k, (b, m) in _bad.items():
-                print(f"  {k}: bundle {b!r} -> this run {m!r}")
+                print(f"  {k}: bundle {b!r} -> this run {m!r}"
+                      + ("" if k in _ovr else "   <- NOT NAMED, accepted by the blanket flag"))
+            print(f"  why: {a.resume_note.strip()}")
+            # CARRIED FORWARD, NOT JUST PRINTED. A fork of a fork must still be readable as one,
+            # so this run's deviation is appended to whatever history the bundle already carried
+            # and the whole chain goes into every bundle this run writes.
+            _drift_history.append({
+                "from_bundle": os.path.abspath(a.resume),
+                "bundle_commit": _g.get("commit", "?"),
+                "bundle_written": _g.get("written", "?"),
+                "bundle_epoch": int(_b["epoch"]), "bundle_step": int(_b["step"]),
+                "accepted_at": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+                "via": _via,
+                "note": a.resume_note.strip(),
+                "fields": {k: {"bundle": b, "this_run": m} for k, (b, m) in _bad.items()},
+                "named": sorted(_ovr & set(_bad)),
+                "unnamed": sorted(_unnamed),
+            })
+            if is_main:
+                _dp = os.path.join(a.out, "resume_drift.json")
+                try:
+                    with open(_dp, "w") as _fh:
+                        json.dump(_drift_history, _fh, indent=1, default=str)
+                    print(f"  recorded -> {_dp}")
+                except Exception as _e:
+                    print(f"  (could not write {_dp}: {type(_e).__name__}: {_e})")
         # NOT UNDER --loss-only. A measurement does not continue the bundle's schedule, it reads
         # the bundle's weights: "the bundle has 141 epochs done and --epochs is 1" is a refusal
         # about training that is not happening, and the epoch counter below is reset to 0 so the
@@ -1328,7 +1404,6 @@ def main():
                 ["grad_norm", "outside_head", "epoch", "step_taken", "nonfinite_grad"]
     # the per-structure item build is the cost --preload-items exists to amortise, so it is measured
     # rather than assumed; reported at the end against the number of structures actually visited.
-    item_build_s = []
     # WHERE AN EPOCH'S WALL CLOCK ACTUALLY GOES, accumulated per rank and printed at every epoch
     # boundary. Always on: a perf_counter pair is ~100 ns against a 0.58 s pose, and the last time
     # this was guessed at rather than measured, 0.67 s of a 3.10 s step attributed to the collective
@@ -1376,7 +1451,6 @@ def main():
             _TN[key] += 1
         _ev_pending.clear()
     nonfinite = {"n": 0}
-    ram_floor = {"hit": False, "n": 0}
     code_drift = {"n": 0, "warned": False}
 
     # ONE FINGERPRINT CACHE, SHARED BY BOTH CALLERS. unit_fingerprint SHAs the trunk (~205 MB),
@@ -1722,60 +1796,19 @@ def main():
         raise SystemExit(f"STOP: {len(ok)} trunks match {lab_p}'s fingerprint: {ok}. Ambiguous "
                          f"provenance is refused rather than resolved arbitrarily.")
 
-    def run_unit(pdb, lab_p, trunk_p, item_cache):
+    def run_unit(pdb, lab_p, trunk_p):
         """Forward + loss for every pose of one unit. Yields (pose_index, loss_tensor, metrics).
 
         Both paths are resolved by the manifest and asserted to exist before the run starts, so
         there is nothing here to skip.
         """
         arm_seed = os.path.basename(lab_p)[:-4]
-        if a.minimal_items:
-            feat_ds = label_dict = label_full = None     # never built; see --minimal-items
-        elif pdb not in item_cache:
-            # RE-CHECKED EVERY TIME, from MemAvailable rather than a remembered number
-            try:
-                _free_gb = next(int(l.split()[1]) for l in open("/proc/meminfo")
-                                if l.startswith("MemAvailable:")) / 1048576.0
-            except Exception:
-                _free_gb = float("inf")
-            try:
-                _rss_gb = int(open(f"/proc/{os.getpid()}/statm").read().split()[1]) * \
-                          os.sysconf("SC_PAGE_SIZE") / 2**30
-            except Exception:
-                _rss_gb = 0.0
-            if (_rss_gb > a.max_rss_gb or _free_gb < a.preload_min_free_gb) and len(item_cache) >= 1:
-                if not ram_floor["hit"]:
-                    print(f"  RAM CAP: this process holds {_rss_gb:.0f} GB (cap "
-                          f"{a.max_rss_gb:.0f}), {_free_gb:.0f} GB free (floor "
-                          f"{a.preload_min_free_gb:.0f}). The item cache stops "
-                          f"growing at {len(item_cache)} structure(s) and evicts from here on; "
-                          f"structures will be rebuilt rather than held. Nothing fails.")
-                    ram_floor["hit"] = True
-                ram_floor["n"] += 1
-                # EVICT ONE, THEN RE-MEASURE. This loop was
-                #     while len(item_cache) >= max(1, len(item_cache)): pop()
-                # and max(1, n) == n for every n >= 1, so the condition was ALWAYS true and it
-                # emptied the whole cache -- 170 items to 0, as review reproduced. Every structure
-                # then had to be rebuilt, the cache refilled, the cap was hit again, and the run
-                # thrashed for the rest of its epochs. Dropping ONE item frees about one item of
-                # memory, which is what the next item needs, and this check runs again before the
-                # one after that, so the cache settles at what fits instead of collapsing. FIFO,
-                # matching the eviction below.
-                if item_cache:
-                    item_cache.pop(next(iter(item_cache)))
-            # EVICT ONLY WHEN THE BUDGET IS REACHED. Holding one item at a time means every structure
-            # is rebuilt every epoch, which the numbers above make the dominant cost of a multi-epoch
-            # run. FIFO rather than LRU because --shuffle visits each structure's units consecutively,
-            # so recency carries no information worth tracking.
-            cap = max(1, a.preload_items)
-            while len(item_cache) >= cap:
-                item_cache.pop(next(iter(item_cache)))
-            _t = time.time()
-            it = train_ds[byp[pdb][0]]
-            item_cache[pdb] = (it["input_feature_dict"], it["label_dict"], it["label_full_dict"])
-            item_build_s.append(time.time() - _t)
-        if not a.minimal_items:
-            feat_ds, label_dict, label_full = item_cache[pdb]
+        # THE FULL DATASET ITEM IS NEVER BUILT, AND NOW CANNOT BE. The loss reads nine feature
+        # keys and two label keys and all eleven live in the cached label npz -- 0.11 MiB against
+        # the item's ~518 MB, bit-identical on 50 of 50 comparisons. It was already dead code
+        # under --minimal-items; the K-structures-per-step order makes it unrunnable besides,
+        # because every rank now touches EVERY structure each epoch, so an item cache would need
+        # all 488 resident per rank where 164 already breached the box's free-RAM floor.
         _t_lab = time.perf_counter()
         lab = np.load(lab_p, allow_pickle=True)
         _tick("label_open", _t_lab)
@@ -1818,11 +1851,7 @@ def main():
         # check_alignment compares against the dataset's -- it calls np.asarray, so handing it the
         # device tensors raises "can't convert cuda:0 device type tensor to numpy". load_unit gives
         # the device tensors the head consumes, and reverses the bf16-as-uint16 storage.
-        if not a.minimal_items:
-            # check_alignment needs the dataset's features, so on the minimal path it has already
-            # run, once per structure, in the preflight asserted above.
-            _z, feat_npz, _poses_np = BC.load_trunk(trunk_p)
-            BC.check_alignment(feat_npz, feat_ds, pdb)
+        # check_alignment ran once per structure in the preflight --minimal-items requires.
         # THE CROP, WHEN ASKED FOR. The head's tensors and the loss's features come out of
         # slice_cached_unit together, from one pair of masks, so there is no path on which one side
         # is cropped and the other is not -- the misalignment the re-indexing gate exists to catch.
@@ -1907,22 +1936,10 @@ def main():
             # pae_rep_atom_mask, frame_atom_index, has_frame and the rest -- so a full-size copy
             # here against a cropped prediction is the silent misalignment, not a shape error.
             feat_cache = crop_feat_loss
-        elif a.minimal_items:
+        else:
             # ONE SHARED BUILDER, so this and the equivalence gate cannot drift apart -- two
             # readers of one record diverging is how the reporting bug shipped twice.
             feat_cache, _ = BC.minimal_loss_inputs(lab, 0, dev, torch)
-        else:
-            feat_live = to_dev({k: (v if torch.is_tensor(v) else torch.as_tensor(np.asarray(v)))
-                                for k, v in feat_ds.items()
-                                if torch.is_tensor(v) or isinstance(v, (np.ndarray, int, float))})
-            for k, v in feat_ds.items():
-                if k not in feat_live:
-                    feat_live[k] = v
-            # the stored loss features are the ones the label was built with
-            feat_cache = dict(feat_live)
-            for k in BC.LOSS_FEATS:
-                v = np.asarray(lab[f"lf_{k}"])      # presence asserted above
-                feat_cache[k] = torch.as_tensor(v).to(dev) if v.dtype != object else lab[f"lf_{k}"]
 
         n_pose = poses.shape[0] if hasattr(poses, "shape") else len(poses)
         # FROM THE HEAD'S FEATURES, which carry asym_id on both paths. feat_cache does not, on the
@@ -2000,21 +2017,8 @@ def main():
                 _cc, _cm = crop_labels
                 ld = {"coordinate": torch.as_tensor(_cc[i], dtype=torch.float32, device=dev),
                       "coordinate_mask": torch.as_tensor(_cm[i].astype(np.float32), device=dev)}
-            elif a.minimal_items:
-                _, ld = BC.minimal_loss_inputs(lab, i, dev, torch)
             else:
-                ld = {}
-                for _k, _v in label_dict.items():
-                    if torch.is_tensor(_v):
-                        ld[_k] = _v.to(dev)
-                    elif isinstance(_v, np.ndarray) and _v.dtype != object:
-                        ld[_k] = torch.as_tensor(_v).to(dev)
-                    else:
-                        ld[_k] = _v
-                ld["coordinate"] = torch.as_tensor(lab["label_coordinate"][i], dtype=torch.float32,
-                                                   device=dev)
-                ld["coordinate_mask"] = torch.as_tensor(
-                    lab["label_coordinate_mask"][i].astype(np.float32), device=dev)
+                _, ld = BC.minimal_loss_inputs(lab, i, dev, torch)
             _set_pae_mask(pdb, feat_head["asym_id"], feat_cache["has_frame"])
             try:
                 cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
@@ -2073,7 +2077,7 @@ def main():
                 # AT A CONSISTENT BOUNDARY: after backward, and after the pose's tensors are gone.
                 # allocated = live tensors. reserved = what the allocator holds, which is what
                 # nvidia-smi shows -- which is why a high nvidia-smi number proves nothing by itself.
-                print(f"MEM {pdb}/{arm_seed} pose {i} tokens {n_tok} items {len(item_cache)}: "
+                print(f"MEM {pdb}/{arm_seed} pose {i} tokens {n_tok}: "
                       f"allocated {torch.cuda.memory_allocated(dev) / 2**30:.2f} GB  "
                       f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f}  "
                       f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f}", flush=True)
@@ -2196,7 +2200,15 @@ def main():
         out = os.path.join(a.out, f"val_loss_ep{epoch}")
         labels = a.val_loss_labels or os.path.join(a.val_loss_fold, "labels")
         cmd = [sys.executable, "-I", os.path.abspath(__file__),
+               # A MEASUREMENT IS NOT A FORK, but it resumes the bundle with a different fold,
+               # selection, seed range and epoch count, so every one of those reads as drift.
+               # --resume-note is mandatory whenever drift is accepted, and the subprocess cannot
+               # be the one exception -- a silent exemption is how the val monitor would die on
+               # the next restart with a message about a note nobody could have passed.
                "--loss-only", "--resume", bundle, "--resume-allow-drift",
+               "--resume-note", (f"held-out PAE measurement of {os.path.basename(bundle)} at "
+                                 f"epoch {epoch}; --loss-only reads the weights and writes no "
+                                 f"checkpoint, so the bundle's schedule is not continued"),
                "--fold", a.val_loss_fold, "--labels", labels,
                "--manifest-selection", a.val_loss_selection,
                "--alignment-preflight", a.val_loss_preflight, "--minimal-items",
@@ -2475,7 +2487,7 @@ def main():
     def train_loop(steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
         for g in opt.param_groups:
             g["lr"] = lr
-        rows, t0, step, n_in_accum, item_cache = [], time.time(), from_step, 0, {}
+        rows, t0, step, n_in_accum = [], time.time(), from_step, 0
         ep_loss = {"sum": 0.0, "n": 0}
         stop_state = {"best": float("inf"), "bad": 0}
         opt.zero_grad(set_to_none=True)
@@ -2586,7 +2598,8 @@ def main():
                                  if n in set(trainable)},
                         "opt": opt.state_dict(),
                         "epoch": epochs_done, "step": step_now,
-                        "guard": {"world": world, "seed": a.seed, "accum": a.accum,
+                        "guard": {"drift_history": _drift_history,
+                                  "world": world, "seed": a.seed, "accum": a.accum,
                                   "nsample": a.nsample, "lr": a.lr,
                                   "warmup_steps": a.warmup_steps, "epochs": a.epochs,
                                   "manifest_skip": a.manifest_skip,
@@ -2683,7 +2696,7 @@ def main():
                         pass
                     _tick("prefetch_issue", _t_pf)
                     _T["prefetch_issue"] -= _T["fingerprint_hash"] - _h0
-                for _m in run_unit(pdb, lab_p, trunk_p, item_cache):
+                for _m in run_unit(pdb, lab_p, trunk_p):
                     i, met = _m["pose"], _m      # floats only; the tensors are already freed
                     cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
                     for g in opt.param_groups:
@@ -3067,21 +3080,10 @@ def main():
                       f"absent from the pool, or no scored pair survived the crop. Those poses "
                       f"trained the ungraded blocks too.")
 
-    if ram_floor["n"]:
-        print(f"\nRAM FLOOR was hit on {ram_floor['n']} structure(s): the item cache was capped "
-              f"below --preload-items to stay above {a.preload_min_free_gb:.0f} GB free, so those "
-              f"structures were rebuilt rather than held.")
     if code_drift["n"]:
         print(f"\nCODE DRIFT ACCEPTED on {code_drift['n']} unit(s) via --allow-code-drift. The "
               f"labels' data provenance matched in every field; only the builder's source hash "
               f"differed. This run is NOT reproducible from a clean checkout of that code.")
-    if item_build_s:
-        import statistics as _st
-        print(f"\ndataset items built: {len(item_build_s)}, median {_st.median(item_build_s):.2f}s, "
-              f"total {sum(item_build_s)/60:.1f} min"
-              + (f" -- --preload-items {a.preload_items} held them, so later epochs pay none of this"
-                 if a.preload_items > 1 else
-                 f" -- --preload-items is {a.preload_items}, so every epoch pays this again"))
     # RANK 0 WRITES THE CHECKPOINT. Every rank holds the same parameters after the all-reduce, so
     # the content would be identical, but two processes writing one path concurrently can interleave
     # and leave a truncated file -- the smoke test showed both ranks reporting the same save.
