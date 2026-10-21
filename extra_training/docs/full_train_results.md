@@ -1,6 +1,6 @@
 # Full training set: the four metrics, per epoch
 
-Generated 2026-10-21 03:50 PDT by `run_logging/results_table.py` from `x3k2m4+jhgfxy+2w5to5+ocqtyt`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
+Generated 2026-10-21 12:32 PDT by `run_logging/results_table.py` from `x3k2m4+jhgfxy+2w5to5+ocqtyt`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
 
 ## The lineage is one experiment in three parts
 
@@ -49,6 +49,10 @@ Budget 30, 18 interfaces, 10 validation structures. **Not** the budget-100 figur
 | 20 | `ocqtyt` | yes | 2.1756 | 2.7585 | -0.2171 | 0.3372 | +0.0463 | 0.6111 | +0.0555 |
 | 21 | `ocqtyt` | yes | 2.1639 | 2.8251 | -0.1505 | 0.2809 | -0.0100 | 0.5556 | +0.0000 |
 | 22 | `ocqtyt` | yes | 2.1474 | 2.8566 | -0.1190 | 0.3057 | +0.0148 | 0.5556 | +0.0000 |
+| 23 | `ocqtyt` | yes | 2.1305 | 2.8919 | -0.0837 | 0.3236 | +0.0327 | 0.6111 | +0.0555 |
+| 24 | `ocqtyt` | yes | 2.1238 | 2.8160 | -0.1596 | 0.3282 | +0.0373 | 0.6111 | +0.0555 |
+| 25 | `ocqtyt` | yes | 2.1152 | 2.9051 | -0.0705 | 0.2982 | +0.0073 | 0.5556 | +0.0000 |
+| 26 | `ocqtyt` | yes | 2.1007 | 3.0841 | +0.1085 | 0.3477 | +0.0568 | 0.6111 | +0.0555 |
 
 Held-out PAE is a loss, so **lower is better** and a negative delta is an improvement. DockQ and frac-acceptable are the opposite.
 
@@ -86,6 +90,10 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 | 20 | `ocqtyt` | 1 | 33.8 | 19.5m | 14.3m | 65.70 | 66.47 | None |
 | 21 | `ocqtyt` | 2 | 37.2 | 26.5m | 10.8m | 65.70 | 66.47 | None |
 | 22 | `ocqtyt` | 2 | 35.7 | 25.2m | 10.5m | 65.70 | 66.47 | None |
+| 23 | `ocqtyt` | 2 | 35.1 | 24.2m | 10.9m | 65.70 | 66.47 | None |
+| 24 | `ocqtyt` | 2 | 35.0 | 23.9m | 11.1m | 65.70 | 66.47 | None |
+| 25 | `ocqtyt` | 2 | 32.7 | 23.2m | 9.5m | 65.70 | 66.47 | None |
+| 26 | `ocqtyt` | 2 | 34.2 | 22.8m | 11.5m | 65.70 | 66.47 | None |
 
 **Wall, accounted and residual all come from the SAME rank** — the one with the longest wall clock — so accounted + residual equals wall. Taking each column's maximum independently produced a row that did not add up under a heading that said 'worst rank'. Memory stays an across-rank maximum on purpose: there the question is whether ANY rank came near the card.
 
@@ -93,21 +101,21 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 
 ### Bucket detail, per rank
 
-**epoch 20** (`ocqtyt`)
+**epoch 24** (`ocqtyt`)
 
-- rank 0: apply_step_total 0.7m/244  crop_slice 1.5m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.4m/244  pose_total 16.4m/7320  prefetch_issue 0.0m/1463
-- rank 1: apply_step_total 0.7m/244  crop_slice 1.5m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.8m/244  pose_total 16.4m/7320  prefetch_issue 0.0m/1463
-- rank 2: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.8m/7320  grad_collective_plus_wait 0.5m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 3.8m/244  pose_total 16.5m/7320  prefetch_issue 0.0m/1463
+- rank 0: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.4m/244  pose_total 16.3m/7320  prefetch_issue 0.0m/1463
+- rank 1: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.6m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.4m/244  pose_total 16.2m/7320  prefetch_issue 0.0m/1463
+- rank 2: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.5m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 5.2m/244  pose_total 16.4m/7320  prefetch_issue 0.0m/1463
 
-**epoch 21** (`ocqtyt`)
+**epoch 25** (`ocqtyt`)
 
-- rank 0: apply_step_total 0.7m/244  crop_slice 1.5m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.4m/244  pose_total 16.4m/7320  prefetch_issue 0.0m/1463
-- rank 1: apply_step_total 0.7m/244  crop_slice 1.5m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.8m/244  pose_total 16.3m/7320  prefetch_issue 0.0m/1463
-- rank 2: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.5m/7320  gpu_forward 5.8m/7320  grad_collective_plus_wait 0.5m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 7.6m/244  pose_total 16.5m/7320  prefetch_issue 0.0m/1463
+- rank 0: apply_step_total 0.6m/244  crop_slice 1.7m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.3m/244  pose_total 16.3m/7320  prefetch_issue 0.0m/1463
+- rank 1: apply_step_total 0.7m/244  crop_slice 1.7m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.4m/244  pose_total 16.3m/7320  prefetch_issue 0.0m/1463
+- rank 2: apply_step_total 0.6m/244  crop_slice 1.7m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 4.5m/244  pose_total 16.4m/7320  prefetch_issue 0.0m/1463
 
-**epoch 22** (`ocqtyt`)
+**epoch 26** (`ocqtyt`)
 
-- rank 0: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.3m/244  pose_total 16.3m/7320  prefetch_issue 0.0m/1463
-- rank 1: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.5m/244  pose_total 16.3m/7320  prefetch_issue 0.0m/1463
-- rank 2: apply_step_total 0.7m/244  crop_slice 1.7m/1464  cropped_tokens mean 326  gpu_backward 12.5m/7320  gpu_forward 5.8m/7320  grad_collective_plus_wait 0.5m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 6.4m/244  pose_total 16.5m/7320  prefetch_issue 0.0m/1463
+- rank 0: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.4m/244  pose_total 16.3m/7320  prefetch_issue 0.0m/1463
+- rank 1: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.4m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 0.3m/244  pose_total 16.3m/7320  prefetch_issue 0.0m/1463
+- rank 2: apply_step_total 0.7m/244  crop_slice 1.6m/1464  cropped_tokens mean 326  gpu_backward 12.4m/7320  gpu_forward 5.7m/7320  grad_collective_plus_wait 0.5m/244  label_open 0.0m/1464  loss_feature_prep 0.0m/1464  loss_stats_collective_plus_wait 4.1m/244  pose_total 16.4m/7320  prefetch_issue 0.0m/1463
 

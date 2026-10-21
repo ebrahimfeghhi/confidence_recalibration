@@ -107,11 +107,40 @@ def load(root, runs, budget, full_steps=0):
             _last_ep = max(acc) if acc else 0
             _is_newest = (part == runs.split("+")[-1])
             _ended = os.path.exists(os.path.join(d, "status.json"))
+            # AN INDEPENDENT COUNT OF WHERE EACH EPOCH ENDED, so the newest epoch need not be
+            # withheld. val_loss.csv's `step` is CUMULATIVE optimiser steps at the end of that
+            # epoch, written by the boundary monitor and not derived from the trajectory at all --
+            # so step(e) - step(e-1) is how many steps epoch e should contain, and an epoch with
+            # all of them is finished whether or not a later epoch has started. This is the exact
+            # test the 0.98 threshold could not be: epoch 6 of 2w5to5 had 285 of 289 and cleared
+            # 0.98, and would fail this.
+            _step_at = {}
+            _vl = os.path.join(d, "val_loss.csv")
+            if os.path.exists(_vl):
+                with open(_vl) as fh:
+                    for r in csv.DictReader(fh):
+                        try:
+                            _step_at[int(r["epoch"])] = int(r["step"])
+                        except (ValueError, KeyError, TypeError):
+                            continue
+
+            def _expected(e, _sa=_step_at):
+                """Steps epoch e should hold, or None when it cannot be known."""
+                if e not in _sa:
+                    return None
+                if e - 1 in _sa:
+                    return _sa[e] - _sa[e - 1]
+                # No predecessor: only epoch 1 of a FRESH segment starts from step 0. A resumed
+                # segment's first epoch starts from the bundle's step, which is not recorded here.
+                return _sa[e] if e == 1 else None
+
             for e, (s, n, k) in acc.items():
                 # WEIGHTED BY POSE COUNT, never a mean of per-step means, and a partial epoch is
                 # dropped rather than averaged -- an epoch's last step is a remainder.
                 m.train_steps[e] = m.train_steps.get(e, 0) + k
-                if k >= need and n > 0 and (e < _last_ep or not _is_newest or _ended):
+                _exp = _expected(e)
+                _whole = _exp is not None and k >= _exp
+                if k >= need and n > 0 and (_whole or e < _last_ep or not _is_newest or _ended):
                     m.train_pae[e] = s / n
                     m.segment[e] = part
         p = os.path.join(d, "val_loss.csv")
