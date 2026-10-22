@@ -131,6 +131,17 @@ def main():
                          "2,000 steps of a 100,000-step run (2%%). At batch 256 three epochs of our "
                          "cache is 292 optimiser steps, so 2,000 would be 685%% of the run and the "
                          "learning rate would never reach its set value. 20 is 6.8%%.")
+    ap.add_argument("--l2-sp", type=float, default=0.0, metavar="LAMBDA",
+                    help="L2-SP: add LAMBDA * ||W - W_shipped||^2 to the loss, penalising DISTANCE "
+                         "FROM THE SHIPPED HEAD rather than distance from zero. Plain weight decay "
+                         "pulls toward zero, which is not a prior anyone holds about this head -- "
+                         "the shipped weights are. This is the continuous form of --train-only and "
+                         "--lora-rank: those forbid motion outright, this prices it. The anchor is "
+                         "written to <out>/l2sp_anchor.pt on a fresh run and read back on a resume, "
+                         "because a resumed run's current weights are NOT the shipped ones. "
+                         "SCALE: the full head drifted ||dW||^2 = 67,052 over 30 epochs (mdv9x7), "
+                         "so LAMBDA 1e-5 prices that drift at ~0.67 against a PAE loss near 2.0. "
+                         "LAMBDA IS NOT TUNED; it is the hyperparameter of the experiment.")
     ap.add_argument("--train-only", default="",
                     help="SELECTIVE FINETUNING: comma-separated REGEXES matched against parameter "
                          "names inside the confidence head; only matching tensors train and "
@@ -1579,6 +1590,40 @@ def main():
                   f"continuing at epoch {start_epoch + 1}/{max(1, math.ceil(a.epochs))}")
             print(f"  bundle commit {_g.get('commit', '?')[:8]}, written {_g.get('written', '?')}")
 
+    # THE L2-SP ANCHOR IS THE SHIPPED HEAD, AND ONLY A FRESH RUN STILL HOLDS IT. Set up AFTER the
+    # resume block on purpose: at this point a fresh run's weights are untouched (init == shipped)
+    # and can be snapshotted, while a resumed run's weights are 60 epochs of training away from
+    # shipped and must read the anchor back from disk instead.
+    _l2sp_anchor, _l2sp_params = None, []
+    _l2sp_drift = {"sq": 0.0, "n": 0}
+    if a.l2_sp:
+        _anchor_p = os.path.join(a.out, "l2sp_anchor.pt")
+        _tset_sp = set(trainable)
+        _l2sp_params = [(n, pp) for n, pp in model.named_parameters() if n in _tset_sp]
+        if a.resume:
+            if not os.path.exists(_anchor_p):
+                raise SystemExit(
+                    f"STOP: --l2-sp resumed but {_anchor_p} is missing. The anchor is the SHIPPED "
+                    f"head; this run's weights are not it, so there is nothing to penalise "
+                    f"distance from. Copy the anchor from the original run's directory.")
+            _a_sd = torch.load(_anchor_p, map_location="cpu", weights_only=True)
+            if is_main:
+                print(f"  --l2-sp {a.l2_sp:g}: anchor READ from {_anchor_p} "
+                      f"({len(_a_sd)} tensor(s)) -- a resumed run's weights are not the shipped ones")
+        else:
+            _a_sd = {n: pp.detach().float().cpu().clone() for n, pp in _l2sp_params}
+            if is_main:
+                torch.save(_a_sd, _anchor_p)
+                print(f"  --l2-sp {a.l2_sp:g}: anchor SNAPSHOT at init ({len(_a_sd)} tensor(s)) "
+                      f"-> {_anchor_p}. Penalty is LAMBDA * ||W - W_shipped||^2; at the drift the "
+                      f"full head showed over 30 epochs (67,052) that prices to "
+                      f"{a.l2_sp * 67051.81:.3f} against a PAE loss near 2.0.")
+        _missing_sp = [n for n, _pp in _l2sp_params if n not in _a_sd]
+        if _missing_sp:
+            raise SystemExit(f"STOP: --l2-sp anchor is missing {len(_missing_sp)} trainable "
+                             f"tensor(s), e.g. {_missing_sp[:3]}")
+        _l2sp_anchor = {n: _a_sd[n].to(pp.device, pp.dtype) for n, pp in _l2sp_params}
+
     # PERSIST THE TRAJECTORY PER STEP, not at the end. A run that dies at step 900 of 1000 must still
     # be analysable, and a loss curve is the only way to see a learning rate that is wrong.
     # CROP BOOKKEEPING, counted rather than assumed. An arm whose crop silently failed to apply on
@@ -2359,6 +2404,19 @@ def main():
             # pose_total totals printed below are what separates them -- their spread IS the
             # straggler share.
             _tick("grad_collective_plus_wait", _t0)
+        # L2-SP PENALTY, ADDED ONCE PER STEP. After the all-reduce, because that SUMS each rank's
+        # gradient and adding before it would multiply the penalty by the world size; before the
+        # clip, because the clip is meant to bound the total gradient actually applied.
+        # d/dW [ lambda * ||W - W0||^2 ] = 2 * lambda * (W - W0).
+        if a.l2_sp and _l2sp_anchor is not None:
+            with torch.no_grad():
+                _sq = 0.0
+                for _n_sp, _p_sp in _l2sp_params:
+                    _d_sp = _p_sp.detach() - _l2sp_anchor[_n_sp]
+                    _p_sp.grad.add_(_d_sp, alpha=2.0 * a.l2_sp)
+                    _sq += float((_d_sp * _d_sp).sum())
+                _l2sp_drift["sq"] = _sq
+                _l2sp_drift["n"] += 1
         try:
             gn = float(torch.nn.utils.clip_grad_norm_(params, a.clip_norm,
                                                       error_if_nonfinite=True))
@@ -3078,6 +3136,13 @@ def main():
                       f"({max(1, a.prefetch_workers)} worker(s)): {_pf_stat['hit']}/{_pf_n} hit "
                       f"({100.0 * _pf_stat['hit'] / max(1, _pf_n):.1f}%), "
                       f"{_pf_stat['wait_s']/60:.1f} min waiting on the worker", flush=True)
+            # THE DRIFT IS THE EXPERIMENT under --l2-sp, so it is reported, not inferred. The
+            # full head reached ||dW||^2 = 67,052 unconstrained over 30 epochs; this says where
+            # the penalised run actually sits.
+            if a.l2_sp and _l2sp_drift["n"]:
+                print(f"  [rank {rank}] epoch {ep + 1} l2-sp: ||W-W0||^2 = "
+                      f"{_l2sp_drift['sq']:.1f}, penalty = {a.l2_sp * _l2sp_drift['sq']:.4f} "
+                      f"(unconstrained full head reached 67,052 by epoch 30)", flush=True)
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
                   f"residual {(_ep_s - _acc)/60:.1f}m "
                   f"(exclusive buckets only; gpu_* overlap pose_total)", flush=True)
