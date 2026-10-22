@@ -60,7 +60,7 @@ LAYERNORM_TYPE=openfold /home/ebrahim/Protenix/.venv/bin/python -I run_logging/l
   --minimal-items --alignment-preflight training/overfit30/alignment_preflight.json \
   --manifest-selection training/overfit30/structures.csv \
   --manifest-skip '9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3' \
-  --epochs 100 --lr 0.01 --warmup-steps 20 --seed 0 --accum 85 --nsample 5 \
+  --epochs 50 --lr 0.01 --warmup-steps 20 --seed 0 --accum 85 --nsample 5 \
   --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0 --crop-size 3400 \
   --save-every 15 \
   --pae-scored-pairs training/overfit30/pool.csv --pae-only \

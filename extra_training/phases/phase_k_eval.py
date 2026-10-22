@@ -425,6 +425,16 @@ def main():
                     help="the checkpoint was trained with weight sharing across injected blocks. "
                          "The tensor COUNT differs between tied and untied, so this must match "
                          "how the head was trained or the load fails.")
+    ap.add_argument("--pose-perblock-share", action="store_true",
+                    help="the checkpoint was trained with --pose-perblock-share: block 0's OWN "
+                         "pretrained injection (linear_no_bias_d AND linear_no_bias_d_wo_onehot) "
+                         "re-applied at every block, with ZERO extra tensors. The tensor COUNT is "
+                         "therefore IDENTICAL to a stock head, so unlike the other pathway flags "
+                         "this one cannot be caught by the checkpoint-load guard -- omit it and "
+                         "the checkpoint loads cleanly and is scored with the pose injected at "
+                         "ONE depth instead of four, silently and wrongly. phase_k_train passes "
+                         "it automatically. Not accepting it is what made arm wd656y exit 1 after "
+                         "its first epoch: the flag was forwarded to a parser that did not know it.")
     ap.add_argument("--no-self-check", action="store_true")
     ap.add_argument("--allow-roles-fallback", action="store_true",
                     help="use chain_roles.csv when OST's per-pose mapping is unusable. OFF by "
@@ -560,7 +570,11 @@ def main():
     # tensors the stock model does not, and the guard below refuses any tensor the model lacks.
     if a.pose_perblock:
         import pose_perblock
-        pose_perblock.install(model, tied=a.pose_perblock_tied)
+        pose_perblock.install(model, tied=a.pose_perblock_tied,
+                              share_pretrained=a.pose_perblock_share)
+    elif a.pose_perblock_share:
+        raise SystemExit("STOP: --pose-perblock-share without --pose-perblock changes nothing, "
+                         "and scoring would silently use one-depth injection.")
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu")
         have = dict(model.named_parameters())
@@ -595,8 +609,10 @@ def main():
                 + f"  The head has {len(head_names)} trainable tensor(s); the checkpoint has "
                   f"{len(sd)}.\n"
                   f"  Pass the same pathway flags the run trained with -- --frame-direction, "
-                  f"--pose-perblock, --pose-perblock-tied -- or the pathway is scored as though "
-                  f"it were absent.")
+                  f"--pose-perblock, --pose-perblock-tied, --pose-perblock-share -- or the "
+                  f"pathway is scored as though it were absent. NOTE "
+                  f"--pose-perblock-share adds NO tensors, so this guard cannot catch its "
+                  f"absence: the load succeeds and the score is simply wrong.")
         with torch.no_grad():
             for k, v in sd.items():
                 have[k].data.copy_(v.to(have[k].device))

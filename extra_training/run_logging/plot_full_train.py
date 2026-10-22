@@ -105,11 +105,27 @@ def main():
         M = MIO.load(a.root, rid, a.budget, a.full_steps)
         for _p, _why in M.rejected:
             notes.append(f"REJECTED {os.path.basename(_p)}: {_why}")
-        _te = sorted(M.train_pae)
+        # PANELS 1 AND 2 SHARE ONE EPOCH SET, so a train point and a held-out point always refer
+        # to the same head. They used to be drawn independently, which made the counts differ for
+        # reasons that are bookkeeping rather than science: ggfhj5's epoch 1 has a train PAE but
+        # no held-out point (the val monitor refused a --train-only bundle that day), and the
+        # newest epoch can have a held-out point written at the boundary before its train PAE is
+        # declared whole. Reading "train kept falling while held-out flattened" off two curves
+        # with different support is how a bookkeeping gap turns into a claim about the model.
+        _both = sorted(set(M.train_pae) & set(M.val_pae))
+        _dropped_t = sorted(set(M.train_pae) - set(_both))
+        _dropped_v = sorted(set(M.val_pae) - set(_both))
+        if _dropped_t or _dropped_v:
+            notes.append(
+                f"{label.split('=')[0] if '=' in label else label}: plotting the "
+                f"{len(_both)} epoch(s) with BOTH metrics"
+                + (f"; train-only at {_dropped_t}" if _dropped_t else "")
+                + (f"; held-out-only at {_dropped_v}" if _dropped_v else ""))
+        _te = _both
         tx, ty = _with_ep0(_te, [M.train_pae[e] for e in _te], a.shipped_train_pae)
         if tx:
             axes[0].plot(tx, ty, marker="o", ms=4.5, lw=1.8, color=c, label=label)
-        _ve = sorted(M.val_pae)
+        _ve = _both
         vx = _ve
         vy = [M.val_pae[e][0] for e in _ve]
         vn = [M.val_pae[e][1] for e in _ve]
