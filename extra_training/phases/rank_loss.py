@@ -12,12 +12,36 @@ the big arms to rank worse.
 So this trains the ordering directly: for two poses of one interface, the one with the higher DockQ
 should get the higher ipTM.
 
-    L = sum_ij w_ij * softplus(-(s_i - s_j) * sign(dq_i - dq_j)) / sum_ij w_ij
+    L = - sum_ij (s_i - s_j)(dq_i - dq_j) / sum_ij |dq_i - dq_j|
 
-over unordered pose pairs of the same interface, s = chain_pair_iptm, dq = DockQ. With
---rank-weight-by-gap the weight is |dq_i - dq_j|, so separating 0.1 from 0.7 matters more than
-separating 0.41 from 0.43 -- which is what the metric cares about, since frac_acc is a threshold at
-0.23 and mean DockQ is driven by the big misses.
+over unordered pose pairs of the same interface, s = chain_pair_iptm, dq = DockQ. It is the
+normalised covariance between score gaps and quality gaps: negative when the head's ordering leans
+the right way.
+
+WHY LINEAR AND NOT softplus. The first version used softplus(-(s_i - s_j) * sign(dq_i - dq_j)),
+the RankNet logistic loss. Measured on 5,400 real within-seed pairs, that was a mistake of units:
+the median |ipTM gap| is 0.0081 and the 90th percentile 0.034, while softplus only bends over
+arguments of order 1. At a margin of 0.02 the gradient magnitude is 0.495 for a correct pair and
+0.505 for an inverted one -- indistinguishable. Every property softplus is chosen for (saturating
+on pairs already right, capping badly inverted ones) was inactive, and the loss was a straight
+line through ln2 with the curvature sitting entirely outside the data. So it is written as the
+straight line it already was.
+
+A multiplier would move the bend onto the data (sigma ~ 30 stops pushing at a gap of 0.1, just
+above the 90th percentile). Per-group standardisation would do it adaptively, and was rejected:
+the implied multiplier ranges 12 to 1,262 across groups because the divisor is a standard
+deviation of five points, so it amplifies hardest exactly where the head has no opinion.
+
+WHAT LINEAR GIVES UP is any stopping point -- it pays to widen the gap forever. Two things bound
+the damage: ipTM is structurally in [0,1], and the per-pose gradients sum to zero, so the group
+MEAN is never pushed, only the spread. The spread is therefore the thing to watch, and it is
+logged per epoch; if it inflates, sigma and softplus come back.
+
+THE DockQ GAP IS THE WEIGHT, and with a linear term it folds in exactly: w_ij * sign(dq_i - dq_j)
+IS (dq_i - dq_j). So the weighted loss needs no sign function. It also fixes a real defect of the
+unweighted form, whose per-pose gradient is the pose's RANK: two poses at DockQ 0.136 and 0.124
+are near-identical in quality but the rank form pushes the last-placed one twice as hard. The
+weighted form pushes each pose by (dq_i - mean dq), which treats them alike.
 
 THE MEMORY CONSTRAINT IS WHY THIS IS TWO PASSES. phase_k_train runs forward AND backward one pose
 at a time on purpose: two fp32 pair-logit tensors at 3,400 tokens x 64 bins are ~5.5 GiB, and an
@@ -125,8 +149,9 @@ def pair_terms(s_vals, dq_vals, weight_by_gap=True, dq_tol=1e-6):
     """(loss, coeffs, n_pairs) for one interface's poses.
 
     s_vals/dq_vals are plain floats. The loss is rebuilt on a LEAF TENSOR and differentiated by
-    autograd rather than by a hand-derived formula -- the derivative of a weighted softplus sum is
-    easy to get subtly wrong, and this costs microseconds on a 5-element vector.
+    autograd rather than by the closed form n*(dq_i - mean dq)/sum|ddq|. The closed form is right
+    only when NO pair is dropped, and equal-DockQ pairs are dropped; autograd stays correct either
+    way and costs microseconds on a 5-element vector.
 
     A pose pair whose DockQ values are equal carries NO ordering information and is dropped: asking
     the head to separate two equally-good poses is noise with a gradient.
@@ -139,9 +164,9 @@ def pair_terms(s_vals, dq_vals, weight_by_gap=True, dq_tol=1e-6):
             d = dq_vals[i] - dq_vals[j]
             if abs(d) <= dq_tol:
                 continue
+            # LINEAR. With the gap as the weight, w * sign(d) collapses to d itself.
             w = abs(d) if weight_by_gap else 1.0
-            sign = 1.0 if d > 0 else -1.0
-            num = num + w * torch.nn.functional.softplus(-(s[i] - s[j]) * sign)
+            num = num - (s[i] - s[j]) * (d if weight_by_gap else (1.0 if d > 0 else -1.0))
             den += w
             npair += 1
     if npair == 0:
