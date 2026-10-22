@@ -16,13 +16,23 @@ forced on the record.
 
 So this arm trains the ordering directly, on top of the two terms already in play.
 
-## The three terms
+## Which arm to run first
 
-| term | flag | what it does |
-|---|---|---|
-| PAE | `--alpha-pae 1.0` | the shipped FT3 objective, unchanged |
-| ranking | `--rank-loss --alpha-rank 1.0` | orders the 5 poses of a seed by DockQ |
-| L2-SP | `--l2-sp 0.05` | prices distance from the shipped head |
+**Run PAE + ranking, without L2-SP.** Adding both at once is not a one-variable comparison against
+`8eiek8`: if it improves, you cannot separate ranking supervision from L2-SP stabilising the
+mapping from an interaction between them. The doc previously called `8eiek8` a one-variable control
+while describing a two-term change; review of `cd8e6ab7` was right to object.
+
+That matters more than usual here, because L2-SP is 0-for-2 on this problem: `4x8t44` (λ=1e-2,
+10,240 params) was a null with the penalty never above 2.0% of the loss, and `wpg274` (λ=1e-5,
+19.8M params) did not prevent the ordering collapse — ρ fell to 0.040–0.055 by epoch 30–32, below
+the unpenalised arm's 0.078 floor, penalty never above 1.3%.
+
+| arm | PAE | ranking | L2-SP | launcher |
+|---|---|---|---|---|
+| `8eiek8` (done, 50 ep) | ✓ | | | the control |
+| **run this** | ✓ | ✓ | | [`launch_poseshare_rank_overfit30.sh`](../shell_scripts/launch_poseshare_rank_overfit30.sh) |
+| only if ranking shows score inflation or drift | ✓ | ✓ | ✓ | [`launch_poseshare_rank_l2_overfit30.sh`](../shell_scripts/launch_poseshare_rank_l2_overfit30.sh) |
 
 Architecture is `--pose-perblock --pose-perblock-share` with
 `--train-only linear_no_bias_d,linear_no_bias_d_wo_onehot` — 10,240 parameters, 0.052% of the head.
@@ -46,8 +56,15 @@ Per-pose gradient, verified against finite differences to 5.6e-17:
 ∂L/∂s_i  =  − n (d_i − mean d) / Σ |d_i − d_j|
 ```
 
-Each pose is pushed by how far its DockQ sits from the group mean. The gradients sum to zero, so
-the group's **mean ipTM is never pushed** — only the spread.
+Each pose is pushed by how far its DockQ sits from the group mean, and the coefficients sum to
+zero — so **the loss is invariant to a uniform shift of the scores within a seed.**
+
+That is a statement about score space, and an earlier version of this doc wrongly carried it into
+parameter space ("the group's mean ipTM is never pushed"). It does not follow. The parameter
+gradient is `∇_θ L = Σ cᵢ ∇_θ sᵢ`, and the five Jacobians `∇_θ sᵢ` are not equal, so a step can
+move the group's mean score and can move other seeds' scores too. **Within-seed supervision can
+therefore change cross-seed ordering through the shared weights** — in either direction, and
+unsupervised. It has to be measured, not assumed. Caught in review of `cd8e6ab7`.
 
 ### Why linear and not softplus
 
@@ -76,9 +93,16 @@ Two alternatives considered and rejected:
 
 ### What linear gives up
 
-Any stopping point: it pays to widen the gap forever. Two things bound the damage — ipTM is
-structurally in [0,1], and the gradients sum to zero so the group mean cannot drift. **The spread
-is the thing to watch**, and if it inflates, σ and softplus come back.
+Any stopping point: it pays to widen the gap forever. ipTM is structurally in [0,1], so nothing
+diverges, but **the within-seed spread is the thing to watch** and it is now logged per epoch.
+
+There is a second, subtler cost. Because `cᵢ` depends only on DockQ, a pose already ranked above
+everything still gets pushed up, and a bottom pose still gets pushed down. So **the loss can fall
+purely by widening gaps that were already correct, with the inverted fraction unchanged.** This is
+a DockQ-weighted covariance surrogate for ranking, not a measure of ranking mistakes, and the two
+must be read separately. If the loss improves substantially while the inversion rate stands still,
+that is the signal to revisit a properly scaled logistic loss — the σ=1 measurement rules out
+unscaled softplus, not a calibrated one.
 
 ### Why the DockQ gap is the weight
 
@@ -102,8 +126,11 @@ are inverted** (coin flip 50%), essentially unchanged across every arm — 44.8%
 head, 45.6% pose-share. So the head is near-random exactly where most of the real quality
 variation lives.
 
-**The limitation, stated plainly.** Selection is a global argmax over all 150 poses. This loss only
-orders within a seed, which is 17.7% of ipTM's variance. Cross-seed pairs would need several
+**The limitation, stated plainly.** Selection is a global argmax over all 150 poses, and the loss
+only forms pairs within a seed. Note what this does *not* establish: because the weights are
+shared, within-seed updates can shift cross-seed scores as well, so the 17.7% figure is **not a
+bound on the possible benefit** — it bounds what is directly supervised, not what can change.
+Cross-seed *pairs* would need several
 ~200 MB trunks co-resident (trunks are stored per `(pdb, seed)`:
 `training/fold/trunks/<pdb>/free_<seed>.npz`), and that is the same I/O amplification which is the
 leading hypothesis for the `ggfhj5` epoch-12 stall. Not attempted here.
@@ -112,36 +139,41 @@ An earlier version of this doc claimed a measurable DockQ gain from fixing withi
 That claim was withdrawn: it held cross-seed selection fixed while changing within-seed ordering,
 but both come from the same weights, so it is a counterfactual that cannot occur.
 
-## How the gradient is computed
+## How the gradient is computed — one pass, no extra forward
 
-[`phases/phase_k_train.py:2490`](../phases/phase_k_train.py#L2490) (pass A),
-[`:2481`](../phases/phase_k_train.py#L2481) (the added backward term),
-[`:2368`](../phases/phase_k_train.py#L2368) (the scalar self-check).
+[`phases/rank_loss.py`](../phases/rank_loss.py) `coeffs()`, applied at
+[`phases/phase_k_train.py:2490`](../phases/phase_k_train.py#L2490).
 
-One pose's backward graph is ~45 GB on a 98 GB card, so five cannot be held at once — and the
-trainer deliberately runs forward *and* backward one pose at a time. But the gradient factors:
+Because the loss is **linear** in the scores, `L = Σ cᵢ sᵢ`, its derivative contains no score at
+all — only DockQ:
 
 ```
-∂L/∂θ  =  Σ_i (∂L/∂s_i)(∂s_i/∂θ)
+c_i  =  − Σ_{j valid} (d_i − d_j)  /  Σ_{(i,j) valid} |d_i − d_j|
 ```
 
-`∂L/∂s_i` is one number per pose, computable from the five ipTM **values** alone. So:
+Verified: the coefficients are byte-identical for score vectors as different as
+`[0.70, 0.69, 0.69, 0.69, 0.66]`, `[0.1, 0.9, 0.5, 0.2, 0.7]` and all-zeros.
 
-1. **Pass A** — forward all 5 poses under `no_grad`, collect the scores. No graph.
-2. Autograd on a 5-element leaf gives the five coefficients exactly.
-3. **Pass B** — the existing per-pose forward; each backward carries its own `c_i · s_i`.
+So the coefficients are computed **before the model runs**, from the labels, and each pose's
+existing forward/backward carries its own `cᵢ · sᵢ`. One graph at a time, exact gradient, **zero
+extra forwards.** The loss value is reconstructed as `Σ cᵢ sᵢ` from the scores the forward already
+produced — no second evaluation of anything.
 
-Exact gradient, one graph at a time, one extra forward per pose (~33% more epoch time).
+### What this replaced, and why it was there
 
-**The RNG state is captured before pass A and restored before pass B**, because the head has
-dropout: the two passes must evaluate the same function or `c_i` belongs to a different one. Each
-scalar is then re-checked against `--rank-scalar-tol` (default 2e-3, matching the evaluator's
-`--iptm-tol`). A silent disagreement would be a wrong gradient that still trains and still looks
-plausible, so it is a `SystemExit`, not a warning.
+The version pushed as `429dd891` used softplus, whose derivative `sigmoid(−m)` *does* depend on
+every score. That needed a no-grad forward over all five poses first, costing ~33% more GPU time
+per pose, plus save/restore of the dropout RNG so the two passes evaluated the same function, plus
+a per-pose scalar equality check (`--rank-scalar-tol`) to catch it when they didn't.
 
-Note the 5.5 GiB pair-logit figure quoted in several code comments assumes the 3,400-token crop
-**cap**. Real crops are 409 tokens median, 656 max over 9,180 units, where a pair-logit tensor is
-0.10 GiB. The memory constraint is the full backward graph, not those tensors.
+Switching the loss to linear made all of that dead, and it was not removed at the time — the
+machinery was not re-derived when the function it served changed. Review of `cd8e6ab7` caught it.
+The pass, the RNG handling and the tolerance flag are gone.
+
+The memory constraint that motivated one-pose-at-a-time is unchanged and still real: one pose's
+backward graph is ~45 GB on a 98 GB card. Note the 5.5 GiB pair-logit figure quoted in several code
+comments assumes the 3,400-token crop **cap** — real crops are 409 tokens median, 656 max over
+9,180 units, where that tensor is 0.10 GiB. The constraint is the full graph, not those tensors.
 
 ## ipTM is computed the evaluator's way
 
@@ -182,9 +214,15 @@ the objective. λ is in this arm because it is cheap to carry, not because it ha
 
 - **`--alpha-rank 1.0` is a guess.** The loss value is ~0.01–0.25 against a PAE loss of 2.3, but
   gradient magnitude on the weights is what matters and that is not inferable from loss values.
-  Two scale constants picked today were wrong (`--l2-sp 1e-2` for 10,240 params, and softplus's
-  implicit σ=1). The honest way to set it: two epochs at `--alpha-rank 0`, two at `1.0`, compare
-  `max grad_norm`. That doubles as the GPU smoke test.
+  Two scale constants picked earlier were wrong (`--l2-sp 1e-2` for 10,240 params, and softplus's
+  implicit σ=1).
+  My first plan — compare `max grad_norm` across two short runs — is not good enough, and review
+  of `cd8e6ab7` said why: the combined norm can be *smaller* than the PAE-only norm if the two
+  gradients oppose each other, and max norms depend heavily on individual batches. The right probe
+  is, on a few **identical** batches at the **same** initial weights, measure `‖g_PAE‖`,
+  `‖g_rank‖` and **`cos(g_PAE, g_rank)`** — which answers both how large the ranking update is and
+  whether it cooperates with or fights the existing objective. Separately for `g_L2SP` if that arm
+  is run.
 - **The within-seed ipTM spread is not yet logged.** It is the quantity to watch with a linear
   loss. Computable post-hoc from the eval shards the same way ρ is
   ([`run_logging/rank_rho.py:80`](../run_logging/rank_rho.py#L80)), so it should be a second column
@@ -195,10 +233,40 @@ the objective. λ is in this arm because it is cheap to carry, not because it ha
   `calculate_chain_based_ptm` with a graph attached, and the pass-A/pass-B scalar agreement under
   dropout.
 
-## Monitoring
+## Monitoring — four quantities, because they move independently
 
-Panel 5 of [`run_logging/plot_full_train.py:150`](../run_logging/plot_full_train.py#L150) plots mean
-within-interface Spearman(ipTM, DockQ) per epoch, cached per run in `rank_rho_b30.csv`. Reference
-values at budget 30, 18 interfaces: shipped ρ **0.1958**, baseline DockQ 0.2909 / 10 of 18, oracle
-0.5968 / 18 of 18. Panels 3 and 4 are noise at n=18 — `mdv9x7` swung DockQ 0.2072 → 0.2018 → 0.2904
-across three adjacent epochs — so ρ is the readout to steer by.
+The loss supervises one of these and reports none of them, so all four are logged. Computed
+post-hoc from the eval shards by [`run_logging/rank_rho.py`](../run_logging/rank_rho.py), cached
+per run in `rank_rho_b30.csv`, no trainer involvement.
+
+| column | what it is | shipped head |
+|---|---|---|
+| `rho_trained` | mean within-interface Spearman(ipTM, DockQ) over all ~150 poses — what selection needs | **0.1958** |
+| `inv_trained` | **within-seed pairwise inversion rate** — the thing `--rank-loss` actually supervises | **0.4481** |
+| `spread` | mean within-seed ipTM std — the quantity a linear loss can inflate without bound | — |
+| DockQ / frac_acc | the downstream objective at the fixed budget | 0.2909 / 10 of 18 |
+
+These really do dissociate, and already have. Across every PAE-only arm the within-seed inversion
+rate has barely moved from the shipped 0.4481 — `8eiek8` went 0.4600 at epoch 1 to 0.4557 at 50,
+`mdv9x7` sat at 0.4503 at epoch 30 — while the within-seed spread roughly doubled or tripled
+(0.0059 → 0.0103 for `8eiek8`, 0.0165 for `mdv9x7`). **So nothing has ever trained the within-seed
+ordering**, which is the gap this arm aims at. It also means a successful intervention could move
+`inv_trained` without moving global `rho` promptly, or move `rho` through cross-seed score shifts
+without touching `inv_trained` — hence both.
+
+Panel 5 of [`run_logging/plot_full_train.py:150`](../run_logging/plot_full_train.py#L150) plots
+`rho_trained`. Panels 3 and 4 are noise at n=18 — `mdv9x7` swung DockQ 0.2072 → 0.2018 → 0.2904
+across three adjacent epochs — so ρ and the inversion rate are the readouts to steer by.
+
+**One plotting caveat that is not yet fixed.** Panel 5 places the *shipped* head's ρ at epoch 0,
+but the pose-share architecture is not bit-identical to the shipped head at initialisation — blocks
+1–3 gain an injection they never had. So for these arms epoch 0 is a *shipped-head reference line*,
+not the architecture's own starting value. Measuring the initialised pose-share head once before
+training would separate the architectural change from the training effect; until then the first
+segment of those curves conflates the two.
+
+## Scope
+
+This is a **development study**: 30 training structures, 18 validation interfaces. Hyperparameters
+and checkpoints are being chosen on that same 18-interface set, so it cannot also serve as the
+reported result. A paper-level claim needs a separate, larger held-out set scored once.

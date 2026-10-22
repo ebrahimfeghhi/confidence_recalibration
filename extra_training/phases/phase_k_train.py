@@ -164,12 +164,6 @@ def main():
                          "DockQ is driven by the big misses.")
     ap.add_argument("--no-rank-weight-by-gap", dest="rank_weight_by_gap",
                     action="store_false", help="weight every pose pair equally instead.")
-    ap.add_argument("--rank-scalar-tol", type=float, default=2e-3,
-                    help="max |s_passA - s_passB| per pose before the run STOPS. The ranking "
-                         "coefficients are computed from a no-grad forward and then applied to a "
-                         "second forward's graph; if the two disagree, c_i was derived for a "
-                         "different function than the one being differentiated and the gradient is "
-                         "silently wrong. Matches phase_k_eval's --iptm-tol.")
     ap.add_argument("--l2-sp", type=float, default=0.0, metavar="LAMBDA",
                     help="L2-SP: add LAMBDA * ||W - W_shipped||^2 to the loss, penalising DISTANCE "
                          "FROM THE SHIPPED HEAD rather than distance from zero. Plain weight decay "
@@ -988,7 +982,7 @@ def main():
     # over poses. accum_eff counts poses; each unit contributes --nsample of them.
     _rank_lab = {}
     _rank_div = max(1, accum_eff // max(1, a.nsample))
-    _rank_seen = {"loss": 0.0, "n": 0}
+    _rank_seen = {"loss": 0.0, "units": 0}
     if a.rank_loss:
         import rank_loss as RKL
         if not _scored_asym:
@@ -1007,6 +1001,14 @@ def main():
         # still paying a full forward, so the arm would be a partial experiment reported as a whole
         # one -- the same class of error as the LoRA bundles that trained four epochs with no
         # held-out points.
+        # COMPLETENESS, NOT MERE PRESENCE. The first version checked only that a scored
+        # structure appeared SOMEWHERE in the labels, which a structure with one labelled seed out
+        # of ten would pass -- and its unlabelled units would then pay a forward and contribute no
+        # ranking gradient, making this a partial experiment reported as a whole one. That is the
+        # same class as the LoRA bundles that trained four epochs with zero held-out points.
+        # Review of cd8e6ab7 pointed out the guard was weaker than the doc claimed. So every
+        # (pdb, seed, interface) this run will train must carry --nsample finite DockQ values at
+        # the expected sample indices.
         _rl_pdbs = {k[0] for k in _rank_lab}
         _rl_missing = sorted(set(_scored_asym) - _rl_pdbs)
         print(f"RANKING LOSS on chain_pair_iptm: alpha {a.alpha_rank:g}, "
@@ -1018,6 +1020,27 @@ def main():
                 f"STOP: {len(_rl_missing)} scored structure(s) have no DockQ labels in {_rl_p}, "
                 f"e.g. {_rl_missing[:6]}. Their poses would pay a forward and contribute no "
                 f"ranking gradient, making this a partial experiment.")
+        # PER-GROUP COMPLETENESS. A group short of --nsample labels, or carrying a non-finite
+        # DockQ, is reported rather than silently filtered out in the training loop.
+        _rl_short, _rl_nonfinite = [], []
+        for (_p_pdb, _p_sd, _p_pair), _m in _rank_lab.items():
+            if _p_pdb not in _scored_asym or _p_pair not in _scored_asym[_p_pdb]:
+                continue
+            if sorted(_m) != list(range(a.nsample)):
+                _rl_short.append((_p_pdb, _p_sd, _p_pair, sorted(_m)))
+            if any(v != v for v in _m.values()):
+                _rl_nonfinite.append((_p_pdb, _p_sd, _p_pair))
+        if _rl_short or _rl_nonfinite:
+            raise SystemExit(
+                f"STOP: --rank-loss label coverage is incomplete in {_rl_p}.\n"
+                f"  {len(_rl_short)} group(s) do not hold exactly samples 0..{a.nsample - 1}"
+                + (f", e.g. {_rl_short[:4]}" if _rl_short else "")
+                + (f"\n  {len(_rl_nonfinite)} group(s) carry a non-finite DockQ, e.g. "
+                   f"{_rl_nonfinite[:4]}" if _rl_nonfinite else "")
+                + "\n  A short group contributes fewer pairs than the experiment claims; a "
+                  "non-finite one poisons the coefficients.")
+        print(f"  label coverage: every scored (pdb, seed, interface) group holds "
+              f"{a.nsample} finite DockQ value(s)")
 
     def _check_eval_pool():
         """Stat the training-eval pool now, not at the first epoch boundary.
@@ -1447,6 +1470,9 @@ def main():
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_weight_by_gap": a.rank_weight_by_gap,
+                 # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
+                 # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
+                 "l2_sp": a.l2_sp,
                  "lr": a.lr, "warmup_steps": a.warmup_steps,
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
@@ -1516,7 +1542,7 @@ def main():
                      "pose_perblock": False, "pose_perblock_tied": False,
                      "pose_perblock_share": False,
                      "rank_loss": False, "alpha_rank": 1.0,
-                     "rank_weight_by_gap": True}
+                     "rank_weight_by_gap": True, "l2_sp": 0.0}
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
@@ -2365,30 +2391,6 @@ def main():
         # branches are dead code for this workload.
         _tick("loss_feature_prep", _t_fc)
 
-        def rank_iptm_checked(i, pair, pae_logits, sA):
-            """s_i WITH a graph, verified against pass A's value for the same pose and interface.
-
-            A silent disagreement here means the coefficient was computed for a different function
-            than the one being differentiated -- a wrong gradient that still trains and still looks
-            plausible. That is exactly the failure mode the evaluator's ipTM self-check exists for,
-            so it is a STOP, not a warning.
-            """
-            import rank_loss as RKL
-            v = RKL.iptm(pae_logits, feat_head, configs, pair)
-            if v is None:
-                return None
-            ref = sA.get((i, pair))
-            if ref is not None and abs(float(v.detach()) - ref) > a.rank_scalar_tol:
-                raise SystemExit(
-                    f"STOP: {pdb}/{arm_seed} pose {i} interface {pair}: ipTM is "
-                    f"{float(v.detach()):.6f} with a graph but was {ref:.6f} under no_grad, a gap "
-                    f"of {abs(float(v.detach()) - ref):.2e} over --rank-scalar-tol "
-                    f"{a.rank_scalar_tol:g}. The ranking coefficients were derived from the "
-                    f"no-grad pass, so they do not belong to this forward and the gradient is "
-                    f"wrong. Dropout RNG is restored between the passes; if this fires, something "
-                    f"else in the head is non-deterministic.")
-            return v
-
         def _one_pose(i):
             x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
                 else torch.as_tensor(poses[i:i + 1], dtype=torch.float32, device=dev)
@@ -2470,15 +2472,20 @@ def main():
                 # pairwise loss contribution, because dL/dtheta = sum_i (dL/ds_i)(ds_i/dtheta) and
                 # c_i IS dL/ds_i. Divided by units-per-step so the term is a mean over units, the
                 # way cum/accum_eff is a mean over poses.
-                if _rank_c and _rank_stat is not None:
+                if _rank_on:
+                    import rank_loss as RKL
                     for _p in sorted({_k[1] for _k in _rank_c if _k[0] == i}):
                         _cv = _rank_c.get((i, _p))
                         if not _cv:
                             continue
-                        _sB = rank_iptm_checked(i, _p, pred["pae"], _rank_stat[1])
-                        if _sB is None:
+                        _sr = RKL.iptm(pred["pae"], feat_head, configs, _p)
+                        if _sr is None:
                             continue
-                        _obj = _obj + (a.alpha_rank * _cv / _rank_div) * _sB
+                        _obj = _obj + (a.alpha_rank * _cv / _rank_div) * _sr
+                        # THE LOSS VALUE IS RECONSTRUCTED, NOT RE-COMPUTED. L = sum_i c_i s_i
+                        # exactly, so accumulating c_i * s_i over the unit's poses gives the
+                        # reported loss without a second evaluation of anything.
+                        _rank_seen["loss"] += float(_cv) * float(_sr.detach())
                 _obj.backward()
                 if _be1 is not None:
                     _be1.record()
@@ -2487,73 +2494,53 @@ def main():
             del cum, met, pred, ld, x, plddt, pae, pde, resolved
             return out
 
-        # PASS A: the ranking coefficients, from a no-grad forward over every pose of this unit.
+        # THE RANKING COEFFICIENTS, FROM THE LABELS ALONE. NO EXTRA FORWARD PASS.
         #
-        # WHY A SECOND PASS AT ALL. A pairwise loss couples the poses, but _one_pose runs forward
-        # AND backward one pose at a time on purpose -- two fp32 pair-logit tensors at 3,400 tokens
-        # x 64 bins are ~5.5 GiB and an earlier version overlapped those peaks for no reason. The
-        # gradient factors, though:  dL/dtheta = sum_i (dL/ds_i)(ds_i/dtheta).  dL/ds_i is a scalar
-        # computable from the ipTM VALUES alone, so pass A collects them under no_grad and each
-        # pose's existing backward then carries its own c_i * s_i. One graph at a time, exact
-        # gradient, and the only new cost is pass A's forward -- about a third of a pose's GPU time.
+        # The loss is LINEAR in the scores, L = sum_i c_i * s_i, so dL/ds_i does not contain any
+        # score at all -- only DockQ:
         #
-        # THE RNG STATE IS CAPTURED AND RESTORED because the confidence head has dropout: pass A
-        # and pass B must evaluate the SAME function or c_i belongs to a different one. _one_pose
-        # re-checks each scalar against --rank-scalar-tol, which is what would catch this failing.
-        _rank_c, _rank_stat = {}, None
+        #     c_i = dL/ds_i = - sum_{j valid} (d_i - d_j) / sum_{(i,j) valid} |d_i - d_j|
+        #
+        # Verified: the coefficients are byte-identical for score vectors as different as
+        # [0.70,0.69,0.69,0.69,0.66], [0.1,0.9,0.5,0.2,0.7] and all-zeros.
+        #
+        # THIS REPLACES A TWO-PASS SCHEME, and the correction is worth recording. The first version
+        # of this loss used softplus, whose derivative sigmoid(-m) DOES depend on every score, so a
+        # no-grad forward was needed to collect them before the real one -- a third more GPU time
+        # per pose, plus save/restore of the dropout RNG so the two passes evaluated the same
+        # function, plus a per-pose scalar equality check to catch it when they did not. Switching
+        # the loss to linear made every bit of that dead, and it was not removed at the time:
+        # the surrounding machinery was not re-derived when the function it served changed.
+        # Review of cd8e6ab7 caught it.
+        #
+        # Each pose's existing forward already yields its own s_i with a graph, so the ranking term
+        # rides along on the backward that was happening anyway. One graph at a time, exact
+        # gradient, zero extra forwards.
+        _rank_c, _rank_on = {}, False
         if a.rank_loss and not a.loss_only:
             import rank_loss as RKL
             _rk_pairs = sorted(_scored_asym.get(pdb) or ())
             _rk_lab = [(_p, _rank_lab.get((pdb, int(arm_seed), _p))) for _p in _rk_pairs]
             _rk_lab = [(_p, _d) for _p, _d in _rk_lab if _d]
-            if _rk_lab:
-                _rng_cpu = torch.get_rng_state()
-                _rng_gpu = torch.cuda.get_rng_state(dev)
-                _t_rk = time.perf_counter()
-                _sA = {}
-                with torch.no_grad():
-                    for _i in range(n_pose):
-                        _xa = poses[_i:_i + 1].to(dev).float() if torch.is_tensor(poses) \
-                            else torch.as_tensor(poses[_i:_i + 1], dtype=torch.float32, device=dev)
-                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                            _, _paeA, _, _ = model.run_confidence_head(
-                                input_feature_dict=feat_head, s_inputs=s_inputs, s_trunk=s_trunk,
-                                z_trunk=zt, pair_mask=None, x_pred_coords=_xa,
-                                triangle_multiplicative=configs.triangle_multiplicative,
-                                triangle_attention=configs.triangle_attention,
-                                inplace_safe=False, chunk_size=None)
-                        for _p, _ in _rk_lab:
-                            _v = RKL.iptm(_paeA, feat_head, configs, _p)
-                            if _v is not None:
-                                _sA[(_i, _p)] = float(_v)
-                _tick("rank_pass_a", _t_rk)
-                torch.set_rng_state(_rng_cpu)
-                torch.cuda.set_rng_state(_rng_gpu, dev)
-                # AVERAGED OVER THE UNIT'S INTERFACES, so a 3-interface structure does not get
-                # three times the weight of a 1-interface one.
-                _nif = 0
-                _lsum = 0.0
-                for _p, _dqmap in _rk_lab:
-                    _idx = [_i for _i in range(n_pose) if (_i, _p) in _sA and _i in _dqmap]
-                    if len(_idx) < 2:
-                        continue
-                    _L, _cs, _np_ = RKL.pair_terms([_sA[(_i, _p)] for _i in _idx],
-                                                   [_dqmap[_i] for _i in _idx],
-                                                   weight_by_gap=a.rank_weight_by_gap)
-                    if _np_ == 0:
-                        continue
-                    _nif += 1
-                    _lsum += _L
-                    for _i, _cv in zip(_idx, _cs):
-                        _rank_c[(_i, _p)] = _rank_c.get((_i, _p), 0.0) + _cv
-                if _nif:
-                    for _k in list(_rank_c):
-                        _rank_c[_k] /= float(_nif)
-                    _rank_stat = (_lsum / _nif, _sA)
-                    # ONCE PER UNIT. Accumulating inside the pose loop instead counted the same
-                    # unit n_pose x n_interface times and the reported mean was meaningless.
-                    _rank_seen["loss"] += _lsum / _nif
-                    _rank_seen["n"] += 1
+            # AVERAGED OVER THE UNIT'S INTERFACES, so a 3-interface structure does not get three
+            # times the weight of a 1-interface one.
+            _nif = 0
+            for _p, _dqmap in _rk_lab:
+                _idx = [_i for _i in range(n_pose) if _i in _dqmap]
+                if len(_idx) < 2:
+                    continue
+                _cs, _np_ = RKL.coeffs([_dqmap[_i] for _i in _idx],
+                                       weight_by_gap=a.rank_weight_by_gap)
+                if _np_ == 0:
+                    continue
+                _nif += 1
+                for _i, _cv in zip(_idx, _cs):
+                    _rank_c[(_i, _p)] = _rank_c.get((_i, _p), 0.0) + _cv
+            if _nif:
+                for _k in list(_rank_c):
+                    _rank_c[_k] /= float(_nif)
+                _rank_on = True
+                _rank_seen["units"] += 1
 
         for i in range(n_pose):
             _t_pose = time.perf_counter()
@@ -3375,16 +3362,24 @@ def main():
                 print(f"  [rank {rank}] epoch {ep + 1} l2-sp: ||W-W0||^2 = "
                       f"{_l2sp_drift['sq']:.1f}, penalty = {a.l2_sp * _l2sp_drift['sq']:.4f} "
                       f"(unconstrained full head reached 67,052 by epoch 30)", flush=True)
-            # THE RANKING LOSS IS THE EXPERIMENT under --rank-loss. ln2 = 0.6931 is the value a
-            # head that cannot order the poses at all would score, so it is quoted as the
-            # reference the number has to beat -- the way 2.9756 is quoted for held-out PAE.
-            if a.rank_loss and _rank_seen["n"]:
-                _rk_mean = _rank_seen["loss"] / _rank_seen["n"]
-                print(f"  [rank {rank}] epoch {ep + 1} rank-loss: {_rk_mean:.4f} over "
-                      f"{_rank_seen['n']} unit(s) (ln2 = 0.6931 is no ordering at all; "
-                      f"lower is better)", flush=True)
+            # THE RANKING LOSS IS THE EXPERIMENT under --rank-loss. ZERO is the reference, not
+            # ln2: this loss is a normalised covariance between score gaps and DockQ gaps, so
+            # equal scores give exactly 0 and so does an ordering uncorrelated with DockQ.
+            # NEGATIVE is correctly aligned, positive is inverted. ln2 = 0.6931 was the reference
+            # for the softplus version and was left here when the loss went linear -- caught in
+            # review of cd8e6ab7, before it misled a single training run.
+            #
+            # AND IT DOES NOT MEASURE INVERSIONS. c_i depends only on DockQ, so a pose already
+            # ranked above everything still gets pushed up: the loss can fall by widening gaps
+            # that were already correct, with the inverted fraction unchanged. The within-seed
+            # inversion rate has to be read separately -- see run_logging/rank_rho.py.
+            if a.rank_loss and _rank_seen["units"]:
+                _rk_mean = _rank_seen["loss"] / _rank_seen["units"]
+                print(f"  [rank {rank}] epoch {ep + 1} rank-loss: {_rk_mean:+.5f} over "
+                      f"{_rank_seen['units']} unit(s) (0 = no alignment, negative is better; "
+                      f"NOT an inversion rate)", flush=True)
                 _rank_seen["loss"] = 0.0
-                _rank_seen["n"] = 0
+                _rank_seen["units"] = 0
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
                   f"residual {(_ep_s - _acc)/60:.1f}m "
                   f"(exclusive buckets only; gpu_* overlap pose_total)", flush=True)
