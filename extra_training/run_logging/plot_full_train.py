@@ -33,6 +33,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import metrics_io as MIO
+import rank_rho as RHO
 
 # The held-out DockQ eval reuses the train-eval code path, so it still prints "TRAIN:".
 COLORS = ["#1f77b4", "#e67e22", "#16a085", "#c0392b", "#000000"]
@@ -77,8 +78,9 @@ def main():
     ap.add_argument("--out", default="training/runs/full_train_plot.png")
     a = ap.parse_args()
 
-    fig, axes = plt.subplots(1, 4, figsize=(22, 4.6))
+    fig, axes = plt.subplots(1, 5, figsize=(27.5, 4.6))
     notes = []
+    rho_ships = []
     for ci, spec in enumerate(a.runs):
         rid, _, label = spec.partition("=")
         label = label or rid
@@ -145,6 +147,19 @@ def main():
             if _x:
                 ax.plot(_x, _y, marker="o", ms=5, lw=1.8, color=c,
                         label=label if ex else f"{label} (epoch 0 only)")
+        # PANEL 5: the ORDERING, which is what the argmax actually consumes. Its epoch-0 point is
+        # rho(stored_iptm, DockQ) from this run's own shard rows, so the baseline and the curve
+        # are the same measurement on the same interfaces.
+        rr = RHO.load(a.root, rid, a.budget)
+        if rr:
+            rx = sorted(rr)
+            ship_rho = rr[rx[0]][1]
+            _x, _y = _with_ep0(rx, [rr[e][0] for e in rx], ship_rho)
+            axes[4].plot(_x, _y, marker="o", ms=5, lw=1.8, color=c, label=label)
+            rho_ships.append(ship_rho)
+            _nif = {rr[e][2] for e in rx}
+            if len(_nif) > 1:
+                notes.append(f"{label}: panel 5 interface count varies {min(_nif)}-{max(_nif)}")
 
     EP0 = "#7f7f7f"
     if a.shipped_train_pae is None:
@@ -163,6 +178,8 @@ def main():
     axes[2].set_ylabel("mean DockQ")
     axes[3].set_title("4. held-out frac acceptable (DockQ >= 0.23)")
     axes[3].set_ylabel("frac acceptable")
+    axes[4].set_title("5. RANK CORRELATION ipTM vs DockQ\nthe ordering the argmax consumes")
+    axes[4].set_ylabel("mean within-interface Spearman")
 
     # The shipped head on the held-out PAE panel: falling is not the bar, beating UNTRAINED is.
     axes[1].axhline(a.shipped_val_pae, ls="--", lw=1.1, color="#888888")
@@ -177,7 +194,23 @@ def main():
             ax.annotate(f"{lab} {v:.4f}", xy=(1, v), xycoords=("axes fraction", "data"),
                         xytext=(-4, 3), textcoords="offset points",
                         ha="right", va="bottom", fontsize=8, color=col)
-    for ax in (axes[1], axes[2], axes[3]):
+    if rho_ships:
+        # ONE LINE ONLY IF THE ARMS AGREE. Different arms score the same 18 interfaces, so their
+        # rho_shipped must coincide; a spread means some arm's shards are a different pool and a
+        # single dashed line would be a lie about which baseline the curves are above.
+        _lo, _hi = min(rho_ships), max(rho_ships)
+        if _hi - _lo < 5e-3:
+            axes[4].axhline(_lo, ls="--", lw=1.1, color="#888888")
+            axes[4].annotate(f"shipped head {_lo:.4f}", xy=(1, _lo),
+                             xycoords=("axes fraction", "data"), xytext=(-4, 3),
+                             textcoords="offset points", ha="right", va="bottom",
+                             fontsize=8, color="#888888")
+        else:
+            notes.append(f"panel 5: arms disagree on the shipped rho ({_lo:.4f}-{_hi:.4f}), "
+                         f"no baseline line drawn")
+        axes[4].axhline(0.0, ls=":", lw=1.0, color="#cccccc")
+
+    for ax in (axes[1], axes[2], axes[3], axes[4]):
         ax.annotate("epoch 0 = shipped head", xy=(0.02, 0.97), xycoords="axes fraction",
                     fontsize=7.5, color=EP0, va="top", ha="left")
     for ax in axes:
@@ -189,7 +222,7 @@ def main():
     fig.suptitle(sub, fontsize=10)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(a.out, dpi=130)
-    have = [n for n, ax in zip("1234", axes) if ax.get_legend_handles_labels()[0]]
+    have = [n for n, ax in zip("12345", axes) if ax.get_legend_handles_labels()[0]]
     print(f"wrote {a.out}" + (f"  (panels with data: {','.join(have)})" if have
                               else "  (NO DATA YET -- no complete epoch, no held-out pass)"))
 
