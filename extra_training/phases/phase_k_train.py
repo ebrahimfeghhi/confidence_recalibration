@@ -131,8 +131,12 @@ def main():
                          "2,000 steps of a 100,000-step run (2%%). At batch 256 three epochs of our "
                          "cache is 292 optimiser steps, so 2,000 would be 685%% of the run and the "
                          "learning rate would never reach its set value. 20 is 6.8%%.")
-    ap.add_argument("--grad-probe", type=int, default=0, metavar="N",
-                    help="MEASURE, DON'T GUESS. Run N units, and for each pose take the PAE "
+    ap.add_argument("--grad-probe", action="store_true",
+                    help="MEASURE, DON'T GUESS. Run EXACTLY ONE accumulation window -- the unit "
+                         "count is derived as accum_local/nsample, not asked for, because a probe "
+                         "that runs past the step mixes gradients measured at two different "
+                         "parameter states and the whole point is to compare the two terms at "
+                         "IDENTICAL weights. For each pose take the PAE "
                          "backward and the ranking backward SEPARATELY at identical weights, then "
                          "report per-tensor gradient norms, the cosine between the two, and "
                          "whether every trainable tensor received a finite non-zero ranking "
@@ -2688,7 +2692,7 @@ def main():
     if a.rank_loss and not trainable_params:
         raise SystemExit("STOP: no trainable tensors found for the ranking term.")
 
-    def _grad_probe_report(pr, names, a, step_taken, accum_local):
+    def _grad_probe_report(pr, names, a, step_taken, accum_local, world):
         """Report, then RAISE on failure. A safety gate that only prints is not a gate.
 
         WHAT IT CHECKS, and why each one exists:
@@ -2726,13 +2730,24 @@ def main():
                 print(f"    {n_:<60} |sum g| {float(g.norm()):.4e}  "
                       f"max|g| {float(g.abs().max()):.4e}")
 
-        # the two accumulated vectors, in the same order
+        # THE TWO ACCUMULATED VECTORS, SUMMED ACROSS RANKS -- exactly what _apply_step does
+        # before clipping and stepping. Each rank only ever saw its own units, so a per-rank
+        # measurement is not the optimiser's gradient, and the ranking contributions cancel both
+        # within a seed and across ranks. Found in review of 523013a.
         vecs = {}
         for nm in ("pae", "rank"):
             got = pr["sum"].get(nm) or {}
             fl = [got[n_].flatten() for n_ in names if got.get(n_) is not None]
-            if fl:
-                vecs[nm] = torch.cat(fl)
+            if not fl:
+                continue
+            v = torch.cat(fl)
+            if world > 1:
+                host = v.cpu()
+                dist.all_reduce(host, op=dist.ReduceOp.SUM)
+                v = host.to(v.device)
+            vecs[nm] = v
+        if world > 1:
+            print(f"\n  (accumulated gradients SUMMED over {world} rank(s), as _apply_step does)")
         if "pae" in vecs and "rank" in vecs:
             vp, vr = vecs["pae"], vecs["rank"]
             np_, nr_ = float(vp.norm()), float(vr.norm())
@@ -2764,6 +2779,24 @@ def main():
         else:
             fail.append("could not form both accumulated gradient vectors")
 
+        # THE ACCUMULATED NORM, NOT JUST THE PER-POSE ONES. Non-zero per-pose gradients can
+        # cancel to nothing over the window -- the coefficients sum to zero inside each group --
+        # and an alpha recommended off a zero accumulated norm is meaningless. Found in review
+        # of 523013a.
+        if "rank" in vecs:
+            _rn = float(vecs["rank"].norm())
+            if not math.isfinite(_rn):
+                fail.append("the ACCUMULATED ranking gradient is non-finite")
+            elif _rn == 0.0:
+                fail.append("the ACCUMULATED ranking gradient is exactly zero: per-pose "
+                            "contributions cancelled over the window, so no alpha can be read "
+                            "from norm parity")
+        if "pae" in vecs and "rank" in vecs:
+            _vp2, _vr2 = vecs["pae"], vecs["rank"]
+            if float(_vp2.norm()) == 0.0:
+                fail.append("the ACCUMULATED PAE gradient is exactly zero")
+            elif not math.isfinite(float((_vp2 @ _vr2) / max(1e-30, _vp2.norm() * _vr2.norm()))):
+                fail.append("the PAE/ranking cosine is not finite")
         if not pr["finite"].get("rank", False):
             fail.append("the RANKING gradient contained non-finite values")
         if not pr["finite"].get("pae", False):
@@ -3500,13 +3533,14 @@ def main():
                 # measure the gradient scale, not to train.
                 if a.grad_probe:
                     _probe["units"] += 1
-                    if _probe["units"] >= a.grad_probe:
+                    # EXACTLY ONE WINDOW. accum_local poses close the window and the optimiser
+                    # steps; one unit further and the probe is summing g(theta_0) with
+                    # g(theta_1), which is not the gradient of any single step. Found in review
+                    # of 523013a, where the launcher asked for 8 units against a 6-unit window.
+                    if _probe["units"] >= max(1, accum_local // max(1, a.nsample)):
                         # RAISES on failure, so the launcher's exit status carries the verdict.
-                        _grad_probe_report(_probe, trainable, a, step > 0, accum_local)
-                        # NO head_final.pt. A probe has not trained anything and a normal-looking
-                        # checkpoint in the run dir would be indistinguishable from one that had.
-                        print("  --grad-probe done; no checkpoint written (nothing was trained).",
-                              flush=True)
+                        _grad_probe_report(_probe, trainable, a, step > 0, accum_local, world)
+                        _probe["done"] = True
                         return
                 if done:
                     break
@@ -3803,6 +3837,20 @@ def main():
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
     train_loop(steps_cap, a.lr, "train", write_traj=is_main,
                from_epoch=start_epoch, from_step=start_step)
+    # --grad-probe STOPS HERE. The return inside train_loop only exits train_loop; main() then
+    # ran on through the summaries to the unconditional head_final.pt save, so a probe wrote a
+    # checkpoint indistinguishable from a trained one WHILE PRINTING that it had not. Found in
+    # review of 523013a. It also corrects the claim: the probe DOES take one real optimiser step,
+    # by design -- what it must not do is leave a head behind that looks like an arm's.
+    if a.grad_probe:
+        if is_main:
+            print(f"  --grad-probe complete. ONE optimiser step was taken (deliberately) and NO "
+                  f"checkpoint is written: {a.out} holds no head_*.pt from this invocation, so it "
+                  f"cannot be mistaken for a trained arm.", flush=True)
+        if world > 1:
+            dist.barrier()
+            dist.destroy_process_group()
+        return
     # THE CROP SUMMARY BELONGS AFTER TRAINING. It was written above the train_loop call, so it read
     # every counter at zero and printed nothing at all -- an arm would have reported no retained
     # fraction and no fallback count, which is exactly the bookkeeping it exists to provide.
