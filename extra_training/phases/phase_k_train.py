@@ -1011,7 +1011,7 @@ def main():
     _rank_lab = {}
     _rank_div = max(1, accum_eff // max(1, a.nsample))
     _rank_seen = {"loss": 0.0, "units": 0}
-    _probe = {"rows": [], "units": 0}
+    _probe = {"rows": [], "units": 0, "poses": 0, "sum": {}, "finite": {}, "nonzero": {}}
     if a.grad_probe:
         import rank_loss as RKL_probe
         if not a.rank_loss:
@@ -1054,42 +1054,52 @@ def main():
                 f"STOP: {len(_rl_missing)} scored structure(s) have no DockQ labels in {_rl_p}, "
                 f"e.g. {_rl_missing[:6]}. Their poses would pay a forward and contribute no "
                 f"ranking gradient, making this a partial experiment.")
-        # PER-GROUP COMPLETENESS, DRIVEN FROM THE SCORED SIDE. The previous version iterated
-        # over the LABELS and skipped any whose pair was not in _scored_asym -- so a scored pair
-        # with no labels at all was invisible to it, which is exactly how the descending-pair key
-        # mismatch above survived an offline pre-flight that reported "all 30 structures covered".
-        # A pdb-level check cannot see a per-pair hole. This walks every (pdb, pair, seed) the run
-        # will actually train and demands the group exist with --nsample finite DockQ values.
-        _rl_lo, _rl_hi = (int(_x) for _x in a.seeds.split("-"))
-        _rl_seeds = range(_rl_lo, _rl_hi + 1)
-        _rl_nogroup, _rl_short, _rl_nonfinite = [], [], []
-        for _p_pdb in sorted(_scored_asym):
-            if _p_pdb not in want:
-                continue
-            for _p_pair in sorted(_scored_asym[_p_pdb]):
-                for _p_sd in _rl_seeds:
-                    _m = _rank_lab.get((_p_pdb, _p_sd, _p_pair))
-                    if not _m:
-                        _rl_nogroup.append((_p_pdb, _p_sd, _p_pair))
-                        continue
-                    if sorted(_m) != list(range(a.nsample)):
-                        _rl_short.append((_p_pdb, _p_sd, _p_pair, sorted(_m)))
-                    # isfinite, not v != v: the latter catches NaN but not +-inf.
-                    if not all(math.isfinite(_v) for _v in _m.values()):
-                        _rl_nonfinite.append((_p_pdb, _p_sd, _p_pair))
-        if _rl_nogroup or _rl_short or _rl_nonfinite:
+        # COVERAGE IS CHECKED AFTER THE MANIFEST IS BUILT, not here: the expected key set is
+        # (pdb, seed, pair) over the units this run will actually train, and `want` does not exist
+        # yet at this point in main(). An earlier version referenced it here anyway and would have
+        # raised NameError at startup the first time --rank-loss was passed. Found in review of
+        # a3086ef. See _rank_check_coverage below.
+
+    def _rank_check_coverage(want_units):
+        """Every (pdb, seed, interface) this run will train must carry --nsample finite DockQ.
+
+        DRIVEN FROM THE EXPECTED SET, NOT FROM THE LABELS. Two earlier versions were weaker and
+        both would have passed the run that was actually broken: one checked only that a structure
+        appeared SOMEWHERE in the labels (a pdb-level test cannot see a per-pair hole), and one
+        iterated over the labels and skipped keys absent from _scored_asym (so a scored pair with
+        no labels at all was invisible). The reference-vs-model chain bug survived both. The
+        expected set is built from the manifest and the scored pairs, and set difference does the
+        work.
+        """
+        if not a.rank_loss:
+            return
+        expected = {(pdb, sd, pr) for pdb, sd in want_units
+                    for pr in (_scored_asym.get(pdb) or ())}
+        if not expected:
+            raise SystemExit("STOP: --rank-loss expected zero (pdb, seed, interface) groups. "
+                             "Either the manifest or --pae-scored-pairs selects nothing.")
+        missing = sorted(expected - set(_rank_lab))
+        short, nonfinite = [], []
+        for k in sorted(expected & set(_rank_lab)):
+            m = _rank_lab[k]
+            if sorted(m) != list(range(a.nsample)):
+                short.append((k, sorted(m)))
+            if not all(math.isfinite(v) for v in m.values()):
+                nonfinite.append(k)
+        if missing or short or nonfinite:
             raise SystemExit(
-                f"STOP: --rank-loss label coverage is incomplete in {_rl_p}.\n"
-                + (f"  {len(_rl_nogroup)} scored (pdb, seed, interface) group(s) have NO labels, "
-                   f"e.g. {_rl_nogroup[:4]}\n" if _rl_nogroup else "")
-                + (f"  {len(_rl_short)} group(s) do not hold exactly samples "
-                   f"0..{a.nsample - 1}, e.g. {_rl_short[:4]}\n" if _rl_short else "")
-                + (f"  {len(_rl_nonfinite)} group(s) carry a non-finite DockQ, e.g. "
-                   f"{_rl_nonfinite[:4]}\n" if _rl_nonfinite else "")
+                f"STOP: --rank-loss label coverage is incomplete for the {len(expected)} "
+                f"(pdb, seed, interface) group(s) this run trains.\n"
+                + (f"  {len(missing)} group(s) have NO labels, e.g. {missing[:6]}\n"
+                   if missing else "")
+                + (f"  {len(short)} group(s) lack samples 0..{a.nsample - 1}, e.g. {short[:4]}\n"
+                   if short else "")
+                + (f"  {len(nonfinite)} group(s) carry a non-finite DockQ, e.g. "
+                   f"{nonfinite[:4]}\n" if nonfinite else "")
                 + "  Those poses would pay a forward and contribute no ranking gradient.")
-        _rl_n = sum(len(v) for k, v in _scored_asym.items() if k in want) * len(_rl_seeds)
-        print(f"  label coverage: all {_rl_n} scored (pdb, seed, interface) group(s) hold "
-              f"{a.nsample} finite DockQ value(s)")
+        if is_main:
+            print(f"  ranking label coverage: all {len(expected)} (pdb, seed, interface) group(s) "
+                  f"hold {a.nsample} finite DockQ value(s)")
 
     def _check_eval_pool():
         """Stat the training-eval pool now, not at the first epoch boundary.
@@ -1306,6 +1316,7 @@ def main():
             _hm, a.lora_rank, a.lora_alpha or 2.0 * a.lora_rank,
             [t.strip() for t in a.lora_targets.split(",") if t.strip()], a.lora_dropout)
         trainable = [f"{prefixes[0]}.{n}" for n in _lnames]
+
         print(f"LoRA rank {a.lora_rank} alpha {a.lora_alpha or 2.0*a.lora_rank:g} "
               f"dropout {a.lora_dropout:g}: {lora_report['modules_adapted']} module(s) adapted, "
               f"{lora_report['lora_params']/1e6:.3f}M adapter parameters against "
@@ -1375,6 +1386,7 @@ def main():
     with open(a.manifest_selection) as fh:
         sel_pdbs = [r["pdb"].strip().lower() for r in csv.DictReader(fh)]
     want = [(p, sd) for p in sel_pdbs if p not in skip for sd in range(lo_s, hi_s + 1)]
+    _rank_check_coverage(want)
     print(f"manifest: {len(sel_pdbs)} selected structure(s) minus {sorted(skip) or 'none'} "
           f"x seeds {lo_s}-{hi_s} = {len(want)} intended unit(s), from {a.manifest_selection}")
 
@@ -2516,34 +2528,56 @@ def main():
             # would be the one way this mode could change the weights it is supposed to measure.
             if not a.loss_only:
                 _be0, _be1 = _gpu_span("gpu_backward")
-                # UNDER --grad-probe: the two terms are differentiated SEPARATELY first, at
-                # these exact weights, so their norms and their cosine are measurable. The real
-                # combined backward still runs afterwards, so the step the probe takes is the
-                # step the run would have taken.
+                # UNDER --grad-probe: the two terms are measured with torch.autograd.grad,
+                # which returns gradients WITHOUT touching any parameter's .grad. The first
+                # version used .backward() with opt.zero_grad() around it, which wiped every
+                # earlier pose's contribution to the open accumulation window -- so the claim that
+                # the probe took the same step as a real run was false, and the step it did take
+                # was built from one pose. Found in review of a3086ef.
+                #
+                # ACCUMULATED, NOT AVERAGED. The optimiser sees sum_i g_i, and ||sum_i g_i|| is
+                # not sum_i ||g_i||: the ranking coefficients sum to zero inside a group, so
+                # per-pose contributions can cancel heavily and a mean of per-pose norms would
+                # overstate the ranking gradient at the step. Both are reported, and alpha is read
+                # off the accumulated pair.
                 if a.grad_probe and _rank_on:
-                    _pr_terms = {}
-                    for _nm, _t in (("pae", cum / accum_eff), ("rank", None)):
-                        if _nm == "rank":
-                            _rt = None
-                            for _p in sorted({_k[1] for _k in _rank_c if _k[0] == i}):
-                                _cv = _rank_c.get((i, _p))
-                                if not _cv:
-                                    continue
-                                _sp_ = RKL_probe.iptm(pred["pae"], feat_head, configs, _p)
-                                if _sp_ is None:
-                                    continue
-                                _tm = (a.alpha_rank * _cv / _rank_div) * _sp_
-                                _rt = _tm if _rt is None else _rt + _tm
-                            _t = _rt
+                    _rt = None
+                    for _p in sorted({_k[1] for _k in _rank_c if _k[0] == i}):
+                        _cv = _rank_c.get((i, _p))
+                        if not _cv:
+                            continue
+                        _sp_ = RKL_probe.iptm(pred["pae"], feat_head, configs, _p)
+                        if _sp_ is None:
+                            continue
+                        _tm = (a.alpha_rank * _cv / _rank_div) * _sp_
+                        _rt = _tm if _rt is None else _rt + _tm
+                    _pr_tensors = [pp for _n, pp in trainable_params]
+                    _pr_norms = {}
+                    for _nm, _t in (("pae", cum / accum_eff), ("rank", _rt)):
                         if _t is None:
                             continue
-                        opt.zero_grad(set_to_none=True)
-                        _t.backward(retain_graph=True)
-                        _pr_terms[_nm] = {_n: (pp.grad.detach().float().clone()
-                                               if pp.grad is not None else None)
-                                          for _n, pp in zip(trainable, params)}
-                    opt.zero_grad(set_to_none=True)
-                    _probe["rows"].append((pdb, arm_seed, i, _pr_terms))
+                        _gs = torch.autograd.grad(_t, _pr_tensors, retain_graph=True,
+                                                  allow_unused=True)
+                        _flat = []
+                        for (_n, _pp), _g in zip(trainable_params, _gs):
+                            _gv = torch.zeros_like(_pp) if _g is None else _g.detach().float()
+                            _probe["sum"].setdefault(_nm, {})
+                            _prev = _probe["sum"][_nm].get(_n)
+                            _probe["sum"][_nm][_n] = _gv.clone() if _prev is None else _prev + _gv
+                            _probe["finite"][_nm] = (_probe["finite"].get(_nm, True)
+                                                     and bool(torch.isfinite(_gv).all()))
+                            _probe["nonzero"].setdefault(_nm, set())
+                            if float(_gv.abs().sum()) > 0:
+                                _probe["nonzero"][_nm].add(_n)
+                            _flat.append(_gv.flatten())
+                        _pr_norms[_nm] = torch.cat(_flat)
+                    if "pae" in _pr_norms and "rank" in _pr_norms:
+                        _vp, _vr = _pr_norms["pae"], _pr_norms["rank"]
+                        _c = (float((_vp @ _vr) / (_vp.norm() * _vr.norm()))
+                              if _vp.norm() > 0 and _vr.norm() > 0 else float("nan"))
+                        _probe["rows"].append((pdb, arm_seed, i, float(_vp.norm()),
+                                               float(_vr.norm()), _c))
+                    _probe["poses"] += 1
                 _obj = cum / accum_eff
                 # THE RANKING TERM, as c_i * s_i. Its gradient is the exact gradient of the unit's
                 # pairwise loss contribution, because dL/dtheta = sum_i (dL/ds_i)(ds_i/dtheta) and
@@ -2645,84 +2679,115 @@ def main():
                    if n not in set(trainable) and p.grad is not None
                    and bool(p.grad.abs().sum() > 0))
 
-    def _grad_probe_report(pr, names, a):
-        """Per-tensor norms, the PAE/ranking cosine, and the one check no label test can make.
+    # ONE LIST, NAMES AND TENSORS TOGETHER, at main level so both _apply_step and the gradient
+    # probe read the same objects in the same order. They were built independently before, and
+    # `params` lived inside _apply_step where _one_pose could not see it -- the probe would have
+    # raised NameError the first time it ran. Zipping two separately-built lists also risks
+    # pairing a name with the wrong tensor. Found in review of a3086ef.
+    trainable_params = [(n, pp) for n, pp in model.named_parameters() if n in set(trainable)]
+    if a.rank_loss and not trainable_params:
+        raise SystemExit("STOP: no trainable tensors found for the ranking term.")
 
-        THE COSINE IS THE POINT. A combined gradient norm can be SMALLER than either term's when
-        they oppose, so comparing max grad_norm across two short runs cannot tell a ranking term
-        that is too weak from one that is fighting the PAE term. cos < 0 means they pull against
-        each other and alpha_rank trades one objective for the other; cos ~ 0 means they are
-        close to orthogonal and the ranking term buys its improvement cheaply.
+    def _grad_probe_report(pr, names, a, step_taken, accum_local):
+        """Report, then RAISE on failure. A safety gate that only prints is not a gate.
+
+        WHAT IT CHECKS, and why each one exists:
+          * every trainable tensor receives a FINITE, NON-ZERO ranking gradient. This is the only
+            thing that establishes gradient flows through calculate_chain_based_ptm into the two
+            matrices; every offline test validates the label side, which cannot. An earlier
+            version computed finiteness and then left it out of the verdict, so a tensor holding
+            both valid and non-finite values could pass on the non-zero check alone.
+          * at least one optimiser step actually completed. The first probe ran 3 units = 15 poses
+            against an accumulation window of 30, so it returned before any step was taken and
+            still reported success.
+          * the ACCUMULATED gradients, because that is what the optimiser sees. ||sum_i g_i|| is
+            not sum_i ||g_i||, and the ranking coefficients sum to zero within a group, so per-pose
+            contributions cancel. alpha is read off the accumulated pair; the per-pose spread is
+            printed beside it for debugging only.
+
+        Both points were raised in review of a3086ef and both were real.
         """
-        import math as _m
-        print("\n" + "=" * 78)
-        print(f"--grad-probe: {len(pr['rows'])} pose(s) over {pr['units']} unit(s), "
-              f"alpha_rank {a.alpha_rank:g}")
-        print("=" * 78)
-        _agg = {}
-        for pdb_, sd_, i_, terms in pr["rows"]:
-            for nm, gd in terms.items():
-                for n_, g_ in gd.items():
-                    if g_ is None:
-                        continue
-                    _agg.setdefault((nm, n_), []).append(g_)
-        _tot = {}
+        bar = "=" * 78
+        print(f"\n{bar}\n--grad-probe: {pr['poses']} pose(s), {pr['units']} unit(s), "
+              f"alpha_rank {a.alpha_rank:g}, accumulation window {accum_local} pose(s)\n{bar}")
+        fail = []
+
         for nm in ("pae", "rank"):
-            print(f"\n  {nm.upper()} gradient, per trainable tensor:")
+            got = pr["sum"].get(nm)
+            if not got:
+                fail.append(f"no {nm.upper()} gradient was measured at all")
+                continue
+            print(f"\n  {nm.upper()}, accumulated over the probe:")
             for n_ in names:
-                gs = _agg.get((nm, n_))
-                if not gs:
-                    print(f"    {n_:<64} NO GRADIENT")
+                g = got.get(n_)
+                if g is None:
+                    print(f"    {n_:<60} ABSENT")
                     continue
-                import torch as _t
-                st = _t.stack([g.flatten() for g in gs])
-                nz = int((st.abs().sum(dim=1) > 0).sum())
-                fin = bool(_t.isfinite(st).all())
-                mean_norm = float(st.norm(dim=1).mean())
-                print(f"    {n_:<64} |g| mean {mean_norm:.3e}  "
-                      f"nonzero {nz}/{len(gs)}  finite {fin}")
-                _tot.setdefault(nm, []).append((n_, st))
-        # cosine, per tensor and overall, pose by pose
-        print("\n  PAE vs RANK alignment (per pose, then pooled):")
-        cos_all = []
-        for pdb_, sd_, i_, terms in pr["rows"]:
-            gp, gr = terms.get("pae"), terms.get("rank")
-            if not gp or not gr:
-                continue
-            import torch as _t
-            vp = _t.cat([gp[n].flatten() for n in names if gp.get(n) is not None])
-            vr = _t.cat([gr[n].flatten() for n in names if gr.get(n) is not None])
-            if vp.numel() != vr.numel() or vp.norm() == 0 or vr.norm() == 0:
-                continue
-            c = float((vp @ vr) / (vp.norm() * vr.norm()))
-            cos_all.append(c)
-            print(f"    {pdb_}/{sd_} pose {i_}:  |g_PAE| {float(vp.norm()):.3e}  "
-                  f"|g_rank| {float(vr.norm()):.3e}  ratio {float(vr.norm()/vp.norm()):.3f}  "
-                  f"cos {c:+.4f}")
-        if cos_all:
-            print(f"\n    pooled cosine: mean {sum(cos_all)/len(cos_all):+.4f}  "
-                  f"min {min(cos_all):+.4f}  max {max(cos_all):+.4f}")
-        # the verdict
-        bad = [n_ for n_ in names
-               if not _agg.get(("rank", n_))
-               or not any(float(g.abs().sum()) > 0 for g in _agg[("rank", n_)])]
-        print("\n  " + "-" * 74)
-        if bad:
-            print(f"  FAIL: {len(bad)} trainable tensor(s) received NO non-zero ranking "
-                  f"gradient: {bad}")
-            print("  The gradient does not reach them through calculate_chain_based_ptm. "
-                  "Do not launch.")
+                print(f"    {n_:<60} |sum g| {float(g.norm()):.4e}  "
+                      f"max|g| {float(g.abs().max()):.4e}")
+
+        # the two accumulated vectors, in the same order
+        vecs = {}
+        for nm in ("pae", "rank"):
+            got = pr["sum"].get(nm) or {}
+            fl = [got[n_].flatten() for n_ in names if got.get(n_) is not None]
+            if fl:
+                vecs[nm] = torch.cat(fl)
+        if "pae" in vecs and "rank" in vecs:
+            vp, vr = vecs["pae"], vecs["rank"]
+            np_, nr_ = float(vp.norm()), float(vr.norm())
+            cos = float((vp @ vr) / (np_ * nr_)) if np_ > 0 and nr_ > 0 else float("nan")
+            comb = float((vp + vr).norm())
+            print(f"\n  ACCUMULATED (what the optimiser sees):")
+            print(f"    |g_PAE|      {np_:.4e}")
+            print(f"    |g_rank|     {nr_:.4e}   ratio {nr_ / max(1e-30, np_):.4f}")
+            print(f"    cos(PAE,rank) {cos:+.4f}   -> " + (
+                "they OPPOSE: alpha trades one objective for the other" if cos < -0.05 else
+                "near-orthogonal: the ranking term is close to free" if abs(cos) <= 0.05 else
+                "they AGREE: the ranking term reinforces the PAE direction"))
+            print(f"    |g_PAE + g_rank| {comb:.4e}   "
+                  f"(clip threshold {a.clip_norm:g}"
+                  f"{', WOULD CLIP' if comb > a.clip_norm else ''})")
+            if nr_ > 0:
+                print(f"    for parity at the step: alpha_rank ~ "
+                      f"{a.alpha_rank * np_ / nr_:.4g}")
+            if pr["rows"]:
+                pr_ratios = [r[4] / r[3] for r in pr["rows"] if r[3] > 0]
+                pr_cos = [r[5] for r in pr["rows"] if r[5] == r[5]]
+                if pr_ratios:
+                    print(f"\n  per-pose, for comparison only: ratio mean "
+                          f"{sum(pr_ratios)/len(pr_ratios):.4f} "
+                          f"[{min(pr_ratios):.4f}, {max(pr_ratios):.4f}]"
+                          + (f", cos mean {sum(pr_cos)/len(pr_cos):+.4f}" if pr_cos else ""))
+                    print(f"  (a mean of per-pose ratios is NOT the accumulated ratio; the "
+                          f"coefficients sum to zero per group so contributions cancel)")
         else:
-            print(f"  PASS: every one of {len(names)} trainable tensor(s) received a finite, "
-                  f"non-zero ranking gradient through calculate_chain_based_ptm.")
-            if cos_all:
-                _r = [float(_t_.norm(dim=1).mean()) for _, _t_ in _tot.get("rank", [])]
-                _p = [float(_t_.norm(dim=1).mean()) for _, _t_ in _tot.get("pae", [])]
-                if _p and _r:
-                    print(f"  SCALE: |g_rank|/|g_PAE| ~ {sum(_r)/sum(_p):.3f} at alpha_rank "
-                          f"{a.alpha_rank:g}. For parity set alpha_rank ~ "
-                          f"{a.alpha_rank * sum(_p) / max(1e-30, sum(_r)):.3g}.")
-        print("=" * 78 + "\n", flush=True)
+            fail.append("could not form both accumulated gradient vectors")
+
+        if not pr["finite"].get("rank", False):
+            fail.append("the RANKING gradient contained non-finite values")
+        if not pr["finite"].get("pae", False):
+            fail.append("the PAE gradient contained non-finite values")
+        nz = pr["nonzero"].get("rank") or set()
+        absent = [n_ for n_ in names if n_ not in nz]
+        if absent:
+            fail.append(f"{len(absent)} trainable tensor(s) got NO non-zero ranking gradient: "
+                        f"{absent}")
+        if not step_taken:
+            fail.append(f"no optimiser step completed: {pr['poses']} pose(s) probed against an "
+                        f"accumulation window of {accum_local}. Raise --grad-probe.")
+
+        print("\n  " + "-" * 74)
+        if fail:
+            print("  FAIL:")
+            for f in fail:
+                print(f"    - {f}")
+            print(f"{bar}\n", flush=True)
+            raise SystemExit("STOP: --grad-probe failed its checks (above). Do not launch. "
+                             "A gate that only prints is not a gate.")
+        print(f"  PASS: all {len(names)} trainable tensor(s) received a finite, non-zero ranking "
+              f"gradient through calculate_chain_based_ptm, and an optimiser step completed.")
+        print(f"{bar}\n", flush=True)
 
     def _apply_step(step):
         """Clip, assert, step. Returns (grad_norm, n_outside_head, ok).
@@ -2740,7 +2805,7 @@ def main():
             # grad_norm is reported as nan rather than 0.0: zero is a measurement, nan is "not
             # measured", and a 0.0 here would read as a vanished gradient in the usual summaries.
             return float("nan"), 0, True
-        params = [pp for n, pp in model.named_parameters() if n in set(trainable)]
+        params = [pp for _n, pp in trainable_params]
         if world > 1:
             # BEFORE THE CLIP, NOT AFTER. Clipping each rank's partial gradient to norm 1 and then
             # averaging is not the same function as clipping the summed gradient, so the multi-GPU
@@ -3436,7 +3501,12 @@ def main():
                 if a.grad_probe:
                     _probe["units"] += 1
                     if _probe["units"] >= a.grad_probe:
-                        _grad_probe_report(_probe, trainable, a)
+                        # RAISES on failure, so the launcher's exit status carries the verdict.
+                        _grad_probe_report(_probe, trainable, a, step > 0, accum_local)
+                        # NO head_final.pt. A probe has not trained anything and a normal-looking
+                        # checkpoint in the run dir would be indistinguishable from one that had.
+                        print("  --grad-probe done; no checkpoint written (nothing was trained).",
+                              flush=True)
                         return
                 if done:
                     break
