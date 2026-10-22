@@ -1,6 +1,6 @@
 # Full training set: the four metrics, per epoch
 
-Generated 2026-10-21 12:40 PDT by `run_logging/results_table.py` from `mdv9x7`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
+Generated 2026-10-21 13:56 PDT by `run_logging/results_table.py` from `mdv9x7`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
 
 ## The lineage is one experiment in three parts
 
@@ -44,6 +44,19 @@ Budget 30, 18 interfaces, 10 validation structures. **Not** the budget-100 figur
 | 15 | `mdv9x7` | yes | 2.0417 | 2.7402 | -0.2354 | 0.2508 | -0.0401 | 0.5556 | +0.0000 |
 | 16 | `mdv9x7` | yes | 2.0035 | 2.6969 | -0.2787 | 0.2693 | -0.0216 | 0.6111 | +0.0555 |
 | 17 | `mdv9x7` | yes | 2.0309 | 2.7817 | -0.1939 | 0.2505 | -0.0404 | 0.5556 | +0.0000 |
+| 18 | `mdv9x7` | yes | 2.0474 | 2.7314 | -0.2442 | 0.2481 | -0.0428 | 0.5000 | -0.0556 |
+| 19 | `mdv9x7` | yes | 2.0178 | 2.7664 | -0.2092 | 0.2381 | -0.0528 | 0.5000 | -0.0556 |
+| 20 | `mdv9x7` | yes | 1.9694 | 2.7517 | -0.2239 | 0.2441 | -0.0468 | 0.5556 | +0.0000 |
+| 21 | `mdv9x7` | yes | 1.9385 | 2.8285 | -0.1471 | 0.2072 | -0.0837 | 0.5000 | -0.0556 |
+| 22 | `mdv9x7` | yes | 1.9866 | 2.7211 | -0.2545 | 0.2018 | -0.0891 | 0.5000 | -0.0556 |
+| 23 | `mdv9x7` | yes | 1.9388 | 2.7865 | -0.1891 | 0.2904 | -0.0005 | 0.5556 | +0.0000 |
+| 24 | `mdv9x7` | yes | 1.9685 | 2.8045 | -0.1711 | 0.2170 | -0.0739 | 0.5000 | -0.0556 |
+| 25 | `mdv9x7` | yes | 1.9217 | 2.8063 | -0.1693 | 0.1790 | -0.1119 | 0.3889 | -0.1667 |
+| 26 | `mdv9x7` | yes | 1.9166 | 2.7532 | -0.2224 | 0.1883 | -0.1026 | 0.4444 | -0.1112 |
+| 27 | `mdv9x7` | yes | 1.8788 | 2.8199 | -0.1557 | 0.2712 | -0.0197 | 0.6111 | +0.0555 |
+| 28 | `mdv9x7` | yes | 1.8934 | 3.1125 | +0.1369 | 0.1699 | -0.1210 | 0.2222 | -0.3334 |
+| 29 | `mdv9x7` | yes | 1.8679 | 2.8310 | -0.1446 | 0.2019 | -0.0890 | 0.3889 | -0.1667 |
+| 30 | `mdv9x7` | **NO** | 1.8666 | 2.8182 | -0.1574 | — | — | — | — |
 
 Held-out PAE is a loss, so **lower is better** and a negative delta is an improvement. DockQ and frac-acceptable are the opposite.
 
@@ -76,7 +89,19 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 | 15 | `mdv9x7` | 2 | 1.8 | 1.7m | 0.1m | 44.82 | 45.34 | None |
 | 16 | `mdv9x7` | 2 | 1.9 | 1.7m | 0.2m | 44.82 | 45.34 | None |
 | 17 | `mdv9x7` | 2 | 1.8 | 1.8m | 0.0m | 44.82 | 45.34 | None |
-| 18 | `?` | 2 | 1.8 | 1.8m | 0.0m | 44.82 | 45.34 | None |
+| 18 | `mdv9x7` | 2 | 1.8 | 1.8m | 0.0m | 44.82 | 45.34 | None |
+| 19 | `mdv9x7` | 2 | 1.8 | 1.7m | 0.1m | 44.82 | 45.34 | None |
+| 20 | `mdv9x7` | 2 | 1.8 | 1.8m | 0.0m | 44.82 | 45.34 | None |
+| 21 | `mdv9x7` | 2 | 1.8 | 1.8m | 0.0m | 44.82 | 45.34 | None |
+| 22 | `mdv9x7` | 1 | 1.8 | 1.7m | 0.0m | 44.82 | 45.34 | None |
+| 23 | `mdv9x7` | 2 | 1.8 | 1.7m | 0.0m | 44.82 | 45.34 | None |
+| 24 | `mdv9x7` | 2 | 1.8 | 1.7m | 0.0m | 44.82 | 45.34 | None |
+| 25 | `mdv9x7` | 2 | 1.8 | 1.8m | 0.0m | 44.82 | 45.34 | None |
+| 26 | `mdv9x7` | 0 | 1.8 | 1.7m | 0.0m | 44.82 | 45.34 | None |
+| 27 | `mdv9x7` | 2 | 1.8 | 1.7m | 0.0m | 44.82 | 45.34 | None |
+| 28 | `mdv9x7` | 1 | 1.8 | 1.8m | 0.0m | 44.82 | 45.34 | None |
+| 29 | `mdv9x7` | 2 | 2.1 | 1.8m | 0.3m | 44.82 | 45.34 | None |
+| 30 | `mdv9x7` | 1 | 1.8 | 1.7m | 0.0m | 44.82 | 45.34 | None |
 
 **Wall, accounted and residual all come from the SAME rank** — the one with the longest wall clock — so accounted + residual equals wall. Taking each column's maximum independently produced a row that did not add up under a heading that said 'worst rank'. Memory stays an across-rank maximum on purpose: there the question is whether ANY rank came near the card.
 
@@ -84,21 +109,21 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 
 ### Bucket detail, per rank
 
-**epoch 16** (`mdv9x7`)
+**epoch 28** (`mdv9x7`)
 
 - rank 0: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
 - rank 1: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-- rank 2: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+- rank 2: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89  [rank 1] epoch 28 memory: peak allocated 44.82 GB, peak reserved 45.34 GB, blocks_per_ckpt=None
 
-**epoch 17** (`mdv9x7`)
+**epoch 29** (`mdv9x7`)
+
+- rank 0: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+- rank 1: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+- rank 2: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.1m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+
+**epoch 30** (`mdv9x7`)
 
 - rank 0: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
 - rank 1: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
 - rank 2: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-
-**epoch 18** (`?`)
-
-- rank 0: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-- rank 1: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-- rank 2: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
 
