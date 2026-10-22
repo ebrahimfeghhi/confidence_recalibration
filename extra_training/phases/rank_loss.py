@@ -174,3 +174,29 @@ def pair_terms(s_vals, dq_vals, weight_by_gap=True, dq_tol=1e-6):
     loss = num / den
     loss.backward()
     return float(loss.detach()), [float(g) for g in s.grad], npair
+
+
+def coeffs(dq_vals, weight_by_gap=True, dq_tol=1e-6):
+    """(c, n_pairs) where c_i = dL/ds_i -- FROM THE LABELS ALONE, no scores needed.
+
+    THIS IS THE WHOLE REASON THE TRAINER NEEDS NO SECOND FORWARD PASS. The loss is linear in the
+    scores, L = sum_i c_i s_i, so its derivative contains no score:
+
+        c_i = - sum_{j: (i,j) valid} (dq_i - dq_j) / sum_{(i,j) valid} |dq_i - dq_j|
+
+    Verified: pair_terms returns byte-identical coefficients for score vectors as different as
+    [0.70, 0.69, 0.69, 0.69, 0.66], [0.1, 0.9, 0.5, 0.2, 0.7] and all-zeros.
+
+    Computed by handing pair_terms a dummy score vector rather than by writing the closed form out
+    again. The closed form above is right only when NO pair is dropped, and equal-DockQ pairs ARE
+    dropped; routing through the same autograd path that computes the loss keeps the two
+    definitions from drifting apart, and costs microseconds on five elements.
+    """
+    _, c, npair = pair_terms([0.0] * len(dq_vals), dq_vals,
+                             weight_by_gap=weight_by_gap, dq_tol=dq_tol)
+    return c, npair
+
+
+def value(s_vals, c):
+    """The loss itself, L = sum_i c_i s_i. For logging; no second evaluation of anything."""
+    return float(sum(a * b for a, b in zip(c, s_vals)))

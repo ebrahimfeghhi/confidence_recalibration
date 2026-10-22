@@ -30,6 +30,7 @@ import os
 import re
 
 CACHE = "rank_rho_b{b}.csv"
+COLS = ("rho_trained", "rho_shipped", "n_ifaces", "inv_trained", "inv_shipped", "spread")
 
 
 def _rows(d, ep, budget):
@@ -41,7 +42,7 @@ def _rows(d, ep, budget):
                     continue
                 try:
                     out.append((r["iface"], float(r["iptm"]), float(r["dockq"]),
-                                float(r["stored_iptm"])))
+                                float(r["stored_iptm"]), int(r["seed"])))
                 except (ValueError, KeyError):
                     continue
     return out
@@ -54,14 +55,32 @@ def _spear(x, y):
 
 
 def _one(d, ep, budget):
-    """(n_ifaces, rho_trained, rho_shipped) for one epoch, or None."""
+    """Per-epoch readouts for one run, or None.
+
+    FOUR QUANTITIES, NOT ONE, because they can move independently and the loss only supervises one
+    of them:
+
+      rho        mean within-interface Spearman(ipTM, DockQ) over all ~150 poses -- what selection
+                 needs, and the only one that was tracked at first.
+      inv        WITHIN-SEED pairwise inversion rate, the fraction of same-seed pose pairs the head
+                 orders backwards. This is the quantity --rank-loss actually supervises, and it is
+                 NOT what the loss reports: the linear loss is a covariance, so it can fall by
+                 widening gaps that were already correct while the inverted fraction stands still.
+                 Shipped head: 0.448 (a coin flip is 0.5).
+      spread     mean within-seed ipTM standard deviation. The linear loss has no stopping point,
+                 so this is the thing that can inflate without bound; shared-parameter updates can
+                 also move seed means, which is how a within-seed loss reaches cross-seed ordering.
+      n_ifaces   how many interfaces contributed.
+    """
     rows = _rows(d, ep, budget)
     if not rows:
         return None
     byif = collections.defaultdict(list)
-    for ifc, it, dq, sit in rows:
-        byif[ifc].append((it, dq, sit))
+    for ifc, it, dq, sit, sd in rows:
+        byif[ifc].append((it, dq, sit, sd))
     tr, sh = [], []
+    inv_t = inv_s = tot = 0
+    spreads = []
     for ifc, v in byif.items():
         dq = [x[1] for x in v]
         # A CONSTANT TRUTH COLUMN HAS NO ORDERING to recover, so the interface is dropped rather
@@ -72,13 +91,31 @@ def _one(d, ep, budget):
         b = _spear([x[2] for x in v], dq)
         if a is not None and b is not None:
             tr.append(a); sh.append(b)
-    if not tr:
+        # WITHIN-SEED, which needs the seed back. byif threw it away, so regroup here.
+        g = collections.defaultdict(list)
+        for _it, _dq, _sit, _sd in v:
+            g[_sd].append((_it, _dq, _sit))
+        for q in g.values():
+            if len(q) > 1:
+                _m = sum(x[0] for x in q) / len(q)
+                spreads.append((sum((x[0] - _m) ** 2 for x in q) / len(q)) ** 0.5)
+            for i in range(len(q)):
+                for j in range(i + 1, len(q)):
+                    if q[i][1] == q[j][1]:
+                        continue
+                    tot += 1
+                    if (q[i][0] - q[j][0]) * (q[i][1] - q[j][1]) < 0:
+                        inv_t += 1
+                    if (q[i][2] - q[j][2]) * (q[i][1] - q[j][1]) < 0:
+                        inv_s += 1
+    if not tr or not tot:
         return None
-    return len(tr), sum(tr) / len(tr), sum(sh) / len(sh)
+    return (len(tr), sum(tr) / len(tr), sum(sh) / len(sh),
+            inv_t / tot, inv_s / tot, sum(spreads) / max(1, len(spreads)))
 
 
 def load(root, runs, budget):
-    """epoch -> (rho_trained, rho_shipped, n_ifaces) across a '+'-joined lineage."""
+    """epoch -> (rho_trained, rho_shipped, n_ifaces, inv_trained, inv_shipped, spread)."""
     got = {}
     for part in runs.split("+"):
         d = os.path.join(root, part)
@@ -90,8 +127,12 @@ def load(root, runs, budget):
             with open(cp) as fh:
                 for r in csv.DictReader(fh):
                     try:
-                        cache[int(r["epoch"])] = (float(r["rho_trained"]),
-                                                  float(r["rho_shipped"]), int(r["n_ifaces"]))
+                        if "inv_trained" not in r:      # pre-expansion cache: recompute
+                            raise KeyError("inv_trained")
+                        cache[int(r["epoch"])] = tuple(
+                            [float(r["rho_trained"]), float(r["rho_shipped"]),
+                             int(r["n_ifaces"]), float(r["inv_trained"]),
+                             float(r["inv_shipped"]), float(r["spread"])])
                     except (ValueError, KeyError):
                         continue
         eps = sorted(int(m.group(1)) for m in
@@ -108,14 +149,14 @@ def load(root, runs, budget):
             r = _one(d, ep, budget)
             if r is None:
                 continue
-            cache[ep] = (r[1], r[2], r[0]); dirty = True
+            cache[ep] = (r[1], r[2], r[0], r[3], r[4], r[5]); dirty = True
         if dirty:
             tmp = cp + ".tmp"
             with open(tmp, "w") as fh:
-                fh.write("epoch,rho_trained,rho_shipped,n_ifaces\n")
+                fh.write("epoch," + ",".join(COLS) + "\n")
                 for ep in sorted(cache):
-                    t, s, n = cache[ep]
-                    fh.write(f"{ep},{t:.6f},{s:.6f},{n}\n")
+                    t, sh_, n, it_, is_, sp_ = cache[ep]
+                    fh.write(f"{ep},{t:.6f},{sh_:.6f},{n},{it_:.6f},{is_:.6f},{sp_:.6f}\n")
             os.replace(tmp, cp)
         got.update(cache)
     return got
