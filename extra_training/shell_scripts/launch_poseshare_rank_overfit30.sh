@@ -51,7 +51,7 @@ fi
 LAYERNORM_TYPE=openfold /home/ebrahim/Protenix/.venv/bin/python -I run_logging/launch.py \
   --cards 4,5,7 --note "POSE-SHARE + PAIRWISE RANKING LOSS. Identical to the pose-share arm 8eiek8 in every respect except one added term, so 8eiek8 is the control: block 0s own pretrained pose injection re-applied at all four pairformer blocks, training only that shared injection (10,240 parameters). THE ADDED TERM trains chain_pair_iptm to ORDER the poses of an interface by DockQ, which is the statistic selection actually uses -- an argmax of ipTM. The FT3 PAE loss is a different functional of the same logits and five arms showed they move independently: mean within-interface Spearman(ipTM, DockQ) is 0.196 shipped, 0.271 for this architecture at epoch 50, and 0.078 for the full head at epoch 30, BELOW untrained. Read panel 5 against 8eiek8; alpha_rank 1.0 is a GUESS, the two terms are different quantities." \
   -- --pose-perblock --pose-perblock-share \
-  --rank-loss --alpha-rank 1.0 --rank-labels training/fold/results.csv \
+  --rank-loss --alpha-rank 50.0 --rank-labels training/fold/results.csv \
   --train-only 'linear_no_bias_d,linear_no_bias_d_wo_onehot' \
   --fold training/fold \
   --crop-margin 10 --crop-contact 5 \
