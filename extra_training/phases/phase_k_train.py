@@ -185,6 +185,56 @@ def main():
                          "DockQ is driven by the big misses.")
     ap.add_argument("--no-rank-weight-by-gap", dest="rank_weight_by_gap",
                     action="store_false", help="weight every pose pair equally instead.")
+    ap.add_argument("--rank-form", choices=("linear", "softplus"), default="linear",
+                    help="SHAPE of the pairwise ranking term.\n"
+                         "linear (default, what every arm so far ran) is "
+                         "-(s_i - s_j)(dq_i - dq_j)/sum|ddq|. Its coefficients come from the "
+                         "LABELS ALONE, so it needs no scoring pass -- and that convenience IS "
+                         "its defect: a gradient that ignores the current scores is constant in "
+                         "them, so the loss has no stopping point and cannot tell an "
+                         "already-correct pair from an inverted one. Scaling all scores by lambda "
+                         "scales the loss by lambda, so WIDENING THE SPREAD PAYS WITHOUT LIMIT, "
+                         "and at the real gap scale spreading is worth ~71x more than reordering. "
+                         "Measured in ntwjfp: spread 0.0114 -> 0.0371 over 8 epochs while held-out "
+                         "rank loss went +0.00018 -> +0.00288 -- the training objective improved "
+                         "while held-out ORDERING got worse.\n"
+                         "softplus is (2 tau/W) sum w_ij softplus(-m_ij/tau), whose per-pair "
+                         "gradient weight sigmoid(-m/tau) decays to 0 once a pair is comfortably "
+                         "correct and caps at 1 when badly inverted. Spreading then buys a bounded "
+                         "amount and stops. Costs the scoring pass (--rank-form softplus implies "
+                         "one), which is exactly the price of having somewhere to stop.")
+    ap.add_argument("--rank-tau", type=float, default=None, metavar="TAU",
+                    help="softplus temperature, the margin scale over which the loss goes from "
+                         "'push hard' to 'satisfied'. Defaults to rank_loss.DEFAULT_TAU = 0.0305, "
+                         "the MEASURED median |ipTM gap| over cross-seed pairs of the full "
+                         "training set (497 structures, 1,028 interfaces, 1,056,035 pairs); "
+                         "reproduce with run_logging/measure_tau.py. NOT a free parameter: tau=1 "
+                         "is the units error the first softplus attempt made (gradient 0.495 for a "
+                         "correct pair vs 0.505 for an inverted one -- inert), and tau far below "
+                         "the gap scale ignores every pair that is not an outright inversion. "
+                         "The within-seed median is 0.0081 and does NOT transfer: cross-seed pairs "
+                         "are 3.9x wider.")
+    ap.add_argument("--rank-cross-seed", action="store_true",
+                    help="RANK ACROSS SEEDS, not just within one. Deployment selects argmax of "
+                         "ipTM over ALL poses of an interface regardless of seed, so cross-seed "
+                         "ordering IS the objective and within-seed ordering is a proxy. Measured "
+                         "variance split: ipTM is 82.3%% between-seed while DockQ is 54.6%% "
+                         "pose-level.\n"
+                         "This regroups the epoch so that ALL seeds of a structure land in one "
+                         "optimiser step, which makes the ranking group the whole interface (50 "
+                         "poses, ~1,225 cross-seed pairs) rather than a 3-seed sample. Measured "
+                         "agreement between a subsample's gradient direction and the full group's, "
+                         "as cosine over shared poses (400 interfaces, 8 draws each): 3 seeds mean "
+                         "0.856 with p10 0.544, 5 seeds mean 0.925 with p10 0.823, 10 seeds exact. "
+                         "Costs nothing in batch size -- a step is ~20 units either way -- so it "
+                         "trades structures per step for an exact ranking signal.")
+    ap.add_argument("--rank-structs-per-step", type=int, default=2, metavar="S",
+                    help="with --rank-cross-seed, how many STRUCTURES share an optimiser step. "
+                         "S structures x all their seeds x --nsample poses is the step. Default 2 "
+                         "= 2 x 10 x 5 = 100 poses, matching the ~100 the current schedule already "
+                         "uses. S x seeds need not divide the rank count; the short rank rotates "
+                         "and the totals are checked at startup rather than being allowed to "
+                         "deadlock.")
     ap.add_argument("--l2-sp", type=float, default=0.0, metavar="LAMBDA",
                     help="L2-SP: add LAMBDA * ||W - W_shipped||^2 to the loss, penalising DISTANCE "
                          "FROM THE SHIPPED HEAD rather than distance from zero. Plain weight decay "
@@ -3266,6 +3316,78 @@ def main():
                 # ROTATED BY POSITION so a rank is not always handed the same seed slot.
                 mine.append(grp[(rank + gi) % world])
         return mine
+
+    def build_epoch_cross_seed(ep):
+        """This epoch's unit sequence FOR THIS RANK, with ALL SEEDS OF A STRUCTURE IN ONE STEP.
+
+        Returns (mine, quotas): the flat unit list and this rank's unit count per step. The step
+        boundary comes from `quotas` rather than from a constant, because S structures x their
+        seeds need not divide `world`.
+
+        WHY THE REGROUPING. --rank-cross-seed ranks poses across seeds, and the coefficient for one
+        pose depends on every other pose in its interface. So the whole interface has to be scored
+        before any backward in the step, which means every seed of the structure must be inside the
+        same optimiser step. build_epoch's normal order deliberately spreads a structure's ten
+        seeds across ten different steps (one per rank per step), which is the opposite.
+
+        THE STEP STAYS THE SAME SIZE. S=2 structures x 10 seeds x 5 poses = 100 poses, against the
+        ~100 the normal schedule already uses (K=6 structures x 3 ranks x 5 poses). What changes is
+        the SHAPE: 2 structures with all their seeds instead of ~6 structures with 3 seeds each. So
+        the ranking signal becomes exact (the full ~1,225 cross-seed pairs of each interface rather
+        than a 75-pair sample, measured cosine 1.000 vs 0.856) at the cost of each step's PAE
+        gradient seeing a third as many structures.
+
+        NO SEED SITS OUT. build_epoch chops seeds into whole groups of `world` and the remainder
+        -- one seed per structure at world 3 -- does not train that epoch. Here a group is ALL the
+        seeds, so every pose is used every epoch.
+
+        THE SHORT RANK ROTATES. 20 units over 3 ranks is 7/7/6, and a rank that takes fewer units
+        in every step would reach the end of the epoch having taken a different number of steps --
+        which does not fail, it HANGS on the first mismatched all-reduce. So the extra units go to
+        ranks (k + 0 .. k + rem - 1) mod world at step k, which gives every rank the same total
+        whenever the step count is a multiple of `world`. When it is not, per-rank unit counts
+        differ and the existing cross-rank count check refuses to start -- loudly, rather than
+        deadlocking. UNITS ARE SHUFFLED WITHIN THE STEP so each rank gets a mix of the step's
+        structures rather than one structure's seeds, which is what keeps per-rank token counts
+        comparable; every seed of a structure crops to the same token count, so a balanced mix of
+        structures is balanced work.
+        """
+        by = {}
+        for _p, _lp, _c in flat:
+            by.setdefault(_p, []).append((_lp, _c))
+        rng_e = random.Random(a.seed + ep)
+        order = sorted(by)
+        rng_e.shuffle(order)
+        S = max(1, int(a.rank_structs_per_step))
+        steps = []
+        for i in range(0, len(order), S):
+            chunk = order[i:i + S]
+            if len(chunk) < S:
+                # A SHORT FINAL STEP IS DROPPED, not padded. Padding would repeat poses inside one
+                # gradient, and a step holding fewer structures than S is still correct -- but the
+                # unit count would differ from every other step and the quota bookkeeping that
+                # keeps the ranks in lockstep is what matters more here than the last few units.
+                break
+            units = []
+            for _p in chunk:
+                u = by[_p][:]
+                rng_e.shuffle(u)
+                units += [(_p, _lp, _c) for _lp, _c in u]
+            rng_e.shuffle(units)
+            steps.append(units)
+        if not steps:
+            raise SystemExit(
+                f"STOP: --rank-cross-seed with --rank-structs-per-step {S} needs at least {S} "
+                f"structure(s); the manifest resolved {len(order)}.")
+        n_units = len(steps[0])
+        base, rem = divmod(n_units, world)
+        mine, quotas = [], []
+        for k, units in enumerate(steps):
+            counts = [base + (1 if ((r - k) % world) < rem else 0) for r in range(world)]
+            start = sum(counts[:rank])
+            mine += units[start:start + counts[rank]]
+            quotas.append(counts[rank])
+        return mine, quotas
 
     def train_loop(steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
         for g in opt.param_groups:
