@@ -1064,6 +1064,21 @@ def main():
         # raised NameError at startup the first time --rank-loss was passed. Found in review of
         # a3086ef. See _rank_check_coverage below.
 
+    def _rank_key(pdb, arm_seed_or_int, pair):
+        """THE label key, built in exactly one place.
+
+        A unit's identifier is the label/trunk basename -- "free_500000", not 500000 -- because
+        that is what names the files. The guard built its keys from the manifest, where seeds are
+        plain ints, while the lookup in run_unit did int(arm_seed) on the basename and raised
+        ValueError on the first unit. Both sides were internally consistent and disagreed with
+        each other, which is the same shape as the reference-vs-model chain bug: two independent
+        key constructions. There is now one, so they cannot diverge again.
+        """
+        sd = arm_seed_or_int
+        if isinstance(sd, str):
+            sd = sd.rsplit("_", 1)[-1]
+        return (pdb, int(sd), pair)
+
     def _rank_check_coverage(want_units):
         """Every (pdb, seed, interface) this run will train must carry --nsample finite DockQ.
 
@@ -1077,7 +1092,7 @@ def main():
         """
         if not a.rank_loss:
             return
-        expected = {(pdb, sd, pr) for pdb, sd in want_units
+        expected = {_rank_key(pdb, sd, pr) for pdb, sd in want_units
                     for pr in (_scored_asym.get(pdb) or ())}
         if not expected:
             raise SystemExit("STOP: --rank-loss expected zero (pdb, seed, interface) groups. "
@@ -2635,7 +2650,7 @@ def main():
         if a.rank_loss and not a.loss_only:
             import rank_loss as RKL
             _rk_pairs = sorted(_scored_asym.get(pdb) or ())
-            _rk_lab = [(_p, _rank_lab.get((pdb, int(arm_seed), _p))) for _p in _rk_pairs]
+            _rk_lab = [(_p, _rank_lab.get(_rank_key(pdb, arm_seed, _p))) for _p in _rk_pairs]
             _rk_lab = [(_p, _d) for _p, _d in _rk_lab if _d]
             # AVERAGED OVER THE UNIT'S INTERFACES, so a 3-interface structure does not get three
             # times the weight of a 1-interface one.
