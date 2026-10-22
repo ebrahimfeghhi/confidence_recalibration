@@ -116,7 +116,16 @@ def main():
             if w.shape == g.shape:
                 maxdiff = max(maxdiff, float(np.abs(w - g).max()))
             else:
-                print(f"  SHAPE MISMATCH on {os.path.basename(tp)}: {w.shape} vs {g.shape}")
+                # A HARD FAILURE, NOT A NOTE. maxdiff is only updated when the shapes
+                # match, so a run where every pair mismatched would print these lines and then
+                # report "largest absolute difference 0.000e+00" -- i.e. declare the two paths
+                # interchangeable on the strength of having compared nothing. Found in review
+                # of a3086ef.
+                raise SystemExit(
+                    f"STOP: chain_pair_iptm shape mismatch on {os.path.basename(tp)}: "
+                    f"{w.shape} (narrow) vs {g.shape} (current). The two paths are not "
+                    f"returning the same object, so they cannot be compared and the narrow "
+                    f"path must not be adopted on this evidence.")
         del feat, s_in, s_tr, z, x, plddt, pae, pde, cp, summary, _full, narrow
         torch.cuda.empty_cache()
         if i % 5 == 0:
