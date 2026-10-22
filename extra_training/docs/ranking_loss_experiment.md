@@ -223,15 +223,23 @@ the objective. λ is in this arm because it is cheap to carry, not because it ha
   `‖g_rank‖` and **`cos(g_PAE, g_rank)`** — which answers both how large the ranking update is and
   whether it cooperates with or fights the existing objective. Separately for `g_L2SP` if that arm
   is run.
-- **The within-seed ipTM spread is not yet logged.** It is the quantity to watch with a linear
-  loss. Computable post-hoc from the eval shards the same way ρ is
-  ([`run_logging/rank_rho.py:80`](../run_logging/rank_rho.py#L80)), so it should be a second column
-  there rather than a fifth trainer patch.
-- **Cross-seed ordering is untouched**, and it is 82.3% of ipTM's variance.
+- **Cross-seed ordering is not directly supervised**, and between-seed variation is 82.3% of
+  ipTM's. But it is reachable: shared-parameter updates can move seed means, so the effect is
+  unsupervised rather than absent, and `rho_trained` is what measures it.
 - **Nothing has run on a GPU.** Offline checks passed: autograd vs finite differences 5.6e-17,
-  gradients sum to zero, label coverage complete, no unbound names. The untested path is
-  `calculate_chain_based_ptm` with a graph attached, and the pass-A/pass-B scalar agreement under
-  dropout.
+  coefficients identical across unrelated score vectors, gradients summing to zero, label coverage
+  770/770, no unbound names. **The untested path is the gradient through
+  `calculate_chain_based_ptm` into the two trainable matrices** — a label-coefficient test cannot
+  establish it. The smoke test must confirm both matrices receive finite, non-zero ranking
+  gradients and that an optimiser step completes.
+- **How to read the outcome**, since the loss falling is not by itself evidence of better ranking:
+
+  | observation | reading |
+  |---|---|
+  | loss falls, inversions fall | within-seed discrimination genuinely improved |
+  | loss falls, inversions flat | margin expansion only — revisit a *scaled* logistic loss |
+  | inversions fall, ρ flat | local gain, cross-seed effects limiting selection |
+  | ρ **and** selected DockQ improve | the result that matters |
 
 ## Monitoring — four quantities, because they move independently
 

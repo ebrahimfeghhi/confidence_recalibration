@@ -955,8 +955,19 @@ def main():
                 if _m1 is None or _m2 is None:
                     _miss.append(f"{_r['pdb']}:{_r['chain1']}/{_r['chain2']}")
                     continue
-                _scored_asym.setdefault(_r["pdb"], set()).add(
-                    (ord(_m1) - ord("A"), ord(_m2) - ord("A")))
+                # NORMALISED LOW-HIGH. chain_roles maps ref_chain -> model_chain, and the
+                # pool's (chain1, chain2) order is the REFERENCE order, so the model-chain pair
+                # comes out descending for most interfaces -- 46 of 77 on the overfit30 pool.
+                # _set_pae_mask symmetrises explicitly so it never cared, but --rank-loss looks up
+                # DockQ labels by this tuple and rank_loss.parse_iface normalises to (min, max):
+                # unnormalised, the lookup found 9 of 77 pairs and the other 68 interfaces would
+                # have paid a forward for zero ranking gradient. chain_pair_iptm is symmetric --
+                # phase_k_eval reads cpi[ai, aj] in the pose's own order and reproduces the fold's
+                # stored ipTM to 2e-3 on every row, descending ones included -- so normalising
+                # changes no value, only the key.
+                _a1 = ord(_m1) - ord("A")
+                _a2 = ord(_m2) - ord("A")
+                _scored_asym.setdefault(_r["pdb"], set()).add((min(_a1, _a2), max(_a1, _a2)))
         if _miss:
             raise SystemExit(f"STOP: {len(_miss)} pool interface(s) have no role mapping, e.g. "
                              f"{_miss[:4]}. The PAE mask would silently drop their blocks.")
@@ -993,7 +1004,7 @@ def main():
         if not os.path.exists(_rl_p):
             raise SystemExit(f"STOP: --rank-loss found no DockQ labels at {_rl_p}. Pass "
                              f"--rank-labels explicitly.")
-        _rank_lab, _rl_bad = RKL.load_labels(_rl_p)
+        _rank_lab, _rl_bad = RKL.load_labels(_rl_p, _roles_p)
         if not _rank_lab:
             raise SystemExit(f"STOP: {_rl_p} yielded no usable (pdb, seed, pair) -> DockQ groups.")
         # THE LABELS MUST COVER THE INTERFACES THIS RUN TRAINS, checked here and not at the first
@@ -1020,26 +1031,41 @@ def main():
                 f"STOP: {len(_rl_missing)} scored structure(s) have no DockQ labels in {_rl_p}, "
                 f"e.g. {_rl_missing[:6]}. Their poses would pay a forward and contribute no "
                 f"ranking gradient, making this a partial experiment.")
-        # PER-GROUP COMPLETENESS. A group short of --nsample labels, or carrying a non-finite
-        # DockQ, is reported rather than silently filtered out in the training loop.
-        _rl_short, _rl_nonfinite = [], []
-        for (_p_pdb, _p_sd, _p_pair), _m in _rank_lab.items():
-            if _p_pdb not in _scored_asym or _p_pair not in _scored_asym[_p_pdb]:
+        # PER-GROUP COMPLETENESS, DRIVEN FROM THE SCORED SIDE. The previous version iterated
+        # over the LABELS and skipped any whose pair was not in _scored_asym -- so a scored pair
+        # with no labels at all was invisible to it, which is exactly how the descending-pair key
+        # mismatch above survived an offline pre-flight that reported "all 30 structures covered".
+        # A pdb-level check cannot see a per-pair hole. This walks every (pdb, pair, seed) the run
+        # will actually train and demands the group exist with --nsample finite DockQ values.
+        _rl_lo, _rl_hi = (int(_x) for _x in a.seeds.split("-"))
+        _rl_seeds = range(_rl_lo, _rl_hi + 1)
+        _rl_nogroup, _rl_short, _rl_nonfinite = [], [], []
+        for _p_pdb in sorted(_scored_asym):
+            if _p_pdb not in want:
                 continue
-            if sorted(_m) != list(range(a.nsample)):
-                _rl_short.append((_p_pdb, _p_sd, _p_pair, sorted(_m)))
-            if any(v != v for v in _m.values()):
-                _rl_nonfinite.append((_p_pdb, _p_sd, _p_pair))
-        if _rl_short or _rl_nonfinite:
+            for _p_pair in sorted(_scored_asym[_p_pdb]):
+                for _p_sd in _rl_seeds:
+                    _m = _rank_lab.get((_p_pdb, _p_sd, _p_pair))
+                    if not _m:
+                        _rl_nogroup.append((_p_pdb, _p_sd, _p_pair))
+                        continue
+                    if sorted(_m) != list(range(a.nsample)):
+                        _rl_short.append((_p_pdb, _p_sd, _p_pair, sorted(_m)))
+                    # isfinite, not v != v: the latter catches NaN but not +-inf.
+                    if not all(math.isfinite(_v) for _v in _m.values()):
+                        _rl_nonfinite.append((_p_pdb, _p_sd, _p_pair))
+        if _rl_nogroup or _rl_short or _rl_nonfinite:
             raise SystemExit(
                 f"STOP: --rank-loss label coverage is incomplete in {_rl_p}.\n"
-                f"  {len(_rl_short)} group(s) do not hold exactly samples 0..{a.nsample - 1}"
-                + (f", e.g. {_rl_short[:4]}" if _rl_short else "")
-                + (f"\n  {len(_rl_nonfinite)} group(s) carry a non-finite DockQ, e.g. "
-                   f"{_rl_nonfinite[:4]}" if _rl_nonfinite else "")
-                + "\n  A short group contributes fewer pairs than the experiment claims; a "
-                  "non-finite one poisons the coefficients.")
-        print(f"  label coverage: every scored (pdb, seed, interface) group holds "
+                + (f"  {len(_rl_nogroup)} scored (pdb, seed, interface) group(s) have NO labels, "
+                   f"e.g. {_rl_nogroup[:4]}\n" if _rl_nogroup else "")
+                + (f"  {len(_rl_short)} group(s) do not hold exactly samples "
+                   f"0..{a.nsample - 1}, e.g. {_rl_short[:4]}\n" if _rl_short else "")
+                + (f"  {len(_rl_nonfinite)} group(s) carry a non-finite DockQ, e.g. "
+                   f"{_rl_nonfinite[:4]}\n" if _rl_nonfinite else "")
+                + "  Those poses would pay a forward and contribute no ranking gradient.")
+        _rl_n = sum(len(v) for k, v in _scored_asym.items() if k in want) * len(_rl_seeds)
+        print(f"  label coverage: all {_rl_n} scored (pdb, seed, interface) group(s) hold "
               f"{a.nsample} finite DockQ value(s)")
 
     def _check_eval_pool():
@@ -3123,6 +3149,15 @@ def main():
                                   "frame_direction": a.frame_direction,
                                   "pose_perblock": a.pose_perblock,
                                   "pose_perblock_tied": a.pose_perblock_tied,
+                                  # FOURTH TIME, five fields at once. pose_perblock_share, l2_sp
+                                  # and the three ranking fields were all in the comparison side
+                                  # and none of them here, so a bundle moved without its args.json
+                                  # carried no record of the architecture OR the objective. Found
+                                  # in review of 04503a9.
+                                  "pose_perblock_share": a.pose_perblock_share,
+                                  "l2_sp": a.l2_sp,
+                                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
+                                  "rank_weight_by_gap": a.rank_weight_by_gap,
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
