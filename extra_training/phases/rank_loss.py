@@ -55,8 +55,17 @@ TAU IS MEASURED, NOT CHOSEN -- see run_logging/measure_tau.py. Over the full tra
 (training/fold/results.csv: 497 structures, 1,028 interfaces, 1,056,035 CROSS-SEED pairs after
 dropping DockQ ties) the median |ipTM gap| is 0.0305, which is the default. Cross-seed pairs are
 3.9x wider than the within-seed 0.0081, so the within-seed figure does not transfer. At tau=0.0305
-inverted pairs are 43.7% of pairs but receive 71.3% of the gradient; under the linear loss they
-would receive 43.7%, equal weight per pair. That redirection is the entire point.
+inverted pairs are 43.7% of pairs BY COUNT and take 81.6% of the PAIRWISE SCORE-SPACE GRADIENT
+MASS, against 40.4% under the DockQ-weighted linear loss -- a redistribution of +41.3 points. That
+redirection is the entire point.
+
+TWO THINGS THAT MEASUREMENT IS NOT, both of which an earlier version of it got wrong. It is not
+the parameter gradient: per-pair mass is |d_i - d_j| sigmoid(-m/tau) * 2/W for the softplus and
+|d_i - d_j|/W for the linear form, and parameter Jacobians and cross-pose cancellation are not in
+it (a probe once measured 65x cancellation between per-pose and accumulated norms). And the
+baseline is NOT the raw inversion count: with the gap as the weight the linear loss does not give
+every pair equal gradient magnitude, so 43.7% is the right comparison only for
+--no-rank-weight-by-gap, where the figures are 44.7% -> 72.7%.
 
 ONE GLOBAL TAU, NOT PER-INTERFACE. Per-interface median gap spans ~1,700x, which sounds fatal but
 is not, because the failure modes are asymmetric: wide interfaces have their CORRECT pairs saturate
