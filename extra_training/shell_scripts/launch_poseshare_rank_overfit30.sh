@@ -30,7 +30,10 @@
 # them. The --pose-perblock and --pose-perblock-tied modes keep bit-identity; this one cannot.
 
 #
-# ONE VARIABLE between the two pose arms: only --l2-sp differs. Everything else matches the three
+# ONE VARIABLE against 8eiek8: the added pairwise ranking term. No L2-SP in this arm --
+# L2-SP is 0-for-2 here (4x8t44 null at 2.0% of the loss; wpg274 did not stop the ordering
+# collapse) and bundling it would make a ranking result uninterpretable. Everything else
+# matches the three
 # capacity arms -- 30 structures, seeds 500000-500009, crop 10/5 at 3400, accum 85, nsample 5,
 # K=6, lr 1e-2, warmup 20, masked PAE-only, per-epoch val10 + DockQ at budget 30, checkpointing
 # off, single-worker prefetch, 15 steps/epoch, 90 units/rank, 1350 poses -- except 100 epochs.

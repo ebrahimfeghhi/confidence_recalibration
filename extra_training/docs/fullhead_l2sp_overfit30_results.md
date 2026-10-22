@@ -1,6 +1,6 @@
 # Full training set: the four metrics, per epoch
 
-Generated 2026-10-22 09:56 PDT by `run_logging/results_table.py` from `wpg274`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
+Generated 2026-10-22 10:09 PDT by `run_logging/results_table.py` from `wpg274`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
 
 ## The lineage is one experiment in three parts
 
@@ -64,6 +64,8 @@ Budget 30, 18 interfaces, 10 validation structures. **Not** the budget-100 figur
 | 35 | `wpg274` | yes | 1.9085 | 2.8601 | -0.1155 | 0.2857 | -0.0052 | 0.5556 | +0.0000 |
 | 36 | `wpg274` | yes | 1.8875 | 2.9682 | -0.0074 | 0.1779 | -0.1130 | 0.2778 | -0.2778 |
 | 37 | `wpg274` | yes | 1.8720 | 2.9095 | -0.0661 | 0.1742 | -0.1167 | 0.3333 | -0.2223 |
+| 38 | `wpg274` | yes | 1.8838 | 2.7805 | -0.1951 | 0.2509 | -0.0400 | 0.4444 | -0.1112 |
+| 39 | `wpg274` | **NO** | 1.8685 | 2.9558 | -0.0198 | — | — | — | — |
 
 Held-out PAE is a loss, so **lower is better** and a negative delta is an improvement. DockQ and frac-acceptable are the opposite.
 
@@ -116,6 +118,8 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 | 35 | `wpg274` | 1 | 1.8 | 1.7m | 0.0m | 44.89 | 45.42 | None |
 | 36 | `wpg274` | 1 | 1.8 | 1.7m | 0.0m | 44.89 | 45.42 | None |
 | 37 | `wpg274` | 1 | 1.8 | 1.7m | 0.0m | 44.89 | 45.42 | None |
+| 38 | `wpg274` | 2 | 1.8 | 1.8m | 0.0m | 44.89 | 45.42 | None |
+| 39 | `wpg274` | 2 | 1.8 | 1.8m | 0.0m | 44.89 | 45.42 | None |
 
 **Wall, accounted and residual all come from the SAME rank** — the one with the longest wall clock — so accounted + residual equals wall. Taking each column's maximum independently produced a row that did not add up under a heading that said 'worst rank'. Memory stays an across-rank maximum on purpose: there the question is whether ANY rank came near the card.
 
@@ -123,19 +127,19 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 
 ### Bucket detail, per rank
 
-**epoch 35** (`wpg274`)
-
-- rank 0: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-- rank 1: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-- rank 2: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-
-**epoch 36** (`wpg274`)
-
-- rank 0: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-- rank 1: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-- rank 2: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
-
 **epoch 37** (`wpg274`)
+
+- rank 0: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+- rank 1: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+- rank 2: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+
+**epoch 38** (`wpg274`)
+
+- rank 0: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+- rank 1: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+- rank 2: apply_step_total 0.0m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
+
+**epoch 39** (`wpg274`)
 
 - rank 0: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89
 - rank 1: apply_step_total 0.1m/15  crop_slice 0.2m/90  cropped_tokens mean 407  gpu_backward 1.2m/450  gpu_forward 0.5m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 1.5m/450  prefetch_issue 0.0m/89

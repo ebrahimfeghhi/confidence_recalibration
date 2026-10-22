@@ -80,35 +80,69 @@ import re
 
 import torch
 
-# `10fj_AB` -> pdb `10fj`, chain letters `A`,`B`. write_job_cif letters model chains A, B, C... in
-# asym_id order, so a letter's alphabet position IS its asym index -- the same join phase_k_train
-# does for --pae-scored-pairs and phase_k_eval does for chain_roles.
-IFACE = re.compile(r"^(?P<pdb>[0-9a-zA-Z]+)_(?P<c1>[A-Z])(?P<c2>[A-Z])$")
+# `10fj_AB` -> pdb `10fj`, REFERENCE chains `A`,`B`. NOT model chains: results.csv names an
+# interface by the chains of the REFERENCE structure, while chain_pair_iptm is indexed by the
+# model's asym ids. The two differ for most interfaces -- 7sfw_EO is reference E/O and model C/A.
+IFACE = re.compile(r"^(?P<pdb>[0-9a-zA-Z]+)_(?P<c1>[A-Za-z])(?P<c2>[A-Za-z])$")
 
 
-def parse_iface(iface):
-    """(pdb, (asym_lo, asym_hi)) or None. The pair is ORDERED LOW-HIGH so it is hashable one way."""
+def load_roles(path):
+    """{pdb: {ref_chain: model_chain}} from a fold's chain_roles.csv, the same join the trainer
+    uses for --pae-scored-pairs and phase_k_eval uses for its own."""
+    out = {}
+    with open(path) as fh:
+        for r in csv.DictReader(fh):
+            out.setdefault(r["pdb"], {})[r["ref_chain"]] = r["model_chain"]
+    return out
+
+
+def parse_iface(iface, roles):
+    """(pdb, (asym_lo, asym_hi)) in MODEL asym indices, or None.
+
+    THE JOIN IS NOT OPTIONAL AND NOT A LETTER CAST. The first version of this function read the
+    iface letters as asym indices directly -- `7sfw_EO` became (4, 14). The real model pair is
+    (0, 2), because write_job_cif letters model chains A, B, C... in asym_id order and
+    chain_roles.csv maps reference chain -> model chain. Measured consequence on the overfit30
+    pool: of 770 scored (pdb, seed, interface) groups the trainer would look up, the letter cast
+    found 190, and the ones it did find matched by coincidence where the letters happened to
+    collide. That is the error phase_k_eval refuses outright -- reading one interface's ipTM
+    against another's DockQ -- arriving through the labels instead.
+
+    NORMALISED LOW-HIGH so the tuple is hashable one way, matching phase_k_train's _scored_asym.
+    chain_pair_iptm is symmetric (phase_k_eval reads cpi[ai, aj] in the pose's own order and
+    reproduces the fold's stored ipTM to 2e-3 on every row), so the order never changes a value.
+    """
     m = IFACE.match(iface.strip())
     if not m:
         return None
-    a = ord(m.group("c1")) - ord("A")
-    b = ord(m.group("c2")) - ord("A")
+    rm = roles.get(m.group("pdb"))
+    if not rm:
+        return None
+    m1, m2 = rm.get(m.group("c1")), rm.get(m.group("c2"))
+    if m1 is None or m2 is None:
+        return None
+    a = ord(m1) - ord("A")
+    b = ord(m2) - ord("A")
     return m.group("pdb"), (min(a, b), max(a, b))
 
 
-def load_labels(path):
-    """{(pdb, seed, asym_pair): {sample: dockq}} from a fold's results.csv.
+def load_labels(path, roles_path):
+    """{(pdb, seed, model_asym_pair): {sample: dockq}} from a fold's results.csv.
+
+    `roles_path` is the fold's chain_roles.csv, and it is REQUIRED, not a convenience: the iface
+    column names REFERENCE chains while the key must be model asym ids. See parse_iface for what
+    the letter cast cost.
 
     KEYED BY INTERFACE, NOT STRUCTURE. A training structure can hold several scored interfaces
     (1,028 over the 488 structures), and reading one interface's ipTM against another's DockQ is
-    the exact error phase_k_eval refuses to run. The asym pair in the key is what makes the join
-    explicit here too.
+    the exact error phase_k_eval refuses to run.
     """
+    roles = load_roles(roles_path)
     out = collections.defaultdict(dict)
     bad = 0
     with open(path) as fh:
         for r in csv.DictReader(fh):
-            p = parse_iface(r.get("iface", ""))
+            p = parse_iface(r.get("iface", ""), roles)
             if p is None:
                 bad += 1
                 continue

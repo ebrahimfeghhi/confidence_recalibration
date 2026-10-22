@@ -30,7 +30,8 @@ import os
 import re
 
 CACHE = "rank_rho_b{b}.csv"
-COLS = ("rho_trained", "rho_shipped", "n_ifaces", "inv_trained", "inv_shipped", "spread")
+COLS = ("rho_trained", "rho_shipped", "n_ifaces", "inv_trained", "inv_shipped",
+        "spread", "tie_trained", "tie_shipped")
 
 
 def _rows(d, ep, budget):
@@ -63,10 +64,20 @@ def _one(d, ep, budget):
       rho        mean within-interface Spearman(ipTM, DockQ) over all ~150 poses -- what selection
                  needs, and the only one that was tracked at first.
       inv        WITHIN-SEED pairwise inversion rate, the fraction of same-seed pose pairs the head
-                 orders backwards. This is the quantity --rank-loss actually supervises, and it is
-                 NOT what the loss reports: the linear loss is a covariance, so it can fall by
-                 widening gaps that were already correct while the inverted fraction stands still.
-                 Shipped head: 0.448 (a coin flip is 0.5).
+                 orders backwards, with a PREDICTED TIE SCORED AS HALF AN ERROR. This is the
+                 quantity --rank-loss actually supervises, and it is NOT what the loss reports: the
+                 linear loss is a covariance, so it can fall by widening gaps that were already
+                 correct while the inverted fraction stands still. 0.0 is perfect, 0.5 is random or
+                 no ordering at all, 1.0 is fully reversed. Shipped head: 0.4502.
+
+                 THE HALF-CREDIT IS NOT COSMETIC. Counting only strict inversions (product < 0)
+                 scores a predicted tie as CORRECT, so a head that gave all five poses the same
+                 ipTM would report an inversion rate of 0.0 -- a perfect score for having learned
+                 no ordering whatsoever. That is a live failure mode for a loss whose whole job is
+                 to separate scores. Measured tie frequency is small (0.43% shipped, 0.00% in both
+                 trained arms, so the correction moves 0.4481 to 0.4502) but it is reported in its
+                 own column rather than assumed away. Found in review of 04503a9.
+      tie        fraction of informative pairs the head scores exactly equal.
       spread     mean within-seed ipTM standard deviation. The linear loss has no stopping point,
                  so this is the thing that can inflate without bound; shared-parameter updates can
                  also move seed means, which is how a within-seed loss reaches cross-seed ordering.
@@ -79,7 +90,8 @@ def _one(d, ep, budget):
     for ifc, it, dq, sit, sd in rows:
         byif[ifc].append((it, dq, sit, sd))
     tr, sh = [], []
-    inv_t = inv_s = tot = 0
+    inv_t = inv_s = tie_t = tie_s = 0.0
+    tot = 0
     spreads = []
     for ifc, v in byif.items():
         dq = [x[1] for x in v]
@@ -102,20 +114,27 @@ def _one(d, ep, budget):
             for i in range(len(q)):
                 for j in range(i + 1, len(q)):
                     if q[i][1] == q[j][1]:
-                        continue
+                        continue          # no ordering information in the TRUTH
                     tot += 1
-                    if (q[i][0] - q[j][0]) * (q[i][1] - q[j][1]) < 0:
-                        inv_t += 1
-                    if (q[i][2] - q[j][2]) * (q[i][1] - q[j][1]) < 0:
-                        inv_s += 1
+                    _pt = (q[i][0] - q[j][0]) * (q[i][1] - q[j][1])
+                    _ps = (q[i][2] - q[j][2]) * (q[i][1] - q[j][1])
+                    if _pt < 0:
+                        inv_t += 1.0
+                    elif _pt == 0:
+                        inv_t += 0.5; tie_t += 1.0
+                    if _ps < 0:
+                        inv_s += 1.0
+                    elif _ps == 0:
+                        inv_s += 0.5; tie_s += 1.0
     if not tr or not tot:
         return None
     return (len(tr), sum(tr) / len(tr), sum(sh) / len(sh),
-            inv_t / tot, inv_s / tot, sum(spreads) / max(1, len(spreads)))
+            inv_t / tot, inv_s / tot, sum(spreads) / max(1, len(spreads)),
+            tie_t / tot, tie_s / tot)
 
 
 def load(root, runs, budget):
-    """epoch -> (rho_trained, rho_shipped, n_ifaces, inv_trained, inv_shipped, spread)."""
+    """epoch -> the tuple named by COLS, across a '+'-joined lineage."""
     got = {}
     for part in runs.split("+"):
         d = os.path.join(root, part)
@@ -127,12 +146,13 @@ def load(root, runs, budget):
             with open(cp) as fh:
                 for r in csv.DictReader(fh):
                     try:
-                        if "inv_trained" not in r:      # pre-expansion cache: recompute
-                            raise KeyError("inv_trained")
+                        if "tie_trained" not in r:      # pre-expansion cache: recompute
+                            raise KeyError("tie_trained")
                         cache[int(r["epoch"])] = tuple(
                             [float(r["rho_trained"]), float(r["rho_shipped"]),
                              int(r["n_ifaces"]), float(r["inv_trained"]),
-                             float(r["inv_shipped"]), float(r["spread"])])
+                             float(r["inv_shipped"]), float(r["spread"]),
+                             float(r["tie_trained"]), float(r["tie_shipped"])])
                     except (ValueError, KeyError):
                         continue
         eps = sorted(int(m.group(1)) for m in
@@ -149,14 +169,15 @@ def load(root, runs, budget):
             r = _one(d, ep, budget)
             if r is None:
                 continue
-            cache[ep] = (r[1], r[2], r[0], r[3], r[4], r[5]); dirty = True
+            cache[ep] = (r[1], r[2], r[0], r[3], r[4], r[5], r[6], r[7]); dirty = True
         if dirty:
             tmp = cp + ".tmp"
             with open(tmp, "w") as fh:
                 fh.write("epoch," + ",".join(COLS) + "\n")
                 for ep in sorted(cache):
-                    t, sh_, n, it_, is_, sp_ = cache[ep]
-                    fh.write(f"{ep},{t:.6f},{sh_:.6f},{n},{it_:.6f},{is_:.6f},{sp_:.6f}\n")
+                    t, sh_, n, it_, is_, sp_, tt_, ts_ = cache[ep]
+                    fh.write(f"{ep},{t:.6f},{sh_:.6f},{n},{it_:.6f},{is_:.6f},{sp_:.6f},"
+                             f"{tt_:.6f},{ts_:.6f}\n")
             os.replace(tmp, cp)
         got.update(cache)
     return got
