@@ -1065,6 +1065,24 @@ def main():
     _rank_lab = {}
     _rank_div = max(1, accum_eff // max(1, a.nsample))
     _rank_seen = {"loss": 0.0, "units": 0}
+    # CROSS-SEED STATE. _xs_coef holds dL/ds for every pose of the CURRENT step, keyed
+    # (pdb, seed, sample, pair) -- a pose's coefficient depends on every other pose of its
+    # interface, which is why it cannot be built per unit the way the linear one is. _xs_div is the
+    # number of interface-groups in the step, so the term is a mean over groups; it is a one-element
+    # list because pass A writes it and the pose loop reads it from a different frame.
+    _xs_coef, _xs_div, _xs_stat = {}, [1], {"groups": 0, "pairs": 0, "loss": 0.0, "steps": 0}
+    # THE CURRENT STEP'S EXPECTED POSE COUNT. accum_local is a constant only when every
+    # step holds the same number of units, which --rank-cross-seed breaks: S structures x
+    # their seeds need not divide `world`, so the short rank rotates and the quota varies
+    # by step. Driving the boundary from the quota keeps every rank stepping on the same
+    # iteration -- a mismatch there HANGS on the first all-reduce rather than failing.
+    _step_poses = [accum_local]
+    # AND THE GLOBAL COUNT, which is what the PAE term's mean is taken over. accum_eff is
+    # K*nsample*world = 90 here, but a cross-seed step holds S*seeds*nsample = 100 poses across the
+    # ranks, so dividing by accum_eff would scale the PAE gradient by 100/90. Set once per epoch
+    # from the actual step shape; equal to accum_eff when --rank-cross-seed is off.
+    _step_poses_g = [accum_eff]
+    _rank_tau = float(a.rank_tau) if a.rank_tau is not None else None
     _probe = {"rows": [], "units": 0, "poses": 0, "sum": {}, "finite": {}, "nonzero": {}}
     if a.grad_probe:
         import rank_loss as RKL_probe
@@ -1103,10 +1121,26 @@ def main():
         # the expected sample indices.
         _rl_pdbs = {k[0] for k in _rank_lab}
         _rl_missing = sorted(set(_scored_asym) - _rl_pdbs)
-        print(f"RANKING LOSS on chain_pair_iptm: alpha {a.alpha_rank:g}, "
+        import rank_loss as _RKL_cfg
+        _tau_eff = _rank_tau if _rank_tau is not None else _RKL_cfg.DEFAULT_TAU
+        print(f"RANKING LOSS on chain_pair_iptm: form {a.rank_form}, alpha {a.alpha_rank:g}, "
               f"weight_by_gap={a.rank_weight_by_gap}, {len(_rank_lab)} labelled "
               f"(pdb, seed, interface) group(s) from {_rl_p}"
               + (f", {_rl_bad} unparsed row(s)" if _rl_bad else ""))
+        if a.rank_form == "softplus":
+            print(f"  softplus tau {_tau_eff:g}"
+                  + ("  (rank_loss.DEFAULT_TAU, the measured median cross-seed |ipTM gap| over "
+                     "the full training set)" if _rank_tau is None else "  (given)"))
+        if a.rank_cross_seed:
+            print(f"  CROSS-SEED GROUPS: {a.rank_structs_per_step} structure(s) x all seeds per "
+                  f"step; a pose's coefficient uses every other pose of its interface, so pass A "
+                  f"scores the whole step before the first backward")
+        elif a.rank_form == "softplus":
+            raise SystemExit(
+                "STOP: --rank-form softplus without --rank-cross-seed is not implemented. The "
+                "softplus coefficients need pass A, which is wired to the cross-seed step "
+                "grouping; running it within-seed would silently fall through to the linear "
+                "per-unit path and train a different objective than the flags say.")
         if _rl_missing:
             raise SystemExit(
                 f"STOP: {len(_rl_missing)} scored structure(s) have no DockQ labels in {_rl_p}, "
@@ -1152,6 +1186,11 @@ def main():
         # (0, 2))". FIFTH instance of this class -- --train-only, LoRA, the evaluator's
         # --pose-perblock-share, the ranking guard fields, now a check of my own that a
         # measurement cannot pass.
+        # UNCHANGED BY --rank-cross-seed, and that is not an oversight. Cross-seed grouping
+        # changes which poses are COMPARED, not which labels must exist: every (pdb, seed,
+        # interface) the run touches still needs its --nsample DockQ values, and the groups are
+        # built from the same manifest units this set is built from. A group missing a seed's
+        # labels is therefore already caught here, before pass A ever runs.
         if not a.rank_loss or a.loss_only:
             return
         expected = {_rank_key(pdb, sd, pr) for pdb, sd in want_units
@@ -1303,10 +1342,23 @@ def main():
         for k, v in w.items()))
     _check_eval_pool()
     zero = [k for k, v in w.items() if not v and k not in _dropped_terms]
+    # THE GUARD'S PREMISE IS "at 0 the ipTM cannot move", AND A RANKING TERM FALSIFIES IT. This
+    # check predates --rank-loss, when PAE was the only path from a weight to chain_pair_iptm. The
+    # ranking term differentiates ipTM directly, so alpha_pae 0 with --rank-loss is a RANKING-ONLY
+    # arm, which is a deliberate configuration and not the silent no-op the guard was written to
+    # catch. Every other zero-weight term is still refused, and pae_loss at 0 WITHOUT a ranking
+    # term still is too -- that really would train nothing the project is judged on.
+    if zero == ["pae_loss"] and a.rank_loss and float(a.alpha_rank) > 0:
+        print(f"  alpha_pae 0 WITH --rank-loss: this is a RANKING-ONLY arm. No PAE gradient is "
+              f"taken; chain_pair_iptm moves through the ranking term alone. The held-out monitor "
+              f"still measures at alpha_pae 1, so val10 PAE stays comparable to every other arm.")
+        zero = []
     if zero:
         raise SystemExit(f"STOP: {', '.join(zero)} carries weight 0, so that term cannot train. "
                          f"FT3 wants alpha_pae = 1 (Protenix's own comment, configs_base.py:402); "
-                         f"at 0 the ipTM this project is judged on cannot move.")
+                         f"at 0 the ipTM this project is judged on cannot move. If you meant a "
+                         f"ranking-only arm, pass --rank-loss: the ranking term differentiates "
+                         f"ipTM directly and the guard allows alpha_pae 0 in that case.")
 
     prefixes, trainable = head_param_names(model)
     # LoRA REPLACES THE TRAINABLE SET, it does not add to it. Applied to the confidence head only
@@ -1612,6 +1664,15 @@ def main():
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_weight_by_gap": a.rank_weight_by_gap,
+                 # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
+                 # shape, so a resume that moved any of them silently would be a different
+                 # experiment wearing the same run id. FOURTH time a field has been added to this
+                 # comparison without being added to the saved bundle below -- so both sides are
+                 # edited in the same patch, and test_guard_fields.py asserts they agree.
+                 "rank_form": a.rank_form,
+                 "rank_tau": (float(a.rank_tau) if a.rank_tau is not None else -1.0),
+                 "rank_cross_seed": a.rank_cross_seed,
+                 "rank_structs_per_step": a.rank_structs_per_step,
                  # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
                  # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
                  "l2_sp": a.l2_sp,
@@ -1684,7 +1745,12 @@ def main():
                      "pose_perblock": False, "pose_perblock_tied": False,
                      "pose_perblock_share": False,
                      "rank_loss": False, "alpha_rank": 1.0,
-                     "rank_weight_by_gap": True, "l2_sp": 0.0}
+                     "rank_weight_by_gap": True, "l2_sp": 0.0,
+                     # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
+                     # these defaults say. rank_tau -1.0 means "unset", matching how the
+                     # comparison side encodes None.
+                     "rank_form": "linear", "rank_tau": -1.0,
+                     "rank_cross_seed": False, "rank_structs_per_step": 2}
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
@@ -2351,13 +2417,23 @@ def main():
         raise SystemExit(f"STOP: {len(ok)} trunks match {lab_p}'s fingerprint: {ok}. Ambiguous "
                          f"provenance is refused rather than resolved arbitrarily.")
 
-    def run_unit(pdb, lab_p, trunk_p):
+    def run_unit(pdb, lab_p, trunk_p, score_only=False):
         """Forward + loss for every pose of one unit. Yields (pose_index, loss_tensor, metrics).
+
+        score_only=True makes this PASS A: a no_grad forward per pose that yields
+        {"pose": i, "iptm": {pair: value}} and nothing else -- no loss, no metrics, no backward,
+        no graph. Needed only by --rank-form softplus, whose coefficients contain
+        sigmoid(-m/tau) and therefore depend on the current scores. See rank_loss's
+        THE MEMORY CONSTRAINT.
 
         Both paths are resolved by the manifest and asserted to exist before the run starts, so
         there is nothing here to skip.
         """
         arm_seed = os.path.basename(lab_p)[:-4]
+        # THE UNIT'S SEED AS AN INT, built through _rank_key so there is ONE place that parses a
+        # seed out of an arm name. The pair argument is unused by the seed field and is only there
+        # because _rank_key returns the whole key.
+        _xs_sd = _rank_key(pdb, arm_seed, (0, 0))[1] if a.rank_cross_seed else None
         # THE FULL DATASET ITEM IS NEVER BUILT, AND NOW CANNOT BE. The loss reads nine feature
         # keys and two label keys and all eleven live in the cached label npz -- 0.11 MiB against
         # the item's ~518 MB, bit-identical on 50 of 50 comparisons. It was already dead code
@@ -2418,7 +2494,18 @@ def main():
             # THE PREFETCHED SLICE, IF THE WORKER GOT THERE FIRST. A hit skips straight to the
             # device move; a miss falls through to the inline path below, so a worker that is
             # behind, failed, or disabled costs correctness nothing.
-            _pre = _pf_take(lab_p) if a.prefetch_units else None
+            # PASS A DOES NOT TOUCH THE PREFETCH QUEUE, and this is a correctness fix, not a
+            # tuning choice. _pf_take's contract is "the worker emits exactly one result per unit,
+            # in the main loop's own order", and it POPS from _pf_pending. Pass A walks the same
+            # units pass B is about to walk, so taking there consumed each unit's result and left
+            # pass B waiting out the full 120 s budget per unit before falling back to an inline
+            # crop -- 100 units an epoch, so the run looked hung with flat CPU and 0% GPU. It was
+            # not deadlocked, it was sleeping ~3 hours an epoch. Observed on probe dsswrj.
+            #
+            # Pass A crops inline instead, which leaves the worker in lockstep with pass B. The
+            # cost is one extra crop per unit (~0.7 s) rather than an extra trunk read, since the
+            # trunk's bytes are in page cache from the worker's own read moments earlier.
+            _pre = _pf_take(lab_p) if (a.prefetch_units and not score_only) else None
             if _pre is not None and _pre[0] == "ok":
                 _t1 = time.perf_counter()
                 crop_slice = _to_dev(_pre[2])
@@ -2575,6 +2662,22 @@ def main():
             else:
                 _, ld = BC.minimal_loss_inputs(lab, i, dev, torch)
             _set_pae_mask(pdb, feat_head["asym_id"], feat_cache["has_frame"])
+            # PASS A STOPS HERE. The scoring sweep needs the pose's ipTM and nothing else: no loss,
+            # no metrics, no backward. Returning before calculate_losses is not an optimisation, it
+            # is the point -- pass A must not touch the loss state that pass B reports, and it runs
+            # inside torch.no_grad() so no graph is built for the forward it just did.
+            #
+            # THE SAME ipTM FUNCTION AS PASS B, deliberately. If the two disagreed, the coefficient
+            # would have been computed for a different function than the one being differentiated.
+            if score_only:
+                import rank_loss as RKL
+                _sc = {}
+                for _p in sorted(_scored_asym.get(pdb) or ()):
+                    _v = RKL.iptm(pred["pae"], feat_head, configs, _p)
+                    if _v is not None:
+                        _sc[_p] = float(_v.detach())
+                del pred, x, plddt, pae, pde, resolved
+                return {"pose": i, "iptm": _sc}
             try:
                 cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
             except RuntimeError as _e:
@@ -2607,7 +2710,27 @@ def main():
             # SCALED BY THE EFFECTIVE BATCH, so summing the ranks reconstructs the full-batch mean.
             # NOT UNDER --loss-only: there are no gradients to accumulate, and calling backward
             # would be the one way this mode could change the weights it is supposed to measure.
-            if not a.loss_only:
+            # TWO SOURCES OF c_i, AND ONLY ONE IS ACTIVE. Per-unit (_rank_c, from the labels
+            # alone) for the within-seed linear form; per-step (_xs_coef, from pass A) for
+            # --rank-cross-seed, where a pose's coefficient depends on every other pose of its
+            # interface and the divisor is interface-groups per step rather than units.
+            if a.rank_cross_seed:
+                _cs_pairs = sorted({_k[3] for _k in _xs_coef
+                                    if _k[0] == pdb and _k[1] == _xs_sd and _k[2] == i})
+                _cs_src = [(_p, _xs_coef.get((pdb, _xs_sd, i, _p))) for _p in _cs_pairs]
+                _cs_div = float(_xs_div[0])
+            elif _rank_on:
+                _cs_src = [(_p, _rank_c.get((i, _p)))
+                           for _p in sorted({_k[1] for _k in _rank_c if _k[0] == i})]
+                _cs_div = float(_rank_div)
+            else:
+                _cs_src = []
+                _cs_div = 1.0
+            # BOUND BEFORE THE BACKWARD BLOCK, not inside it. The first version computed this
+            # below the --grad-probe block that reads it, so the probe raised NameError on its
+            # first pose -- the same defect review found at line 1067 with `want`. One binding,
+            # above both readers.
+            if not a.loss_only and not score_only:
                 _be0, _be1 = _gpu_span("gpu_backward")
                 # UNDER --grad-probe: the two terms are measured with torch.autograd.grad,
                 # which returns gradients WITHOUT touching any parameter's .grad. The first
@@ -2621,20 +2744,23 @@ def main():
                 # per-pose contributions can cancel heavily and a mean of per-pose norms would
                 # overstate the ranking gradient at the step. Both are reported, and alpha is read
                 # off the accumulated pair.
-                if a.grad_probe and _rank_on:
+                # THE PROBE READS THE SAME COEFFICIENT SOURCE THE OBJECTIVE DOES. _rank_on is set
+                # only on the per-unit linear path, so gating on it alone made the probe silently
+                # measure nothing under --rank-cross-seed -- it would have reported a ranking
+                # gradient of zero and the parity alpha as infinite.
+                if a.grad_probe and _cs_src:
                     _rt = None
-                    for _p in sorted({_k[1] for _k in _rank_c if _k[0] == i}):
-                        _cv = _rank_c.get((i, _p))
+                    for _p, _cv in _cs_src:
                         if not _cv:
                             continue
                         _sp_ = RKL_probe.iptm(pred["pae"], feat_head, configs, _p)
                         if _sp_ is None:
                             continue
-                        _tm = (a.alpha_rank * _cv / _rank_div) * _sp_
+                        _tm = (a.alpha_rank * _cv / _cs_div) * _sp_
                         _rt = _tm if _rt is None else _rt + _tm
                     _pr_tensors = [pp for _n, pp in trainable_params]
                     _pr_norms = {}
-                    for _nm, _t in (("pae", cum / accum_eff), ("rank", _rt)):
+                    for _nm, _t in (("pae", cum / _step_poses_g[0]), ("rank", _rt)):
                         if _t is None:
                             continue
                         _gs = torch.autograd.grad(_t, _pr_tensors, retain_graph=True,
@@ -2659,25 +2785,26 @@ def main():
                         _probe["rows"].append((pdb, arm_seed, i, float(_vp.norm()),
                                                float(_vr.norm()), _c))
                     _probe["poses"] += 1
-                _obj = cum / accum_eff
+                _obj = cum / _step_poses_g[0]
                 # THE RANKING TERM, as c_i * s_i. Its gradient is the exact gradient of the unit's
                 # pairwise loss contribution, because dL/dtheta = sum_i (dL/ds_i)(ds_i/dtheta) and
                 # c_i IS dL/ds_i. Divided by units-per-step so the term is a mean over units, the
                 # way cum/accum_eff is a mean over poses.
-                if _rank_on:
+                if _cs_src:
                     import rank_loss as RKL
-                    for _p in sorted({_k[1] for _k in _rank_c if _k[0] == i}):
-                        _cv = _rank_c.get((i, _p))
+                    for _p, _cv in _cs_src:
                         if not _cv:
                             continue
                         _sr = RKL.iptm(pred["pae"], feat_head, configs, _p)
                         if _sr is None:
                             continue
-                        _obj = _obj + (a.alpha_rank * _cv / _rank_div) * _sr
-                        # THE LOSS VALUE IS RECONSTRUCTED, NOT RE-COMPUTED. L = sum_i c_i s_i
-                        # exactly, so accumulating c_i * s_i over the unit's poses gives the
-                        # reported loss without a second evaluation of anything.
-                        _rank_seen["loss"] += float(_cv) * float(_sr.detach())
+                        _obj = _obj + (a.alpha_rank * _cv / _cs_div) * _sr
+                        # RECONSTRUCTED FOR THE LINEAR FORM ONLY. L = sum_i c_i s_i holds exactly
+                        # there, so accumulating c_i * s_i gives the loss with no second
+                        # evaluation. The SOFTPLUS loss is NOT sum_i c_i s_i -- its value comes
+                        # from group_coeffs in pass A and is reported out of _xs_stat instead.
+                        if not a.rank_cross_seed:
+                            _rank_seen["loss"] += float(_cv) * float(_sr.detach())
                 _obj.backward()
                 if _be1 is not None:
                     _be1.record()
@@ -2709,7 +2836,7 @@ def main():
         # rides along on the backward that was happening anyway. One graph at a time, exact
         # gradient, zero extra forwards.
         _rank_c, _rank_on = {}, False
-        if a.rank_loss and not a.loss_only:
+        if a.rank_loss and not a.loss_only and not a.rank_cross_seed:
             import rank_loss as RKL
             _rk_pairs = sorted(_scored_asym.get(pdb) or ())
             _rk_lab = [(_p, _rank_lab.get(_rank_key(pdb, arm_seed, _p))) for _p in _rk_pairs]
@@ -2739,12 +2866,15 @@ def main():
             # NO GRAPH UNDER --loss-only. Skipping only the backward would still build the
             # autograd graph for every pose and free it unused -- correct, but it pays the
             # activation memory of training for a measurement that needs none.
-            if a.loss_only:
+            if a.loss_only or score_only:
                 with torch.no_grad():
                     m = _one_pose(i)
             else:
                 m = _one_pose(i)
-            _tick("pose_total", _t_pose)
+            # PASS A'S POSES GET THEIR OWN BUCKET. Ticking them into pose_total would double-count
+            # every pose and make the epoch accounting -- which is checked against the wall clock
+            # and reported as a residual -- silently wrong.
+            _tick("pose_a_total" if score_only else "pose_total", _t_pose)
             if a.mem_log:
                 # AT A CONSISTENT BOUNDARY: after backward, and after the pose's tensors are gone.
                 # allocated = live tensors. reserved = what the allocator holds, which is what
@@ -2754,6 +2884,100 @@ def main():
                       f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f}  "
                       f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f}", flush=True)
             yield m
+
+    def _xs_prepare(step_units, ep):
+        """PASS A for one optimiser step: score every pose, share the scalars, build dL/ds.
+
+        Fills _xs_coef for exactly the poses of `step_units` across ALL ranks, and sets _xs_div to
+        the number of interface-groups the step contains. Called once per step, before that step's
+        first backward.
+
+        WHY A WHOLE STEP AT A TIME. With --rank-cross-seed a pose's coefficient contains
+        sigmoid(-m_ij/tau) against every other pose of its interface, and build_epoch_cross_seed
+        puts all of a structure's seeds inside one step. So the unit of scoring is the step, not
+        the unit -- which is the whole reason the step boundary had to become explicit.
+
+        THE TRUNK IS READ TWICE PER STEP, once here and once in pass B. That is deliberate: the
+        alternative is holding every unit of the step resident, and at ~205 MB of trunk per unit
+        and 20 units per step that is ~4 GB of NON-reclaimable RSS per rank against a box that
+        other people are using. The second read comes from page cache, which is reclaimable and
+        does not count against --max-rss-gb or MemAvailable in the way that matters.
+
+        NO OPTIMISER STEP MAY HAPPEN BETWEEN THIS AND PASS B, or the scores were computed at
+        different weights than the gradient is taken at. That is guaranteed by construction: this
+        runs at a step boundary, immediately after the previous step was applied.
+
+        THE RNG IS SAVED AND RESTORED because the confidence head has dropout, so pass A would
+        otherwise advance the generator and pass B would evaluate a different function than the one
+        the coefficients describe.
+        """
+        _xs_coef.clear()
+        _xs_div[0] = 1
+        if not (a.rank_cross_seed and a.rank_loss) or a.loss_only:
+            return
+        import rank_loss as RKL
+        _rng_cpu = torch.get_rng_state()
+        _rng_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        _t_a = time.perf_counter()
+        local = {}
+        try:
+            for _pdb, _lab, _cands in step_units:
+                _tp = resolve_trunk(_pdb, _lab, _cands)
+                _sd = _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1]
+                for _m in run_unit(_pdb, _lab, _tp, score_only=True):
+                    for _pair, _v in _m["iptm"].items():
+                        local[(_pdb, _sd, int(_m["pose"]), _pair)] = float(_v)
+        finally:
+            torch.set_rng_state(_rng_cpu)
+            if _rng_cuda is not None:
+                torch.cuda.set_rng_state_all(_rng_cuda)
+        _tick("rank_pass_a", _t_a)
+
+        # EVERY RANK NEEDS THE WHOLE STEP. A few hundred floats, so the object collective's
+        # pickling is irrelevant next to a 205 MB trunk read. All ranks then compute the SAME
+        # coefficients from the SAME inputs, and each applies only its own poses -- so the
+        # cross-rank gradient sum reconstructs one group contribution, not `world` of them.
+        if world > 1:
+            _t_g = time.perf_counter()
+            _bag = [None] * world
+            dist.all_gather_object(_bag, local)
+            _tick("rank_gather", _t_g)
+            allsc = {}
+            for _d in _bag:
+                allsc.update(_d or {})
+        else:
+            allsc = dict(local)
+
+        # GROUPED BY (pdb, interface), which is what an interface IS. Keyed by (seed, sample)
+        # inside the group so group_coeffs can tell cross-seed pairs from within-seed ones.
+        groups = {}
+        for (_pdb, _sd, _i, _pair), _v in allsc.items():
+            groups.setdefault((_pdb, _pair), {})[(_sd, _i)] = _v
+        n_groups = 0
+        for (_pdb, _pair), s_by in groups.items():
+            dq_by = {}
+            for (_sd, _i) in s_by:
+                _lab = _rank_lab.get(_rank_key(_pdb, _sd, _pair))
+                if _lab is not None and _i in _lab:
+                    dq_by[(_sd, _i)] = float(_lab[_i])
+            if len(dq_by) < 2:
+                continue
+            c, npair, lval = RKL.group_coeffs(
+                s_by, dq_by,
+                form=("softplus" if a.rank_form == "softplus" else "linear"),
+                tau=(_rank_tau if _rank_tau is not None else RKL.DEFAULT_TAU),
+                weight_by_gap=a.rank_weight_by_gap,
+                cross_seed_only=True)
+            if npair == 0:
+                continue
+            n_groups += 1
+            _xs_stat["pairs"] += npair
+            _xs_stat["loss"] += lval
+            for (_sd, _i), _cv in c.items():
+                _xs_coef[(_pdb, _sd, _i, _pair)] = _cv
+        _xs_div[0] = max(1, n_groups)
+        _xs_stat["groups"] += n_groups
+        _xs_stat["steps"] += 1
 
     def outside_head_grads():
         return sum(1 for n, p in model.named_parameters()
@@ -3043,7 +3267,16 @@ def main():
                # which is the only thing it is for.
                "--crop-margin", str(a.crop_margin), "--crop-contact", str(a.crop_contact),
                "--crop-size", str(a.crop_size), "--accum", str(a.accum),
-               "--nsample", str(a.nsample), "--alpha-pae", str(a.alpha_pae),
+               # ALPHA_PAE 0 IS A TRAINING CHOICE, NOT A MEASUREMENT ONE. A ranking-only arm sets
+               # --alpha-pae 0 so no PAE gradient is taken, but the held-out number this
+               # subprocess exists to produce IS the PAE loss, and passing 0 through would report
+               # val10 PAE as exactly 0.0 every epoch -- silently destroying the one diagnostic
+               # that is comparable across every arm (shipped 2.9756). So the monitor always
+               # measures at alpha_pae 1. SIXTH instance of the --loss-only inheritance class:
+               # --train-only, LoRA, --pose-perblock-share, the ranking guard fields, my own
+               # coverage guard, now the loss weight itself.
+               "--nsample", str(a.nsample),
+               "--alpha-pae", str(a.alpha_pae if float(a.alpha_pae) > 0 else 1.0),
                "--alpha-confidence", str(a.alpha_confidence), "--clip-norm", str(a.clip_norm),
                "--blocks-per-ckpt", str(a.blocks_per_ckpt),
                "--epochs", "1", "--save-every", "0", "--warmup-steps", "0",
@@ -3320,9 +3553,10 @@ def main():
     def build_epoch_cross_seed(ep):
         """This epoch's unit sequence FOR THIS RANK, with ALL SEEDS OF A STRUCTURE IN ONE STEP.
 
-        Returns (mine, quotas): the flat unit list and this rank's unit count per step. The step
-        boundary comes from `quotas` rather than from a constant, because S structures x their
-        seeds need not divide `world`.
+        Returns (mine, quotas, n_units): the flat unit list, this rank's unit count per step, and
+        the GLOBAL unit count per step. The step boundary comes from `quotas` rather than from a
+        constant, because S structures x their seeds need not divide `world`; n_units is what the
+        PAE term's mean has to be taken over, since accum_eff no longer describes the step.
 
         WHY THE REGROUPING. --rank-cross-seed ranks poses across seeds, and the coefficient for one
         pose depends on every other pose in its interface. So the whole interface has to be scored
@@ -3387,7 +3621,7 @@ def main():
             start = sum(counts[:rank])
             mine += units[start:start + counts[rank]]
             quotas.append(counts[rank])
-        return mine, quotas
+        return mine, quotas, n_units
 
     def train_loop(steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
         for g in opt.param_groups:
@@ -3459,12 +3693,12 @@ def main():
             means, n_tot = _batch_means()
             if n_tot <= 0:
                 return
-            scale = accum_eff / n_tot
+            scale = _step_poses_g[0] / n_tot
             tset = set(trainable)
             for _n, pp in model.named_parameters():
                 if _n in tset and pp.grad is not None:
                     pp.grad.mul_(scale)
-            print(f"  flushing a partial accumulation of {n_tot}/{accum_eff} pose(s), gradient "
+            print(f"  flushing a partial accumulation of {n_tot}/{_step_poses_g[0]} pose(s), gradient "
                   f"scaled by {scale:.4f} so the step is the same size as every other")
             _gn, _outside, ok = _apply_step(step)
             # LOGGED, because this step used to leave no row at all: the reader then spliced the
@@ -3535,6 +3769,11 @@ def main():
                                   "l2_sp": a.l2_sp,
                                   "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                                   "rank_weight_by_gap": a.rank_weight_by_gap,
+                                  "rank_form": a.rank_form,
+                                  "rank_tau": (float(a.rank_tau)
+                                               if a.rank_tau is not None else -1.0),
+                                  "rank_cross_seed": a.rank_cross_seed,
+                                  "rank_structs_per_step": a.rank_structs_per_step,
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
@@ -3557,7 +3796,17 @@ def main():
         for ep in range(from_epoch, n_epochs):
             if done:
                 break
-            ep_units = build_epoch(ep)
+            # THE EPOCH ORDER, AND WITH --rank-cross-seed ITS STEP SHAPE TOO. The cross-seed
+            # builder returns a per-step unit quota because S structures x their seeds need not
+            # divide `world`, so the step boundary cannot be the constant accum_local.
+            ep_quotas = None
+            if a.rank_cross_seed:
+                ep_units, ep_quotas, _xs_nunits = build_epoch_cross_seed(ep)
+                # EVERY STEP HOLDS THE SAME TOTAL unit count across ranks -- only the per-rank
+                # split rotates -- so the global pose count per step is a constant.
+                _step_poses_g[0] = _xs_nunits * a.nsample
+            else:
+                ep_units = build_epoch(ep)
             if world > 1:
                 # THE RANKS MUST AGREE ON THE UNIT COUNT. If they do not, they take a different
                 # number of optimiser steps and the first mismatched all-reduce hangs forever
@@ -3588,7 +3837,26 @@ def main():
             ep_start_step = step
             ep_t0 = time.time()
             ep_loss["sum"], ep_loss["n"] = 0.0, 0
+            # UNIT INDEX -> (step index, the step's whole unit list), so pass A can score a
+            # step's poses before the first backward of that step. Built once per epoch.
+            _xs_steps, _xs_at = [], {}
+            if ep_quotas:
+                _o = 0
+                for _k, _q in enumerate(ep_quotas):
+                    if _o >= len(ep_units):
+                        break
+                    _xs_steps.append(ep_units[_o:_o + _q])
+                    _xs_at[_o] = _k
+                    _o += _q
+                if _o != len(ep_units):
+                    raise SystemExit(
+                        f"STOP: the cross-seed quotas sum to {_o} unit(s) but the epoch holds "
+                        f"{len(ep_units)}. The step boundary would drift from the quota and the "
+                        f"ranks would step at different times.")
             for ui, (pdb, lab_p, cands) in enumerate(ep_units):
+                if ui in _xs_at:
+                    _step_poses[0] = len(_xs_steps[_xs_at[ui]]) * a.nsample
+                    _xs_prepare(_xs_steps[_xs_at[ui]], ep)
                 trunk_p = resolve_trunk(pdb, lab_p, cands)
                 # THE NEXT UNIT'S TRUNK, WARMED WHILE THIS ONE COMPUTES. Resolving it is cheap
                 # after epoch 1 because the fingerprint is cached; on the first epoch it pays the
@@ -3627,7 +3895,7 @@ def main():
                     gn, outside, took, bad_grad = float("nan"), -1, 0, 0
                     means = {"batch_" + _k: None for _k in TERMS}
                     means["batch_n"] = 0
-                    if n_in_accum >= accum_local:
+                    if n_in_accum >= _step_poses[0]:
                         # REDUCED BEFORE THE STEP IS TAKEN, so the numbers logged are the numbers
                         # the step was taken on even if the step is then refused. _batch_means
                         # resets the accumulator and n_in_accum, so neither is reset again below.
@@ -3686,7 +3954,13 @@ def main():
                     # steps; one unit further and the probe is summing g(theta_0) with
                     # g(theta_1), which is not the gradient of any single step. Found in review
                     # of 523013a, where the launcher asked for 8 units against a 6-unit window.
-                    if _probe["units"] >= max(1, accum_local // max(1, a.nsample)):
+                    # THE WINDOW IS THE STEP, AND THE STEP IS NO LONGER A CONSTANT. accum_local
+                    # // nsample is the unit count per step only when every step holds the same
+                    # number; --rank-cross-seed rotates a 7/7/6 split, so the window has to come
+                    # from _step_poses[0], which the epoch loop sets per step. Measuring one unit
+                    # past the boundary sums g(theta_0) with g(theta_1), which is the gradient of
+                    # no single step -- the defect review found in 523013a.
+                    if _probe["units"] >= max(1, _step_poses[0] // max(1, a.nsample)):
                         # RAISES on failure, so the launcher's exit status carries the verdict.
                         _grad_probe_report(_probe, trainable, a, step > 0, accum_local, world)
                         _probe["done"] = True
@@ -3798,7 +4072,21 @@ def main():
             # ranked above everything still gets pushed up: the loss can fall by widening gaps
             # that were already correct, with the inverted fraction unchanged. The within-seed
             # inversion rate has to be read separately -- see run_logging/rank_rho.py.
-            if a.rank_loss and _rank_seen["units"]:
+            if a.rank_loss and a.rank_cross_seed and _xs_stat["groups"]:
+                # THE SOFTPLUS LOSS IS NOT sum_i c_i s_i, so it cannot be reconstructed from the
+                # coefficients the way the linear one is. group_coeffs returns the value in pass A
+                # and it is accumulated there; 0 is the floor (every pair ordered), not "no
+                # alignment".
+                print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({a.rank_form}, cross-seed): "
+                      f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
+                      f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s), "
+                      f"{_xs_stat['pairs']} pair(s)"
+                      + ("  (0 is the FLOOR -- every pair ordered)"
+                         if a.rank_form == "softplus" else ""), flush=True)
+                for _k in ("groups", "pairs", "steps"):
+                    _xs_stat[_k] = 0
+                _xs_stat["loss"] = 0.0
+            elif a.rank_loss and _rank_seen["units"]:
                 _rk_mean = _rank_seen["loss"] / _rank_seen["units"]
                 print(f"  [rank {rank}] epoch {ep + 1} rank-loss: {_rk_mean:+.5f} over "
                       f"{_rank_seen['units']} unit(s) (0 = no alignment, negative is better; "
