@@ -1021,7 +1021,11 @@ def main():
         if not a.rank_loss:
             raise SystemExit("STOP: --grad-probe needs --rank-loss; there is nothing to compare "
                              "the PAE gradient against.")
-    if a.rank_loss:
+    if a.rank_loss and a.loss_only:
+        # SAME REASON. Nothing below is needed for a measurement, and --rank-labels points at the
+        # training fold while this subprocess reads the validation one.
+        print("  --loss-only: ranking setup skipped (the term does not run in a measurement)")
+    elif a.rank_loss:
         import rank_loss as RKL
         if not _scored_asym:
             raise SystemExit("STOP: --rank-loss needs --pae-scored-pairs. The ranking term reads "
@@ -1090,7 +1094,15 @@ def main():
         expected set is built from the manifest and the scored pairs, and set difference does the
         work.
         """
-        if not a.rank_loss:
+        # NOT UNDER --loss-only. The held-out monitor is a subprocess on the VALIDATION fold
+        # (seeds 400000+), it inherits rank_loss=True only so the resume guard matches, and the
+        # ranking term never runs there -- a measurement takes no step. Demanding training-fold
+        # labels for validation units is a check it cannot satisfy, and it killed the held-out
+        # pass on every epoch of s7dh7o: "540 group(s) have NO labels, e.g. ('7qu2', 400000,
+        # (0, 2))". FIFTH instance of this class -- --train-only, LoRA, the evaluator's
+        # --pose-perblock-share, the ranking guard fields, now a check of my own that a
+        # measurement cannot pass.
+        if not a.rank_loss or a.loss_only:
             return
         expected = {_rank_key(pdb, sd, pr) for pdb, sd in want_units
                     for pr in (_scored_asym.get(pdb) or ())}
