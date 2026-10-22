@@ -131,6 +131,23 @@ def main():
                          "2,000 steps of a 100,000-step run (2%%). At batch 256 three epochs of our "
                          "cache is 292 optimiser steps, so 2,000 would be 685%% of the run and the "
                          "learning rate would never reach its set value. 20 is 6.8%%.")
+    ap.add_argument("--grad-probe", type=int, default=0, metavar="N",
+                    help="MEASURE, DON'T GUESS. Run N units, and for each pose take the PAE "
+                         "backward and the ranking backward SEPARATELY at identical weights, then "
+                         "report per-tensor gradient norms, the cosine between the two, and "
+                         "whether every trainable tensor received a finite non-zero ranking "
+                         "gradient. Then take one real step and exit 0.\n"
+                         "WHY THIS AND NOT A SHORT RUN. --alpha-rank cannot be set from loss "
+                         "values: a ranking loss of 0.01-0.25 against a PAE loss of 2.3 says "
+                         "nothing about their gradient magnitudes on the weights. Comparing "
+                         "max grad_norm across two short runs is also wrong, because the combined "
+                         "norm can be SMALLER than either when the gradients oppose -- which is "
+                         "exactly what the cosine answers. And it is the only check that the "
+                         "gradient reaches the trainable matrices THROUGH "
+                         "calculate_chain_based_ptm at all; every offline test so far has "
+                         "validated the label side, which cannot establish that.\n"
+                         "Two scale constants chosen without this (--l2-sp 1e-2 on 10,240 "
+                         "parameters, and softplus's implicit sigma=1) were both wrong.")
     ap.add_argument("--rank-loss", action="store_true",
                     help="PAIRWISE RANKING LOSS on chain_pair_iptm, the statistic selection "
                          "actually uses. The FT3 PAE loss is a per-pair accuracy objective; "
@@ -994,6 +1011,12 @@ def main():
     _rank_lab = {}
     _rank_div = max(1, accum_eff // max(1, a.nsample))
     _rank_seen = {"loss": 0.0, "units": 0}
+    _probe = {"rows": [], "units": 0}
+    if a.grad_probe:
+        import rank_loss as RKL_probe
+        if not a.rank_loss:
+            raise SystemExit("STOP: --grad-probe needs --rank-loss; there is nothing to compare "
+                             "the PAE gradient against.")
     if a.rank_loss:
         import rank_loss as RKL
         if not _scored_asym:
@@ -2493,6 +2516,34 @@ def main():
             # would be the one way this mode could change the weights it is supposed to measure.
             if not a.loss_only:
                 _be0, _be1 = _gpu_span("gpu_backward")
+                # UNDER --grad-probe: the two terms are differentiated SEPARATELY first, at
+                # these exact weights, so their norms and their cosine are measurable. The real
+                # combined backward still runs afterwards, so the step the probe takes is the
+                # step the run would have taken.
+                if a.grad_probe and _rank_on:
+                    _pr_terms = {}
+                    for _nm, _t in (("pae", cum / accum_eff), ("rank", None)):
+                        if _nm == "rank":
+                            _rt = None
+                            for _p in sorted({_k[1] for _k in _rank_c if _k[0] == i}):
+                                _cv = _rank_c.get((i, _p))
+                                if not _cv:
+                                    continue
+                                _sp_ = RKL_probe.iptm(pred["pae"], feat_head, configs, _p)
+                                if _sp_ is None:
+                                    continue
+                                _tm = (a.alpha_rank * _cv / _rank_div) * _sp_
+                                _rt = _tm if _rt is None else _rt + _tm
+                            _t = _rt
+                        if _t is None:
+                            continue
+                        opt.zero_grad(set_to_none=True)
+                        _t.backward(retain_graph=True)
+                        _pr_terms[_nm] = {_n: (pp.grad.detach().float().clone()
+                                               if pp.grad is not None else None)
+                                          for _n, pp in zip(trainable, params)}
+                    opt.zero_grad(set_to_none=True)
+                    _probe["rows"].append((pdb, arm_seed, i, _pr_terms))
                 _obj = cum / accum_eff
                 # THE RANKING TERM, as c_i * s_i. Its gradient is the exact gradient of the unit's
                 # pairwise loss contribution, because dL/dtheta = sum_i (dL/ds_i)(ds_i/dtheta) and
@@ -2593,6 +2644,85 @@ def main():
         return sum(1 for n, p in model.named_parameters()
                    if n not in set(trainable) and p.grad is not None
                    and bool(p.grad.abs().sum() > 0))
+
+    def _grad_probe_report(pr, names, a):
+        """Per-tensor norms, the PAE/ranking cosine, and the one check no label test can make.
+
+        THE COSINE IS THE POINT. A combined gradient norm can be SMALLER than either term's when
+        they oppose, so comparing max grad_norm across two short runs cannot tell a ranking term
+        that is too weak from one that is fighting the PAE term. cos < 0 means they pull against
+        each other and alpha_rank trades one objective for the other; cos ~ 0 means they are
+        close to orthogonal and the ranking term buys its improvement cheaply.
+        """
+        import math as _m
+        print("\n" + "=" * 78)
+        print(f"--grad-probe: {len(pr['rows'])} pose(s) over {pr['units']} unit(s), "
+              f"alpha_rank {a.alpha_rank:g}")
+        print("=" * 78)
+        _agg = {}
+        for pdb_, sd_, i_, terms in pr["rows"]:
+            for nm, gd in terms.items():
+                for n_, g_ in gd.items():
+                    if g_ is None:
+                        continue
+                    _agg.setdefault((nm, n_), []).append(g_)
+        _tot = {}
+        for nm in ("pae", "rank"):
+            print(f"\n  {nm.upper()} gradient, per trainable tensor:")
+            for n_ in names:
+                gs = _agg.get((nm, n_))
+                if not gs:
+                    print(f"    {n_:<64} NO GRADIENT")
+                    continue
+                import torch as _t
+                st = _t.stack([g.flatten() for g in gs])
+                nz = int((st.abs().sum(dim=1) > 0).sum())
+                fin = bool(_t.isfinite(st).all())
+                mean_norm = float(st.norm(dim=1).mean())
+                print(f"    {n_:<64} |g| mean {mean_norm:.3e}  "
+                      f"nonzero {nz}/{len(gs)}  finite {fin}")
+                _tot.setdefault(nm, []).append((n_, st))
+        # cosine, per tensor and overall, pose by pose
+        print("\n  PAE vs RANK alignment (per pose, then pooled):")
+        cos_all = []
+        for pdb_, sd_, i_, terms in pr["rows"]:
+            gp, gr = terms.get("pae"), terms.get("rank")
+            if not gp or not gr:
+                continue
+            import torch as _t
+            vp = _t.cat([gp[n].flatten() for n in names if gp.get(n) is not None])
+            vr = _t.cat([gr[n].flatten() for n in names if gr.get(n) is not None])
+            if vp.numel() != vr.numel() or vp.norm() == 0 or vr.norm() == 0:
+                continue
+            c = float((vp @ vr) / (vp.norm() * vr.norm()))
+            cos_all.append(c)
+            print(f"    {pdb_}/{sd_} pose {i_}:  |g_PAE| {float(vp.norm()):.3e}  "
+                  f"|g_rank| {float(vr.norm()):.3e}  ratio {float(vr.norm()/vp.norm()):.3f}  "
+                  f"cos {c:+.4f}")
+        if cos_all:
+            print(f"\n    pooled cosine: mean {sum(cos_all)/len(cos_all):+.4f}  "
+                  f"min {min(cos_all):+.4f}  max {max(cos_all):+.4f}")
+        # the verdict
+        bad = [n_ for n_ in names
+               if not _agg.get(("rank", n_))
+               or not any(float(g.abs().sum()) > 0 for g in _agg[("rank", n_)])]
+        print("\n  " + "-" * 74)
+        if bad:
+            print(f"  FAIL: {len(bad)} trainable tensor(s) received NO non-zero ranking "
+                  f"gradient: {bad}")
+            print("  The gradient does not reach them through calculate_chain_based_ptm. "
+                  "Do not launch.")
+        else:
+            print(f"  PASS: every one of {len(names)} trainable tensor(s) received a finite, "
+                  f"non-zero ranking gradient through calculate_chain_based_ptm.")
+            if cos_all:
+                _r = [float(_t_.norm(dim=1).mean()) for _, _t_ in _tot.get("rank", [])]
+                _p = [float(_t_.norm(dim=1).mean()) for _, _t_ in _tot.get("pae", [])]
+                if _p and _r:
+                    print(f"  SCALE: |g_rank|/|g_PAE| ~ {sum(_r)/sum(_p):.3f} at alpha_rank "
+                          f"{a.alpha_rank:g}. For parity set alpha_rank ~ "
+                          f"{a.alpha_rank * sum(_p) / max(1e-30, sum(_r)):.3g}.")
+        print("=" * 78 + "\n", flush=True)
 
     def _apply_step(step):
         """Clip, assert, step. Returns (grad_norm, n_outside_head, ok).
@@ -3301,6 +3431,13 @@ def main():
                     if steps_cap and step >= steps_cap:
                         done = True
                         break
+                # --grad-probe: one unit done. Report after N of them and stop; this mode exists to
+                # measure the gradient scale, not to train.
+                if a.grad_probe:
+                    _probe["units"] += 1
+                    if _probe["units"] >= a.grad_probe:
+                        _grad_probe_report(_probe, trainable, a)
+                        return
                 if done:
                     break
             # HOW LONG THE EPOCH TOOK, logged rather than left to be derived. Timing has been
