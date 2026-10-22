@@ -82,4 +82,9 @@ LAYERNORM_TYPE=openfold /home/ebrahim/Protenix/.venv/bin/python -I run_logging/l
   --blocks-per-ckpt 0 --dist-backend gloo --dist-timeout-min 240 \
   --max-rss-gb 80 --preload-min-free-gb 260 \
   --require-replay training/ft3_pilot_replay.log --allow-code-drift
-echo "launcher returned $?"
+rc=$?
+# PROPAGATE IT. The chain runner stops on a non-zero arm, and a trailing bare `echo` always
+# returns 0 -- which is why a broken arm reported success and the chain marched straight on to
+# the next one.
+echo "launcher returned $rc"
+exit $rc

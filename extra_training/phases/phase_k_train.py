@@ -275,6 +275,19 @@ def main():
                          "different projection of distance, so a win is ambiguous between the "
                          "two. NOT equivalent to scaling a single injection: each block "
                          "transforms z before the next add. Requires --pose-perblock.")
+    ap.add_argument("--pose-perblock-share", action="store_true",
+                    help="SHARE BLOCK 0's OWN PRETRAINED INJECTION at every pairformer block "
+                         "instead of adding new matrices: blocks 1..n-1 re-apply "
+                         "linear_no_bias_d AND linear_no_bias_d_wo_onehot verbatim, both terms, "
+                         "because block 0 adds both. ZERO new parameters -- the whole experiment "
+                         "is one matrix pair applied at four depths, which is the literal form of "
+                         "'tie the weights so they are the same across all 4'. Requires "
+                         "--pose-perblock and is mutually exclusive with --pose-perblock-tied. "
+                         "STEP 0 IS NOT BIT-IDENTICAL to the shipped head: blocks 1..n-1 gain an "
+                         "injection they never had, from weights that are already non-zero. That "
+                         "is inherent to the mode, so this arm is a different ARCHITECTURE "
+                         "evaluated from the shipped weights, not a one-variable change to them. "
+                         "Pair it with --l2-sp to price how far that shared injection may move.")
     ap.add_argument("--allow-unmasked-fallback", action="store_true",
                     help="accept training structures that --pae-scored-pairs does not name, whose "
                          "poses then train the UNMASKED PAE term. Refused by default: the running "
@@ -803,8 +816,9 @@ def main():
         pose_direction.install(model)
     if a.pose_perblock:
         import pose_perblock
-        pose_perblock.install(model, tied=a.pose_perblock_tied)
-    elif a.pose_perblock_tied:
+        pose_perblock.install(model, tied=a.pose_perblock_tied,
+                              share_pretrained=a.pose_perblock_share)
+    elif a.pose_perblock_tied or a.pose_perblock_share:
         raise SystemExit("STOP: --pose-perblock-tied without --pose-perblock does nothing. It "
                          "selects how A shares its weights, not whether A is installed.")
     loss_fn = ProtenixLoss(configs)
@@ -1351,6 +1365,7 @@ def main():
                  # Compared here so the refusal names the setting rather than an absent tensor.
                  "pose_perblock": a.pose_perblock,
                  "pose_perblock_tied": a.pose_perblock_tied,
+                 "pose_perblock_share": a.pose_perblock_share,
                  # THE PARAMETER SET ITSELF. A bundle written at rank 8 holds 282 adapter
                  # tensors and one written without LoRA holds 248 head tensors; resuming one as
                  # the other fails on the missing-tensor check with a message about tensors
@@ -1394,7 +1409,8 @@ def main():
                      "crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
                      "pae_only": False,
                      "frame_direction": False,
-                     "pose_perblock": False, "pose_perblock_tied": False}
+                     "pose_perblock": False, "pose_perblock_tied": False,
+                     "pose_perblock_share": False}
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
@@ -2512,6 +2528,8 @@ def main():
             cmd.append("--pose-perblock")
             if a.pose_perblock_tied:
                 cmd.append("--pose-perblock-tied")
+            if a.pose_perblock_share:
+                cmd.append("--pose-perblock-share")
         if a.val_loss_prep:
             cmd += ["--indices", os.path.join(a.val_loss_prep, "job_indices.csv"),
                     "--bio-dir", os.path.join(a.val_loss_prep, "job_bioassembly"),
@@ -2637,6 +2655,8 @@ def main():
             extra = extra + ["--pose-perblock"]
             if a.pose_perblock_tied:
                 extra = extra + ["--pose-perblock-tied"]
+            if a.pose_perblock_share:
+                extra = extra + ["--pose-perblock-share"]
         # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
         #
         # --join-cache is the big one. The pose->sample join is a function of the trunk's own

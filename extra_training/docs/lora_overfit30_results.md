@@ -1,6 +1,6 @@
 # Full training set: the four metrics, per epoch
 
-Generated 2026-10-21 16:57 PDT by `run_logging/results_table.py` from `eewbr5`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
+Generated 2026-10-21 18:30 PDT by `run_logging/results_table.py` from `eewbr5`, at **budget 30**. Regenerated automatically when an epoch's fourth metric lands. Do not edit.
 
 ## The lineage is one experiment in three parts
 
@@ -46,6 +46,17 @@ Budget 30, 18 interfaces, 10 validation structures. **Not** the budget-100 figur
 | 17 | `eewbr5` | yes | 2.0673 | 2.7628 | -0.2128 | 0.2499 | -0.0410 | 0.3889 | -0.1667 |
 | 18 | `eewbr5` | yes | 2.0418 | 2.8336 | -0.1420 | 0.2004 | -0.0905 | 0.3333 | -0.2223 |
 | 19 | `eewbr5` | yes | 2.0680 | 2.7632 | -0.2124 | 0.2862 | -0.0047 | 0.5000 | -0.0556 |
+| 20 | `eewbr5` | yes | 2.0173 | 2.7475 | -0.2281 | 0.2307 | -0.0602 | 0.4444 | -0.1112 |
+| 21 | `eewbr5` | yes | 1.9946 | 2.7609 | -0.2147 | 0.2879 | -0.0030 | 0.4444 | -0.1112 |
+| 22 | `eewbr5` | yes | 2.0241 | 2.7589 | -0.2167 | 0.2475 | -0.0434 | 0.4444 | -0.1112 |
+| 23 | `eewbr5` | yes | 1.9721 | 2.7285 | -0.2471 | 0.2416 | -0.0493 | 0.4444 | -0.1112 |
+| 24 | `eewbr5` | yes | 1.9870 | 2.8066 | -0.1690 | 0.2793 | -0.0116 | 0.4444 | -0.1112 |
+| 25 | `eewbr5` | yes | 1.9863 | 2.7468 | -0.2288 | 0.2578 | -0.0331 | 0.4444 | -0.1112 |
+| 26 | `eewbr5` | yes | 1.9878 | 2.7592 | -0.2164 | 0.2905 | -0.0004 | 0.4444 | -0.1112 |
+| 27 | `eewbr5` | yes | 1.9740 | 2.7431 | -0.2325 | 0.3338 | +0.0429 | 0.5556 | +0.0000 |
+| 28 | `eewbr5` | yes | 2.0151 | 2.7681 | -0.2075 | 0.2863 | -0.0046 | 0.5556 | +0.0000 |
+| 29 | `eewbr5` | yes | 1.9502 | 2.8515 | -0.1241 | 0.2394 | -0.0515 | 0.5000 | -0.0556 |
+| 30 | `eewbr5` | yes | 1.9568 | 2.7929 | -0.1827 | 0.3014 | +0.0105 | 0.5000 | -0.0556 |
 
 Held-out PAE is a loss, so **lower is better** and a negative delta is an improvement. DockQ and frac-acceptable are the opposite.
 
@@ -80,6 +91,17 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 | 17 | `eewbr5` | 1 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
 | 18 | `eewbr5` | 1 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
 | 19 | `eewbr5` | 1 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
+| 20 | `eewbr5` | 2 | 2.6 | 2.6m | 0.0m | 52.37 | 54.76 | None |
+| 21 | `eewbr5` | 2 | 2.6 | 2.6m | 0.0m | 52.37 | 53.16 | None |
+| 22 | `eewbr5` | 1 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
+| 23 | `eewbr5` | 2 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
+| 24 | `eewbr5` | 2 | 2.6 | 2.6m | 0.0m | 52.37 | 54.76 | None |
+| 25 | `eewbr5` | 2 | 2.6 | 2.6m | 0.0m | 52.37 | 54.76 | None |
+| 26 | `eewbr5` | 2 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
+| 27 | `eewbr5` | 2 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
+| 28 | `eewbr5` | 2 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
+| 29 | `eewbr5` | 1 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
+| 30 | `eewbr5` | 1 | 2.6 | 2.6m | 0.0m | 52.37 | 53.15 | None |
 
 **Wall, accounted and residual all come from the SAME rank** — the one with the longest wall clock — so accounted + residual equals wall. Taking each column's maximum independently produced a row that did not add up under a heading that said 'worst rank'. Memory stays an across-rank maximum on purpose: there the question is whether ANY rank came near the card.
 
@@ -87,19 +109,19 @@ On the 30-structure arm, training PAE fell 38% from epoch 1 to 142 while held-ou
 
 ### Bucket detail, per rank
 
-**epoch 17** (`eewbr5`)
+**epoch 28** (`eewbr5`)
 
 - rank 0: apply_step_total 0.0m/15  crop_slice 0.1m/90  cropped_tokens mean 407  gpu_backward 1.5m/450  gpu_forward 1.0m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 2.4m/450  prefetch_issue 0.0m/89
 - rank 1: apply_step_total 0.0m/15  crop_slice 0.1m/90  cropped_tokens mean 407  gpu_backward 1.5m/450  gpu_forward 1.0m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 2.4m/450  prefetch_issue 0.0m/89
 - rank 2: apply_step_total 0.0m/15  crop_slice 0.1m/90  cropped_tokens mean 407  gpu_backward 1.5m/450  gpu_forward 1.0m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 2.4m/450  prefetch_issue 0.0m/89
 
-**epoch 18** (`eewbr5`)
+**epoch 29** (`eewbr5`)
 
 - rank 0: apply_step_total 0.0m/15  crop_slice 0.1m/90  cropped_tokens mean 407  gpu_backward 1.5m/450  gpu_forward 1.0m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 2.4m/450  prefetch_issue 0.0m/89
-- rank 1: apply_step_total 0.0m/15  crop_slice 0.1m/90  cropped_tokens mean 407  gpu_backward 1.6m/450  gpu_forward 1.0m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 2.4m/450  prefetch_issue 0.0m/89
+- rank 1: apply_step_total 0.0m/15  crop_slice 0.1m/90  cropped_tokens mean 407  gpu_backward 1.5m/450  gpu_forward 1.0m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 2.4m/450  prefetch_issue 0.0m/89
 - rank 2: apply_step_total 0.0m/15  crop_slice 0.1m/90  cropped_tokens mean 407  gpu_backward 1.5m/450  gpu_forward 1.0m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 2.4m/450  prefetch_issue 0.0m/89
 
-**epoch 19** (`eewbr5`)
+**epoch 30** (`eewbr5`)
 
 - rank 0: apply_step_total 0.0m/15  crop_slice 0.1m/90  cropped_tokens mean 407  gpu_backward 1.5m/450  gpu_forward 1.0m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 2.4m/450  prefetch_issue 0.0m/89
 - rank 1: apply_step_total 0.0m/15  crop_slice 0.1m/90  cropped_tokens mean 407  gpu_backward 1.5m/450  gpu_forward 1.0m/450  grad_collective_plus_wait 0.0m/15  label_open 0.0m/90  loss_feature_prep 0.0m/90  loss_stats_collective_plus_wait 0.0m/15  pose_total 2.4m/450  prefetch_issue 0.0m/89

@@ -39,14 +39,14 @@ from protenix.model.utils import one_hot
 # which is the point: computing it per block would be four times that for an identical result.
 # Under activation checkpointing a tensor captured from an enclosing scope is held rather than
 # recomputed, so this is also what the checkpointed blocks see on the backward pass.
-_CALL = {"onehot": None}
+_CALL = {"onehot": None, "dist": None}
 
 
 class _NoPose(Exception):
     pass
 
 
-def install(model, tied=False, loud=True):
+def install(model, tied=False, share_pretrained=False, loud=True):
     """Add the per-block projections and route the pose embedding into every block but the first.
 
     The projections are added as submodules of `confidence_head`, so phase_k_train's
@@ -63,24 +63,43 @@ def install(model, tied=False, loud=True):
                            f"inject into beyond the existing pre-stack embedding.")
 
     ref = head.linear_no_bias_d.weight
-    n_new = 1 if tied else n_blocks - 1
+    if share_pretrained and tied:
+        raise RuntimeError("STOP: share_pretrained and tied are different experiments. "
+                           "share_pretrained reuses block 0's OWN pretrained injection at every "
+                           "depth and adds no parameters; tied adds one new zero-init matrix "
+                           "shared across blocks 1..n-1.")
+
+    # SHARE_PRETRAINED ADDS NO PARAMETERS AT ALL. Blocks 1..n-1 re-apply block 0's own
+    # linear_no_bias_d AND linear_no_bias_d_wo_onehot -- the complete pose injection, both terms,
+    # because block 0 adds both (confidence.py:286-305) and re-adding only the one-hot path would
+    # be a different operator wearing the same name.
+    #
+    # STEP 0 IS NOT BIT-IDENTICAL HERE, and that is inherent rather than an oversight: blocks
+    # 1..n-1 gain an injection they never had, using weights that are already non-zero. The
+    # zero-init safety story belongs to the other two modes and the check below is skipped for
+    # this one, loudly. A run in this mode is therefore NOT a one-variable change against the
+    # shipped head at step 0 -- it is a different architecture evaluated from the same weights.
     projs = torch.nn.ModuleList()
-    for _ in range(n_new):
-        p = LinearNoBias(in_features=head.num_bins, out_features=head.c_z)
-        with torch.no_grad():
-            p.weight.zero_()
-        projs.append(p.to(device=ref.device, dtype=ref.dtype))
+    if not share_pretrained:
+        n_new = 1 if tied else n_blocks - 1
+        for _ in range(n_new):
+            p = LinearNoBias(in_features=head.num_bins, out_features=head.c_z)
+            with torch.no_grad():
+                p.weight.zero_()
+            projs.append(p.to(device=ref.device, dtype=ref.dtype))
     head.add_module("pose_perblock_proj", projs)
     head._pose_perblock_tied = bool(tied)
+    head._pose_perblock_share = bool(share_pretrained)
 
     # VERIFIED, NOT ASSUMED. The safety story is that step 0 is bit-identical, which holds only if
     # every one of these returns exactly zero -- not merely something small.
-    with torch.no_grad():
-        probe = torch.randn(4, head.num_bins, device=ref.device, dtype=ref.dtype)
-        worst = max(float(p(probe).abs().max()) for p in projs)
-    if worst > 0:
-        raise RuntimeError(f"STOP: a zero-init projection returned {worst:.3e}, not zero, so "
-                           f"installing A would change the head at step 0.")
+    if projs:
+        with torch.no_grad():
+            probe = torch.randn(4, head.num_bins, device=ref.device, dtype=ref.dtype)
+            worst = max(float(p(probe).abs().max()) for p in projs)
+        if worst > 0:
+            raise RuntimeError(f"STOP: a zero-init projection returned {worst:.3e}, not zero, so "
+                               f"installing A would change the head at step 0.")
 
     orig_mef = head.memory_efficient_forward
     orig_prep = stack._prep_blocks
@@ -96,6 +115,10 @@ def install(model, tied=False, loud=True):
             d = torch.cdist(c, c)
             _CALL["onehot"] = one_hot(x=d, lower_bins=head.lower_bins,
                                       upper_bins=head.upper_bins)
+            # THE RAW DISTANCE TOO, for share_pretrained: block 0's injection is the one-hot path
+            # PLUS linear_no_bias_d_wo_onehot(distance), and sharing the injection means sharing
+            # both terms.
+            _CALL["dist"] = d
         try:
             return orig_mef(input_feature_dict=input_feature_dict, s_trunk=s_trunk,
                             z_pair=z_pair, pair_mask=pair_mask,
@@ -104,6 +127,7 @@ def install(model, tied=False, loud=True):
             # RELEASED ON THE WAY OUT, including on an exception. Leaving a 67 MB tensor reachable
             # between poses is how a per-pose leak looks from the outside.
             _CALL["onehot"] = None
+            _CALL["dist"] = None
 
     def _prep_blocks(pair_mask=None, **kw):
         blocks = orig_prep(pair_mask=pair_mask, **kw)
@@ -121,6 +145,7 @@ def install(model, tied=False, loud=True):
         # holds, which checkpoint_blocks' graph holds until that graph's backward is done. Clearing
         # the dict slot afterwards is then harmless -- it drops the dict's reference, not this one.
         oh = _CALL["onehot"]
+        dd = _CALL["dist"]
         if oh is None:
             raise _NoPose(
                 "STOP: the pair stack was prepared without the pose embedding set. A is installed "
@@ -129,6 +154,12 @@ def install(model, tied=False, loud=True):
 
         def wrap(i, fn):
             def run(s, z):
+                if head._pose_perblock_share:
+                    # BLOCK 0's OWN INJECTION, BOTH TERMS, re-applied verbatim. One matrix pair
+                    # for the whole stack and zero new parameters.
+                    z = z + head.linear_no_bias_d(oh).to(z.dtype)
+                    z = z + head.linear_no_bias_d_wo_onehot(dd.unsqueeze(-1)).to(z.dtype)
+                    return fn(s, z)
                 proj = (head.pose_perblock_proj[0] if head._pose_perblock_tied
                         else head.pose_perblock_proj[i - 1])
                 # ADD, THEN DROP THE REFERENCE, BEFORE THE BLOCK RUNS. Passing `z + delta` as an
@@ -147,11 +178,24 @@ def install(model, tied=False, loud=True):
     stack._prep_blocks = _prep_blocks
     head._pose_perblock_installed = True
     info = {"n_blocks": n_blocks, "injected": n_blocks - 1, "tied": bool(tied),
+            "share_pretrained": bool(share_pretrained),
             "params": sum(p.weight.numel() for p in projs),
             "num_bins": int(head.num_bins), "c_z": int(head.c_z)}
     if loud:
-        print(f"pose per-block: {info['injected']} block(s) injected "
-              f"({'TIED, 1 matrix' if tied else f'untied, {n_new} matrices'}), "
-              f"LinearNoBias({info['num_bins']} -> {info['c_z']}), {info['params']} parameter(s), "
-              f"zero-init verified exactly zero; block 0 keeps linear_no_bias_d")
+        if share_pretrained:
+            _shared = (head.linear_no_bias_d.weight.numel()
+                       + head.linear_no_bias_d_wo_onehot.weight.numel())
+            print(f"pose per-block: {info['injected']} block(s) injected, SHARING BLOCK 0's OWN "
+                  f"pretrained injection (linear_no_bias_d {tuple(head.linear_no_bias_d.weight.shape)} "
+                  f"+ linear_no_bias_d_wo_onehot "
+                  f"{tuple(head.linear_no_bias_d_wo_onehot.weight.shape)} = {_shared:,} shared "
+                  f"parameter(s)), ZERO new parameters. "
+                  f"STEP 0 IS NOT BIT-IDENTICAL to the shipped head -- blocks 1-"
+                  f"{n_blocks - 1} gain an injection they never had, from weights that are "
+                  f"already non-zero. That is inherent to this mode, not a bug.")
+        else:
+            print(f"pose per-block: {info['injected']} block(s) injected "
+                  f"({'TIED, 1 matrix' if tied else f'untied, {n_new} matrices'}), "
+                  f"LinearNoBias({info['num_bins']} -> {info['c_z']}), {info['params']} parameter(s), "
+                  f"zero-init verified exactly zero; block 0 keeps linear_no_bias_d")
     return info
