@@ -11,10 +11,17 @@ Get it wrong in either direction and the loss sees nothing:
   tau << typical gap  -> nearly every correct pair is already at 5 tau, weight 0.007, so the loss
                          ignores them and only ever sees outright inversions. Very sparse signal.
 
-MEASURED ANSWER, full training set (training/fold/results.csv, 497 structures, 1,028 interfaces,
-1,154,400 cross-seed pairs): median |gap| = 0.0315. For comparison the 20-structure overfit30
-subset gives 0.0429 and val10 gives 0.0313. USE THE TRAINING NUMBER -- tau shapes the training
-gradient, so setting it from val would let the eval set influence training.
+MEASURED ANSWER, and THE POPULATION IS PART OF THE ANSWER. Over training/fold/results.csv, taking
+rows deduplicated by (seed, sample), forming only CROSS-SEED pairs, dropping pairs whose DockQ
+differ by less than DQ_TOL, and keeping interfaces with at least --min-pairs such pairs:
+
+    497 structures, 1,027 interfaces, 1,056,035 pairs  ->  median |gap| = 0.0305
+
+That is rank_loss.DEFAULT_TAU. Two earlier figures in the notes came from looser populations and
+should not be quoted: 0.0315 over 1,154,400 pairs was computed BEFORE dropping DockQ ties, and
+0.0313 was val10 only. For comparison the 20-structure overfit30 subset gives 0.0429 and val10
+gives 0.0313. USE THE TRAINING NUMBER -- tau shapes the training gradient, so setting it from val
+would let the eval set influence training.
 
 CROSS-SEED, NOT WITHIN-SEED. The earlier 0.0081 figure was within-seed pairs only. Cross-seed
 pairs are 3.9x wider, and the loss compares across seeds, so within-seed numbers do not transfer.
@@ -143,23 +150,65 @@ def main():
     print(f"  {len(per_iface)-tight-wide:>5} "
           f"({100*(len(per_iface)-tight-wide)/len(per_iface):>4.1f}%) responsive")
 
-    # THE NUMBER THAT DECIDES IT: where does the gradient actually go?
-    n_cor = n_inv = 0
-    w_cor = w_inv = 0.0
+    # WHERE THE GRADIENT MASS ACTUALLY GOES.
+    #
+    # THIS MEASURES THE PAIRWISE SCORE-SPACE GRADIENT MASS, not the parameter gradient. A pair's
+    # contribution to dL/d(s_i - s_j) is, for the two forms,
+    #
+    #     linear:    |d_i - d_j| / W
+    #     softplus:  2 |d_i - d_j| sigmoid(-m_ij / tau) / W        W = sum of the weights
+    #
+    # so at a tie the ratio is exactly 1 (sigmoid(0) = 1/2), which is the 2*tau property. Parameter
+    # Jacobians and cross-pose cancellation are NOT included and can change the picture: an earlier
+    # probe measured a 65x cancellation between per-pose and accumulated gradient norms. So this
+    # says how the OBJECTIVE allocates its attention over pairs, nothing more.
+    #
+    # THE BASELINE IS THE DockQ-WEIGHTED LINEAR LOSS, because that is what every arm actually ran.
+    # An earlier version of this script compared against the raw inversion COUNT fraction, which
+    # is the right baseline only for --no-rank-weight-by-gap: with the gap as the weight the linear
+    # loss does NOT give every pair equal gradient magnitude, it gives each |d_i - d_j|/W.
+    #
+    # NORMALISED PER INTERFACE by that interface's own W, matching group_coeffs, then summed over
+    # interfaces -- so every interface contributes the same total mass under the linear form (1.0)
+    # and interfaces are weighted equally rather than by pair count.
+    acc = {k: {"cor": 0.0, "inv": 0.0} for k in ("lin", "sp", "lin_u", "sp_u")}
+    n_cor = n_inv = n_used = 0
     for poses in data.values():
-        for _, m in cross_seed_pairs(poses):
-            w = sigmoid(-m / tau)
-            if m > 0:
-                n_cor += 1; w_cor += w
+        pr = cross_seed_pairs(poses)
+        if len(pr) < a.min_pairs:
+            continue
+        n_used += 1
+        w_sum = sum(g for g, _ in pr)
+        u_sum = float(len(pr))
+        for gap, m in pr:
+            k = "cor" if m > 0 else "inv"
+            if k == "cor":
+                n_cor += 1
             else:
-                n_inv += 1; w_inv += w
-    n_tot, w_tot = n_cor + n_inv, w_cor + w_inv
-    print(f"\ngradient allocation at tau = {tau:.4f}:")
-    print(f"  correctly ordered  {n_cor:>9,} pair(s)  mean weight {w_cor/max(n_cor,1):.3f}")
-    print(f"  INVERTED           {n_inv:>9,} pair(s)  mean weight {w_inv/max(n_inv,1):.3f}")
-    print(f"  inverted are {100*n_inv/n_tot:.1f}% of pairs but receive "
-          f"{100*w_inv/w_tot:.1f}% of the gradient")
-    print(f"  (the LINEAR loss weights every pair equally, so inversions would get {100*n_inv/n_tot:.1f}%)")
+                n_inv += 1
+            s = sigmoid(-m / tau)
+            acc["lin"][k] += gap / w_sum
+            acc["sp"][k] += 2.0 * gap * s / w_sum
+            acc["lin_u"][k] += 1.0 / u_sum
+            acc["sp_u"][k] += 2.0 * s / u_sum
+
+    n_tot = n_cor + n_inv
+    print(f"\npopulation for the allocation below: {n_used} interface(s), {n_tot:,} pair(s)")
+    print(f"  inverted pairs are {100*n_inv/n_tot:.1f}% BY COUNT")
+    print(f"\nshare of PAIRWISE SCORE-SPACE GRADIENT MASS reaching INVERTED pairs")
+    print(f"  (per-interface normalisation by that interface's W; NOT parameter gradients)")
+    rows = (("lin", "DockQ-weighted LINEAR   <- the baseline that ran"),
+            ("sp", f"DockQ-weighted SOFTPLUS tau={tau:.4f}"),
+            ("lin_u", "unweighted LINEAR"),
+            ("sp_u", f"unweighted SOFTPLUS tau={tau:.4f}"))
+    share = {}
+    for k, lab in rows:
+        tm = acc[k]["cor"] + acc[k]["inv"]
+        share[k] = 100.0 * acc[k]["inv"] / tm if tm else float("nan")
+        print(f"    {lab:44s} {share[k]:5.1f}%   (mass/interface {tm/max(n_used,1):.3f})")
+    print(f"\n  REDISTRIBUTION toward inverted pairs")
+    print(f"    weighted   forms: {share['sp'] - share['lin']:+.1f} points")
+    print(f"    unweighted forms: {share['sp_u'] - share['lin_u']:+.1f} points")
 
 
 if __name__ == "__main__":

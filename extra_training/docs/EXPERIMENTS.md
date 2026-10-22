@@ -254,8 +254,31 @@ dropping DockQ ties. The within-seed median is 0.0081 and does NOT transfer -- c
 3.9x wider. For reference the 20-structure overfit30 subset gives 0.0429 and val10 gives 0.0313;
 the training number is the right one, since tau shapes the training gradient.
 
-At that tau, **inverted pairs are 43.7% of pairs but receive 71.3% of the gradient**. Under the
-linear loss they would receive 43.7%, equal weight per pair. That redirection is the whole point.
+At that tau, inverted pairs are 43.7% of pairs **by count** and take **81.6% of the pairwise
+score-space gradient mass**, against **40.4%** under the DockQ-weighted linear loss -- a
+redistribution of **+41.3 points**. That redirection is the whole point.
+
+| objective | inverted pairs' share of score-space gradient mass |
+|---|---|
+| DockQ-weighted LINEAR (the baseline that ran) | 40.4% |
+| DockQ-weighted SOFTPLUS, tau=0.0305 | **81.6%** |
+| unweighted LINEAR | 44.7% |
+| unweighted SOFTPLUS | 72.7% |
+
+Two things that is NOT, both of which an earlier version of this note got wrong and which a
+blocking review of `018b9e50` caught. It is **not** the parameter gradient -- per-pair mass is
+`2|dd| sigmoid(-m/tau)/W` for the softplus and `|dd|/W` for the linear form, with parameter
+Jacobians and cross-pose cancellation excluded (a probe once measured 65x cancellation between
+per-pose and accumulated norms). And the baseline is **not** the raw inversion count: with the gap
+as the weight the linear loss does not give every pair equal gradient magnitude, so 43.7% is the
+right comparison only for `--no-rank-weight-by-gap`. The first published figures, 43.7% -> 71.3%,
+summed bare sigmoids and compared against the count fraction; both were wrong, and the corrected
+redistribution is larger, not smaller.
+
+THE POPULATION IS PART OF THE NUMBER. All figures above: rows deduplicated by (seed, sample),
+CROSS-SEED pairs only, pairs with |dDockQ| < 1e-6 dropped, interfaces with at least 10 surviving
+pairs kept -- 1,027 interfaces, 1,056,035 pairs. The 0.0315 over 1,154,400 pairs quoted earlier
+predates the DockQ-tie filter and should not be used.
 
 ONE GLOBAL TAU. Per-interface median gap spans ~1,700x, which sounds fatal but is not: wide
 interfaces have their CORRECT pairs saturate (right -- already ordered) while their inversions
