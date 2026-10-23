@@ -321,6 +321,64 @@ because tau shapes the training gradient and taking it from val would let the ev
 """
 
 
+DEFAULT_SOFTMAX_TAU = 0.05
+"""Softmax temperature for the EXPECTED-DockQ form. NOT the same quantity as DEFAULT_TAU.
+
+DEFAULT_TAU is a margin scale in ipTM units -- the measured median cross-seed gap -- and it sets
+where the softplus stops caring. This is a temperature dividing the scores before a softmax, and
+it sets how much of the probability mass sits on the current leaders. They are both called tau and
+they are not interchangeable: 0.0305 here would be a far sharper selection than 0.05, and 0.05 in
+the softplus would be a 1.6x wider margin. The flag is shared, so the banner prints which meaning
+is in force.
+"""
+
+
+def expected_dockq(s_vals, dq_vals, tau=DEFAULT_SOFTMAX_TAU):
+    """(loss, coeffs, n_poses) for the EXPECTED-DockQ form.
+
+        p = softmax(s / tau)          over EVERY pose in the group
+        L = - sum_i p_i * dq_i        the expected DockQ of the pose the model would select
+
+    WHY THIS EXISTS. Every other form in this file is pairwise, and a pairwise loss spends its
+    gradient in proportion to how many pairs a pose appears in -- which is the same for a pose
+    ranked 1st and a pose ranked 90th. Deployment takes the argmax and nothing else, so ordering
+    the bottom of the list is work that cannot pay. The softmax is a differentiable stand-in for
+    that argmax: as tau falls it concentrates on the current leaders, and in the limit L is the
+    DockQ of the selected pose.
+
+    THERE ARE NO PAIRS. The returned count is POSES, not pairs. `weight_by_gap` and
+    `cross_seed_only` have nothing to act on here -- the softmax is over the whole group by
+    construction, which is what "all poses competing for selection" means -- so group_coeffs
+    ignores both for this form and says so in the log rather than appearing to honour them.
+
+    THE FLOOR IS NOT ZERO. L is in [-max(dq), -min(dq)], so a perfect model scores -max(dq) for
+    that group, not 0. The softplus log line's "0 is the FLOOR" claim is false for this form and
+    is suppressed.
+
+    THE GRADIENT, closed form:
+        dL/ds_i = -(p_i / tau) * (dq_i - sum_j p_j dq_j)
+    A pose is pushed up when its DockQ beats the current expected DockQ, down when it does not,
+    and the push is scaled by p_i -- so a pose with no chance of being selected gets no gradient.
+    test_rank_loss.py checks this against autograd.
+    """
+    if tau <= 0:
+        raise ValueError(f"tau must be positive, got {tau!r}")
+    n = len(s_vals)
+    if n != len(dq_vals):
+        raise ValueError(f"length mismatch: {n} scores, {len(dq_vals)} labels")
+    if n == 0:
+        return 0.0, [], 0
+    z = [float(s) / tau for s in s_vals]
+    zmax = max(z)                      # shift before exp; at tau 0.02 a score of 0.9 is z = 45
+    ex = [math.exp(v - zmax) for v in z]
+    tot = sum(ex)
+    p = [v / tot for v in ex]
+    ebar = sum(pi * float(d) for pi, d in zip(p, dq_vals))
+    loss = -ebar
+    c = [-(pi / tau) * (float(d) - ebar) for pi, d in zip(p, dq_vals)]
+    return loss, c, n
+
+
 def pair_terms_softplus(s_vals, dq_vals, tau=DEFAULT_TAU, weight_by_gap=True, dq_tol=1e-6):
     """(loss, coeffs, n_pairs) for the SCALED LOGISTIC form.
 
@@ -408,6 +466,20 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
     dv = [float(dq_by_key[k]) for k in keys]
 
     n = len(keys)
+    # EXPECTED-DockQ IS PAIR-FREE and so leaves before the pair loop. It needs no DockQ-tie
+    # dropping (a tie is two poses with equal utility, which the expectation handles), and it
+    # cannot honour cross_seed_only or weight_by_gap -- see expected_dockq. Differentiated by
+    # autograd here, like the other forms, so the value and its gradient cannot drift apart;
+    # the closed form is checked against this in the tests.
+    if form == "expected":
+        if tau <= 0:
+            raise ValueError(f"tau must be positive, got {tau!r}")
+        s = torch.tensor(sv, dtype=torch.float64, requires_grad=True)
+        d = torch.tensor(dv, dtype=torch.float64)
+        loss = -(torch.softmax(s / tau, dim=0) * d).sum()
+        loss.backward()
+        return ({k: float(g) for k, g in zip(keys, s.grad)}, n, float(loss.detach()))
+
     if tau <= 0 and form == "softplus":
         raise ValueError(f"tau must be positive, got {tau!r}")
     s = torch.tensor(sv, dtype=torch.float64, requires_grad=True)
@@ -453,6 +525,11 @@ def group_loss(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
     keys = sorted(set(s_by_key) & set(dq_by_key))
     if len(keys) < 2:
         return 0.0, 0
+    # PAIR-FREE FORM, value only. Same closed form the trainer differentiates through autograd.
+    if form == "expected":
+        _l, _c, _n = expected_dockq([s_by_key[k] for k in keys], [dq_by_key[k] for k in keys],
+                                   tau=tau)
+        return _l, _n
     if tau <= 0 and form == "softplus":
         raise ValueError(f"tau must be positive, got {tau!r}")
     num, den, npair = 0.0, 0.0, 0
