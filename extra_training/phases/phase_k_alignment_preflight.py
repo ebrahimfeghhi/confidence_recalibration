@@ -92,6 +92,12 @@ def main():
         trunk = os.path.join(a.fold, "trunks", pdb, f"free_{lo}.npz")
         if not os.path.exists(trunk):
             missing.append(pdb); continue
+        # BOUND BEFORE THE try, because `del it` sits outside it. If train_ds[...] raises -- which
+        # is precisely the case this loop exists to RECORD -- `it` never gets bound and the `del`
+        # raised UnboundLocalError, crashing the script instead of appending to `bad`. So the one
+        # structure that needed reporting took the whole preflight down and printed no diagnosis.
+        # Never fired on val10's 10 clean structures; found on the 53-structure validation set.
+        it = None
         try:
             it = train_ds[byp[pdb][0]]
             _z, feat_npz, _p = BC.load_trunk(trunk)

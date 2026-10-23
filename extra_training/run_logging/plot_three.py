@@ -12,6 +12,7 @@ The dashed line is the SHIPPED head, derived from this run's own stored_iptm col
 not another arm.
 """
 import argparse
+import csv
 import os
 import sys
 
@@ -22,8 +23,34 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rank_rho as RHO
 
-SHIPPED = {"dockq": 0.2909, "frac": 0.5556, "rho": 0.1958}
-ORACLE = {"dockq": 0.5968, "frac": 1.0000}
+# DERIVED FROM THE RUN'S OWN SHARDS, NOT HARDCODED.
+#
+# The constants that used to live here -- DockQ 0.2909, frac 0.5556, rho 0.1958, oracle 0.5968 --
+# are all EIGHTEEN-INTERFACE figures from val10. Drawing them against a 92-interface run would put
+# the reference line in the wrong place and every comparison on the plot would be wrong by an
+# unknown amount. The shipped head's selection is recoverable exactly: each shard row carries
+# stored_iptm, so argmax(stored_iptm) per interface IS what the shipped head would have picked.
+def shipped_and_oracle(rid, epoch, budget):
+    """(shipped_dockq, shipped_frac, shipped_rho, oracle_dockq, oracle_frac, n_ifaces)."""
+    import glob
+    from collections import defaultdict
+    by = defaultdict(list)
+    for f in glob.glob(os.path.join("training", "runs", rid,
+                                    f"train_eval_shards_ep{epoch}", f"rows_b{budget}_*.csv")):
+        for r in csv.DictReader(open(f)):
+            by[r["iface"]].append((float(r["iptm"]), float(r["dockq"]), float(r["stored_iptm"])))
+    s_dq, s_ok, o_dq, o_ok, rhos = [], [], [], [], []
+    for v in by.values():
+        best_sh = max(v, key=lambda x: x[2])[1]
+        s_dq.append(best_sh); s_ok.append(1.0 if best_sh >= 0.23 else 0.0)
+        best = max(x[1] for x in v)
+        o_dq.append(best); o_ok.append(1.0 if best >= 0.23 else 0.0)
+        r = RHO._spear([x[2] for x in v], [x[1] for x in v])
+        if r is not None:
+            rhos.append(r)
+    n = max(1, len(by))
+    return (sum(s_dq)/n, sum(s_ok)/n, (sum(rhos)/len(rhos) if rhos else float("nan")),
+            sum(o_dq)/n, sum(o_ok)/n, len(by))
 
 
 def main():
@@ -43,13 +70,11 @@ def main():
     ep = sorted(got)
     g = lambda k: [got[e][IX[k]] for e in ep]
 
+    s_dq, s_fr, s_rho, o_dq, o_fr, n_if = shipped_and_oracle(a.rid, ep[-1], a.budget)
     panels = [
-        ("mean DockQ of the selected pose", g("dockq_mean"), g("dockq_sem"),
-         SHIPPED["dockq"], ORACLE["dockq"]),
-        ("fraction acceptable (DockQ > 0.23)", g("frac_mean"), g("frac_sem"),
-         SHIPPED["frac"], ORACLE["frac"]),
-        ("Spearman(ipTM, DockQ) within interface", g("rho_trained"), g("rho_sem"),
-         SHIPPED["rho"], None),
+        ("mean DockQ of the selected pose", g("dockq_mean"), g("dockq_sem"), s_dq, o_dq),
+        ("fraction acceptable (DockQ > 0.23)", g("frac_mean"), g("frac_sem"), s_fr, o_fr),
+        ("Spearman(ipTM, DockQ) within interface", g("rho_trained"), g("rho_sem"), s_rho, None),
     ]
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.6))
     for ax, (title, y, se, ship, orac) in zip(axes, panels):
@@ -67,9 +92,10 @@ def main():
         ax.set_title(title, fontsize=11.5)
         ax.set_xlabel("epoch", fontsize=10.5)
         ax.grid(alpha=0.15)
-    axes[0].set_ylabel("held out, 18 interfaces, +- s.e. across interfaces", fontsize=10)
-    fig.suptitle(f"{a.rid} -- ranking-only, cross-seed softplus  (bands are s.e. over the 18 "
-                 f"interfaces; the set resolves ~0.05 DockQ)", fontsize=11.5, y=1.02)
+    axes[0].set_ylabel(f"held out, {n_if} interfaces, +- s.e. across interfaces", fontsize=10)
+    fig.suptitle(f"{a.rid} -- cross-seed softplus  (bands are s.e. over {n_if} interfaces; "
+                 f"dashed = SHIPPED head on these same {n_if}, derived from stored_iptm)",
+                 fontsize=11.5, y=1.02)
     out = a.out or os.path.join("training", "runs", "three_panels.png")
     plt.savefig(out, dpi=140, bbox_inches="tight")
     print(f"wrote {out}  ({len(ep)} epoch(s): {ep[0]}..{ep[-1]})")
