@@ -3173,6 +3173,44 @@ def main():
                           + (f", cos mean {sum(pr_cos)/len(pr_cos):+.4f}" if pr_cos else ""))
                     print(f"  (a mean of per-pose ratios is NOT the accumulated ratio; the "
                           f"coefficients sum to zero per group so contributions cancel)")
+
+            # ALIGNMENT: ||sum_i g_i|| / sum_i ||g_i||, THE ONE NUMBER THAT SEPARATES
+            # CANCELLATION FROM LOST SENSITIVITY.
+            #
+            # A shrinking parameter gradient has two possible causes and they need different
+            # fixes. Either the per-pose gradients still have real magnitude but point in
+            # opposing directions and destroy each other when summed (CANCELLATION), or the poses
+            # individually stopped producing gradient because the trainable parameters no longer
+            # move ipTM much (SENSITIVITY). The accumulated norm alone cannot tell them apart,
+            # which is exactly the ambiguity raised in review after the first plateau analysis:
+            # 40% of pairs were still inverted and the score-level signal was GROWING while the
+            # parameter gradient fell 8x, and I attributed that to cancellation without having
+            # measured it.
+            #
+            # sum_i ||g_i|| is the total magnitude BEFORE any cancellation; ||sum_i g_i|| is what
+            # the optimiser receives. Their ratio is 1 when every pose pulls the same way and
+            # tends to ~1/sqrt(N) for N independent directions, so READ IT AGAINST THAT
+            # BASELINE, not against 1. Tracking it across checkpoints answers the question:
+            #   ratio falls while sum_i ||g_i|| holds up  -> CANCELLATION
+            #   sum_i ||g_i|| itself collapses            -> SENSITIVITY
+            #
+            # Summed over ranks like everything else here, because each rank saw only its own
+            # poses and a per-rank figure is not the optimiser's.
+            for nm, vec in (("PAE", vecs.get("pae")), ("rank", vecs.get("rank"))):
+                col = 3 if nm == "PAE" else 4
+                loc = sum(r[col] for r in pr["rows"]) if pr["rows"] else 0.0
+                tot = torch.tensor([loc], dtype=torch.float64)
+                if world > 1:
+                    dist.all_reduce(tot, op=dist.ReduceOp.SUM)
+                tot = float(tot[0])
+                if vec is None or tot <= 0:
+                    continue
+                acc = float(vec.norm())
+                n_poses = pr["poses"] * max(1, world)
+                print(f"\n  {nm} ALIGNMENT over {n_poses} pose(s): "
+                      f"||sum g_i|| {acc:.4e} / sum ||g_i|| {tot:.4e} = {acc / tot:.4f}"
+                      f"   (1/sqrt(N) = {1.0 / math.sqrt(max(1, n_poses)):.4f} would be "
+                      f"independent directions)")
         else:
             fail.append("could not form both accumulated gradient vectors")
 
