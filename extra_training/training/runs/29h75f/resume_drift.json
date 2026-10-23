@@ -1,0 +1,27 @@
+[
+ {
+  "from_bundle": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/zfahpb/resume_ep3.pt",
+  "bundle_commit": "b66a520de1107cd07404f711504b5453ab71cd8f",
+  "bundle_written": "2026-10-23T12:55:37-0700",
+  "bundle_epoch": 3,
+  "bundle_step": 45,
+  "accepted_at": "2026-10-23T13:35:12-07:00",
+  "via": "--resume-allow-drift",
+  "note": "alignment probe, not a continuation: alpha_pae 1 (the source run used 0) because measuring both terms costs nothing and |g_rank| does not depend on it, and NO --l2-sp (the source used 2.5e-4) because the anchor is added to .grad after the backward and omitting it makes the reported gradient the PURE TASK gradient, which is the quantity the alignment ratio needs. One accumulation window, no checkpoint written.",
+  "fields": {
+   "alpha_pae": {
+    "bundle": 0.0,
+    "this_run": 1.0
+   },
+   "l2_sp": {
+    "bundle": 0.00025,
+    "this_run": 0.0
+   }
+  },
+  "named": [],
+  "unnamed": [
+   "alpha_pae",
+   "l2_sp"
+  ]
+ }
+]

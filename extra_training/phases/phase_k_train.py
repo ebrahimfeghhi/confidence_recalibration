@@ -3206,7 +3206,14 @@ def main():
                 if vec is None or tot <= 0:
                     continue
                 acc = float(vec.norm())
-                n_poses = pr["poses"] * max(1, world)
+                # N IS THE ALL-REDUCED POSE COUNT, not this rank's count times the world size.
+                # Ranks get different numbers of units when the split is uneven, so the latter
+                # printed two different N (105 and 90) for the same accumulation window and so
+                # two different 1/sqrt(N) baselines beside an identical ratio.
+                _npt = torch.tensor([float(pr["poses"])], dtype=torch.float64)
+                if world > 1:
+                    dist.all_reduce(_npt, op=dist.ReduceOp.SUM)
+                n_poses = int(_npt[0])
                 print(f"\n  {nm} ALIGNMENT over {n_poses} pose(s): "
                       f"||sum g_i|| {acc:.4e} / sum ||g_i|| {tot:.4e} = {acc / tot:.4f}"
                       f"   (1/sqrt(N) = {1.0 / math.sqrt(max(1, n_poses)):.4f} would be "
