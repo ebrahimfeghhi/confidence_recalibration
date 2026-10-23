@@ -12,7 +12,6 @@ The dashed line is the SHIPPED head, derived from this run's own stored_iptm col
 not another arm.
 """
 import argparse
-import csv
 import os
 import sys
 
@@ -34,15 +33,15 @@ def main():
     ap.add_argument("--budget", type=int, default=30)
     a = ap.parse_args()
 
-    base = os.path.join("training", "runs", a.rid)
-    cache = os.path.join(base, f"rank_rho_b{a.budget}.csv")
-    if not os.path.exists(cache):
-        raise SystemExit(f"no {cache} yet")
-    rows = list(csv.DictReader(open(cache)))
-    if not rows:
-        raise SystemExit(f"{cache} is empty")
-    ep = [int(r["epoch"]) for r in rows]
-    g = lambda k: [float(r[k]) for r in rows]
+    # THROUGH rank_rho, NOT A HARDCODED FILENAME. This read "rank_rho_b{b}.csv" directly and so
+    # silently found nothing once the cache identity became _v2 -- the plot was blocked on a stale
+    # constant while the metrics themselves were fine. RHO.CACHE and RHO.load are the one source.
+    got = RHO.load(os.path.join("training", "runs"), a.rid, a.budget)
+    if not got:
+        raise SystemExit(f"no cached epochs for {a.rid} at budget {a.budget} yet")
+    IX = {n: i for i, n in enumerate(RHO.COLS)}
+    ep = sorted(got)
+    g = lambda k: [got[e][IX[k]] for e in ep]
 
     panels = [
         ("mean DockQ of the selected pose", g("dockq_mean"), g("dockq_sem"),
