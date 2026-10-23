@@ -33,9 +33,12 @@ COLUMNS
   eff#          median 1/sum(p^2), the effective number of poses receiving gradient, out of
                 poses/if. Small means the step is driven by a handful of poses.
   top5%         share of total |gradient| on the five poses that carry most of it
-  underrated%   SHARE OF |GRADIENT| REACHING POSES WITH DockQ ABOVE AND ipTM BELOW THE
-                INTERFACE MEDIAN. These are the poses that must be lifted. THIS IS THE COLUMN
-                TO CHOOSE ON.
+  lift%         SHARE OF |GRADIENT| ON LOW-ipTM POSES THE LOSS IS ACTUALLY RAISING -- ipTM
+                below the interface median AND DockQ above E[DockQ], which is exactly where
+                dL/ds_i is negative. THIS IS THE COLUMN TO CHOOSE ON.
+  (median-cut err)  mass a median-DockQ cut miscounts as lifting while the loss pushes it
+                DOWN. E[DockQ] is not the median and moves with tau, so this error grows
+                with tau; kept visible rather than silently fixed.
   oracle%       share of |gradient| on the single highest-DockQ pose of the interface
   oracle_rank   median rank of that pose when poses are ordered by |gradient|, out of poses/if.
                 1 means the loss is pushing hardest on the best available pose.
@@ -100,14 +103,27 @@ def stats_at(by, tau):
         sm = sum(ex)
         p = [q / sm for q in ex]
         md, mi = st.median(d), st.median(s)
+        ebar = -loss                      # the softmax-weighted E[DockQ] for THIS group
         io = max(range(len(d)), key=lambda i: d[i])
         order = sorted(range(len(ac)), key=lambda i: -ac[i])
         out["n"].append(n)
-        out["e"].append(-loss)
+        out["e"].append(ebar)
         out["am"].append(max(v, key=lambda x: x[0])[1])
         out["eff"].append(1.0 / sum(q * q for q in p))
         out["top5"].append(sum(sorted(ac, reverse=True)[:5]) / tot)
-        out["und"].append(sum(a for a, dd, ss in zip(ac, d, s) if dd > md and ss < mi) / tot)
+        # LIFT: gradient on low-ipTM poses THE LOSS IS ACTUALLY RAISING.
+        #
+        # THE SIGN THRESHOLD IS E[DockQ], NOT THE MEDIAN. dL/ds_i is negative -- so the step
+        # raises ipTM -- exactly when DockQ_i > E[DockQ]. This column first used the median DockQ
+        # as the cut, which silently counted poses the loss was pushing DOWN as if they were being
+        # lifted. Caught in review of 9798aa1c. The two cuts differ because E[DockQ] is not the
+        # median and, worse, MOVES WITH TAU: on overfit30 the median is 0.0383 at every
+        # temperature while E[DockQ] runs 0.0505 at tau 0.02 to 0.0773 at 0.20, so the error grew
+        # with tau and biased the comparison in the direction of the recommendation.
+        out["lift"].append(sum(a for a, dd, ss in zip(ac, d, s) if dd > ebar and ss < mi) / tot)
+        # The mass the median cut got wrong, kept so the size of that error stays visible.
+        out["cont"].append(sum(a for a, dd, ss in zip(ac, d, s)
+                               if dd > md and ss < mi and dd <= ebar) / tot)
         out["orc"].append(ac[io] / tot)
         out["orank"].append(1 + order.index(io))
     return out
@@ -116,12 +132,14 @@ def stats_at(by, tau):
 def table(name, by, taus):
     print(f"\n{name}: {len(by)} interfaces, {st.median([len(v) for v in by.values()]):.0f} "
           f"poses/interface (median), {sum(len(v) for v in by.values())} poses")
-    print("  tau     E[DockQ]  argmax    gap       eff#    top5%   underrated%  oracle%  oracle_rank")
+    print("  tau     E[DockQ]  argmax    gap       eff#    top5%     lift%  (median-cut err)  "
+          "oracle%  oracle_rank")
     for t in taus:
         o = stats_at(by, t)
         print(f"  {t:<7.3f} {st.mean(o['e']):.4f}    {st.mean(o['am']):.4f}    "
               f"{st.mean(o['e']) - st.mean(o['am']):+.4f}   {st.median(o['eff']):7.1f} "
-              f"{100 * st.mean(o['top5']):6.1f}% {100 * st.mean(o['und']):10.1f}% "
+              f"{100 * st.mean(o['top5']):6.1f}% {100 * st.mean(o['lift']):8.1f}% "
+              f"{100 * st.mean(o['cont']):12.1f}%  "
               f"{100 * st.mean(o['orc']):7.2f}% {st.median(o['orank']):10.0f}")
 
 
@@ -151,9 +169,12 @@ def main():
             table(nm, by, taus)
         else:
             print(f"\n{nm}: no interfaces after filtering")
-    print("\nCHOOSE ON underrated% -- the gradient share reaching poses that must be LIFTED "
-          "(DockQ above, ipTM below the interface median).\n`gap` is numerical fidelity to "
-          "argmax and moves the OPPOSITE way; it is not the criterion.")
+    print("\nCHOOSE ON lift% -- the gradient share on low-ipTM poses the loss is ACTUALLY "
+          "RAISING, i.e. DockQ_i > E[DockQ], which is where dL/ds_i is negative.\n"
+          "(median-cut err) is the mass a median-DockQ cut would have miscounted as lifting "
+          "while the loss pushes it DOWN -- it grows with tau.\n"
+          "`gap` is numerical fidelity to argmax and moves the OPPOSITE way; it is NOT the "
+          "criterion.")
 
 
 if __name__ == "__main__":
