@@ -49,8 +49,13 @@ for P in "${CAND[@]:-}"; do
     esac
     [ -r "/proc/$P/cmdline" ] || continue
     CMD="$(tr '\0' ' ' < "/proc/$P/cmdline")"
+    # TWO FLAGS, NOT ONE. The trainer ranks carry --out <rundir>, but the EVAL SHARD workers
+    # (phase_k_eval.py, one per card) carry only --ckpt <rundir>/head_epN_stepM.pt. Matching on
+    # --out alone left three eval workers holding all three cards after the trainer exited, and
+    # the next launch refused because the cards looked busy. Both forms are anchored to RUNDIR
+    # followed by a space or a slash, so a run id that prefixes another still cannot match.
     case "$CMD" in
-        *"--out $RUNDIR "*|*"--out $RUNDIR/"*) TARGETS+=("$P") ;;
+        *"--out $RUNDIR "*|*"--out $RUNDIR/"*|*"--ckpt $RUNDIR/"*) TARGETS+=("$P") ;;
     esac
 done
 
