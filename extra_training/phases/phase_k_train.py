@@ -2805,6 +2805,17 @@ def main():
                             continue
                         _tm = (a.alpha_rank * _cv / _cs_div) * _sp_
                         _rt = _tm if _rt is None else _rt + _tm
+                    # THE COEFFICIENT THIS POSE WAS PUSHED WITH, recorded alongside the
+                    # gradient it produced, so the two factors of
+                    #     g_i = c_i * grad_theta s_i
+                    # are measured ON THE SAME POSE IN THE SAME WINDOW. Without this the only
+                    # coefficient figures available were val10 sum|c_i| against a training-set
+                    # gradient probe, which cannot be divided -- raised in review, and correct.
+                    # Summed over the pose's interfaces exactly as the term above is built, with
+                    # the same alpha_rank and _cs_div scaling, so |g_rank| / this quantity is the
+                    # realised sensitivity |grad_theta s_i|.
+                    _cabs = sum(abs(a.alpha_rank * _cv / _cs_div)
+                                for _p, _cv in _cs_src if _cv)
                     _pr_tensors = [pp for _n, pp in trainable_params]
                     _pr_norms = {}
                     for _nm, _t in (("pae", cum / _step_poses_g[0]), ("rank", _rt)):
@@ -2830,7 +2841,7 @@ def main():
                         _c = (float((_vp @ _vr) / (_vp.norm() * _vr.norm()))
                               if _vp.norm() > 0 and _vr.norm() > 0 else float("nan"))
                         _probe["rows"].append((pdb, arm_seed, i, float(_vp.norm()),
-                                               float(_vr.norm()), _c))
+                                               float(_vr.norm()), _c, float(_cabs)))
                     _probe["poses"] += 1
                 _obj = cum / _step_poses_g[0]
                 # THE RANKING TERM, as c_i * s_i. Its gradient is the exact gradient of the unit's
@@ -3196,6 +3207,29 @@ def main():
             #
             # Summed over ranks like everything else here, because each rank saw only its own
             # poses and a per-rank figure is not the optimiser's.
+            # THE DECOMPOSITION, on the same poses and the same window:
+            #     g_i = c_i * grad_theta s_i
+            # so sum_i ||g_i|| / sum_i |c_i| is the realised mean sensitivity of ipTM to the
+            # trainable weights. Tracked across checkpoints it separates the two causes of a
+            # shrinking parameter gradient that the alignment ratio alone cannot:
+            #     |c_i| falls, sensitivity flat  -> the loss stopped asking
+            #     |c_i| flat, sensitivity falls  -> the weights lost leverage over ipTM
+            # Previously the only coefficient numbers were val10 sum|c_i| against a training-set
+            # gradient probe -- different poses, so the ratio was not formable. Raised in review.
+            if pr["rows"] and len(pr["rows"][0]) > 6:
+                _cl = sum(r[6] for r in pr["rows"])
+                _gl = sum(r[4] for r in pr["rows"])
+                _t = torch.tensor([_cl, _gl], dtype=torch.float64)
+                if world > 1:
+                    dist.all_reduce(_t, op=dist.ReduceOp.SUM)
+                _cl, _gl = float(_t[0]), float(_t[1])
+                if _cl > 0:
+                    print(f"\n  rank DECOMPOSITION: sum_i |c_i| {_cl:.4e}   "
+                          f"sum_i ||g_i|| {_gl:.4e}   "
+                          f"mean sensitivity ||grad_theta s_i|| {_gl / _cl:.4e}")
+                    print(f"  (track across checkpoints: |c_i| falling = the loss stopped "
+                          f"asking; sensitivity falling = the weights lost leverage over ipTM)")
+
             for nm, vec in (("PAE", vecs.get("pae")), ("rank", vecs.get("rank"))):
                 col = 3 if nm == "PAE" else 4
                 loc = sum(r[col] for r in pr["rows"]) if pr["rows"] else 0.0
