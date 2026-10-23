@@ -160,6 +160,27 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
     # these and frame_dir_proj, exactly as it must match `pose_perblock` for the distance copies.
     dirs = torch.nn.ModuleList()
     if getattr(head, "_pose_direction_installed", False):
+        # ACTIVATION CHECKPOINTING IS REFUSED WITH PER-BLOCK ORIENTATION.
+        #
+        # These copies read pose_direction's _CALL["dir"] cache, which the outer forward clears
+        # in its `finally`. Under checkpointing a block's forward is RECOMPUTED during backward,
+        # after that clear has run, so the cache is either None -- raising from inside backward,
+        # where the message is far from the cause -- or, worse, holding a LATER sample's
+        # directions, which would pair one pose's geometry with another's gradient. The distance
+        # copies do not have this problem because pose_perblock's own onehot/dist cache is set
+        # inside memory_efficient_forward, within the checkpointed region.
+        #
+        # Caught in review of 03f10456 as a future caution; made a refusal because the silent
+        # variant -- wrong sample's directions -- is the failure this project has paid for most
+        # often, and a latent hazard documented in a comment is one someone enables later.
+        _bpc = getattr(stack, "blocks_per_ckpt", None)
+        if _bpc:
+            raise RuntimeError(
+                f"STOP: per-block orientation needs blocks_per_ckpt off, got {_bpc!r}. The "
+                f"orientation copies read pose_direction's direction cache, which the outer "
+                f"forward clears after the stack; a checkpointed block recomputes its forward "
+                f"during backward, after that clear, so the cache is missing or holds another "
+                f"sample's geometry. Pass --blocks-per-ckpt 0, or drop --frame-direction.")
         src = head.frame_dir_proj.weight
         for _ in range(n_blocks - 1):
             fd = LinearNoBias(in_features=3, out_features=head.c_z)
