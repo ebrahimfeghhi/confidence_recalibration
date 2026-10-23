@@ -570,6 +570,23 @@ def main():
     # have. That refusal is the right behaviour -- scoring a trained head with the pathway absent
     # would measure a different function than the one trained -- so this flag is how the trainer
     # keeps the two in step, and phase_k_train passes it automatically.
+    # ACTIVATION CHECKPOINTING OFF BEFORE ANY PATHWAY IS INSTALLED.
+    #
+    # Scoring runs entirely under torch.no_grad(), so checkpointing buys nothing here -- there is
+    # no backward to recompute activations for. It was left at Protenix's config default of 1,
+    # which was harmless until per-block orientation arrived: those copies read
+    # pose_direction's direction cache, which the outer forward clears after the stack, so a
+    # recomputed block would find it missing or holding a LATER sample's geometry.
+    # pose_perblock.install refuses that combination, and the refusal fired here first -- run
+    # 2g65a6 trained epoch 1 and then died because all three eval shards raised
+    # "per-block orientation needs blocks_per_ckpt off, got 1". The trainer passes
+    # --blocks-per-ckpt to itself but not to the evaluator, and the evaluator never set it at all.
+    #
+    # Set unconditionally rather than only for the orientation arms: under no_grad it is the
+    # right value for every arm, and a conditional would leave the same trap for the next
+    # pathway that caches per-sample state.
+    model.confidence_head.pairformer_stack.blocks_per_ckpt = None
+
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
