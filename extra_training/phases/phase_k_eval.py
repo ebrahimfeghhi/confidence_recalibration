@@ -425,6 +425,13 @@ def main():
                     help="the checkpoint was trained with weight sharing across injected blocks. "
                          "The tensor COUNT differs between tied and untied, so this must match "
                          "how the head was trained or the load fails.")
+    ap.add_argument("--pose-perblock-copy", action="store_true",
+                    help="scoring counterpart of the trainer's --pose-perblock-copy: each injected\n"
+                         "block gets its OWN copy of block 0's injection, so the "
+                         "checkpoint carries pose_perblock_linear_no_bias_d* tensors "
+                         "the stock model lacks. UNLIKE --pose-perblock-share this mode "
+                         "DOES add tensors, so the state-dict guard below catches its "
+                         "omission rather than silently scoring one-depth injection.")
     ap.add_argument("--pose-perblock-share", action="store_true",
                     help="the checkpoint was trained with --pose-perblock-share: block 0's OWN "
                          "pretrained injection (linear_no_bias_d AND linear_no_bias_d_wo_onehot) "
@@ -571,10 +578,11 @@ def main():
     if a.pose_perblock:
         import pose_perblock
         pose_perblock.install(model, tied=a.pose_perblock_tied,
-                              share_pretrained=a.pose_perblock_share)
-    elif a.pose_perblock_share:
-        raise SystemExit("STOP: --pose-perblock-share without --pose-perblock changes nothing, "
-                         "and scoring would silently use one-depth injection.")
+                              share_pretrained=a.pose_perblock_share,
+                              copy_pretrained=a.pose_perblock_copy)
+    elif a.pose_perblock_share or a.pose_perblock_copy:
+        raise SystemExit("STOP: --pose-perblock-share/-copy without --pose-perblock changes "
+                         "nothing, and scoring would silently use one-depth injection.")
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu")
         have = dict(model.named_parameters())

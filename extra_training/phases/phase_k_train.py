@@ -379,6 +379,21 @@ def main():
                          "different projection of distance, so a win is ambiguous between the "
                          "two. NOT equivalent to scaling a single injection: each block "
                          "transforms z before the next add. Requires --pose-perblock.")
+    ap.add_argument("--pose-perblock-copy", action="store_true",
+                    help="UNTIED, BUT EVERY DEPTH STARTS AS A COPY OF BLOCK 0's INJECTION. Each "
+                         "injected block gets its own linear_no_bias_d AND "
+                         "linear_no_bias_d_wo_onehot, initialised to block 0's pretrained weights "
+                         "-- 3 x (9,984 + 256) = 30,720 new parameters on a 4-block stack. "
+                         "STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's STEP 0, not to the "
+                         "shipped head, and that is the point: against a share arm the ONLY "
+                         "variable is capacity, where the zero-init --pose-perblock would change "
+                         "the starting function too. Verified at install against block 0's "
+                         "weights exactly, not approximately. Mutually exclusive with "
+                         "--pose-perblock-tied and --pose-perblock-share, and requires "
+                         "--pose-perblock. THE COPIES ARE NAMED pose_perblock_linear_no_bias_d*, "
+                         "so a --train-only that does not match them creates them and never "
+                         "trains them -- pass e.g. "
+                         "--train-only 'linear_no_bias_d,pose_perblock'.")
     ap.add_argument("--pose-perblock-share", action="store_true",
                     help="SHARE BLOCK 0's OWN PRETRAINED INJECTION at every pairformer block "
                          "instead of adding new matrices: blocks 1..n-1 re-apply "
@@ -921,10 +936,12 @@ def main():
     if a.pose_perblock:
         import pose_perblock
         pose_perblock.install(model, tied=a.pose_perblock_tied,
-                              share_pretrained=a.pose_perblock_share)
-    elif a.pose_perblock_tied or a.pose_perblock_share:
-        raise SystemExit("STOP: --pose-perblock-tied without --pose-perblock does nothing. It "
-                         "selects how A shares its weights, not whether A is installed.")
+                              share_pretrained=a.pose_perblock_share,
+                              copy_pretrained=a.pose_perblock_copy)
+    elif a.pose_perblock_tied or a.pose_perblock_share or a.pose_perblock_copy:
+        raise SystemExit("STOP: --pose-perblock-tied/-share/-copy without --pose-perblock does "
+                         "nothing. They select how A shares its weights, not whether A is "
+                         "installed.")
     loss_fn = ProtenixLoss(configs)
     if a.drop_pde:
         # A STUB IN PLACE OF THE MODULE, because a zero weight would still run it.
@@ -1699,6 +1716,7 @@ def main():
                  "pose_perblock": a.pose_perblock,
                  "pose_perblock_tied": a.pose_perblock_tied,
                  "pose_perblock_share": a.pose_perblock_share,
+                 "pose_perblock_copy": a.pose_perblock_copy,
                  # THE PARAMETER SET ITSELF. A bundle written at rank 8 holds 282 adapter
                  # tensors and one written without LoRA holds 248 head tensors; resuming one as
                  # the other fails on the missing-tensor check with a message about tensors
@@ -1743,7 +1761,7 @@ def main():
                      "pae_only": False,
                      "frame_direction": False,
                      "pose_perblock": False, "pose_perblock_tied": False,
-                     "pose_perblock_share": False,
+                     "pose_perblock_share": False, "pose_perblock_copy": False,
                      "rank_loss": False, "alpha_rank": 1.0,
                      "rank_weight_by_gap": True, "l2_sp": 0.0,
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
@@ -3332,6 +3350,11 @@ def main():
                 cmd.append("--pose-perblock-tied")
             if a.pose_perblock_share:
                 cmd.append("--pose-perblock-share")
+            # PASSED TO THE CHILD, like the other two. A monitor that built a DIFFERENT
+            # architecture than the parent would report a held-out number for a model that does
+            # not exist -- the --loss-only inheritance class, now seven instances.
+            if a.pose_perblock_copy:
+                cmd.append("--pose-perblock-copy")
         if a.val_loss_prep:
             cmd += ["--indices", os.path.join(a.val_loss_prep, "job_indices.csv"),
                     "--bio-dir", os.path.join(a.val_loss_prep, "job_bioassembly"),
@@ -3459,6 +3482,11 @@ def main():
                 extra = extra + ["--pose-perblock-tied"]
             if a.pose_perblock_share:
                 extra = extra + ["--pose-perblock-share"]
+            # AND THE COPY MODE. This one ADDS tensors, so omitting it makes the evaluator's
+            # state-dict guard refuse outright rather than silently score a different
+            # architecture -- but passing it is still the fix, not relying on the refusal.
+            if a.pose_perblock_copy:
+                extra = extra + ["--pose-perblock-copy"]
         # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
         #
         # --join-cache is the big one. The pose->sample join is a function of the trunk's own
@@ -3805,6 +3833,8 @@ def main():
                                   # carried no record of the architecture OR the objective. Found
                                   # in review of 04503a9.
                                   "pose_perblock_share": a.pose_perblock_share,
+                                  "pose_perblock_copy": a.pose_perblock_copy,
+                                  "pose_perblock_copy": a.pose_perblock_copy,
                                   "l2_sp": a.l2_sp,
                                   "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                                   "rank_weight_by_gap": a.rank_weight_by_gap,

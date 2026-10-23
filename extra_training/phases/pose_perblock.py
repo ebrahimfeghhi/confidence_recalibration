@@ -46,7 +46,8 @@ class _NoPose(Exception):
     pass
 
 
-def install(model, tied=False, share_pretrained=False, loud=True):
+def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
+            loud=True):
     """Add the per-block projections and route the pose embedding into every block but the first.
 
     The projections are added as submodules of `confidence_head`, so phase_k_train's
@@ -63,11 +64,15 @@ def install(model, tied=False, share_pretrained=False, loud=True):
                            f"inject into beyond the existing pre-stack embedding.")
 
     ref = head.linear_no_bias_d.weight
-    if share_pretrained and tied:
-        raise RuntimeError("STOP: share_pretrained and tied are different experiments. "
-                           "share_pretrained reuses block 0's OWN pretrained injection at every "
-                           "depth and adds no parameters; tied adds one new zero-init matrix "
-                           "shared across blocks 1..n-1.")
+    _modes = [k for k, v in (("tied", tied), ("share_pretrained", share_pretrained),
+                             ("copy_pretrained", copy_pretrained)) if v]
+    if len(_modes) > 1:
+        raise RuntimeError(
+            f"STOP: {' and '.join(_modes)} are different experiments and at most one may be set. "
+            f"share_pretrained reuses block 0's OWN pretrained injection at every depth and adds "
+            f"no parameters (weights TIED forever). copy_pretrained gives every depth its own COPY "
+            f"of that injection, so step 0 matches share_pretrained exactly and the copies are then "
+            f"free to diverge. tied adds one new zero-init matrix shared across blocks 1..n-1.")
 
     # SHARE_PRETRAINED ADDS NO PARAMETERS AT ALL. Blocks 1..n-1 re-apply block 0's own
     # linear_no_bias_d AND linear_no_bias_d_wo_onehot -- the complete pose injection, both terms,
@@ -79,8 +84,32 @@ def install(model, tied=False, share_pretrained=False, loud=True):
     # zero-init safety story belongs to the other two modes and the check below is skipped for
     # this one, loudly. A run in this mode is therefore NOT a one-variable change against the
     # shipped head at step 0 -- it is a different architecture evaluated from the same weights.
+    # COPY_PRETRAINED: ONE COMPLETE COPY OF BLOCK 0's INJECTION PER DEPTH.
+    #
+    # Block 0 adds TWO terms -- linear_no_bias_d(one_hot) AND linear_no_bias_d_wo_onehot(distance)
+    # (confidence.py:297-305) -- so a faithful copy needs both. Copying only the one-hot path, as
+    # the zero-init untied mode's single matrix would suggest, is a different operator.
+    #
+    # STEP 0 IS BIT-IDENTICAL TO share_pretrained's STEP 0, not to the shipped head. That is the
+    # point: it makes CAPACITY the only variable against a share_pretrained arm, where zero-init
+    # untied would instead change both the starting function and the capacity at once. Verified
+    # below against block 0's weights rather than against zero.
+    copies_d = torch.nn.ModuleList()
+    copies_wo = torch.nn.ModuleList()
+    if copy_pretrained:
+        for _ in range(n_blocks - 1):
+            cd = LinearNoBias(in_features=head.num_bins, out_features=head.c_z)
+            cw = LinearNoBias(in_features=1, out_features=head.c_z)
+            with torch.no_grad():
+                cd.weight.copy_(head.linear_no_bias_d.weight)
+                cw.weight.copy_(head.linear_no_bias_d_wo_onehot.weight)
+            copies_d.append(cd.to(device=ref.device, dtype=ref.dtype))
+            copies_wo.append(cw.to(device=ref.device, dtype=ref.dtype))
+    head.add_module("pose_perblock_linear_no_bias_d", copies_d)
+    head.add_module("pose_perblock_linear_no_bias_d_wo_onehot", copies_wo)
+
     projs = torch.nn.ModuleList()
-    if not share_pretrained:
+    if not share_pretrained and not copy_pretrained:
         n_new = 1 if tied else n_blocks - 1
         for _ in range(n_new):
             p = LinearNoBias(in_features=head.num_bins, out_features=head.c_z)
@@ -90,6 +119,7 @@ def install(model, tied=False, share_pretrained=False, loud=True):
     head.add_module("pose_perblock_proj", projs)
     head._pose_perblock_tied = bool(tied)
     head._pose_perblock_share = bool(share_pretrained)
+    head._pose_perblock_copy = bool(copy_pretrained)
 
     # VERIFIED, NOT ASSUMED. The safety story is that step 0 is bit-identical, which holds only if
     # every one of these returns exactly zero -- not merely something small.
@@ -100,6 +130,24 @@ def install(model, tied=False, share_pretrained=False, loud=True):
         if worst > 0:
             raise RuntimeError(f"STOP: a zero-init projection returned {worst:.3e}, not zero, so "
                                f"installing A would change the head at step 0.")
+
+    # VERIFIED AGAINST BLOCK 0, NOT AGAINST ZERO. For the zero-init modes the safety story is
+    # "step 0 is bit-identical to the shipped head" and the check above asserts exact zeros. For
+    # copy_pretrained the story is "step 0 is bit-identical to SHARE mode", which holds only if
+    # every copy equals block 0's weights exactly -- not merely closely. A copy that drifted by
+    # one bit would make this arm's step 0 a third starting point and the comparison meaningless.
+    if copy_pretrained:
+        with torch.no_grad():
+            worst_d = max(float((c.weight - head.linear_no_bias_d.weight).abs().max())
+                          for c in copies_d)
+            worst_w = max(float((c.weight - head.linear_no_bias_d_wo_onehot.weight).abs().max())
+                          for c in copies_wo)
+        if worst_d != 0.0 or worst_w != 0.0:
+            raise RuntimeError(
+                f"STOP: a copied injection differs from block 0's by {worst_d:.3e} (one-hot) / "
+                f"{worst_w:.3e} (raw distance), so step 0 would NOT match share_pretrained and "
+                f"this arm would differ from its control in the starting function as well as in "
+                f"capacity.")
 
     orig_mef = head.memory_efficient_forward
     orig_prep = stack._prep_blocks
@@ -160,6 +208,14 @@ def install(model, tied=False, share_pretrained=False, loud=True):
                     z = z + head.linear_no_bias_d(oh).to(z.dtype)
                     z = z + head.linear_no_bias_d_wo_onehot(dd.unsqueeze(-1)).to(z.dtype)
                     return fn(s, z)
+                if head._pose_perblock_copy:
+                    # THIS DEPTH's OWN COPY, both terms. Identical to the share branch at step 0
+                    # and free to diverge after. Same add-then-drop discipline as below: the
+                    # delta is not kept live across the block's forward and backward.
+                    z = z + head.pose_perblock_linear_no_bias_d[i - 1](oh).to(z.dtype)
+                    z = z + head.pose_perblock_linear_no_bias_d_wo_onehot[i - 1](
+                        dd.unsqueeze(-1)).to(z.dtype)
+                    return fn(s, z)
                 proj = (head.pose_perblock_proj[0] if head._pose_perblock_tied
                         else head.pose_perblock_proj[i - 1])
                 # ADD, THEN DROP THE REFERENCE, BEFORE THE BLOCK RUNS. Passing `z + delta` as an
@@ -178,8 +234,13 @@ def install(model, tied=False, share_pretrained=False, loud=True):
     stack._prep_blocks = _prep_blocks
     head._pose_perblock_installed = True
     info = {"n_blocks": n_blocks, "injected": n_blocks - 1, "tied": bool(tied),
-            "share_pretrained": bool(share_pretrained),
-            "params": sum(p.weight.numel() for p in projs),
+            "share_pretrained": bool(share_pretrained), "copy_pretrained": bool(copy_pretrained),
+            # COUNTS THE COPIES TOO. `projs` is empty in both share and copy mode, so summing
+            # only it reported 0 parameters for an arm that adds 30,720 -- and the launcher's note
+            # would have recorded the wrong capacity.
+            "params": (sum(p.weight.numel() for p in projs)
+                       + sum(c.weight.numel() for c in copies_d)
+                       + sum(c.weight.numel() for c in copies_wo)),
             "num_bins": int(head.num_bins), "c_z": int(head.c_z)}
     if loud:
         if share_pretrained:
@@ -193,9 +254,23 @@ def install(model, tied=False, share_pretrained=False, loud=True):
                   f"STEP 0 IS NOT BIT-IDENTICAL to the shipped head -- blocks 1-"
                   f"{n_blocks - 1} gain an injection they never had, from weights that are "
                   f"already non-zero. That is inherent to this mode, not a bug.")
+        elif copy_pretrained:
+            print(f"pose per-block: {info['injected']} block(s) injected, each with its OWN COPY "
+                  f"of block 0's injection -- linear_no_bias_d "
+                  f"{tuple(head.linear_no_bias_d.weight.shape)} + linear_no_bias_d_wo_onehot "
+                  f"{tuple(head.linear_no_bias_d_wo_onehot.weight.shape)} per depth, "
+                  f"{info['params']:,} NEW parameter(s). UNTIED: the copies are free to diverge. "
+                  f"STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's step 0 (verified against "
+                  f"block 0's weights, exactly), NOT to the shipped head -- so capacity is the "
+                  f"only variable against a share arm. The copies are named "
+                  f"pose_perblock_linear_no_bias_d* and a --train-only that does not match them "
+                  f"would create them and never train them.")
         else:
+            # n_new EXISTS ONLY IN THE ZERO-INIT BRANCHES. Reading it here raised NameError the
+            # moment copy_pretrained was added -- the same shape as the `del it` defect in
+            # phase_k_alignment_preflight.py. Guarded rather than assumed.
             print(f"pose per-block: {info['injected']} block(s) injected "
-                  f"({'TIED, 1 matrix' if tied else f'untied, {n_new} matrices'}), "
+                  f"({'TIED, 1 matrix' if tied else f'untied, {len(projs)} matrices'}), "
                   f"LinearNoBias({info['num_bins']} -> {info['c_z']}), {info['params']} parameter(s), "
                   f"zero-init verified exactly zero; block 0 keeps linear_no_bias_d")
     return info

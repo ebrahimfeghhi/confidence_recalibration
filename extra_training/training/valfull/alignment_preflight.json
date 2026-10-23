@@ -1,0 +1,18 @@
+{
+ "ok": true,
+ "complete": true,
+ "n_manifest_structures": 53,
+ "limit": 0,
+ "manifest_digest": "5cf73dbc53401d74",
+ "n_structures": 53,
+ "n_units": 1590,
+ "manifest_selection": "training/valfull/structures.csv",
+ "manifest_skip": "9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3",
+ "seeds": "400000-400029",
+ "checked_seed": 400000,
+ "mismatches": [],
+ "missing_trunks": [],
+ "schema": 2,
+ "written": "2026-10-22T19:30:46-0700",
+ "seconds": 280.2
+}
