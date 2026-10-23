@@ -85,6 +85,12 @@ def main():
     ap.add_argument("rid")
     ap.add_argument("--out", default=None)
     ap.add_argument("--budget", type=int, default=30)
+    ap.add_argument("--no-rho", dest="with_rho", action="store_false",
+                    help="drop the Spearman(ipTM, DockQ) panel. SHOWN BY DEFAULT, but it is NOT "
+                         "the criterion: h7msge lifted rho +0.075 over shipped while selected "
+                         "DockQ and frac acceptable both ended below shipped, which is the whole "
+                         "reason the loss was changed. Kept visible because the two moving apart "
+                         "is itself the finding worth watching.")
     a = ap.parse_args()
 
     # THROUGH rank_rho, NOT A HARDCODED FILENAME. This read "rank_rho_b{b}.csv" directly and so
@@ -98,12 +104,16 @@ def main():
     g = lambda k: [got[e][IX[k]] for e in ep]
 
     s_dq, s_fr, s_rho, o_dq, o_fr, n_if = shipped_and_oracle(a.rid, ep[-1], a.budget)
+    # THE TWO METRICS THAT DECIDE IT, then the objective. Spearman is opt-in; see --with-rho.
     panels = [
         ("mean DockQ of the selected pose", g("dockq_mean"), g("dockq_sem"), s_dq, o_dq),
         ("fraction acceptable (DockQ > 0.23)", g("frac_mean"), g("frac_sem"), s_fr, o_fr),
-        ("Spearman(ipTM, DockQ) within interface", g("rho_trained"), g("rho_sem"), s_rho, None),
     ]
-    fig, axes = plt.subplots(1, 4, figsize=(21, 4.6))
+    if a.with_rho:
+        panels.append(("Spearman(ipTM, DockQ) within interface",
+                       g("rho_trained"), g("rho_sem"), s_rho, None))
+    n_ax = len(panels) + 1                      # + the train-vs-held-out objective panel
+    fig, axes = plt.subplots(1, n_ax, figsize=(5.25 * n_ax, 4.6))
     for ax, (title, y, se, ship, orac) in zip(axes, panels):
         lo = [v - s for v, s in zip(y, se)]
         hi = [v + s for v, s in zip(y, se)]
@@ -131,7 +141,7 @@ def main():
     # training curve (-E[DockQ]) drawn against a POSITIVE pairwise softplus held-out curve, on
     # one axis, labelled as the same loss. Caught in review of 92338a36. rank_rho now computes
     # both metrics for every run and run_rank_form says which objective was trained.
-    ax = axes[3]
+    ax = axes[len(panels)]
     _form, _tau = RHO.run_rank_form(os.path.join("training", "runs", a.rid))
     if _form == "expected":
         ho_col, ho_se_col = "exloss_trained", "exloss_sem"
