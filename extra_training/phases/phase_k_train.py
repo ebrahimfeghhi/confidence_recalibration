@@ -260,6 +260,21 @@ def main():
                          "SCALE: the full head drifted ||dW||^2 = 67,052 over 30 epochs (mdv9x7), "
                          "so LAMBDA 1e-5 prices that drift at ~0.67 against a PAE loss near 2.0. "
                          "LAMBDA IS NOT TUNED; it is the hyperparameter of the experiment.")
+    ap.add_argument("--l2-sp-exclude", default="",
+                    help="comma-separated REGEXES matched against trainable parameter names; "
+                         "matching tensors stay TRAINABLE but are left OUT of the L2-SP anchor.\n"
+                         "THE CASE THIS EXISTS FOR is a tensor whose init is zero. L2-SP prices "
+                         "distance from the SHIPPED weights, which is a prior worth holding for a "
+                         "pretrained matrix; for a newly added zero-init projection the same "
+                         "penalty is plain decay toward zero, i.e. it penalises the very term "
+                         "being added. --frame-direction's frame_dir_proj and pose_perblock's "
+                         "orientation copies are exactly that: zero-init by construction and "
+                         "verified exactly zero at install.\n"
+                         "IT DOES NOT MAKE THEM UNREGULARISED BY ACCIDENT -- excluded tensors "
+                         "are named in the startup log and the count is reported, because an "
+                         "anchor silently covering fewer tensors than the reader believes is the "
+                         "same failure class as a --train-only that creates parameters and never "
+                         "trains them.")
     ap.add_argument("--train-only", default="",
                     help="SELECTIVE FINETUNING: comma-separated REGEXES matched against parameter "
                          "names inside the confidence head; only matching tensors train and "
@@ -1722,6 +1737,7 @@ def main():
                  # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
                  # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
                  "l2_sp": a.l2_sp,
+                 "l2_sp_exclude": a.l2_sp_exclude,
                  "lr": a.lr, "warmup_steps": a.warmup_steps,
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
@@ -1792,7 +1808,7 @@ def main():
                      "pose_perblock": False, "pose_perblock_tied": False,
                      "pose_perblock_share": False, "pose_perblock_copy": False,
                      "rank_loss": False, "alpha_rank": 1.0,
-                     "rank_weight_by_gap": True, "l2_sp": 0.0,
+                     "rank_weight_by_gap": True, "l2_sp": 0.0, "l2_sp_exclude": "",
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
@@ -2002,6 +2018,32 @@ def main():
     if a.l2_sp:
         _anchor_p = os.path.join(a.out, "l2sp_anchor.pt")
         _tset_sp = set(trainable)
+        # EXCLUSIONS ARE APPLIED HERE, BEFORE THE ANCHOR IS BUILT, so an excluded tensor never
+        # enters _a_sd and the resume consistency check cannot be satisfied by a stale anchor
+        # that still carries it. Reported by name: an anchor covering fewer tensors than the
+        # reader believes is the bug this project keeps rediscovering.
+        if a.l2_sp_exclude:
+            import re as _re_sp
+            _pats_sp = [t.strip() for t in a.l2_sp_exclude.split(",") if t.strip()]
+            _pfx_sp = prefixes[0]
+            _drop = {n for n in _tset_sp
+                     if any(_re_sp.search(_p, n[len(_pfx_sp) + 1:]) for _p in _pats_sp)}
+            if not _drop:
+                raise SystemExit(
+                    f"STOP: --l2-sp-exclude {_pats_sp} matched no trainable parameter, so it "
+                    f"would silently do nothing while the record says the anchor was reduced.\n"
+                    f"  trainable: {[n[len(_pfx_sp) + 1:] for n in sorted(_tset_sp)]}")
+            if _drop == _tset_sp:
+                raise SystemExit(
+                    f"STOP: --l2-sp-exclude {_pats_sp} matched EVERY trainable parameter, which "
+                    f"leaves no anchor at all. Drop --l2-sp instead of excluding everything, so "
+                    f"the record says plainly that there is no anchor.")
+            _tset_sp = _tset_sp - _drop
+            if is_main:
+                print(f"  --l2-sp-exclude {_pats_sp}: {len(_drop)} tensor(s) stay TRAINABLE but "
+                      f"are OUT of the anchor, {len(_tset_sp)} anchored:")
+                for n in sorted(_drop):
+                    print(f"    excluded  {n[len(_pfx_sp) + 1:]}")
         _l2sp_params = [(n, pp) for n, pp in model.named_parameters() if n in _tset_sp]
         if a.resume:
             if not os.path.exists(_anchor_p):
@@ -3954,6 +3996,7 @@ def main():
                                   "pose_perblock_copy": a.pose_perblock_copy,
                                   "pose_perblock_copy": a.pose_perblock_copy,
                                   "l2_sp": a.l2_sp,
+                                  "l2_sp_exclude": a.l2_sp_exclude,
                                   "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                                   "rank_weight_by_gap": a.rank_weight_by_gap,
                                   "rank_form": a.rank_form,
