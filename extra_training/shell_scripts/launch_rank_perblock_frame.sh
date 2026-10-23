@@ -1,49 +1,62 @@
 #!/bin/bash
-# RANKING LOSS + L2-SP, POSE INJECTED AT ALL FOUR PAIRFORMER BLOCKS WITH UNTIED WEIGHTS.
+# RANKING LOSS + L2-SP, WITH DISTANCE *AND* ORIENTATION INJECTED AT ALL FOUR PAIRFORMER BLOCKS.
 #
-# ONE VARIABLE AGAINST h7msge: the injection architecture. Same objective (cross-seed scaled
-# softplus at tau 0.0305, --alpha-pae 0 so ordering is the ONLY term), same data (overfit30 train,
-# val10 held out every epoch at budget 30), same 50 epochs, same 100 poses/step, same lr 1e-2.
+# TWO VARIABLES AGAINST zfahpb/zfahp2, not one, and both are deliberate:
+#   1. ORIENTATION IS ADDED. --frame-direction gives the head the unit direction of j in i's
+#      backbone frame, three numbers per ordered pair, which no arm in this project has ever
+#      trained. Every previous arm saw the pose only as cdist over one representative atom per
+#      token, so the frame's orientation was absent from the input rather than merely implicit.
+#   2. THE ANCHOR NO LONGER COVERS EVERY TRAINABLE TENSOR. --l2-sp-exclude 'frame_dir' leaves the
+#      orientation weights trainable but out of the L2-SP penalty.
+# Everything else matches zfahpb: cross-seed softplus at tau 0.0305, --alpha-pae 0, overfit30
+# train, val10 held out every epoch at budget 30, 50 epochs, 100 poses/step, lr 1e-2, warmup 20.
 #
-# WHAT CHANGES. h7msge injected the pose once, before the stack. This injects it at blocks 1, 2
-# and 3 as well, and each depth gets its OWN COPY of the two projections rather than sharing one
-# matrix. 30,720 new parameters, 40,960 trainable across 8 tensors. Each copy is initialised as an
-# exact duplicate of block 0's weights and install verifies that against block 0 exactly.
+# PARAMETERS, 44,032 trainable over 12 tensors:
+#   ANCHORED at 2.5e-4   linear_no_bias_d (256x39) + linear_no_bias_d_wo_onehot (256x1)      10,240
+#                        3 per-block copies of both                                           30,720
+#   NOT ANCHORED         frame_dir_proj LinearNoBias(3 -> 256)                                   768
+#                        3 per-block orientation copies                                        2,304
+# pae_ln and linear_no_bias_pae stay FROZEN.
 #
-# STEP 0 IS NOT THE SHIPPED HEAD. It is bit-identical to --pose-perblock-share's step 0, because
-# blocks 1-3 gain an injection they never had, using weights that are already non-zero. Against a
-# SHARE arm capacity is the only variable; against h7msge or the shipped head it is not. Stated
-# because the single-site arms could claim shipped-head bit-identity and this one cannot.
+# WHY THE ORIENTATION WEIGHTS ARE EXCLUDED FROM THE ANCHOR. L2-SP prices distance from the
+# SHIPPED weights, which is a prior worth holding for a pretrained matrix. These four tensors are
+# ZERO-INIT by construction and verified exactly zero at install, so anchoring them to their init
+# is plain decay toward zero -- it penalises the very term being added. AdamW also runs
+# weight_decay=0, so they are genuinely unregularised; that is the intent, and the startup log
+# names each excluded tensor so the reduced anchor is not something a reader has to infer.
 #
-# THE ANCHOR IS ALSO A SOFT TIE, which is the point of untying this way. Every copy is anchored to
-# the SAME weights, so the penalty pulls each copy toward the shipped projection AND toward the
-# other copies. The blocks differentiate only as far as the ranking loss pays for it, and
-# --pose-perblock-share is the lambda -> infinity limit of this arm.
+# STEP 0 IS UNCHANGED FROM zfahpb's. The orientation projections contribute exactly zero at
+# install, so this arm starts from the same function zfahpb did -- bit-identical to
+# --pose-perblock-share's step 0 on the distance terms, NOT to the shipped head, because blocks
+# 1-3 gain a distance injection they never had.
 #
-# WHY LAMBDA IS 2.5e-4 AND NOT 1e-3, measured by probe ygpn6t on THIS configuration:
-#   |g_rank| = 4.0207e-02 across the 8 trainable tensors, against 7.96e-02 for the single-site
-#   10,240 set (probe ev3d6u). All 8 tensors received a finite, non-zero ranking gradient through
-#   calculate_chain_based_ptm -- the one thing no offline test can establish.
-# Two effects compound in the same direction. The task gradient is 0.505x what it was, so a fixed
-# lambda is ~2x stiffer relative to it. And 4x the parameters means ||dW|| is ~2x larger at the
-# same PER-PARAMETER drift, while the anchor gradient is 2*lambda*||dW|| -- another 2x. At 1e-3
-# the anchor would bite ~4x harder per site than it did in h7msge, pinning the copies to block 0
-# and quietly reproducing --pose-perblock-share. 1e-3/4 = 2.5e-4 preserves the anchor strength
-# that made h7msge's drift plateau in the 4-7 band.
+# LAMBDA STAYS 2.5e-4. It was transferred from h7msge's 1e-3 by run_logging/l2sp_lambda.py using
+# probe ygpn6t (|g_rank| 4.02e-02 against 7.96e-02 at 10,240 params). The anchored set here is
+# the SAME 8 tensors at the same 40,960 parameters as zfahpb, so the transfer is unchanged; the
+# 3,072 orientation parameters are outside the anchor and so do not enter it at all.
 #
-# WHAT IT TESTS. h7msge established that the single-site pairwise arm improves its own objective
-# (held-out loss 0.0741 -> 0.0368) without improving selection: frac acceptable never beat shipped
-# in 43 epochs and 0 of 18 interfaces changed which pose won. Pairs involving the selected pose are
-# only 2.29% of that loss, so halving it left selection untouched. This arm asks whether the deficit
-# was CAPACITY -- one 256x39 matrix seeing the pose once, four blocks downstream of it -- rather
-# than the objective. If it reproduces h7msge, capacity is not the limit either.
+# --blocks-per-ckpt 0 IS LOAD-BEARING, NOT INCIDENTAL. The orientation copies read
+# pose_direction's direction cache, which the outer forward clears after the stack. A
+# checkpointed block recomputes its forward during backward, after that clear, so the cache would
+# be missing or hold a LATER sample's geometry -- pairing one pose's directions with another's
+# gradient. pose_perblock.install now REFUSES per-block orientation with blocks_per_ckpt set
+# rather than leaving that as a comment someone enables later.
 #
-# WHAT WOULD FALSIFY IT: drift leaving the band (the anchor mis-scaled after all), or the copies
-# failing to diverge from block 0 at all (lambda still too stiff -- check ||dW||^2 against 4x the
-# single-site value, since 4x the tensors alone accounts for that much).
+# WHAT IT TESTS. Three arms have now failed to beat shipped on frac acceptable: h7msge (pairwise,
+# single site), ctij23 (expected-DockQ, single site) and zfahpb/zfahp2 (pairwise, distance at
+# four depths). The alignment probes showed the ranking gradient destroys ~91% of its magnitude
+# to cancellation at every epoch while PAE destroys almost none, and that the parameter gradient
+# collapse is lost SENSITIVITY rather than growing cancellation -- consistent with the trainable
+# distance pathway simply having little leverage over ipTM. Orientation is the one input the head
+# has never had, so this asks whether the deficit is INFORMATION rather than capacity or
+# objective.
 #
-# CONTROLS: h7msge (same objective and anchor, single site, stopped ep43), 4y3ve6 (same objective,
-# perblock SHARE, no anchor, overfit from ep3), 8eiek8 (perblock share, no ranking term).
+# WHAT WOULD FALSIFY IT: the orientation weights staying near zero (the loss finds no use for
+# them -- check their norm against the anchored tensors' drift), or the same 0.038-0.042 held-out
+# plateau and unchanged frac that the three previous arms reached.
+#
+# CONTROLS: zfahp2 (this arm minus orientation, running), h7msge (single site, same objective and
+# anchor), 4y3ve6 (perblock share, no anchor), 8eiek8 (perblock share, no ranking term).
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 BUSY=$(/home/ebrahim/Protenix/.venv/bin/python -I run_logging/cards_busy.py)
@@ -52,7 +65,7 @@ if [ "$BUSY" != "0" ]; then
     exit 1
 fi
 LAYERNORM_TYPE=openfold /home/ebrahim/Protenix/.venv/bin/python -I run_logging/launch.py \
-  --cards 4,5,7 --note "RANKING LOSS + L2-SP WITH THE POSE INJECTED AT ALL FOUR PAIRFORMER BLOCKS, UNTIED. ONE VARIABLE AGAINST h7msge: the injection architecture. Same objective -- cross-seed scaled softplus at tau 0.0305 with --alpha-pae 0, so pose ordering is the ONLY term -- same overfit30 train and val10 held-out every epoch at budget 30, same 50 epochs, same 2 structures x 10 seeds x 5 poses = 100 poses/step, 15 steps/epoch, lr 1e-2, warmup 20, accum 85, crop 10/5 at 3400, seeds 500000-500009. ARCHITECTURE: --pose-perblock --pose-perblock-copy gives blocks 1-3 their OWN COPY of linear_no_bias_d (256x39) and linear_no_bias_d_wo_onehot (256x1) instead of sharing block 0's, 30,720 new parameters, 40,960 trainable over 8 tensors, each copy initialised as an exact duplicate of block 0's weights and verified against them at install. pae_ln and linear_no_bias_pae stay FROZEN. STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's STEP 0, NOT to the shipped head: blocks 1-3 gain an injection they never had, using already non-zero weights. Against a share arm capacity is the only variable; against h7msge it is not. THE ANCHOR IS ALSO A SOFT TIE: every copy is anchored to the SAME shipped weights, so the penalty pulls each copy toward the shipped projection and toward the other copies, letting the blocks differentiate only as far as the ranking loss pays for. --pose-perblock-share is the lambda -> infinity limit of this arm. LAMBDA 2.5e-4, NOT 1e-3, MEASURED BY PROBE ygpn6t ON THIS EXACT CONFIGURATION: |g_rank| 4.0207e-02 over the 8 trainable tensors against 7.96e-02 for the single-site 10,240 set (probe ev3d6u), |g_PAE| 8.5061e-02, cos +0.3298, and all 8 tensors received a finite non-zero ranking gradient through calculate_chain_based_ptm. Two effects compound: the task gradient is 0.505x what it was so a fixed lambda is ~2x stiffer relative to it, and 4x the parameters makes ||dW|| ~2x larger at the same per-parameter drift while the anchor gradient is 2*lambda*||dW|| -- another 2x. At 1e-3 the anchor would bite ~4x harder per site, pinning the copies to block 0 and quietly reproducing the share arm. WHAT IT TESTS: whether h7msge's failure was CAPACITY rather than the objective. That arm drove its held-out pairwise loss 0.0741 -> 0.0368 and rho to +0.075 over shipped while frac acceptable never beat shipped in 43 epochs and 0 of 18 interfaces changed which pose won; pairs involving the selected pose are only 2.29% of that loss, so halving it left selection untouched. If this reproduces h7msge, capacity is not the limit either. FALSIFIERS: drift leaving the band (anchor mis-scaled), or the copies not diverging from block 0 at all (lambda still too stiff -- compare ||dW||^2 against 4x the single-site value, since 4x the tensors alone accounts for that). CRITERION: selected DockQ and fraction above 0.23 on the 18 val10 interfaces against shipped derived from the same shards (DockQ 0.2909, frac 0.5556, rho 0.1958, oracle 0.5968/1.0000). Spearman is reported but is NOT the criterion. CONTROLS: h7msge (same objective and anchor, single site, stopped ep43), 4y3ve6 (same objective, perblock share, no anchor, overfit from ep3), 8eiek8 (perblock share, no ranking term)." \
+  --cards 4,5,7 --note "RANKING LOSS + L2-SP WITH DISTANCE AND ORIENTATION INJECTED AT ALL FOUR PAIRFORMER BLOCKS. TWO VARIABLES AGAINST zfahpb/zfahp2, both deliberate: (1) --frame-direction ADDS ORIENTATION -- the unit direction of j in i's backbone frame, three numbers per ordered pair, which no arm in this project has ever trained, since every previous arm saw the pose only as cdist over one representative atom per token and so had the frame's orientation ABSENT from its input rather than merely implicit; and (2) --l2-sp-exclude 'frame_dir' means THE ANCHOR NO LONGER COVERS EVERY TRAINABLE TENSOR. Everything else matches zfahpb: cross-seed softplus at tau 0.0305, --alpha-pae 0 so ordering is the only term, overfit30 train, val10 held out every epoch at budget 30, 50 epochs, 2 structures x 10 seeds x 5 poses = 100 poses/step, 15 steps/epoch, lr 1e-2, warmup 20, accum 85, crop 10/5 at 3400, seeds 500000-500009. 44,032 TRAINABLE OVER 12 TENSORS. ANCHORED at lambda 2.5e-4: linear_no_bias_d (256x39) + linear_no_bias_d_wo_onehot (256x1) = 10,240, plus 3 per-block copies of both = 30,720, so 40,960 over 8 tensors -- the SAME anchored set as zfahpb at the same size, which is why the lambda transfer from h7msge via run_logging/l2sp_lambda.py and probe ygpn6t (|g_rank| 4.02e-02 against 7.96e-02 at 10,240 params) is unchanged. NOT ANCHORED: frame_dir_proj LinearNoBias(3 -> 256) = 768 plus 3 per-block orientation copies = 2,304, so 3,072 over 4 tensors. pae_ln and linear_no_bias_pae stay FROZEN. WHY THE ORIENTATION WEIGHTS ARE OUT OF THE ANCHOR: L2-SP prices distance from the SHIPPED weights, a prior worth holding for a pretrained matrix, but these four tensors are ZERO-INIT by construction and verified exactly zero at install, so anchoring them to their init is plain decay toward zero -- penalising the very term being added. AdamW runs weight_decay=0 so they are genuinely unregularised, which is the intent; the startup log names each excluded tensor. STEP 0 IS UNCHANGED FROM zfahpb's, because the orientation projections contribute exactly zero at install -- so still bit-identical to --pose-perblock-share's step 0 on the distance terms, NOT to the shipped head, since blocks 1-3 gain a distance injection they never had. --blocks-per-ckpt 0 IS LOAD-BEARING: the orientation copies read pose_direction's direction cache, which the outer forward clears after the stack, and a checkpointed block recomputes its forward during backward after that clear -- so the cache would be missing or hold a LATER sample's geometry, pairing one pose's directions with another's gradient. pose_perblock.install REFUSES per-block orientation when blocks_per_ckpt is set. WHAT IT TESTS: whether the deficit is INFORMATION rather than capacity or objective. Three arms have failed to beat shipped on frac acceptable -- h7msge (pairwise, single site), ctij23 (expected-DockQ, single site), zfahpb/zfahp2 (pairwise, distance at four depths) -- and the alignment probes showed the ranking gradient destroys ~91% of its magnitude to cancellation at every epoch while PAE destroys almost none, with the parameter-gradient collapse being lost SENSITIVITY rather than growing cancellation, consistent with the distance pathway having little leverage over ipTM. Orientation is the one input the head has never had. FALSIFIERS: the orientation weights staying near zero (the loss finds no use for them -- compare their norm against the anchored tensors' drift), or the same 0.038-0.042 held-out plateau and unchanged frac the three previous arms reached. CRITERION: selected DockQ and fraction above 0.23 on the 18 val10 interfaces against shipped derived from the same shards (DockQ 0.2909, frac 0.5556, rho 0.1958, oracle 0.5968/1.0000, E[DockQ] 0.2342). Spearman is reported but is NOT the criterion. CONTROLS: zfahp2 (this arm minus orientation), h7msge (single site, same objective and anchor), 4y3ve6 (perblock share, no anchor), 8eiek8 (perblock share, no ranking term)." \
   -- --pose-perblock --pose-perblock-copy --frame-direction --l2-sp 2.5e-4 --l2-sp-exclude 'frame_dir' \
   --rank-loss --alpha-rank 1.0 --rank-labels training/fold/results.csv \
   --rank-form softplus --rank-cross-seed --rank-structs-per-step 2 \
