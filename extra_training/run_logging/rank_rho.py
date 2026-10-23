@@ -29,11 +29,18 @@ import glob
 import os
 import re
 
-CACHE = "rank_rho_b{b}.csv"
+# BUMPED TO _v2 WHEN xsloss WAS ADDED. A cache written before it holds only the within-seed
+# LINEAR rankloss, and silently reading those rows back under the new column layout would mix two
+# different objectives in one column. Old caches stay on disk under the old name, distinguishable.
+CACHE = "rank_rho_b{b}_v2.csv"
 COLS = ("rho_trained", "rho_shipped", "n_ifaces", "inv_trained", "inv_shipped",
         "spread", "tie_trained", "tie_shipped", "rankloss_trained", "rankloss_shipped",
         "top1_trained", "top1_shipped", "dockq_mean", "dockq_sem", "frac_mean", "frac_sem",
-        "rho_sem", "top1_sem")
+        "rho_sem", "top1_sem",
+        # THE OBJECTIVE 4y3ve6 ACTUALLY TRAINS. Distinct from rankloss_* above, which is the OLD
+        # within-seed LINEAR loss and is kept only so historical arms stay comparable. See the
+        # module docstring.
+        "xsloss_trained", "xsloss_shipped", "xsloss_sem")
 
 
 def _rows(d, ep, budget):
@@ -91,12 +98,22 @@ def _one(d, ep, budget):
                  ERROR over the 18 interfaces. metric_train_ep*.json already carries the means;
                  these are recomputed from the shards so the SPREAD is available, and the mean is
                  cross-checked against the json rather than trusted.
-      rankloss   THE TRAINING LOSS, EVALUATED HELD-OUT. Exactly the objective --rank-loss
-                 minimises -- the DockQ-weighted linear pairwise loss over the poses of one seed --
-                 but computed on the val10 shards instead of the training poses. The trainer's own
-                 per-epoch `rank-loss:` line is a TRAIN number; this is its held-out twin, so the
-                 generalisation gap on the new objective is readable directly. 0 means no
-                 alignment, negative is better.
+      rankloss   THE OLD WITHIN-SEED LINEAR LOSS, held out. The DockQ-weighted linear pairwise
+                 loss over the poses of ONE seed. It is what arms up to and including ntwjfp
+                 trained, and it is KEPT ONLY so those arms stay comparable. It is NOT the
+                 objective of any cross-seed softplus arm: do not read it as that arm's
+                 generalisation. It is a covariance, so it can be negative; 0 means no alignment.
+      xsloss     THE CROSS-SEED SOFTPLUS, held out -- the objective --rank-form softplus
+                 --rank-cross-seed actually minimises, evaluated on val10 with the SAME tau
+                 (rank_loss.DEFAULT_TAU), the same per-interface normalisation and the same
+                 cross-seed-only pair selection as training. NON-NEGATIVE, floor 0 = every
+                 cross-seed pair correctly ordered, so LOWER IS BETTER and it is not on the same
+                 scale as rankloss -- the two must never share an axis. Computed with
+                 rank_loss.group_loss, the float-only path, which test_rank_loss.py asserts agrees
+                 with the autograd group_coeffs the trainer differentiates to within 1e-9.
+                 Reference: shipped 0.0803; 8eiek8, which trains no ranking term at all, reaches
+                 0.052-0.055. So an arm must beat ~0.05 to have done anything the PAE objective
+                 did not already do.
       spread     mean within-seed ipTM standard deviation. The linear loss has no stopping point,
                  so this is the thing that can inflate without bound; shared-parameter updates can
                  also move seed means, which is how a within-seed loss reaches cross-seed ordering.
@@ -118,6 +135,8 @@ def _one(d, ep, budget):
     rl_t, rl_s, rl_n = 0.0, 0.0, 0
     top_t, top_s = [], []
     sel_dq, sel_ok = [], []
+    # PER-INTERFACE cross-seed softplus loss, trained and shipped.
+    xs_t, xs_s = [], []
     tot = 0
     spreads = []
     for ifc, v in byif.items():
@@ -136,6 +155,25 @@ def _one(d, ep, budget):
         _best = max(v, key=lambda x: x[0])
         sel_dq.append(_best[1])
         sel_ok.append(1.0 if _best[1] >= 0.23 else 0.0)
+        # THE CROSS-SEED SOFTPLUS, held out -- the objective --rank-form softplus
+        # --rank-cross-seed actually minimises, evaluated on val10 with the SAME tau, the same
+        # per-interface normalisation and the same cross-seed-only pair selection as training.
+        # Keyed (seed, index-within-seed) because group_coeffs reads the seed field to exclude
+        # within-seed pairs; the second element only has to be unique inside a seed.
+        _sb, _ss, _db, _n_in_sd = {}, {}, {}, collections.defaultdict(int)
+        for _it, _dq, _sit, _sd in v:
+            _k = (_sd, _n_in_sd[_sd]); _n_in_sd[_sd] += 1
+            _sb[_k] = _it; _ss[_k] = _sit; _db[_k] = _dq
+        # group_loss, NOT group_coeffs: the value is all this needs, and the autograd path made a
+        # 50-epoch recompute take minutes for a gradient immediately discarded.
+        # test_rank_loss.py asserts the two agree to 1e-9 so the diagnostic cannot drift from the
+        # objective.
+        _lv_t, _np_t = _RKL.group_loss(_sb, _db, form="softplus",
+                                       tau=_RKL.DEFAULT_TAU, cross_seed_only=True)
+        _lv_s, _np_s = _RKL.group_loss(_ss, _db, form="softplus",
+                                       tau=_RKL.DEFAULT_TAU, cross_seed_only=True)
+        if _np_t and _np_s:
+            xs_t.append(_lv_t); xs_s.append(_lv_s)
         # WITHIN-SEED, which needs the seed back. byif threw it away, so regroup here.
         g = collections.defaultdict(list)
         for _it, _dq, _sit, _sd in v:
@@ -201,12 +239,26 @@ def _one(d, ep, budget):
     # others are exact.
     _, rho_e = _ms(tr)
     _, top_e = _ms(top_t)
-    return (len(tr), sum(tr) / len(tr), sum(sh) / len(sh),
+    # MEAN OVER INTERFACES, matching how training normalises per interface-group and then means
+    # over groups. The softplus loss is NON-NEGATIVE with 0 as its floor (every pair ordered),
+    # unlike rankloss_* which is a covariance and can be negative -- so the two columns are not
+    # on the same scale and must never be plotted on one axis.
+    xs_m, xs_e = _ms(xs_t)
+    xs_sm, _ = _ms(xs_s)
+    # IN COLS ORDER, DELIBERATELY. This used to return its own order and `load` permuted it with
+    # positional literals -- (r[1], r[2], r[0], r[3], ...) -- truncated at r[17], with a writer
+    # that unpacked exactly eighteen names. Adding xsloss_* then produced a cache whose header had
+    # 22 fields and whose rows had 19, which parsed without error and surfaced later as an
+    # IndexError at the plot. Returning in COLS order removes the permutation, and the writer now
+    # iterates COLS, so a new column is added in ONE place.
+    assert len(COLS) == 21, f"COLS changed to {len(COLS)}; update this return"
+    return (sum(tr) / len(tr), sum(sh) / len(sh), len(tr),
             inv_t / tot, inv_s / tot, sum(spreads) / max(1, len(spreads)),
             tie_t / tot, tie_s / tot,
             rl_t / max(1, rl_n), rl_s / max(1, rl_n),
             sum(top_t) / max(1, len(top_t)), sum(top_s) / max(1, len(top_s)),
-            dq_m, dq_e, fr_m, fr_e, rho_e, top_e)
+            dq_m, dq_e, fr_m, fr_e, rho_e, top_e,
+            xs_m, xs_sm, xs_e)
 
 
 def load(root, runs, budget):
@@ -219,23 +271,30 @@ def load(root, runs, budget):
         cp = os.path.join(d, CACHE.format(b=budget))
         cache = {}
         if os.path.exists(cp):
+            # VALIDATED AGAINST COLS, AND BUILT FROM IT. The previous reader named all eighteen
+            # columns by hand with an ad-hoc `if "top1_sem" not in r` guard for one earlier
+            # expansion. When xsloss_* was added, a cache whose HEADER had the new 22 fields but
+            # whose ROWS still had 19 (written mid-edit) parsed without error -- DictReader fills
+            # the missing keys with None, every hand-named key happened to fall inside the first
+            # 19, and the result was a silently SHORT tuple that only failed later as an
+            # IndexError at the plot. So: refuse any cache whose header is not exactly COLS, and
+            # build the tuple by iterating COLS so a new column cannot be forgotten here.
             with open(cp) as fh:
-                for r in csv.DictReader(fh):
-                    try:
-                        if "top1_sem" not in r:           # pre-expansion cache: recompute
-                            raise KeyError("top1_sem")
-                        cache[int(r["epoch"])] = tuple(
-                            [float(r["rho_trained"]), float(r["rho_shipped"]),
-                             int(r["n_ifaces"]), float(r["inv_trained"]),
-                             float(r["inv_shipped"]), float(r["spread"]),
-                             float(r["tie_trained"]), float(r["tie_shipped"]),
-                             float(r["rankloss_trained"]), float(r["rankloss_shipped"]),
-                             float(r["top1_trained"]), float(r["top1_shipped"]),
-                             float(r["dockq_mean"]), float(r["dockq_sem"]),
-                             float(r["frac_mean"]), float(r["frac_sem"]),
-                             float(r["rho_sem"]), float(r["top1_sem"])])
-                    except (ValueError, KeyError):
-                        continue
+                rdr = csv.reader(fh)
+                try:
+                    head = next(rdr)
+                except StopIteration:
+                    head = []
+                if head == ["epoch"] + list(COLS):
+                    for row in rdr:
+                        if len(row) != len(head):
+                            continue
+                        r = dict(zip(head, row))
+                        try:
+                            cache[int(r["epoch"])] = tuple(
+                                int(r[c]) if c == "n_ifaces" else float(r[c]) for c in COLS)
+                        except (ValueError, KeyError, TypeError):
+                            continue
         eps = sorted(int(m.group(1)) for m in
                      (re.search(r"train_eval_shards_ep(\d+)$", p)
                       for p in glob.glob(os.path.join(d, "train_eval_shards_ep*"))) if m)
@@ -250,20 +309,25 @@ def load(root, runs, budget):
             r = _one(d, ep, budget)
             if r is None:
                 continue
-            cache[ep] = (r[1], r[2], r[0], r[3], r[4], r[5], r[6], r[7], r[8], r[9],
-                         r[10], r[11], r[12], r[13], r[14], r[15], r[16], r[17])
+            if len(r) != len(COLS):
+                raise SystemExit(f"STOP: _one returned {len(r)} value(s) for {len(COLS)} "
+                                 f"column(s); the cache would be written short.")
+            cache[ep] = r
             dirty = True
         if dirty:
             tmp = cp + ".tmp"
             with open(tmp, "w") as fh:
                 fh.write("epoch," + ",".join(COLS) + "\n")
                 for ep in sorted(cache):
-                    (t, sh_, n, it_, is_, sp_, tt_, ts_, rt_, rs_,
-                     o1_, o0_, dm_, de_, fm_, fe_, re_, oe_) = cache[ep]
-                    fh.write(f"{ep},{t:.6f},{sh_:.6f},{n},{it_:.6f},{is_:.6f},{sp_:.6f},"
-                             f"{tt_:.6f},{ts_:.6f},{rt_:.8f},{rs_:.8f},"
-                             f"{o1_:.6f},{o0_:.6f},{dm_:.6f},{de_:.6f},{fm_:.6f},{fe_:.6f},"
-                             f"{re_:.6f},{oe_:.6f}\n")
+                    vals = []
+                    for c, v in zip(COLS, cache[ep]):
+                        if c == "n_ifaces":
+                            vals.append(str(int(v)))
+                        elif c.startswith(("rankloss", "xsloss")):
+                            vals.append(f"{float(v):.8f}")      # the small ones need the digits
+                        else:
+                            vals.append(f"{float(v):.6f}")
+                    fh.write(f"{ep}," + ",".join(vals) + "\n")
             os.replace(tmp, cp)
         got.update(cache)
     return got

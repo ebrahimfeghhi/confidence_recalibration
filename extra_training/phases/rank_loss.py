@@ -149,6 +149,7 @@ different experiment.
 """
 import collections
 import csv
+import math
 import os
 import re
 
@@ -433,3 +434,50 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
     loss = (2.0 * tau / den) * num if form == "softplus" else num / den
     loss.backward()
     return ({k: float(g) for k, g in zip(keys, s.grad)}, npair, float(loss.detach()))
+
+
+def group_loss(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
+               weight_by_gap=True, dq_tol=1e-6, cross_seed_only=True):
+    """The loss VALUE for one interface, in plain floats. No autograd, no graph.
+
+    Same objective and same normalisation as group_coeffs -- asserted equal in test_rank_loss.py --
+    but it returns only (loss, n_pairs) and never the coefficients.
+
+    WHY A SECOND PATH EXISTS. The held-out diagnostic needs the value for every interface at every
+    epoch: 18 interfaces x ~1,225 cross-seed pairs x 2 (trained and shipped) is ~44,000 terms per
+    epoch, and routing those through a traced leaf tensor to then discard the gradient made
+    recomputing a 50-epoch history take minutes. Training still uses group_coeffs, because there
+    the gradient IS the point and the autograd path is what keeps the loss and its derivative from
+    drifting apart.
+    """
+    keys = sorted(set(s_by_key) & set(dq_by_key))
+    if len(keys) < 2:
+        return 0.0, 0
+    if tau <= 0 and form == "softplus":
+        raise ValueError(f"tau must be positive, got {tau!r}")
+    num, den, npair = 0.0, 0.0, 0
+    for i in range(len(keys)):
+        ki = keys[i]
+        si, di = float(s_by_key[ki]), float(dq_by_key[ki])
+        for j in range(i + 1, len(keys)):
+            kj = keys[j]
+            if cross_seed_only and ki[0] == kj[0]:
+                continue
+            d = di - float(dq_by_key[kj])
+            if abs(d) <= dq_tol:
+                continue
+            w = abs(d) if weight_by_gap else 1.0
+            if form == "softplus":
+                x = -((si - float(s_by_key[kj])) * (1.0 if d > 0 else -1.0)) / tau
+                # log1p(exp(x)) without overflowing for large x, which happens at a badly
+                # inverted pair: at x = 700 math.exp overflows and the honest answer is x.
+                num += w * (x + math.log1p(math.exp(-x)) if x > 0 else math.log1p(math.exp(x)))
+            elif form == "linear":
+                num -= (si - float(s_by_key[kj])) * (d if weight_by_gap else (1.0 if d > 0 else -1.0))
+            else:
+                raise ValueError(f"unknown form {form!r}")
+            den += w
+            npair += 1
+    if npair == 0:
+        return 0.0, 0
+    return ((2.0 * tau / den) * num if form == "softplus" else num / den), npair
