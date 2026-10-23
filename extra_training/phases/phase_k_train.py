@@ -2933,6 +2933,45 @@ def main():
                 torch.cuda.set_rng_state_all(_rng_cuda)
         _tick("rank_pass_a", _t_a)
 
+        # PASS A MUST SCORE EVERYTHING IT WAS ASKED TO, AND THIS ASSERTS IT RATHER THAN HOPING.
+        #
+        # RKL.iptm returns None when a requested asym index falls outside the pose's
+        # chain_pair_iptm -- which cropping can cause, not only a bad roles join. Without this
+        # check that None is silently dropped from `local`, group_coeffs then INTERSECTS the
+        # surviving scores with the labels, and a group left with fewer than two poses is skipped
+        # entirely. The objective would quietly stop being the full-group ranking loss it is
+        # documented as, and in a ranking-only arm (--alpha-pae 0) the affected poses would
+        # receive NO gradient at all while the run looked healthy. The label-coverage guard cannot
+        # see this: it checks that DockQ exists, not that a score was produced.
+        #
+        # ASSERTED PER RANK, BEFORE THE GATHER. Every rank verifies its own units, so the merged
+        # set is complete by construction -- there is no need to know the other ranks' units here.
+        # Found by review of f01dec8a.
+        _exp = {(_pdb, _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1], _i, _pair)
+                for _pdb, _lab, _cands in step_units
+                for _pair in (_scored_asym.get(_pdb) or ())
+                for _i in range(a.nsample)}
+        _got = set(local)
+        if _exp != _got:
+            _missing = sorted(_exp - _got)[:6]
+            _extra = sorted(_got - _exp)[:6]
+            raise SystemExit(
+                f"STOP: pass A scored {len(_got)} of {len(_exp)} expected "
+                f"(pdb, seed, pose, interface) key(s) for this step.\n"
+                f"  missing e.g. {_missing}\n"
+                f"  unexpected e.g. {_extra}\n"
+                f"A missing score silently removes comparisons from the ranking objective, and "
+                f"with --alpha-pae 0 it removes the affected poses' only gradient. The usual "
+                f"cause is RKL.iptm returning None because an asym index falls outside the pose's "
+                f"chain_pair_iptm -- check --pae-scored-pairs against the fold's chain_roles.csv "
+                f"and whether the crop dropped a chain.")
+        _nonfinite = sorted(k for k, v in local.items() if not math.isfinite(v))
+        if _nonfinite:
+            raise SystemExit(
+                f"STOP: pass A produced {len(_nonfinite)} non-finite ipTM value(s), e.g. "
+                f"{_nonfinite[:6]}. A non-finite score makes every coefficient in that group "
+                f"non-finite, which would train on it rather than fail.")
+
         # EVERY RANK NEEDS THE WHOLE STEP. A few hundred floats, so the object collective's
         # pickling is irrelevant next to a 205 MB trunk read. All ranks then compute the SAME
         # coefficients from the SAME inputs, and each applies only its own poses -- so the

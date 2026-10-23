@@ -108,5 +108,28 @@ try:
 except ValueError:
     check("tau=0 raises ValueError", True)
 
+print("\n11. group_loss AGREES WITH group_coeffs, so the fast diagnostic path cannot drift")
+import random as _rnd
+_r = _rnd.Random(0)
+_worst = 0.0
+for _trial in range(25):
+    _nsd, _nsm = _r.randint(2, 5), _r.randint(2, 5)
+    _s = {(sd, sm): _r.uniform(0.2, 0.9) for sd in range(_nsd) for sm in range(_nsm)}
+    _d = {k: round(_r.uniform(0.0, 0.8), 3) for k in _s}
+    for _form in ("softplus", "linear"):
+        for _wbg in (True, False):
+            _, _n1, _l1 = R.group_coeffs(_s, _d, form=_form, tau=tau,
+                                         weight_by_gap=_wbg, cross_seed_only=True)
+            _l2, _n2 = R.group_loss(_s, _d, form=_form, tau=tau,
+                                    weight_by_gap=_wbg, cross_seed_only=True)
+            assert _n1 == _n2, (_form, _wbg, _n1, _n2)
+            _worst = max(_worst, abs(_l1 - _l2))
+check("25 random groups x 2 forms x 2 weightings agree", _worst < 1e-9, f"max|diff| {_worst:.2e}")
+# AND THE OVERFLOW GUARD: a badly inverted pair sends x to +inf in log1p(exp(x)).
+_l_big, _ = R.group_loss({(0,0): 0.0, (1,0): 100.0}, {(0,0): 0.9, (1,0): 0.1},
+                         form="softplus", tau=tau)
+check("a margin of -100 does not overflow", _l_big == _l_big and _l_big < float("inf"),
+      f"{_l_big:.4f}")
+
 print("\n" + ("ALL PASS" if not FAILS else f"{len(FAILS)} FAILURE(S): {FAILS}"))
 sys.exit(1 if FAILS else 0)
