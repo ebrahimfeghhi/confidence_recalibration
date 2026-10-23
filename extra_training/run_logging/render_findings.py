@@ -46,8 +46,16 @@ def mean_sem(xs):
     return m, sd / math.sqrt(n)
 
 
-def paired(rundir, ep_a, ep_b):
-    a, b = _sel(shards(rundir, ep_a), "iptm"), _sel(shards(rundir, ep_b), "iptm")
+def paired(rundir, ep_a, ep_b, rid=None, budget=30):
+    ra = P3._shards_dir(rid, ep_a, budget) if rid else f"{rundir}/train_eval_shards_ep{ep_a}"
+    rb = P3._shards_dir(rid, ep_b, budget) if rid else f"{rundir}/train_eval_shards_ep{ep_b}"
+    import csv as _csv, glob as _glob
+    def _rows(d):
+        out = []
+        for f in _glob.glob(f"{d}/rows_b{budget}_*.csv"):
+            out += list(_csv.DictReader(open(f)))
+        return out
+    a, b = _sel(_rows(ra), "iptm"), _sel(_rows(rb), "iptm")
     ks = sorted(set(a) & set(b))
     d = [b[k] - a[k] for k in ks]
     m, se = mean_sem(d)
@@ -155,7 +163,11 @@ def main():
     a = ap.parse_args()
 
     rundir = f"{a.runs}/{a.rid}"
-    cache = RHO.load(a.runs, a.rid, a.budget)
+    # THE WHOLE RESUME CHAIN, not just this directory. A resume writes fresh records while
+    # continuing the parent's epoch numbering, so rendering 24u342 alone would document a
+    # one-epoch run and silently drop the eight epochs it is continuing.
+    cache = P3.load_chain(a.rid, a.budget, a.runs)
+    chain = P3.run_chain(a.rid, a.runs)
     if not cache:
         sys.exit(f"no cached epoch for {a.rid} at budget {a.budget}")
     eps = sorted(cache)
@@ -169,15 +181,26 @@ def main():
         cfg = json.load(open(f"{rundir}/config.json"))
     except Exception:
         pass
-    tr = P3.train_rank_loss(a.rid)
-    dr, vl = drift(rundir), valloss(rundir)
+    tr = {}
+    for _r in chain:
+        tr.update(P3.train_rank_loss(_r))
+    dr, vl = {}, {}
+    for _r in chain:
+        _d = f"{a.runs}/{_r}"
+        try:
+            dr.update(drift(_d)); vl.update(valloss(_d))
+        except Exception:
+            pass
     ck, exn = excluded_norms(rundir)
     traj = trajectory(rundir, ep)
     tl = trainable_line(rundir)
     n_excl, n_anch = anchored_line(rundir)
 
     # SHIPPED, from this run's own shards: stored_iptm is the shipped head's ipTM per pose.
-    rws = shards(rundir, ep)
+    rws = []
+    import glob as _g
+    for _f in _g.glob(f"{P3._shards_dir(a.rid, ep, a.budget)}/rows_b{a.budget}_*.csv"):
+        rws += list(csv.DictReader(open(_f)))
     s_sel = _sel(rws, "stored_iptm")
     s_dq, s_dq_se = mean_sem(list(s_sel.values()))
     s_fr, s_fr_se = mean_sem([1.0 if v > 0.23 else 0.0 for v in s_sel.values()])
@@ -198,6 +221,12 @@ def main():
     W(f"via their `stored_iptm` column, not carried over by hand.\n")
     W(f"**Epochs evaluated:** {eps[0]}-{ep} ({len(eps)} of {args.get('epochs')}).  "
       f"**Interfaces:** {row['n_ifaces']}.  **Budget:** {a.budget}.\n")
+    if len(chain) > 1:
+        W(f"**Resume chain:** `" + "` -> `".join(chain) + "`. A resume writes to a fresh directory")
+        W("while continuing the parent's epoch numbering, so every table here spans the chain; the")
+        W("parent is found from `args.json`'s recorded `--resume` checkpoint path, not from the")
+        W("run id. An epoch trained but stopped before its held-out pass finished has no row here")
+        W("rather than a carried-forward one.\n")
 
     W("## Configuration\n")
     W("| | |")
@@ -256,7 +285,7 @@ def main():
     W("")
 
     if len(eps) > 1:
-        p = paired(rundir, eps[0], ep)
+        p = paired(rundir, eps[0], ep, a.rid, a.budget)
         W(f"## Paired per-interface test, epoch {eps[0]} -> {ep}\n")
         W(f"Per-interface selected-pose DockQ (argmax ipTM), {p['n']} interfaces paired.\n")
         W(f"- paired mean **{p['mean']:+.4f} +- {p['sem']:.4f}** ({p['sigma']:.2f} sigma)")
@@ -269,6 +298,36 @@ def main():
         W("")
         if eps[0] != 1:
             W(f"Note: epoch {eps[0]} is the earliest EVALUATED epoch, not a pre-training state.\n")
+
+    far = P3.first_acceptable_rank(a.rid, a.budget)
+    fep = [e for e in eps if e in far and "trained" in far[e]]
+    if fep:
+        W("## Rank of the first acceptable pose, ordering by ipTM\n")
+        W("`frac acceptable` only asks whether rank 1 happens to be acceptable, so it cannot see an")
+        W("arm that lifts the best pose from rank 90 to rank 2. This can. Rank is 1-indexed and")
+        W("**lower is better**; rank 1 everywhere is frac 1.0.\n")
+        c = far[fep[-1]]
+        W(f"Scored over {c['trained']['poses']:.0f} poses per interface, threshold DockQ >= 0.23, "
+          f"{c['trained']['censored']} interface(s) with no acceptable pose anywhere "
+          f"(those have no rank and are excluded; a non-zero count here would bias the mean "
+          f"optimistically, since the hardest interfaces would be the ones dropped).\n")
+        W("The unpaired s.e. is large because a few interfaces first become acceptable in the 90s")
+        W("while most are acceptable at rank 1, so between-interface variance swamps the effect.")
+        W("**The paired column is the one that can resolve a change** -- every interface is scored")
+        W("by both orderings over the same poses, so the pairing is exact.\n")
+        W("| epoch | mean rank +- s.e. | median | at rank 1 | paired vs shipped | better/worse/same |")
+        W("|---|---|---|---|---|---|")
+        for e in fep:
+            t = far[e]["trained"]
+            q = far[e].get("paired")
+            pq = (f"{q['mean']:+.2f} +- {q['sem']:.2f}" if q else "n/a")
+            bw = (f"{q['better']}/{q['worse']}/{q['same']}" if q else "n/a")
+            W(f"| {e} | {t['mean']:.2f} +- {t['sem']:.2f} | {t['median']:.1f} | "
+              f"{t['at1']}/{t['n']} | {pq} | {bw} |")
+        sh = far[fep[-1]].get("shipped")
+        if sh:
+            W(f"\nShipped on the same interfaces: mean rank {sh['mean']:.2f} +- {sh['sem']:.2f}, "
+              f"median {sh['median']:.1f}, {sh['at1']}/{sh['n']} at rank 1.\n")
 
     if exn:
         W("## Tensors excluded from the anchor\n")
