@@ -123,25 +123,41 @@ def main():
 
     # FOURTH PANEL: THE OBJECTIVE ITSELF, TRAIN AGAINST HELD OUT. Its own axes because this is a
     # loss near 0.04, not a DockQ-scale quantity, and sharing with the panels above would flatten
-    # it to a line. Both curves are the SAME loss -- softplus, same tau, cross-seed, gap-weighted,
-    # floor 0 -- so the vertical gap between them is the generalisation gap and nothing else.
+    # it to a line. The two curves are the SAME loss, which is the only thing that makes the
+    # vertical gap between them a generalisation gap.
+    #
+    # WHICH HELD-OUT COLUMN IS THE MATCHING ONE DEPENDS ON THE RUN'S FORM. This read
+    # xsloss_trained unconditionally, so an --rank-form expected arm would have had its NEGATIVE
+    # training curve (-E[DockQ]) drawn against a POSITIVE pairwise softplus held-out curve, on
+    # one axis, labelled as the same loss. Caught in review of 92338a36. rank_rho now computes
+    # both metrics for every run and run_rank_form says which objective was trained.
     ax = axes[3]
+    _form, _tau = RHO.run_rank_form(os.path.join("training", "runs", a.rid))
+    if _form == "expected":
+        ho_col, ho_se_col = "exloss_trained", "exloss_sem"
+        _taus = sorted({round(v, 6) for v in g("exloss_tau")})
+        _lbl = f"-E[DockQ], softmax tau {_taus[0]:g}" if len(_taus) == 1 else "-E[DockQ]"
+        _floor_txt = " floor -max(DockQ) per group"
+    else:
+        ho_col, ho_se_col = "xsloss_trained", "xsloss_sem"
+        _lbl = "cross-seed softplus"
+        _floor_txt = " floor 0 = every pair ordered"
     tr = train_rank_loss(a.rid)
     tr_ep = [e for e in ep if e in tr]
     if tr_ep:
         ax.plot(tr_ep, [tr[e] for e in tr_ep], color="#ff7f0e", lw=2.0, marker="s", ms=3.5,
                 label="training (overfit30)")
-    ho, ho_se = g("xsloss_trained"), g("xsloss_sem")
+    ho, ho_se = g(ho_col), g(ho_se_col)
     ax.fill_between(ep, [v - s for v, s in zip(ho, ho_se)], [v + s for v, s in zip(ho, ho_se)],
                     color="#1f77b4", alpha=0.18, lw=0)
     ax.plot(ep, ho, color="#1f77b4", lw=2.0, marker="o", ms=3.5,
             label=f"held out (val10, {n_if} ifaces)")
     ax.axhline(0.0, color="#555555", ls="-", lw=0.9)
-    ax.text(ax.get_xlim()[1], 0.0, " floor 0 = every pair ordered", color="#555555",
+    ax.text(ax.get_xlim()[1], 0.0, _floor_txt, color="#555555",
             fontsize=8.5, va="bottom", ha="right")
-    ax.set_title("ranking loss: training vs held out", fontsize=11.5)
+    ax.set_title(f"{_lbl}: training vs held out", fontsize=11.5)
     ax.set_xlabel("epoch", fontsize=10.5)
-    ax.set_ylabel("cross-seed softplus loss (lower is better)", fontsize=10)
+    ax.set_ylabel(f"{_lbl} (lower is better)", fontsize=10)
     ax.legend(fontsize=8.5, loc="upper right", framealpha=0.9)
     ax.grid(alpha=0.15)
     fig.suptitle(f"{a.rid} -- cross-seed softplus  (bands are s.e. over {n_if} interfaces; "

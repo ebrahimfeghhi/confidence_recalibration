@@ -32,7 +32,36 @@ import re
 # BUMPED TO _v2 WHEN xsloss WAS ADDED. A cache written before it holds only the within-seed
 # LINEAR rankloss, and silently reading those rows back under the new column layout would mix two
 # different objectives in one column. Old caches stay on disk under the old name, distinguishable.
-CACHE = "rank_rho_b{b}_v2.csv"
+# BUMPED TO _v3 WHEN exloss WAS ADDED. A _v2 cache has 21 columns and no expected-DockQ metric;
+# the reader refuses any header that is not exactly ["epoch"] + COLS, so a stale cache is
+# recomputed from the shards rather than read back one column short.
+CACHE = "rank_rho_b{b}_v3.csv"
+
+
+def run_rank_form(d):
+    """(form, tau) the run at directory `d` actually TRAINED, from its own args.json.
+
+    THE HELD-OUT METRIC HAS TO MATCH THE OBJECTIVE. This module hardcoded form="softplus" at
+    tau=DEFAULT_TAU, which was right while every arm was pairwise and silently wrong the moment
+    --rank-form expected existed: the arm would train -expected DockQ at tau 0.05 and be graded
+    on a pairwise softplus at tau 0.0305, two quantities of opposite sign. Caught in review of
+    92338a36 before any expected-form arm had run.
+
+    Falls back to the pairwise default when args.json is missing or carries no ranking fields,
+    which is what every pre-92338a36 run looks like.
+    """
+    import json
+    p = os.path.join(d, "args.json")
+    try:
+        with open(p) as fh:
+            a = json.load(fh)
+    except (OSError, ValueError):
+        return "softplus", None
+    form = a.get("rank_form") or "softplus"
+    tau = a.get("rank_tau")
+    if tau is None or float(tau) <= 0:
+        tau = None
+    return form, (float(tau) if tau is not None else None)
 COLS = ("rho_trained", "rho_shipped", "n_ifaces", "inv_trained", "inv_shipped",
         "spread", "tie_trained", "tie_shipped", "rankloss_trained", "rankloss_shipped",
         "top1_trained", "top1_shipped", "dockq_mean", "dockq_sem", "frac_mean", "frac_sem",
@@ -40,7 +69,15 @@ COLS = ("rho_trained", "rho_shipped", "n_ifaces", "inv_trained", "inv_shipped",
         # THE OBJECTIVE 4y3ve6 ACTUALLY TRAINS. Distinct from rankloss_* above, which is the OLD
         # within-seed LINEAR loss and is kept only so historical arms stay comparable. See the
         # module docstring.
-        "xsloss_trained", "xsloss_shipped", "xsloss_sem")
+        "xsloss_trained", "xsloss_shipped", "xsloss_sem",
+        # THE EXPECTED-DockQ OBJECTIVE, held out, at THIS RUN's OWN softmax temperature.
+        # NEGATIVE: it is -E[DockQ of the selected pose], floor -max(DockQ) per group, so it is
+        # NOT on the same scale as xsloss_* above and the two must never share an axis. Computed
+        # for every run, including pairwise ones, so any two arms can be compared on it -- but
+        # only at EQUAL tau: the metric itself depends on tau, so exloss from a tau 0.02 arm and
+        # a tau 0.10 arm are different quantities. Cross-arm selection comparisons belong to
+        # dockq_mean and frac_mean, which depend on no hyperparameter at all.
+        "exloss_trained", "exloss_shipped", "exloss_sem", "exloss_tau")
 
 
 def _rows(d, ep, budget):
@@ -137,6 +174,12 @@ def _one(d, ep, budget):
     sel_dq, sel_ok = [], []
     # PER-INTERFACE cross-seed softplus loss, trained and shipped.
     xs_t, xs_s = [], []
+    ex_t, ex_s = [], []
+    # THE TEMPERATURE THE HELD-OUT EXPECTED METRIC USES. This run's own --rank-tau when it
+    # trained the expected form; otherwise DEFAULT_SOFTMAX_TAU, so a pairwise arm still gets a
+    # comparable number at the canonical 0.05.
+    _rf, _rt = run_rank_form(d)
+    _ex_tau = _rt if (_rf == "expected" and _rt is not None) else _RKL.DEFAULT_SOFTMAX_TAU
     tot = 0
     spreads = []
     for ifc, v in byif.items():
@@ -174,6 +217,13 @@ def _one(d, ep, budget):
                                        tau=_RKL.DEFAULT_TAU, cross_seed_only=True)
         if _np_t and _np_s:
             xs_t.append(_lv_t); xs_s.append(_lv_s)
+        # THE EXPECTED-DockQ OBJECTIVE, held out, at this run's own temperature. Pair-free, so no
+        # cross_seed_only and no gap weighting -- the softmax runs over every pose of the
+        # interface, which is the same population argmax selects from.
+        _ev_t, _en_t = _RKL.group_loss(_sb, _db, form="expected", tau=_ex_tau)
+        _ev_s, _en_s = _RKL.group_loss(_ss, _db, form="expected", tau=_ex_tau)
+        if _en_t and _en_s:
+            ex_t.append(_ev_t); ex_s.append(_ev_s)
         # WITHIN-SEED, which needs the seed back. byif threw it away, so regroup here.
         g = collections.defaultdict(list)
         for _it, _dq, _sit, _sd in v:
@@ -245,20 +295,23 @@ def _one(d, ep, budget):
     # on the same scale and must never be plotted on one axis.
     xs_m, xs_e = _ms(xs_t)
     xs_sm, _ = _ms(xs_s)
+    ex_m, ex_e = _ms(ex_t)
+    ex_sm, _ = _ms(ex_s)
     # IN COLS ORDER, DELIBERATELY. This used to return its own order and `load` permuted it with
     # positional literals -- (r[1], r[2], r[0], r[3], ...) -- truncated at r[17], with a writer
     # that unpacked exactly eighteen names. Adding xsloss_* then produced a cache whose header had
     # 22 fields and whose rows had 19, which parsed without error and surfaced later as an
     # IndexError at the plot. Returning in COLS order removes the permutation, and the writer now
     # iterates COLS, so a new column is added in ONE place.
-    assert len(COLS) == 21, f"COLS changed to {len(COLS)}; update this return"
+    assert len(COLS) == 25, f"COLS changed to {len(COLS)}; update this return"
     return (sum(tr) / len(tr), sum(sh) / len(sh), len(tr),
             inv_t / tot, inv_s / tot, sum(spreads) / max(1, len(spreads)),
             tie_t / tot, tie_s / tot,
             rl_t / max(1, rl_n), rl_s / max(1, rl_n),
             sum(top_t) / max(1, len(top_t)), sum(top_s) / max(1, len(top_s)),
             dq_m, dq_e, fr_m, fr_e, rho_e, top_e,
-            xs_m, xs_sm, xs_e)
+            xs_m, xs_sm, xs_e,
+            ex_m, ex_sm, ex_e, _ex_tau)
 
 
 def load(root, runs, budget):
