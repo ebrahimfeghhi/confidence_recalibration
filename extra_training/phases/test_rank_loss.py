@@ -131,5 +131,87 @@ _l_big, _ = R.group_loss({(0,0): 0.0, (1,0): 100.0}, {(0,0): 0.9, (1,0): 0.1},
 check("a margin of -100 does not overflow", _l_big == _l_big and _l_big < float("inf"),
       f"{_l_big:.4f}")
 
+
+# ---------------------------------------------------------------------------------------------
+# EXPECTED-DockQ FORM.  L = -sum_i softmax(s/tau)_i * dq_i
+# ---------------------------------------------------------------------------------------------
+print("\n--- expected-DockQ form ---")
+
+# THE CLOSED-FORM GRADIENT AGAINST AUTOGRAD. expected_dockq computes dL/ds_i analytically while
+# group_coeffs differentiates the same expression; if they disagree the trainer is stepping on a
+# gradient that does not belong to the loss it reports.
+_worst_g = 0.0
+_r = _rnd.Random(11)
+for _ in range(40):
+    _nsd, _nsm = _r.randint(2, 5), _r.randint(2, 5)
+    _s = {(sd, sm): _r.uniform(0.2, 0.9) for sd in range(_nsd) for sm in range(_nsm)}
+    _d = {k: round(_r.uniform(0.0, 0.9), 3) for k in _s}
+    for _t in (0.02, 0.05, 0.10):
+        _keys = sorted(_s)
+        _l_cf, _c_cf, _n_cf = R.expected_dockq([_s[k] for k in _keys], [_d[k] for k in _keys], tau=_t)
+        _c_ag, _n_ag, _l_ag = R.group_coeffs(_s, _d, form="expected", tau=_t)
+        assert _n_cf == _n_ag == len(_keys), (_n_cf, _n_ag, len(_keys))
+        _worst_g = max(_worst_g, abs(_l_cf - _l_ag))
+        for k in _keys:
+            _worst_g = max(_worst_g, abs(_c_cf[_keys.index(k)] - _c_ag[k]))
+check("closed form == autograd over 40 groups x 3 temperatures", _worst_g < 1e-9,
+      f"max|diff| {_worst_g:.2e}")
+
+# THE VALUE PATH AGREES WITH THE GRADIENT PATH, as for the pairwise forms.
+_worst_v = 0.0
+for _ in range(25):
+    _s = {(sd, sm): _r.uniform(0.2, 0.9) for sd in range(3) for sm in range(4)}
+    _d = {k: round(_r.uniform(0.0, 0.8), 3) for k in _s}
+    for _t in (0.02, 0.05, 0.10):
+        _, _n1, _l1 = R.group_coeffs(_s, _d, form="expected", tau=_t)
+        _l2, _n2 = R.group_loss(_s, _d, form="expected", tau=_t)
+        assert _n1 == _n2, (_n1, _n2)
+        _worst_v = max(_worst_v, abs(_l1 - _l2))
+check("group_loss == group_coeffs for expected", _worst_v < 1e-12, f"max|diff| {_worst_v:.2e}")
+
+# IT IS -EXPECTED DockQ, so the loss is bounded by the group's own labels and a model that puts
+# all mass on the best pose scores exactly -max(dq).
+_s_win = {(0, 0): 10.0, (0, 1): 0.0, (1, 0): 0.0}
+_d_win = {(0, 0): 0.80, (0, 1): 0.10, (1, 0): 0.20}
+_l_win, _ = R.group_loss(_s_win, _d_win, form="expected", tau=0.05)
+check("mass on the best pose gives -max(dq)", abs(_l_win - (-0.80)) < 1e-6, f"{_l_win:.6f}")
+_s_lose = {(0, 0): 0.0, (0, 1): 10.0, (1, 0): 0.0}
+_l_lose, _ = R.group_loss(_s_lose, _d_win, form="expected", tau=0.05)
+check("mass on the worst pose gives -min(dq)", abs(_l_lose - (-0.10)) < 1e-6, f"{_l_lose:.6f}")
+
+# LOWER TAU IS SHARPER. With the leader held fixed, a colder softmax must put more mass on it,
+# so the loss moves toward -max(dq) monotonically as tau falls.
+_s_t = {(0, 0): 0.60, (0, 1): 0.50, (1, 0): 0.40}
+_d_t = {(0, 0): 0.70, (0, 1): 0.30, (1, 0): 0.10}
+_ls = [R.group_loss(_s_t, _d_t, form="expected", tau=t)[0] for t in (0.10, 0.05, 0.02)]
+check("colder tau -> closer to -max(dq)", _ls[0] > _ls[1] > _ls[2],
+      "  ".join(f"tau {t:g}: {l:+.5f}" for t, l in zip((0.10, 0.05, 0.02), _ls)))
+
+# A POSE WITH NO CHANCE OF SELECTION GETS NO GRADIENT -- the property the pairwise forms lack and
+# the entire reason this form exists. The pairwise softplus gives the same hopeless pose a
+# gradient of the same order as a contender's.
+_s_h = {(0, 0): 0.90, (0, 1): 0.89, (1, 0): 0.10}
+_d_h = {(0, 0): 0.20, (0, 1): 0.70, (1, 0): 0.60}
+_c_e, _, _ = R.group_coeffs(_s_h, _d_h, form="expected", tau=0.05)
+_c_p, _, _ = R.group_coeffs(_s_h, _d_h, form="softplus", tau=0.0305)
+_ratio_e = abs(_c_e[(1, 0)]) / max(abs(_c_e[(0, 1)]), 1e-30)
+_ratio_p = abs(_c_p[(1, 0)]) / max(abs(_c_p[(0, 1)]), 1e-30)
+check("expected starves the hopeless pose where softplus does not",
+      _ratio_e < 1e-6 and _ratio_p > 0.1,
+      f"hopeless/contender gradient: expected {_ratio_e:.2e}, softplus {_ratio_p:.3f}")
+
+# NO OVERFLOW AT A COLD TEMPERATURE. z = 0.9/0.02 = 45 and exp(45) is finite, but a wider score
+# range at tau 0.001 would not be -- the shift by max(z) is what makes this safe.
+_l_cold, _c_cold, _ = R.expected_dockq([0.0, 1.0], [0.1, 0.9], tau=0.001)
+check("tau 0.001 does not overflow", _l_cold == _l_cold and abs(_l_cold + 0.9) < 1e-9,
+      f"{_l_cold:.6f}")
+
+# TAU MUST BE POSITIVE for this form too.
+try:
+    R.expected_dockq([0.1, 0.2], [0.3, 0.4], tau=0.0)
+    check("tau <= 0 raises", False, "no exception")
+except ValueError:
+    check("tau <= 0 raises", True, "ValueError")
+
 print("\n" + ("ALL PASS" if not FAILS else f"{len(FAILS)} FAILURE(S): {FAILS}"))
 sys.exit(1 if FAILS else 0)

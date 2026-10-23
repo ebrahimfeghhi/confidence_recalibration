@@ -185,8 +185,22 @@ def main():
                          "DockQ is driven by the big misses.")
     ap.add_argument("--no-rank-weight-by-gap", dest="rank_weight_by_gap",
                     action="store_false", help="weight every pose pair equally instead.")
-    ap.add_argument("--rank-form", choices=("linear", "softplus"), default="linear",
-                    help="SHAPE of the pairwise ranking term.\n"
+    ap.add_argument("--rank-form", choices=("linear", "softplus", "expected"), default="linear",
+                    help="SHAPE of the ranking term. linear and softplus are PAIRWISE; expected "
+                         "is not.\n"
+                         "expected is L = -sum_i softmax(ipTM/tau)_i * DockQ_i over every pose of "
+                         "the interface: the expected DockQ of the pose the model would SELECT. "
+                         "It exists because a pairwise loss spends gradient in proportion to how "
+                         "many pairs a pose appears in, which is the same for rank 1 and rank 90, "
+                         "while deployment takes the argmax and nothing else -- so ordering the "
+                         "bottom of the list is work that cannot pay. h7msge is the evidence: "
+                         "held-out pairwise loss reached a run best and Spearman went +0.075 over "
+                         "shipped, while selected DockQ stayed flat-to-down and frac acceptable "
+                         "never beat shipped once in 37 epochs. The softmax is a differentiable "
+                         "argmax, so tau sets how much mass sits on the current leaders; it has "
+                         "NO PAIRS, so --rank-weight-by-gap and the cross-seed pair filter have "
+                         "nothing to act on and are reported as inapplicable rather than silently "
+                         "appearing to work. Its floor is -max(DockQ) for the group, not 0.\n"
                          "linear (default, what every arm so far ran) is "
                          "-(s_i - s_j)(dq_i - dq_j)/sum|ddq|. Its coefficients come from the "
                          "LABELS ALONE, so it needs no scoring pass -- and that convenience IS "
@@ -1148,16 +1162,31 @@ def main():
             print(f"  softplus tau {_tau_eff:g}"
                   + ("  (rank_loss.DEFAULT_TAU, the measured median cross-seed |ipTM gap| over "
                      "the full training set)" if _rank_tau is None else "  (given)"))
+        elif a.rank_form == "expected":
+            # TWO DIFFERENT QUANTITIES SHARE THE --rank-tau FLAG, so say which one is in force.
+            # A margin scale of 0.0305 and a softmax temperature of 0.05 are not comparable, and
+            # defaulting silently to DEFAULT_TAU here would be a 1.6x sharper selection than
+            # intended with nothing in the log to show it.
+            _tau_sm = _rank_tau if _rank_tau is not None else _RKL_cfg.DEFAULT_SOFTMAX_TAU
+            print(f"  EXPECTED-DockQ, softmax temperature tau {_tau_sm:g}"
+                  + ("  (rank_loss.DEFAULT_SOFTMAX_TAU)" if _rank_tau is None else "  (given)")
+                  + "\n  L = -sum_i softmax(ipTM/tau)_i * DockQ_i over ALL poses of the "
+                    "interface; the floor is -max(DockQ) of the group, NOT 0. PAIR-FREE: "
+                    f"--rank-weight-by-gap={a.rank_weight_by_gap} and the cross-seed pair filter "
+                    "are INAPPLICABLE and are not applied.")
         if a.rank_cross_seed:
             print(f"  CROSS-SEED GROUPS: {a.rank_structs_per_step} structure(s) x all seeds per "
                   f"step; a pose's coefficient uses every other pose of its interface, so pass A "
                   f"scores the whole step before the first backward")
-        elif a.rank_form == "softplus":
+        elif a.rank_form in ("softplus", "expected"):
             raise SystemExit(
-                "STOP: --rank-form softplus without --rank-cross-seed is not implemented. The "
-                "softplus coefficients need pass A, which is wired to the cross-seed step "
-                "grouping; running it within-seed would silently fall through to the linear "
-                "per-unit path and train a different objective than the flags say.")
+                f"STOP: --rank-form {a.rank_form} without --rank-cross-seed is not implemented. "
+                "Its coefficients need pass A, which is wired to the cross-seed step grouping; "
+                "running it within-seed would silently fall through to the linear per-unit path "
+                "and train a different objective than the flags say. For the expected form this "
+                "would also defeat its purpose outright -- the softmax has to run over ALL poses "
+                "competing for selection, and within one seed it would range over 5 poses rather "
+                "than 50.")
         if _rl_missing:
             raise SystemExit(
                 f"STOP: {len(_rl_missing)} scored structure(s) have no DockQ labels in {_rl_p}, "
@@ -3019,10 +3048,20 @@ def main():
                     dq_by[(_sd, _i)] = float(_lab[_i])
             if len(dq_by) < 2:
                 continue
+            # THE FORM IS PASSED THROUGH, NOT RE-DERIVED. This read
+            #     form=("softplus" if a.rank_form == "softplus" else "linear")
+            # which sent any third form to the LINEAR loss while every log line and the saved
+            # guard still said otherwise -- a run that looks right and is the wrong experiment.
+            # rank_loss.group_coeffs raises on an unknown form, so a typo fails loudly instead.
             c, npair, lval = RKL.group_coeffs(
                 s_by, dq_by,
-                form=("softplus" if a.rank_form == "softplus" else "linear"),
-                tau=(_rank_tau if _rank_tau is not None else RKL.DEFAULT_TAU),
+                form=a.rank_form,
+                # THE DEFAULT DEPENDS ON THE FORM. DEFAULT_TAU is a margin scale in ipTM units;
+                # the expected form's tau is a softmax temperature. Falling back to 0.0305 for
+                # the expected form would be a sharper selection than the 0.05 default intends,
+                # with nothing in the log to reveal it.
+                tau=(_rank_tau if _rank_tau is not None else
+                     (RKL.DEFAULT_SOFTMAX_TAU if a.rank_form == "expected" else RKL.DEFAULT_TAU)),
                 weight_by_gap=a.rank_weight_by_gap,
                 cross_seed_only=True)
             if npair == 0:
@@ -4149,9 +4188,16 @@ def main():
                 print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({a.rank_form}, cross-seed): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
                       f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s), "
-                      f"{_xs_stat['pairs']} pair(s)"
+                      # THE COUNT IS POSES FOR THE EXPECTED FORM, NOT PAIRS, and its floor is
+                      # -max(DockQ) rather than 0. Calling 150 poses "150 pair(s)" and claiming a
+                      # zero floor would misreport the objective in the one line most likely to
+                      # be read back later.
+                      f"{_xs_stat['pairs']} "
+                      + ("pose(s)" if a.rank_form == "expected" else "pair(s)")
                       + ("  (0 is the FLOOR -- every pair ordered)"
-                         if a.rank_form == "softplus" else ""), flush=True)
+                         if a.rank_form == "softplus" else "")
+                      + ("  (NEGATIVE: this is -expected DockQ, floor -max(DockQ) per group)"
+                         if a.rank_form == "expected" else ""), flush=True)
                 for _k in ("groups", "pairs", "steps"):
                     _xs_stat[_k] = 0
                 _xs_stat["loss"] = 0.0
