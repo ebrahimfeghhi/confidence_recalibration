@@ -50,7 +50,20 @@ _UNIT = {"frame_atom_index": None, "has_frame": None, "pae_rep_atom_mask": None,
 # Set by the patched forward for the patched memory_efficient_forward to read. `forward` holds the
 # full atom coordinates and loops over samples; memory_efficient_forward receives only the
 # representative-atom subset of one sample, and the frames need N and C, which are not in it.
-_CALL = {"coords": None, "i": 0}
+_CALL = {"coords": None, "i": 0, "dir": None}
+"""`dir` caches the UNIT-DIRECTION GEOMETRY for the sample currently in the stack, so
+pose_perblock can project it again at each block with its own weights.
+
+WHY THE GEOMETRY AND NOT THE PROJECTED DELTA. The geometry is [N_token, N_token, 3] float32 --
+139 MiB at the 3,400-token crop cap -- while a projected delta is [N_token, N_token, c_z], which
+at c_z 256 in bf16 is 5.9 GiB there. Caching the projection would repeat exactly the mistake
+review caught twice in this file and in pose_perblock: a pair-sized tensor pinned for the whole
+stack's forward AND backward. Recomputing the geometry per block instead would mean four passes
+of the frame construction, which is the expensive part.
+
+It is cleared in the outer forward's `finally`, so a stack reached by some other path finds None
+rather than a stale sample's directions.
+"""
 
 # Length below which a displacement has no direction.
 #
@@ -225,13 +238,13 @@ def install(model, loud=True):
         # THE FULL ATOM COORDINATES, STASHED FOR THE INNER CALL. memory_efficient_forward is given
         # only x_pred_coords[..., rep_atom_mask, :] for one sample, and the frame atoms (N and C)
         # are not in that subset, so the inner call cannot build frames from what it receives.
-        _CALL["coords"], _CALL["i"] = x_pred_coords, 0
+        _CALL["coords"], _CALL["i"], _CALL["dir"] = x_pred_coords, 0, None
         try:
             return orig_forward(input_feature_dict=input_feature_dict, s_inputs=s_inputs,
                                 s_trunk=s_trunk, z_trunk=z_trunk, pair_mask=pair_mask,
                                 x_pred_coords=x_pred_coords, **kw)
         finally:
-            _CALL["coords"], _CALL["i"] = None, 0
+            _CALL["coords"], _CALL["i"], _CALL["dir"] = None, 0, None
 
     def memory_efficient_forward(input_feature_dict, s_trunk, z_pair, pair_mask,
                                  x_pred_rep_coords, **kw):
@@ -309,4 +322,7 @@ def _delta(head, feat, x_pred_rep_coords):
         full_f = full_i.to(torch.float32)
         d = direction_tensor(full_f[pae_mask], full_f,
                              _UNIT["frame_atom_index"], _UNIT["has_frame"])
+    # STASHED FOR THE PER-BLOCK COPIES, if pose_perblock installed any. Kept as the geometry,
+    # not the projection -- see the _CALL docstring for the memory arithmetic.
+    _CALL["dir"] = d
     return head.frame_dir_proj(d)

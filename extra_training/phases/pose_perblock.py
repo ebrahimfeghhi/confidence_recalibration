@@ -46,6 +46,32 @@ class _NoPose(Exception):
     pass
 
 
+def _add_dir(head, i, z):
+    """Add this depth's own orientation projection to z, or return z unchanged.
+
+    RETURNS z UNCHANGED ONLY WHEN THERE ARE NO COPIES, i.e. pose_direction was not installed.
+    If copies exist the geometry MUST be there, and a missing cache raises instead of quietly
+    dropping the orientation term for the rest of the stack -- an arm that trains
+    distance-at-four-depths while its logs claim orientation-at-four-depths is the failure this
+    guard exists to prevent, and it is the same class as the `--train-only` that created
+    per-block copies and never trained them.
+    """
+    dirs = getattr(head, "pose_perblock_frame_dir", None)
+    if not dirs or len(dirs) == 0:
+        return z
+    import pose_direction
+    d = pose_direction._CALL.get("dir")
+    if d is None:
+        raise RuntimeError(
+            "STOP: per-block orientation copies are installed but pose_direction cached no "
+            "direction geometry for this sample. The pre-stack injection sets it, so reaching a "
+            "block without it means memory_efficient_forward was bypassed -- the orientation "
+            "term would be silently absent from blocks 1..n while the run reported otherwise.")
+    # ADD, THEN DROP, as everywhere else here: the delta is not held live across the block.
+    z = z + dirs[i - 1](d).to(z.dtype)
+    return z
+
+
 def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
             loud=True):
     """Add the per-block projections and route the pose embedding into every block but the first.
@@ -117,6 +143,31 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
                 p.weight.zero_()
             projs.append(p.to(device=ref.device, dtype=ref.dtype))
     head.add_module("pose_perblock_proj", projs)
+
+    # PER-BLOCK ORIENTATION, only when pose_direction is already installed. It installs first in
+    # phase_k_train, so its presence is detectable here and its absence means there is no
+    # geometry to project.
+    #
+    # ONE COPY PER EXTRA BLOCK, COPYING frame_dir_proj's WEIGHTS -- which are zero by
+    # construction, since pose_direction zero-inits and verifies exactly zero. So these are zero
+    # too and STEP 0 IS UNCHANGED: identical to the same arm without per-block orientation, and
+    # therefore still identical to --pose-perblock-share's step 0 on the distance terms. Copied
+    # rather than zeroed directly so that if frame_dir_proj ever gains a non-zero init, these
+    # follow it instead of silently disagreeing.
+    #
+    # 768 parameters each at c_z 256, so three copies add 2,304 -- 5.6% on top of the 40,960 a
+    # copy-mode distance arm already trains. A --train-only must match `frame_dir` to reach BOTH
+    # these and frame_dir_proj, exactly as it must match `pose_perblock` for the distance copies.
+    dirs = torch.nn.ModuleList()
+    if getattr(head, "_pose_direction_installed", False):
+        src = head.frame_dir_proj.weight
+        for _ in range(n_blocks - 1):
+            fd = LinearNoBias(in_features=3, out_features=head.c_z)
+            with torch.no_grad():
+                fd.weight.copy_(src)
+            dirs.append(fd.to(device=ref.device, dtype=ref.dtype))
+    head.add_module("pose_perblock_frame_dir", dirs)
+
     head._pose_perblock_tied = bool(tied)
     head._pose_perblock_share = bool(share_pretrained)
     head._pose_perblock_copy = bool(copy_pretrained)
@@ -207,6 +258,7 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
                     # for the whole stack and zero new parameters.
                     z = z + head.linear_no_bias_d(oh).to(z.dtype)
                     z = z + head.linear_no_bias_d_wo_onehot(dd.unsqueeze(-1)).to(z.dtype)
+                    z = _add_dir(head, i, z)
                     return fn(s, z)
                 if head._pose_perblock_copy:
                     # THIS DEPTH's OWN COPY, both terms. Identical to the share branch at step 0
@@ -215,6 +267,7 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
                     z = z + head.pose_perblock_linear_no_bias_d[i - 1](oh).to(z.dtype)
                     z = z + head.pose_perblock_linear_no_bias_d_wo_onehot[i - 1](
                         dd.unsqueeze(-1)).to(z.dtype)
+                    z = _add_dir(head, i, z)
                     return fn(s, z)
                 proj = (head.pose_perblock_proj[0] if head._pose_perblock_tied
                         else head.pose_perblock_proj[i - 1])
@@ -223,6 +276,7 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
                 # for the whole block, forward and backward -- the same mistake review caught in
                 # pathway C, where it was 5.5 GiB at the 3,400-token crop cap.
                 z = z + proj(oh).to(z.dtype)
+                z = _add_dir(head, i, z)
                 return fn(s, z)
             return run
 
@@ -235,14 +289,27 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
     head._pose_perblock_installed = True
     info = {"n_blocks": n_blocks, "injected": n_blocks - 1, "tied": bool(tied),
             "share_pretrained": bool(share_pretrained), "copy_pretrained": bool(copy_pretrained),
+            # COUNTS THE ORIENTATION COPIES TOO, for the same reason the distance copies are
+            # counted: a mode whose new parameters are not in `projs` must not report 0.
+            "dir_copies": int(len(dirs)),
+            "dir_params": int(sum(p.weight.numel() for p in dirs)),
             # COUNTS THE COPIES TOO. `projs` is empty in both share and copy mode, so summing
             # only it reported 0 parameters for an arm that adds 30,720 -- and the launcher's note
             # would have recorded the wrong capacity.
             "params": (sum(p.weight.numel() for p in projs)
                        + sum(c.weight.numel() for c in copies_d)
-                       + sum(c.weight.numel() for c in copies_wo)),
+                       + sum(c.weight.numel() for c in copies_wo)
+                       + sum(d_.weight.numel() for d_ in dirs)),
             "num_bins": int(head.num_bins), "c_z": int(head.c_z)}
     if loud:
+        if dirs:
+            print(f"pose per-block ORIENTATION: {len(dirs)} copy/copies of frame_dir_proj "
+                  f"LinearNoBias(3 -> {head.c_z}), {info['dir_params']:,} new parameter(s), "
+                  f"each copied from frame_dir_proj's weights -- which pose_direction zero-inits "
+                  f"and verifies exactly zero, so STEP 0 IS UNCHANGED by these. Orientation now "
+                  f"enters at ALL {n_blocks} depths; without them it enters ONCE, before the "
+                  f"stack, while the distance terms enter at every depth. A --train-only must "
+                  f"match `frame_dir` to reach them.")
         if share_pretrained:
             _shared = (head.linear_no_bias_d.weight.numel()
                        + head.linear_no_bias_d_wo_onehot.weight.numel())
