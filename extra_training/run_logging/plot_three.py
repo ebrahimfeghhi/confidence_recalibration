@@ -14,6 +14,7 @@ not another arm.
 import argparse
 import csv
 import os
+import re
 import sys
 
 import matplotlib
@@ -53,6 +54,32 @@ def shipped_and_oracle(rid, epoch, budget):
             sum(o_dq)/n, sum(o_ok)/n, len(by))
 
 
+def train_rank_loss(rid):
+    """{epoch: training ranking loss} from the run's own log, rank 0 only.
+
+    THE SAME LOSS AS THE HELD-OUT ONE, which is why they may share an axis: same form
+    (softplus), same tau, same cross-seed grouping, same gap weighting, same floor of 0. What
+    differs is the population -- the training groups over overfit30 against the val10
+    interfaces -- and the moment of measurement: the training value accumulates DURING the epoch
+    while the weights move, the held-out value is computed at that epoch's checkpoint. So a small
+    train-side lead is expected even with no overfitting at all.
+
+    Rank 0 only. All three ranks print an identical figure (the loss is reduced across ranks
+    before it is logged), so taking every line would triple-count each epoch.
+    """
+    p = os.path.join("training", "runs", rid, "run.log")
+    if not os.path.exists(p):
+        return {}
+    pat = re.compile(r"\[rank 0\] epoch (\d+) rank-loss \([^)]*\): ([+-][0-9.]+)")
+    out = {}
+    with open(p, errors="replace") as fh:
+        for line in fh:
+            m = pat.search(line)
+            if m:
+                out[int(m.group(1))] = float(m.group(2))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("rid")
@@ -76,7 +103,7 @@ def main():
         ("fraction acceptable (DockQ > 0.23)", g("frac_mean"), g("frac_sem"), s_fr, o_fr),
         ("Spearman(ipTM, DockQ) within interface", g("rho_trained"), g("rho_sem"), s_rho, None),
     ]
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6))
+    fig, axes = plt.subplots(1, 4, figsize=(21, 4.6))
     for ax, (title, y, se, ship, orac) in zip(axes, panels):
         lo = [v - s for v, s in zip(y, se)]
         hi = [v + s for v, s in zip(y, se)]
@@ -93,6 +120,30 @@ def main():
         ax.set_xlabel("epoch", fontsize=10.5)
         ax.grid(alpha=0.15)
     axes[0].set_ylabel(f"held out, {n_if} interfaces, +- s.e. across interfaces", fontsize=10)
+
+    # FOURTH PANEL: THE OBJECTIVE ITSELF, TRAIN AGAINST HELD OUT. Its own axes because this is a
+    # loss near 0.04, not a DockQ-scale quantity, and sharing with the panels above would flatten
+    # it to a line. Both curves are the SAME loss -- softplus, same tau, cross-seed, gap-weighted,
+    # floor 0 -- so the vertical gap between them is the generalisation gap and nothing else.
+    ax = axes[3]
+    tr = train_rank_loss(a.rid)
+    tr_ep = [e for e in ep if e in tr]
+    if tr_ep:
+        ax.plot(tr_ep, [tr[e] for e in tr_ep], color="#ff7f0e", lw=2.0, marker="s", ms=3.5,
+                label="training (overfit30)")
+    ho, ho_se = g("xsloss_trained"), g("xsloss_sem")
+    ax.fill_between(ep, [v - s for v, s in zip(ho, ho_se)], [v + s for v, s in zip(ho, ho_se)],
+                    color="#1f77b4", alpha=0.18, lw=0)
+    ax.plot(ep, ho, color="#1f77b4", lw=2.0, marker="o", ms=3.5,
+            label=f"held out (val10, {n_if} ifaces)")
+    ax.axhline(0.0, color="#555555", ls="-", lw=0.9)
+    ax.text(ax.get_xlim()[1], 0.0, " floor 0 = every pair ordered", color="#555555",
+            fontsize=8.5, va="bottom", ha="right")
+    ax.set_title("ranking loss: training vs held out", fontsize=11.5)
+    ax.set_xlabel("epoch", fontsize=10.5)
+    ax.set_ylabel("cross-seed softplus loss (lower is better)", fontsize=10)
+    ax.legend(fontsize=8.5, loc="upper right", framealpha=0.9)
+    ax.grid(alpha=0.15)
     fig.suptitle(f"{a.rid} -- cross-seed softplus  (bands are s.e. over {n_if} interfaces; "
                  f"dashed = SHIPPED head on these same {n_if}, derived from stored_iptm)",
                  fontsize=11.5, y=1.02)
