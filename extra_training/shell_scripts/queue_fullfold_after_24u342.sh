@@ -53,6 +53,25 @@ PY=/home/ebrahim/Protenix/.venv/bin/python
 PARENT=24u342
 LOG=training/runs/fullfold_queue.log
 TRAIN_ONLY='linear_no_bias_d,pose_perblock,frame_dir'
+# 9dzj IS EXCLUDED VIA THE SELECTION FILE, NOT --manifest-skip, and the reason is the preflight. Those have no
+# ranking labels at all. 9dzj has labels for seeds 500002-500009 on both its interfaces but NOT
+# for 500000 and 500001, so --rank-loss's coverage guard refused the first probe (oimynw):
+#   "4 group(s) have NO labels, e.g. [('9dzj', 500000, (0, 2)), ...]"
+# which is the guard doing its job -- those poses would pay a forward and contribute no ranking
+# gradient. Checked exhaustively before changing anything: across all 977 full_train interfaces,
+# 9dzj is the ONLY structure with any missing (iface, seed) label, 4 groups in total. Excluding it
+# costs 2 interfaces of 977. The alternative, narrowing --seeds to 500002-500009, would change the
+# data for every structure to accommodate one, which is the worse trade.
+#
+# WHY THE SELECTION FILE AND NOT THE SKIP LIST. Adding 9dzj to --manifest-skip changed the manifest
+# digest, and the alignment preflight records the digest of the population it was run over, so the
+# trainer then refused: "the preflight was run over manifest 77fd7d86b4079a45, this run is
+# 258f939fd53397bf". Re-running the real preflight costs 22.4 s/structure. Instead
+# phases/phase_k_derive_preflight_subset.py derived a child marker, which REPRODUCED the parent
+# digest over its 488 structures before emitting the child's 258f939fd53397bf over 487 -- so the
+# inherited evidence is verified rather than assumed, and the marker records `derived_from` so
+# anything reading it can see the check was inherited. --manifest-skip therefore stays at the
+# original ten.
 SKIP='9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3'
 exec >> "$LOG" 2>&1
 echo "=== full-fold arm armed $(date '+%Y-%m-%d %H:%M:%S %Z'), waiting on $PARENT ==="
@@ -86,8 +105,8 @@ COMMON=(
   --train-only "$TRAIN_ONLY"
   --fold training/fold
   --crop-margin 10 --crop-contact 5
-  --minimal-items --alignment-preflight training/full_train/alignment_preflight.json
-  --manifest-selection training/full_train/structures.csv
+  --minimal-items --alignment-preflight training/full_train/alignment_preflight_no9dzj.json
+  --manifest-selection training/full_train/structures_no9dzj.csv
   --manifest-skip "$SKIP"
   --lr 0.01 --warmup-steps 20 --seed 0 --accum 85 --nsample 5
   --alpha-confidence 1.0 --clip-norm 25.0 --crop-size 3400
