@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid bjwcm5`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-4 (4 of 15.0).  **Interfaces:** 18.  **Budget:** 30.
+**Epochs evaluated:** 1-5 (5 of 15.0).  **Interfaces:** 18.  **Budget:** 30.
 
 ## Configuration
 
@@ -25,9 +25,9 @@ Spearman is reported but is **not** the criterion.
 
 | | trained | shipped | oracle |
 |---|---|---|---|
-| selected DockQ | 0.2774 +- 0.0578 | 0.2909 +- 0.0620 | 0.5968 |
+| selected DockQ | 0.2876 +- 0.0570 | 0.2909 +- 0.0620 | 0.5968 |
 | frac > 0.23 | 0.5556 +- 0.1205 | 0.5556 +- 0.1205 | 1.0000 |
-| Spearman rho | 0.2182 +- 0.0690 | 0.1958 | |
+| Spearman rho | 0.2429 +- 0.0656 | 0.1958 | |
 
 ## Loss, per epoch
 
@@ -40,6 +40,7 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | 2 | 0.03965 | 0.04036 +- 0.00500 | 0.2220 | 4.0 | 0.0010 | 3.5172 |
 | 3 | 0.03843 | 0.03822 +- 0.00344 | 0.2178 | 5.6 | 0.0014 | 3.7249 |
 | 4 | 0.03778 | 0.03919 +- 0.00413 | 0.2192 | 4.3 | 0.0011 | 3.6078 |
+| 5 | 0.03766 | 0.03945 +- 0.00434 | 0.2191 | 3.8 | 0.0010 | 3.5271 |
 
 Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.2572 (tau 0.05).
 
@@ -51,21 +52,22 @@ Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.257
 | 2 | 0.2853 +- 0.0615 | 0.5556 +- 0.1205 | 0.2096 +- 0.0720 | 0.0051 |
 | 3 | 0.2591 +- 0.0573 | 0.5556 +- 0.1205 | 0.2328 +- 0.0711 | 0.0046 |
 | 4 | 0.2774 +- 0.0578 | 0.5556 +- 0.1205 | 0.2182 +- 0.0690 | 0.0047 |
+| 5 | 0.2876 +- 0.0570 | 0.5556 +- 0.1205 | 0.2429 +- 0.0656 | 0.0047 |
 
-## Paired per-interface test, epoch 1 -> 4
+## Paired per-interface test, epoch 1 -> 5
 
 Per-interface selected-pose DockQ (argmax ipTM), 18 interfaces paired.
 
-- paired mean **+0.0037 +- 0.0293** (0.13 sigma)
-- 4 up, 4 worsened, 10 unchanged
+- paired mean **+0.0139 +- 0.0286** (0.49 sigma)
+- 5 up, 3 worsened, 10 unchanged
 
-| interface | ep1 | ep4 | delta |
+| interface | ep1 | ep5 | delta |
 |---|---|---|---|
 | `9bx7_AC` | 0.184 | 0.587 | +0.403 |
 | `8og0_AC` | 0.655 | 0.370 | -0.285 |
-| `9cfd_BC` | 0.393 | 0.285 | -0.108 |
 | `7r58_AB` | 0.011 | 0.087 | +0.076 |
-| `7r58_AC` | 0.040 | 0.012 | -0.028 |
+| `7qu2_BC` | 0.015 | 0.070 | +0.055 |
+| `9ima_AD` | 0.564 | 0.583 | +0.019 |
 
 ## Rank of the first acceptable pose, ordering by ipTM
 
@@ -86,21 +88,22 @@ by both orderings over the same poses, so the pairing is exact.
 | 2 | 42.44 +- 13.92 | 1.0 | 10/18 | +4.94 +- 2.89 | 3/5/10 |
 | 3 | 41.39 +- 13.79 | 1.0 | 10/18 | +3.94 +- 3.31 | 3/4/11 |
 | 4 | 42.28 +- 14.15 | 1.0 | 10/18 | +4.78 +- 2.97 | 2/4/12 |
+| 5 | 40.78 +- 13.40 | 1.0 | 10/18 | +3.33 +- 2.42 | 1/6/11 |
 
-Shipped on the same interfaces: mean rank 37.50 +- 12.56, median 1.0, 10/18 at rank 1.
+Shipped on the same interfaces: mean rank 37.44 +- 12.54, median 1.0, 10/18 at rank 1.
 
 ## Tensors excluded from the anchor
 
 `--l2-sp-exclude frame_dir` leaves these trainable but outside
 `||W - W0||^2`, so the drift column above does **not** cover them. They are zero-init, so
-their norm is the direct test of whether the loss finds any use for them. From `resume_ep4.pt`:
+their norm is the direct test of whether the loss finds any use for them. From `resume_ep5.pt`:
 
 | tensor | \|\|W\|\| |
 |---|---|
-| `frame_dir_proj.weight` | 2.7626e+00 |
-| `pose_perblock_frame_dir.0.weight` | 2.7617e+00 |
-| `pose_perblock_frame_dir.1.weight` | 2.3632e+00 |
-| `pose_perblock_frame_dir.2.weight` | 2.2361e+00 |
+| `frame_dir_proj.weight` | 3.5846e+00 |
+| `pose_perblock_frame_dir.0.weight` | 3.5823e+00 |
+| `pose_perblock_frame_dir.1.weight` | 3.1670e+00 |
+| `pose_perblock_frame_dir.2.weight` | 3.0102e+00 |
 
 ## The arm as launched
 
@@ -110,5 +113,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-15 optimiser step(s), max `grad_norm` 0.0091, 0 non-finite gradient(s).
+15 optimiser step(s), max `grad_norm` 0.0131, 0 non-finite gradient(s).
 
