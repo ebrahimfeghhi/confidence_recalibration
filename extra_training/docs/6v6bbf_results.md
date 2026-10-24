@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid 6v6bbf`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-6 (6 of 15.0).  **Interfaces:** 18.  **Budget:** 30.
+**Epochs evaluated:** 1-7 (7 of 15.0).  **Interfaces:** 18.  **Budget:** 30.
 
 ## Configuration
 
@@ -27,7 +27,7 @@ Spearman is reported but is **not** the criterion.
 |---|---|---|---|
 | selected DockQ | 0.2807 +- 0.0591 | 0.2909 +- 0.0620 | 0.5968 |
 | frac > 0.23 | 0.5000 +- 0.1213 | 0.5556 +- 0.1205 | 1.0000 |
-| Spearman rho | 0.2073 +- 0.0740 | 0.1958 | |
+| Spearman rho | 0.2252 +- 0.0700 | 0.1958 | |
 
 ## Loss, per epoch
 
@@ -42,6 +42,7 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | 4 | 0.03994 | 0.03732 +- 0.00221 | 0.2109 | 9.1 | 0.0023 | 4.0270 |
 | 5 | 0.03955 | 0.03729 +- 0.00219 | 0.2103 | 8.0 | 0.0020 | 4.0169 |
 | 6 | 0.03927 | 0.03738 +- 0.00207 | 0.2087 | 8.1 | 0.0020 | 4.0484 |
+| 7 | 0.03915 | 0.03721 +- 0.00213 | 0.2100 | 7.0 | 0.0017 | 4.0117 |
 
 Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.2572 (tau 0.05).
 
@@ -55,15 +56,16 @@ Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.257
 | 4 | 0.2806 +- 0.0590 | 0.5000 +- 0.1213 | 0.1895 +- 0.0774 | 0.0038 |
 | 5 | 0.2806 +- 0.0590 | 0.5000 +- 0.1213 | 0.2038 +- 0.0761 | 0.0036 |
 | 6 | 0.2807 +- 0.0591 | 0.5000 +- 0.1213 | 0.2073 +- 0.0740 | 0.0034 |
+| 7 | 0.2807 +- 0.0591 | 0.5000 +- 0.1213 | 0.2252 +- 0.0700 | 0.0035 |
 
-## Paired per-interface test, epoch 1 -> 6
+## Paired per-interface test, epoch 1 -> 7
 
 Per-interface selected-pose DockQ (argmax ipTM), 18 interfaces paired.
 
 - paired mean **-0.0014 +- 0.0288** (0.05 sigma)
 - 4 up, 7 worsened, 7 unchanged
 
-| interface | ep1 | ep6 | delta |
+| interface | ep1 | ep7 | delta |
 |---|---|---|---|
 | `9bx7_AC` | 0.184 | 0.587 | +0.403 |
 | `8og0_AC` | 0.655 | 0.370 | -0.285 |
@@ -92,6 +94,7 @@ by both orderings over the same poses, so the pairing is exact.
 | 4 | 41.78 +- 12.92 | 1.5 | 9/18 | +4.28 +- 3.15 | 2/7/9 |
 | 5 | 42.33 +- 12.87 | 1.5 | 9/18 | +4.89 +- 3.41 | 2/6/10 |
 | 6 | 43.39 +- 12.85 | 1.5 | 9/18 | +5.89 +- 3.52 | 2/6/10 |
+| 7 | 43.44 +- 13.33 | 1.5 | 9/18 | +5.94 +- 3.37 | 2/6/10 |
 
 Shipped on the same interfaces: mean rank 37.50 +- 12.56, median 1.0, 10/18 at rank 1.
 
@@ -99,14 +102,14 @@ Shipped on the same interfaces: mean rank 37.50 +- 12.56, median 1.0, 10/18 at r
 
 `--l2-sp-exclude frame_dir` leaves these trainable but outside
 `||W - W0||^2`, so the drift column above does **not** cover them. They are zero-init, so
-their norm is the direct test of whether the loss finds any use for them. From `resume_ep6.pt`:
+their norm is the direct test of whether the loss finds any use for them. From `resume_ep7.pt`:
 
 | tensor | \|\|W\|\| |
 |---|---|
-| `frame_dir_proj.weight` | 3.5874e+00 |
-| `pose_perblock_frame_dir.0.weight` | 3.5830e+00 |
-| `pose_perblock_frame_dir.1.weight` | 3.3443e+00 |
-| `pose_perblock_frame_dir.2.weight` | 3.3596e+00 |
+| `frame_dir_proj.weight` | 4.1158e+00 |
+| `pose_perblock_frame_dir.0.weight` | 4.1104e+00 |
+| `pose_perblock_frame_dir.1.weight` | 3.8980e+00 |
+| `pose_perblock_frame_dir.2.weight` | 3.9336e+00 |
 
 ## The arm as launched
 
@@ -116,5 +119,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-15 optimiser step(s), max `grad_norm` 0.0097, 0 non-finite gradient(s).
+15 optimiser step(s), max `grad_norm` 0.0100, 0 non-finite gradient(s).
 
