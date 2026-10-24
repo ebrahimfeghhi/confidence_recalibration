@@ -38,12 +38,17 @@ LOG=training/runs/within_queue.log
 exec >>"$LOG" 2>&1
 echo "=== within-seed queue started $(date '+%F %T %Z') ==="
 
-# Only directories, 6 lowercase chars, and NEVER `latest` -- which is itself six lowercase
-# characters and has resolved to the wrong run twice in this project.
-newest_rid() {
-    ls -t training/runs 2>/dev/null \
+# THE SET OF RUN DIRECTORIES, not the newest one. `ls -t` orders by MTIME, and any write inside
+# an existing run directory bumps it to the top -- rank_rho.load does os.replace into
+# <rid>/rank_rho_b30_v3.csv on every plot refresh, and a sibling watch_arm.sh does that during
+# this very detection window. "newest differs from before" would then latch onto an unrelated
+# finished run, record the wrong rid, and leave the real arm unwatched and unpushed. A set
+# difference cannot be fooled by mtime. `latest` is excluded by name because it is itself six
+# lowercase characters and has resolved to the wrong run twice in this project.
+rid_set() {
+    ls training/runs 2>/dev/null \
       | while read -r n; do [ -d "training/runs/$n" ] && echo "$n"; done \
-      | grep -E '^[a-z0-9]{6}$' | grep -vx latest | head -1
+      | grep -E '^[a-z0-9]{6}$' | grep -vx latest | sort
 }
 
 wait_for_cards() {
@@ -59,16 +64,18 @@ run_arm() {
     local L="$1" K="$2" label="$3"
     echo "--- $(date '+%T') waiting for cards before $label ---"
     wait_for_cards || { echo "never got the cards for $label"; return 1; }
-    local before; before=$(newest_rid)
-    echo "$(date '+%T') launching $label (newest rid before: ${before:-none})"
+    local before; before=$(rid_set)
+    echo "$(date '+%T') launching $label ($(echo "$before" | grep -c . ) run dir(s) before)"
     ./shell_scripts/launch_within_arm.sh "$L" "$K" &
     local launcher=$!
     local RID=""
     for _ in $(seq 600); do
-        RID=$(newest_rid)
-        [ -n "$RID" ] && [ "$RID" != "$before" ] && break
+        RID=$(comm -13 <(echo "$before") <(rid_set) | head -1)
+        [ -n "$RID" ] && break
+        # Stop waiting if the launcher has already died -- otherwise a refusal (cards busy)
+        # burns the full 20 minutes before the queue notices.
+        kill -0 "$launcher" 2>/dev/null || break
         sleep 2
-        RID=""
     done
     if [ -z "$RID" ]; then
         echo "$label: no new run directory appeared; not watching"
@@ -77,12 +84,25 @@ run_arm() {
         echo "$(date '+%T') $label is $RID"
         nohup ./shell_scripts/watch_arm.sh "$RID" >>"training/runs/watch_$RID.log" 2>&1 &
     fi
+    # CAPTURE $? BEFORE ANY OTHER COMMAND RUNS. `echo "$(date) ... $?"` prints 0 always: the
+    # command substitution executes during argument expansion and resets $? before it is read.
     wait "$launcher"
-    echo "$(date '+%T') $label launcher returned $? (rid ${RID:-unknown})"
+    local rc=$?
+    echo "$(date '+%T') $label launcher returned $rc (rid ${RID:-unknown})"
+    return "$rc"
 }
 
-run_arm 8 0 L8
-run_arm 1 0 L1
-run_arm 8 2 L8K2
-run_arm 1 2 L1K2
+# A FAILED ARM STOPS THE QUEUE. run_arm used to print the exit code and discard it, so a refusal
+# (cards busy) or a crash in launch.py would be logged as a successful launch and the next arm
+# would start on top of whatever caused it. Four arms sharing one set of cards means the first
+# failure is usually a reason the rest will fail too, and 12 hours of them failing unattended is
+# worse than stopping.
+for spec in "8 0 L8" "1 0 L1" "8 2 L8K2" "1 2 L1K2"; do
+    [ -f training/runs/CANCEL_WITHIN_QUEUE ] && { echo "CANCELLED before $spec"; exit 0; }
+    # shellcheck disable=SC2086
+    if ! run_arm $spec; then
+        echo "STOPPING THE QUEUE: $spec failed; the remaining arms were NOT started."
+        exit 1
+    fi
+done
 echo "=== within-seed queue done $(date '+%F %T %Z') ==="

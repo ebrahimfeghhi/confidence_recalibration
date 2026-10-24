@@ -25,7 +25,7 @@ differ by less than DQ_TOL, and keeping interfaces with at least --min-pairs suc
 
 That is rank_loss.DEFAULT_TAU. Two earlier figures in the notes came from looser populations and
 should not be quoted: 0.0315 over 1,154,400 pairs was computed BEFORE dropping DockQ ties, and
-0.0313 was val10 only. For comparison the 20-structure overfit30 subset gives 0.0429 and val10
+0.0313 was val10 only. For comparison the 30-structure overfit30 subset gives 0.0426 and val10
 gives 0.0313. USE THE TRAINING NUMBER -- tau shapes the training gradient, so setting it from val
 would let the eval set influence training.
 
@@ -123,12 +123,18 @@ def weighted_median(pairs_wv):
     tot = sum(w for w, _ in pairs_wv)
     if tot <= 0:
         return float("nan")
+    ordered = sorted(pairs_wv, key=lambda t: t[1])
     acc = 0.0
-    for w, v in sorted(pairs_wv, key=lambda t: t[1]):
+    for w, v in ordered:
         acc += w
         if acc >= tot / 2.0:
             return v
-    return pairs_wv[-1][1]
+    # ONLY REACHABLE WITH A NON-FINITE WEIGHT, since acc sums to tot otherwise. Fall back to the
+    # LARGEST value, not to the last element of the unsorted input -- that returned an arbitrary
+    # element. This is the lower weighted median, while the figure printed beside it is
+    # statistics.median, which interpolates; immaterial at a million pairs, but it means part of
+    # any small discrepancy between them is definitional rather than from the weighting.
+    return ordered[-1][1]
 
 
 def sigmoid(x):
@@ -149,14 +155,13 @@ def main():
     ap.add_argument("--min-pairs", type=int, default=10,
                     help="skip interfaces with fewer pairs than this")
     ap.add_argument("--within-weight", type=float, default=1.0, metavar="L",
-                    help="with --pairs all, count each within-seed pair L times when taking the "
-                         "median, matching --rank-within-weight in the trainer. THE POOLED "
-                         "MEDIAN MOVES WITH L and the unweighted pooled median is only the right "
-                         "tau at L=1: within-seed pairs are 7.9%% of the pool by count, so at "
-                         "L=1 they barely shift it, but at L=8 they carry ~41%% of the weight and "
-                         "the median the loss actually sees is far tighter. If the principle is "
-                         "'tau = the median gap of the pairs the loss weights', then L belongs "
-                         "in the median.")
+                    help="with --pairs all, mirror --rank-within-weight in the DIAGNOSTICS: the "
+                         "weighted median and the gradient-mass allocation. IT DOES NOT MOVE THE "
+                         "HEADLINE TAU, which is the unweighted median over pairs as counted, and "
+                         "that is deliberate -- tau is set from a property of the data rather "
+                         "than of the knob, so arms at different L can share one tau and differ "
+                         "in one thing. Use it to see where the gradient goes at a given L, not "
+                         "to pick tau for that L.")
     ap.add_argument("--pairs", choices=("cross", "within", "all"), default="cross",
                     help="which pair family to measure. 'within' is a DIFFERENT population with "
                          "a different scale, not a variant reading of the same one -- see "
@@ -179,8 +184,12 @@ def main():
         pr = cross_seed_pairs(poses, a.pairs)
         if len(pr) < a.min_pairs:
             continue
-        # L-WEIGHTED, by repeating each within-seed pair's gap. Repetition rather than a
-        # weighted-median formula so the percentiles below stay the same statistic as the median.
+        # THE HEADLINE MEDIAN IS DELIBERATELY UNWEIGHTED, over pairs as counted. An earlier
+        # comment here claimed --within-weight repeated within-seed gaps into this list; it never
+        # did, and the flag's help claimed the pooled median "moves with L" when it does not.
+        # Keeping it unweighted is the right behaviour -- tau is set from a property of the DATA,
+        # not of the knob, which is what lets two arms at different L share one tau and differ in
+        # one thing. L reaches only the weighted median printed beside it, as a diagnostic.
         g = [_gap for _gap, _m, _same, _dq in pr]
         gaps.extend(g)
         # The loss's OWN weight w_ij = |dDockQ| x (L for within-seed), so the weighted median
@@ -253,8 +262,18 @@ def main():
         if len(pr) < a.min_pairs:
             continue
         n_used += 1
-        w_sum = sum(g for g, _, _ in pr)
+        # |dDockQ| x L, THE LOSS'S OWN w_ij -- not the |ipTM gap|. This block read `gap`, the
+        # ipTM gap, while the comment above it and group_coeffs both define the per-pair mass as
+        # |d_i - d_j| / W over DockQ. The two correlate, so the result looked plausible: it put
+        # the softplus share at 81.6% against a true 74.5%, and the headline "redistribution"
+        # figure at +41.3 points against +32.8. Those wrong numbers were quoted in rank_loss.py,
+        # this docstring and the --rank-tau help, and are corrected there.
+        def _w(_g, _m, _sm, _d):
+            return _d * (a.within_weight if (_sm and a.pairs == "all") else 1.0)
+        w_sum = sum(_w(*t) for t in pr)
         u_sum = float(len(pr))
+        if w_sum <= 0:
+            continue
         for gap, m, _same, _dq in pr:
             k = "cor" if m > 0 else "inv"
             if k == "cor":
@@ -262,8 +281,9 @@ def main():
             else:
                 n_inv += 1
             s = sigmoid(-m / tau)
-            acc["lin"][k] += gap / w_sum
-            acc["sp"][k] += 2.0 * gap * s / w_sum
+            wij = _w(gap, m, _same, _dq)
+            acc["lin"][k] += wij / w_sum
+            acc["sp"][k] += 2.0 * wij * s / w_sum
             acc["lin_u"][k] += 1.0 / u_sum
             acc["sp_u"][k] += 2.0 * s / u_sum
 
