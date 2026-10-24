@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid hronsr`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-7 (7 of 25.0).  **Interfaces:** 18.  **Budget:** 30.
+**Epochs evaluated:** 1-8 (8 of 25.0).  **Interfaces:** 18.  **Budget:** 30.
 
 ## Configuration
 
@@ -25,9 +25,9 @@ Spearman is reported but is **not** the criterion.
 
 | | trained | shipped | oracle |
 |---|---|---|---|
-| selected DockQ | 0.2896 +- 0.0566 | 0.2909 +- 0.0620 | 0.5968 |
+| selected DockQ | 0.3042 +- 0.0603 | 0.2909 +- 0.0620 | 0.5968 |
 | frac > 0.23 | 0.5556 +- 0.1205 | 0.5556 +- 0.1205 | 1.0000 |
-| Spearman rho | 0.2568 +- 0.0653 | 0.1958 | |
+| Spearman rho | 0.2608 +- 0.0652 | 0.1958 | |
 
 ## Loss, per epoch
 
@@ -43,6 +43,7 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | 5 | 0.03769 | 0.03883 +- 0.00423 | 0.2211 | 3.2 | 0.0008 | 3.6155 |
 | 6 | 0.03743 | 0.03827 +- 0.00382 | 0.2197 | 3.8 | 0.0009 | 3.6569 |
 | 7 | 0.03752 | 0.03891 +- 0.00436 | 0.2215 | 3.2 | 0.0008 | 3.5359 |
+| 8 | 0.03726 | 0.03840 +- 0.00408 | 0.2218 | 3.1 | 0.0008 | 3.5774 |
 
 Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.2572 (tau 0.05).
 
@@ -57,21 +58,22 @@ Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.257
 | 5 | 0.2849 +- 0.0577 | 0.5556 +- 0.1205 | 0.2294 +- 0.0681 | 0.0046 |
 | 6 | 0.2900 +- 0.0574 | 0.5556 +- 0.1205 | 0.2400 +- 0.0667 | 0.0043 |
 | 7 | 0.2896 +- 0.0566 | 0.5556 +- 0.1205 | 0.2568 +- 0.0653 | 0.0045 |
+| 8 | 0.3042 +- 0.0603 | 0.5556 +- 0.1205 | 0.2608 +- 0.0652 | 0.0044 |
 
-## Paired per-interface test, epoch 1 -> 7
+## Paired per-interface test, epoch 1 -> 8
 
 Per-interface selected-pose DockQ (argmax ipTM), 18 interfaces paired.
 
-- paired mean **+0.0159 +- 0.0286** (0.56 sigma)
-- 6 up, 3 worsened, 9 unchanged
+- paired mean **+0.0306 +- 0.0227** (1.35 sigma)
+- 6 up, 2 worsened, 10 unchanged
 
-| interface | ep1 | ep7 | delta |
+| interface | ep1 | ep8 | delta |
 |---|---|---|---|
 | `9bx7_AC` | 0.184 | 0.587 | +0.403 |
-| `8og0_AC` | 0.655 | 0.370 | -0.285 |
 | `7r58_AB` | 0.011 | 0.087 | +0.076 |
 | `7qu2_BC` | 0.015 | 0.070 | +0.055 |
 | `7qu2_AC` | 0.033 | 0.068 | +0.035 |
+| `7r58_AC` | 0.040 | 0.012 | -0.028 |
 
 ## Rank of the first acceptable pose, ordering by ipTM
 
@@ -95,21 +97,22 @@ by both orderings over the same poses, so the pairing is exact.
 | 5 | 42.44 +- 14.18 | 1.0 | 10/18 | +5.00 +- 3.25 | 3/4/11 |
 | 6 | 43.39 +- 14.43 | 1.0 | 10/18 | +5.89 +- 3.57 | 3/4/11 |
 | 7 | 40.00 +- 13.61 | 1.0 | 10/18 | +2.50 +- 2.54 | 3/3/12 |
+| 8 | 41.67 +- 13.93 | 1.0 | 10/18 | +4.22 +- 2.88 | 4/4/10 |
 
-Shipped on the same interfaces: mean rank 37.50 +- 12.56, median 1.0, 10/18 at rank 1.
+Shipped on the same interfaces: mean rank 37.44 +- 12.54, median 1.0, 10/18 at rank 1.
 
 ## Tensors excluded from the anchor
 
 `--l2-sp-exclude frame_dir` leaves these trainable but outside
 `||W - W0||^2`, so the drift column above does **not** cover them. They are zero-init, so
-their norm is the direct test of whether the loss finds any use for them. From `resume_ep7.pt`:
+their norm is the direct test of whether the loss finds any use for them. From `resume_ep8.pt`:
 
 | tensor | \|\|W\|\| |
 |---|---|
-| `frame_dir_proj.weight` | 4.6346e+00 |
-| `pose_perblock_frame_dir.0.weight` | 4.6261e+00 |
-| `pose_perblock_frame_dir.1.weight` | 3.8635e+00 |
-| `pose_perblock_frame_dir.2.weight` | 3.7642e+00 |
+| `frame_dir_proj.weight` | 5.3339e+00 |
+| `pose_perblock_frame_dir.0.weight` | 5.3250e+00 |
+| `pose_perblock_frame_dir.1.weight` | 4.4568e+00 |
+| `pose_perblock_frame_dir.2.weight` | 4.3998e+00 |
 
 ## The arm as launched
 
@@ -119,5 +122,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-15 optimiser step(s), max `grad_norm` 0.0109, 0 non-finite gradient(s).
+15 optimiser step(s), max `grad_norm` 0.0049, 0 non-finite gradient(s).
 
