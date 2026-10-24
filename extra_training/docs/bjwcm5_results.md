@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid bjwcm5`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-7 (7 of 15.0).  **Interfaces:** 18.  **Budget:** 30.
+**Epochs evaluated:** 1-8 (8 of 15.0).  **Interfaces:** 18.  **Budget:** 30.
 
 ## Configuration
 
@@ -25,9 +25,9 @@ Spearman is reported but is **not** the criterion.
 
 | | trained | shipped | oracle |
 |---|---|---|---|
-| selected DockQ | 0.2859 +- 0.0543 | 0.2909 +- 0.0620 | 0.5968 |
+| selected DockQ | 0.2792 +- 0.0557 | 0.2909 +- 0.0620 | 0.5968 |
 | frac > 0.23 | 0.6111 +- 0.1182 | 0.5556 +- 0.1205 | 1.0000 |
-| Spearman rho | 0.2234 +- 0.0685 | 0.1958 | |
+| Spearman rho | 0.2235 +- 0.0692 | 0.1958 | |
 
 ## Loss, per epoch
 
@@ -43,6 +43,7 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | 5 | 0.03766 | 0.03945 +- 0.00434 | 0.2191 | 3.8 | 0.0010 | 3.5271 |
 | 6 | 0.03729 | 0.03894 +- 0.00378 | 0.2169 | 4.4 | 0.0011 | 3.6039 |
 | 7 | 0.03724 | 0.03966 +- 0.00424 | 0.2170 | 4.2 | 0.0010 | 3.4650 |
+| 8 | 0.03680 | 0.03939 +- 0.00388 | 0.2160 | 4.0 | 0.0010 | 3.5242 |
 
 Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.2572 (tau 0.05).
 
@@ -57,21 +58,22 @@ Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.257
 | 5 | 0.2876 +- 0.0570 | 0.5556 +- 0.1205 | 0.2429 +- 0.0656 | 0.0047 |
 | 6 | 0.2684 +- 0.0567 | 0.5556 +- 0.1205 | 0.2415 +- 0.0694 | 0.0047 |
 | 7 | 0.2859 +- 0.0543 | 0.6111 +- 0.1182 | 0.2234 +- 0.0685 | 0.0049 |
+| 8 | 0.2792 +- 0.0557 | 0.6111 +- 0.1182 | 0.2235 +- 0.0692 | 0.0049 |
 
-## Paired per-interface test, epoch 1 -> 7
+## Paired per-interface test, epoch 1 -> 8
 
 Per-interface selected-pose DockQ (argmax ipTM), 18 interfaces paired.
 
-- paired mean **+0.0122 +- 0.0327** (0.37 sigma)
-- 7 up, 4 worsened, 7 unchanged
+- paired mean **+0.0056 +- 0.0325** (0.17 sigma)
+- 6 up, 5 worsened, 7 unchanged
 
-| interface | ep1 | ep7 | delta |
+| interface | ep1 | ep8 | delta |
 |---|---|---|---|
 | `9bx7_AC` | 0.184 | 0.587 | +0.403 |
 | `8og0_AC` | 0.655 | 0.370 | -0.285 |
 | `9bx7_BC` | 0.492 | 0.274 | -0.218 |
 | `9c7x_BC` | 0.071 | 0.241 | +0.170 |
-| `7r58_AB` | 0.011 | 0.087 | +0.076 |
+| `7qu2_BC` | 0.015 | 0.052 | +0.037 |
 
 ## Rank of the first acceptable pose, ordering by ipTM
 
@@ -95,21 +97,22 @@ by both orderings over the same poses, so the pairing is exact.
 | 5 | 40.78 +- 13.40 | 1.0 | 10/18 | +3.33 +- 2.42 | 1/6/11 |
 | 6 | 39.39 +- 13.48 | 1.0 | 10/18 | +1.89 +- 2.79 | 3/4/11 |
 | 7 | 38.17 +- 12.93 | 1.0 | 11/18 | +0.67 +- 2.99 | 4/4/10 |
+| 8 | 37.22 +- 12.97 | 1.0 | 11/18 | -0.22 +- 2.63 | 3/4/11 |
 
-Shipped on the same interfaces: mean rank 37.50 +- 12.56, median 1.0, 10/18 at rank 1.
+Shipped on the same interfaces: mean rank 37.44 +- 12.54, median 1.0, 10/18 at rank 1.
 
 ## Tensors excluded from the anchor
 
 `--l2-sp-exclude frame_dir` leaves these trainable but outside
 `||W - W0||^2`, so the drift column above does **not** cover them. They are zero-init, so
-their norm is the direct test of whether the loss finds any use for them. From `resume_ep7.pt`:
+their norm is the direct test of whether the loss finds any use for them. From `resume_ep8.pt`:
 
 | tensor | \|\|W\|\| |
 |---|---|
-| `frame_dir_proj.weight` | 5.1707e+00 |
-| `pose_perblock_frame_dir.0.weight` | 5.1658e+00 |
-| `pose_perblock_frame_dir.1.weight` | 4.7398e+00 |
-| `pose_perblock_frame_dir.2.weight` | 4.4388e+00 |
+| `frame_dir_proj.weight` | 5.8063e+00 |
+| `pose_perblock_frame_dir.0.weight` | 5.8017e+00 |
+| `pose_perblock_frame_dir.1.weight` | 5.3196e+00 |
+| `pose_perblock_frame_dir.2.weight` | 5.0487e+00 |
 
 ## The arm as launched
 
@@ -119,5 +122,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-15 optimiser step(s), max `grad_norm` 0.0164, 0 non-finite gradient(s).
+15 optimiser step(s), max `grad_norm` 0.0072, 0 non-finite gradient(s).
 
