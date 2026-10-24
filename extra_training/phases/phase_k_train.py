@@ -282,7 +282,7 @@ def main():
                          "gradient-strength one: at tau 0.0305 a median within-seed pair on "
                          "overfit30 (gap 0.0137) already gets 0.376 correctly ordered against "
                          "0.624 inverted, which discriminates fine -- but within-seed pairs are "
-                         "only 7.7%% of pairs and 6.7%% of the pairwise gradient mass, so "
+                         "only 7.9%% of pairs and 7.0%% of the pairwise gradient mass, so "
                          "deployment-relevant orderings inside a seed are barely trained. "
                          "CALIBRATED ON THE FULL TRAINING SET, not on the pool being trained, "
                          "so the knob does not move when the pool does -- the same rule "
@@ -1238,6 +1238,46 @@ def main():
               f"weight_by_gap={a.rank_weight_by_gap}, {len(_rank_lab)} labelled "
               f"(pdb, seed, interface) group(s) from {_rl_p}"
               + (f", {_rl_bad} unparsed row(s)" if _rl_bad else ""))
+        # VALIDATED BEFORE ANYTHING IS PRINTED. tau <= 0 is refused in three places while these
+        # two floats took nan, inf and negatives silently: --rank-topk-decay nan makes every
+        # weight nan and the `> 0` banner test below is FALSE for nan, so the log would not even
+        # mention the decay while the loss trained on nan; --rank-within-weight -1 drives den
+        # negative and flips the loss's sign.
+        for _nm, _vv in (("--rank-within-weight", a.rank_within_weight),
+                         ("--rank-topk-decay", a.rank_topk_decay)):
+            if not math.isfinite(_vv) or _vv < 0:
+                raise SystemExit(f"STOP: {_nm} {_vv!r} must be a finite number >= 0.")
+        if a.rank_within_weight == 0 and a.rank_pairs == "all":
+            print("  NOTE --rank-within-weight 0 drops the within-seed family from the WEIGHTING "
+                  "while --rank-pairs all still forms its pairs. Groups whose poses all come "
+                  "from one seed then carry no weighted pair and contribute nothing, which is "
+                  "handled (rank_loss guards den == 0) but means this is NOT the same run as "
+                  "--rank-pairs cross.")
+        # THE BANNERS MUST NOT DESCRIBE A PATH THAT IS NOT TAKEN. These three flags are read only
+        # by group_coeffs on the pass-A cross-seed path. The linear form without --rank-cross-seed
+        # goes through RKL.coeffs, which takes labels alone and honours none of them, and the
+        # expected form returns before the pair loop. Printing "CROSS-SEED pairs only -- the
+        # deployed objective" while training within-seed linear pairs is how a run gets written up
+        # as the wrong experiment, so a non-default setting on a path that ignores it is refused
+        # rather than announced.
+        _ignores = (a.rank_form == "expected") or not a.rank_cross_seed
+        _nondefault = [f"--rank-pairs {a.rank_pairs}" for _ in (1,) if a.rank_pairs != "cross"] \
+            + [f"--rank-within-weight {a.rank_within_weight:g}" for _ in (1,)
+               if a.rank_within_weight != 1.0] \
+            + [f"--rank-topk-decay {a.rank_topk_decay:g}" for _ in (1,) if a.rank_topk_decay != 0.0]
+        if _ignores and _nondefault:
+            raise SystemExit(
+                "STOP: " + ", ".join(_nondefault) + " cannot take effect here. "
+                + ("--rank-form expected is pair-free -- group_coeffs returns before the pair "
+                   "loop, so the family, the within-seed weight and the rank decay are all "
+                   "inapplicable."
+                   if a.rank_form == "expected" else
+                   "without --rank-cross-seed the loss goes through the per-unit path "
+                   "(rank_loss.coeffs), which takes labels alone and honours none of these three. "
+                   "Add --rank-cross-seed, or drop these flags.")
+                + " Refused rather than warned: the startup banner would otherwise name an "
+                  "objective the run is not training.")
+
         # THE FAMILY IS NAMED BEFORE THE TAU, because the tau is only interpretable against it.
         _fam_txt = {"cross": "CROSS-SEED pairs only (different seeds) -- the deployed objective",
                     "within": "WITHIN-SEED pairs only (same seed) -- a PROXY for selection, not "
@@ -1925,7 +1965,16 @@ def main():
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
                      "rank_form": "linear", "rank_tau": -1.0,
-                     "rank_cross_seed": False, "rank_structs_per_step": 2}
+                     "rank_cross_seed": False, "rank_structs_per_step": 2,
+                     # A BUNDLE PREDATING THESE THREE RAN CROSS-SEED PAIRS ONLY, AT NATURAL
+                     # WEIGHT, WITH NO RANK DECAY -- which is what these defaults say. Their
+                     # absence is evidence of the inert values, not of an unknown setting, so
+                     # they belong here rather than in _unknown: the STOP at "recorded nowhere
+                     # for this bundle" fires BEFORE --resume-allow-drift is consulted and so
+                     # cannot be overridden, which would have made every pre-patch bundle --
+                     # including the live zg5fnw's per-epoch held-out subprocess, which resumes
+                     # its own bundle through this same file -- unresumable.
+                     "rank_pairs": "cross", "rank_within_weight": 1.0, "rank_topk_decay": 0.0}
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
@@ -4118,6 +4167,13 @@ def main():
                                                if a.rank_tau is not None else -1.0),
                                   "rank_cross_seed": a.rank_cross_seed,
                                   "rank_structs_per_step": a.rank_structs_per_step,
+                                  # FIFTH TIME. rank_pairs, rank_within_weight and rank_topk_decay
+                                  # went into the comparison side with a comment claiming both
+                                  # sides were edited together; they were not, and
+                                  # test_guard_fields.py said so. Found in review.
+                                  "rank_pairs": a.rank_pairs,
+                                  "rank_within_weight": a.rank_within_weight,
+                                  "rank_topk_decay": a.rank_topk_decay,
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,

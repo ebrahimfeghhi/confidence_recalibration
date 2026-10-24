@@ -58,8 +58,11 @@ TAU IS MEASURED, NOT CHOSEN -- see run_logging/measure_tau.py. Over the full tra
 (training/fold/results.csv: 497 structures, 1,028 interfaces, 1,056,035 CROSS-SEED pairs after
 dropping DockQ ties) the median |ipTM gap| is 0.0305, which is the default. Cross-seed pairs are
 8.5x wider than the within-seed 0.0036, so the within-seed figure does not transfer. At tau=0.0305
-inverted pairs are 43.7% of pairs BY COUNT and take 81.6% of the PAIRWISE SCORE-SPACE GRADIENT
-MASS, against 40.4% under the DockQ-weighted linear loss -- a redistribution of +41.3 points. That
+inverted pairs are 43.7% of pairs BY COUNT and take 74.5% of the PAIRWISE SCORE-SPACE GRADIENT
+MASS, against 41.7% under the DockQ-weighted linear loss -- a redistribution of +32.8 points.
+(The figures here were 81.6 / 40.4 / +41.3 until measure_tau.py's allocation block was found to
+be weighting pairs by |dipTM| where the loss weights them by |dDockQ|. The redistribution is
+real and smaller than was claimed.) That
 redirection is the entire point.
 
 TWO THINGS THAT MEASUREMENT IS NOT, both of which an earlier version of it got wrong. It is not
@@ -319,7 +322,7 @@ DEFAULT_TAU = 0.0305
 
 training/fold/results.csv, 497 structures, 1,028 interfaces, 1,056,035 pairs after dropping DockQ
 ties. Reproduce with `python -I run_logging/measure_tau.py`. For reference the 20-structure
-overfit30 subset gives 0.0429 and val10 gives 0.0313; the training number is the one to use,
+overfit30 subset gives 0.0426 and val10 gives 0.0313; the training number is the one to use,
 because tau shapes the training gradient and taking it from val would let the eval set in.
 """
 
@@ -460,7 +463,7 @@ def pair_included(ki, kj, pairs):
     overfit30-median within-seed pair weights 0.376 correct against 0.624 inverted (1.66x), and
     even at the full training set's tighter 0.0036 it is 0.467 / 0.533 with both directions
     pushing toward the better-DockQ pose. A wide tau costs saturation, not gradient. What the
-    within-seed family actually lacks is SHARE -- 7.7% of pairs, 6.7% of pairwise gradient mass --
+    within-seed family actually lacks is SHARE -- 7.9% of pairs, 7.0% of pairwise gradient mass --
     which `within_weight` addresses directly and measurably. Reach for a second tau only to change
     the correct/inverted RATIO, not to make within-seed pairs count for more.
     """
@@ -587,12 +590,26 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
                 m = (s[i] - s[j]) * (1.0 if d > 0 else -1.0)
                 num = num + w * torch.nn.functional.softplus(-m / tau)
             elif form == "linear":
-                num = num - (s[i] - s[j]) * (d if weight_by_gap else (1.0 if d > 0 else -1.0))
+                # w, NOT d. The old form folded the gap weighting straight into the numerator as
+                # `d`, which equalled sign(d)*w only while w was exactly |d|. within_weight and
+                # the rank decay break that: they entered `den` but not here, so each knob became
+                # a uniform GAIN on the ranking term rather than a reweighting -- measured as
+                # every coefficient scaled by one constant, 0.239x at L=8, i.e. the opposite of
+                # the "L cannot act as a second alpha_rank" property the flag promises.
+                num = num - (s[i] - s[j]) * (1.0 if d > 0 else -1.0) * w
             else:
                 raise ValueError(f"unknown form {form!r}")
             den += w
             npair += 1
-    if npair == 0:
+    # den == 0 WITH npair > 0 BECAME REACHABLE WITH THE NEW KNOBS. It used to be impossible:
+    # w was |dDockQ| and every counted pair had |dDockQ| > dq_tol, so npair > 0 implied den > 0.
+    # within_weight=0 (the natural way to write "drop the within-seed family") and a tiny
+    # rank_decay_k (whose weights underflow to exactly 0.0 away from the top pose) both break it.
+    # Unguarded, this path divided by zero: group_coeffs returned inf/nan COEFFICIENTS -- which
+    # the pass-A non-finite check does not see, because it tests the scores, not the coefficients
+    # -- while group_loss raised ZeroDivisionError. The two implementations must never disagree,
+    # so both now report the group as carrying no weighted pair.
+    if npair == 0 or den <= 0.0:
         return {}, 0, 0.0
     loss = (2.0 * tau / den) * num if form == "softplus" else num / den
     loss.backward()
@@ -648,11 +665,15 @@ def group_loss(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
                 # inverted pair: at x = 700 math.exp overflows and the honest answer is x.
                 num += w * (x + math.log1p(math.exp(-x)) if x > 0 else math.log1p(math.exp(x)))
             elif form == "linear":
-                num -= (si - float(s_by_key[kj])) * (d if weight_by_gap else (1.0 if d > 0 else -1.0))
+                # w, NOT d -- see group_coeffs. The two paths shared the bug identically, which
+                # is exactly why their agreement test could not see it.
+                num -= (si - float(s_by_key[kj])) * (1.0 if d > 0 else -1.0) * w
             else:
                 raise ValueError(f"unknown form {form!r}")
             den += w
             npair += 1
-    if npair == 0:
+    # den == 0 with npair > 0 -- see group_coeffs. Both paths must answer identically, and
+    # before this guard group_coeffs returned inf coefficients here while this one raised.
+    if npair == 0 or den <= 0.0:
         return 0.0, 0
     return ((2.0 * tau / den) * num if form == "softplus" else num / den), npair

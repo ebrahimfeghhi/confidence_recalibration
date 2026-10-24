@@ -176,6 +176,55 @@ check("group_loss == group_coeffs with BOTH knobs", abs(_lc - _lcv) < 1e-9,
 check("both knobs together still sum to zero", abs(sum(_cc.values())) < 1e-9,
       f"{sum(_cc.values()):.3e}")
 
+print("\n6c. THE LINEAR FORM MUST HONOUR BOTH KNOBS, NOT TREAT THEM AS A GAIN")
+# --rank-form's DEFAULT is linear, and its numerator used to fold the gap weighting in as `d`,
+# which equals sign(d)*w only while w is exactly |d|. Both new knobs entered the normaliser and
+# not the numerator, so each became a uniform scale on every coefficient -- the exact opposite
+# of a reweighting, and invisible to the group_loss/group_coeffs agreement test because both
+# implementations shared it.
+# AN ASYMMETRIC GROUP IS REQUIRED. With 2 seeds x 2 samples every pose sits in exactly one
+# within-seed pair and two cross-seed ones, so reweighting the within family scales every
+# coefficient by the SAME factor and is indistinguishable from a gain -- a fixture that cannot
+# fail. Here seed 1 has three samples and seed 2 has one, so (2,0) is in NO within-seed pair.
+_as = {(1, 0): 0.50, (1, 1): 0.52, (1, 2): 0.47, (2, 0): 0.55}
+_ad = {(1, 0): 0.60, (1, 1): 0.20, (1, 2): 0.35, (2, 0): 0.70}
+
+
+def _ratios(**kw):
+    _a, _, _ = R.group_coeffs(_as, _ad, form="linear", pairs="all", **kw)
+    _b, _, _ = R.group_coeffs(_as, _ad, form="linear", pairs="all")
+    return [_a[k] / _b[k] for k in sorted(_a) if abs(_b[k]) > 1e-12]
+_rw = _ratios(within_weight=8.0)
+check("within_weight REWEIGHTS the linear form, not scales it",
+      max(_rw) - min(_rw) > 1e-6, f"all coefficients scaled alike by {_rw[0]:.4f}")
+_rk = _ratios(rank_decay_k=2.0)
+check("rank_decay_k REWEIGHTS the linear form, not scales it",
+      max(_rk) - min(_rk) > 1e-6, f"all coefficients scaled alike by {_rk[0]:.4f}")
+for _f in ("softplus", "linear"):
+    _lg, _, _ = R.group_coeffs(s, d, form=_f, pairs="all", within_weight=5.0, rank_decay_k=3.0)
+    _lv, _ = R.group_loss(s, d, form=_f, pairs="all", within_weight=5.0, rank_decay_k=3.0)
+    _l2, _, _l2v = R.group_coeffs(s, d, form=_f, pairs="all", within_weight=5.0, rank_decay_k=3.0)
+    check(f"group_loss == group_coeffs for {_f} with both knobs", abs(_l2v - _lv) < 1e-9,
+          f"{_l2v:.9f} vs {_lv:.9f}")
+
+print("\n6d. den == 0 WITH npair > 0 -- REACHABLE, AND THE TWO PATHS MUST AGREE")
+# within_weight=0 is the natural way to write "drop the within-seed family"; a tiny
+# rank_decay_k underflows every weight away from the top pose to exactly 0.0. Before the guard,
+# group_coeffs returned inf/nan COEFFICIENTS (the pass-A non-finite check tests scores, not
+# coefficients, so they would have reached the backward) while group_loss raised.
+_s1 = {(1, 0): 0.50, (1, 1): 0.52, (1, 2): 0.47}
+_d1 = {(1, 0): 0.60, (1, 1): 0.20, (1, 2): 0.35}
+for _f in ("softplus", "linear"):
+    _c0, _n0, _v0 = R.group_coeffs(_s1, _d1, form=_f, pairs="all", within_weight=0.0, tau=tau)
+    _lv0, _ln0 = R.group_loss(_s1, _d1, form=_f, pairs="all", within_weight=0.0, tau=tau)
+    check(f"{_f}: within_weight=0 on an all-within group yields no pairs, not inf",
+          _n0 == 0 and _ln0 == 0 and _v0 == 0.0 and _lv0 == 0.0 and not _c0,
+          f"coeffs={_c0} n={_n0} loss={_v0} vs group_loss {_lv0}/{_ln0}")
+    _ct0, _nt0, _vt0 = R.group_coeffs(_s1, _d1, form=_f, rank_decay_k=1e-3, pairs="all", tau=tau)
+    check(f"{_f}: underflowing decay weights do not produce inf coefficients",
+          all(math.isfinite(x) for x in _ct0.values()) and math.isfinite(_vt0),
+          f"coeffs={_ct0} loss={_vt0}")
+
 print("\n7. group_coeffs AGREES WITH pair_terms_softplus when every pose is its own seed")
 sv = {(i, 0): v for i, v in enumerate([0.50, 0.52, 0.48, 0.55, 0.51])}
 dv = {(i, 0): v for i, v in enumerate(DQ)}

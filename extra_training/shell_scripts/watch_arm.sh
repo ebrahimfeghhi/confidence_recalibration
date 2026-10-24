@@ -23,12 +23,18 @@ print(max(d) if d else 0)
         # since val10 and valfull have different interface counts.
         N=$(cat training/runs/$RID/train_eval_shards_ep$EP/rows_b30_*.csv 2>/dev/null | grep -vc '^iface' || echo 0)
         if [ "${N:-0}" -gt 0 ] 2>/dev/null; then
-            ./shell_scripts/refresh_three.sh "$RID" >/dev/null 2>&1 \
-                && cp training/runs/three_panels.png "training/runs/${RID}_panels.png" \
-                && echo "$(date '+%H:%M:%S') plotted ep$EP ($N shard rows)" \
-                || echo "$(date '+%H:%M:%S') PLOT FAILED ep$EP"
-            echo "$EP" > "training/runs/${RID}_last_plotted"
-            ./shell_scripts/push_findings.sh "$RID" "$EP" 2>&1 | tail -1
+            # last_plotted ADVANCES ONLY ON SUCCESS. It used to be written in both branches, so
+            # one transient refresh_three.sh or cp failure permanently skipped that epoch's panel
+            # AND its push -- the loop only ever looks for an epoch GREATER than last_plotted.
+            # Leaving it alone means the next tick retries the same epoch.
+            if ./shell_scripts/refresh_three.sh "$RID" >/dev/null 2>&1 \
+               && cp training/runs/three_panels.png "training/runs/${RID}_panels.png"; then
+                echo "$(date '+%H:%M:%S') plotted ep$EP ($N shard rows)"
+                echo "$EP" > "training/runs/${RID}_last_plotted"
+                ./shell_scripts/push_findings.sh "$RID" "$EP" 2>&1 | tail -1
+            else
+                echo "$(date '+%H:%M:%S') PLOT FAILED ep$EP, will retry next tick"
+            fi
         else
             echo "$(date '+%H:%M:%S') ep$EP shards empty, leaving last_plotted alone"
         fi
