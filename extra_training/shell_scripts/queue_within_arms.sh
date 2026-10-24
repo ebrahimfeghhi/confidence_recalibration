@@ -97,7 +97,14 @@ run_arm() {
 # would start on top of whatever caused it. Four arms sharing one set of cards means the first
 # failure is usually a reason the rest will fail too, and 12 hours of them failing unattended is
 # worse than stopping.
-for spec in "8 0 L8" "1 0 L1" "8 2 L8K2" "1 2 L1K2"; do
+# ARMS COME FROM THE COMMAND LINE, defaulting to all four. L8 ran first at 25 epochs and was
+# stopped at 15 once the target changed, which exited this queue by design; the remainder are
+# then started by naming them, rather than by editing this list and risking a re-run of an arm
+# whose results are already on disk.
+#   ./shell_scripts/queue_within_arms.sh "1 0 L1" "8 2 L8K2" "1 2 L1K2"
+ARMS=("$@")
+[ "${#ARMS[@]}" -gt 0 ] || ARMS=("8 0 L8" "1 0 L1" "8 2 L8K2" "1 2 L1K2")
+for spec in "${ARMS[@]}"; do
     [ -f training/runs/CANCEL_WITHIN_QUEUE ] && { echo "CANCELLED before $spec"; exit 0; }
     # shellcheck disable=SC2086
     if ! run_arm $spec; then
