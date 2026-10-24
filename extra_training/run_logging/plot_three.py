@@ -242,6 +242,22 @@ def pool_names(rid):
     return _pool(a.get("manifest_selection")), _pool(a.get("val_loss_selection"))
 
 
+def rank_family(rid):
+    """Which pair family the run TRAINED on: "cross", "within", "all", or None if unrecorded.
+
+    The held-out series in the loss panel is always CROSS-SEED -- rank_rho.py computes it that
+    way for every arm so the figures stay comparable. For a --rank-pairs within run the two lines
+    are therefore DIFFERENT OBJECTIVES, and the panel must say so rather than implying the
+    held-out curve is the training curve evaluated elsewhere. That gap is the transfer question
+    the arm exists to answer, so it is worth drawing; it is only wrong to draw it unlabelled.
+    """
+    try:
+        with open(os.path.join("training", "runs", run_chain(rid)[0], "args.json")) as fh:
+            return json.load(fh).get("rank_pairs")
+    except Exception:
+        return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("rid")
@@ -362,18 +378,21 @@ def main():
         _lbl = "cross-seed softplus"
         _floor_txt = " floor 0 = every pair ordered"
     _tr_pool, _ho_pool = pool_names(a.rid)
+    _fam = rank_family(a.rid)
     tr = {}
     for _r in run_chain(a.rid):
         tr.update(train_rank_loss(_r))
     tr_ep = [e for e in ep if e in tr]
     if tr_ep:
         ax.plot(tr_ep, [tr[e] for e in tr_ep], color="#ff7f0e", lw=2.0, marker="s", ms=3.5,
-                label="training" + (f" ({_tr_pool})" if _tr_pool else ""))
+                label="training" + (f" ({_tr_pool}" if _tr_pool else " (")
+                      + (f", {_fam}-seed pairs)" if _fam and _fam != "cross" else ")"))
     ho, ho_se = g(ho_col), g(ho_se_col)
     ax.fill_between(ep, [v - s for v, s in zip(ho, ho_se)], [v + s for v, s in zip(ho, ho_se)],
                     color="#1f77b4", alpha=0.18, lw=0)
     ax.plot(ep, ho, color="#1f77b4", lw=2.0, marker="o", ms=3.5,
-            label="held out (" + (f"{_ho_pool}, " if _ho_pool else "") + f"{n_if} ifaces)")
+            label="held out (" + (f"{_ho_pool}, " if _ho_pool else "") + f"{n_if} ifaces"
+                  + (", CROSS-seed" if _fam and _fam != "cross" else "") + ")")
     ax.axhline(0.0, color="#555555", ls="-", lw=0.9)
     ax.text(ax.get_xlim()[1], 0.0, _floor_txt, color="#555555",
             fontsize=8.5, va="bottom", ha="right")
