@@ -226,8 +226,73 @@ def main():
                          "is the units error the first softplus attempt made (gradient 0.495 for a "
                          "correct pair vs 0.505 for an inverted one -- inert), and tau far below "
                          "the gap scale ignores every pair that is not an outright inversion. "
-                         "The within-seed median is 0.0081 and does NOT transfer: cross-seed pairs "
-                         "are 3.9x wider.")
+                         "The within-seed median is 0.0036 and does NOT transfer: cross-seed pairs "
+                         "are 8.5x wider. (An earlier 0.0081 was measured before DockQ ties "
+                         "were dropped; reproduce either with measure_tau.py --pairs within.) "
+                         "The scale is POPULATION-SPECIFIC and must come from the pool being "
+                         "TRAINED on: overfit30 gives within 0.0137 / cross 0.0426, while "
+                         "valfull gives within 0.0011 -- setting tau from val would let the "
+                         "eval set shape the training gradient.")
+    ap.add_argument("--rank-pairs", choices=("cross", "within", "all"), default="cross",
+                    metavar="FAMILY",
+                    help="WHICH PAIRS THE LOSS FORMS INSIDE A GROUP. This is the OBJECTIVE; "
+                         "--rank-cross-seed is the STEP SHAPE, and they are easy to confuse. "
+                         "--rank-cross-seed decides which poses land in one optimiser step (all "
+                         "seeds of a structure, so the group is the whole interface); "
+                         "--rank-pairs decides which pairs drawn from that group enter the loss. "
+                         "'cross' pairs poses from DIFFERENT seeds and is the deployed objective, "
+                         "since selection is argmax ipTM over every pose regardless of seed. "
+                         "'within' pairs poses from the SAME seed -- a separate family at a "
+                         "separate scale, NOT a subset reading of the same one: over the 497-"
+                         "structure training set the median |ipTM gap| is 0.0036 within-seed "
+                         "against 0.0305 cross-seed, 8.5x, so --rank-tau MUST be re-measured for "
+                         "it (measure_tau.py --pairs within, against the TRAINING pool; overfit30 "
+                         "gives 0.0137). Leaving tau at the cross-seed value puts every "
+                         "within-seed pair at m/tau ~ 0, where sigmoid gives a correct pair and "
+                         "an inverted one the same weight and the term is inert. 'all' takes "
+                         "both at ONE tau, which by the same argument can only suit one of them; "
+                         "it is here for completeness, not as a recommendation. NOTE the five "
+                         "earliest arms trained within-seed pairs and did not beat shipped, but "
+                         "they ran the LINEAR form with no tau at all, so they do not test this.")
+    ap.add_argument("--rank-topk-decay", type=float, default=0.0, metavar="K",
+                    help="weight each pair by max(v(r_i), v(r_j)) with v(r) = exp(-(r-1)/K) over "
+                         "the group's CURRENT ipTM order, r=1 the top pose. 0 disables it. "
+                         "WHY: selection is argmax ipTM over the group, so the selected pose "
+                         "changes only when some pose crosses the current top -- the pairs "
+                         "(top, j) are the ENTIRE selection-relevant subspace. Measured on "
+                         "valfull at the shipped head they are 1.33%% of pairs and 1.56%% of the "
+                         "loss's weight, while ordering them all correctly is identical to the "
+                         "top pose being the best pose, i.e. the full oracle (DockQ 0.5831 -> "
+                         "0.6926 over 92 interfaces). MAX, NOT PRODUCT: a product would "
+                         "annihilate the (rank 1, deep pose) pairs, which are the ones carrying "
+                         "the headroom -- the best-DockQ pose sits at a median rank of 68 of "
+                         "150. K INTERPOLATES: K->0 is the pure star (rank-1 pairs only), K->inf "
+                         "is the undecayed objective, and K=2 puts 39.3%% of the weight on the "
+                         "star and 92.8%% inside the top 5 while a rank-1/rank-2 swap moves "
+                         "their weights 1.00 <-> 0.61 rather than 1.00 <-> 0. A spike on the "
+                         "argmax would make the objective's identity change discontinuously "
+                         "whenever the top pose flips, which invites oscillation. STOP-GRADIENT: "
+                         "the ranks come from detached scores, so this is not the exact gradient "
+                         "of a fixed objective -- deliberate, and recorded so it is not read as "
+                         "an oversight.")
+    ap.add_argument("--rank-within-weight", type=float, default=1.0, metavar="L",
+                    help="with --rank-pairs all, multiply WITHIN-SEED pairs by L in both the "
+                         "numerator and the normaliser W, so the loss stays a weighted mean and "
+                         "L cannot act as a second --alpha-rank. Fixes a SHARE problem, not a "
+                         "gradient-strength one: at tau 0.0305 a median within-seed pair on "
+                         "overfit30 (gap 0.0137) already gets 0.376 correctly ordered against "
+                         "0.624 inverted, which discriminates fine -- but within-seed pairs are "
+                         "only 7.7%% of pairs and 6.7%% of the pairwise gradient mass, so "
+                         "deployment-relevant orderings inside a seed are barely trained. "
+                         "CALIBRATED ON THE FULL TRAINING SET, not on the pool being trained, "
+                         "so the knob does not move when the pool does -- the same rule "
+                         "DEFAULT_TAU follows. Within-seed mass share by L at tau 0.0270: "
+                         "1 -> 7.0%%, 3 -> 18.3%%, 8 -> 37.1%%, 20 -> 59.3%%, while mass reaching "
+                         "INVERTED pairs falls only 75.0%% -> 71.6%% at L=8. overfit30 gives "
+                         "6.7/17.6/36.0/58.0, within a point, so nothing hinges on the pool. "
+                         "Reproduce with run_logging/within_weight.py. Ignored unless "
+                         "--rank-pairs is 'all' (under 'within' every pair is scaled alike and L "
+                         "normalises away).")
     ap.add_argument("--rank-cross-seed", action="store_true",
                     help="RANK ACROSS SEEDS, not just within one. Deployment selects argmax of "
                          "ipTM over ALL poses of an interface regardless of seed, so cross-seed "
@@ -1173,6 +1238,50 @@ def main():
               f"weight_by_gap={a.rank_weight_by_gap}, {len(_rank_lab)} labelled "
               f"(pdb, seed, interface) group(s) from {_rl_p}"
               + (f", {_rl_bad} unparsed row(s)" if _rl_bad else ""))
+        # THE FAMILY IS NAMED BEFORE THE TAU, because the tau is only interpretable against it.
+        _fam_txt = {"cross": "CROSS-SEED pairs only (different seeds) -- the deployed objective",
+                    "within": "WITHIN-SEED pairs only (same seed) -- a PROXY for selection, not "
+                              "the deployed objective",
+                    "all": "BOTH families at ONE tau"}[a.rank_pairs]
+        print(f"  PAIR FAMILY: {_fam_txt}")
+        if a.rank_pairs == "all":
+            print(f"  within-seed pairs weighted x{a.rank_within_weight:g} in numerator and W "
+                  f"(full training set at tau 0.0270: L=1 leaves within-seed at 7.0% of pairwise "
+                  f"gradient mass, L=3 18.3%, L=8 37.1%, L=20 59.3%)")
+        if a.rank_topk_decay > 0:
+            print(f"  TOP-k RANK DECAY K={a.rank_topk_decay:g}: pair weight x "
+                  f"max(v(r_i), v(r_j)), v(r)=exp(-(r-1)/K) over the current ipTM order. "
+                  f"K=2 puts ~39% of weight on pairs touching rank 1 (1.6% undecayed) and ~93% "
+                  "inside the top 5. Ranks are taken from DETACHED scores, so the weight is a "
+                  "constant in the backward and the loss is not the exact gradient of a fixed "
+                  "objective.")
+        elif a.rank_within_weight != 1.0:
+            print(f"  NOTE --rank-within-weight {a.rank_within_weight:g} is INERT under "
+                  f"--rank-pairs {a.rank_pairs}: it scales one family against the other, and "
+                  "this run has only one family. Not an error; stated so the log cannot be read "
+                  "as if the weighting were in force.")
+        # NO STOP HERE, AND THE EARLIER ONE WAS WRONG. It refused --rank-pairs within/all
+        # without an explicit --rank-tau, on the grounds that at the cross-seed tau a within-seed
+        # pair "sits at m/tau ~ 0 where the softplus gives a correct pair and an inverted one the
+        # same weight, so the term is inert". The premise is right and the conclusion is not.
+        # At overfit30's within-seed median gap of 0.0137 against tau 0.0305 the weights are
+        # 0.376 correct / 0.624 inverted -- real discrimination; even at the full training set's
+        # 0.0036 they are 0.467 / 0.533, and BOTH PUSH THE SAME WAY, toward the better-DockQ
+        # pose. They add, they do not cancel. What a large tau costs is SATURATION: the loss
+        # never stops pushing pairs it has already ordered, so the term degenerates toward the
+        # linear loss. That is what the --rank-tau help means by the original units error being
+        # "inert" -- the softplus NONLINEARITY is inert, not the gradient. Within-seed pairs are
+        # under-weighted (6.7% of pairwise gradient mass on overfit30), which is a question for
+        # --rank-within-weight, not for tau. So this prints the regime and lets the run proceed.
+        if a.rank_pairs != "cross" and a.rank_form == "softplus":
+            _r = 0.0137 / _tau_eff          # overfit30 within-seed median; the training pool's
+            _sg = 1.0 / (1.0 + math.exp(-_r))
+            print(f"  within-seed pairs at tau {_tau_eff:g}: a median-gap pair (0.0137 on "
+                  f"overfit30) gets weight {1 - _sg:.3f} if correctly ordered and {_sg:.3f} if "
+                  f"inverted ({_sg / (1 - _sg):.2f}x). Re-measure for another pool with "
+                  "measure_tau.py --pairs within --restrict-to <pool>/structures.csv; the full "
+                  "training set gives 0.0036 and valfull 0.0011, so this ratio is "
+                  "POPULATION-SPECIFIC and tau must never be set from val.")
         if a.rank_form == "softplus":
             print(f"  softplus tau {_tau_eff:g}"
                   + ("  (rank_loss.DEFAULT_TAU, the measured median cross-seed |ipTM gap| over "
@@ -1733,6 +1842,9 @@ def main():
                  "rank_form": a.rank_form,
                  "rank_tau": (float(a.rank_tau) if a.rank_tau is not None else -1.0),
                  "rank_cross_seed": a.rank_cross_seed,
+                 "rank_pairs": a.rank_pairs,
+                 "rank_within_weight": a.rank_within_weight,
+                 "rank_topk_decay": a.rank_topk_decay,
                  "rank_structs_per_step": a.rank_structs_per_step,
                  # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
                  # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
@@ -3116,7 +3228,9 @@ def main():
                 tau=(_rank_tau if _rank_tau is not None else
                      (RKL.DEFAULT_SOFTMAX_TAU if a.rank_form == "expected" else RKL.DEFAULT_TAU)),
                 weight_by_gap=a.rank_weight_by_gap,
-                cross_seed_only=True)
+                pairs=a.rank_pairs,
+                within_weight=a.rank_within_weight,
+                rank_decay_k=a.rank_topk_decay)
             if npair == 0:
                 continue
             n_groups += 1
