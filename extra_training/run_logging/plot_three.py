@@ -221,6 +221,27 @@ def load_chain(rid, budget, runs=None):
     return merged
 
 
+def pool_names(rid):
+    """The training and held-out pool names, READ FROM THE RUN rather than hardcoded.
+
+    The legend said "overfit30" and "val10" as literals, dating from when every arm used those
+    two. zg5fnw trains on full_train against valfull, so those literals named the wrong pools on
+    a 92-interface figure -- the one mistake this file's header warns about, made in its own
+    legend. Both come from args.json's selection paths, whose parent directory IS the pool.
+    """
+    def _pool(path):
+        if not path:
+            return None
+        d = os.path.basename(os.path.dirname(os.path.abspath(path)))
+        return d or None
+    try:
+        with open(os.path.join("training", "runs", run_chain(rid)[0], "args.json")) as fh:
+            a = json.load(fh)
+    except Exception:
+        return None, None
+    return _pool(a.get("manifest_selection")), _pool(a.get("val_loss_selection"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("rid")
@@ -340,18 +361,19 @@ def main():
         ho_col, ho_se_col = "xsloss_trained", "xsloss_sem"
         _lbl = "cross-seed softplus"
         _floor_txt = " floor 0 = every pair ordered"
+    _tr_pool, _ho_pool = pool_names(a.rid)
     tr = {}
     for _r in run_chain(a.rid):
         tr.update(train_rank_loss(_r))
     tr_ep = [e for e in ep if e in tr]
     if tr_ep:
         ax.plot(tr_ep, [tr[e] for e in tr_ep], color="#ff7f0e", lw=2.0, marker="s", ms=3.5,
-                label="training (overfit30)")
+                label="training" + (f" ({_tr_pool})" if _tr_pool else ""))
     ho, ho_se = g(ho_col), g(ho_se_col)
     ax.fill_between(ep, [v - s for v, s in zip(ho, ho_se)], [v + s for v, s in zip(ho, ho_se)],
                     color="#1f77b4", alpha=0.18, lw=0)
     ax.plot(ep, ho, color="#1f77b4", lw=2.0, marker="o", ms=3.5,
-            label=f"held out (val10, {n_if} ifaces)")
+            label="held out (" + (f"{_ho_pool}, " if _ho_pool else "") + f"{n_if} ifaces)")
     ax.axhline(0.0, color="#555555", ls="-", lw=0.9)
     ax.text(ax.get_xlim()[1], 0.0, _floor_txt, color="#555555",
             fontsize=8.5, va="bottom", ha="right")
