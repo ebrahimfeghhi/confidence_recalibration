@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid 24u342`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-15 (14 of 50.0).  **Interfaces:** 18.  **Budget:** 30.
+**Epochs evaluated:** 1-20 (19 of 50.0).  **Interfaces:** 18.  **Budget:** 30.
 
 **Resume chain:** `24u34d` -> `24u342`. A resume writes to a fresh directory
 while continuing the parent's epoch numbering, so every table here spans the chain; the
@@ -31,9 +31,9 @@ Spearman is reported but is **not** the criterion.
 
 | | trained | shipped | oracle |
 |---|---|---|---|
-| selected DockQ | 0.2949 +- 0.0557 | 0.2909 +- 0.0620 | 0.5968 |
+| selected DockQ | 0.3016 +- 0.0548 | 0.2909 +- 0.0620 | 0.5968 |
 | frac > 0.23 | 0.6111 +- 0.1182 | 0.5556 +- 0.1205 | 1.0000 |
-| Spearman rho | 0.2256 +- 0.0680 | 0.1958 | |
+| Spearman rho | 0.2326 +- 0.0682 | 0.1958 | |
 
 ## Loss, per epoch
 
@@ -56,6 +56,11 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | 13 | 0.04107 | 0.03922 +- 0.00399 | 0.2165 | 4.6 | 0.0012 | 3.3823 |
 | 14 | 0.04129 | 0.04003 +- 0.00451 | 0.2162 | 5.1 | 0.0013 | 3.2475 |
 | 15 | 0.04079 | 0.03943 +- 0.00417 | 0.2163 | 5.1 | 0.0013 | 3.3319 |
+| 16 | 0.04102 | 0.03974 +- 0.00447 | 0.2177 | 4.3 | 0.0011 | 3.3649 |
+| 17 | 0.04095 | 0.03935 +- 0.00404 | 0.2162 | 4.8 | 0.0012 | 3.3877 |
+| 18 | 0.04095 | 0.03936 +- 0.00404 | 0.2161 | 4.4 | 0.0011 | 3.3877 |
+| 19 | 0.04092 | 0.03989 +- 0.00446 | 0.2165 | 4.7 | 0.0012 | 3.3036 |
+| 20 | 0.04092 | 0.03944 +- 0.00408 | 0.2158 | 4.7 | 0.0012 | 3.3565 |
 
 Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.2572 (tau 0.05).
 
@@ -77,21 +82,26 @@ Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.257
 | 13 | 0.2871 +- 0.0540 | 0.6111 +- 0.1182 | 0.2242 +- 0.0678 | 0.0050 |
 | 14 | 0.2892 +- 0.0541 | 0.6111 +- 0.1182 | 0.2219 +- 0.0666 | 0.0052 |
 | 15 | 0.2949 +- 0.0557 | 0.6111 +- 0.1182 | 0.2256 +- 0.0680 | 0.0050 |
+| 16 | 0.2993 +- 0.0548 | 0.6111 +- 0.1182 | 0.2262 +- 0.0671 | 0.0051 |
+| 17 | 0.2949 +- 0.0557 | 0.6111 +- 0.1182 | 0.2272 +- 0.0678 | 0.0050 |
+| 18 | 0.2959 +- 0.0560 | 0.6111 +- 0.1182 | 0.2284 +- 0.0681 | 0.0050 |
+| 19 | 0.2972 +- 0.0565 | 0.6111 +- 0.1182 | 0.2306 +- 0.0667 | 0.0052 |
+| 20 | 0.3016 +- 0.0548 | 0.6111 +- 0.1182 | 0.2326 +- 0.0682 | 0.0050 |
 
-## Paired per-interface test, epoch 1 -> 15
+## Paired per-interface test, epoch 1 -> 20
 
 Per-interface selected-pose DockQ (argmax ipTM), 18 interfaces paired.
 
-- paired mean **+0.0333 +- 0.0317** (1.05 sigma)
+- paired mean **+0.0400 +- 0.0320** (1.25 sigma)
 - 6 up, 3 worsened, 9 unchanged
 
-| interface | ep1 | ep15 | delta |
+| interface | ep1 | ep20 | delta |
 |---|---|---|---|
 | `9bx7_AC` | 0.184 | 0.587 | +0.403 |
 | `8og0_AC` | 0.655 | 0.370 | -0.285 |
 | `9bx7_BC` | 0.274 | 0.492 | +0.218 |
 | `9c7x_BC` | 0.071 | 0.241 | +0.170 |
-| `7r58_AB` | 0.011 | 0.087 | +0.076 |
+| `7qu2_AC` | 0.033 | 0.148 | +0.115 |
 
 ## Rank of the first acceptable pose, ordering by ipTM
 
@@ -122,6 +132,11 @@ by both orderings over the same poses, so the pairing is exact.
 | 13 | 38.17 +- 12.69 | 1.0 | 11/18 | +0.67 +- 3.49 | 4/4/10 |
 | 14 | 37.72 +- 12.69 | 1.0 | 11/18 | +0.28 +- 3.63 | 4/4/10 |
 | 15 | 37.28 +- 12.59 | 1.0 | 11/18 | -0.17 +- 3.56 | 4/4/10 |
+| 16 | 38.11 +- 12.71 | 1.0 | 11/18 | +0.61 +- 3.35 | 4/4/10 |
+| 17 | 37.83 +- 12.63 | 1.0 | 11/18 | +0.33 +- 3.44 | 4/4/10 |
+| 18 | 37.06 +- 12.52 | 1.0 | 11/18 | -0.44 +- 3.10 | 4/4/10 |
+| 19 | 37.06 +- 12.56 | 1.0 | 11/18 | -0.44 +- 3.23 | 4/4/10 |
+| 20 | 36.44 +- 12.52 | 1.0 | 11/18 | -1.00 +- 2.87 | 4/4/10 |
 
 Shipped on the same interfaces: mean rank 37.44 +- 12.54, median 1.0, 10/18 at rank 1.
 
@@ -129,14 +144,14 @@ Shipped on the same interfaces: mean rank 37.44 +- 12.54, median 1.0, 10/18 at r
 
 `--l2-sp-exclude frame_dir` leaves these trainable but outside
 `||W - W0||^2`, so the drift column above does **not** cover them. They are zero-init, so
-their norm is the direct test of whether the loss finds any use for them. From `resume_ep15.pt`:
+their norm is the direct test of whether the loss finds any use for them. From `resume_ep20.pt`:
 
 | tensor | \|\|W\|\| |
 |---|---|
-| `frame_dir_proj.weight` | 9.4058e+00 |
-| `pose_perblock_frame_dir.0.weight` | 9.3935e+00 |
-| `pose_perblock_frame_dir.1.weight` | 8.3921e+00 |
-| `pose_perblock_frame_dir.2.weight` | 8.5270e+00 |
+| `frame_dir_proj.weight` | 1.2069e+01 |
+| `pose_perblock_frame_dir.0.weight` | 1.2051e+01 |
+| `pose_perblock_frame_dir.1.weight` | 1.0776e+01 |
+| `pose_perblock_frame_dir.2.weight` | 1.1186e+01 |
 
 ## The arm as launched
 
@@ -146,5 +161,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-15 optimiser step(s), max `grad_norm` 0.0065, 0 non-finite gradient(s).
+15 optimiser step(s), max `grad_norm` 0.0092, 0 non-finite gradient(s).
 
