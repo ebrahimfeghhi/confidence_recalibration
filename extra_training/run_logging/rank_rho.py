@@ -212,13 +212,13 @@ def _one(d, ep, budget):
         # test_rank_loss.py asserts the two agree to 1e-9 so the diagnostic cannot drift from the
         # objective.
         _lv_t, _np_t = _RKL.group_loss(_sb, _db, form="softplus",
-                                       tau=_RKL.DEFAULT_TAU, cross_seed_only=True)
+                                       tau=_RKL.DEFAULT_TAU, pairs="cross")
         _lv_s, _np_s = _RKL.group_loss(_ss, _db, form="softplus",
-                                       tau=_RKL.DEFAULT_TAU, cross_seed_only=True)
+                                       tau=_RKL.DEFAULT_TAU, pairs="cross")
         if _np_t and _np_s:
             xs_t.append(_lv_t); xs_s.append(_lv_s)
         # THE EXPECTED-DockQ OBJECTIVE, held out, at this run's own temperature. Pair-free, so no
-        # cross_seed_only and no gap weighting -- the softmax runs over every pose of the
+        # pairs="cross" and no gap weighting -- the softmax runs over every pose of the
         # interface, which is the same population argmax selects from.
         _ev_t, _en_t = _RKL.group_loss(_sb, _db, form="expected", tau=_ex_tau)
         _ev_s, _en_s = _RKL.group_loss(_ss, _db, form="expected", tau=_ex_tau)

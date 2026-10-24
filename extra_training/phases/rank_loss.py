@@ -23,7 +23,10 @@ and it is now the recommended one. The history matters because both mistakes wer
 
 THE FIRST SOFTPLUS ATTEMPT WAS A UNITS ERROR, not a shape error. It used
 softplus(-(s_i - s_j) * sign(dq_i - dq_j)) with no temperature. Measured on 5,400 real within-seed
-pairs, the median |ipTM gap| is 0.0081 and the 90th percentile 0.034, while softplus only bends
+pairs, the median |ipTM gap| was 0.0081 and the 90th percentile 0.034 -- that 0.0081 is a 5,400-pair
+sample taken before DockQ ties were dropped and should not be quoted as the within-seed scale; the
+full training set after the tie filter gives 0.0036 (measure_tau.py --pairs within). Either way the
+argument below is unchanged, because softplus only bends
 over arguments of order 1. At a margin of 0.02 the gradient magnitude was 0.495 for a correct pair
 against 0.505 for an inverted one -- indistinguishable. Every property softplus is chosen for was
 inactive and the loss was a straight line through ln2. That is why it was replaced by the straight
@@ -54,7 +57,7 @@ pair.
 TAU IS MEASURED, NOT CHOSEN -- see run_logging/measure_tau.py. Over the full training set
 (training/fold/results.csv: 497 structures, 1,028 interfaces, 1,056,035 CROSS-SEED pairs after
 dropping DockQ ties) the median |ipTM gap| is 0.0305, which is the default. Cross-seed pairs are
-3.9x wider than the within-seed 0.0081, so the within-seed figure does not transfer. At tau=0.0305
+8.5x wider than the within-seed 0.0036, so the within-seed figure does not transfer. At tau=0.0305
 inverted pairs are 43.7% of pairs BY COUNT and take 81.6% of the PAIRWISE SCORE-SPACE GRADIENT
 MASS, against 40.4% under the DockQ-weighted linear loss -- a redistribution of +41.3 points. That
 redirection is the entire point.
@@ -347,7 +350,7 @@ def expected_dockq(s_vals, dq_vals, tau=DEFAULT_SOFTMAX_TAU):
     DockQ of the selected pose.
 
     THERE ARE NO PAIRS. The returned count is POSES, not pairs. `weight_by_gap` and
-    `cross_seed_only` have nothing to act on here -- the softmax is over the whole group by
+    `pairs` has nothing to act on here -- the softmax is over the whole group by
     construction, which is what "all poses competing for selection" means -- so group_coeffs
     ignores both for this form and says so in the log rather than appearing to honour them.
 
@@ -441,8 +444,74 @@ def coeffs_softplus(s_vals, dq_vals, tau=DEFAULT_TAU, weight_by_gap=True, dq_tol
     return c, npair
 
 
+PAIR_FAMILIES = ("cross", "within", "all")
+
+
+def pair_included(ki, kj, pairs):
+    """Does the pair of group keys (seed, sample) belong to the `pairs` family?
+
+    THE FAMILY IS PART OF THE OBJECTIVE, NOT A FILTER ON ONE. Cross-seed and within-seed pairs
+    sit at different ipTM scales -- over the 497-structure training set after the DockQ-tie filter,
+    median |gap| is 0.0305 cross-seed against 0.0036 within-seed, 8.5x; on overfit30, 0.0426
+    against 0.0137. Reproduce with `measure_tau.py --pairs {cross,within}` against the pool being
+    TRAINED on, never against val.
+
+    ONE TAU CAN SERVE BOTH, which an earlier version of this note denied. At tau 0.0305 an
+    overfit30-median within-seed pair weights 0.376 correct against 0.624 inverted (1.66x), and
+    even at the full training set's tighter 0.0036 it is 0.467 / 0.533 with both directions
+    pushing toward the better-DockQ pose. A wide tau costs saturation, not gradient. What the
+    within-seed family actually lacks is SHARE -- 7.7% of pairs, 6.7% of pairwise gradient mass --
+    which `within_weight` addresses directly and measurably. Reach for a second tau only to change
+    the correct/inverted RATIO, not to make within-seed pairs count for more.
+    """
+    if pairs not in PAIR_FAMILIES:
+        raise ValueError(f"unknown pair family {pairs!r}, expected one of {PAIR_FAMILIES}")
+    if pairs == "all":
+        return True
+    same_seed = (ki[0] == kj[0])
+    return (not same_seed) if pairs == "cross" else same_seed
+
+
+def rank_decay_weights(sv, k):
+    """v(r) = exp(-(r-1)/k) over the group's CURRENT ipTM order, r = 1 for the top pose.
+
+    Returns a list aligned with sv, or None when k <= 0 (decay off).
+
+    WHY IT EXISTS. Selection is argmax ipTM over the group, and the selected pose changes only
+    when some pose's ipTM crosses the current top's -- so the pairs (top, j) are the entire
+    selection-relevant subspace. Measured on valfull at the shipped head, those pairs are 1.33%
+    of all pairs and carry 1.56% of the loss's weight, while ordering them all correctly is
+    equivalent to the top pose being the best pose, i.e. the FULL oracle (0.5831 -> 0.6926 DockQ
+    on 92 interfaces). The objective therefore spends ~98% of its weight on orderings deployment
+    never consults.
+
+    WHY A DECAY RATHER THAN A SPIKE ON RANK 1. The weight would then be a step function of the
+    scores: whenever the argmax flips, the objective's identity changes discontinuously and the
+    run can oscillate -- demote A, B becomes top, demote B, A returns. With k = 2 a rank-1/rank-2
+    swap moves their weights 1.00 <-> 0.61 instead of 1.00 <-> 0. k -> 0 recovers the pure star,
+    k -> inf recovers the unweighted objective, so k interpolates between them.
+
+    THE PAIR WEIGHT USES max(), NOT the product -- see group_coeffs. A product would annihilate
+    the (rank 1, deep pose) pairs, and those are exactly the ones carrying the headroom: the
+    best-DockQ pose sits at a median rank of 68 of 150.
+
+    STOP-GRADIENT BY CONSTRUCTION. The ranks come from the detached float scores, so the weight
+    is treated as a constant and the loss is not the exact gradient of any fixed objective. That
+    is deliberate and is the same choice every ranking method of this family makes; it is
+    recorded here so it is not mistaken for an oversight.
+    """
+    if k is None or k <= 0:
+        return None
+    order = sorted(range(len(sv)), key=lambda i: -sv[i])
+    v = [0.0] * len(sv)
+    for r, i in enumerate(order):
+        v[i] = math.exp(-r / float(k))
+    return v
+
+
 def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
-                 weight_by_gap=True, dq_tol=1e-6, cross_seed_only=True):
+                 weight_by_gap=True, dq_tol=1e-6, pairs="cross", within_weight=1.0,
+                 rank_decay_k=0.0):
     """Coefficients for ONE interface over poses drawn from SEVERAL SEEDS.
 
     s_by_key / dq_by_key are {(seed, sample): float} over the whole group -- after pass A's
@@ -450,11 +519,28 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
 
     Returns ({(seed, sample): c_i}, n_pairs, loss).
 
-    CROSS-SEED ONLY, BY DEFAULT. Within-seed pairs are the thing the five earlier arms already
-    trained and failed to improve, and they are 3.9x tighter than cross-seed pairs so a single tau
-    cannot serve both. More to the point, deployment selects argmax over ALL poses of an interface
-    regardless of seed, so cross-seed ordering is the objective and within-seed ordering is a
-    proxy for it. Pass cross_seed_only=False to include both.
+    CROSS-SEED BY DEFAULT; `pairs` selects the family -- see pair_included. Deployment takes the
+    argmax over ALL poses of an interface regardless of seed, so cross-seed ordering is the
+    objective and within-seed ordering is a proxy for it, and the five earliest arms trained the
+    within-seed proxy alone without beating shipped. Those arms ran the LINEAR form with no tau at
+    all, so they do not test a within-seed softplus; "within" exists to make that a separable
+    experiment rather than an assumption.
+
+    `within_weight` SCALES WITHIN-SEED PAIRS UNDER pairs="all", in both the numerator and the
+    normaliser W, so the result stays a weighted mean and the coefficients still sum to zero.
+    It exists because within-seed pairs are under-REPRESENTED, not under-GRADIENTED: at tau
+    0.0305 a median within-seed pair on overfit30 (gap 0.0137) already gets 0.376 if correctly
+    ordered against 0.624 if inverted, which is real discrimination. The deficit is share --
+    6.7% of the pairwise gradient mass -- and share is what this fixes. A multiplier is a better
+    knob for that than a second tau: it is monotone in the quantity being targeted, so it can be
+    set from a measurement, while tau changes the shape of the weighting and its effect on mass
+    share is not monotone. Measured on overfit30 at tau 0.0305, within-seed mass share goes
+    6.7% -> 17.6% -> 36.0% -> 58.0% at L = 1, 3, 8, 20, while mass reaching inverted pairs falls
+    only 82.7% -> 80.2% at L=8.
+
+    NOTE THE SEED COUNT MOVES THE BASELINE. Within-seed pairs are 10*C(5,2) of C(50,2) = 8.2% of
+    an interface at the 10 training seeds, but only 2.7% at the 30 seeds the held-out evaluation
+    uses. L is calibrated against the TRAINING shape.
 
     PAIRS ARE DROPPED, NOT ZEROED, when excluded -- they leave the normaliser W as well as the
     numerator, so the loss stays a mean over the pairs it actually uses.
@@ -468,7 +554,7 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
     n = len(keys)
     # EXPECTED-DockQ IS PAIR-FREE and so leaves before the pair loop. It needs no DockQ-tie
     # dropping (a tie is two poses with equal utility, which the expectation handles), and it
-    # cannot honour cross_seed_only or weight_by_gap -- see expected_dockq. Differentiated by
+    # cannot honour `pairs` or weight_by_gap -- see expected_dockq. Differentiated by
     # autograd here, like the other forms, so the value and its gradient cannot drift apart;
     # the closed form is checked against this in the tests.
     if form == "expected":
@@ -483,15 +569,20 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
     if tau <= 0 and form == "softplus":
         raise ValueError(f"tau must be positive, got {tau!r}")
     s = torch.tensor(sv, dtype=torch.float64, requires_grad=True)
+    _vdec = rank_decay_weights(sv, rank_decay_k)
     num, den, npair = s.new_zeros(()), 0.0, 0
     for i in range(n):
         for j in range(i + 1, n):
-            if cross_seed_only and keys[i][0] == keys[j][0]:
+            if not pair_included(keys[i], keys[j], pairs):
                 continue
             d = dv[i] - dv[j]
             if abs(d) <= dq_tol:
                 continue
             w = abs(d) if weight_by_gap else 1.0
+            if keys[i][0] == keys[j][0]:
+                w *= within_weight
+            if _vdec is not None:
+                w *= max(_vdec[i], _vdec[j])
             if form == "softplus":
                 m = (s[i] - s[j]) * (1.0 if d > 0 else -1.0)
                 num = num + w * torch.nn.functional.softplus(-m / tau)
@@ -509,7 +600,8 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
 
 
 def group_loss(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
-               weight_by_gap=True, dq_tol=1e-6, cross_seed_only=True):
+               weight_by_gap=True, dq_tol=1e-6, pairs="cross", within_weight=1.0,
+               rank_decay_k=0.0):
     """The loss VALUE for one interface, in plain floats. No autograd, no graph.
 
     Same objective and same normalisation as group_coeffs -- asserted equal in test_rank_loss.py --
@@ -532,18 +624,24 @@ def group_loss(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
         return _l, _n
     if tau <= 0 and form == "softplus":
         raise ValueError(f"tau must be positive, got {tau!r}")
+    _vdec = rank_decay_weights([float(s_by_key[k]) for k in keys], rank_decay_k)
+    _ix = {k: i for i, k in enumerate(keys)}
     num, den, npair = 0.0, 0.0, 0
     for i in range(len(keys)):
         ki = keys[i]
         si, di = float(s_by_key[ki]), float(dq_by_key[ki])
         for j in range(i + 1, len(keys)):
             kj = keys[j]
-            if cross_seed_only and ki[0] == kj[0]:
+            if not pair_included(ki, kj, pairs):
                 continue
             d = di - float(dq_by_key[kj])
             if abs(d) <= dq_tol:
                 continue
             w = abs(d) if weight_by_gap else 1.0
+            if ki[0] == kj[0]:
+                w *= within_weight
+            if _vdec is not None:
+                w *= max(_vdec[_ix[ki]], _vdec[_ix[kj]])
             if form == "softplus":
                 x = -((si - float(s_by_key[kj])) * (1.0 if d > 0 else -1.0)) / tau
                 # log1p(exp(x)) without overflowing for large x, which happens at a badly

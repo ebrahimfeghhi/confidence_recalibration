@@ -72,15 +72,114 @@ check("one distinct label leaves 2 pairs, not 3", n3 == 2, f"n_pairs={n3}")
 print("\n6. group_coeffs USES CROSS-SEED PAIRS ONLY")
 s = {(1, 0): 0.50, (1, 1): 0.52, (2, 0): 0.48, (2, 1): 0.55}
 d = {(1, 0): 0.60, (1, 1): 0.20, (2, 0): 0.70, (2, 1): 0.10}
-_, n_cross, _ = R.group_coeffs(s, d, cross_seed_only=True, tau=tau)
-_, n_all, _ = R.group_coeffs(s, d, cross_seed_only=False, tau=tau)
+_, n_cross, _ = R.group_coeffs(s, d, pairs="cross", tau=tau)
+_, n_all, _ = R.group_coeffs(s, d, pairs="all", tau=tau)
 check("2 seeds x 2 samples -> 4 cross-seed pairs", n_cross == 4, f"{n_cross}")
 check("including within-seed -> 6 pairs", n_all == 6, f"{n_all}")
+
+# THE THREE FAMILIES MUST PARTITION THE PAIRS, or "all" is not the sum of its parts and a
+# two-tau run would double-count or drop pairs without saying so.
+_, n_within, _ = R.group_coeffs(s, d, pairs="within", tau=tau)
+check("2 seeds x 2 samples -> 2 within-seed pairs", n_within == 2, f"{n_within}")
+check("cross + within == all, exactly", n_cross + n_within == n_all,
+      f"{n_cross} + {n_within} vs {n_all}")
+try:
+    R.group_coeffs(s, d, pairs="withinseed", tau=tau)
+    check("an unknown family raises", False, "no exception")
+except ValueError as _e:
+    check("an unknown family raises", True, str(_e)[:48])
+
+# WITHIN-SEED PAIRS ARE NOT A RELABELLING OF CROSS-SEED ONES: the coefficients differ, so a
+# within-seed arm is a different objective rather than the same gradient with fewer terms.
+_cw, _, _ = R.group_coeffs(s, d, pairs="within", tau=tau)
+_cc, _, _ = R.group_coeffs(s, d, pairs="cross", tau=tau)
+check("within-seed coefficients differ from cross-seed",
+      any(abs(_cw[k] - _cc[k]) > 1e-9 for k in _cw), f"{_cw} vs {_cc}")
+
+# EVERY FAMILY MUST STILL SUM TO ZERO. The coefficients are antisymmetric per pair, so whatever
+# the family, raising one pose's score is paid for by lowering another's -- this is the
+# zero-sum property behind the measured ~91% gradient cancellation, and it does not go away.
+for _fam in R.PAIR_FAMILIES:
+    _c, _, _ = R.group_coeffs(s, d, pairs=_fam, tau=tau)
+    check(f"coefficients sum to zero for pairs={_fam}", abs(sum(_c.values())) < 1e-9,
+          f"{sum(_c.values()):.3e}")
+
+# --- within_weight: a SHARE knob, not a scale knob ---------------------------------------
+# It must leave the two degenerate cases exactly alone, keep the loss a weighted MEAN (so a
+# larger L cannot inflate the loss by itself), and keep the zero-sum property.
+_c1, _n1, _l1 = R.group_coeffs(s, d, pairs="all", tau=tau, within_weight=1.0)
+_c8, _n8, _l8 = R.group_coeffs(s, d, pairs="all", tau=tau, within_weight=8.0)
+check("within_weight does not change the pair COUNT", _n1 == _n8, f"{_n1} vs {_n8}")
+check("within_weight=8 changes the coefficients",
+      any(abs(_c1[k] - _c8[k]) > 1e-9 for k in _c1), "unchanged")
+check("within_weight keeps coefficients summing to zero", abs(sum(_c8.values())) < 1e-9,
+      f"{sum(_c8.values()):.3e}")
+# NORMALISED, so L must not act as a gain on the loss value. A 10x L on a group whose pairs are
+# ALL within-seed is the same weighted mean as L=1 -- if this drifts, L is secretly an alpha_rank.
+_sw = {(1, 0): 0.50, (1, 1): 0.52, (1, 2): 0.47}
+_dw = {(1, 0): 0.60, (1, 1): 0.20, (1, 2): 0.35}
+_, _, _lw1 = R.group_coeffs(_sw, _dw, pairs="within", tau=tau, within_weight=1.0)
+_, _, _lw10 = R.group_coeffs(_sw, _dw, pairs="within", tau=tau, within_weight=10.0)
+check("L is normalised away when every pair is within-seed", abs(_lw1 - _lw10) < 1e-12,
+      f"{_lw1:.9f} vs {_lw10:.9f}")
+_, _, _lc1 = R.group_coeffs(s, d, pairs="cross", tau=tau, within_weight=1.0)
+_, _, _lc9 = R.group_coeffs(s, d, pairs="cross", tau=tau, within_weight=9.0)
+check("L has no effect under pairs=cross", abs(_lc1 - _lc9) < 1e-12, f"{_lc1} vs {_lc9}")
+# AND THE FAST PATH MUST AGREE, or the held-out diagnostic would report a different objective
+# than the one being trained.
+for _L in (1.0, 3.0, 8.0):
+    _, _, _lg = R.group_coeffs(s, d, pairs="all", tau=tau, within_weight=_L)
+    _lv, _ = R.group_loss(s, d, pairs="all", tau=tau, within_weight=_L)
+    check(f"group_loss == group_coeffs at within_weight={_L:g}", abs(_lg - _lv) < 1e-9,
+          f"{_lg:.9f} vs {_lv:.9f}")
+
+print("\n6b. TOP-k RANK DECAY")
+# v(r) = exp(-(r-1)/k) over the CURRENT ipTM order, rank 1 = highest score.
+_sv = [0.9, 0.5, 0.7, 0.1]
+_v = R.rank_decay_weights(_sv, 2.0)
+check("decay is off at k<=0", R.rank_decay_weights(_sv, 0) is None, "not None")
+check("the top-scoring pose gets v=1", abs(_v[0] - 1.0) < 1e-12, f"{_v[0]}")
+check("v decays with RANK, not with index",
+      _v[0] > _v[2] > _v[1] > _v[3], f"{_v}")
+check("v(2)/v(1) = exp(-1/k)", abs(_v[2] - math.exp(-0.5)) < 1e-12, f"{_v[2]}")
+
+# max(), NOT the product: a (rank 1, worst pose) pair must keep full weight, because the
+# best-DockQ pose sits at a median rank of 68 of 150 and that pair carries the headroom.
+check("pair weight uses max so (top, deep) stays at 1.0",
+      abs(max(_v[0], _v[3]) - 1.0) < 1e-12, f"{max(_v[0], _v[3])}")
+
+# k -> inf must recover the undecayed objective, and k -> 0 the pure star (rank-1 pairs only).
+_sd = {(1, 0): 0.90, (2, 0): 0.50, (3, 0): 0.70, (4, 0): 0.10}
+_dd = {(1, 0): 0.30, (2, 0): 0.80, (3, 0): 0.10, (4, 0): 0.60}
+_, _n0, _l0 = R.group_coeffs(_sd, _dd, tau=tau, rank_decay_k=0.0)
+_, _nb, _lb = R.group_coeffs(_sd, _dd, tau=tau, rank_decay_k=1e9)
+check("k -> inf recovers the undecayed loss", abs(_l0 - _lb) < 1e-6, f"{_l0:.9f} vs {_lb:.9f}")
+check("decay changes no pair COUNT", _n0 == _nb, f"{_n0} vs {_nb}")
+_ct, _, _lt = R.group_coeffs(_sd, _dd, tau=tau, rank_decay_k=1e-3)
+# At k -> 0 every pair not touching rank 1 has weight ~0, so the loss is the star's alone.
+_star = {k: v for k, v in _sd.items()}
+check("k -> 0 concentrates on the rank-1 pose",
+      abs(_ct[(1, 0)]) > 0.99 * sum(abs(x) for x in _ct.values()) / 2.0,
+      f"top coeff {_ct[(1, 0)]:.4f} of total {sum(abs(x) for x in _ct.values()):.4f}")
+check("decay keeps coefficients summing to zero", abs(sum(_ct.values())) < 1e-9,
+      f"{sum(_ct.values()):.3e}")
+for _k in (0.5, 2.0, 5.0):
+    _cg, _, _lg2 = R.group_coeffs(_sd, _dd, tau=tau, rank_decay_k=_k)
+    _lv2, _ = R.group_loss(_sd, _dd, tau=tau, rank_decay_k=_k)
+    check(f"group_loss == group_coeffs at rank_decay_k={_k:g}", abs(_lg2 - _lv2) < 1e-9,
+          f"{_lg2:.9f} vs {_lv2:.9f}")
+# AND IT MUST COMPOSE WITH within_weight, since the k=2 arm runs both.
+_cc, _, _lc = R.group_coeffs(s, d, pairs="all", tau=tau, within_weight=8.0, rank_decay_k=2.0)
+_lcv, _ = R.group_loss(s, d, pairs="all", tau=tau, within_weight=8.0, rank_decay_k=2.0)
+check("group_loss == group_coeffs with BOTH knobs", abs(_lc - _lcv) < 1e-9,
+      f"{_lc:.9f} vs {_lcv:.9f}")
+check("both knobs together still sum to zero", abs(sum(_cc.values())) < 1e-9,
+      f"{sum(_cc.values()):.3e}")
 
 print("\n7. group_coeffs AGREES WITH pair_terms_softplus when every pose is its own seed")
 sv = {(i, 0): v for i, v in enumerate([0.50, 0.52, 0.48, 0.55, 0.51])}
 dv = {(i, 0): v for i, v in enumerate(DQ)}
-gc, n_g, l_g = R.group_coeffs(sv, dv, cross_seed_only=True, tau=tau)
+gc, n_g, l_g = R.group_coeffs(sv, dv, pairs="cross", tau=tau)
 keys = sorted(sv)
 ref_l, ref_c, n_r = R.pair_terms_softplus([sv[k] for k in keys], [dv[k] for k in keys], tau=tau)
 worst = max(abs(gc[k] - ref_c[i]) for i, k in enumerate(keys))
@@ -89,7 +188,7 @@ check("same loss", abs(l_g - ref_l) < 1e-12, f"{abs(l_g-ref_l):.2e}")
 check("same coefficients", worst < 1e-12, f"{worst:.2e}")
 
 print("\n8. group_coeffs form='linear' reproduces the linear coefficients")
-gl, _, _ = R.group_coeffs(sv, dv, form="linear", cross_seed_only=True)
+gl, _, _ = R.group_coeffs(sv, dv, form="linear", pairs="cross")
 lin5, _ = R.coeffs(DQ)
 worst = max(abs(gl[k] - lin5[i]) for i, k in enumerate(keys))
 check("linear path matches coeffs()", worst < 1e-12, f"{worst:.2e}")
@@ -119,9 +218,9 @@ for _trial in range(25):
     for _form in ("softplus", "linear"):
         for _wbg in (True, False):
             _, _n1, _l1 = R.group_coeffs(_s, _d, form=_form, tau=tau,
-                                         weight_by_gap=_wbg, cross_seed_only=True)
+                                         weight_by_gap=_wbg, pairs="cross")
             _l2, _n2 = R.group_loss(_s, _d, form=_form, tau=tau,
-                                    weight_by_gap=_wbg, cross_seed_only=True)
+                                    weight_by_gap=_wbg, pairs="cross")
             assert _n1 == _n2, (_form, _wbg, _n1, _n2)
             _worst = max(_worst, abs(_l1 - _l2))
 check("25 random groups x 2 forms x 2 weightings agree", _worst < 1e-9, f"max|diff| {_worst:.2e}")
