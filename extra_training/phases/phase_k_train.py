@@ -2032,6 +2032,13 @@ def main():
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
                  "crop_margin": a.crop_margin, "crop_contact": a.crop_contact,
+                 # THE CROP DEFINITION ITSELF, not just its radii. a16911de changed the DEFAULT
+                 # from the union over all nsample poses to pose 0 alone, so a resume across that
+                 # change blends two crop definitions into one curve. f1268fe5 added the field to
+                 # the saved bundle and stopped there -- which is the inert guard described two
+                 # entries down, repeated one commit later. It is compared HERE and defaulted in
+                 # _PRE_CROP, which are the two halves that make a field actually checked.
+                 "crop_all_poses": a.crop_all_poses,
                  # SAME REASON AS CROPPING. --pae-scored-pairs changes which pairs the PAE term
                  # averages over and --pae-only changes which terms exist at all, so resuming
                  # across either blends two objectives into one curve, carrying the first one's
@@ -2092,6 +2099,11 @@ def main():
         _PRE_CROP = {"lora_rank": 0, "lora_alpha": 0.0, "lora_targets": "", "lora_dropout": 0.0,
                  "train_only": "",
                      "crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
+                     # ABSENCE IS EVIDENCE, as for the two above: a bundle written before
+                     # a16911de was written by code that had no such flag and always took the
+                     # union, so it migrates to True. A resume that switches to pose 0 therefore
+                     # reads as real drift and must be named with --resume-override crop_all_poses.
+                     "crop_all_poses": True,
                      "pae_only": False,
                      "frame_direction": False,
                      "pose_perblock": False, "pose_perblock_tied": False,
