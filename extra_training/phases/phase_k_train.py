@@ -2528,13 +2528,35 @@ def main():
     _pf_stop = threading.Event()
 
     def _cpu_crop(pdb, lab_p, trunk_p):
-        """The expensive CPU half, with no device in sight. Returns None if no crop is definable."""
+        """The expensive CPU half, with no device in sight. Returns None if no crop is definable.
+
+        TIMED IN FOUR STAGES, because this was a black box and every number anyone quoted about it
+        had to be DERIVED from the epoch total. That is not good enough to tell the two
+        explanations of a shrinking prefetch wait apart: the trunk read genuinely getting faster
+        (a real win) and the same work merely moving from the main thread into this one (no win).
+        Stage `cpucrop_trunk` falling while `cpucrop_tokens` and `cpucrop_slice` hold constant is
+        the signature of the first. It also settles a gap nobody could close: a warm-cache bench
+        on 10 units put the whole crop at 0.291 s while the live worker appeared to use ~0.485 s.
+
+        The counters are shared with the main thread, which runs this inline on a prefetch miss.
+        `+=` on a defaultdict is not atomic, so a simultaneous miss can lose one sample out of
+        thousands. That is acceptable for a diagnostic and is NOT acceptable for anything the run
+        branches on; nothing branches on these.
+        """
+        _t = time.perf_counter()
         lab_l = np.load(lab_p, allow_pickle=True)
+        _tick("cpucrop_label", _t)
+        _t = time.perf_counter()
         zc = np.load(trunk_p)
+        _tick("cpucrop_trunk", _t)
+        _t = time.perf_counter()
         kt, ka = BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin)
+        _tick("cpucrop_tokens", _t)
         if kt is None:
             return ("nocrop", None, None)
+        _t = time.perf_counter()
         sl = BC.slice_cached_unit(zc, lab_l, kt, ka, torch.device("cpu"), torch)
+        _tick("cpucrop_slice", _t)
         return ("ok", kt, sl)
 
     def _pf_worker(units):
@@ -4695,6 +4717,14 @@ def main():
             # GPU time is not carried silently into the next epoch's figures.
             _drain_gpu_spans()
             _ep_s = time.time() - ep_t0
+            # THE PREFETCH WAIT IS A REAL BUCKET AND WAS IN NO BUCKET AT ALL. _pf_take is called
+            # between the label_open tick and the start of crop_slice, so no timer was open across
+            # it and its minutes landed only in the unexplained residual -- which is why, on this
+            # arm, "residual" and "prefetch wait" happened to be the same 6.7 min and could be
+            # mistaken for two separate costs. Publishing it means the residual means the same
+            # thing in every arm instead of only in the ones without a pass A.
+            _T["prefetch_wait"] = _pf_stat["wait_s"]
+            _TN["prefetch_wait"] = _pf_stat["hit"] + _pf_stat["miss"]
             _parts = [(k, _T[k] - _T0.get(k, 0.0), _TN[k] - _TN0.get(k, 0)) for k in sorted(_T)]
             # cropped_tokens is a WORKLOAD counter, not a duration: reported as a mean so the
             # per-rank imbalance is readable directly. The pair track is quadratic in tokens, so
@@ -4707,9 +4737,17 @@ def main():
             # because they are CUDA-event spans that overlap pose_total rather than adding to it.
             # Printing the residual stops a reader summing the wrong subset -- which is how an
             # ~8 min double-count of the fingerprint hash survived into a committed document.
+            # EVERY EXCLUSIVE HOST BUCKET, so the printed residual is actually unexplained time.
+            # It omitted prefetch_wait and grad_collective_plus_wait, and the three pass-A buckets
+            # that only ranking arms have -- so the same residual meant 6.7 min of prefetch wait
+            # on j583i8 and 10-12 min of pass A on zg5fnw and 8fkrsu, with nothing to say which.
+            # cpucrop_* are deliberately NOT here: they are a breakdown of work already counted by
+            # crop_slice and by the worker, so adding them would double count.
             _EXCL = ("pose_total", "crop_slice", "fingerprint_hash", "prefetch_issue",
                      "trunk_read_plus_crop_tokens", "label_open", "loss_feature_prep",
-                     "loss_stats_collective_plus_wait", "apply_step_total")
+                     "loss_stats_collective_plus_wait", "apply_step_total",
+                     "prefetch_wait", "grad_collective_plus_wait",
+                     "rank_pass_a", "rank_gather", "pose_a_total")
             _acc = sum(v for k, v, c in _parts if k in _EXCL and c)
             print(f"  [rank {rank}] epoch {ep + 1} took {_ep_s/60:.1f} min -- {_shown}", flush=True)
             # DID THE PREFETCH ACTUALLY FIRE? crop_slice alone cannot answer it: a miss falls back
