@@ -1,0 +1,47 @@
+[
+ {
+  "from_bundle": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/resume_ep2.pt",
+  "bundle_commit": "2fb2357620a7024f39a5698c7872ba154f258d04",
+  "bundle_written": "2026-10-25T13:17:53-0700",
+  "bundle_epoch": 2,
+  "bundle_step": 488,
+  "accepted_at": "2026-10-25T13:19:36-07:00",
+  "via": "--resume-allow-drift",
+  "note": "held-out PAE measurement of resume_ep2.pt at epoch 2; --loss-only reads the weights and writes no checkpoint, so the bundle's schedule is not continued",
+  "fields": {
+   "world": {
+    "bundle": 3,
+    "this_run": 1
+   },
+   "manifest_digest": {
+    "bundle": "258f939fd53397bf",
+    "this_run": "5cf73dbc53401d74"
+   },
+   "lr": {
+    "bundle": 0.01,
+    "this_run": 0.001
+   },
+   "warmup_steps": {
+    "bundle": 20,
+    "this_run": 0
+   },
+   "pae_scored_pairs": {
+    "bundle": "training/full_train/pool.csv",
+    "this_run": "training/valfull/pool.csv"
+   },
+   "train_only": {
+    "bundle": "linear_no_bias_d,linear_no_bias_d_wo_onehot",
+    "this_run": ""
+   }
+  },
+  "named": [],
+  "unnamed": [
+   "lr",
+   "manifest_digest",
+   "pae_scored_pairs",
+   "train_only",
+   "warmup_steps",
+   "world"
+  ]
+ }
+]

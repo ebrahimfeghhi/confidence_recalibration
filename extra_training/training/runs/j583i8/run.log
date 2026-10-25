@@ -150,3 +150,32 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 2/15: 1461 unit(s)  epoch 2/15: 1461 unit(s)
 
   saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/head_step250.pt
+  epoch 2 took 24.1 min for 1461 unit(s), 243 optimiser step(s), 0.20 s/pose
+  epoch 2 took 24.1 min for 1461 unit(s), 243 optimiser step(s), 0.20 s/pose
+  epoch 2 took 24.1 min for 1461 unit(s), 243 optimiser step(s), 0.20 s/pose
+  flushing a partial accumulation of 45/90 pose(s), gradient scaled by 2.0000 so the step is the same size as every other
+  flushing a partial accumulation of 45/90 pose(s), gradient scaled by 2.0000 so the step is the same size as every other
+  flushing a partial accumulation of 45/90 pose(s), gradient scaled by 2.0000 so the step is the same size as every other
+  [rank 0] epoch 2 took 24.1 min -- apply_step_total 0.3m/243  crop_slice 1.4m/1461  cropped_tokens mean 326  gpu_backward 10.7m/7305  gpu_forward 5.8m/7305  grad_collective_plus_wait 0.1m/244  label_open 0.0m/1461  loss_feature_prep 0.0m/1461  loss_stats_collective_plus_wait 0.6m/243  pose_total 15.0m/7305  prefetch_issue 0.0m/1460
+  [rank 0] epoch 2 prefetch (1 worker(s)): 1461/1461 hit (100.0%), 6.7 min waiting on the worker
+  [rank 0] epoch 2 accounted 17.4m of 24.1m, residual 6.7m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 1] epoch 2 took 24.1 min -- apply_step_total 0.3m/243  crop_slice 1.4m/1461  cropped_tokens mean 326  gpu_backward 10.7m/7305  gpu_forward 5.8m/7305  grad_collective_plus_wait 0.1m/244  label_open 0.0m/1461  loss_feature_prep 0.0m/1461  loss_stats_collective_plus_wait 0.6m/243  pose_total 15.0m/7305  prefetch_issue 0.0m/1460
+  [rank 1] epoch 2 prefetch (1 worker(s)): 1461/1461 hit (100.0%), 6.7 min waiting on the worker
+  [rank 1] epoch 2 accounted 17.3m of 24.1m, residual 6.8m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 2] epoch 2 took 24.1 min -- apply_step_total 0.3m/243  crop_slice 1.4m/1461  cropped_tokens mean 326  gpu_backward 10.8m/7305  gpu_forward 5.9m/7305  grad_collective_plus_wait 0.1m/244  label_open 0.0m/1461  loss_feature_prep 0.0m/1461  loss_stats_collective_plus_wait 0.4m/243  pose_total 15.1m/7305  prefetch_issue 0.0m/1460
+  [rank 2] epoch 2 prefetch (1 worker(s)): 1461/1461 hit (100.0%), 6.8 min waiting on the worker
+  [rank 2] epoch 2 accounted 17.3m of 24.1m, residual 6.8m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 0] epoch 2 memory: peak allocated 54.83 GB, peak reserved 56.33 GB, blocks_per_ckpt=None
+  [rank 1] epoch 2 memory: peak allocated 54.83 GB, peak reserved 56.33 GB, blocks_per_ckpt=None
+  [rank 2] epoch 2 memory: peak allocated 54.83 GB, peak reserved 56.33 GB, blocks_per_ckpt=None
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/resume_ep2.pt (0 MiB: head + AdamW moments + step)
+  held-out PAE for epoch 2 (the training card)
+epoch 2 VALLOSS: pae 2.8038  poses 7950
+  evaluating epoch 2 (pool@fold) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:3954: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/metric_train_ep2.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 2 TRAIN: mean_dockq 0.5876  frac_acc 0.7500  oracle 0.6926 / 0.8587  headroom 0.1050  (92 interfaces)
+  epoch 3/15: 1461 unit(s)
+  epoch 3/15: 1461 unit(s)
+  epoch 3/15: 1461 unit(s)
