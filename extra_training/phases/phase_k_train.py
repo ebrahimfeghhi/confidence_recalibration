@@ -572,6 +572,18 @@ def main():
     ap.add_argument("--val-loss-card", default="",
                     help="card for the held-out pass. Empty shares the trainer's; it loads a second "
                          "464M-parameter model, so the free-memory floor below applies.")
+    ap.add_argument("--manifest-shard", type=int, default=-1,
+                    help="TAKE ONLY THIS SHARD of --manifest-selection, INTERLEAVED (i::n), with "
+                         "--manifest-nshards. -1, the default, takes everything and is what every "
+                         "existing caller gets, so adding this changes no behaviour unless asked "
+                         "for. INTERLEAVED and not contiguous because the selection csv is "
+                         "ordered and contiguous blocks hand one shard all the large complexes -- "
+                         "phase_k_eval_sharded.py's own note, and the reason its speedup would "
+                         "otherwise be set by the slowest block. Exists for the held-out PAE "
+                         "monitor, which was a SINGLE-card child while two cards sat at a "
+                         "barrier: 12.8 min of a 46.0 min epoch cycle in j583i8.")
+    ap.add_argument("--manifest-nshards", type=int, default=0,
+                    help="how many shards --manifest-shard is one of. 0 disables sharding.")
     ap.add_argument("--loss-only", action="store_true",
                     help="FORWARD AND LOSS ONLY, no backward, no optimiser, no weight change -- one "
                          "pass over the manifest. For measuring a saved head's loss on a HELD-OUT "
@@ -1768,6 +1780,18 @@ def main():
     skip = {x.strip().lower() for x in a.manifest_skip.split(",") if x.strip()}
     with open(a.manifest_selection) as fh:
         sel_pdbs = [r["pdb"].strip().lower() for r in csv.DictReader(fh)]
+    # SHARDED BEFORE THE SEED EXPANSION, so a shard owns whole structures and every seed of a
+    # structure lands in the same child -- which is what makes the shard means poolable as a plain
+    # mean over poses. Interleaved, so the ordered selection csv does not give one shard all the
+    # large complexes.
+    if a.manifest_nshards and a.manifest_nshards > 1:
+        if not (0 <= a.manifest_shard < a.manifest_nshards):
+            raise SystemExit(f"STOP: --manifest-shard {a.manifest_shard} is not in "
+                             f"[0, {a.manifest_nshards}).")
+        _n_all = len(sel_pdbs)
+        sel_pdbs = sel_pdbs[a.manifest_shard::a.manifest_nshards]
+        print(f"manifest SHARD {a.manifest_shard} of {a.manifest_nshards}: "
+              f"{len(sel_pdbs)} of {_n_all} selected structure(s), interleaved")
     want = [(p, sd) for p in sel_pdbs if p not in skip for sd in range(lo_s, hi_s + 1)]
     _rank_check_coverage(want)
     print(f"manifest: {len(sel_pdbs)} selected structure(s) minus {sorted(skip) or 'none'} "
@@ -2499,12 +2523,27 @@ def main():
         # ROUND-ROBIN SLICES, so worker w takes units[w::W] and the queue is fed in roughly the
         # order the main loop consumes. Roughly, not exactly: with W workers the arrival order
         # can run ahead by up to W units, which is what _pf_pending absorbs.
-        for t in units:
+        for _k, t in enumerate(units):
             if _pf_stop.is_set():
                 break
             pdb_, lab_p_, cands_ = t
             try:
                 trunk_p_ = resolve_trunk(pdb_, lab_p_, cands_)
+                # THE READAHEAD BELONGS TO THE THREAD THAT DOES THE READING. _prefetch() is also
+                # issued by the MAIN loop for unit i+1, but with --prefetch-units 2 this worker is
+                # already 2-3 units past the main loop, so that hint lands on a trunk this thread
+                # has ALREADY read -- it is issued behind the only consumer it exists to help, and
+                # its own timer confirms it is free and useless there (prefetch_issue 0.0m/1460).
+                # Measured on j583i8: the worker sits at 49% of one core with the device at
+                # 553 MB/s and ~250 MB of z_trunk per unit, i.e. ~0.505 s/unit blocked in read()
+                # against 0.715 s/unit of main-thread work -- so the WORKER sets the epoch length
+                # and 6.7 of 24.1 min is the main thread waiting on it.
+                if _k + 1 < len(units):
+                    _n = units[_k + 1]
+                    try:
+                        _prefetch(resolve_trunk(_n[0], _n[1], _n[2]))
+                    except BaseException:         # noqa: BLE001 -- a bad NEXT unit must not kill
+                        pass                      # THIS one; it reports itself when reached.
                 res = _cpu_crop(pdb_, lab_p_, trunk_p_)
             except BaseException as e:            # noqa: BLE001 -- see below
                 # THE WORKER NEVER KILLS THE RUN. Anything it fails on is handed back as a miss
@@ -3680,6 +3719,26 @@ def main():
     _train_eval_seed_base, _n_seeds = _seed_lo_hi(a.seeds)
     _train_eval_budget = a.train_eval_budget or _n_seeds
 
+    def _record_val_loss(epoch, step, bundle, mean, n_poses):
+        """Append one held-out point to val_loss.csv. Shared by the sharded and unsharded paths.
+
+        RECORDING THE MEASUREMENT MUST NOT BE ABLE TO END THE RUN. A NameError on this exact
+        bookkeeping killed epoch 1 of x3k2m4 after the pass had already succeeded -- the mean was
+        computed and 78 minutes of training died on the append. The subprocess trajectories are the
+        durable record either way, so a failure here is reported and dropped.
+        """
+        try:
+            vp = os.path.join(a.out, "val_loss.csv")
+            new_file = not os.path.exists(vp)
+            with open(vp, "a", newline="") as fh:
+                w = csv.writer(fh)
+                if new_file:
+                    w.writerow(["epoch", "step", "n_poses", "val_pae", "bundle"])
+                w.writerow([epoch, step, n_poses, f"{mean:.6f}", os.path.basename(bundle)])
+        except Exception as e:
+            print(f"  WARNING: could not append to val_loss.csv ({type(e).__name__}: {e}); the "
+                  f"number is in the line above", flush=True)
+
     def val_loss_checkpoint(epoch, bundle, step):
         """Held-out PAE for the bundle this epoch just wrote. Returns the pose mean, or None.
 
@@ -3773,9 +3832,70 @@ def main():
         env["LOCAL_RANK"] = "0"
         if a.val_loss_card:
             env["CUDA_VISIBLE_DEVICES"] = str(a.val_loss_card)
-        print(f"  held-out PAE for epoch {epoch} "
-              f"({'card ' + str(a.val_loss_card) if a.val_loss_card else 'the training card'})",
-              flush=True)
+        # SHARDED ACROSS THE EVAL CARDS when there is more than one. This pass was a SINGLE
+        # single-card child while the other two cards sat at the epoch-boundary barrier: measured
+        # on j583i8, 12.8 min of a 46.0 min cycle, against a 24.1 min epoch. The children are
+        # independent processes with no collective between them -- deliberately NOT a distributed
+        # child, because --loss-only refuses WORLD_SIZE>1 and the comment there records the hang
+        # that refusal prevents.
+        _cards = [c.strip() for c in (a.eval_cards or "").split(",") if c.strip()]
+        if a.val_loss_card:
+            _cards = [str(a.val_loss_card)]
+        _nsh = len(_cards) if len(_cards) > 1 else 1
+        _where = (f"{_nsh} shard(s) over card(s) {','.join(_cards)}" if _nsh > 1
+                  else ('card ' + str(a.val_loss_card) if a.val_loss_card else 'the training card'))
+        print(f"  held-out PAE for epoch {epoch} ({_where})", flush=True)
+        if _nsh > 1:
+            procs = []
+            for _i, _c in enumerate(_cards):
+                _env = dict(env)
+                _env["CUDA_VISIBLE_DEVICES"] = _c
+                _o = os.path.join(a.out, f"val_loss_ep{epoch}", f"shard{_i}")
+                _cmd = [x for x in cmd]
+                _cmd[_cmd.index("--out") + 1] = _o
+                _cmd += ["--manifest-shard", str(_i), "--manifest-nshards", str(_nsh)]
+                procs.append((_i, _o, subprocess.Popen(_cmd, stdout=subprocess.PIPE,
+                                                       stderr=subprocess.STDOUT, text=True,
+                                                       env=_env)))
+            _bad = []
+            for _i, _o, _p in procs:
+                _out = _p.communicate()[0]
+                if _p.returncode != 0:
+                    _bad.append((_i, (_out or "").strip().splitlines()[-4:]))
+            if _bad:
+                # ANY shard failing voids the epoch's number. Pooling the survivors would report a
+                # mean over a BIASED subset of the held-out set -- a different population than
+                # every other epoch -- which is worse than no point at all, because it is silently
+                # comparable-looking. The next epoch tries again and the gap shows in val_loss.csv.
+                for _i, _tail in _bad:
+                    print(f"  WARNING: held-out shard {_i} of epoch {epoch} failed:\n    "
+                          + "\n    ".join(_tail), flush=True)
+                print(f"  WARNING: epoch {epoch} has no held-out point; {len(_bad)} of {_nsh} "
+                      f"shard(s) failed and a partial pool would be a different population.",
+                      flush=True)
+                return None
+            # POOLED AS A PLAIN MEAN OVER POSES. Each shard owns whole structures, every pose
+            # appears in exactly one shard exactly once, so concatenating the rows and taking one
+            # mean IS the pose-weighted figure -- the same identity the unsharded path relies on.
+            _vals = []
+            for _i, _o, _p in procs:
+                try:
+                    with open(os.path.join(_o, "trajectory.csv")) as fh:
+                        for row in csv.DictReader(fh):
+                            if row.get("pae_loss"):
+                                _vals.append(float(row["pae_loss"]))
+                except OSError as e:
+                    print(f"  WARNING: held-out shard {_i} of epoch {epoch} wrote no readable "
+                          f"trajectory ({e}); epoch {epoch} has no held-out point", flush=True)
+                    return None
+            if not _vals:
+                print(f"  WARNING: the epoch-{epoch} held-out shards have no pae_loss rows",
+                      flush=True)
+                return None
+            _mean = sum(_vals) / len(_vals)
+            print(f"epoch {epoch} VALLOSS: pae {_mean:.4f}  poses {len(_vals)}", flush=True)
+            _record_val_loss(epoch, step, bundle, _mean, len(_vals))
+            return _mean
         r = subprocess.run(cmd, capture_output=True, text=True, env=env)
         if r.returncode != 0:
             # LOUD, BUT NOT FATAL. Training is the run; a monitor that cannot compute its number
@@ -3811,17 +3931,7 @@ def main():
         # not in scope, the mean was computed, and 78 minutes of training died on the bookkeeping.
         # The subprocess's own trajectory.csv is the durable record either way -- that is where the
         # lost number was recovered from -- so a failure here is reported and dropped.
-        try:
-            vp = os.path.join(a.out, "val_loss.csv")
-            new_file = not os.path.exists(vp)
-            with open(vp, "a", newline="") as fh:
-                w = csv.writer(fh)
-                if new_file:
-                    w.writerow(["epoch", "step", "n_poses", "val_pae", "bundle"])
-                w.writerow([epoch, step, len(vals), f"{mean:.6f}", os.path.basename(bundle)])
-        except Exception as e:
-            print(f"  WARNING: could not append to val_loss.csv ({type(e).__name__}: {e}); the "
-                  f"number is in the line above and in {tp}", flush=True)
+        _record_val_loss(epoch, step, bundle, mean, len(vals))
         return mean
 
     def eval_checkpoint(step, epoch, train_pool=""):
