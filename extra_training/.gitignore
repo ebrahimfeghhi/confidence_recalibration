@@ -1,0 +1,11 @@
+
+# Generated run reports: regenerate from the records with run_logging/render_report.py.
+extra_training/run_logging/reports/
+extra_training/run_logging/watch.log
+extra_training/run_logging/__pycache__/
+
+# Model checkpoints never belong in the repo: 75 tracked .pt files are 3.5 GB on disk and
+# .git is already 2.1 GB. They are reproducible from the run and its args.json, and removing one
+# later costs a history rewrite. Metrics, logs, shards and plots stay tracked -- those are the
+# record; the weights are not.
+*.pt
