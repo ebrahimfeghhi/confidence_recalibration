@@ -37,7 +37,7 @@ settled:
 |---|---|---|---|---|---|
 | **L8** | **+0.0116** | +0.0084 | +0.0133 | **8 / 8** | 0.5556 (= shipped) |
 | **L1** control | **-0.0073** | -0.0117 | -0.0061 | **0 / 8** | **0.6111** (> shipped) |
-| **L8K2** | **-0.0212** | -0.0297 | -0.0106 | **0 / 7** | 0.5000 (< shipped) |
+| **L8K2** | **-0.0219** | -0.0297 | -0.0106 | **0 / 8** | 0.5000 (< shipped) |
 
 shipped on this set: DockQ 0.2909, frac 0.5556.
 
@@ -47,13 +47,13 @@ epochs against negative in every one of eight. The gain is therefore not attribu
 0.0270 nor to the mere presence of within-seed pairs, both of which the control also has.
 
 **The top-k rank decay makes things worse, and by more than the weighting made them better.**
--0.0212 against +0.0116, from the same L=8 starting point. L8K2 is also the only arm below
+-0.0219 against +0.0116, from the same L=8 starting point. L8K2 is also the only arm below
 shipped on DockQ *and* frac at once.
 
 ## What this does NOT establish
 
 - **No arm is individually significant.** L8 peaks at 1.74 sigma (p ~ 0.08) and its final epoch
-  is 1.31 sigma; L1 never exceeds 0.49 sigma; L8K2 reaches 1.17 sigma in the wrong direction.
+  is 1.31 sigma; L1 never exceeds 0.49 sigma; L8K2 reaches 1.29 sigma in the wrong direction.
   The 8/8-vs-0/8 sign split is more persuasive than any single epoch, but the epochs within an
   arm are serially correlated -- each arm contributes roughly **one** converged state, not eight
   observations. Three states is not a significance claim.

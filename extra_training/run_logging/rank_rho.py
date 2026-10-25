@@ -35,7 +35,11 @@ import re
 # BUMPED TO _v3 WHEN exloss WAS ADDED. A _v2 cache has 21 columns and no expected-DockQ metric;
 # the reader refuses any header that is not exactly ["epoch"] + COLS, so a stale cache is
 # recomputed from the shards rather than read back one column short.
-CACHE = "rank_rho_b{b}_v3.csv"
+# v4: xsloss_* is computed with the run's OWN --rank-pairs / --rank-within-weight /
+# --rank-topk-decay instead of hardcoded cross-seed defaults. Pre-knob runs reproduce their v3
+# numbers exactly, since the defaults are what they trained; the version bump exists so arms that
+# DID set those flags are recomputed rather than read from a cache of the wrong quantity.
+CACHE = "rank_rho_b{b}_v4.csv"
 
 
 def run_rank_form(d):
@@ -49,6 +53,11 @@ def run_rank_form(d):
 
     Falls back to the pairwise default when args.json is missing or carries no ranking fields,
     which is what every pre-92338a36 run looks like.
+
+    SEE ALSO run_rank_objective, which returns the FULL objective. This function kept returning
+    only (form, tau) while --rank-pairs, --rank-within-weight and --rank-topk-decay were added,
+    so an arm training pairs=all at L=8 was again being graded on a cross-seed loss it was not
+    minimising -- the exact failure this docstring was written about, repeated one knob later.
     """
     import json
     p = os.path.join(d, "args.json")
@@ -62,6 +71,35 @@ def run_rank_form(d):
     if tau is None or float(tau) <= 0:
         tau = None
     return form, (float(tau) if tau is not None else None)
+def run_rank_objective(d):
+    """Every setting that defines WHAT the run minimises, as kwargs for rank_loss.group_loss.
+
+    THE HELD-OUT LOSS IS COMPUTED WITH THESE, not with hardcoded cross-seed defaults, so
+    xsloss_trained is always the twin of the training curve and the gap between them is
+    generalisation rather than a change of function.
+
+    BACKWARD COMPATIBLE BY CONSTRUCTION: the defaults here are exactly what every pre-knob run
+    trained (cross-seed pairs, within-seed weight 1, no rank decay), so those runs' numbers are
+    bit-identical to what the hardcoded version produced. Only arms that actually set the new
+    flags move, and those were being measured against the wrong function.
+    """
+    import json
+    import rank_loss as _RKL   # imported here, as elsewhere in this module
+    form, tau = run_rank_form(d)
+    try:
+        with open(os.path.join(d, "args.json")) as fh:
+            a = json.load(fh)
+    except (OSError, ValueError):
+        a = {}
+    return dict(form=form,
+                tau=tau if tau is not None else
+                    (_RKL.DEFAULT_SOFTMAX_TAU if form == "expected" else _RKL.DEFAULT_TAU),
+                pairs=a.get("rank_pairs") or "cross",
+                within_weight=float(a.get("rank_within_weight") or 1.0),
+                rank_decay_k=float(a.get("rank_topk_decay") or 0.0),
+                weight_by_gap=bool(a.get("rank_weight_by_gap", True)))
+
+
 COLS = ("rho_trained", "rho_shipped", "n_ifaces", "inv_trained", "inv_shipped",
         "spread", "tie_trained", "tie_shipped", "rankloss_trained", "rankloss_shipped",
         "top1_trained", "top1_shipped", "dockq_mean", "dockq_sem", "frac_mean", "frac_sem",
@@ -172,7 +210,7 @@ def _one(d, ep, budget):
     rl_t, rl_s, rl_n = 0.0, 0.0, 0
     top_t, top_s = [], []
     sel_dq, sel_ok = [], []
-    # PER-INTERFACE cross-seed softplus loss, trained and shipped.
+    # PER-INTERFACE held-out loss under the RUN'S OWN objective, trained and shipped.
     xs_t, xs_s = [], []
     ex_t, ex_s = [], []
     # THE TEMPERATURE THE HELD-OUT EXPECTED METRIC USES. This run's own --rank-tau when it
@@ -180,6 +218,12 @@ def _one(d, ep, budget):
     # comparable number at the canonical 0.05.
     _rf, _rt = run_rank_form(d)
     _ex_tau = _rt if (_rf == "expected" and _rt is not None) else _RKL.DEFAULT_SOFTMAX_TAU
+    # THE RUN'S OWN OBJECTIVE for the held-out pairwise loss. The expected form is handled
+    # separately below and is pair-free, so it keeps its own path.
+    _obj = run_rank_objective(d)
+    if _obj["form"] == "expected":
+        _obj = dict(form="softplus", tau=_RKL.DEFAULT_TAU, pairs="cross",
+                    within_weight=1.0, rank_decay_k=0.0, weight_by_gap=True)
     tot = 0
     spreads = []
     for ifc, v in byif.items():
@@ -198,9 +242,10 @@ def _one(d, ep, budget):
         _best = max(v, key=lambda x: x[0])
         sel_dq.append(_best[1])
         sel_ok.append(1.0 if _best[1] >= 0.23 else 0.0)
-        # THE CROSS-SEED SOFTPLUS, held out -- the objective --rank-form softplus
-        # --rank-cross-seed actually minimises, evaluated on val10 with the SAME tau, the same
-        # per-interface normalisation and the same cross-seed-only pair selection as training.
+        # THE RUN'S OWN OBJECTIVE, held out -- same form, same tau, same pair family, same
+        # within-seed weight and same rank decay as training, so this IS the training curve's
+        # twin and the gap between them is generalisation. Previously hardcoded to cross-seed
+        # softplus at DEFAULT_TAU, which was right for every arm until --rank-pairs existed.
         # Keyed (seed, index-within-seed) because group_coeffs reads the seed field to exclude
         # within-seed pairs; the second element only has to be unique inside a seed.
         _sb, _ss, _db, _n_in_sd = {}, {}, {}, collections.defaultdict(int)
@@ -211,10 +256,8 @@ def _one(d, ep, budget):
         # 50-epoch recompute take minutes for a gradient immediately discarded.
         # test_rank_loss.py asserts the two agree to 1e-9 so the diagnostic cannot drift from the
         # objective.
-        _lv_t, _np_t = _RKL.group_loss(_sb, _db, form="softplus",
-                                       tau=_RKL.DEFAULT_TAU, pairs="cross")
-        _lv_s, _np_s = _RKL.group_loss(_ss, _db, form="softplus",
-                                       tau=_RKL.DEFAULT_TAU, pairs="cross")
+        _lv_t, _np_t = _RKL.group_loss(_sb, _db, **_obj)
+        _lv_s, _np_s = _RKL.group_loss(_ss, _db, **_obj)
         if _np_t and _np_s:
             xs_t.append(_lv_t); xs_s.append(_lv_s)
         # THE EXPECTED-DockQ OBJECTIVE, held out, at this run's own temperature. Pair-free, so no
