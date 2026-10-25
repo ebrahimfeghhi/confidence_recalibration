@@ -22,11 +22,18 @@ PIDS=("$@")
 # train_eval_shards_ep<N>/ and writes shard logs into it minutes before the rows_*.csv land, so
 # counting directories wakes the session while rank_rho still has nothing to read -- which is
 # exactly what happened on x5frz6 epoch 1.
+# AN EPOCH COUNTS ONLY WHEN EVERY SHARD HAS WRITTEN ITS ROWS. Each eval shard writes a
+# shard<N>.log immediately and its rows_*.csv at the end, so "some rows exist" is true while a
+# shard is still running: x5frz6 epoch 3 had 2 of 3 rows files and 3 shard logs when this woke the
+# session, and rank_rho -- which requires the whole epoch -- correctly had nothing to show.
+# Requiring rows >= logs makes the wake mean what it says.
 rows() {
-  local n=0 d
+  local n=0 d nrows nlogs
   for d in "training/runs/$RID"/train_eval_shards_ep*/; do
     [ -d "$d" ] || continue
-    compgen -G "$d"'rows_*.csv' > /dev/null 2>&1 && n=$((n+1))
+    nrows=$(ls "$d" 2>/dev/null | grep -c 'rows_.*\.csv$')
+    nlogs=$(ls "$d" 2>/dev/null | grep -c 'shard.*\.log$')
+    [ "$nlogs" -gt 0 ] && [ "$nrows" -ge "$nlogs" ] && n=$((n+1))
   done
   echo "$n"
 }
