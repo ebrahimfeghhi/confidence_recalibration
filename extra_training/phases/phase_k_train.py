@@ -572,6 +572,24 @@ def main():
     ap.add_argument("--val-loss-card", default="",
                     help="card for the held-out pass. Empty shares the trainer's; it loads a second "
                          "464M-parameter model, so the free-memory floor below applies.")
+    ap.add_argument("--crop-all-poses", action="store_true",
+                    help="DEFINE THE CROP FROM THE UNION OVER ALL 5 POSES instead of pose 0. The "
+                         "union is what interface_crop_tokens has always done and it exists as "
+                         "insurance: Protenix permutes symmetric chains per pose, so in principle "
+                         "pose 1's interface can involve a copy pose 0's does not. In practice it "
+                         "never has -- the function's own docstring records the largest "
+                         "|d(pose i) - d(pose 0)| over token representative atoms as 0.000000 A "
+                         "across all 491 training structures x all 5 poses, with 77 of them having "
+                         "at least two chains of equal token count, i.e. the case that could "
+                         "differ. Re-checked on the current labels before this flag was added: "
+                         "masks identical on every unit sampled. The union costs 5x the work for "
+                         "that insurance -- a cKDTree build, a query_pairs iterated as a Python "
+                         "set, and a per-token Python loop, five times -- measured at 17 ms "
+                         "against 4 ms for pose 0 on a 128-token unit. So the default is pose 0 "
+                         "and this flag buys the insurance back. ANY LABEL REBUILD THAT COULD "
+                         "PERMUTE must be followed by phases/phase_k_crop_consistency.py, which "
+                         "is the gate that would catch a divergence; that gate still compares "
+                         "against the union regardless of this flag.")
     ap.add_argument("--manifest-shard", type=int, default=-1,
                     help="TAKE ONLY THIS SHARD of --manifest-selection, INTERLEAVED (i::n), with "
                          "--manifest-nshards. -1, the default, takes everything and is what every "
@@ -2550,7 +2568,8 @@ def main():
         zc = np.load(trunk_p)
         _tick("cpucrop_trunk", _t)
         _t = time.perf_counter()
-        kt, ka = BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin)
+        kt, ka = BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin,
+                                          all_poses=a.crop_all_poses)
         _tick("cpucrop_tokens", _t)
         if kt is None:
             return ("nocrop", None, None)
@@ -2909,7 +2928,8 @@ def main():
                 # argues for caching the crop indices and nothing else.
                 _t0 = time.perf_counter()
                 _zc = np.load(trunk_p)
-                _kt, _ka = BC.interface_crop_tokens(_zc, lab, a.crop_contact, a.crop_margin)
+                _kt, _ka = BC.interface_crop_tokens(_zc, lab, a.crop_contact, a.crop_margin,
+                                                    all_poses=a.crop_all_poses)
                 _tick("trunk_read_plus_crop_tokens", _t0)
                 if _kt is None:
                     crop_stats["undefined"] += 1
