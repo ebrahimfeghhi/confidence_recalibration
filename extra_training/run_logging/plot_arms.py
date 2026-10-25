@@ -103,8 +103,12 @@ def heldout_is_twin(rid, budget):
     """
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import rank_rho as _RHO
-    return os.path.exists(os.path.join("training", "runs", rid, _RHO.CACHE.format(b=budget)))
+    # THE HIGHEST CACHE PRESENT, not the current CACHE constant. Pinning to the constant meant
+    # that bumping it to v6 turned every existing run's answer to False overnight, so a v5 cache
+    # -- which DOES hold the own-objective loss -- was plotted under the "CANONICAL cross-seed"
+    # subtitle. v4 is the version at which the column became the run's own objective.
+    path, ver = _cache_path(rid, budget)
+    return bool(path) and ver >= 4
 
 
 def objective(rid):
@@ -194,13 +198,23 @@ def _is_canonical_objective(rid):
         return False
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import rank_rho as _RHO
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    "phases"))
+    # rank_loss, NOT rank_rho: rank_rho has no module-level DEFAULT_TAU -- it reaches it through a
+    # function-local `import rank_loss` every time. Reading it off rank_rho raised AttributeError
+    # for every run with an explicit --rank-tau, which is every arm since bjwcm5.
+    import rank_loss as _RKL
     tau = a.get("rank_tau")
-    tau_ok = tau is None or abs(float(tau) - _RHO.DEFAULT_TAU) < 1e-9
+    tau_ok = tau is None or abs(float(tau) - _RKL.DEFAULT_TAU) < 1e-9
     return (a.get("rank_form") == "softplus" and bool(a.get("rank_cross_seed"))
             and a.get("rank_pairs") in (None, "cross")
             and float(a.get("rank_within_weight") or 1.0) == 1.0
-            and not a.get("rank_topk_decay") and tau_ok)
+            and not a.get("rank_topk_decay")
+            # straddle and weight_by_gap change the function too. Without them, an arm at
+            # --rank-straddle 0.23 --rank-pairs cross and the default tau would be called
+            # canonical and its own-objective curve plotted on the cross-arm axis.
+            and not float(a.get("rank_straddle") or 0.0)
+            and bool(a.get("rank_weight_by_gap", True)) and tau_ok)
 
 
 def series(rid, budget, thresh):

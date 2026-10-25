@@ -12,7 +12,7 @@ of two failures, can be reordered in any way at all and the fraction does not ch
 So restrict the ranking loss to pairs that **straddle** the threshold: exactly one pose above
 0.23, one below. `--rank-straddle 0.23`.
 
-Over the full training fold, that keeps **143,680 of 1,056,035 pairs (13.6%)**. The other 86.4%
+Over the full training fold, that keeps **143,680 of 1,146,184 pairs (12.5%)**. The other 87.5%
 of the loss's weight was being spent on orderings the criterion cannot see.
 
 ## What it costs, stated rather than hidden
@@ -22,7 +22,7 @@ and leaves the fraction untouched -- and that gradient is now discarded. This ar
 fraction and treats mean DockQ as a free variable. The two can move in opposite directions, so
 both are reported and the fraction is named in advance as the primary number.
 
-**589 of 1028 training interfaces go silent.** Only 438 are usable; the rest have every pose on
+**590 of 1028 training interfaces go silent.** Only 438 are usable; the rest have every pose on
 one side of 0.23 -- all acceptable, or all failures -- so they form no straddling pair and
 contribute nothing to the loss. This is the single biggest risk in the arm and the first thing
 to check if it fails.

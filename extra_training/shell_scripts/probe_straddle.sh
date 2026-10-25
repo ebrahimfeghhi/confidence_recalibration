@@ -5,12 +5,15 @@
 # (8 tensors / 40,960 parameters, since dropping --frame-direction also removes the only tensors
 # zg5fnw excluded). l2sp_lambda.py's size factor is therefore exactly 1 and the whole transfer
 # rests on the task gradient -- which this measures, because the objective changed twice over:
-# --rank-straddle 0.23 keeps 143,680 of 1,056,035 pairs (13.6%) and tau rises 0.0305 -> 0.1429.
+# --rank-straddle 0.23 keeps 143,680 of 1,146,184 pairs (12.5%) and tau rises 0.0305 -> 0.1429.
 # Fewer pairs and a wider tau both move |g_rank|, and in opposite directions, so guessing is
 # not available.
 #
-# alpha_pae 0 and NO --l2-sp: the reported gradient is the PURE ranking gradient, which is the
-# only task term this arm has.
+# alpha_pae 1 and NO --l2-sp. The lambda needs the PURE ranking gradient, and |g_rank| does not
+# depend on alpha_pae -- the ranking term is differentiated by its own torch.autograd.grad call.
+# But --grad-probe's gate FAILS on an exactly-zero accumulated PAE gradient, so alpha_pae 0 made
+# the probe exit 1 while still printing |g_rank|, and a chain that only grepped for the number
+# launched from a probe that had refused. Measuring both terms is free and keeps the gate real.
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY_BIN=/home/ebrahim/Protenix/.venv/bin/python
@@ -29,7 +32,7 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --manifest-selection training/full_train/structures_no9dzj.csv \
   --manifest-skip '9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3' \
   --grad-probe --epochs 1 --lr 0.01 --warmup-steps 20 --seed 0 --accum 85 --nsample 5 \
-  --alpha-confidence 1.0 --alpha-pae 0.0 --clip-norm 25.0 --crop-size 3400 \
+  --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0 --crop-size 3400 \
   --save-every 100000 \
   --pae-scored-pairs training/full_train/pool.csv --pae-only \
   --shuffle structure --seeds 500000-500009 --prefetch-units 2 \

@@ -102,7 +102,7 @@ def cross_seed_pairs(poses, mode="cross", straddle=0.0):
             same = (si == sj)
             if (mode == "cross" and same) or (mode == "within" and not same):
                 continue
-            if straddle > 0 and ((dqi > straddle) == (dqj > straddle)):
+            if straddle > 0 and ((dqi >= straddle) == (dqj >= straddle)):
                 continue
             dd = dqi - dqj
             if abs(dd) < DQ_TOL:
@@ -264,7 +264,7 @@ def main():
     acc = {k: {"cor": 0.0, "inv": 0.0} for k in ("lin", "sp", "lin_u", "sp_u")}
     n_cor = n_inv = n_used = 0
     for poses in data.values():
-        pr = cross_seed_pairs(poses, a.pairs)
+        pr = cross_seed_pairs(poses, a.pairs, a.straddle)
         if len(pr) < a.min_pairs:
             continue
         n_used += 1

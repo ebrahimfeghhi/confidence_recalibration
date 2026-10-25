@@ -242,6 +242,34 @@ def pool_names(rid):
     return _pool(a.get("manifest_selection")), _pool(a.get("val_loss_selection"))
 
 
+def objective_label(rid):
+    """How to NAME the loss this run minimises, from its own args.json.
+
+    The three strings this replaces were hardcoded "cross-seed softplus" from a time when every
+    arm was. Since rank_rho v4 the held-out column IS the run's own objective, so an arm at
+    --rank-pairs all --rank-straddle 0.23 --rank-tau 0.1429 was getting a panel titled
+    "cross-seed softplus" over a curve that is neither cross-seed nor at DEFAULT_TAU.
+    """
+    try:
+        with open(os.path.join("training", "runs", run_chain(rid)[0], "args.json")) as fh:
+            a = json.load(fh)
+    except Exception:
+        return "ranking loss"
+    fam = {"cross": "cross-seed", "within": "within-seed", "all": "all-pair"}.get(
+        a.get("rank_pairs") or "cross", a.get("rank_pairs"))
+    bits = [fam, "softplus"]
+    st = float(a.get("rank_straddle") or 0.0)
+    if st:
+        bits.append(f"straddle {st:g}")
+    L = float(a.get("rank_within_weight") or 1.0)
+    if L != 1.0:
+        bits.append(f"L={L:g}")
+    tau = a.get("rank_tau")
+    if tau is not None:
+        bits.append(f"tau {float(tau):g}")
+    return " ".join(bits)
+
+
 def rank_family(rid):
     """Which pair family the run TRAINED on: "cross", "within", "all", or None if unrecorded.
 
@@ -375,7 +403,7 @@ def main():
         _floor_txt = " floor -max(DockQ) per group"
     else:
         ho_col, ho_se_col = "xsloss_trained", "xsloss_sem"
-        _lbl = "cross-seed softplus"
+        _lbl = objective_label(a.rid)
         _floor_txt = " floor 0 = every pair ordered"
     _tr_pool, _ho_pool = pool_names(a.rid)
     _fam = rank_family(a.rid)
@@ -391,8 +419,8 @@ def main():
     ax.fill_between(ep, [v - s for v, s in zip(ho, ho_se)], [v + s for v, s in zip(ho, ho_se)],
                     color="#1f77b4", alpha=0.18, lw=0)
     ax.plot(ep, ho, color="#1f77b4", lw=2.0, marker="o", ms=3.5,
-            label="held out (" + (f"{_ho_pool}, " if _ho_pool else "") + f"{n_if} ifaces"
-                  + (", CROSS-seed" if _fam and _fam != "cross" else "") + ")")
+            label="held out (" + (f"{_ho_pool}, " if _ho_pool else "")
+                  + f"{n_if} ifaces scored" + ")")
     ax.axhline(0.0, color="#555555", ls="-", lw=0.9)
     ax.text(ax.get_xlim()[1], 0.0, _floor_txt, color="#555555",
             fontsize=8.5, va="bottom", ha="right")
@@ -401,7 +429,7 @@ def main():
     ax.set_ylabel(f"{_lbl} (lower is better)", fontsize=10)
     ax.legend(fontsize=8.5, loc="upper right", framealpha=0.9)
     ax.grid(alpha=0.15)
-    fig.suptitle(f"{a.rid} -- cross-seed softplus  (bands are s.e. over {n_if} interfaces; "
+    fig.suptitle(f"{a.rid} -- {objective_label(a.rid)}  (bands are s.e. over {n_if} interfaces; "
                  f"dashed = SHIPPED head on these same {n_if}, derived from stored_iptm)",
                  fontsize=11.5, y=1.02)
     out = a.out or os.path.join("training", "runs", "three_panels.png")

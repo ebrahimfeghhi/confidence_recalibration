@@ -502,7 +502,12 @@ def pair_straddles(di, dj, thresh):
     """
     if not thresh or thresh <= 0:
         return True
-    return (di > thresh) != (dj > thresh)
+    # >=, NOT >, because the reported metric is `1.0 if best_dockq >= 0.23 else 0.0`
+    # (rank_rho.py). DockQ is stored to 3-4 decimals and 26 rows sit at exactly 0.2300, so a pose
+    # on the line is "acceptable" to the criterion; a `>` here would call it unacceptable and the
+    # filter would be optimising a threshold the scoreboard does not use. Worth 116 of 143,680
+    # pairs -- immaterial to any result, but there is no reason for the two to disagree.
+    return (di >= thresh) != (dj >= thresh)
 
 
 def rank_decay_weights(sv, k):

@@ -10,6 +10,11 @@ echo "=== straddle chain armed $(date '+%F %T %Z') ==="
 before=$(ls training/runs | grep -E '^[a-z0-9]{6}$' | sort)
 echo "$(date '+%T') probing |g_rank| for the straddle objective"
 ./shell_scripts/probe_straddle.sh >> training/runs/probe_straddle.log 2>&1
+prc=$?
+# THE PROBE HAS ITS OWN GATE AND IT MUST BE HONOURED. --grad-probe prints |g_rank| BEFORE
+# it evaluates its fail list, so grepping for the number succeeds even when the probe
+# exited 1 saying "Do not launch". The first attempt at this arm launched that way.
+[ "$prc" = "0" ] || { echo "STOP: probe exited $prc -- its own gate refused. Not launching."; exit 1; }
 after=$(ls training/runs | grep -E '^[a-z0-9]{6}$' | sort)
 PR=$(comm -13 <(echo "$before") <(echo "$after") | head -1)
 [ -n "$PR" ] || { echo "STOP: probe produced no new run dir."; exit 1; }
@@ -33,6 +38,9 @@ for i in $(seq 1 120); do
   after=$(ls training/runs | grep -E '^[a-z0-9]{6}$' | sort)
   RID=$(comm -13 <(echo "$before") <(echo "$after") | head -1)
   [ -n "$RID" ] && break
+  # the launcher can refuse outright (cards still busy from the probe's teardown); without this
+  # the loop spins the full 600s and reports "started no run dir" with the real cause elsewhere.
+  kill -0 "$LP" 2>/dev/null || { echo "STOP: launcher exited before creating a run dir; see training/runs/straddle_launch.log"; tail -5 training/runs/straddle_launch.log; exit 1; }
   sleep 5
 done
 [ -n "${RID:-}" ] || { echo "STOP: launcher started no run dir (pid $LP)."; exit 1; }

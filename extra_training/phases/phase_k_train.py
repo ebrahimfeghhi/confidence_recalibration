@@ -1195,7 +1195,8 @@ def main():
     # interface, which is why it cannot be built per unit the way the linear one is. _xs_div is the
     # number of interface-groups in the step, so the term is a mean over groups; it is a one-element
     # list because pass A writes it and the pose loop reads it from a different frame.
-    _xs_coef, _xs_div, _xs_stat = {}, [1], {"groups": 0, "pairs": 0, "loss": 0.0, "steps": 0}
+    _xs_coef, _xs_div, _xs_stat = {}, [1], {"groups": 0, "pairs": 0, "loss": 0.0, "steps": 0,
+                                             "last_groups": 0, "skipped": 0}
     # THE CURRENT STEP'S EXPECTED POSE COUNT. accum_local is a constant only when every
     # step holds the same number of units, which --rank-cross-seed breaks: S structures x
     # their seeds need not divide `world`, so the short rank rotates and the quota varies
@@ -3312,6 +3313,10 @@ def main():
             for (_sd, _i), _cv in c.items():
                 _xs_coef[(_pdb, _sd, _i, _pair)] = _cv
         _xs_div[0] = max(1, n_groups)
+        # PER-STEP, not cumulative. Pass A is REPLICATED -- it fills _xs_coef for the poses of
+        # step_units across ALL ranks -- so n_groups is identical on every rank and the skip
+        # decision below needs no collective and cannot desynchronise them.
+        _xs_stat["last_groups"] = n_groups
         _xs_stat["groups"] += n_groups
         _xs_stat["steps"] += 1
 
@@ -3543,6 +3548,27 @@ def main():
             # grad_norm is reported as nan rather than 0.0: zero is a measurement, nan is "not
             # measured", and a 0.0 here would read as a vanished gradient in the usual summaries.
             return float("nan"), 0, True
+        # A STEP WITH NO TASK GRADIENT MUST NOT BE TAKEN. --rank-straddle makes this reachable
+        # for the first time: a group with no straddling pair is skipped at the `npair == 0`
+        # continue above, and 52.3% of the training fold's structures have no straddling pair at
+        # all, so with --rank-structs-per-step 2 about 27% of steps accumulate NOTHING from the
+        # ranking term. With --alpha-pae 0 there is then no task gradient whatsoever, and the
+        # L2-SP block below would be the step's ONLY gradient.
+        #
+        # THAT IS NOT A SMALL STEP, BECAUSE ADAMW IS SCALE-INVARIANT. Once exp_avg_sq has decayed
+        # (beta2 0.95, ~20-step memory) a gradient 100x smaller does not give a step 100x smaller;
+        # it gives a near-full lr-sized step straight back toward l2sp_anchor.pt. Measured on the
+        # first attempt at this arm: 16 of 69 taken steps had grad_norm < 1e-3 against a typical
+        # 0.01-0.20, the late ones clustered at ~2.5e-4 and rising as the weights drifted, i.e.
+        # the anchor pulling harder the further the arm got. The lambda calibrated against
+        # |g_rank| is simply not in force on those steps.
+        #
+        # Counted, not silent: the epoch summary prints how many steps were skipped this way.
+        if (a.rank_loss and a.rank_cross_seed and not a.alpha_pae
+                and _xs_stat.get("last_groups", 1) == 0):
+            _xs_stat["skipped"] += 1
+            opt.zero_grad(set_to_none=True)
+            return float("nan"), 0, False
         params = [pp for _n, pp in trainable_params]
         if world > 1:
             # BEFORE THE CLIP, NOT AFTER. Clipping each rank's partial gradient to norm 1 and then
@@ -4504,7 +4530,10 @@ def main():
                 # alignment".
                 print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({a.rank_form}, cross-seed): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
-                      f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s), "
+                      f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s)"
+                      + (f" [{_xs_stat['skipped']} step(s) SKIPPED: no straddling pair in either "
+                         f"structure, so no task gradient -- not handed to AdamW]"
+                         if _xs_stat.get("skipped") else "") + ", "
                       # THE COUNT IS POSES FOR THE EXPECTED FORM, NOT PAIRS, and its floor is
                       # -max(DockQ) rather than 0. Calling 150 poses "150 pair(s)" and claiming a
                       # zero floor would misreport the objective in the one line most likely to
@@ -4515,7 +4544,7 @@ def main():
                          if a.rank_form == "softplus" else "")
                       + ("  (NEGATIVE: this is -expected DockQ, floor -max(DockQ) per group)"
                          if a.rank_form == "expected" else ""), flush=True)
-                for _k in ("groups", "pairs", "steps"):
+                for _k in ("groups", "pairs", "steps", "skipped"):
                     _xs_stat[_k] = 0
                 _xs_stat["loss"] = 0.0
             elif a.rank_loss and _rank_seen["units"]:
