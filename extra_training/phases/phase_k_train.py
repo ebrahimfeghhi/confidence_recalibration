@@ -572,6 +572,22 @@ def main():
     ap.add_argument("--val-loss-card", default="",
                     help="card for the held-out pass. Empty shares the trainer's; it loads a second "
                          "464M-parameter model, so the free-memory floor below applies.")
+    ap.add_argument("--emit-iptm-rows", default="",
+                    help="ALSO write chain_pair_iptm per (interface, seed, sample) to this csv. "
+                         "EXPERIMENTAL and off by default. The held-out PAE pass and the DockQ "
+                         "eval forward the SAME 7,950 poses through the SAME head every epoch -- "
+                         "verified identical as sets of (pdb, seed, sample) -- and ipTM is derived "
+                         "from the PAE logits the loss pass already has, so the second forward is "
+                         "redundant in principle. This emits the rows that would let the DockQ "
+                         "metric be computed from the loss pass, WITHOUT removing the eval, so "
+                         "the two can be compared on real data before anything is deleted. "
+                         "THE JOIN IS THE RISK, not the arithmetic: phase_k_eval joins poses to "
+                         "DockQ by COORDINATE IDENTITY against the _sample_<k>.cif files, and a "
+                         "naive (iface, seed, sample) key join is only equivalent if the sample "
+                         "ordering agrees. Measured on j583i8 epoch 1 it does, on all 13,800 rows "
+                         "against validation/fold/results.csv -- but that is one pool on one day, "
+                         "which is exactly why the eval keeps its own self-check and why nothing "
+                         "here replaces it yet.")
     ap.add_argument("--crop-all-poses", action="store_true",
                     help="DEFINE THE CROP FROM THE UNION OVER ALL 5 POSES instead of pose 0. The "
                          "union is what interface_crop_tokens has always done and it exists as "
@@ -1178,6 +1194,11 @@ def main():
     _pae_keep = {"m": None}
     _scored_asym = {}
     _pae_mask_stats = {"masked": 0, "unmasked": 0}
+    _iface_of = {}
+    # LAZILY OPENED, so a run without --emit-iptm-rows touches no file. Rows are flushed per unit
+    # rather than held to the end: a measurement pass that dies on its last unit should still
+    # leave the rows it earned, the same reason the subprocess trajectories are the durable record.
+    _iptm_fh = {"fh": None, "w": None, "n": 0}
     if a.pae_scored_pairs:
         import csv as _csv
         _roles_p = a.pae_scored_roles or os.path.join(a.fold, "chain_roles.csv")
@@ -1208,6 +1229,11 @@ def main():
                 _a1 = ord(_m1) - ord("A")
                 _a2 = ord(_m2) - ord("A")
                 _scored_asym.setdefault(_r["pdb"], set()).add((min(_a1, _a2), max(_a1, _a2)))
+                # THE POOL'S OWN REFERENCE NAMING, kept so an emitted row can carry the `iface`
+                # string results.csv uses. The asym pair is a MODEL-chain index pair and says
+                # nothing about which reference chains it came from.
+                _iface_of[(_r["pdb"], (min(_a1, _a2), max(_a1, _a2)))] = \
+                    f"{_r['pdb']}_{_r['chain1']}{_r['chain2']}"
         if _miss:
             raise SystemExit(f"STOP: {len(_miss)} pool interface(s) have no role mapping, e.g. "
                              f"{_miss[:4]}. The PAE mask would silently drop their blocks.")
@@ -3072,6 +3098,27 @@ def main():
                         _sc[_p] = float(_v.detach())
                 del pred, x, plddt, pae, pde, resolved
                 return {"pose": i, "iptm": _sc}
+            if a.emit_iptm_rows and _scored_asym.get(pdb):
+                # THE SAME FUNCTION PASS A USES. If this computed ipTM differently from the
+                # ranking loss's own scorer, the emitted rows would describe a statistic the run
+                # does not otherwise use, which is the failure the pass A comment warns about.
+                import rank_loss as RKL
+                if _iptm_fh["fh"] is None:
+                    _iptm_fh["fh"] = open(a.emit_iptm_rows, "w", newline="")
+                    _iptm_fh["w"] = csv.writer(_iptm_fh["fh"])
+                    _iptm_fh["w"].writerow(["iface", "seed", "sample", "iptm"])
+                _unit = os.path.basename(lab_p).rsplit(".", 1)[0]
+                _seed = _unit.rsplit("_", 1)[-1]
+                for _p in sorted(_scored_asym.get(pdb) or ()):
+                    _v = RKL.iptm(pred["pae"], feat_head, configs, _p)
+                    if _v is None:
+                        continue
+                    _ifc = _iface_of.get((pdb, _p))
+                    if _ifc is None:
+                        continue
+                    _iptm_fh["w"].writerow([_ifc, _seed, i, f"{float(_v.detach()):.6f}"])
+                    _iptm_fh["n"] += 1
+                _iptm_fh["fh"].flush()
             try:
                 cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
             except RuntimeError as _e:
