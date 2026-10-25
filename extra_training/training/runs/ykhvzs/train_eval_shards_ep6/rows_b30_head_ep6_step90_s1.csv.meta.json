@@ -1,0 +1,14 @@
+{
+ "shard": 1,
+ "nshards": 3,
+ "units": 100,
+ "rows": 900,
+ "n_ost": 500,
+ "n_unresolvable": 0,
+ "n_differ": 0,
+ "differ_pdbs": {},
+ "n_unmapped": 0,
+ "unmapped": [],
+ "budget": 30,
+ "ckpt": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/ykhvzs/head_ep6_step90.pt"
+}

@@ -1,0 +1,72 @@
+[
+ {
+  "from_bundle": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/ykhvzs/resume_ep7.pt",
+  "bundle_commit": "123c5a3d2045ea7a8a82071a6865dfbc62f34ba2",
+  "bundle_written": "2026-10-25T09:00:42-0700",
+  "bundle_epoch": 7,
+  "bundle_step": 105,
+  "accepted_at": "2026-10-25T09:01:17-07:00",
+  "via": "--resume-allow-drift",
+  "note": "held-out PAE measurement of resume_ep7.pt at epoch 7; --loss-only reads the weights and writes no checkpoint, so the bundle's schedule is not continued",
+  "fields": {
+   "world": {
+    "bundle": 3,
+    "this_run": 1
+   },
+   "manifest_digest": {
+    "bundle": "a008c369ca5dc05a",
+    "this_run": "5895a5609b48124a"
+   },
+   "rank_form": {
+    "bundle": "softplus",
+    "this_run": "linear"
+   },
+   "rank_cross_seed": {
+    "bundle": true,
+    "this_run": false
+   },
+   "l2_sp": {
+    "bundle": 0.00025,
+    "this_run": 0.0
+   },
+   "l2_sp_exclude": {
+    "bundle": "frame_dir",
+    "this_run": ""
+   },
+   "lr_final": {
+    "bundle": 0.0001,
+    "this_run": 0.0
+   },
+   "lr": {
+    "bundle": 0.01,
+    "this_run": 0.001
+   },
+   "warmup_steps": {
+    "bundle": 20,
+    "this_run": 0
+   },
+   "pae_scored_pairs": {
+    "bundle": "training/overfit30/pool.csv",
+    "this_run": "training/val10/pool.csv"
+   },
+   "train_only": {
+    "bundle": "linear_no_bias_d,pose_perblock,frame_dir",
+    "this_run": ""
+   }
+  },
+  "named": [],
+  "unnamed": [
+   "l2_sp",
+   "l2_sp_exclude",
+   "lr",
+   "lr_final",
+   "manifest_digest",
+   "pae_scored_pairs",
+   "rank_cross_seed",
+   "rank_form",
+   "train_only",
+   "warmup_steps",
+   "world"
+  ]
+ }
+]
