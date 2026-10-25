@@ -1,0 +1,4 @@
+pool: 18 interface(s) over 10 structure(s)
+results.csv: 46000 scored (iface, seed, sample) row(s)
+shard 2 of 3: 100 unit(s)
+units: 100 of 300 intended (10 structures x 30 seeds)
