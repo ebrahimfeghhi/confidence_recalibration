@@ -1,0 +1,13 @@
+pool: 18 interface(s) over 10 structure(s)
+results.csv: 46000 scored (iface, seed, sample) row(s)
+shard 2 of 3: 100 unit(s)
+units: 100 of 300 intended (10 structures x 30 seeds)
+train scheduler 16.0
+inference scheduler 16.0
+Diffusion Module has 16.0
+pose direction: frame_dir_proj LinearNoBias(3 -> 256) installed on confidence_head, 768 parameter(s), zero-init verified exactly zero
+pose per-block ORIENTATION: 3 copy/copies of frame_dir_proj LinearNoBias(3 -> 256), 2,304 new parameter(s), each copied from frame_dir_proj's weights -- which pose_direction zero-inits and verifies exactly zero, so STEP 0 IS UNCHANGED by these. Orientation now enters at ALL 4 depths; without them it enters ONCE, before the stack, while the distance terms enter at every depth. A --train-only must match `frame_dir` to reach them.
+pose per-block: 3 block(s) injected, each with its OWN COPY of block 0's injection -- linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) per depth, 33,024 NEW parameter(s). UNTIED: the copies are free to diverge. STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's step 0 (verified against block 0's weights, exactly), NOT to the shipped head -- so capacity is the only variable against a share arm. The copies are named pose_perblock_linear_no_bias_d* and a --train-only that does not match them would create them and never train them.
+loaded 258 head tensor(s) from /home/ebrahim/confidence_recalibration/extra_training/training/runs/ykhvzs/head_ep6_step90.pt, exact match against 258 head parameter(s)
+join cache: 393 entry(ies) from /home/ebrahim/confidence_recalibration/extra_training/training/val10/join_cache_shard2.json
+prefetch: one background reader warming the next trunk
