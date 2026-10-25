@@ -1,0 +1,12 @@
+current context: code=93a8fe85a9ea9bde loss=2fc84683b58e5aa0
+scanning 491 structures x 10 seeds = 4910 labels
+  ...100/491 structures
+  ...200/491 structures
+  ...300/491 structures
+  ...400/491 structures
+
+checked 4910 labels, 0 missing
+MISMATCHES BY FIELD SET (the trainer tolerates 'code' alone, nothing else):
+  code                      4910 labels,  491 structures  <- TOLERATED by --allow-code-drift
+
+GATE PASSED: every label's inputs match, or differ only in `code` (--allow-code-drift).
