@@ -24,6 +24,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import metrics_io as MIO
 import rank_rho as RHO
 
 # DERIVED FROM THE RUN'S OWN SHARDS, NOT HARDCODED.
@@ -255,9 +256,22 @@ def objective_label(rid):
             a = json.load(fh)
     except Exception:
         return "ranking loss"
+    # A RUN WITH NO RANKING LOSS STILL GETS THIS PANEL, because rank_rho.py derives held-out
+    # ranking loss from the eval shards for ANY run -- it measures how well the head orders poses,
+    # which is defined whatever the head was trained on. But it is then a DIAGNOSTIC, not the
+    # objective, and saying otherwise is a lie about the run. 8eiek8 (PAE only, pose-share, no
+    # --rank-loss) was labelled "cross-seed softplus" because rank_pairs defaults to "cross" when
+    # absent and "softplus" was hardcoded, so every field of that label was invented.
+    if not a.get("rank_loss"):
+        terms = []
+        if float(a.get("alpha_pae") or 0.0):
+            terms.append("PAE")
+        if float(a.get("alpha_confidence") or 0.0) and not a.get("pae_only"):
+            terms.append("confidence")
+        return " + ".join(terms) or "unrecorded loss"
     fam = {"cross": "cross-seed", "within": "within-seed", "all": "all-pair"}.get(
         a.get("rank_pairs") or "cross", a.get("rank_pairs"))
-    bits = [fam, "softplus"]
+    bits = [fam, str(a.get("rank_form") or "softplus")]
     st = float(a.get("rank_straddle") or 0.0)
     if st:
         bits.append(f"straddle {st:g}")
@@ -268,6 +282,29 @@ def objective_label(rid):
     if tau is not None:
         bits.append(f"tau {float(tau):g}")
     return " ".join(bits)
+
+
+def trained_rank_loss(rid):
+    """True when the run actually minimised a ranking loss. A run WITHOUT one still gets a
+    held-out ranking-loss column from rank_rho.py -- it is defined for any head, because it only
+    measures ordering -- but then it is a DIAGNOSTIC and the objective panel must show the loss
+    that was really trained, or the panel lies about the run."""
+    try:
+        with open(os.path.join("training", "runs", run_chain(rid)[0], "args.json")) as fh:
+            return bool(json.load(fh).get("rank_loss"))
+    except Exception:
+        return True
+
+
+def pae_curves(rid):
+    """(epochs, train PAE, held-out PAE) for a PAE-trained run, over the epochs that have BOTH.
+
+    Same rule plot_full_train.py uses: an epoch missing either side is dropped rather than drawn
+    against a gap, so a vertical distance between the curves is always the same head.
+    """
+    M = MIO.load("training/runs", rid, 30, 0)
+    both = sorted(set(M.train_pae) & set(M.val_pae))
+    return both, [M.train_pae[e] for e in both], [M.val_pae[e][0] for e in both]
 
 
 def rank_family(rid):
@@ -338,7 +375,7 @@ def main():
         panels.append(("Spearman(ipTM, DockQ) within interface",
                        g("rho_trained"), g("rho_sem"), s_rho, None))
     n_ax = len(panels) + 1 + (1 if far_panel else 0)   # + objective panel, + rank panel
-    fig, axes = plt.subplots(1, n_ax, figsize=(5.25 * n_ax, 4.6))
+    fig, axes = plt.subplots(1, n_ax, figsize=(5.25 * n_ax, 4.9), layout="constrained")
     for ax, (title, y, se, ship, orac) in zip(axes, panels):
         lo = [v - s for v, s in zip(y, se)]
         hi = [v + s for v, s in zip(y, se)]
@@ -371,7 +408,7 @@ def main():
         axr.text(axr.get_xlim()[0], 1.0, " oracle 1.00", color="#2ca02c",
                  fontsize=9, va="top", ha="left")
         axr.invert_yaxis()                      # see the comment where far_panel is built
-        axr.set_title("rank of first acceptable pose (ipTM order)\nLOWER IS BETTER -- axis flipped",
+        axr.set_title("rank of first acceptable pose (lower better)",
                       fontsize=10.5)
         axr.set_xlabel("epoch", fontsize=10.5)
         axr.grid(alpha=0.15)
@@ -407,33 +444,44 @@ def main():
         _floor_txt = " floor 0 = every pair ordered"
     _tr_pool, _ho_pool = pool_names(a.rid)
     _fam = rank_family(a.rid)
-    tr = {}
-    for _r in run_chain(a.rid):
-        tr.update(train_rank_loss(_r))
-    tr_ep = [e for e in ep if e in tr]
-    if tr_ep:
-        ax.plot(tr_ep, [tr[e] for e in tr_ep], color="#ff7f0e", lw=2.0, marker="s", ms=3.5,
-                label="training" + (f" ({_tr_pool}" if _tr_pool else " (")
-                      + (f", {_fam}-seed pairs)" if _fam and _fam != "cross" else ")"))
-    ho, ho_se = g(ho_col), g(ho_se_col)
-    ax.fill_between(ep, [v - s for v, s in zip(ho, ho_se)], [v + s for v, s in zip(ho, ho_se)],
-                    color="#1f77b4", alpha=0.18, lw=0)
-    ax.plot(ep, ho, color="#1f77b4", lw=2.0, marker="o", ms=3.5,
-            label="held out (" + (f"{_ho_pool}, " if _ho_pool else "")
-                  + f"{n_if} ifaces scored" + ")")
-    ax.axhline(0.0, color="#555555", ls="-", lw=0.9)
-    ax.text(ax.get_xlim()[1], 0.0, _floor_txt, color="#555555",
-            fontsize=8.5, va="bottom", ha="right")
-    ax.set_title(f"{_lbl}: training vs held out", fontsize=11.5)
+    if not trained_rank_loss(a.rid):
+        # PAE RUN: the ranking columns exist but were never optimised, so drawing them here and
+        # calling them the objective is a false claim about the run. Draw the PAE it did minimise.
+        _pep, _ptr, _pho = pae_curves(a.rid)
+        if _pep:
+            ax.plot(_pep, _ptr, color="#ff7f0e", lw=2.0, marker="s", ms=3.5, label="training")
+            ax.plot(_pep, _pho, color="#1f77b4", lw=2.0, marker="o", ms=3.5, label="held out")
+        _lbl = objective_label(a.rid)
+        ax.set_title(f"{_lbl} loss: training vs held out", fontsize=11.5)
+    else:
+        tr = {}
+        for _r in run_chain(a.rid):
+            tr.update(train_rank_loss(_r))
+        tr_ep = [e for e in ep if e in tr]
+        if tr_ep:
+            ax.plot(tr_ep, [tr[e] for e in tr_ep], color="#ff7f0e", lw=2.0, marker="s", ms=3.5,
+                    label="training" + (f" ({_tr_pool}" if _tr_pool else " (")
+                          + (f", {_fam}-seed pairs)" if _fam and _fam != "cross" else ")"))
+        ho, ho_se = g(ho_col), g(ho_se_col)
+        ax.fill_between(ep, [v - s for v, s in zip(ho, ho_se)], [v + s for v, s in zip(ho, ho_se)],
+                        color="#1f77b4", alpha=0.18, lw=0)
+        ax.plot(ep, ho, color="#1f77b4", lw=2.0, marker="o", ms=3.5,
+                label="held out (" + (f"{_ho_pool}, " if _ho_pool else "")
+                      + f"{n_if} ifaces scored" + ")")
+        ax.axhline(0.0, color="#555555", ls="-", lw=0.9)
+        ax.text(0.98, 0.02, _floor_txt.strip(), transform=ax.transAxes, color="#555555",
+                fontsize=8, va="bottom", ha="right")
+        ax.set_title(f"{_lbl}: training vs held out", fontsize=11.5)
     ax.set_xlabel("epoch", fontsize=10.5)
-    ax.set_ylabel(f"{_lbl} (lower is better)", fontsize=10)
+    ax.set_ylabel(f"{_lbl} (lower is better)", fontsize=9.5)
     ax.legend(fontsize=8.5, loc="upper right", framealpha=0.9)
     ax.grid(alpha=0.15)
-    fig.suptitle(f"{a.rid} -- {objective_label(a.rid)}  (bands are s.e. over {n_if} interfaces; "
-                 f"dashed = SHIPPED head on these same {n_if}, derived from stored_iptm)",
-                 fontsize=11.5, y=1.02)
+    _note = "" if trained_rank_loss(a.rid) else "  [ranking columns exist but were NOT trained]"
+    fig.suptitle(f"{a.rid} -- trained on {objective_label(a.rid)}{_note}\n"
+                 f"bands are s.e. over {n_if} interfaces; dashed = SHIPPED head on these same "
+                 f"{n_if}, from stored_iptm", fontsize=11)
     out = a.out or os.path.join("training", "runs", "three_panels.png")
-    plt.savefig(out, dpi=140, bbox_inches="tight")
+    plt.savefig(out, dpi=140)
     print(f"wrote {out}  ({len(ep)} epoch(s): {ep[0]}..{ep[-1]})")
 
 
