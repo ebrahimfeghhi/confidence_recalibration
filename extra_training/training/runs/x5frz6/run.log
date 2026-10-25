@@ -468,3 +468,68 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 12/20: 100 unit(s)  epoch 12/20: 100 unit(s)
 
   epoch 12/20: 100 unit(s)
+  epoch 12 took 3.5 min for 100 unit(s), 15 optimiser step(s), 0.42 s/pose
+  [rank 1] epoch 12 took 3.5 min -- apply_step_total 0.0m/15  crop_slice 0.4m/200  cropped_tokens mean 400  gpu_backward 1.2m/500  gpu_forward 1.1m/1000  grad_collective_plus_wait 0.0m/15  label_open 0.0m/200  loss_feature_prep 0.0m/200  loss_stats_collective_plus_wait 0.4m/15  pose_a_total 0.6m/500  pose_total 1.6m/500  prefetch_issue 0.0m/99  rank_gather 0.2m/15  rank_pass_a 1.1m/15  trunk_read_plus_crop_tokens 0.2m/100
+  [rank 1] epoch 12 prefetch (1 worker(s)): 100/100 hit (100.0%), 0.0 min waiting on the worker
+  [rank 1] epoch 12 rank-loss (softplus, cross-seed): +0.00502 over 77 interface-group(s) in 15 step(s), 6656 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 1] epoch 12 accounted 2.7m of 3.5m, residual 0.8m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 1] epoch 12 memory: peak allocated 37.44 GB, peak reserved 38.49 GB, blocks_per_ckpt=None
+  epoch 12 took 3.5 min for 100 unit(s), 15 optimiser step(s), 0.42 s/pose
+  [rank 2] epoch 12 took 3.5 min -- apply_step_total 0.0m/15  crop_slice 0.4m/200  cropped_tokens mean 399  gpu_backward 1.2m/500  gpu_forward 1.1m/1000  grad_collective_plus_wait 0.0m/15  label_open 0.0m/200  loss_feature_prep 0.0m/200  loss_stats_collective_plus_wait 0.4m/15  pose_a_total 0.6m/500  pose_total 1.6m/500  prefetch_issue 0.0m/99  rank_gather 0.2m/15  rank_pass_a 1.1m/15  trunk_read_plus_crop_tokens 0.2m/100
+  [rank 2] epoch 12 prefetch (1 worker(s)): 100/100 hit (100.0%), 0.0 min waiting on the worker
+  [rank 2] epoch 12 rank-loss (softplus, cross-seed): +0.00502 over 77 interface-group(s) in 15 step(s), 6656 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 2] epoch 12 accounted 2.7m of 3.5m, residual 0.8m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 2] epoch 12 memory: peak allocated 37.44 GB, peak reserved 38.49 GB, blocks_per_ckpt=None
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/x5frz6/head_step180.pt
+  epoch 12 took 3.5 min for 100 unit(s), 15 optimiser step(s), 0.42 s/pose
+  [rank 0] epoch 12 took 3.5 min -- apply_step_total 0.0m/15  crop_slice 0.5m/200  cropped_tokens mean 423  gpu_backward 1.4m/500  gpu_forward 1.3m/1000  grad_collective_plus_wait 0.0m/15  label_open 0.0m/200  loss_feature_prep 0.0m/200  loss_stats_collective_plus_wait 0.1m/15  pose_a_total 0.7m/500  pose_total 1.8m/500  prefetch_issue 0.0m/99  rank_gather 0.1m/15  rank_pass_a 1.2m/15  trunk_read_plus_crop_tokens 0.2m/100
+  [rank 0] epoch 12 prefetch (1 worker(s)): 100/100 hit (100.0%), 0.0 min waiting on the worker
+  [rank 0] epoch 12 rank-loss (softplus, cross-seed): +0.00502 over 77 interface-group(s) in 15 step(s), 6656 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 0] epoch 12 accounted 2.7m of 3.5m, residual 0.8m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 0] epoch 12 memory: peak allocated 37.44 GB, peak reserved 38.49 GB, blocks_per_ckpt=None
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/x5frz6/resume_ep12.pt (0 MiB: head + AdamW moments + step)
+  held-out PAE for epoch 12 (the training card)
+epoch 12 VALLOSS: pae 4.9995  poses 1500
+  evaluating epoch 12 (pool@fold) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:3954: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/x5frz6/metric_train_ep12.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 12 TRAIN: mean_dockq 0.3031  frac_acc 0.5000  oracle 0.5968 / 1.0000  headroom 0.2937  (18 interfaces)
+  epoch 13/20: 100 unit(s)
+  epoch 13/20: 100 unit(s)  epoch 13/20: 100 unit(s)
+
+W1025 11:59:11.966000 4001440 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 4001512 closing signal SIGTERM
+W1025 11:59:11.967000 4001440 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 4001513 closing signal SIGTERM
+E1025 11:59:12.394000 4001440 torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: -15) local_rank: 0 (pid: 4001511) of binary: /home/ebrahim/Protenix/.venv/bin/python3
+Traceback (most recent call last):
+  File "/home/ebrahim/Protenix/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-10-25_11:59:11
+  host      : alderaan
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 4001511)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 4001511
+============================================================
