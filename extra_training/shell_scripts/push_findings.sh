@@ -12,7 +12,11 @@
 #   docs/confidence_head_reachability.md       the finding behind this arm's trainable set
 #   training/runs/<rid>/args.json              what was configured
 #   training/runs/<rid>/config.json            the launcher's note, verbatim
-#   training/runs/<rid>/rank_rho_b30_v3.csv    the held-out metric cache the doc is rendered from
+#   training/runs/<rid>/rank_rho_b30_v*.csv   the held-out metric cache the doc is rendered from.
+#                                             GLOBBED, not pinned to a version: the cache is
+#                                             bumped when what the numbers MEAN changes, and a
+#                                             pinned name would keep pushing the stale file while
+#                                             the doc was rendered from the new one.
 #   run_logging/render_findings.py             the renderer, so the doc is reproducible
 #   shell_scripts/*.sh                         the launchers, so the arm is reproducible
 #
@@ -49,7 +53,7 @@ FILES=(
   "extra_training/run_logging/plot_three.py"
   "extra_training/training/runs/${RID}/args.json"
   "extra_training/training/runs/${RID}/config.json"
-  "extra_training/training/runs/${RID}/rank_rho_b30_v3.csv"
+  extra_training/training/runs/${RID}/rank_rho_b30_v*.csv
 )
 ADD=()
 for f in "${FILES[@]}"; do [ -f "$ROOT/$f" ] && ADD+=("$f"); done
