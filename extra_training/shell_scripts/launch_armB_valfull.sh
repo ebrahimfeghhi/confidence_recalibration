@@ -64,7 +64,7 @@ LAYERNORM_TYPE=openfold /home/ebrahim/Protenix/.venv/bin/python -I run_logging/l
   --save-every 30 \
   --pae-scored-pairs training/overfit30/pool.csv --pae-only \
   --shuffle structure --seeds 500000-500009 \
-  --prefetch-units 2 --prefetch-workers 3 \
+  --prefetch-units 2 \
   --val-loss-every 3 \
   --val-loss-fold validation/fold \
   --val-loss-selection training/valfull/structures.csv \
