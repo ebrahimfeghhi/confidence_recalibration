@@ -1,0 +1,17 @@
+{
+ "shard": 1,
+ "nshards": 3,
+ "units": 530,
+ "rows": 4600,
+ "n_ost": 2650,
+ "n_unresolvable": 0,
+ "n_differ": 54,
+ "differ_pdbs": {
+  "7zra": 23,
+  "9eg6": 31
+ },
+ "n_unmapped": 0,
+ "unmapped": [],
+ "budget": 30,
+ "ckpt": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/head_ep5_step870.pt"
+}

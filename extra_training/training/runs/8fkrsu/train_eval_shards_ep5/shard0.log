@@ -1,0 +1,17 @@
+pool: 92 interface(s) over 53 structure(s)
+results.csv: 46000 scored (iface, seed, sample) row(s)
+shard 0 of 3: 530 unit(s)
+units: 530 of 1590 intended (53 structures x 30 seeds)
+train scheduler 16.0
+inference scheduler 16.0
+Diffusion Module has 16.0
+pose per-block: 3 block(s) injected, each with its OWN COPY of block 0's injection -- linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) per depth, 30,720 NEW parameter(s). UNTIED: the copies are free to diverge. STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's step 0 (verified against block 0's weights, exactly), NOT to the shipped head -- so capacity is the only variable against a share arm. The copies are named pose_perblock_linear_no_bias_d* and a --train-only that does not match them would create them and never train them.
+loaded 254 head tensor(s) from /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/head_ep5_step870.pt, exact match against 254 head parameter(s)
+join cache: 530 entry(ies) from /home/ebrahim/confidence_recalibration/extra_training/training/valfull/join_cache_shard0.json
+prefetch: one background reader warming the next trunk
+  ...200/530 units
+  ...400/530 units
+join cache: 530 hit(s), 0 newly derived (100% reused)
+
+join 1: OST's per-pose chain mapping used on 2650 pose(s), unresolvable on 0
+shard 0: 4600 row(s) -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/train_eval_shards_ep5/rows_b30_head_ep5_step870_s0.csv
