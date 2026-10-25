@@ -391,6 +391,19 @@ def main():
         # THE UNION IS NOT A GUESS: assert no single pose needs a token the union dropped.
         try:
             extra = BC.assert_pose_invariant_crop(z, lab, a.contact, a.margin)
+            # THE GATE MUST FAIL ON WHAT IT MEASURES. `extra` was computed, printed in the
+            # union-1 column, and discarded -- failures never gained it and the exit code is
+            # `1 if failures else 0`, so a pose-0 divergence was a number a human had to
+            # notice. It is also the ONLY quantity here that can detect one:
+            # assert_pose_invariant_crop's own `miss` check is tautological by its own
+            # docstring ("the union cannot miss a pose's tokens by construction"), while
+            # extra = max_i |union & ~pose_i| == 0 does imply pose_0 == union. Since the
+            # training crop now DEFAULTS to pose 0, this is the check that stands behind it.
+            if extra:
+                failures.append(
+                    f"{pdb}/{unit}: the union crop keeps {extra} token(s) that some "
+                    f"single pose does not, so pose 0 is NOT the union and --crop-all-poses "
+                    f"is no longer optional for this label set")
         except Exception as e:
             bad.append(f"pose-invariance: {type(e).__name__}: {e}")
             extra = -1

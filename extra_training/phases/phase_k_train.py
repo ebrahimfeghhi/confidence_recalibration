@@ -1194,6 +1194,13 @@ def main():
     _pae_keep = {"m": None}
     _scored_asym = {}
     _pae_mask_stats = {"masked": 0, "unmasked": 0}
+    if a.emit_iptm_rows and not a.loss_only:
+        raise SystemExit(
+            "STOP: --emit-iptm-rows is only supported with --loss-only. rank_loss.iptm is the "
+            "DIFFERENTIABLE scorer -- 'minus its torch.no_grad' -- so in a grad-enabled run it "
+            "builds an fp32 [1,N,N,64] softmax that stays reachable from the loop variable across "
+            "calculate_losses and backward, at the memory peak (2.96 GiB at --crop-size 3400). "
+            "--loss-only already wraps the pose in torch.no_grad, which is why it is safe there.")
     _iface_of = {}
     # LAZILY OPENED, so a run without --emit-iptm-rows touches no file. Rows are flushed per unit
     # rather than held to the end: a measurement pass that dies on its last unit should still
@@ -3108,7 +3115,31 @@ def main():
                     _iptm_fh["w"] = csv.writer(_iptm_fh["fh"])
                     _iptm_fh["w"].writerow(["iface", "seed", "sample", "iptm"])
                 _unit = os.path.basename(lab_p).rsplit(".", 1)[0]
-                _seed = _unit.rsplit("_", 1)[-1]
+                _seed = _rank_key(_unit)
+                # THE POSE INDEX IS NOT THE SAMPLE INDEX. The label npz carries an explicit
+                # pose -> sample permutation in `sample_index`, written by
+                # phase_j_build_cache.sample_indices from COORDINATE IDENTITY against the
+                # <pdb>_sample_<k>.cif files, and it is almost never the identity: measured
+                # non-identity on 396 of 400 validation label files. phase_k_eval writes the
+                # MAPPED k, and results.csv is keyed by it. Writing `i` here looked right -- the
+                # aggregate moved by 0.0009 -- while 73.8% of rows carried another sample's DockQ
+                # and 56 of 92 interfaces selected a different pose. Caught in review.
+                _si = lab.get("sample_index") if hasattr(lab, "get") else None
+                if _si is None:
+                    try:
+                        _si = lab["sample_index"]
+                    except Exception:            # noqa: BLE001
+                        _si = None
+                if _si is None:
+                    raise SystemExit(
+                        f"STOP: --emit-iptm-rows needs `sample_index` in {lab_p} to key rows the "
+                        f"way results.csv does, and this label does not carry it. Without it the "
+                        f"rows would join to another sample's DockQ.")
+                _si = np.asarray(_si).reshape(-1)
+                if i >= _si.shape[0]:
+                    raise SystemExit(f"STOP: pose {i} has no sample_index entry in {lab_p} "
+                                     f"({_si.shape[0]} entries).")
+                _samp = int(_si[i])
                 for _p in sorted(_scored_asym.get(pdb) or ()):
                     _v = RKL.iptm(pred["pae"], feat_head, configs, _p)
                     if _v is None:
@@ -3116,7 +3147,7 @@ def main():
                     _ifc = _iface_of.get((pdb, _p))
                     if _ifc is None:
                         continue
-                    _iptm_fh["w"].writerow([_ifc, _seed, i, f"{float(_v.detach()):.6f}"])
+                    _iptm_fh["w"].writerow([_ifc, _seed, _samp, f"{float(_v.detach()):.6f}"])
                     _iptm_fh["n"] += 1
                 _iptm_fh["fh"].flush()
             try:
@@ -3884,6 +3915,12 @@ def main():
                # which is the only thing it is for.
                "--crop-margin", str(a.crop_margin), "--crop-contact", str(a.crop_contact),
                "--crop-size", str(a.crop_size), "--accum", str(a.accum),
+               # EIGHTH INSTANCE OF THE --loss-only INHERITANCE CLASS. The three crop args above
+               # are passed because "a different crop would make the held-out number incomparable
+               # to the training curve it is read against"; --crop-all-poses changes the crop by
+               # the same argument and was not passed, so a parent using the union would have been
+               # monitored on a pose-0 crop. Caught in review.
+               *(["--crop-all-poses"] if a.crop_all_poses else []),
                # ALPHA_PAE 0 IS A TRAINING CHOICE, NOT A MEASUREMENT ONE. A ranking-only arm sets
                # --alpha-pae 0 so no PAE gradient is taken, but the held-out number this
                # subprocess exists to produce IS the PAE loss, and passing 0 through would report
@@ -4528,6 +4565,12 @@ def main():
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
                                   "crop_contact": a.crop_contact,
+                 # THE CROP DEFINITION, for the same reason as the two above: a16911de changed
+                 # the DEFAULT, so resuming a pre-change bundle under post-change code blends two
+                 # crops into one curve unless the guard compares it. Benign only while pose 0
+                 # equals the union; the guard's standard is that the setting is compared, not
+                 # that it currently happens to be a no-op.
+                 "crop_all_poses": a.crop_all_poses,
                                   "commit": _git_commit(), "written": time.strftime("%Y-%m-%dT%H:%M:%S%z")}},
                        tmp)
             # ATOMIC: a bundle half-written by a crash at the epoch boundary would be the one thing
@@ -4790,8 +4833,14 @@ def main():
             # arm, "residual" and "prefetch wait" happened to be the same 6.7 min and could be
             # mistaken for two separate costs. Publishing it means the residual means the same
             # thing in every arm instead of only in the ones without a pass A.
-            _T["prefetch_wait"] = _pf_stat["wait_s"]
-            _TN["prefetch_wait"] = _pf_stat["hit"] + _pf_stat["miss"]
+            # ACCUMULATED, NOT ASSIGNED. _parts reports _T[k] - _T0[k], which is right only for
+            # the run-cumulative counters _tick produces. _pf_stat is RESET per epoch by
+            # _pf_start, so assigning it here printed w_N - w_{N-1} -- negative exactly when the
+            # wait shrank, which is the phenomenon this bucket was added to track -- and a count
+            # delta of 0 whenever two epochs had the same unit count, which filtered the bucket
+            # out of both the printed line and _acc from epoch 2 onward. Only epoch 1 was right.
+            _T["prefetch_wait"] += _pf_stat["wait_s"]
+            _TN["prefetch_wait"] += _pf_stat["hit"] + _pf_stat["miss"]
             _parts = [(k, _T[k] - _T0.get(k, 0.0), _TN[k] - _TN0.get(k, 0)) for k in sorted(_T)]
             # cropped_tokens is a WORKLOAD counter, not a duration: reported as a mean so the
             # per-rank imbalance is readable directly. The pair track is quadratic in tokens, so
@@ -4814,7 +4863,13 @@ def main():
                      "trunk_read_plus_crop_tokens", "label_open", "loss_feature_prep",
                      "loss_stats_collective_plus_wait", "apply_step_total",
                      "prefetch_wait", "grad_collective_plus_wait",
-                     "rank_pass_a", "rank_gather", "pose_a_total")
+                     # rank_gather and pose_a_total are leaves. rank_pass_a is NOT: it wraps the
+                     # score_only run_unit calls, which tick pose_a_total, label_open,
+                     # fingerprint_hash, trunk_read_plus_crop_tokens and loss_feature_prep into
+                     # the same _T. Including it counted pass A two or three times and could push
+                     # the residual negative on a --rank-cross-seed arm -- the same double-count
+                     # reasoning that correctly kept cpucrop_* out.
+                     "rank_gather", "pose_a_total")
             _acc = sum(v for k, v, c in _parts if k in _EXCL and c)
             print(f"  [rank {rank}] epoch {ep + 1} took {_ep_s/60:.1f} min -- {_shown}", flush=True)
             # DID THE PREFETCH ACTUALLY FIRE? crop_slice alone cannot answer it: a miss falls back

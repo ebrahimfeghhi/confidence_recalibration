@@ -26,7 +26,12 @@ ap.add_argument("rows")
 ap.add_argument("--results", required=True)
 ap.add_argument("--compare", default="", help="an eval shard dir to check this against")
 ap.add_argument("--thresh", type=float, default=0.23)
-ap.add_argument("--budget", type=int, default=30)
+ap.add_argument("--budget", type=int, default=30,
+                help="seeds per interface, as phase_k_eval means it. Rows outside "
+                     "[--seed-base, --seed-base + budget) are DROPPED rather than silently "
+                     "widening the population: 70 extra seeds move mean_dockq by 0.0052 and "
+                     "frac_acc by 0.011 on this pool, the same order as the signal being read.")
+ap.add_argument("--seed-base", type=int, default=400000)
 a = ap.parse_args()
 
 dq = {}
@@ -34,22 +39,50 @@ with open(a.results) as fh:
     for r in csv.DictReader(fh):
         dq[(r["iface"], r["seed"], r["sample"])] = float(r["dockq"])
 
-by, missing = defaultdict(list), 0
+by, missing, out_of_range, dup = defaultdict(list), 0, 0, 0
+seen = set()
 with open(a.rows) as fh:
     for r in csv.DictReader(fh):
+        if not (a.seed_base <= int(r["seed"]) < a.seed_base + a.budget):
+            out_of_range += 1
+            continue
         k = (r["iface"], r["seed"], r["sample"])
         if k not in dq:
             missing += 1
             continue
-        by[r["iface"]].append((float(r["iptm"]), dq[k]))
+        if k in seen:
+            dup += 1
+        seen.add(k)
+        by[r["iface"]].append((float(r["iptm"]), dq[k], int(r["seed"]), int(r["sample"])))
 if not by:
     raise SystemExit(f"STOP: no rows of {a.rows} joined to {a.results}")
-sel = [max(v, key=lambda p: p[0])[1] for v in by.values()]
+# THE EVAL'S OWN TIE-BREAK, (iptm, -seed, -sample). phase_k_eval adopted it because the
+# row-order version "selected different DockQ depending on how the work was split"; picking by
+# file order here reintroduces exactly that. It matters more in emitted rows than in the eval's,
+# because the emitter writes ipTM at 6 dp and ties are therefore MORE likely: 1 of 92 interfaces
+# on j583i8 epoch 1 ties at that precision with two different DockQ values behind it.
+sel = [max(v, key=lambda t: (t[0], -t[2], -t[3]))[1] for v in by.values()]
 n = len(by)
 mean = sum(sel) / n
 frac = sum(1 for d in sel if d >= a.thresh) / n
+# PHASE_K_EVAL REFUSES ALL OF THESE; a rebuilt metric that does not is a metric over
+# "whatever showed up". The emitter flushes per unit by design, so a pass that dies at 60% leaves
+# a file this would otherwise summarise as if it were complete.
+if dup:
+    raise SystemExit(f"STOP: {dup} duplicate (iface, seed, sample) row(s) in {a.rows}. The "
+                     f"emitter truncates per process, so this is what a sharded or multi-rank "
+                     f"writer clobbering one file looks like.")
+if missing:
+    raise SystemExit(f"STOP: {missing} row(s) of {a.rows} have no DockQ in {a.results}. A metric "
+                     f"over the rows that happened to join is not the metric.")
+depths = {len(v) for v in by.values()}
+if len(depths) != 1:
+    raise SystemExit(f"STOP: interfaces have unequal pose depth {sorted(depths)}; the population "
+                     f"is not the cross product phase_k_eval asserts.")
 print(f"from ipTM rows: mean_dockq {mean:.6f}  frac_acc {frac:.6f}  ({n} interfaces)"
-      + (f"  [{missing} row(s) not in results.csv]" if missing else ""))
+      + f"  [depth {depths.pop()}/iface"
+      + (f", {out_of_range} row(s) outside the seed budget dropped" if out_of_range else "")
+      + "]")
 
 if a.compare:
     rows = []
@@ -60,8 +93,9 @@ if a.compare:
         raise SystemExit(f"STOP: no rows_b{a.budget}_*.csv under {a.compare}")
     eb = defaultdict(list)
     for r in rows:
-        eb[r["iface"]].append((float(r["iptm"]), float(r["dockq"])))
-    es = [max(v, key=lambda p: p[0])[1] for v in eb.values()]
+        eb[r["iface"]].append((float(r["iptm"]), float(r["dockq"]), int(r["seed"]),
+                               int(r["sample"])))
+    es = [max(v, key=lambda t: (t[0], -t[2], -t[3]))[1] for v in eb.values()]
     em, ef = sum(es) / len(eb), sum(1 for d in es if d >= a.thresh) / len(eb)
     print(f"from the eval : mean_dockq {em:.6f}  frac_acc {ef:.6f}  ({len(eb)} interfaces)")
     # PER-POSE, NOT JUST THE AGGREGATE. Two different ipTM vectors can select the same pose on
