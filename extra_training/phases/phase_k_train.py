@@ -4556,7 +4556,13 @@ def main():
                 # coefficients the way the linear one is. group_coeffs returns the value in pass A
                 # and it is accumulated there; 0 is the floor (every pair ordered), not "no
                 # alignment".
-                print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({a.rank_form}, cross-seed): "
+                # THE PAIR FAMILY IS a.rank_pairs, NOT the string "cross-seed". That was
+                # hardcoded here from a time when every arm formed cross-seed pairs, so x5frz6 --
+                # which forms WITHIN-SEED pairs only -- printed "cross-seed" at every epoch while
+                # the startup banner said the opposite. The pair count was the only thing that
+                # gave it away: 6,656 against the ~86,600 a cross-seed objective would form.
+                print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({a.rank_form}, "
+                      f"{a.rank_pairs}-seed pairs): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
                       f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s)"
                       + (f" [{_xs_stat['skipped']} step(s) SKIPPED: no straddling pair in either "
