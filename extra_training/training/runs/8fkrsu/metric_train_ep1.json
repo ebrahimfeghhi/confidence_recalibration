@@ -1,0 +1,12 @@
+{
+ "n_interfaces": 92,
+ "budget": 30,
+ "mean_dockq": 0.5735,
+ "frac_acc": 0.7174,
+ "oracle_mean_dockq": 0.6926,
+ "oracle_frac_acc": 0.8587,
+ "ckpt": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/head_ep1_step178.pt",
+ "headroom": 0.1191,
+ "baseline_mean_dockq": 0.5831,
+ "baseline_frac_acc": 0.7391
+}

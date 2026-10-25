@@ -1,0 +1,228 @@
+W1024 21:22:25.827000 3043572 torch/distributed/run.py:766] 
+W1024 21:22:25.827000 3043572 torch/distributed/run.py:766] *****************************************
+W1024 21:22:25.827000 3043572 torch/distributed/run.py:766] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1024 21:22:25.827000 3043572 torch/distributed/run.py:766] *****************************************
+held-out PAE monitor: every 1 epoch(s), 53 structure(s) x seeds 400000-400029 = 1590 unit(s), masked by training/valfull/pool.csv
+replay gate: PASS (training/ft3_pilot_replay.log)
+held-out PAE monitor: every 1 epoch(s), 53 structure(s) x seeds 400000-400029 = 1590 unit(s), masked by training/valfull/pool.csv
+held-out PAE monitor: every 1 epoch(s), 53 structure(s) x seeds 400000-400029 = 1590 unit(s), masked by training/valfull/pool.csv
+replay gate: PASS (training/ft3_pilot_replay.log)
+replay gate: PASS (training/ft3_pilot_replay.log)
+[rank 0/3] cuda:0 backend=gloo timeout=240 min
+  accum: 85 requested -> K=6 structure(s)/step x 3 rank(s) x 5 pose(s) = 90 poses per step (30/rank)
+[rank 2/3] cuda:2 backend=gloo timeout=240 min
+  accum: 85 requested -> K=6 structure(s)/step x 3 rank(s) x 5 pose(s) = 90 poses per step (30/rank)
+[rank 1/3] cuda:1 backend=gloo timeout=240 min
+  accum: 85 requested -> K=6 structure(s)/step x 3 rank(s) x 5 pose(s) = 90 poses per step (30/rank)
+train scheduler 16.0
+inference scheduler 16.0
+train scheduler 16.0
+inference scheduler 16.0
+train scheduler 16.0
+inference scheduler 16.0
+Diffusion Module has 16.0
+Diffusion Module has 16.0
+Diffusion Module has 16.0
+pair stack: 4 block(s), blocks_per_ckpt=None, chunking off
+confidence_head.training = True (trunk stays eval; train_confidence_only=True)
+pose per-block: 3 block(s) injected, each with its OWN COPY of block 0's injection -- linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) per depth, 30,720 NEW parameter(s). UNTIED: the copies are free to diverge. STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's step 0 (verified against block 0's weights, exactly), NOT to the shipped head -- so capacity is the only variable against a share arm. The copies are named pose_perblock_linear_no_bias_d* and a --train-only that does not match them would create them and never train them.
+  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); measured 3.4 ms and up to 1.66 GB per pose
+  dropped plddt_loss (PLDDTLoss); stub answers ['bins_from_lddt', 'forward_given_atom_lddt']
+  dropped pde_loss (PDELoss); stub answers ['calculate_label']
+  dropped resolved_loss (ExperimentallyResolvedLoss); stub answers []
+PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. Every gradient now goes to the one output ipTM reads.
+PAE term MASKED to scored chain pairs: 488 structure(s), 977 interface(s), from training/full_train/pool.csv
+RANKING LOSS on chain_pair_iptm: form softplus, alpha 1, weight_by_gap=True, 10268 labelled (pdb, seed, interface) group(s) from training/fold/results.csv
+  PAIR FAMILY: BOTH families at ONE tau
+  within-seed pairs weighted x1 in numerator and W (full training set at tau 0.0270: L=1 leaves within-seed at 7.0% of pairwise gradient mass, L=3 18.3%, L=8 37.1%, L=20 59.3%)
+  STRADDLE-ONLY at DockQ 0.23: a pair counts only when exactly one of its two poses is above 0.23. This is the subspace the FRACTION-ACCEPTABLE criterion can see; mean DockQ is deliberately left as a free variable and both are reported.
+  within-seed pairs at tau 0.1429: a median-gap pair (0.0137 on overfit30) gets weight 0.476 if correctly ordered and 0.524 if inverted (1.10x). Re-measure for another pool with measure_tau.py --pairs within --restrict-to <pool>/structures.csv; the full training set gives 0.0036 and valfull 0.0011, so this ratio is POPULATION-SPECIFIC and tau must never be set from val.
+  softplus tau 0.1429  (given)
+  CROSS-SEED GROUPS: 2 structure(s) x all seeds per step; a pose's coefficient uses every other pose of its interface, so pass A scores the whole step before the first backward
+loss weights: plddt 1 [DROPPED]  pde 1 [DROPPED]  pae 0  resolved 1 [DROPPED]
+train-eval pool: 53 structure(s), all present, none skipped
+  alpha_pae 0 WITH --rank-loss: this is a RANKING-ONLY arm. No PAE gradient is taken; chain_pair_iptm moves through the ranking term alone. The held-out monitor still measures at alpha_pae 1, so val10 PAE stays comparable to every other arm.
+--train-only ['linear_no_bias_d', 'pose_perblock']: 8 of 254 head tensor(s), 40,960 of 19,782,990 parameters (0.207% of the head). Everything else is FROZEN.
+    linear_no_bias_d.weight                        (256, 39)
+    linear_no_bias_d_wo_onehot.weight              (256, 1)
+    pose_perblock_linear_no_bias_d.0.weight        (256, 39)
+    pose_perblock_linear_no_bias_d.1.weight        (256, 39)
+    pose_perblock_linear_no_bias_d.2.weight        (256, 39)
+    pose_perblock_linear_no_bias_d_wo_onehot.0.weight (256, 1)
+    pose_perblock_linear_no_bias_d_wo_onehot.1.weight (256, 1)
+    pose_perblock_linear_no_bias_d_wo_onehot.2.weight (256, 1)
+trainable: 8 tensor(s), 0.0M of 464.5M parameters (0.0%), under ['confidence_head']
+manifest: 487 selected structure(s) minus ['8vba', '9b9j', '9bbn', '9dc3', '9dzf', '9e7x', '9mx1', '9q5m', '9q5v', '9q7b'] x seeds 500000-500009 = 4870 intended unit(s), from training/full_train/structures_no9dzj.csv
+  manifest digest 258f939fd53397bf over 4870 unit(s)
+  PAE mask: all 487 training structure(s) are named by training/full_train/pool.csv
+  alignment preflight: PASS over 487 structure(s), digest 258f939fd53397bf
+  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label only (9 features + coordinate/coordinate_mask)
+  resolved 4870 unit(s) over 487 structure(s) from 1 fold root(s), shuffle=structure, seed=0
+fingerprint context: code=93a8fe85a9ea9bde loss=2fc84683b58e5aa0
+pair stack: 4 block(s), blocks_per_ckpt=None, chunking off
+confidence_head.training = True (trunk stays eval; train_confidence_only=True)
+pose per-block: 3 block(s) injected, each with its OWN COPY of block 0's injection -- linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) per depth, 30,720 NEW parameter(s). UNTIED: the copies are free to diverge. STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's step 0 (verified against block 0's weights, exactly), NOT to the shipped head -- so capacity is the only variable against a share arm. The copies are named pose_perblock_linear_no_bias_d* and a --train-only that does not match them would create them and never train them.
+  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); measured 3.4 ms and up to 1.66 GB per pose
+  dropped plddt_loss (PLDDTLoss); stub answers ['bins_from_lddt', 'forward_given_atom_lddt']
+  dropped pde_loss (PDELoss); stub answers ['calculate_label']
+  dropped resolved_loss (ExperimentallyResolvedLoss); stub answers []
+PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. Every gradient now goes to the one output ipTM reads.
+PAE term MASKED to scored chain pairs: 488 structure(s), 977 interface(s), from training/full_train/pool.csv
+RANKING LOSS on chain_pair_iptm: form softplus, alpha 1, weight_by_gap=True, 10268 labelled (pdb, seed, interface) group(s) from training/fold/results.csv
+  PAIR FAMILY: BOTH families at ONE tau
+  within-seed pairs weighted x1 in numerator and W (full training set at tau 0.0270: L=1 leaves within-seed at 7.0% of pairwise gradient mass, L=3 18.3%, L=8 37.1%, L=20 59.3%)
+  STRADDLE-ONLY at DockQ 0.23: a pair counts only when exactly one of its two poses is above 0.23. This is the subspace the FRACTION-ACCEPTABLE criterion can see; mean DockQ is deliberately left as a free variable and both are reported.
+  within-seed pairs at tau 0.1429: a median-gap pair (0.0137 on overfit30) gets weight 0.476 if correctly ordered and 0.524 if inverted (1.10x). Re-measure for another pool with measure_tau.py --pairs within --restrict-to <pool>/structures.csv; the full training set gives 0.0036 and valfull 0.0011, so this ratio is POPULATION-SPECIFIC and tau must never be set from val.
+  softplus tau 0.1429  (given)
+  CROSS-SEED GROUPS: 2 structure(s) x all seeds per step; a pose's coefficient uses every other pose of its interface, so pass A scores the whole step before the first backward
+loss weights: plddt 1 [DROPPED]  pde 1 [DROPPED]  pae 0  resolved 1 [DROPPED]
+train-eval pool: 53 structure(s), all present, none skipped
+  alpha_pae 0 WITH --rank-loss: this is a RANKING-ONLY arm. No PAE gradient is taken; chain_pair_iptm moves through the ranking term alone. The held-out monitor still measures at alpha_pae 1, so val10 PAE stays comparable to every other arm.
+--train-only ['linear_no_bias_d', 'pose_perblock']: 8 of 254 head tensor(s), 40,960 of 19,782,990 parameters (0.207% of the head). Everything else is FROZEN.
+    linear_no_bias_d.weight                        (256, 39)
+    linear_no_bias_d_wo_onehot.weight              (256, 1)
+    pose_perblock_linear_no_bias_d.0.weight        (256, 39)
+    pose_perblock_linear_no_bias_d.1.weight        (256, 39)
+    pose_perblock_linear_no_bias_d.2.weight        (256, 39)
+    pose_perblock_linear_no_bias_d_wo_onehot.0.weight (256, 1)
+    pose_perblock_linear_no_bias_d_wo_onehot.1.weight (256, 1)
+    pose_perblock_linear_no_bias_d_wo_onehot.2.weight (256, 1)
+trainable: 8 tensor(s), 0.0M of 464.5M parameters (0.0%), under ['confidence_head']
+manifest: 487 selected structure(s) minus ['8vba', '9b9j', '9bbn', '9dc3', '9dzf', '9e7x', '9mx1', '9q5m', '9q5v', '9q7b'] x seeds 500000-500009 = 4870 intended unit(s), from training/full_train/structures_no9dzj.csv
+  manifest digest 258f939fd53397bf over 4870 unit(s)
+  PAE mask: all 487 training structure(s) are named by training/full_train/pool.csv
+  alignment preflight: PASS over 487 structure(s), digest 258f939fd53397bf
+  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label only (9 features + coordinate/coordinate_mask)
+  resolved 4870 unit(s) over 487 structure(s) from 1 fold root(s), shuffle=structure, seed=0
+fingerprint context: code=93a8fe85a9ea9bde loss=2fc84683b58e5aa0
+fingerprint cache: 4880 entry(ies) reused from training/fold, 0 invalidated by a changed input, code_fp or schema
+
+training: lr 0.01, warmup 20, accum 85, ~4065 optimiser step(s) for 15.0 epoch(s) (270 full + 1 partial per epoch); no step cap, the epoch loop decides
+trajectory -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/trajectory.csv
+fingerprint cache: 4880 entry(ies) reused from training/fold, 0 invalidated by a changed input, code_fp or schema
+
+training: lr 0.01, warmup 20, accum 85, ~4065 optimiser step(s) for 15.0 epoch(s) (270 full + 1 partial per epoch); no step cap, the epoch loop decides
+trajectory -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/trajectory.csv
+pair stack: 4 block(s), blocks_per_ckpt=None, chunking off
+confidence_head.training = True (trunk stays eval; train_confidence_only=True)
+pose per-block: 3 block(s) injected, each with its OWN COPY of block 0's injection -- linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) per depth, 30,720 NEW parameter(s). UNTIED: the copies are free to diverge. STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's step 0 (verified against block 0's weights, exactly), NOT to the shipped head -- so capacity is the only variable against a share arm. The copies are named pose_perblock_linear_no_bias_d* and a --train-only that does not match them would create them and never train them.
+  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); measured 3.4 ms and up to 1.66 GB per pose
+  dropped plddt_loss (PLDDTLoss); stub answers ['bins_from_lddt', 'forward_given_atom_lddt']
+  dropped pde_loss (PDELoss); stub answers ['calculate_label']
+  dropped resolved_loss (ExperimentallyResolvedLoss); stub answers []
+PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. Every gradient now goes to the one output ipTM reads.
+PAE term MASKED to scored chain pairs: 488 structure(s), 977 interface(s), from training/full_train/pool.csv
+RANKING LOSS on chain_pair_iptm: form softplus, alpha 1, weight_by_gap=True, 10268 labelled (pdb, seed, interface) group(s) from training/fold/results.csv
+  PAIR FAMILY: BOTH families at ONE tau
+  within-seed pairs weighted x1 in numerator and W (full training set at tau 0.0270: L=1 leaves within-seed at 7.0% of pairwise gradient mass, L=3 18.3%, L=8 37.1%, L=20 59.3%)
+  STRADDLE-ONLY at DockQ 0.23: a pair counts only when exactly one of its two poses is above 0.23. This is the subspace the FRACTION-ACCEPTABLE criterion can see; mean DockQ is deliberately left as a free variable and both are reported.
+  within-seed pairs at tau 0.1429: a median-gap pair (0.0137 on overfit30) gets weight 0.476 if correctly ordered and 0.524 if inverted (1.10x). Re-measure for another pool with measure_tau.py --pairs within --restrict-to <pool>/structures.csv; the full training set gives 0.0036 and valfull 0.0011, so this ratio is POPULATION-SPECIFIC and tau must never be set from val.
+  softplus tau 0.1429  (given)
+  CROSS-SEED GROUPS: 2 structure(s) x all seeds per step; a pose's coefficient uses every other pose of its interface, so pass A scores the whole step before the first backward
+loss weights: plddt 1 [DROPPED]  pde 1 [DROPPED]  pae 0  resolved 1 [DROPPED]
+train-eval pool: 53 structure(s), all present, none skipped
+  alpha_pae 0 WITH --rank-loss: this is a RANKING-ONLY arm. No PAE gradient is taken; chain_pair_iptm moves through the ranking term alone. The held-out monitor still measures at alpha_pae 1, so val10 PAE stays comparable to every other arm.
+--train-only ['linear_no_bias_d', 'pose_perblock']: 8 of 254 head tensor(s), 40,960 of 19,782,990 parameters (0.207% of the head). Everything else is FROZEN.
+    linear_no_bias_d.weight                        (256, 39)
+    linear_no_bias_d_wo_onehot.weight              (256, 1)
+    pose_perblock_linear_no_bias_d.0.weight        (256, 39)
+    pose_perblock_linear_no_bias_d.1.weight        (256, 39)
+    pose_perblock_linear_no_bias_d.2.weight        (256, 39)
+    pose_perblock_linear_no_bias_d_wo_onehot.0.weight (256, 1)
+    pose_perblock_linear_no_bias_d_wo_onehot.1.weight (256, 1)
+    pose_perblock_linear_no_bias_d_wo_onehot.2.weight (256, 1)
+trainable: 8 tensor(s), 0.0M of 464.5M parameters (0.0%), under ['confidence_head']
+  ranking label coverage: all 9750 (pdb, seed, interface) group(s) hold 5 finite DockQ value(s)
+manifest: 487 selected structure(s) minus ['8vba', '9b9j', '9bbn', '9dc3', '9dzf', '9e7x', '9mx1', '9q5m', '9q5v', '9q7b'] x seeds 500000-500009 = 4870 intended unit(s), from training/full_train/structures_no9dzj.csv
+  manifest digest 258f939fd53397bf over 4870 unit(s)
+  PAE mask: all 487 training structure(s) are named by training/full_train/pool.csv
+  alignment preflight: PASS over 487 structure(s), digest 258f939fd53397bf
+  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label only (9 features + coordinate/coordinate_mask)
+  resolved 4870 unit(s) over 487 structure(s) from 1 fold root(s), shuffle=structure, seed=0
+fingerprint context: code=93a8fe85a9ea9bde loss=2fc84683b58e5aa0
+  --l2-sp 5e-05: anchor SNAPSHOT at init (8 tensor(s)) -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/l2sp_anchor.pt. Penalty is LAMBDA * ||W - W_shipped||^2; at the drift the full head showed over 30 epochs (67,052) that prices to 3.353 against a PAE loss near 2.0.
+fingerprint cache: 4880 entry(ies) reused from training/fold, 0 invalidated by a changed input, code_fp or schema
+
+training: lr 0.01, warmup 20, accum 85, ~4065 optimiser step(s) for 15.0 epoch(s) (270 full + 1 partial per epoch); no step cap, the epoch loop decides
+trajectory -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/trajectory.csv
+  epoch 1/15: 1620 unit(s)  epoch 1/15: 1620 unit(s)
+  epoch 1/15: 1620 unit(s)
+
+  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=93a8fe85a9ea9bde. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.
+  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=93a8fe85a9ea9bde. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.
+  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=93a8fe85a9ea9bde. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=93a8fe85a9ea9bde. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.
+
+  epoch 1 took 53.2 min for 1620 unit(s), 178 optimiser step(s), 0.39 s/pose
+  [rank 2] epoch 1 took 53.2 min -- apply_step_total 0.2m/243  crop_slice 16.9m/3240  cropped_tokens mean 328  gpu_backward 12.8m/8100  gpu_forward 13.0m/16200  grad_collective_plus_wait 0.1m/178  label_open 0.0m/3240  loss_feature_prep 0.0m/3240  loss_stats_collective_plus_wait 2.9m/243  pose_a_total 7.0m/8100  pose_total 17.8m/8100  prefetch_issue 0.0m/1619  rank_gather 4.5m/243  rank_pass_a 24.6m/243  trunk_read_plus_crop_tokens 2.6m/1620
+  [rank 2] epoch 1 prefetch (1 worker(s)): 1620/1620 hit (100.0%), 1.2 min waiting on the worker
+  [rank 2] epoch 1 l2-sp: ||W-W0||^2 = 14.0, penalty = 0.0007 (unconstrained full head reached 67,052 by epoch 30)
+  [rank 2] epoch 1 rank-loss (softplus, cross-seed): +0.14452 over 413 interface-group(s) in 243 step(s) [65 step(s) SKIPPED: no straddling pair in either structure, so no task gradient -- not handed to AdamW], 134655 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 2] epoch 1 accounted 40.4m of 53.2m, residual 12.8m (exclusive buckets only; gpu_* overlap pose_total)
+  epoch 1 took 53.2 min for 1620 unit(s), 178 optimiser step(s), 0.39 s/pose
+  [rank 1] epoch 1 took 53.2 min -- apply_step_total 0.2m/243  crop_slice 16.9m/3240  cropped_tokens mean 324  gpu_backward 12.5m/8100  gpu_forward 12.6m/16200  grad_collective_plus_wait 0.1m/178  label_open 0.0m/3240  loss_feature_prep 0.0m/3240  loss_stats_collective_plus_wait 3.2m/243  pose_a_total 6.8m/8100  pose_total 17.4m/8100  prefetch_issue 0.0m/1619  rank_gather 4.5m/243  rank_pass_a 24.6m/243  trunk_read_plus_crop_tokens 2.6m/1620
+  [rank 1] epoch 1 prefetch (1 worker(s)): 1620/1620 hit (100.0%), 1.3 min waiting on the worker
+  [rank 1] epoch 1 l2-sp: ||W-W0||^2 = 14.0, penalty = 0.0007 (unconstrained full head reached 67,052 by epoch 30)
+  [rank 2] epoch 1 memory: peak allocated 54.83 GB, peak reserved 56.84 GB, blocks_per_ckpt=None
+  [rank 1] epoch 1 rank-loss (softplus, cross-seed): +0.14452 over 413 interface-group(s) in 243 step(s) [65 step(s) SKIPPED: no straddling pair in either structure, so no task gradient -- not handed to AdamW], 134655 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 1] epoch 1 accounted 40.4m of 53.2m, residual 12.8m (exclusive buckets only; gpu_* overlap pose_total)
+  epoch 1 took 53.2 min for 1620 unit(s), 178 optimiser step(s), 0.39 s/pose
+  [rank 1] epoch 1 memory: peak allocated 54.83 GB, peak reserved 56.84 GB, blocks_per_ckpt=None
+  [rank 0] epoch 1 took 53.2 min -- apply_step_total 0.2m/243  crop_slice 19.6m/3240  cropped_tokens mean 327  gpu_backward 12.5m/8100  gpu_forward 12.7m/16200  grad_collective_plus_wait 0.2m/178  label_open 0.0m/3240  loss_feature_prep 0.0m/3240  loss_stats_collective_plus_wait 3.4m/243  pose_a_total 6.9m/8100  pose_total 17.3m/8100  prefetch_issue 0.0m/1619  rank_gather 1.8m/243  rank_pass_a 27.3m/243  trunk_read_plus_crop_tokens 2.6m/1620
+  [rank 0] epoch 1 prefetch (1 worker(s)): 1620/1620 hit (100.0%), 1.1 min waiting on the worker
+  [rank 0] epoch 1 l2-sp: ||W-W0||^2 = 14.0, penalty = 0.0007 (unconstrained full head reached 67,052 by epoch 30)
+  [rank 0] epoch 1 rank-loss (softplus, cross-seed): +0.14452 over 413 interface-group(s) in 243 step(s) [65 step(s) SKIPPED: no straddling pair in either structure, so no task gradient -- not handed to AdamW], 134655 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 0] epoch 1 accounted 43.2m of 53.2m, residual 9.9m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 0] epoch 1 memory: peak allocated 54.83 GB, peak reserved 56.84 GB, blocks_per_ckpt=None
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:2426: ResourceWarning: unclosed file <_io.TextIOWrapper name='training/fold/unit_fingerprints.r0.json' mode='r' encoding='UTF-8'>
+  prev = json.load(open(_fp_disk))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:2426: ResourceWarning: unclosed file <_io.TextIOWrapper name='training/fold/unit_fingerprints.r2.json' mode='r' encoding='UTF-8'>
+  prev = json.load(open(_fp_disk))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:2426: ResourceWarning: unclosed file <_io.TextIOWrapper name='training/fold/unit_fingerprints.r1.json' mode='r' encoding='UTF-8'>
+  prev = json.load(open(_fp_disk))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/resume_ep1.pt (0 MiB: head + AdamW moments + step)
+  held-out PAE for epoch 1 (the training card)
+epoch 1 VALLOSS: pae 3.0041  poses 7950
+  evaluating epoch 1 (pool@fold) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:3933: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/metric_train_ep1.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 1 TRAIN: mean_dockq 0.5735  frac_acc 0.7174  oracle 0.6926 / 0.8587  headroom 0.1191  (92 interfaces)
+  epoch 2/15: 1620 unit(s)
+  epoch 2/15: 1620 unit(s)  epoch 2/15: 1620 unit(s)
+
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/head_step250.pt
+  epoch 2 took 53.9 min for 1620 unit(s), 175 optimiser step(s), 0.40 s/pose
+  [rank 1] epoch 2 took 53.9 min -- apply_step_total 0.3m/243  crop_slice 18.3m/3240  cropped_tokens mean 327  gpu_backward 12.6m/8100  gpu_forward 12.7m/16200  grad_collective_plus_wait 0.2m/175  label_open 0.0m/3240  loss_feature_prep 0.0m/3240  loss_stats_collective_plus_wait 3.4m/243  pose_a_total 6.9m/8100  pose_total 17.4m/8100  prefetch_issue 0.0m/1619  rank_gather 4.1m/243  rank_pass_a 25.9m/243  trunk_read_plus_crop_tokens 2.5m/1620
+  [rank 1] epoch 2 prefetch (1 worker(s)): 1620/1620 hit (100.0%), 0.8 min waiting on the worker
+  [rank 1] epoch 2 l2-sp: ||W-W0||^2 = 20.3, penalty = 0.0010 (unconstrained full head reached 67,052 by epoch 30)
+  [rank 1] epoch 2 rank-loss (softplus, cross-seed): +0.14570 over 413 interface-group(s) in 243 step(s) [68 step(s) SKIPPED: no straddling pair in either structure, so no task gradient -- not handed to AdamW], 134567 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 1] epoch 2 accounted 41.9m of 53.9m, residual 11.9m (exclusive buckets only; gpu_* overlap pose_total)
+  epoch 2 took 53.9 min for 1620 unit(s), 175 optimiser step(s), 0.40 s/pose
+  [rank 2] epoch 2 took 53.9 min -- apply_step_total 0.3m/243  crop_slice 18.7m/3240  cropped_tokens mean 329  gpu_backward 12.8m/8100  gpu_forward 12.9m/16200  grad_collective_plus_wait 0.2m/175  label_open 0.0m/3240  loss_feature_prep 0.0m/3240  loss_stats_collective_plus_wait 3.1m/243  pose_a_total 7.0m/8100  pose_total 17.7m/8100  prefetch_issue 0.0m/1619  rank_gather 3.6m/243  rank_pass_a 26.4m/243  trunk_read_plus_crop_tokens 2.5m/1620
+  [rank 2] epoch 2 prefetch (1 worker(s)): 1620/1620 hit (100.0%), 0.8 min waiting on the worker
+  [rank 2] epoch 2 l2-sp: ||W-W0||^2 = 20.3, penalty = 0.0010 (unconstrained full head reached 67,052 by epoch 30)
+  [rank 2] epoch 2 rank-loss (softplus, cross-seed): +0.14570 over 413 interface-group(s) in 243 step(s) [68 step(s) SKIPPED: no straddling pair in either structure, so no task gradient -- not handed to AdamW], 134567 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 2] epoch 2 accounted 42.3m of 53.9m, residual 11.6m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 1] epoch 2 memory: peak allocated 54.83 GB, peak reserved 56.33 GB, blocks_per_ckpt=None
+  [rank 2] epoch 2 memory: peak allocated 54.83 GB, peak reserved 56.33 GB, blocks_per_ckpt=None
+  epoch 2 took 53.9 min for 1620 unit(s), 175 optimiser step(s), 0.40 s/pose
+  [rank 0] epoch 2 took 53.9 min -- apply_step_total 0.3m/243  crop_slice 20.2m/3240  cropped_tokens mean 324  gpu_backward 12.5m/8100  gpu_forward 12.6m/16200  grad_collective_plus_wait 0.2m/175  label_open 0.0m/3240  loss_feature_prep 0.0m/3240  loss_stats_collective_plus_wait 3.4m/243  pose_a_total 6.8m/8100  pose_total 17.4m/8100  prefetch_issue 0.0m/1619  rank_gather 2.2m/243  rank_pass_a 27.8m/243  trunk_read_plus_crop_tokens 2.5m/1620
+  [rank 0] epoch 2 prefetch (1 worker(s)): 1620/1620 hit (100.0%), 1.0 min waiting on the worker
+  [rank 0] epoch 2 l2-sp: ||W-W0||^2 = 20.3, penalty = 0.0010 (unconstrained full head reached 67,052 by epoch 30)
+  [rank 0] epoch 2 rank-loss (softplus, cross-seed): +0.14570 over 413 interface-group(s) in 243 step(s) [68 step(s) SKIPPED: no straddling pair in either structure, so no task gradient -- not handed to AdamW], 134567 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 0] epoch 2 accounted 43.8m of 53.9m, residual 10.1m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 0] epoch 2 memory: peak allocated 54.83 GB, peak reserved 56.33 GB, blocks_per_ckpt=None
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/resume_ep2.pt (0 MiB: head + AdamW moments + step)
+  held-out PAE for epoch 2 (the training card)
+epoch 2 VALLOSS: pae 3.2424  poses 7950
+  evaluating epoch 2 (pool@fold) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:3933: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/metric_train_ep2.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 2 TRAIN: mean_dockq 0.5787  frac_acc 0.7391  oracle 0.6926 / 0.8587  headroom 0.1139  (92 interfaces)
+  epoch 3/15: 1620 unit(s)
+  epoch 3/15: 1620 unit(s)  epoch 3/15: 1620 unit(s)
+
