@@ -1780,18 +1780,10 @@ def main():
     skip = {x.strip().lower() for x in a.manifest_skip.split(",") if x.strip()}
     with open(a.manifest_selection) as fh:
         sel_pdbs = [r["pdb"].strip().lower() for r in csv.DictReader(fh)]
-    # SHARDED BEFORE THE SEED EXPANSION, so a shard owns whole structures and every seed of a
-    # structure lands in the same child -- which is what makes the shard means poolable as a plain
-    # mean over poses. Interleaved, so the ordered selection csv does not give one shard all the
-    # large complexes.
     if a.manifest_nshards and a.manifest_nshards > 1:
         if not (0 <= a.manifest_shard < a.manifest_nshards):
             raise SystemExit(f"STOP: --manifest-shard {a.manifest_shard} is not in "
                              f"[0, {a.manifest_nshards}).")
-        _n_all = len(sel_pdbs)
-        sel_pdbs = sel_pdbs[a.manifest_shard::a.manifest_nshards]
-        print(f"manifest SHARD {a.manifest_shard} of {a.manifest_nshards}: "
-              f"{len(sel_pdbs)} of {_n_all} selected structure(s), interleaved")
     want = [(p, sd) for p in sel_pdbs if p not in skip for sd in range(lo_s, hi_s + 1)]
     _rank_check_coverage(want)
     print(f"manifest: {len(sel_pdbs)} selected structure(s) minus {sorted(skip) or 'none'} "
@@ -1892,6 +1884,32 @@ def main():
               f"digest {_pf.get('manifest_digest')}")
         print(f"  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label "
               f"only ({len(BC.LOSS_FEATS)} features + coordinate/coordinate_mask)")
+    # THE SHARD IS APPLIED HERE, AFTER the manifest digest, the PAE mask coverage and the
+    # alignment preflight have all run over the WHOLE population. Slicing sel_pdbs earlier -- the
+    # first version of this -- made each child compute a digest over its own 17-18 structures and
+    # compare it to a marker written for all 53, so every child exited with "the alignment
+    # preflight was run over manifest X, this run is Y". All three shards would have failed, and
+    # the any-shard-fails policy would then have dropped the held-out point EVERY epoch: a
+    # permanently dead monitor that looks like a configuration problem. Caught in review.
+    #
+    # Filtering by STRUCTURE keeps every seed of a structure in one child, which is convenient but
+    # is NOT what makes the pooled mean correct -- disjoint, complete pose coverage is, and that
+    # is asserted by the parent against the expected population before it publishes a number.
+    if a.manifest_nshards and a.manifest_nshards > 1:
+        _all_pdbs = sorted({x[0] for x in flat})
+        _mine = set(_all_pdbs[a.manifest_shard::a.manifest_nshards])
+        _n_before = len(flat)
+        flat = [x for x in flat if x[0] in _mine]
+        print(f"  manifest SHARD {a.manifest_shard} of {a.manifest_nshards}: "
+              f"{len(_mine)} of {len(_all_pdbs)} structure(s), {len(flat)} of {_n_before} unit(s), "
+              f"interleaved -- digest and preflight above cover the FULL population")
+        # MACHINE-READABLE, because the parent cannot derive the FULL population itself: units are
+        # dropped for missing labels or trunks after the selection is read, so
+        # structures x seeds overstates it. Only the child knows _n_before. The parent asserts the
+        # shards agree on it and that they sum to it, which is what makes the pooled mean a mean
+        # over the same population every epoch.
+        print(f"SHARD COVERAGE shard={a.manifest_shard} nshards={a.manifest_nshards} "
+              f"units_mine={len(flat)} units_all={_n_before} nsample={a.nsample}", flush=True)
     print(f"  resolved {len(flat)} unit(s) over {len(set(x[0] for x in flat))} structure(s) "
           f"from {len(roots)} fold root(s), shuffle={a.shuffle}, seed={a.seed}")
 
@@ -3846,22 +3864,39 @@ def main():
                   else ('card ' + str(a.val_loss_card) if a.val_loss_card else 'the training card'))
         print(f"  held-out PAE for epoch {epoch} ({_where})", flush=True)
         if _nsh > 1:
+            # EACH CHILD WRITES ITS OWN LOG FILE rather than a pipe the parent drains one at a
+            # time. With stdout=PIPE and sequential communicate(), a later child that fills its
+            # 64 KiB pipe buffer BLOCKS until the parent gets round to reading it -- serialising
+            # the very passes this change exists to run in parallel. Files also keep the whole
+            # diagnostic instead of the last four lines of a failure. Caught in review.
             procs = []
+            os.makedirs(os.path.join(a.out, f"val_loss_ep{epoch}"), exist_ok=True)
             for _i, _c in enumerate(_cards):
                 _env = dict(env)
                 _env["CUDA_VISIBLE_DEVICES"] = _c
                 _o = os.path.join(a.out, f"val_loss_ep{epoch}", f"shard{_i}")
+                os.makedirs(_o, exist_ok=True)
+                _lg = os.path.join(_o, "shard.log")
                 _cmd = [x for x in cmd]
                 _cmd[_cmd.index("--out") + 1] = _o
                 _cmd += ["--manifest-shard", str(_i), "--manifest-nshards", str(_nsh)]
-                procs.append((_i, _o, subprocess.Popen(_cmd, stdout=subprocess.PIPE,
-                                                       stderr=subprocess.STDOUT, text=True,
-                                                       env=_env)))
+                _fh = open(_lg, "w")
+                procs.append((_i, _o, _lg, _fh,
+                              subprocess.Popen(_cmd, stdout=_fh, stderr=subprocess.STDOUT,
+                                               text=True, env=_env)))
             _bad = []
-            for _i, _o, _p in procs:
-                _out = _p.communicate()[0]
+            for _i, _o, _lg, _fh, _p in procs:
+                _p.wait()
+                try:
+                    _fh.close()
+                except Exception:                 # noqa: BLE001
+                    pass
                 if _p.returncode != 0:
-                    _bad.append((_i, (_out or "").strip().splitlines()[-4:]))
+                    try:
+                        _tail = open(_lg).read().strip().splitlines()[-6:]
+                    except OSError:
+                        _tail = [f"(no readable log at {_lg})"]
+                    _bad.append((_i, _tail))
             if _bad:
                 # ANY shard failing voids the epoch's number. Pooling the survivors would report a
                 # mean over a BIASED subset of the held-out set -- a different population than
@@ -3877,13 +3912,33 @@ def main():
             # POOLED AS A PLAIN MEAN OVER POSES. Each shard owns whole structures, every pose
             # appears in exactly one shard exactly once, so concatenating the rows and taking one
             # mean IS the pose-weighted figure -- the same identity the unsharded path relies on.
-            _vals = []
-            for _i, _o, _p in procs:
+            # EXACT POSE POPULATION, ASSERTED. Arithmetic alone does not make the pooled mean
+            # right: a child can exit 0 having measured fewer poses than it owned, and the mean
+            # over a short population would look entirely normal while being a different number
+            # from every other epoch. So the identities are checked, not just the count.
+            _vals, _ids, _cov = [], set(), {}
+            for _i, _o, _lg, _fh, _p in procs:
+                try:
+                    with open(_lg) as fh:
+                        for ln in fh:
+                            if ln.startswith("SHARD COVERAGE "):
+                                _cov[_i] = dict(kv.split("=", 1)
+                                                for kv in ln.split()[2:] if "=" in kv)
+                except OSError:
+                    pass
                 try:
                     with open(os.path.join(_o, "trajectory.csv")) as fh:
                         for row in csv.DictReader(fh):
-                            if row.get("pae_loss"):
-                                _vals.append(float(row["pae_loss"]))
+                            if not row.get("pae_loss"):
+                                continue
+                            _k = (row.get("pdb"), row.get("unit"), row.get("pose"))
+                            if _k in _ids:
+                                print(f"  WARNING: epoch {epoch} held-out pose {_k} appears in "
+                                      f"more than one shard; the shards are not disjoint and the "
+                                      f"epoch has no held-out point", flush=True)
+                                return None
+                            _ids.add(_k)
+                            _vals.append(float(row["pae_loss"]))
                 except OSError as e:
                     print(f"  WARNING: held-out shard {_i} of epoch {epoch} wrote no readable "
                           f"trajectory ({e}); epoch {epoch} has no held-out point", flush=True)
@@ -3891,6 +3946,29 @@ def main():
             if not _vals:
                 print(f"  WARNING: the epoch-{epoch} held-out shards have no pae_loss rows",
                       flush=True)
+                return None
+            if len(_cov) != _nsh:
+                print(f"  WARNING: epoch {epoch} got coverage lines from {len(_cov)} of {_nsh} "
+                      f"shard(s); cannot prove the population is complete, so no held-out point",
+                      flush=True)
+                return None
+            _alls = {int(c["units_all"]) for c in _cov.values()}
+            _nsamp = {int(c["nsample"]) for c in _cov.values()}
+            _sum_mine = sum(int(c["units_mine"]) for c in _cov.values())
+            if len(_alls) != 1 or len(_nsamp) != 1:
+                print(f"  WARNING: epoch {epoch} shards disagree on the full population "
+                      f"(units_all={_alls}, nsample={_nsamp}); no held-out point", flush=True)
+                return None
+            _exp_units, _ns = _alls.pop(), _nsamp.pop()
+            if _sum_mine != _exp_units:
+                print(f"  WARNING: epoch {epoch} shards cover {_sum_mine} of {_exp_units} unit(s); "
+                      f"the population is incomplete, so no held-out point", flush=True)
+                return None
+            _exp_poses = _exp_units * _ns
+            if len(_vals) != _exp_poses or len(_ids) != _exp_poses:
+                print(f"  WARNING: epoch {epoch} pooled {len(_vals)} pose(s) ({len(_ids)} unique) "
+                      f"against {_exp_poses} expected ({_exp_units} unit(s) x {_ns}); no held-out "
+                      f"point", flush=True)
                 return None
             _mean = sum(_vals) / len(_vals)
             print(f"epoch {epoch} VALLOSS: pae {_mean:.4f}  poses {len(_vals)}", flush=True)
