@@ -378,3 +378,33 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 9/20: 100 unit(s)
   epoch 9/20: 100 unit(s)
   epoch 9/20: 100 unit(s)
+  epoch 9 took 4.0 min for 100 unit(s), 15 optimiser step(s), 0.48 s/pose
+  [rank 2] epoch 9 took 4.0 min -- apply_step_total 0.0m/15  crop_slice 0.7m/200  cropped_tokens mean 409  gpu_backward 1.3m/500  gpu_forward 1.2m/1000  grad_collective_plus_wait 0.0m/15  label_open 0.0m/200  loss_feature_prep 0.0m/200  loss_stats_collective_plus_wait 0.3m/15  pose_a_total 0.7m/500  pose_total 1.7m/500  prefetch_issue 0.0m/99  rank_gather 0.3m/15  rank_pass_a 1.4m/15  trunk_read_plus_crop_tokens 0.2m/100
+  [rank 2] epoch 9 prefetch (1 worker(s)): 100/100 hit (100.0%), 0.0 min waiting on the worker
+  [rank 2] epoch 9 rank-loss (softplus, cross-seed): +0.00508 over 77 interface-group(s) in 15 step(s), 6656 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 2] epoch 9 accounted 3.0m of 4.0m, residual 1.0m (exclusive buckets only; gpu_* overlap pose_total)
+  epoch 9 took 4.0 min for 100 unit(s), 15 optimiser step(s), 0.48 s/pose
+  [rank 1] epoch 9 took 4.0 min -- apply_step_total 0.0m/15  crop_slice 0.7m/200  cropped_tokens mean 396  gpu_backward 1.2m/500  gpu_forward 1.1m/1000  grad_collective_plus_wait 0.0m/15  label_open 0.0m/200  loss_feature_prep 0.0m/200  loss_stats_collective_plus_wait 0.4m/15  pose_a_total 0.6m/500  pose_total 1.7m/500  prefetch_issue 0.0m/99  rank_gather 0.4m/15  rank_pass_a 1.3m/15  trunk_read_plus_crop_tokens 0.2m/100
+  [rank 1] epoch 9 prefetch (1 worker(s)): 100/100 hit (100.0%), 0.0 min waiting on the worker
+  [rank 1] epoch 9 rank-loss (softplus, cross-seed): +0.00508 over 77 interface-group(s) in 15 step(s), 6656 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 1] epoch 9 accounted 2.9m of 4.0m, residual 1.0m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 2] epoch 9 memory: peak allocated 37.44 GB, peak reserved 38.49 GB, blocks_per_ckpt=None
+  [rank 1] epoch 9 memory: peak allocated 37.44 GB, peak reserved 38.49 GB, blocks_per_ckpt=None
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/x5frz6/head_step135.pt
+  epoch 9 took 4.0 min for 100 unit(s), 15 optimiser step(s), 0.48 s/pose
+  [rank 0] epoch 9 took 4.0 min -- apply_step_total 0.0m/15  crop_slice 1.0m/200  cropped_tokens mean 417  gpu_backward 1.4m/500  gpu_forward 1.2m/1000  grad_collective_plus_wait 0.0m/15  label_open 0.0m/200  loss_feature_prep 0.0m/200  loss_stats_collective_plus_wait 0.2m/15  pose_a_total 0.7m/500  pose_total 1.8m/500  prefetch_issue 0.0m/99  rank_gather 0.1m/15  rank_pass_a 1.7m/15  trunk_read_plus_crop_tokens 0.2m/100
+  [rank 0] epoch 9 prefetch (1 worker(s)): 100/100 hit (100.0%), 0.0 min waiting on the worker
+  [rank 0] epoch 9 rank-loss (softplus, cross-seed): +0.00508 over 77 interface-group(s) in 15 step(s), 6656 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 0] epoch 9 accounted 3.2m of 4.0m, residual 0.8m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 0] epoch 9 memory: peak allocated 37.44 GB, peak reserved 38.49 GB, blocks_per_ckpt=None
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/x5frz6/resume_ep9.pt (0 MiB: head + AdamW moments + step)
+  held-out PAE for epoch 9 (the training card)
+epoch 9 VALLOSS: pae 4.8675  poses 1500
+  evaluating epoch 9 (pool@fold) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:3954: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/x5frz6/metric_train_ep9.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 9 TRAIN: mean_dockq 0.3100  frac_acc 0.5000  oracle 0.5968 / 1.0000  headroom 0.2868  (18 interfaces)
+  epoch 10/20: 100 unit(s)
+  epoch 10/20: 100 unit(s)
+  epoch 10/20: 100 unit(s)
