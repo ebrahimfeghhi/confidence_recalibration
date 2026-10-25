@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid 8fkrsu`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-1 (1 of 15.0).  **Interfaces:** 92.  **Budget:** 30.
+**Epochs evaluated:** 1-2 (2 of 15.0).  **Interfaces:** 92.  **Budget:** 30.
 
 ## Configuration
 
@@ -25,9 +25,9 @@ Spearman is reported but is **not** the criterion.
 
 | | trained | shipped | oracle |
 |---|---|---|---|
-| selected DockQ | 0.5735 +- 0.0387 | 0.5832 +- 0.0387 | 0.6926 |
-| frac > 0.23 | 0.7174 +- 0.0472 | 0.7391 +- 0.0460 | 0.8587 |
-| Spearman rho | 0.2270 +- 0.0358 | 0.2218 | |
+| selected DockQ | 0.5787 +- 0.0381 | 0.5830 +- 0.0387 | 0.6926 |
+| frac > 0.23 | 0.7391 +- 0.0460 | 0.7391 +- 0.0460 | 0.8587 |
+| Spearman rho | 0.2464 +- 0.0355 | 0.2218 | |
 
 ## Loss, per epoch
 
@@ -37,6 +37,7 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | epoch | training | held-out ranking loss | E[DockQ] | drift \|\|W-W0\|\|^2 | penalty | val PAE |
 |---|---|---|---|---|---|---|
 | 1 | 0.14452 | 0.11987 +- 0.01859 | 0.5732 | 14.0 | 0.0007 | 3.0041 |
+| 2 | 0.14570 | 0.11468 +- 0.01376 | 0.5688 | 20.3 | 0.0010 | 3.2424 |
 
 Shipped, on these same interfaces: held-out ranking loss 0.11632, E[DockQ] 0.5719 (tau 0.05).
 
@@ -45,6 +46,22 @@ Shipped, on these same interfaces: held-out ranking loss 0.11632, E[DockQ] 0.571
 | epoch | selected DockQ | frac > 0.23 | Spearman rho | spread |
 |---|---|---|---|---|
 | 1 | 0.5735 +- 0.0387 | 0.7174 +- 0.0472 | 0.2270 +- 0.0358 | 0.0055 |
+| 2 | 0.5787 +- 0.0381 | 0.7391 +- 0.0460 | 0.2464 +- 0.0355 | 0.0066 |
+
+## Paired per-interface test, epoch 1 -> 2
+
+Per-interface selected-pose DockQ (argmax ipTM), 92 interfaces paired.
+
+- paired mean **+0.0051 +- 0.0053** (0.97 sigma)
+- 19 up, 21 worsened, 52 unchanged
+
+| interface | ep1 | ep2 | delta |
+|---|---|---|---|
+| `9bx7_AC` | 0.184 | 0.587 | +0.403 |
+| `9qrv_AB` | 0.434 | 0.571 | +0.137 |
+| `9cfd_BC` | 0.285 | 0.393 | +0.108 |
+| `9mmj_BC` | 0.953 | 0.846 | -0.107 |
+| `7q4q_BE` | 0.909 | 0.811 | -0.098 |
 
 ## Rank of the first acceptable pose, ordering by ipTM
 
@@ -62,8 +79,9 @@ by both orderings over the same poses, so the pairing is exact.
 | epoch | mean rank +- s.e. | median | at rank 1 | paired vs shipped | better/worse/same |
 |---|---|---|---|---|---|
 | 1 | 13.03 +- 3.92 | 1.0 | 66/79 | +1.77 +- 0.84 | 3/11/65 |
+| 2 | 12.09 +- 3.88 | 1.0 | 68/79 | +0.82 +- 0.79 | 6/6/67 |
 
-Shipped on the same interfaces: mean rank 11.25 +- 3.58, median 1.0, 68/79 at rank 1.
+Shipped on the same interfaces: mean rank 11.27 +- 3.58, median 1.0, 68/79 at rank 1.
 
 ## The arm as launched
 
@@ -73,5 +91,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-178 optimiser step(s), max `grad_norm` 0.1757, 65 non-finite gradient(s).
+175 optimiser step(s), max `grad_norm` 0.7357, 68 non-finite gradient(s).
 
