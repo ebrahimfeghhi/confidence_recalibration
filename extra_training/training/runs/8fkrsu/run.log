@@ -324,3 +324,36 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 6/15: 1620 unit(s)
   epoch 6/15: 1620 unit(s)
   epoch 6/15: 1620 unit(s)
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/head_step1000.pt
+  epoch 6 took 51.3 min for 1620 unit(s), 176 optimiser step(s), 0.38 s/pose
+  epoch 6 took 51.3 min for 1620 unit(s), 176 optimiser step(s), 0.38 s/pose  [rank 1] epoch 6 took 51.3 min -- apply_step_total 0.3m/243  crop_slice 15.7m/3240  cropped_tokens mean 328  gpu_backward 12.9m/8100  gpu_forward 12.9m/16200  grad_collective_plus_wait 0.2m/176  label_open 0.0m/3240  loss_feature_prep 0.0m/3240  loss_stats_collective_plus_wait 3.0m/243  pose_a_total 7.1m/8100  pose_total 17.8m/8100  prefetch_issue 0.0m/1619  rank_gather 4.5m/243  rank_pass_a 23.3m/243  trunk_read_plus_crop_tokens 2.5m/1620  epoch 6 took 51.3 min for 1620 unit(s), 176 optimiser step(s), 0.38 s/pose
+
+
+  [rank 1] epoch 6 prefetch (1 worker(s)): 1620/1620 hit (100.0%), 0.3 min waiting on the worker
+  [rank 1] epoch 6 l2-sp: ||W-W0||^2 = 31.4, penalty = 0.0016 (unconstrained full head reached 67,052 by epoch 30)
+  [rank 1] epoch 6 rank-loss (softplus, cross-seed): +0.14084 over 415 interface-group(s) in 243 step(s) [67 step(s) SKIPPED: no straddling pair in either structure, so no task gradient -- not handed to AdamW], 134800 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 1] epoch 6 accounted 39.3m of 51.3m, residual 12.0m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 0] epoch 6 took 51.3 min -- apply_step_total 0.3m/243  crop_slice 18.3m/3240  cropped_tokens mean 323  gpu_backward 12.3m/8100  gpu_forward 12.4m/16200  grad_collective_plus_wait 0.2m/176  label_open 0.0m/3240  loss_feature_prep 0.0m/3240  loss_stats_collective_plus_wait 3.3m/243  pose_a_total 6.7m/8100  pose_total 17.0m/8100  prefetch_issue 0.0m/1619  rank_gather 2.0m/243  rank_pass_a 25.8m/243  trunk_read_plus_crop_tokens 2.5m/1620
+  [rank 0] epoch 6 prefetch (1 worker(s)): 1620/1620 hit (100.0%), 1.0 min waiting on the worker
+  [rank 0] epoch 6 l2-sp: ||W-W0||^2 = 31.4, penalty = 0.0016 (unconstrained full head reached 67,052 by epoch 30)
+  [rank 0] epoch 6 rank-loss (softplus, cross-seed): +0.14084 over 415 interface-group(s) in 243 step(s) [67 step(s) SKIPPED: no straddling pair in either structure, so no task gradient -- not handed to AdamW], 134800 pair(s)  (0 is the FLOOR -- every pair ordered)  [rank 2] epoch 6 took 51.3 min -- apply_step_total 0.3m/243  crop_slice 16.8m/3240  cropped_tokens mean 327  gpu_backward 12.6m/8100  gpu_forward 12.7m/16200  grad_collective_plus_wait 0.2m/176  label_open 0.0m/3240  loss_feature_prep 0.0m/3240  loss_stats_collective_plus_wait 3.1m/243  pose_a_total 6.9m/8100  pose_total 17.5m/8100  prefetch_issue 0.0m/1619  rank_gather 3.5m/243  rank_pass_a 24.3m/243  trunk_read_plus_crop_tokens 2.5m/1620
+
+  [rank 0] epoch 6 accounted 41.4m of 51.3m, residual 9.9m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 2] epoch 6 prefetch (1 worker(s)): 1620/1620 hit (100.0%), 0.7 min waiting on the worker
+  [rank 2] epoch 6 l2-sp: ||W-W0||^2 = 31.4, penalty = 0.0016 (unconstrained full head reached 67,052 by epoch 30)
+  [rank 2] epoch 6 rank-loss (softplus, cross-seed): +0.14084 over 415 interface-group(s) in 243 step(s) [67 step(s) SKIPPED: no straddling pair in either structure, so no task gradient -- not handed to AdamW], 134800 pair(s)  (0 is the FLOOR -- every pair ordered)
+  [rank 2] epoch 6 accounted 40.1m of 51.3m, residual 11.2m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 1] epoch 6 memory: peak allocated 54.83 GB, peak reserved 56.33 GB, blocks_per_ckpt=None
+  [rank 2] epoch 6 memory: peak allocated 54.83 GB, peak reserved 56.33 GB, blocks_per_ckpt=None
+  [rank 0] epoch 6 memory: peak allocated 54.83 GB, peak reserved 56.33 GB, blocks_per_ckpt=None
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/resume_ep6.pt (0 MiB: head + AdamW moments + step)
+  held-out PAE for epoch 6 (the training card)
+epoch 6 VALLOSS: pae 3.1293  poses 7950
+  evaluating epoch 6 (pool@fold) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:3933: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/metric_train_ep6.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 6 TRAIN: mean_dockq 0.5757  frac_acc 0.7283  oracle 0.6926 / 0.8587  headroom 0.1169  (92 interfaces)
+  epoch 7/15: 1620 unit(s)
+  epoch 7/15: 1620 unit(s)
+  epoch 7/15: 1620 unit(s)
