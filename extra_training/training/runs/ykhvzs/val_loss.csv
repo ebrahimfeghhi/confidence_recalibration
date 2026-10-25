@@ -1,0 +1,5 @@
+epoch,step,n_poses,val_pae,bundle
+1,15,1500,2.917338,resume_ep1.pt
+2,30,1500,2.892075,resume_ep2.pt
+3,45,1500,2.882187,resume_ep3.pt
+4,60,1500,2.864800,resume_ep4.pt
