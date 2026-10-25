@@ -471,6 +471,30 @@ def main():
         ax.axhline(0.0, color="#555555", ls="-", lw=0.9)
         ax.text(0.98, 0.02, _floor_txt.strip(), transform=ax.transAxes, color="#555555",
                 fontsize=8, va="bottom", ha="right")
+        # THE ZERO-INFORMATION LINE, 2*tau*ln2. Set every margin to zero and softplus(0) = ln2
+        # factors out while the DockQ weights normalise away, so this is exactly what the loss
+        # reads when the head scores every pose of an interface identically -- no opinion at all.
+        # Below it the head orders better than a constant; above it, worse. It is NOT the floor:
+        # the floor is 0. It moves with tau (0.04228 at DEFAULT_TAU 0.0305, 0.00499 at the
+        # within-seed 0.0036), which is exactly why two arms at different tau must never share
+        # this axis. run_logging/zero_margin.py computes it and checks arms against it.
+        # run_rank_form returns tau=None when the run passed no --rank-tau, which MEANS
+        # DEFAULT_TAU rather than "no tau". Taking it at face value silently skipped this line on
+        # every arm that used the default -- 4y3ve6 and ykhvzs among them, i.e. exactly the ones
+        # worth comparing against the landmark. Resolve it the way rank_rho does.
+        if _tau is None:
+            _ph = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "phases")
+            if _ph not in sys.path:
+                sys.path.insert(0, _ph)
+            import rank_loss as _RKL
+            _tau = _RKL.DEFAULT_TAU
+        if _form != "expected" and _tau:
+            _zi = 2.0 * float(_tau) * math.log(2.0)
+            ax.axhline(_zi, color="#c0392b", ls="--", lw=1.2)
+            ax.text(0.02, _zi, f"no-information {_zi:.5f}  (2*tau*ln2, tau {float(_tau):g})",
+                    transform=ax.get_yaxis_transform(), color="#c0392b",
+                    fontsize=8, va="bottom", ha="left")
         ax.set_title(f"{_lbl}: training vs held out", fontsize=11.5)
     ax.set_xlabel("epoch", fontsize=10.5)
     ax.set_ylabel(f"{_lbl} (lower is better)", fontsize=9.5)
