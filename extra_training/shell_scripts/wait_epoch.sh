@@ -8,6 +8,7 @@
 # the shell running them and self-killed this session twice on 2026-10-18. An empty $P would make
 # /proc/$P/stat collapse to /proc/stat, so each is tested for non-emptiness first.
 set -u
+shopt -s nullglob 2>/dev/null || true
 cd /home/ebrahim/confidence_recalibration/extra_training
 RID="${1:?rid}"; HAVE="${2:?have}"; shift 2
 PIDS=("$@")
@@ -17,8 +18,17 @@ PIDS=("$@")
 # for it. Waiting on the csv is therefore circular: it cannot grow until the thing it is supposed
 # to wake up has already run. train_eval_shards_ep<N>/ is written by the training loop itself at
 # every epoch boundary, so it is the signal that actually fires on its own.
+# COUNT EPOCHS WHOSE SHARDS ARE WRITTEN, not epochs whose DIRECTORY exists. The eval creates
+# train_eval_shards_ep<N>/ and writes shard logs into it minutes before the rows_*.csv land, so
+# counting directories wakes the session while rank_rho still has nothing to read -- which is
+# exactly what happened on x5frz6 epoch 1.
 rows() {
-  ls -d "training/runs/$RID"/train_eval_shards_ep*/ 2>/dev/null | wc -l
+  local n=0 d
+  for d in "training/runs/$RID"/train_eval_shards_ep*/; do
+    [ -d "$d" ] || continue
+    compgen -G "$d"'rows_*.csv' > /dev/null 2>&1 && n=$((n+1))
+  done
+  echo "$n"
 }
 for i in $(seq 1 1400); do   # ~7h ceiling at 18s
   n=$(rows)
