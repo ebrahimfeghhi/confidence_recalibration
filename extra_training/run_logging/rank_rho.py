@@ -43,7 +43,7 @@ import re
 # own-objective xsloss_* that v4 introduced. v4 made the held-out loss the twin of the training
 # curve and in doing so made it incomparable between arms training different functions; both
 # columns exist so neither question has to borrow the other's number.
-CACHE = "rank_rho_b{b}_v5.csv"
+CACHE = "rank_rho_b{b}_v6.csv"
 
 
 def run_rank_form(d):
@@ -101,6 +101,7 @@ def run_rank_objective(d):
                 pairs=a.get("rank_pairs") or "cross",
                 within_weight=float(a.get("rank_within_weight") or 1.0),
                 rank_decay_k=float(a.get("rank_topk_decay") or 0.0),
+                straddle=float(a.get("rank_straddle") or 0.0),
                 weight_by_gap=bool(a.get("rank_weight_by_gap", True)))
 
 

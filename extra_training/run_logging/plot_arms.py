@@ -31,6 +31,7 @@ match and naming the offender.
 """
 import argparse
 import csv
+import re
 import glob
 import json
 import math
@@ -129,24 +130,48 @@ def train_loss(rid):
     return plot_three.train_rank_loss(rid)
 
 
-def xsloss(rid, budget, shipped=False, canonical=False):
-    """epoch -> held-out cross-seed softplus, from the run's own rank_rho cache.
+def _cache_path(rid, budget):
+    """(path, version) of the HIGHEST rank_rho cache version this run has, or (None, None).
 
-    ALWAYS CROSS-SEED AT DEFAULT_TAU, whatever the arm trained -- see the module docstring. That
-    is what makes it comparable across arms and what disqualifies it as a generalisation check.
+    A run stopped before a version bump never gets the new cache unless it is rescored, and
+    reading only the current version drew zg5fnw's held-out curve as nothing at all. The version
+    comes back with the path because what the columns MEAN depends on it.
+    """
+    best = (None, None)
+    for f in glob.glob(os.path.join("training", "runs", rid, f"rank_rho_b{budget}_v*.csv")):
+        m = re.search(r"_v(\d+)\.csv$", f)
+        if m and (best[1] is None or int(m.group(1)) > best[1]):
+            best = (f, int(m.group(1)))
+    return best
+
+
+def xsloss(rid, budget, shipped=False, canonical=False):
+    """epoch -> held-out ranking loss, from the run's own rank_rho cache.
+
+    TWO QUANTITIES LIVE IN ONE COLUMN NAME ACROSS THE v4 BOUNDARY. Before v4 the xsloss_* column
+    was always cross-seed at DEFAULT_TAU -- the canonical loss. From v4 it is the run's OWN
+    objective, and v5 added a separate canonical column beside it. So for a pre-v4 cache the
+    canonical request is served by the old column, and the own-objective request is served by it
+    ONLY when the run's objective happens to be the canonical one; otherwise there is no such
+    number on disk and this returns empty rather than the wrong curve.
     """
     out = {}
-    # THROUGH rank_rho.CACHE, never a literal filename. The cache version has been bumped twice
-    # for a change of what the numbers MEAN; a hardcoded "_v3" here would keep reading the old
-    # quantity after the bump and the figure would silently disagree with the doc.
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import rank_rho as _RHO
-    path = os.path.join("training", "runs", rid, _RHO.CACHE.format(b=budget))
-    if not os.path.exists(path):
+    path, ver = _cache_path(rid, budget)
+    if not path:
         return out
-    col = ("xscanon_shipped" if shipped else "xscanon_trained") if canonical \
-        else ("xsloss_shipped" if shipped else "xsloss_trained")
+    if ver >= 5:
+        col = ("xscanon_shipped" if shipped else "xscanon_trained") if canonical \
+            else ("xsloss_shipped" if shipped else "xsloss_trained")
+    elif ver == 4:
+        # own-objective only; no canonical column existed yet
+        if canonical and not _is_canonical_objective(rid):
+            return out
+        col = "xsloss_shipped" if shipped else "xsloss_trained"
+    else:
+        # pre-v4: the column IS the canonical loss
+        if not canonical and not _is_canonical_objective(rid):
+            return out
+        col = "xsloss_shipped" if shipped else "xsloss_trained"
     with open(path) as fh:
         for r in csv.DictReader(fh):
             try:
@@ -154,6 +179,28 @@ def xsloss(rid, budget, shipped=False, canonical=False):
             except (KeyError, ValueError, TypeError):
                 continue
     return out
+
+
+def _is_canonical_objective(rid):
+    """True when the run trained exactly the canonical loss: cross-seed softplus at DEFAULT_TAU.
+
+    Only then are the own-objective and canonical held-out curves the same number, which is what
+    lets a pre-v4 cache answer for both.
+    """
+    try:
+        with open(f"training/runs/{rid}/args.json") as fh:
+            a = json.load(fh)
+    except Exception:
+        return False
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import rank_rho as _RHO
+    tau = a.get("rank_tau")
+    tau_ok = tau is None or abs(float(tau) - _RHO.DEFAULT_TAU) < 1e-9
+    return (a.get("rank_form") == "softplus" and bool(a.get("rank_cross_seed"))
+            and a.get("rank_pairs") in (None, "cross")
+            and float(a.get("rank_within_weight") or 1.0) == 1.0
+            and not a.get("rank_topk_decay") and tau_ok)
 
 
 def series(rid, budget, thresh):

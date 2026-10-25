@@ -78,7 +78,7 @@ def load(paths, keep=None):
     return {k: [(s, ip, dq) for (s, _), (ip, dq) in v.items()] for k, v in seen.items()}
 
 
-def cross_seed_pairs(poses, mode="cross"):
+def cross_seed_pairs(poses, mode="cross", straddle=0.0):
     """(abs_ipTM_gap, signed_margin, same_seed, abs_DockQ_gap) per pair of family `mode`.
 
     The DockQ gap travels with the pair because it is the loss's weight w_ij, and the weighted
@@ -101,6 +101,8 @@ def cross_seed_pairs(poses, mode="cross"):
             sj, ipj, dqj = poses[j]
             same = (si == sj)
             if (mode == "cross" and same) or (mode == "within" and not same):
+                continue
+            if straddle > 0 and ((dqi > straddle) == (dqj > straddle)):
                 continue
             dd = dqi - dqj
             if abs(dd) < DQ_TOL:
@@ -166,6 +168,10 @@ def main():
                     help="which pair family to measure. 'within' is a DIFFERENT population with "
                          "a different scale, not a variant reading of the same one -- see "
                          "cross_seed_pairs. Default 'cross', which is what DEFAULT_TAU is.")
+    ap.add_argument("--straddle", type=float, default=0.0, metavar="DOCKQ",
+                    help="keep only pairs with exactly one pose above this DockQ. Matches "
+                         "phase_k_train.py --rank-straddle; the tau for such an arm must be "
+                         "measured over the pairs it actually trains, not over all of them.")
     a = ap.parse_args()
 
     keep = None
@@ -181,7 +187,7 @@ def main():
 
     gaps, wgaps, per_iface = [], [], []
     for ifc, poses in data.items():
-        pr = cross_seed_pairs(poses, a.pairs)
+        pr = cross_seed_pairs(poses, a.pairs, a.straddle)
         if len(pr) < a.min_pairs:
             continue
         # THE HEADLINE MEDIAN IS DELIBERATELY UNWEIGHTED, over pairs as counted. An earlier

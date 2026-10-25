@@ -475,6 +475,36 @@ def pair_included(ki, kj, pairs):
     return (not same_seed) if pairs == "cross" else same_seed
 
 
+def pair_straddles(di, dj, thresh):
+    """Does this pair cross the acceptability threshold -- exactly one pose above it?
+
+    thresh <= 0 turns the restriction OFF and every pair passes, which is the default and what
+    every run before this flag did.
+
+    WHY RESTRICT TO THESE PAIRS. The reported criterion is the FRACTION of interfaces whose
+    selected pose clears DockQ 0.23, and that number changes only when selection moves a pose
+    from one side of 0.23 to the other. A pair of two acceptable poses, or of two unacceptable
+    ones, can be reordered freely without moving the fraction at all. Ordering every straddling
+    pair correctly is exactly equivalent to never selecting an unacceptable pose when an
+    acceptable one is present in the group, which is the whole of the headroom that the fraction
+    metric can see.
+
+    WHAT IT COSTS. Mean DockQ is NOT invariant to the pairs this drops: promoting 0.61 over 0.38
+    raises mean DockQ and leaves the fraction untouched, and this filter discards that gradient.
+    So the arm optimises the fraction and treats mean DockQ as a free variable, which is a real
+    change of objective and not merely a sparser estimate of the same one. The two numbers are
+    reported side by side for that reason.
+
+    THE THRESHOLD IS A DockQ THRESHOLD, applied to the LABELS, never to the scores. It therefore
+    partitions pairs by a fixed property of the data: the set of included pairs does not move as
+    the model trains, so unlike rank_decay_weights this does not make the objective a function of
+    the model's current ordering and cannot oscillate.
+    """
+    if not thresh or thresh <= 0:
+        return True
+    return (di > thresh) != (dj > thresh)
+
+
 def rank_decay_weights(sv, k):
     """v(r) = exp(-(r-1)/k) over the group's CURRENT ipTM order, r = 1 for the top pose.
 
@@ -514,7 +544,7 @@ def rank_decay_weights(sv, k):
 
 def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
                  weight_by_gap=True, dq_tol=1e-6, pairs="cross", within_weight=1.0,
-                 rank_decay_k=0.0):
+                 rank_decay_k=0.0, straddle=0.0):
     """Coefficients for ONE interface over poses drawn from SEVERAL SEEDS.
 
     s_by_key / dq_by_key are {(seed, sample): float} over the whole group -- after pass A's
@@ -581,6 +611,8 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
             d = dv[i] - dv[j]
             if abs(d) <= dq_tol:
                 continue
+            if not pair_straddles(dv[i], dv[j], straddle):
+                continue
             w = abs(d) if weight_by_gap else 1.0
             if keys[i][0] == keys[j][0]:
                 w *= within_weight
@@ -618,7 +650,7 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
 
 def group_loss(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
                weight_by_gap=True, dq_tol=1e-6, pairs="cross", within_weight=1.0,
-               rank_decay_k=0.0):
+               rank_decay_k=0.0, straddle=0.0):
     """The loss VALUE for one interface, in plain floats. No autograd, no graph.
 
     Same objective and same normalisation as group_coeffs -- asserted equal in test_rank_loss.py --
@@ -653,6 +685,8 @@ def group_loss(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
                 continue
             d = di - float(dq_by_key[kj])
             if abs(d) <= dq_tol:
+                continue
+            if not pair_straddles(di, float(dq_by_key[kj]), straddle):
                 continue
             w = abs(d) if weight_by_gap else 1.0
             if ki[0] == kj[0]:

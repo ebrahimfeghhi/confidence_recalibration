@@ -275,6 +275,20 @@ def main():
                          "the ranks come from detached scores, so this is not the exact gradient "
                          "of a fixed objective -- deliberate, and recorded so it is not read as "
                          "an oversight.")
+    ap.add_argument("--rank-straddle", type=float, default=0.0, metavar="DOCKQ",
+                    help="keep ONLY pairs that straddle this DockQ threshold -- exactly one pose "
+                         "above it, one below. 0 disables it (every run before this flag). "
+                         "WHY: the reported criterion is the FRACTION of interfaces whose "
+                         "selected pose clears 0.23, and that fraction moves only when selection "
+                         "crosses the threshold. Two acceptable poses, or two unacceptable ones, "
+                         "can be reordered freely without changing it. COST, stated rather than "
+                         "hidden: mean DockQ is NOT invariant to the dropped pairs -- promoting "
+                         "0.61 over 0.38 raises the mean and leaves the fraction alone -- so this "
+                         "optimises the fraction and treats mean DockQ as a free variable. That "
+                         "is a change of objective, not a sparser estimate of the same one. "
+                         "The threshold applies to LABELS, never scores, so the included set is "
+                         "fixed by the data and cannot oscillate as the model trains. "
+                         "Needs its own tau: measure_tau.py --straddle.")
     ap.add_argument("--rank-within-weight", type=float, default=1.0, metavar="L",
                     help="with --rank-pairs all, multiply WITHIN-SEED pairs by L in both the "
                          "numerator and the normaliser W, so the loss stays a weighted mean and "
@@ -1244,7 +1258,8 @@ def main():
         # mention the decay while the loss trained on nan; --rank-within-weight -1 drives den
         # negative and flips the loss's sign.
         for _nm, _vv in (("--rank-within-weight", a.rank_within_weight),
-                         ("--rank-topk-decay", a.rank_topk_decay)):
+                         ("--rank-topk-decay", a.rank_topk_decay),
+                         ("--rank-straddle", a.rank_straddle)):
             if not math.isfinite(_vv) or _vv < 0:
                 raise SystemExit(f"STOP: {_nm} {_vv!r} must be a finite number >= 0.")
         if a.rank_within_weight == 0 and a.rank_pairs == "all":
@@ -1264,7 +1279,8 @@ def main():
         _nondefault = [f"--rank-pairs {a.rank_pairs}" for _ in (1,) if a.rank_pairs != "cross"] \
             + [f"--rank-within-weight {a.rank_within_weight:g}" for _ in (1,)
                if a.rank_within_weight != 1.0] \
-            + [f"--rank-topk-decay {a.rank_topk_decay:g}" for _ in (1,) if a.rank_topk_decay != 0.0]
+            + [f"--rank-topk-decay {a.rank_topk_decay:g}" for _ in (1,) if a.rank_topk_decay != 0.0] \
+            + [f"--rank-straddle {a.rank_straddle:g}" for _ in (1,) if a.rank_straddle != 0.0]
         if _ignores and _nondefault:
             raise SystemExit(
                 "STOP: " + ", ".join(_nondefault) + " cannot take effect here. "
@@ -1288,6 +1304,11 @@ def main():
             print(f"  within-seed pairs weighted x{a.rank_within_weight:g} in numerator and W "
                   f"(full training set at tau 0.0270: L=1 leaves within-seed at 7.0% of pairwise "
                   f"gradient mass, L=3 18.3%, L=8 37.1%, L=20 59.3%)")
+        if a.rank_straddle > 0:
+            print(f"  STRADDLE-ONLY at DockQ {a.rank_straddle:g}: a pair counts only when exactly "
+                  f"one of its two poses is above {a.rank_straddle:g}. This is the subspace the "
+                  f"FRACTION-ACCEPTABLE criterion can see; mean DockQ is deliberately left as a "
+                  f"free variable and both are reported.")
         if a.rank_topk_decay > 0:
             print(f"  TOP-k RANK DECAY K={a.rank_topk_decay:g}: pair weight x "
                   f"max(v(r_i), v(r_j)), v(r)=exp(-(r-1)/K) over the current ipTM order. "
@@ -1885,6 +1906,7 @@ def main():
                  "rank_pairs": a.rank_pairs,
                  "rank_within_weight": a.rank_within_weight,
                  "rank_topk_decay": a.rank_topk_decay,
+                 "rank_straddle": a.rank_straddle,
                  "rank_structs_per_step": a.rank_structs_per_step,
                  # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
                  # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
@@ -1974,7 +1996,8 @@ def main():
                      # cannot be overridden, which would have made every pre-patch bundle --
                      # including the live zg5fnw's per-epoch held-out subprocess, which resumes
                      # its own bundle through this same file -- unresumable.
-                     "rank_pairs": "cross", "rank_within_weight": 1.0, "rank_topk_decay": 0.0}
+                     "rank_pairs": "cross", "rank_within_weight": 1.0, "rank_topk_decay": 0.0,
+                     "rank_straddle": 0.0}
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
@@ -3279,7 +3302,8 @@ def main():
                 weight_by_gap=a.rank_weight_by_gap,
                 pairs=a.rank_pairs,
                 within_weight=a.rank_within_weight,
-                rank_decay_k=a.rank_topk_decay)
+                rank_decay_k=a.rank_topk_decay,
+                straddle=a.rank_straddle)
             if npair == 0:
                 continue
             n_groups += 1
@@ -4174,6 +4198,7 @@ def main():
                                   "rank_pairs": a.rank_pairs,
                                   "rank_within_weight": a.rank_within_weight,
                                   "rank_topk_decay": a.rank_topk_decay,
+                                  "rank_straddle": a.rank_straddle,
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
