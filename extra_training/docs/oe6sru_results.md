@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid oe6sru`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-14 (14 of 25.0).  **Interfaces:** 18.  **Budget:** 30.
+**Epochs evaluated:** 1-15 (15 of 25.0).  **Interfaces:** 18.  **Budget:** 30.
 
 ## Configuration
 
@@ -25,9 +25,9 @@ Spearman is reported but is **not** the criterion.
 
 | | trained | shipped | oracle |
 |---|---|---|---|
-| selected DockQ | 0.2754 +- 0.0562 | 0.2909 +- 0.0620 | 0.5968 |
+| selected DockQ | 0.2712 +- 0.0547 | 0.2909 +- 0.0620 | 0.5968 |
 | frac > 0.23 | 0.5000 +- 0.1213 | 0.5556 +- 0.1205 | 1.0000 |
-| Spearman rho | 0.2377 +- 0.0685 | 0.1958 | |
+| Spearman rho | 0.2196 +- 0.0669 | 0.1958 | |
 
 ## Loss, per epoch
 
@@ -50,6 +50,7 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | 12 | 0.04201 | 0.03910 +- 0.00490 | 0.2285 | 23.1 | 0.0115 | 2.9631 |
 | 13 | 0.04132 | 0.03922 +- 0.00486 | 0.2273 | 24.3 | 0.0121 | 2.9200 |
 | 14 | 0.04261 | 0.03978 +- 0.00528 | 0.2282 | 25.0 | 0.0125 | 2.9179 |
+| 15 | 0.04169 | 0.04009 +- 0.00488 | 0.2233 | 25.9 | 0.0129 | 2.8938 |
 
 Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.2572 (tau 0.05).
 
@@ -71,21 +72,22 @@ Shipped, on these same interfaces: held-out ranking loss 0.08032, E[DockQ] 0.257
 | 12 | 0.2729 +- 0.0553 | 0.5000 +- 0.1213 | 0.2509 +- 0.0692 | 0.0059 |
 | 13 | 0.2771 +- 0.0565 | 0.5000 +- 0.1213 | 0.2307 +- 0.0685 | 0.0067 |
 | 14 | 0.2754 +- 0.0562 | 0.5000 +- 0.1213 | 0.2377 +- 0.0685 | 0.0068 |
+| 15 | 0.2712 +- 0.0547 | 0.5000 +- 0.1213 | 0.2196 +- 0.0669 | 0.0067 |
 
-## Paired per-interface test, epoch 1 -> 14
+## Paired per-interface test, epoch 1 -> 15
 
 Per-interface selected-pose DockQ (argmax ipTM), 18 interfaces paired.
 
-- paired mean **+0.0115 +- 0.0111** (1.03 sigma)
-- 7 up, 2 worsened, 9 unchanged
+- paired mean **+0.0073 +- 0.0107** (0.68 sigma)
+- 6 up, 3 worsened, 9 unchanged
 
-| interface | ep1 | ep14 | delta |
+| interface | ep1 | ep15 | delta |
 |---|---|---|---|
 | `9c7x_BC` | 0.071 | 0.241 | +0.170 |
 | `8og0_BC` | 0.716 | 0.646 | -0.070 |
-| `9ima_AD` | 0.564 | 0.632 | +0.068 |
 | `7qu2_AC` | 0.033 | 0.068 | +0.035 |
 | `9cfd_AC` | 0.361 | 0.342 | -0.019 |
+| `7qu2_BC` | 0.052 | 0.070 | +0.018 |
 
 ## Rank of the first acceptable pose, ordering by ipTM
 
@@ -116,6 +118,7 @@ by both orderings over the same poses, so the pairing is exact.
 | 12 | 36.72 +- 13.15 | 1.5 | 9/18 | -0.72 +- 4.22 | 4/6/8 |
 | 13 | 34.61 +- 12.93 | 1.5 | 9/18 | -2.89 +- 4.72 | 4/6/8 |
 | 14 | 35.11 +- 13.02 | 1.5 | 9/18 | -2.33 +- 4.63 | 4/6/8 |
+| 15 | 35.00 +- 12.80 | 1.5 | 9/18 | -2.44 +- 4.09 | 4/6/8 |
 
 Shipped on the same interfaces: mean rank 37.44 +- 12.54, median 1.0, 10/18 at rank 1.
 
@@ -123,14 +126,14 @@ Shipped on the same interfaces: mean rank 37.44 +- 12.54, median 1.0, 10/18 at r
 
 `--l2-sp-exclude frame_dir` leaves these trainable but outside
 `||W - W0||^2`, so the drift column above does **not** cover them. They are zero-init, so
-their norm is the direct test of whether the loss finds any use for them. From `resume_ep14.pt`:
+their norm is the direct test of whether the loss finds any use for them. From `resume_ep15.pt`:
 
 | tensor | \|\|W\|\| |
 |---|---|
-| `frame_dir_proj.weight` | 7.4976e+00 |
-| `pose_perblock_frame_dir.0.weight` | 7.5301e+00 |
-| `pose_perblock_frame_dir.1.weight` | 7.5590e+00 |
-| `pose_perblock_frame_dir.2.weight` | 7.0948e+00 |
+| `frame_dir_proj.weight` | 7.9570e+00 |
+| `pose_perblock_frame_dir.0.weight` | 7.9896e+00 |
+| `pose_perblock_frame_dir.1.weight` | 7.9809e+00 |
+| `pose_perblock_frame_dir.2.weight` | 7.6015e+00 |
 
 ## The arm as launched
 
@@ -140,5 +143,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-15 optimiser step(s), max `grad_norm` 0.9486, 0 non-finite gradient(s).
+15 optimiser step(s), max `grad_norm` 0.8778, 0 non-finite gradient(s).
 
