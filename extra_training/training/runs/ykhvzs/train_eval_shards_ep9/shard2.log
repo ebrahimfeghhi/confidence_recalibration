@@ -11,3 +11,7 @@ pose per-block: 3 block(s) injected, each with its OWN COPY of block 0's injecti
 loaded 258 head tensor(s) from /home/ebrahim/confidence_recalibration/extra_training/training/runs/ykhvzs/head_ep9_step135.pt, exact match against 258 head parameter(s)
 join cache: 393 entry(ies) from /home/ebrahim/confidence_recalibration/extra_training/training/val10/join_cache_shard2.json
 prefetch: one background reader warming the next trunk
+join cache: 100 hit(s), 0 newly derived (100% reused)
+
+join 1: OST's per-pose chain mapping used on 500 pose(s), unresolvable on 0
+shard 2: 900 row(s) -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/ykhvzs/train_eval_shards_ep9/rows_b30_head_ep9_step135_s2.csv
