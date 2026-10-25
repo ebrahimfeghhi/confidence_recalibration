@@ -1,0 +1,15 @@
+pool: 18 interface(s) over 10 structure(s)
+results.csv: 46000 scored (iface, seed, sample) row(s)
+shard 0 of 3: 100 unit(s)
+units: 100 of 300 intended (10 structures x 30 seeds)
+train scheduler 16.0
+inference scheduler 16.0
+Diffusion Module has 16.0
+pose per-block: 3 block(s) injected, SHARING BLOCK 0's OWN pretrained injection (linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) = 10,240 shared parameter(s)), ZERO new parameters. STEP 0 IS NOT BIT-IDENTICAL to the shipped head -- blocks 1-3 gain an injection they never had, from weights that are already non-zero. That is inherent to this mode, not a bug.
+loaded 248 head tensor(s) from /home/ebrahim/confidence_recalibration/extra_training/training/runs/x5frz6/head_ep8_step120.pt, exact match against 248 head parameter(s)
+join cache: 394 entry(ies) from /home/ebrahim/confidence_recalibration/extra_training/training/val10/join_cache_shard0.json
+prefetch: one background reader warming the next trunk
+join cache: 100 hit(s), 0 newly derived (100% reused)
+
+join 1: OST's per-pose chain mapping used on 500 pose(s), unresolvable on 0
+shard 0: 900 row(s) -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/x5frz6/train_eval_shards_ep8/rows_b30_head_ep8_step120_s0.csv
