@@ -54,7 +54,7 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --save-every 250 \
   --pae-scored-pairs training/full_train/pool.csv --pae-only \
   --shuffle structure --seeds 500000-500009 \
-  --prefetch-units 2 \
+  --prefetch-units 2 --prefetch-workers 3 \
   --val-loss-every 1 \
   --val-loss-fold validation/fold \
   --val-loss-selection training/valfull/structures.csv \
