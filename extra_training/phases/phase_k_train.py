@@ -131,6 +131,20 @@ def main():
                          "2,000 steps of a 100,000-step run (2%%). At batch 256 three epochs of our "
                          "cache is 292 optimiser steps, so 2,000 would be 685%% of the run and the "
                          "learning rate would never reach its set value. 20 is 6.8%%.")
+    ap.add_argument("--lr-final", type=float, default=0.0,
+                    help="COSINE DECAY TARGET. 0 (default) keeps the historical schedule: warm up "
+                         "over --warmup-steps and then hold --lr flat for the whole run, which is "
+                         "what every arm before this one did. Set it and the lr follows "
+                         "lr_final + (lr - lr_final)*(1+cos(pi*p))/2 for p the fraction of the "
+                         "run's EXPECTED optimiser steps completed after warmup, so it reaches "
+                         "--lr-final on the last step. WHY IT EXISTS: 8fkrsu and zg5fnw both sat "
+                         "at a fixed distance from their L2-SP anchor for five epochs (5.55 and "
+                         "~20) while still MOVING 3-12 per epoch, with gradient norms steady and "
+                         "training loss flat -- run_logging/weight_travel.py reports 8fkrsu's "
+                         "straightness at 0.227 against 0.462 for a free random walk of the same "
+                         "steps, i.e. confined and retracing. That is an optimiser oscillating at "
+                         "the limit its step size can resolve, and neither run ever decayed: lr "
+                         "was constant 0.01 from step 20 to the end because no decay existed.")
     ap.add_argument("--grad-probe", action="store_true",
                     help="MEASURE, DON'T GUESS. Run EXACTLY ONE accumulation window -- the unit "
                          "count is derived as accum_local/nsample, not asked for, because a probe "
@@ -1208,6 +1222,10 @@ def main():
     # ranks, so dividing by accum_eff would scale the PAE gradient by 100/90. Set once per epoch
     # from the actual step shape; equal to accum_eff when --rank-cross-seed is off.
     _step_poses_g = [accum_eff]
+    # THE COSINE HORIZON, in optimiser steps, filled in just before train_loop from the same
+    # `_expect` the startup banner prints. A list because train_loop closes over it and the value
+    # is not known until the unit list has been flattened and sharded.
+    _lr_horizon = [0]
     _rank_tau = float(a.rank_tau) if a.rank_tau is not None else None
     _probe = {"rows": [], "units": 0, "poses": 0, "sum": {}, "finite": {}, "nonzero": {}}
     if a.grad_probe:
@@ -1913,6 +1931,9 @@ def main():
                  # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
                  "l2_sp": a.l2_sp,
                  "l2_sp_exclude": a.l2_sp_exclude,
+                 # AND SO DOES THE SCHEDULE. lr_final changes the lr at every step after warmup,
+                 # so a resume that added or dropped the cosine would be a different experiment.
+                 "lr_final": a.lr_final,
                  "lr": a.lr, "warmup_steps": a.warmup_steps,
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
@@ -4184,6 +4205,7 @@ def main():
                                   "train_only": a.train_only,
                                   "world": world, "seed": a.seed, "accum": a.accum,
                                   "nsample": a.nsample, "lr": a.lr,
+                                  "lr_final": a.lr_final,
                                   "warmup_steps": a.warmup_steps, "epochs": a.epochs,
                                   "manifest_skip": a.manifest_skip,
                                   "manifest_digest": _manifest_digest,
@@ -4336,6 +4358,12 @@ def main():
                 for _m in run_unit(pdb, lab_p, trunk_p):
                     i, met = _m["pose"], _m      # floats only; the tensors are already freed
                     cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
+                    # COSINE AFTER WARMUP. Driven by `step`, which resume restores, so a resumed
+                    # run picks up the schedule where it left off instead of restarting the decay.
+                    if a.lr_final > 0.0 and _lr_horizon[0] > a.warmup_steps and step >= a.warmup_steps:
+                        _p = min(1.0, (step - a.warmup_steps)
+                                 / float(_lr_horizon[0] - a.warmup_steps))
+                        cur_lr = a.lr_final + 0.5 * (lr - a.lr_final) * (1.0 + math.cos(math.pi * _p))
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
                     n_in_accum += 1
@@ -4728,9 +4756,13 @@ def main():
     _full = (len(flat) // max(1, world)) * a.nsample // accum_local
     _expect = (_full + 1) * max(1, math.ceil(a.epochs))
     steps_cap = 0
+    _lr_horizon[0] = _expect
+    _sched = ("flat after warmup (no decay)" if a.lr_final <= 0.0 else
+              f"COSINE {a.lr:g} -> {a.lr_final:g} over steps {a.warmup_steps}..{_expect}")
     print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
           f"~{_expect} optimiser step(s) for {a.epochs} epoch(s) "
           f"({_full} full + 1 partial per epoch); no step cap, the epoch loop decides")
+    print(f"  lr schedule: {_sched}")
     print(f"trajectory -> {traj_p}")
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
     train_loop(steps_cap, a.lr, "train", write_traj=is_main,

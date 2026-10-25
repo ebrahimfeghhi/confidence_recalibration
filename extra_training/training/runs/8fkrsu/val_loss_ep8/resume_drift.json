@@ -1,0 +1,82 @@
+[
+ {
+  "from_bundle": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/8fkrsu/resume_ep8.pt",
+  "bundle_commit": "c509c9d72b294031215a7ca105eab84ea8330669",
+  "bundle_written": "2026-10-25T07:04:19-0700",
+  "bundle_epoch": 8,
+  "bundle_step": 1401,
+  "accepted_at": "2026-10-25T07:04:55-07:00",
+  "via": "--resume-allow-drift",
+  "note": "held-out PAE measurement of resume_ep8.pt at epoch 8; --loss-only reads the weights and writes no checkpoint, so the bundle's schedule is not continued",
+  "fields": {
+   "world": {
+    "bundle": 3,
+    "this_run": 1
+   },
+   "manifest_digest": {
+    "bundle": "258f939fd53397bf",
+    "this_run": "5cf73dbc53401d74"
+   },
+   "alpha_pae": {
+    "bundle": 0.0,
+    "this_run": 1.0
+   },
+   "rank_form": {
+    "bundle": "softplus",
+    "this_run": "linear"
+   },
+   "rank_tau": {
+    "bundle": 0.1429,
+    "this_run": -1.0
+   },
+   "rank_cross_seed": {
+    "bundle": true,
+    "this_run": false
+   },
+   "rank_pairs": {
+    "bundle": "all",
+    "this_run": "cross"
+   },
+   "rank_straddle": {
+    "bundle": 0.23,
+    "this_run": 0.0
+   },
+   "l2_sp": {
+    "bundle": 5e-05,
+    "this_run": 0.0
+   },
+   "lr": {
+    "bundle": 0.01,
+    "this_run": 0.001
+   },
+   "warmup_steps": {
+    "bundle": 20,
+    "this_run": 0
+   },
+   "pae_scored_pairs": {
+    "bundle": "training/full_train/pool.csv",
+    "this_run": "training/valfull/pool.csv"
+   },
+   "train_only": {
+    "bundle": "linear_no_bias_d,pose_perblock",
+    "this_run": ""
+   }
+  },
+  "named": [],
+  "unnamed": [
+   "alpha_pae",
+   "l2_sp",
+   "lr",
+   "manifest_digest",
+   "pae_scored_pairs",
+   "rank_cross_seed",
+   "rank_form",
+   "rank_pairs",
+   "rank_straddle",
+   "rank_tau",
+   "train_only",
+   "warmup_steps",
+   "world"
+  ]
+ }
+]
