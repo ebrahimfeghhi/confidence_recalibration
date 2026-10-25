@@ -1,0 +1,152 @@
+W1025 12:08:24.332000 16366 torch/distributed/run.py:766] 
+W1025 12:08:24.332000 16366 torch/distributed/run.py:766] *****************************************
+W1025 12:08:24.332000 16366 torch/distributed/run.py:766] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1025 12:08:24.332000 16366 torch/distributed/run.py:766] *****************************************
+held-out PAE monitor: every 1 epoch(s), 53 structure(s) x seeds 400000-400029 = 1590 unit(s), masked by training/valfull/pool.csv
+held-out PAE monitor: every 1 epoch(s), 53 structure(s) x seeds 400000-400029 = 1590 unit(s), masked by training/valfull/pool.csvheld-out PAE monitor: every 1 epoch(s), 53 structure(s) x seeds 400000-400029 = 1590 unit(s), masked by training/valfull/pool.csv
+
+replay gate: PASS (training/ft3_pilot_replay.log)
+replay gate: PASS (training/ft3_pilot_replay.log)
+replay gate: PASS (training/ft3_pilot_replay.log)
+[rank 0/3] cuda:0 backend=gloo timeout=240 min
+  accum: 85 requested -> K=6 structure(s)/step x 3 rank(s) x 5 pose(s) = 90 poses per step (30/rank)
+[rank 2/3] cuda:2 backend=gloo timeout=240 min
+  accum: 85 requested -> K=6 structure(s)/step x 3 rank(s) x 5 pose(s) = 90 poses per step (30/rank)
+[rank 1/3] cuda:1 backend=gloo timeout=240 min
+  accum: 85 requested -> K=6 structure(s)/step x 3 rank(s) x 5 pose(s) = 90 poses per step (30/rank)
+train scheduler 16.0
+inference scheduler 16.0
+train scheduler 16.0
+inference scheduler 16.0
+train scheduler 16.0
+inference scheduler 16.0
+Diffusion Module has 16.0
+Diffusion Module has 16.0
+Diffusion Module has 16.0
+pair stack: 4 block(s), blocks_per_ckpt=None, chunking off
+confidence_head.training = True (trunk stays eval; train_confidence_only=True)
+pose per-block: 3 block(s) injected, SHARING BLOCK 0's OWN pretrained injection (linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) = 10,240 shared parameter(s)), ZERO new parameters. STEP 0 IS NOT BIT-IDENTICAL to the shipped head -- blocks 1-3 gain an injection they never had, from weights that are already non-zero. That is inherent to this mode, not a bug.
+  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); measured 3.4 ms and up to 1.66 GB per pose
+  dropped plddt_loss (PLDDTLoss); stub answers ['bins_from_lddt', 'forward_given_atom_lddt']
+  dropped pde_loss (PDELoss); stub answers ['calculate_label']
+  dropped resolved_loss (ExperimentallyResolvedLoss); stub answers []
+PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. Every gradient now goes to the one output ipTM reads.
+PAE term MASKED to scored chain pairs: 488 structure(s), 977 interface(s), from training/full_train/pool.csv
+loss weights: plddt 1 [DROPPED]  pde 1 [DROPPED]  pae 1  resolved 1 [DROPPED]
+train-eval pool: 53 structure(s), all present, none skipped
+pair stack: 4 block(s), blocks_per_ckpt=None, chunking off
+confidence_head.training = True (trunk stays eval; train_confidence_only=True)
+pose per-block: 3 block(s) injected, SHARING BLOCK 0's OWN pretrained injection (linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) = 10,240 shared parameter(s)), ZERO new parameters. STEP 0 IS NOT BIT-IDENTICAL to the shipped head -- blocks 1-3 gain an injection they never had, from weights that are already non-zero. That is inherent to this mode, not a bug.
+  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); measured 3.4 ms and up to 1.66 GB per pose
+  dropped plddt_loss (PLDDTLoss); stub answers ['bins_from_lddt', 'forward_given_atom_lddt']
+  dropped pde_loss (PDELoss); stub answers ['calculate_label']
+  dropped resolved_loss (ExperimentallyResolvedLoss); stub answers []
+PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. Every gradient now goes to the one output ipTM reads.
+PAE term MASKED to scored chain pairs: 488 structure(s), 977 interface(s), from training/full_train/pool.csv
+loss weights: plddt 1 [DROPPED]  pde 1 [DROPPED]  pae 1  resolved 1 [DROPPED]
+train-eval pool: 53 structure(s), all present, none skipped
+--train-only ['linear_no_bias_d', 'linear_no_bias_d_wo_onehot']: 2 of 248 head tensor(s), 10,240 of 19,752,270 parameters (0.052% of the head). Everything else is FROZEN.
+    linear_no_bias_d.weight                        (256, 39)
+    linear_no_bias_d_wo_onehot.weight              (256, 1)
+--train-only ['linear_no_bias_d', 'linear_no_bias_d_wo_onehot']: 2 of 248 head tensor(s), 10,240 of 19,752,270 parameters (0.052% of the head). Everything else is FROZEN.
+    linear_no_bias_d.weight                        (256, 39)
+trainable: 2 tensor(s), 0.0M of 464.4M parameters (0.0%), under ['confidence_head']
+    linear_no_bias_d_wo_onehot.weight              (256, 1)
+manifest: 487 selected structure(s) minus ['8vba', '9b9j', '9bbn', '9dc3', '9dzf', '9e7x', '9mx1', '9q5m', '9q5v', '9q7b'] x seeds 500000-500009 = 4870 intended unit(s), from training/full_train/structures_no9dzj.csv
+trainable: 2 tensor(s), 0.0M of 464.4M parameters (0.0%), under ['confidence_head']
+manifest: 487 selected structure(s) minus ['8vba', '9b9j', '9bbn', '9dc3', '9dzf', '9e7x', '9mx1', '9q5m', '9q5v', '9q7b'] x seeds 500000-500009 = 4870 intended unit(s), from training/full_train/structures_no9dzj.csv
+  manifest digest 258f939fd53397bf over 4870 unit(s)
+  PAE mask: all 487 training structure(s) are named by training/full_train/pool.csv
+  alignment preflight: PASS over 487 structure(s), digest 258f939fd53397bf
+  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label only (9 features + coordinate/coordinate_mask)
+  resolved 4870 unit(s) over 487 structure(s) from 1 fold root(s), shuffle=structure, seed=0
+fingerprint context: code=93a8fe85a9ea9bde loss=2fc84683b58e5aa0
+  manifest digest 258f939fd53397bf over 4870 unit(s)
+  PAE mask: all 487 training structure(s) are named by training/full_train/pool.csv
+  alignment preflight: PASS over 487 structure(s), digest 258f939fd53397bf
+  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label only (9 features + coordinate/coordinate_mask)
+  resolved 4870 unit(s) over 487 structure(s) from 1 fold root(s), shuffle=structure, seed=0
+fingerprint context: code=93a8fe85a9ea9bde loss=2fc84683b58e5aa0
+pair stack: 4 block(s), blocks_per_ckpt=None, chunking off
+confidence_head.training = True (trunk stays eval; train_confidence_only=True)
+pose per-block: 3 block(s) injected, SHARING BLOCK 0's OWN pretrained injection (linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) = 10,240 shared parameter(s)), ZERO new parameters. STEP 0 IS NOT BIT-IDENTICAL to the shipped head -- blocks 1-3 gain an injection they never had, from weights that are already non-zero. That is inherent to this mode, not a bug.
+  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); measured 3.4 ms and up to 1.66 GB per pose
+  dropped plddt_loss (PLDDTLoss); stub answers ['bins_from_lddt', 'forward_given_atom_lddt']
+  dropped pde_loss (PDELoss); stub answers ['calculate_label']
+  dropped resolved_loss (ExperimentallyResolvedLoss); stub answers []
+PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. Every gradient now goes to the one output ipTM reads.
+PAE term MASKED to scored chain pairs: 488 structure(s), 977 interface(s), from training/full_train/pool.csv
+loss weights: plddt 1 [DROPPED]  pde 1 [DROPPED]  pae 1  resolved 1 [DROPPED]
+train-eval pool: 53 structure(s), all present, none skipped
+--train-only ['linear_no_bias_d', 'linear_no_bias_d_wo_onehot']: 2 of 248 head tensor(s), 10,240 of 19,752,270 parameters (0.052% of the head). Everything else is FROZEN.
+    linear_no_bias_d.weight                        (256, 39)
+    linear_no_bias_d_wo_onehot.weight              (256, 1)
+trainable: 2 tensor(s), 0.0M of 464.4M parameters (0.0%), under ['confidence_head']
+manifest: 487 selected structure(s) minus ['8vba', '9b9j', '9bbn', '9dc3', '9dzf', '9e7x', '9mx1', '9q5m', '9q5v', '9q7b'] x seeds 500000-500009 = 4870 intended unit(s), from training/full_train/structures_no9dzj.csv
+  manifest digest 258f939fd53397bf over 4870 unit(s)
+  PAE mask: all 487 training structure(s) are named by training/full_train/pool.csv
+  alignment preflight: PASS over 487 structure(s), digest 258f939fd53397bf
+  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label only (9 features + coordinate/coordinate_mask)
+  resolved 4870 unit(s) over 487 structure(s) from 1 fold root(s), shuffle=structure, seed=0
+fingerprint context: code=93a8fe85a9ea9bde loss=2fc84683b58e5aa0
+fingerprint cache: 4880 entry(ies) reused from training/fold, 0 invalidated by a changed input, code_fp or schema
+
+training: lr 0.01, warmup 20, accum 85, ~4065 optimiser step(s) for 15.0 epoch(s) (270 full + 1 partial per epoch); no step cap, the epoch loop decides
+  lr schedule: flat after warmup (no decay)
+trajectory -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/trajectory.csv
+fingerprint cache: 4880 entry(ies) reused from training/fold, 0 invalidated by a changed input, code_fp or schema
+
+training: lr 0.01, warmup 20, accum 85, ~4065 optimiser step(s) for 15.0 epoch(s) (270 full + 1 partial per epoch); no step cap, the epoch loop decides
+  lr schedule: flat after warmup (no decay)
+trajectory -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/trajectory.csv
+fingerprint cache: 4880 entry(ies) reused from training/fold, 0 invalidated by a changed input, code_fp or schema
+
+training: lr 0.01, warmup 20, accum 85, ~4065 optimiser step(s) for 15.0 epoch(s) (270 full + 1 partial per epoch); no step cap, the epoch loop decides
+  lr schedule: flat after warmup (no decay)
+trajectory -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/trajectory.csv
+  epoch 1/15: 1461 unit(s)
+  epoch 1/15: 1461 unit(s)
+  epoch 1/15: 1461 unit(s)
+  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=93a8fe85a9ea9bde. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.
+  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=93a8fe85a9ea9bde. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.
+  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=93a8fe85a9ea9bde. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=93a8fe85a9ea9bde. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.
+
+  epoch 1 took 23.1 min for 1461 unit(s), 243 optimiser step(s), 0.19 s/pose
+  epoch 1 took 23.1 min for 1461 unit(s), 243 optimiser step(s), 0.19 s/pose
+  epoch 1 took 23.1 min for 1461 unit(s), 243 optimiser step(s), 0.19 s/pose
+  flushing a partial accumulation of 45/90 pose(s), gradient scaled by 2.0000 so the step is the same size as every other
+  flushing a partial accumulation of 45/90 pose(s), gradient scaled by 2.0000 so the step is the same size as every other
+  flushing a partial accumulation of 45/90 pose(s), gradient scaled by 2.0000 so the step is the same size as every other
+  [rank 0] epoch 1 took 23.1 min -- apply_step_total 0.3m/243  crop_slice 1.4m/1461  cropped_tokens mean 326  gpu_backward 10.7m/7305  gpu_forward 5.8m/7305  grad_collective_plus_wait 0.1m/244  label_open 0.0m/1461  loss_feature_prep 0.0m/1461  loss_stats_collective_plus_wait 0.3m/243  pose_total 15.0m/7305  prefetch_issue 0.0m/1460
+  [rank 0] epoch 1 prefetch (1 worker(s)): 1461/1461 hit (100.0%), 6.1 min waiting on the worker
+  [rank 0] epoch 1 accounted 17.0m of 23.1m, residual 6.1m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 1] epoch 1 took 23.1 min -- apply_step_total 0.3m/243  crop_slice 1.4m/1461  cropped_tokens mean 326  gpu_backward 10.7m/7305  gpu_forward 5.8m/7305  grad_collective_plus_wait 0.2m/244  label_open 0.0m/1461  loss_feature_prep 0.0m/1461  loss_stats_collective_plus_wait 0.7m/243  pose_total 15.0m/7305  prefetch_issue 0.0m/1460
+  [rank 1] epoch 1 prefetch (1 worker(s)): 1461/1461 hit (100.0%), 5.6 min waiting on the worker
+  [rank 1] epoch 1 accounted 17.5m of 23.1m, residual 5.6m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 0] epoch 1 memory: peak allocated 54.83 GB, peak reserved 56.84 GB, blocks_per_ckpt=None
+  [rank 1] epoch 1 memory: peak allocated 54.83 GB, peak reserved 56.84 GB, blocks_per_ckpt=None
+  [rank 2] epoch 1 took 23.1 min -- apply_step_total 0.3m/243  crop_slice 1.4m/1461  cropped_tokens mean 326  gpu_backward 10.7m/7305  gpu_forward 5.9m/7305  grad_collective_plus_wait 0.1m/244  label_open 0.0m/1461  loss_feature_prep 0.0m/1461  loss_stats_collective_plus_wait 0.3m/243  pose_total 15.1m/7305  prefetch_issue 0.0m/1460
+  [rank 2] epoch 1 prefetch (1 worker(s)): 1461/1461 hit (100.0%), 5.9 min waiting on the worker
+  [rank 2] epoch 1 accounted 17.2m of 23.1m, residual 5.9m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 2] epoch 1 memory: peak allocated 54.83 GB, peak reserved 56.84 GB, blocks_per_ckpt=None
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:2447: ResourceWarning: unclosed file <_io.TextIOWrapper name='training/fold/unit_fingerprints.r1.json' mode='r' encoding='UTF-8'>
+  prev = json.load(open(_fp_disk))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:2447: ResourceWarning: unclosed file <_io.TextIOWrapper name='training/fold/unit_fingerprints.r2.json' mode='r' encoding='UTF-8'>
+  prev = json.load(open(_fp_disk))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:2447: ResourceWarning: unclosed file <_io.TextIOWrapper name='training/fold/unit_fingerprints.r0.json' mode='r' encoding='UTF-8'>
+  prev = json.load(open(_fp_disk))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/resume_ep1.pt (0 MiB: head + AdamW moments + step)
+  held-out PAE for epoch 1 (the training card)
+epoch 1 VALLOSS: pae 2.8305  poses 7950
+  evaluating epoch 1 (pool@fold) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:3954: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/metric_train_ep1.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 1 TRAIN: mean_dockq 0.5868  frac_acc 0.7500  oracle 0.6926 / 0.8587  headroom 0.1058  (92 interfaces)
+  epoch 2/15: 1461 unit(s)
+  epoch 2/15: 1461 unit(s)  epoch 2/15: 1461 unit(s)
+
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/j583i8/head_step250.pt
