@@ -39,7 +39,11 @@ import re
 # --rank-topk-decay instead of hardcoded cross-seed defaults. Pre-knob runs reproduce their v3
 # numbers exactly, since the defaults are what they trained; the version bump exists so arms that
 # DID set those flags are recomputed rather than read from a cache of the wrong quantity.
-CACHE = "rank_rho_b{b}_v4.csv"
+# v5 adds xscanon_*, the canonical cross-seed loss every arm can be compared on, alongside the
+# own-objective xsloss_* that v4 introduced. v4 made the held-out loss the twin of the training
+# curve and in doing so made it incomparable between arms training different functions; both
+# columns exist so neither question has to borrow the other's number.
+CACHE = "rank_rho_b{b}_v5.csv"
 
 
 def run_rank_form(d):
@@ -108,6 +112,15 @@ COLS = ("rho_trained", "rho_shipped", "n_ifaces", "inv_trained", "inv_shipped",
         # within-seed LINEAR loss and is kept only so historical arms stay comparable. See the
         # module docstring.
         "xsloss_trained", "xsloss_shipped", "xsloss_sem",
+        # THE SAME LOSS AT THE CANONICAL SETTINGS -- cross-seed softplus at DEFAULT_TAU, no
+        # within-seed weight, no rank decay -- FOR EVERY ARM REGARDLESS OF WHAT IT TRAINED.
+        # xsloss_* above is each run's OWN objective, which is what makes it the twin of the
+        # training curve; that same property makes it INCOMPARABLE ACROSS ARMS that train
+        # different functions. Both are needed and they answer different questions:
+        #   xsloss_*       vs the training curve  -> generalisation
+        #   xscanon_*      vs another arm         -> which arm orders held-out poses better
+        # For a cross-seed arm at DEFAULT_TAU the two are identical by construction.
+        "xscanon_trained", "xscanon_shipped",
         # THE EXPECTED-DockQ OBJECTIVE, held out, at THIS RUN's OWN softmax temperature.
         # NEGATIVE: it is -E[DockQ of the selected pose], floor -max(DockQ) per group, so it is
         # NOT on the same scale as xsloss_* above and the two must never share an axis. Computed
@@ -212,6 +225,7 @@ def _one(d, ep, budget):
     sel_dq, sel_ok = [], []
     # PER-INTERFACE held-out loss under the RUN'S OWN objective, trained and shipped.
     xs_t, xs_s = [], []
+    xc_t, xc_s = [], []
     ex_t, ex_s = [], []
     # THE TEMPERATURE THE HELD-OUT EXPECTED METRIC USES. This run's own --rank-tau when it
     # trained the expected form; otherwise DEFAULT_SOFTMAX_TAU, so a pairwise arm still gets a
@@ -258,6 +272,13 @@ def _one(d, ep, budget):
         # objective.
         _lv_t, _np_t = _RKL.group_loss(_sb, _db, **_obj)
         _lv_s, _np_s = _RKL.group_loss(_ss, _db, **_obj)
+        # The canonical yardstick, identical settings for every arm.
+        _cv_t, _cn_t = _RKL.group_loss(_sb, _db, form="softplus", tau=_RKL.DEFAULT_TAU,
+                                       pairs="cross")
+        _cv_s, _cn_s = _RKL.group_loss(_ss, _db, form="softplus", tau=_RKL.DEFAULT_TAU,
+                                       pairs="cross")
+        if _cn_t and _cn_s:
+            xc_t.append(_cv_t); xc_s.append(_cv_s)
         if _np_t and _np_s:
             xs_t.append(_lv_t); xs_s.append(_lv_s)
         # THE EXPECTED-DockQ OBJECTIVE, held out, at this run's own temperature. Pair-free, so no
@@ -346,7 +367,7 @@ def _one(d, ep, budget):
     # 22 fields and whose rows had 19, which parsed without error and surfaced later as an
     # IndexError at the plot. Returning in COLS order removes the permutation, and the writer now
     # iterates COLS, so a new column is added in ONE place.
-    assert len(COLS) == 25, f"COLS changed to {len(COLS)}; update this return"
+    assert len(COLS) == 27, f"COLS changed to {len(COLS)}; update this return"
     return (sum(tr) / len(tr), sum(sh) / len(sh), len(tr),
             inv_t / tot, inv_s / tot, sum(spreads) / max(1, len(spreads)),
             tie_t / tot, tie_s / tot,
@@ -354,6 +375,8 @@ def _one(d, ep, budget):
             sum(top_t) / max(1, len(top_t)), sum(top_s) / max(1, len(top_s)),
             dq_m, dq_e, fr_m, fr_e, rho_e, top_e,
             xs_m, xs_sm, xs_e,
+            (sum(xc_t) / len(xc_t)) if xc_t else float("nan"),
+            (sum(xc_s) / len(xc_s)) if xc_s else float("nan"),
             ex_m, ex_sm, ex_e, _ex_tau)
 
 

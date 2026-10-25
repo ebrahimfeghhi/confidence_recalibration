@@ -62,8 +62,12 @@ LAM=$($PY -I run_logging/l2sp_lambda.py --old-lambda 1e-05 --old-grad 2.4260e-03
 [ -n "$LAM" ] || { echo "STOP: l2sp_lambda.py produced no lambda."; exit 1; }
 echo "$(date '+%T') derived lambda = $LAM"
 
-sed -i "s/LAMBDA_PLACEHOLDER/$LAM/" shell_scripts/launch_pt3_full.sh
-grep -q LAMBDA_PLACEHOLDER shell_scripts/launch_pt3_full.sh && { echo "STOP: placeholder survived"; exit 1; }
+# ANCHORED TO THE FLAG, not a bare token. A bare `s/LAMBDA_PLACEHOLDER/$LAM/` rewrote every
+# line holding that token, including the launcher's own guard, which then matched the --l2-sp
+# argument and refused to launch. Anchoring to "--l2-sp " touches only the argument.
+sed -i "s/--l2-sp LAMBDA_PLACEHOLDER/--l2-sp $LAM/" shell_scripts/launch_pt3_full.sh
+grep -q -- "--l2-sp LAMBDA_PLACEHOLDER" shell_scripts/launch_pt3_full.sh && {
+    echo "STOP: --l2-sp placeholder survived substitution"; exit 1; }
 
 # --- launch, and identify the run by SET DIFFERENCE, never by `ls -t` ---
 BEFORE=$(ls training/runs | while read -r n; do [ -d "training/runs/$n" ] && echo "$n"; done \

@@ -42,18 +42,36 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# The held-out loss is cross-seed softplus at DEFAULT_TAU with gap weighting. A run whose own
-# objective is exactly that can have its two loss curves read against each other; any other run
-# cannot, because the vertical gap then mixes generalisation with a change of function.
-SAME_AS_HELDOUT = {"rank_form": "softplus", "rank_pairs": "cross", "rank_within_weight": 1.0,
-                   "rank_topk_decay": 0.0, "rank_weight_by_gap": True, "rank_cross_seed": True}
-DEFAULT_TAU = 0.0305
+# TWO HELD-OUT LOSS COLUMNS, AND THEY ANSWER DIFFERENT QUESTIONS.
+#   xsloss_*   each run's OWN objective, so it is the twin of that run's training curve. The gap
+#              between them is generalisation. NOT comparable between arms training different
+#              functions.
+#   xscanon_*  cross-seed softplus at DEFAULT_TAU for every arm regardless of what it trained.
+#              Comparable across arms; not the twin of anything that trained something else.
+# This plotter uses the first against the training curve and the second when overlaying arms, so
+# neither question borrows the other's number. An earlier version hardcoded the canonical
+# settings for both, which mislabelled every within-seed arm's loss panel as "different
+# functions" after rank_rho started computing the own-objective column.
 
 OBJECTIVE_KEYS = ("rank_form", "rank_pairs", "rank_within_weight", "rank_topk_decay",
                   "rank_tau", "rank_weight_by_gap", "alpha_rank", "rank_cross_seed")
 
 COLORS = ["#2f6fb0", "#e07b39", "#2e9e83", "#b03a3a", "#7f5fb0"]
 SHIPPED_C = "#9a9a9a"
+
+
+def tint(c, f=0.55):
+    """Lighten a hex colour toward white by fraction f.
+
+    THE TWO LOSS CURVES NEED TO DIFFER BY COLOUR, not only by dash pattern. Drawn in one colour
+    with solid/dashed as the only cue, their legend handles were indistinguishable at the size
+    the figure renders, so "training" and "held out" could not be told apart -- which is the one
+    thing that panel exists to show. Tinting keeps each arm identifiable by hue when several are
+    overlaid, while separating its two curves within that hue.
+    """
+    c = c.lstrip("#")
+    r, g, b = (int(c[i:i + 2], 16) for i in (0, 2, 4))
+    return "#%02x%02x%02x" % tuple(int(v + (255 - v) * f) for v in (r, g, b))
 plt.rcParams.update({
     "font.size": 10.5, "axes.titlesize": 11.5, "axes.labelsize": 10.5,
     "axes.spines.top": False, "axes.spines.right": False,
@@ -73,17 +91,19 @@ def epoch_rows(rid, ep, budget):
     return rows
 
 
-def heldout_is_twin(rid):
-    """Is this run's OWN objective the same function the held-out loss measures?"""
-    try:
-        with open(f"training/runs/{rid}/args.json") as fh:
-            a = json.load(fh)
-    except Exception:
-        return False
-    if any(a.get(k) != v for k, v in SAME_AS_HELDOUT.items()):
-        return False
-    t = a.get("rank_tau")
-    return t is None or abs(float(t) - DEFAULT_TAU) < 1e-9
+def heldout_is_twin(rid, budget):
+    """Does this run's cache carry the own-objective held-out loss?
+
+    Since rank_rho v4 the xsloss_* column IS the run's own objective, so for any run whose cache
+    has been rebuilt the answer is yes and the training-vs-held-out gap is generalisation. A
+    cache predating v4 holds the canonical loss instead, and for an arm that trained something
+    else that gap would mix generalisation with a change of function -- so this checks the cache
+    actually in use rather than assuming.
+    """
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import rank_rho as _RHO
+    return os.path.exists(os.path.join("training", "runs", rid, _RHO.CACHE.format(b=budget)))
 
 
 def objective(rid):
@@ -109,7 +129,7 @@ def train_loss(rid):
     return plot_three.train_rank_loss(rid)
 
 
-def xsloss(rid, budget, shipped=False):
+def xsloss(rid, budget, shipped=False, canonical=False):
     """epoch -> held-out cross-seed softplus, from the run's own rank_rho cache.
 
     ALWAYS CROSS-SEED AT DEFAULT_TAU, whatever the arm trained -- see the module docstring. That
@@ -125,7 +145,8 @@ def xsloss(rid, budget, shipped=False):
     path = os.path.join("training", "runs", rid, _RHO.CACHE.format(b=budget))
     if not os.path.exists(path):
         return out
-    col = "xsloss_shipped" if shipped else "xsloss_trained"
+    col = ("xscanon_shipped" if shipped else "xscanon_trained") if canonical \
+        else ("xsloss_shipped" if shipped else "xsloss_trained")
     with open(path) as fh:
         for r in csv.DictReader(fh):
             try:
@@ -215,15 +236,18 @@ def main():
         axes[2].fill_between(ep, [x - y for x, y in zip(m, se)], [x + y for x, y in zip(m, se)],
                              color=c, alpha=0.15, lw=0)
         axes[2].plot(ep, m, color=c, lw=2, marker="o", ms=3.5, label=labels[rid])
-        tl, xl = train_loss(rid), xsloss(rid, a.budget)
+        tl = train_loss(rid)
+        # ACROSS ARMS the canonical column is the only comparable one; for ONE arm the
+        # own-objective column is what pairs with its training curve.
+        xl = xsloss(rid, a.budget, canonical=(len(a.arms) > 1))
         te = [e for e in ep if e in tl]
         xe = [e for e in ep if e in xl]
         if te:
-            axes[3].plot(te, [tl[e] for e in te], color=c, lw=2, marker="s", ms=3.5, ls="--",
-                         label=f"{labels[rid]} \u2014 training")
+            axes[3].plot(te, [tl[e] for e in te], color=tint(c), lw=2.2, marker="s", ms=4,
+                         ls="--", label=f"{labels[rid]} \u2014 training")
         if xe:
-            axes[3].plot(xe, [xl[e] for e in xe], color=c, lw=2, marker="o", ms=3.5,
-                         label=f"{labels[rid]} \u2014 held out")
+            axes[3].plot(xe, [xl[e] for e in xe], color=c, lw=2.2, marker="o", ms=4,
+                         label=f"{labels[rid]} \u2014 HELD OUT")
 
     for ax, ttl, ref in ((axes[0], "mean DockQ of the selected pose", sh_d),
                          (axes[1], f"fraction acceptable (DockQ > {a.thresh:g})", sh_f)):
@@ -237,7 +261,8 @@ def main():
     axes[2].set_title("paired trained \u2212 shipped, same interfaces")
     _shipped_xs = None
     for spec in a.arms:
-        _x = xsloss(spec.partition("=")[0], a.budget, shipped=True)
+        _x = xsloss(spec.partition("=")[0], a.budget, shipped=True,
+                    canonical=(len(a.arms) > 1))
         if _x:
             _shipped_xs = next(iter(_x.values()))
             break
@@ -256,11 +281,12 @@ def main():
             axes[3].annotate(f"shipped {_shipped_xs:.4f}", xy=(0.015, _shipped_xs),
                              xycoords=("axes fraction", "data"), color="#777777", fontsize=9,
                              va="bottom")
-    twins = all(heldout_is_twin(spec.partition("=")[0]) for spec in a.arms)
-    axes[3].set_title("ranking loss: training (dashed) vs held out (solid)\n"
+    twins = (len(a.arms) == 1
+             and heldout_is_twin(a.arms[0].partition("=")[0], a.budget))
+    axes[3].set_title("ranking loss \u2014 light dashed = TRAINING, dark solid = HELD OUT\n"
                       + ("same function both sides: the gap is generalisation"
                          if twins else
-                         "different functions, so the gap is not generalisation alone"),
+                         "held out is the CANONICAL cross-seed loss, comparable across arms"),
                       fontsize=10.5)
     multi = len(a.arms) > 1
     for ax in axes[:4]:
