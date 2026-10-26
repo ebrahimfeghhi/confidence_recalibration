@@ -22,6 +22,7 @@ import sys
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import metrics_io as MIO
@@ -404,6 +405,9 @@ def main():
                     fontsize=9, va="bottom", ha="right")
         ax.set_title(title, fontsize=11.5)
         ax.set_xlabel("epoch", fontsize=10.5)
+        # EPOCHS ARE INTEGERS. The default locator labelled a 1-8 range at 2.5/5.0/7.5, naming
+        # epochs that do not exist.
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins="auto"))
         ax.grid(alpha=0.15)
     axes[0].set_ylabel(f"held out, {n_if} interfaces, +- s.e. across interfaces", fontsize=10)
 
@@ -425,6 +429,7 @@ def main():
         axr.set_title("rank of first acceptable pose (lower better)",
                       fontsize=10.5)
         axr.set_xlabel("epoch", fontsize=10.5)
+        axr.xaxis.set_major_locator(MaxNLocator(integer=True, nbins="auto"))
         axr.grid(alpha=0.15)
         # The unpaired s.e. is ~13 on a mean of ~37, so the paired delta is the number that can
         # actually resolve a change; it is annotated here rather than given a panel of its own.
@@ -511,6 +516,7 @@ def main():
                     fontsize=8, va="bottom", ha="left")
         ax.set_title(f"{_lbl}: training vs held out", fontsize=11.5)
     ax.set_xlabel("epoch", fontsize=10.5)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins="auto"))
     ax.set_ylabel(f"{_lbl} (lower is better)", fontsize=9.5)
     ax.legend(fontsize=8.5, loc="upper right", framealpha=0.9)
     ax.grid(alpha=0.15)

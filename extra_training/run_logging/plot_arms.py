@@ -42,6 +42,7 @@ from collections import defaultdict
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 # TWO HELD-OUT LOSS COLUMNS, AND THEY ANSWER DIFFERENT QUESTIONS.
 #   xsloss_*   each run's OWN objective, so it is the twin of that run's training curve. The gap
@@ -262,6 +263,89 @@ def _chain(rid):
     return plot_three.run_chain(rid)
 
 
+def rho_paired(rid, budget):
+    """epoch -> (paired_mean_drho, paired_sem) -- per-interface Spearman(trained) minus
+    Spearman(shipped), averaged over interfaces.
+
+    WHY THIS AND NOT THE CACHED rho_sem. rho_sem is the spread ACROSS interfaces: on the valfull
+    pool it is ~0.0353, larger than the entire gap to shipped, because interfaces differ hugely in
+    how well ANY score tracks DockQ. Drawn as the band under the rho curve it says "interfaces
+    differ", which is true and is not the question. The question is whether THIS head orders
+    better than the shipped one, and that is a paired quantity: both rhos come from the same
+    interface's same ~30 poses, differing only in which column was correlated against DockQ. The
+    paired s.e. is ~0.010, so it resolves a gap the unpaired one buries.
+
+    This is exactly the error that got the paired-DockQ panel deleted, one level down: an error
+    bar that does not match the claim beside it. Computed from the shards rather than cached
+    because rank_rho.py stores no paired column; ~2 s for 20 epochs, and only manual runs of this
+    plotter pay it -- the per-epoch watcher calls plot_three.
+    """
+    from scipy.stats import spearmanr
+    out = {}
+    eps = {}
+    for r in _chain(rid):
+        for d in glob.glob(f"training/runs/{r}/train_eval_shards_ep*"):
+            eps[int(os.path.basename(d).split("ep")[-1])] = r
+    for ep in sorted(eps):
+        rows = epoch_rows(eps[ep], ep, budget)
+        if not rows:
+            continue
+        by = defaultdict(list)
+        for r in rows:
+            by[r["iface"]].append((float(r["iptm"]), float(r["stored_iptm"]), float(r["dockq"])))
+        d = []
+        for ps in by.values():
+            # Spearman is undefined on fewer than 3 points and nan when either side is constant;
+            # such an interface is DROPPED, not counted as zero, which would pull the mean toward
+            # "no difference" using interfaces that carry no information either way.
+            if len(ps) < 3:
+                continue
+            dq = [x[2] for x in ps]
+            t = spearmanr([x[0] for x in ps], dq).statistic
+            s = spearmanr([x[1] for x in ps], dq).statistic
+            if t == t and s == s:
+                d.append(t - s)
+        if len(d) < 2:
+            continue
+        m = sum(d) / len(d)
+        out[ep] = (m, st.stdev(d) / math.sqrt(len(d)))
+    return out
+
+
+def rho_curve(rid, budget):
+    """epoch -> (rho_trained, rho_sem, rho_shipped), from each chain member's rank_rho cache.
+
+    MEAN WITHIN-INTERFACE Spearman(ipTM, DockQ), which is rank_rho.py's definition and the only
+    one used anywhere in this repo -- NOT a correlation pooled over every row. Pooled, the
+    statistic is dominated by between-interface variation: an easy interface has both high ipTM
+    and high DockQ, so the pooled number would mostly measure which interfaces are easy and would
+    move when the pool changed rather than when the head did. That is the same error the paired
+    DockQ panel existed to avoid, one level down.
+
+    WHY IT REPLACES THE PAIRED PANEL. The paired mean is algebraically identical to panel 1 minus
+    its shipped line -- verified equal to four decimals on every epoch of dntxmn -- so panel 3
+    carried no number panel 1 did not already show, only an error bar. rho reads the ORDERING
+    over all ~30 poses per interface instead of the single argmax outcome, which is what selection
+    actually depends on and what the argmax cannot resolve.
+
+    rho_sem is the s.e. ACROSS the per-interface rhos, computed by rank_rho.py from the same rows.
+    """
+    out = {}
+    for r in _chain(rid):
+        path, ver = _cache_path(r, budget)
+        if not path:
+            continue
+        with open(path) as fh:
+            for row in csv.DictReader(fh):
+                try:
+                    out[int(row["epoch"])] = (float(row["rho_trained"]),
+                                              float(row["rho_sem"]),
+                                              float(row["rho_shipped"]))
+                except (KeyError, ValueError, TypeError):
+                    continue
+    return out
+
+
 def series(rid, budget, thresh):
     """epoch -> (paired_mean, paired_sem, dockq, frac, shipped_dockq, shipped_frac, ifaces).
 
@@ -328,6 +412,24 @@ def main():
     sh_f = next(iter(first.values()))[5]
     n_if = len(base)
 
+    # rho COMES FROM THE CACHE, so an arm whose cache has not been written yet draws no curve
+    # here rather than a wrong one. Named, because a silently absent curve reads as a flat arm.
+    rho = {}
+    for spec in a.arms:
+        rid = spec.partition("=")[0]
+        rho[rid] = rho_curve(rid, a.budget)
+        if not rho[rid]:
+            print(f"NOTE: no rank_rho_b{a.budget}_v*.csv for {rid}; its rho curve is omitted")
+    rhop = {spec.partition("=")[0]: rho_paired(spec.partition("=")[0], a.budget)
+            for spec in a.arms}
+    # THE SHIPPED rho MUST AGREE between arms, for the same reason the interface sets must: it is
+    # derived from each run's own stored_iptm rows, so a mismatch means the pools differ in a way
+    # the interface-set check did not catch, and one dashed line cannot stand for both.
+    _sh = {rid: next(iter(v.values()))[2] for rid, v in rho.items() if v}
+    if len(set(round(v, 6) for v in _sh.values())) > 1:
+        raise SystemExit(f"STOP: shipped rho differs between arms: {_sh}; these are not the "
+                         f"same pool and one baseline cannot be drawn for both")
+
     objs = {spec.partition('=')[0]: objective(spec.partition('=')[0]) for spec in a.arms}
     same_obj = len({o for o in objs.values() if o is not None}) <= 1
     # EVERY arm, not any: one PAE arm beside one ranking arm has no shared loss to draw, and the
@@ -354,11 +456,17 @@ def main():
                      label=labels[rid])
         axes[1].plot(ep, [s[e][3] for e in ep], color=c, lw=2, marker="o", ms=3.5,
                      label=labels[rid])
-        m = [s[e][0] for e in ep]
-        se = [s[e][1] for e in ep]
-        axes[2].fill_between(ep, [x - y for x, y in zip(m, se)], [x + y for x, y in zip(m, se)],
-                             color=c, alpha=0.15, lw=0)
-        axes[2].plot(ep, m, color=c, lw=2, marker="o", ms=3.5, label=labels[rid])
+        rc, rp = rho[rid], rhop[rid]
+        rep = sorted(rc)
+        if rep:
+            m = [rc[e][0] for e in rep]
+            # THE BAND IS THE PAIRED s.e., not the across-interface rho_sem -- see rho_paired().
+            # Centred on the trained curve because shipped is a fixed constant here, so
+            # "does the band clear the dashed line" is then the right question to ask of it.
+            se = [rp[e][1] if e in rp else 0.0 for e in rep]
+            axes[2].fill_between(rep, [x - y for x, y in zip(m, se)],
+                                 [x + y for x, y in zip(m, se)], color=c, alpha=0.15, lw=0)
+            axes[2].plot(rep, m, color=c, lw=2, marker="o", ms=3.5, label=labels[rid])
         if pae_mode:
             _pe, _ptr, _pvl = pae_loss(rid)
             tl = dict(zip(_pe, _ptr))
@@ -386,10 +494,15 @@ def main():
         ax.annotate(f"shipped {ref:.4f}", xy=(0.015, ref), xycoords=("axes fraction", "data"),
                     color="#777777", fontsize=9, va="bottom")
         ax.set_title(ttl)
-    axes[2].axhline(0.0, color=SHIPPED_C, ls="--", lw=1.3, zorder=0)
-    axes[2].annotate("shipped", xy=(0.015, 0.0), xycoords=("axes fraction", "data"),
-                     color="#777777", fontsize=9, va="bottom")
-    axes[2].set_title("paired trained \u2212 shipped, same interfaces")
+    _rho_sh = next(iter(_sh.values())) if _sh else None
+    if _rho_sh is not None:
+        axes[2].axhline(_rho_sh, color=SHIPPED_C, ls="--", lw=1.3, zorder=0)
+        axes[2].annotate(f"shipped {_rho_sh:.4f}", xy=(0.015, _rho_sh),
+                         xycoords=("axes fraction", "data"), color="#777777", fontsize=9,
+                         va="bottom")
+    axes[2].set_title("mean within-interface Spearman(ipTM, DockQ)\n"
+                      "band = PAIRED s.e. vs shipped, so clearing the dashed line is the test",
+                      fontsize=10.5)
     _shipped_xs = None
     for spec in ([] if pae_mode else a.arms):
         _x = xsloss(spec.partition("=")[0], a.budget, shipped=True,
@@ -431,6 +544,9 @@ def main():
     multi = len(a.arms) > 1
     for ax in axes[:4]:
         ax.set_xlabel("epoch")
+        # EPOCHS ARE INTEGERS. The default locator put ticks at 2.5, 5.0, 7.5 on a 1-8 range,
+        # labelling an axis whose values can only be whole numbers with halves that name no epoch.
+        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins="auto"))
         ax.grid(alpha=0.6, lw=0.7)
         ax.margins(x=0.03)
         if multi or ax is axes[3]:
