@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid dntxmn`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-15 (15 of 20.0).  **Interfaces:** 92.  **Budget:** 30.
+**Epochs evaluated:** 1-16 (16 of 20.0).  **Interfaces:** 92.  **Budget:** 30.
 
 ## Configuration
 
@@ -25,9 +25,9 @@ Spearman is reported but is **not** the criterion.
 
 | | trained | shipped | oracle |
 |---|---|---|---|
-| selected DockQ | 0.5846 +- 0.0386 | 0.5832 +- 0.0387 | 0.6926 |
-| frac > 0.23 | 0.7391 +- 0.0460 | 0.7391 +- 0.0460 | 0.8587 |
-| Spearman rho | 0.2537 +- 0.0348 | 0.2218 | |
+| selected DockQ | 0.5848 +- 0.0386 | 0.5830 +- 0.0387 | 0.6926 |
+| frac > 0.23 | 0.7283 +- 0.0466 | 0.7391 +- 0.0460 | 0.8587 |
+| Spearman rho | 0.2521 +- 0.0351 | 0.2218 | |
 
 ## Loss, per epoch
 
@@ -51,6 +51,7 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | 13 | nan | -0.11275 +- 0.02169 | 0.5719 | nan | nan | 2.7580 |
 | 14 | nan | -0.11740 +- 0.02261 | 0.5746 | nan | nan | 2.7609 |
 | 15 | nan | -0.11123 +- 0.02129 | 0.5737 | nan | nan | 2.7538 |
+| 16 | nan | -0.11382 +- 0.02202 | 0.5749 | nan | nan | 2.7645 |
 
 Shipped, on these same interfaces: held-out ranking loss -0.10567, E[DockQ] 0.5719 (tau 0.05).
 
@@ -73,21 +74,22 @@ Shipped, on these same interfaces: held-out ranking loss -0.10567, E[DockQ] 0.57
 | 13 | 0.5821 +- 0.0387 | 0.7283 +- 0.0466 | 0.2478 +- 0.0349 | 0.0073 |
 | 14 | 0.5863 +- 0.0385 | 0.7391 +- 0.0460 | 0.2560 +- 0.0348 | 0.0075 |
 | 15 | 0.5846 +- 0.0386 | 0.7391 +- 0.0460 | 0.2537 +- 0.0348 | 0.0073 |
+| 16 | 0.5848 +- 0.0386 | 0.7283 +- 0.0466 | 0.2521 +- 0.0351 | 0.0077 |
 
-## Paired per-interface test, epoch 1 -> 15
+## Paired per-interface test, epoch 1 -> 16
 
 Per-interface selected-pose DockQ (argmax ipTM), 92 interfaces paired.
 
-- paired mean **-0.0024 +- 0.0042** (0.56 sigma)
-- 30 up, 29 worsened, 33 unchanged
+- paired mean **-0.0022 +- 0.0038** (0.58 sigma)
+- 28 up, 23 worsened, 41 unchanged
 
-| interface | ep1 | ep15 | delta |
+| interface | ep1 | ep16 | delta |
 |---|---|---|---|
 | `29tj_BG` | 0.400 | 0.162 | -0.238 |
-| `9bx7_BC` | 0.492 | 0.661 | +0.169 |
 | `9qrv_AB` | 0.571 | 0.434 | -0.137 |
 | `7tzh_AC` | 0.678 | 0.779 | +0.101 |
-| `8tbq_DF` | 0.597 | 0.666 | +0.069 |
+| `8tbq_DF` | 0.597 | 0.676 | +0.079 |
+| `8tbq_EF` | 0.733 | 0.811 | +0.078 |
 
 ## Rank of the first acceptable pose, ordering by ipTM
 
@@ -119,8 +121,9 @@ by both orderings over the same poses, so the pairing is exact.
 | 13 | 10.73 +- 3.40 | 1.0 | 67/79 | -0.53 +- 0.69 | 6/6/67 |
 | 14 | 11.73 +- 3.69 | 1.0 | 68/79 | +0.47 +- 0.79 | 5/6/68 |
 | 15 | 11.81 +- 3.71 | 1.0 | 68/79 | +0.56 +- 0.80 | 5/6/68 |
+| 16 | 11.61 +- 3.66 | 1.0 | 67/79 | +0.34 +- 0.69 | 6/6/67 |
 
-Shipped on the same interfaces: mean rank 11.25 +- 3.58, median 1.0, 68/79 at rank 1.
+Shipped on the same interfaces: mean rank 11.27 +- 3.58, median 1.0, 68/79 at rank 1.
 
 ## The arm as launched
 
@@ -130,5 +133,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-244 optimiser step(s), max `grad_norm` 1.3639, 0 non-finite gradient(s).
+244 optimiser step(s), max `grad_norm` 1.4442, 0 non-finite gradient(s).
 
