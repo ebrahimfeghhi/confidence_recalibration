@@ -80,13 +80,33 @@ for i in $(seq 1 60); do
   sleep 10
 done
 echo "$(date '+%F %T') running the ipTM join verification on dntxmn epoch 16 (informational)"
-./shell_scripts/verify_iptm_join.sh dntxmn 16
+# BOUNDED, because "informational" has to mean it cannot hold the arm. Run synchronously with no
+# ceiling, an uncropped full-structure pass that hangs on I/O or wedges in a collective would stop
+# the L2-SP arm from EVER launching -- which contradicts the whole contract of this step. Found in
+# review of fbf03447. 75 min against a 25-35 min estimate; --kill-after escalates if SIGTERM is
+# ignored, so the cards are released either way.
+timeout --signal=TERM --kill-after=120s 75m ./shell_scripts/verify_iptm_join.sh dntxmn 16
 JOINRC=$?
+if [ "$JOINRC" = "124" ] || [ "$JOINRC" = "137" ]; then
+  echo "$(date '+%F %T') join verification TIMED OUT after 75 min (exit $JOINRC); treating it as"
+  echo "  NOT verified. The separate DockQ eval stays. Continuing to the arm."
+fi
 if [ "$JOINRC" = "0" ]; then
   echo "$(date '+%F %T') JOIN VERIFIED -- the eval merge can be wired for the arm after this one"
 else
   echo "$(date '+%F %T') join NOT verified (exit $JOINRC) -- the separate DockQ eval stays"
 fi
 
+# AND THE CARDS MUST BE FREE AGAIN before the arm starts: the verification just held all three,
+# and a timeout kill needs a moment to release them. run_arm waits for cards_busy itself, which
+# now targets the cards by UUID and fails closed rather than reporting 0 when the holders are gone.
 run_arm shell_scripts/launch_fullhead_l2sp_posefree.sh "FULL HEAD + pose-COPY, L2-SP 1e-3 on the 246 non-pose tensors (full_train -> valfull, 20 ep)"
-echo "$(date '+%F %T') chain done"
+ARMRC=$?
+# PROPAGATE IT. A trailing bare echo always returns 0, so a FAILED arm launch reported chain
+# success -- the exact mistake chain_copy_after_ip8ga4.sh documents and this chain reintroduced.
+if [ "$ARMRC" = "0" ]; then
+  echo "$(date '+%F %T') chain done (join rc=$JOINRC, arm rc=0)"
+else
+  echo "$(date '+%F %T') CHAIN FAILED: the arm launcher returned $ARMRC (join rc=$JOINRC)"
+fi
+exit $ARMRC
