@@ -64,6 +64,30 @@
 # up for ranks 0 and 1 and that appears free -- gpu_forward was 5.6 min on all three ranks
 # regardless of socket.
 #
+# --prefetch-workers 4, FIRST LIVE USE SINCE THE REVERT. SPEED ONLY -- no input, parameter or
+# objective changes, so this arm stays comparable to dntxmn. 1083ed10 set this above 1 everywhere
+# and 7033430b reverted it because ggfhj5 lost epoch 12 to what looked like a deadlock. The
+# mechanism was established today and fixed (08957d1c): _pf_pending evicted unconsumed results,
+# and since a worker emits each unit exactly once the next take waited the full 120 s for
+# something that could never arrive, then the unit after it did the same. The CPU-only
+# reproduction in run_logging/prefetch_deadlock_repro.py shows 365 of 400 takes stalling at W=4
+# before the fix and 0 after, with a 100% hit rate at W=1/2/4 when no unit is slow.
+#
+# WHY IT IS WORTH THE RISK: dntxmn spends 16.5 min per epoch on cpucrop_slice on its FAST ranks
+# against 14.6 min of GPU work, so the CPU is the critical path for every rank. Four workers
+# should take slicing to ~4 min and make the GPU the floor.
+#
+# WHAT TO READ IN EPOCH 1, and it separates the two speed changes cleanly:
+#   cpucrop_slice ABSOLUTE   -> the workers. ~16.5 min means they did nothing.
+#   cpucrop_slice SPREAD     -> the NUMA pin. Still 11 min apart means placement was not it.
+#   "N evicted-then-wanted" / "N asked after the workers finished" in the prefetch line -> both
+#       were invisible before the fix. 0 means the fix is holding; a climbing `dropped` is safe
+#       but means the buffer is overflowing and the benefit is leaking into inline recrops.
+#
+# THE OLD FAILURE WAS NOT SUBTLE and the health watcher will see it: every rank at 0% GPU in
+# futex_wait with no trajectory write. If it recurs, --prefetch-workers goes back to 1 and the
+# crop cache becomes the route instead.
+#
 # WHAT WOULD FALSIFY IT: cpucrop_slice still spread wide across ranks in epoch 1. Then the
 # placement was not the cause and the straggler is something else.
 #
@@ -90,7 +114,7 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --save-every 250 \
   --pae-scored-pairs training/full_train/pool.csv --pae-only \
   --shuffle structure --seeds 500000-500009 \
-  --prefetch-units 2 \
+  --prefetch-units 2 --prefetch-workers 4 \
   --val-loss-every 1 \
   --val-loss-fold validation/fold \
   --val-loss-selection training/valfull/structures.csv \
