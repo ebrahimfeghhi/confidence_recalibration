@@ -37,7 +37,17 @@ while :; do
         # --out, so the first match names the run it continues rather than the run that is
         # executing -- which is how the first tick reported ip8ga4 as "uhyypy", and would have
         # watched a directory nothing is writing to.
-        RID=$(printf '%s' "$C" | tr ' ' '\n' | grep -A1 -x -- '--out' | tail -1 | sed 's#/*$##' | xargs -r basename)
+        OUT=$(printf '%s' "$C" | tr ' ' '\n' | grep -A1 -x -- '--out' | tail -1 | sed 's#/*$##')
+        # A SHARD IS NOT A RUN. The sharded held-out PAE pass spawns phase_k_train children whose
+        # --out is training/runs/<rid>/val_loss_ep<N>/shard<i>, so a naive basename called the
+        # active run "shard0" -- and since training/runs/shard0/trajectory.csv does not exist,
+        # two consecutive ticks would both read mtime 0 and fire a FALSE wedge alert at whatever
+        # hour the PAE pass happened to straddle. Require the out dir to sit DIRECTLY under
+        # training/runs with a six-character rid; anything deeper is a child of a run, not a run.
+        case "$OUT" in
+          */training/runs/??????|training/runs/??????) RID=$(basename "$OUT");;
+          *) RID="";;
+        esac
         ;;
     esac
     [ -n "$RID" ] && break
