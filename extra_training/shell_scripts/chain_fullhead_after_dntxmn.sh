@@ -15,6 +15,11 @@
 # its ranks to be gone and the cards to be free rather than stopping a live run. It can only ever
 # fail to launch.
 #
+# ORDER: wait for dntxmn -> ipTM join verification (informational, ~25-35 min) -> the arm. The
+# arm does NOT get --val-loss-uncropped: that would make its val PAE a different number and lose
+# the arm-to-arm val PAE comparison that is being read across arms 1, 2 and 3. The merge goes on
+# at the start of the NEXT comparison, which is a clean boundary.
+#
 # EACH LAUNCHER BLOCKS -- launch.py runs the trainer under subprocess.run (launch.py:208) -- so a
 # plain call is correct here and no pid bookkeeping is needed.
 set -u
@@ -57,6 +62,31 @@ run_arm() {
   echo "$(date '+%F %T') $label launcher returned $rc"
   return $rc
 }
+
+# THE JOIN VERIFICATION GOES IN THE GAP, because this is the only moment the cards are free and
+# the question blocks a ~3-4 min/epoch saving on every run after this one. IT IS INFORMATIONAL AND
+# NEVER BLOCKS THE ARM: a failed join means the DockQ eval stays, not that the arm should wait. Its
+# exit status is recorded and then ignored on purpose.
+#
+# IT RUNS AGAINST dntxmn's OWN EPOCH 16, whose eval shards already exist, so it compares an
+# uncropped loss-only pass to the eval that this arm actually produced. It writes no checkpoint and
+# does not touch dntxmn, which has already exited by this point.
+#
+# ~25-35 min: unsharded where the live pass is sharded over 3 cards (4 min), and uncropped where
+# the live pass crops to ~31% of the pair matrix.
+for i in $(seq 1 60); do
+  BUSY=$($PY_BIN -I run_logging/cards_busy.py 2>&1 | tail -1)
+  [ "$BUSY" = "0" ] && break
+  sleep 10
+done
+echo "$(date '+%F %T') running the ipTM join verification on dntxmn epoch 16 (informational)"
+./shell_scripts/verify_iptm_join.sh dntxmn 16
+JOINRC=$?
+if [ "$JOINRC" = "0" ]; then
+  echo "$(date '+%F %T') JOIN VERIFIED -- the eval merge can be wired for the arm after this one"
+else
+  echo "$(date '+%F %T') join NOT verified (exit $JOINRC) -- the separate DockQ eval stays"
+fi
 
 run_arm shell_scripts/launch_fullhead_l2sp_posefree.sh "FULL HEAD + pose-COPY, L2-SP 1e-3 on the 246 non-pose tensors (full_train -> valfull, 20 ep)"
 echo "$(date '+%F %T') chain done"
