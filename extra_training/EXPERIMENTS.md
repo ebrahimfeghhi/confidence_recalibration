@@ -36,17 +36,17 @@ Oracle ceiling: DockQ 0.6926, frac 0.8587 → **headroom 0.1096**.
 
 ![arms overlay](figures/arms_overlay.png)
 
-*Regenerated 2026-10-26 4:43 PM EDT. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
+*Regenerated 2026-10-26 5:44 PM EDT. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
 
 Shipped on `valfull` (92 interfaces, budget 30): DockQ **0.5830**, frac **0.7391**, rho **0.2218**.
 
 | # | run | epochs | DockQ | frac | rho | paired ΔDockQ (last) | train PAE | val PAE |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `ip8ga4` | 1..20 | 0.5904 | 0.7391 | 0.2550 | +0.0074 ± 0.0040 | 2.6443 | 2.7923 |
-| 2 | `dntxmn` | 1..17 | 0.5861 | 0.7391 | 0.2562 | +0.0031 ± 0.0033 | 2.6310 | 2.7680 |
+| 2 | `dntxmn` | 1..19 | 0.5874 | 0.7391 | 0.2434 | +0.0044 ± 0.0033 | 2.6309 | 2.7611 |
 
 - **1. share x PAE** (`ip8ga4`, 20 epochs): paired ΔDockQ mean **+0.0023**; rho 0.2550 (best 0.2551) vs shipped 0.2218; train PAE 2.7693 → 2.6443; val PAE 2.8305 → 2.7923, min 2.7621 at epoch 13.
-- **2. copy x PAE** (`dntxmn`, 17 epochs): paired ΔDockQ mean **+0.0010**; rho 0.2562 (best 0.2562) vs shipped 0.2218; train PAE 2.7654 → 2.6310; val PAE 2.8283 → 2.7680, min 2.7538 at epoch 15.
+- **2. copy x PAE** (`dntxmn`, 19 epochs): paired ΔDockQ mean **+0.0010**; rho 0.2434 (best 0.2562) vs shipped 0.2218; train PAE 2.7654 → 2.6309; val PAE 2.8283 → 2.7611, min 2.7538 at epoch 15.
 
 <!-- AUTO:END -->
 
