@@ -5,7 +5,8 @@ FoldBench/PXM interfaces, at **no more compute than a free 50-seed budget**. We 
 (confidence-head-only training) on our own pose distribution and re-score; the trunk is frozen and
 never retrained.
 
-**Last updated** 2026-10-26, while experiment 2 is at epoch 14 of 20.
+The **Live results** section below is regenerated hourly from the shards by
+`run_logging/experiments_doc.py` and pushed; everything outside its markers is written by hand.
 
 ---
 
@@ -28,6 +29,26 @@ Changing any of these makes two runs incomparable, so they are fixed:
 Oracle ceiling: DockQ 0.6926, frac 0.8587 → **headroom 0.1096**.
 
 ---
+
+## Live results
+
+<!-- AUTO:BEGIN -->
+
+![arms overlay](figures/arms_overlay.png)
+
+*Regenerated 2026-10-26 2:42 PM EDT. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
+
+Shipped on `valfull` (92 interfaces, budget 30): DockQ **0.5830**, frac **0.7391**, rho **0.2218**.
+
+| # | run | epochs | DockQ | frac | rho | paired ΔDockQ (last) | train PAE | val PAE |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `ip8ga4` | 1..20 | 0.5904 | 0.7391 | 0.2550 | +0.0074 ± 0.0040 | 2.6443 | 2.7923 |
+| 2 | `dntxmn` | 1..14 | 0.5863 | 0.7391 | 0.2560 | +0.0032 ± 0.0032 | 2.6347 | 2.7609 |
+
+- **1. share x PAE** (`ip8ga4`, 20 epochs): paired ΔDockQ mean **+0.0023**; rho 0.2550 (best 0.2551) vs shipped 0.2218; train PAE 2.7693 → 2.6443; val PAE 2.8305 → 2.7923, min 2.7621 at epoch 13.
+- **2. copy x PAE** (`dntxmn`, 14 epochs): paired ΔDockQ mean **+0.0008**; rho 0.2560 (best 0.2560) vs shipped 0.2218; train PAE 2.7654 → 2.6347; val PAE 2.8283 → 2.7609, min 2.7580 at epoch 13.
+
+<!-- AUTO:END -->
 
 ## The three experiments
 
