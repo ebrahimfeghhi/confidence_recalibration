@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid ip8ga4`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-18 (18 of 20.0).  **Interfaces:** 92.  **Budget:** 30.
+**Epochs evaluated:** 1-19 (19 of 20.0).  **Interfaces:** 92.  **Budget:** 30.
 
 **Resume chain:** `j583i8` -> `uhyypy` -> `ip8ga4`. A resume writes to a fresh directory
 while continuing the parent's epoch numbering, so every table here spans the chain; the
@@ -31,9 +31,9 @@ Spearman is reported but is **not** the criterion.
 
 | | trained | shipped | oracle |
 |---|---|---|---|
-| selected DockQ | 0.5859 +- 0.0385 | 0.5831 +- 0.0387 | 0.6926 |
-| frac > 0.23 | 0.7391 +- 0.0460 | 0.7391 +- 0.0460 | 0.8587 |
-| Spearman rho | 0.2382 +- 0.0353 | 0.2218 | |
+| selected DockQ | 0.5774 +- 0.0390 | 0.5830 +- 0.0387 | 0.6926 |
+| frac > 0.23 | 0.7283 +- 0.0466 | 0.7391 +- 0.0460 | 0.8587 |
+| Spearman rho | 0.2247 +- 0.0351 | 0.2218 | |
 
 ## Loss, per epoch
 
@@ -60,6 +60,7 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | 16 | nan | -0.11232 +- 0.02191 | 0.5745 | nan | nan | 2.7674 |
 | 17 | nan | -0.10824 +- 0.02100 | 0.5739 | nan | nan | 2.7698 |
 | 18 | nan | -0.10665 +- 0.02079 | 0.5727 | nan | nan | 2.7701 |
+| 19 | nan | -0.10901 +- 0.02129 | 0.5679 | nan | nan | 2.7768 |
 
 Shipped, on these same interfaces: held-out ranking loss -0.10567, E[DockQ] 0.5719 (tau 0.05).
 
@@ -85,21 +86,22 @@ Shipped, on these same interfaces: held-out ranking loss -0.10567, E[DockQ] 0.57
 | 16 | 0.5853 +- 0.0385 | 0.7391 +- 0.0460 | 0.2467 +- 0.0348 | 0.0084 |
 | 17 | 0.5864 +- 0.0386 | 0.7391 +- 0.0460 | 0.2516 +- 0.0345 | 0.0080 |
 | 18 | 0.5859 +- 0.0385 | 0.7391 +- 0.0460 | 0.2382 +- 0.0353 | 0.0084 |
+| 19 | 0.5774 +- 0.0390 | 0.7283 +- 0.0466 | 0.2247 +- 0.0351 | 0.0103 |
 
-## Paired per-interface test, epoch 1 -> 18
+## Paired per-interface test, epoch 1 -> 19
 
 Per-interface selected-pose DockQ (argmax ipTM), 92 interfaces paired.
 
-- paired mean **-0.0009 +- 0.0043** (0.21 sigma)
-- 32 up, 31 worsened, 29 unchanged
+- paired mean **-0.0093 +- 0.0088** (1.06 sigma)
+- 30 up, 35 worsened, 27 unchanged
 
-| interface | ep1 | ep18 | delta |
+| interface | ep1 | ep19 | delta |
 |---|---|---|---|
-| `29tj_BG` | 0.400 | 0.164 | -0.236 |
+| `7zmk_WX` | 0.733 | 0.011 | -0.722 |
+| `29tj_BG` | 0.400 | 0.163 | -0.237 |
 | `9bx7_BC` | 0.492 | 0.661 | +0.169 |
-| `9qrv_AB` | 0.571 | 0.434 | -0.137 |
 | `7tzh_AC` | 0.678 | 0.779 | +0.101 |
-| `8tbq_EF` | 0.733 | 0.811 | +0.078 |
+| `8tbq_DF` | 0.597 | 0.666 | +0.069 |
 
 ## Rank of the first acceptable pose, ordering by ipTM
 
@@ -134,6 +136,7 @@ by both orderings over the same poses, so the pairing is exact.
 | 16 | 11.72 +- 3.70 | 1.0 | 68/79 | +0.46 +- 0.90 | 6/5/68 |
 | 17 | 11.65 +- 3.66 | 1.0 | 68/79 | +0.38 +- 0.85 | 5/4/70 |
 | 18 | 12.20 +- 3.79 | 1.0 | 68/79 | +0.94 +- 0.82 | 5/6/68 |
+| 19 | 11.51 +- 3.62 | 1.0 | 67/79 | +0.24 +- 0.93 | 5/6/68 |
 
 Shipped on the same interfaces: mean rank 11.27 +- 3.58, median 1.0, 68/79 at rank 1.
 
@@ -145,5 +148,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-244 optimiser step(s), max `grad_norm` 2.7133, 0 non-finite gradient(s).
+244 optimiser step(s), max `grad_norm` 2.4779, 0 non-finite gradient(s).
 
