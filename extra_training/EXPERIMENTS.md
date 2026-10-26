@@ -36,17 +36,17 @@ Oracle ceiling: DockQ 0.6926, frac 0.8587 → **headroom 0.1096**.
 
 ![arms overlay](figures/arms_overlay.png)
 
-*Regenerated 2026-10-26 2:43 PM EDT. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
+*Regenerated 2026-10-26 3:01 PM EDT. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
 
 Shipped on `valfull` (92 interfaces, budget 30): DockQ **0.5830**, frac **0.7391**, rho **0.2218**.
 
 | # | run | epochs | DockQ | frac | rho | paired ΔDockQ (last) | train PAE | val PAE |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `ip8ga4` | 1..20 | 0.5904 | 0.7391 | 0.2550 | +0.0074 ± 0.0040 | 2.6443 | 2.7923 |
-| 2 | `dntxmn` | 1..14 | 0.5863 | 0.7391 | 0.2560 | +0.0032 ± 0.0032 | 2.6347 | 2.7609 |
+| 2 | `dntxmn` | 1..14 | 0.5863 | 0.7391 | 0.2560 | +0.0032 ± 0.0032 | 2.6380 | 2.7538 |
 
 - **1. share x PAE** (`ip8ga4`, 20 epochs): paired ΔDockQ mean **+0.0023**; rho 0.2550 (best 0.2551) vs shipped 0.2218; train PAE 2.7693 → 2.6443; val PAE 2.8305 → 2.7923, min 2.7621 at epoch 13.
-- **2. copy x PAE** (`dntxmn`, 14 epochs): paired ΔDockQ mean **+0.0008**; rho 0.2560 (best 0.2560) vs shipped 0.2218; train PAE 2.7654 → 2.6347; val PAE 2.8283 → 2.7609, min 2.7580 at epoch 13.
+- **2. copy x PAE** (`dntxmn`, 14 epochs): paired ΔDockQ mean **+0.0008**; rho 0.2560 (best 0.2560) vs shipped 0.2218; train PAE 2.7654 → 2.6380; val PAE 2.8283 → 2.7538, min 2.7538 at epoch 15.
 
 <!-- AUTO:END -->
 
@@ -59,7 +59,7 @@ sets do the injecting, and in what the rest of the head is allowed to do.
 |---|---|---|---|---|---|
 | 1 | share × PAE | `j583i8` → `uhyypy` → `ip8ga4` | 1 set, shared by all 4 sites (block 0's own pretrained weights) — **0 new params** | **frozen** | done, 20 epochs |
 | 2 | copy × PAE | `dntxmn` | 4 untied sets, each initialised from block 0 — **30,720 new params** | **frozen** | running, ep 14/20 |
-| 3 | full head + pose-free L2-SP | queued | same 4 untied sets as #2 | **trainable, priced** at 1e-2·‖W−W_shipped‖² | starts ~6:15 PM Oct 26 |
+| 3 | full head + pose-free L2-SP | queued | same 4 untied sets as #2 | **trainable, priced** at 1e-3·‖W−W_shipped‖² | starts ~6:15 PM Oct 26 |
 
 Experiments 1 and 2 have **bit-identical step 0** — `install()` asserts the copies equal block 0
 exactly — so capacity is the only variable between them. Experiment 3 is one variable off 2: the
@@ -107,10 +107,19 @@ data order rather than the weights.
 
 ### 3. full head + pose-free L2-SP — capacity only where it is new
 
-`--l2-sp 1e-2 --l2-sp-exclude 'linear_no_bias_d'`, no trainable restriction.
+`--l2-sp 1e-3 --l2-sp-exclude 'linear_no_bias_d'`, no trainable restriction.
 
 The exclusion is an unanchored regex, so it selects exactly the 8 tensors experiment 2 trained.
-Those keep **no anchor at all**; the other 246 are anchored to the shipped weights at λ=1e-2.
+Those keep **no anchor at all**; the other 246 are anchored to the shipped weights at λ=1e-3.
+
+**Why the pose tensors are excluded, measured not assumed.** By epoch 13 `dntxmn`'s 8 pose tensors
+sat at ‖ΔW‖² = **120,392** over 40,960 parameters (RMS 1.714 per parameter) — `linear_no_bias_d`
+starts with a tensor norm of 0.780 and travels 158 from it, 200× its own initial size. These are
+being learned from near-nothing, not fine-tuned. Anchoring them at λ=1e-3 would charge **120
+against a PAE loss of 2.64**, ~45× the objective, and the optimiser would spend its gradient
+dragging them back instead of learning. No λ both regularises the 246 and leaves the pose part
+functional. (That 1.714 RMS is from a run where the 8 tensors are the *only* thing moving, so in
+this arm they will likely travel less — but the margin is wide enough that the conclusion holds.)
 
 **Question.** Both earlier regimes failed in opposite ways. Letting all 254 tensors move freely
 (`wpg274`, `ocqtyt`, `mdv9x7`, `eewbr5`) memorised the training set — the two longest runs ended
@@ -119,7 +128,10 @@ overfitting but barely improved anything. This is the middle: free where the hea
 new to learn, expensive where it already works.
 
 **λ is not derived.** `l2sp_lambda.py`'s transfer formula is deliberately unused — see
-[Known traps](#known-traps). λ=1e-2 is a chosen value and the arm is read on the **measured**
+[Known traps](#known-traps). λ=**1e-3** is a chosen value — lowered from 1e-2 before launch
+because `wpg274`'s measured full-head drift of 3,801 priced at 1e-2 is 38.0 against a loss near
+2.6, ~14× the objective and likely to pin the 246 outright, where 1e-3 prices it at 3.8 (~1.4×).
+That is a reason, not a prediction. The arm is read on the **measured**
 `l2-sp: ||W-W0||^2 = … penalty = …` line printed each epoch, against train and val PAE.
 
 **First thing to check at launch.** The log must print

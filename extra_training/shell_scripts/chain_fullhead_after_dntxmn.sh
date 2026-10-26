@@ -4,6 +4,8 @@
 # Usage:  nohup ./shell_scripts/chain_fullhead_after_dntxmn.sh \
 #              > training/runs/fullhead_chain.log 2>&1 &
 #
+# LAMBDA IS 1e-3: lowered from 1e-2 by the user before launch. See the launcher header.
+#
 # REPLACES the two overfit30 lambda sweep arms at the user's direction (2026-10-26): they were
 # the cheap read on what lambda does to a full head, and the user chose to spend that time on
 # the full-scale arm instead. launch_l2sp_1e3_overfit30.sh and launch_l2sp_1e4_overfit30.sh stay
@@ -56,5 +58,5 @@ run_arm() {
   return $rc
 }
 
-run_arm shell_scripts/launch_fullhead_l2sp_posefree.sh "FULL HEAD + pose-COPY, L2-SP 1e-2 on the 246 non-pose tensors (full_train -> valfull, 20 ep)"
+run_arm shell_scripts/launch_fullhead_l2sp_posefree.sh "FULL HEAD + pose-COPY, L2-SP 1e-3 on the 246 non-pose tensors (full_train -> valfull, 20 ep)"
 echo "$(date '+%F %T') chain done"
