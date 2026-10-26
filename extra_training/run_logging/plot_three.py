@@ -302,9 +302,23 @@ def pae_curves(rid):
     Same rule plot_full_train.py uses: an epoch missing either side is dropped rather than drawn
     against a gap, so a vertical distance between the curves is always the same head.
     """
-    M = MIO.load("training/runs", rid, 30, 0)
-    both = sorted(set(M.train_pae) & set(M.val_pae))
-    return both, [M.train_pae[e] for e in both], [M.val_pae[e][0] for e in both]
+    # OVER THE WHOLE CHAIN, like every other panel. This read the single rid, so a RESUMED run
+    # drew its own epochs only: uhyypy, resumed from j583i8 at epoch 8, plotted four panels
+    # spanning epochs 1-8 beside a PAE panel holding two isolated dots at epoch 8. The four
+    # panels go through load_chain and this one did not, which is the whole bug.
+    #
+    # LATER RUNS WIN on a duplicated epoch. A resume continues the parent's numbering, so an
+    # overlap means the child recomputed that epoch and its value is the current one.
+    tr, vl = {}, {}
+    for r in run_chain(rid):
+        try:
+            M = MIO.load("training/runs", r, 30, 0)
+        except Exception:
+            continue
+        tr.update(M.train_pae)
+        vl.update(M.val_pae)
+    both = sorted(set(tr) & set(vl))
+    return both, [tr[e] for e in both], [vl[e][0] for e in both]
 
 
 def rank_family(rid):
