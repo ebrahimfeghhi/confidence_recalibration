@@ -1,0 +1,31 @@
+2026-10-26 07:08:32 PM EDT armed; waiting for ij24wr epoch 1 (metric + checkpoint)
+2026-10-26 07:15:02 PM EDT epoch 1 complete:   epoch 1 TRAIN: mean_dockq 0.5736  frac_acc 0.7283  oracle 0.6926 / 0.8587  headroom 0.1190  (92 interfaces)
+2026-10-26 07:15:02 PM EDT ranks on the cards: 3269735 3269736 3269737 
+2026-10-26 07:15:02 PM EDT SIGTERM to torchrun 3269480
+2026-10-26 07:15:13 PM EDT cards free
+2026-10-26 07:15:13 PM EDT running the ipTM join verification on dntxmn epoch 16
+verifying the join for dntxmn epoch 16
+  bundle training/runs/dntxmn/resume_ep16.pt
+  pool   training/valfull/pool.csv  seeds 400000-400029
+  arch   --pae-only --pose-perblock --pose-perblock-copy --train-only linear_no_bias_d,linear_no_bias_d_wo_onehot
+  UNCROPPED (--crop-margin 0), emitting ipTM rows, writing no checkpoint
+  loss-only pass returned 0
+
+=== join check: rebuilt metric vs the eval's own, and PER-POSE ipTM ===
+from ipTM rows: mean_dockq 0.583880  frac_acc 0.728261  (92 interfaces)  [depth 150/iface]
+from the eval : mean_dockq 0.584772  frac_acc 0.728261  (92 interfaces)
+  pose overlap 13,800 of 13,800 eval / 13,800 emitted; worst |d ipTM| 0.103313
+  interfaces match: True   metric match: False
+  pose-key sets identical: True   interfaces selecting a different pose: 3   same pose but different DockQ: 3
+
+JOIN NOT VERIFIED:
+  - worst |d ipTM| 1.033e-01 exceeds --iptm-tol 1.000e-06
+  - 3 interface(s) select a different (seed, sample), e.g. 7zra_BC: mine (400018, 3) vs eval (400016, 0), 9eg6_DE: mine (400029, 0) vs eval (400022, 4), 7zra_AC: mine (400016, 0) vs eval (400018, 3)
+  - 3 interface(s) select the SAME pose with a different DockQ, e.g. 7zra_BC: 0.9260 vs 0.9230, 9eg6_DE: 0.9040 vs 0.9410, 7zra_AC: 0.8690 vs 0.9170 -- that is the (iface, seed, sample) key joining to the wrong results.csv row
+  - aggregate differs: 0.583880/0.728261 vs 0.584772/0.728261
+The separate DockQ eval must stay. A rebuilt metric that disagrees with the eval on identical inputs is lining rows up against the wrong poses.
+
+JOIN NOT VERIFIED (exit 1). The separate DockQ eval must stay.
+2026-10-26 07:33:48 PM EDT join NOT verified (exit 1) -- the separate DockQ eval stays
+2026-10-26 07:33:50 PM EDT resuming ij24wr from epoch 1
+RESUMING ij24wr from epoch 1 to the 20-epoch horizon (full head, L2-SP 1e-3, pose copy)
