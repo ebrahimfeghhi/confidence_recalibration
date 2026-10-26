@@ -2392,11 +2392,34 @@ def main():
                     print(f"    excluded  {n[len(_pfx_sp) + 1:]}")
         _l2sp_params = [(n, pp) for n, pp in model.named_parameters() if n in _tset_sp]
         if a.resume:
+            # THE ANCHOR BELONGS TO THE LINEAGE, NOT THE DIRECTORY. A resume writes to a FRESH
+            # directory and launch.py refuses a non-empty one, so there is no window in which to
+            # place the anchor there by hand -- which is what the old message asked for, making an
+            # --l2-sp run effectively unresumable. So it is inherited from beside the resume
+            # bundle and COPIED into this run's directory, which keeps the record of what was
+            # actually used with the run that used it. Only if neither exists is this fatal.
+            if not os.path.exists(_anchor_p):
+                _parent_anchor = os.path.join(os.path.dirname(os.path.abspath(a.resume)),
+                                              "l2sp_anchor.pt")
+                if os.path.exists(_parent_anchor):
+                    if is_main:
+                        import shutil as _sh
+                        _sh.copyfile(_parent_anchor, _anchor_p)
+                        print(f"  --l2-sp: anchor INHERITED from {_parent_anchor} -> {_anchor_p}",
+                              flush=True)
+                    else:
+                        # The non-main ranks wait for rank 0 to place it rather than racing to
+                        # copy it themselves.
+                        for _ in range(600):
+                            if os.path.exists(_anchor_p):
+                                break
+                            time.sleep(0.1)
             if not os.path.exists(_anchor_p):
                 raise SystemExit(
-                    f"STOP: --l2-sp resumed but {_anchor_p} is missing. The anchor is the SHIPPED "
+                    f"STOP: --l2-sp resumed but {_anchor_p} is missing, and there is no "
+                    f"l2sp_anchor.pt beside {a.resume} to inherit. The anchor is the SHIPPED "
                     f"head; this run's weights are not it, so there is nothing to penalise "
-                    f"distance from. Copy the anchor from the original run's directory.")
+                    f"distance from.")
             _a_sd = torch.load(_anchor_p, map_location="cpu", weights_only=True)
             if is_main:
                 print(f"  --l2-sp {a.l2_sp:g}: anchor READ from {_anchor_p} "
