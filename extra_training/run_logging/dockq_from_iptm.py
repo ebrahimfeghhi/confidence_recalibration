@@ -32,6 +32,16 @@ ap.add_argument("--budget", type=int, default=30,
                      "widening the population: 70 extra seeds move mean_dockq by 0.0052 and "
                      "frac_acc by 0.011 on this pool, the same order as the signal being read.")
 ap.add_argument("--seed-base", type=int, default=400000)
+ap.add_argument("--iptm-tol", type=float, default=1e-6,
+                help="the largest per-pose |d ipTM| against the eval's rows that still counts as "
+                     "the same forward. NOT ZERO, and the reason matters: 'any difference is the "
+                     "join' is too strong, because two code paths can select different cuDNN or "
+                     "TF32 kernels and an uncropped pass presents different batch shapes, so a "
+                     "perfectly correct join can still differ in the last bits. 1e-6 is far below "
+                     "the ipTM gaps that decide a selection -- within-seed std is ~0.006 and the "
+                     "top1-top2 gap ~0.002 -- and far above float32 round-off, so it separates "
+                     "numerical noise from a row lined up against the wrong pose. Raise it only "
+                     "with a measurement, never to make a comparison pass.")
 a = ap.parse_args()
 
 dq = {}
@@ -110,5 +120,41 @@ if a.compare:
     worst = max((abs(ev[k] - mine[k]) for k in both), default=float("nan"))
     print(f"  pose overlap {len(both):,} of {len(ev):,} eval / {len(mine):,} emitted; "
           f"worst |d ipTM| {worst:.6f}")
-    print(f"  interfaces match: {set(by) == set(eb)}   "
-          f"metric match: {abs(mean-em) < 1e-6 and abs(frac-ef) < 1e-9}")
+    # THE VERDICT IS THE EXIT STATUS, not a printed boolean. This module printed its findings and
+    # returned 0 either way, and verify_iptm_join.sh ended on an echo, so a FAILED comparison was
+    # indistinguishable from a verified one to any automated caller. Review blocker.
+    _ifaces_ok = set(by) == set(eb)
+    _metric_ok = abs(mean - em) < 1e-6 and abs(frac - ef) < 1e-9
+    _iptm_ok = bool(both) and worst == worst and worst <= a.iptm_tol
+    # PER-POSE SELECTION, not just the aggregate: two different ipTM vectors can agree on the
+    # statistic while selecting different poses on offsetting interfaces.
+    _mine_sel = {k: max(v, key=lambda t: (t[0], -t[2], -t[3]))[1] for k, v in by.items()}
+    _eval_sel = {k: max(v, key=lambda t: (t[0], -t[2], -t[3]))[1] for k, v in eb.items()}
+    _sel_diff = [k for k in set(_mine_sel) & set(_eval_sel)
+                 if abs(_mine_sel[k] - _eval_sel[k]) > 1e-12]
+    _cov_ok = set(ev) == set(mine)
+    print(f"  interfaces match: {_ifaces_ok}   metric match: {_metric_ok}")
+    print(f"  pose-key sets identical: {_cov_ok}   "
+          f"interfaces selecting a different pose: {len(_sel_diff)}")
+    _fail = []
+    if not _cov_ok:
+        _fail.append(f"pose-key sets differ: {len(set(ev) - set(mine))} only in the eval, "
+                     f"{len(set(mine) - set(ev))} only in the emitted rows")
+    if not _ifaces_ok:
+        _fail.append(f"interface sets differ ({len(set(by))} vs {len(set(eb))})")
+    if not _iptm_ok:
+        _fail.append(f"worst |d ipTM| {worst:.3e} exceeds --iptm-tol {a.iptm_tol:.3e}")
+    if _sel_diff:
+        _fail.append(f"{len(_sel_diff)} interface(s) select a different pose, e.g. "
+                     f"{_sel_diff[:4]}")
+    if not _metric_ok:
+        _fail.append(f"aggregate differs: {mean:.6f}/{frac:.6f} vs {em:.6f}/{ef:.6f}")
+    if _fail:
+        print("\nJOIN NOT VERIFIED:")
+        for _f in _fail:
+            print("  - " + _f)
+        print("The separate DockQ eval must stay. A rebuilt metric that disagrees with the eval "
+              "on identical inputs is lining rows up against the wrong poses.")
+        raise SystemExit(1)
+    print("\nJOIN VERIFIED: identical pose keys, ipTM within tolerance, same selected pose on "
+          "every interface, same aggregate.")

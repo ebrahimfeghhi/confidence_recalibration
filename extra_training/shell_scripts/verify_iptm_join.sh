@@ -42,14 +42,41 @@ BUSY=$($PY_BIN -I run_logging/cards_busy.py 2>&1 | tail -1)
 
 # The run's own geometry EXCEPT the crop, and the run's own pool and seeds, read from its args.json
 # so this cannot drift from what the arm actually measured.
-read -r FOLD SEL PRE POOL SEEDS PREP ACCUM < <($PY_BIN -I -c "
+read -r FOLD SEL PRE POOL SEEDS PREP ACCUM NSAMPLE < <($PY_BIN -I -c "
 import json; a=json.load(open('training/runs/$RID/args.json'))
 print(a['val_loss_fold'], a['val_loss_selection'], a['val_loss_preflight'],
-      a['val_loss_pool'], a['val_loss_seeds'], a['val_loss_prep'], a['accum'])")
+      a['val_loss_pool'], a['val_loss_seeds'], a['val_loss_prep'], a['accum'], a['nsample'])")
+
+# THE ARCHITECTURE FLAGS, MIRRORING WHAT THE TRAINER'S OWN MONITOR PASSES ITS CHILD. Omitting
+# them was a review blocker and the worst of the four: dntxmn uses --pose-perblock-copy, so
+# without these the bundle's pose tensors would load into a model that has no copied pathway,
+# and the ipTM comparison would then measure a DIFFERENT ARCHITECTURE. Every difference would be
+# attributed to the pose join, which is the one thing this script exists to isolate.
+# --resume-allow-drift is not a substitute for building the same model.
+ARCH=$($PY_BIN -I -c "
+import json; a=json.load(open('training/runs/$RID/args.json'))
+f=[]
+if a.get('pae_only'): f.append('--pae-only')
+if a.get('drop_pde'): f.append('--drop-pde')
+if a.get('frame_direction'): f.append('--frame-direction')
+if a.get('pose_perblock'):
+    f.append('--pose-perblock')
+    if a.get('pose_perblock_tied'): f.append('--pose-perblock-tied')
+    if a.get('pose_perblock_share'): f.append('--pose-perblock-share')
+    if a.get('pose_perblock_copy'): f.append('--pose-perblock-copy')
+if a.get('train_only'): f += ['--train-only', a['train_only']]
+if a.get('lora_rank'): f += ['--lora-rank', str(a['lora_rank'])]
+print(' '.join(f))")
+PREPARGS=""
+if [ -n "$PREP" ] && [ "$PREP" != "None" ]; then
+  PREPARGS="--indices $PREP/job_indices.csv --bio-dir $PREP/job_bioassembly --mmcif-dir $PREP/job_cifs"
+fi
 echo "verifying the join for $RID epoch $EP"
 echo "  bundle $BUNDLE"
 echo "  pool   $POOL  seeds $SEEDS"
+echo "  arch   $ARCH"
 echo "  UNCROPPED (--crop-margin 0), emitting ipTM rows, writing no checkpoint"
+[ -n "$ARCH" ] || echo "  NOTE: args.json records no architecture flags for this run"
 
 mkdir -p "$OUT"
 LAYERNORM_TYPE=openfold CUDA_VISIBLE_DEVICES=4,5,7 \
@@ -60,9 +87,10 @@ $PY_BIN -I phases/phase_k_train.py \
   --fold "$FOLD" --labels "$FOLD/labels" \
   --manifest-selection "$SEL" --alignment-preflight "$PRE" --minimal-items \
   --pae-scored-pairs "$POOL" --seeds "$SEEDS" \
-  --crop-margin 0 --crop-size 3400 --accum "$ACCUM" \
+  --crop-margin 0 --crop-size 3400 --accum "$ACCUM" --nsample "$NSAMPLE" \
   --alpha-pae 1.0 --emit-iptm-rows "$OUT/iptm_rows.csv" \
-  --blocks-per-ckpt 0 \
+  --blocks-per-ckpt 0 --epochs 1 --save-every 0 --warmup-steps 0 --shuffle structure \
+  $ARCH $PREPARGS \
   --out "$OUT" > "$OUT/pass.log" 2>&1
 rc=$?
 echo "  loss-only pass returned $rc"
@@ -71,8 +99,18 @@ echo "  loss-only pass returned $rc"
 
 echo
 echo "=== join check: rebuilt metric vs the eval's own, and PER-POSE ipTM ==="
+# THE EXIT STATUS IS THE RESULT. dockq_from_iptm.py now fails on an ipTM disagreement beyond
+# --iptm-tol, on mismatched interface sets, on a selected-pose disagreement or on an aggregate
+# mismatch -- and this propagates it. Before, the comparison printed its verdict and the script
+# ended on an `echo`, so a FAILED comparison returned 0 and no automated caller could tell a
+# verified join from a broken one. Review blocker; set -u does not imply set -e.
 $PY_BIN -I run_logging/dockq_from_iptm.py "$OUT/iptm_rows.csv" \
   --results "$FOLD/results.csv" --compare "$SHARDS"
+rc=$?
 echo
-echo "PASS means: worst |d ipTM| ~0, interfaces match True, metric match True."
-echo "A non-zero ipTM difference on identical inputs IS the join, not the arithmetic."
+if [ "$rc" = "0" ]; then
+  echo "JOIN VERIFIED for $RID epoch $EP."
+else
+  echo "JOIN NOT VERIFIED (exit $rc). The separate DockQ eval must stay."
+fi
+exit $rc

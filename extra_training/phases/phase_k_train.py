@@ -3194,7 +3194,13 @@ def main():
                     _iptm_fh["w"] = csv.writer(_iptm_fh["fh"])
                     _iptm_fh["w"].writerow(["iface", "seed", "sample", "iptm"])
                 _unit = os.path.basename(lab_p).rsplit(".", 1)[0]
-                _seed = _rank_key(_unit)
+                # THREE ARGUMENTS. _rank_key(pdb, arm_seed_or_int, pair) returns a key whose
+                # second element is the parsed seed; calling it with one argument raised
+                # TypeError on the FIRST emitted row, so --emit-iptm-rows could never have
+                # produced a single line. Every other call site in this file passes three and
+                # takes [1] for the seed -- see the pass A key at the --rank-cross-seed site.
+                # Found in review of 511519e7.
+                _seed = _rank_key(pdb, _unit, (0, 0))[1]
                 # THE POSE INDEX IS NOT THE SAMPLE INDEX. The label npz carries an explicit
                 # pose -> sample permutation in `sample_index`, written by
                 # phase_j_build_cache.sample_indices from COORDINATE IDENTITY against the
@@ -3226,7 +3232,12 @@ def main():
                     _ifc = _iface_of.get((pdb, _p))
                     if _ifc is None:
                         continue
-                    _iptm_fh["w"].writerow([_ifc, _seed, _samp, f"{float(_v.detach()):.6f}"])
+                    # FULL PRECISION, NOT SIX DECIMALS. dockq_from_iptm.py already records that
+                    # the emitter's 6 dp makes ties MORE likely than the eval's and that 1 of 92
+                    # interfaces on j583i8 epoch 1 tied at that precision with two different
+                    # DockQ values behind it -- so rounding here can change the SELECTED POSE and
+                    # therefore the metric. repr() round-trips exactly. Found in review.
+                    _iptm_fh["w"].writerow([_ifc, _seed, _samp, repr(float(_v.detach()))])
                     _iptm_fh["n"] += 1
                 _iptm_fh["fh"].flush()
             try:
@@ -3998,6 +4009,11 @@ def main():
                "--crop-margin", ("0" if a.val_loss_uncropped else str(a.crop_margin)),
                "--crop-contact", str(a.crop_contact),
                "--crop-size", str(a.crop_size), "--accum", str(a.accum),
+               # THE PATH IS PER SHARD, and the sharded launcher below rewrites it the same way
+               # it rewrites --out. Handing every child this one path meant three processes
+               # opening it with "w" and truncating each other: rows overwritten, interleaved or
+               # lost, and the existing coverage checks look at trajectory.csv, not at this file,
+               # so the corruption would not have been detected. Found in review of 511519e7.
                *(["--emit-iptm-rows", os.path.join(out, "iptm_rows.csv")]
                  if a.val_loss_emit_iptm else []),
                # EIGHTH INSTANCE OF THE --loss-only INHERITANCE CLASS. The three crop args above
@@ -4091,6 +4107,11 @@ def main():
                 _lg = os.path.join(_o, "shard.log")
                 _cmd = [x for x in cmd]
                 _cmd[_cmd.index("--out") + 1] = _o
+                # AND THE EMIT PATH, for the same reason --out is rewritten: the emitter opens it
+                # with "w", so a shared path means three children truncating one file.
+                if "--emit-iptm-rows" in _cmd:
+                    _cmd[_cmd.index("--emit-iptm-rows") + 1] = \
+                        os.path.join(_o, "iptm_rows.csv")
                 _cmd += ["--manifest-shard", str(_i), "--manifest-nshards", str(_nsh)]
                 _fh = open(_lg, "w")
                 procs.append((_i, _o, _lg, _fh,
@@ -4182,6 +4203,42 @@ def main():
                       f"against {_exp_poses} expected ({_exp_units} unit(s) x {_ns}); no held-out "
                       f"point", flush=True)
                 return None
+            # MERGE THE PER-SHARD ipTM FILES, with the same disjointness standard the pose
+            # population above is held to. Each shard now writes its own iptm_rows.csv (they used
+            # to share one path and truncate each other), so the merged file is the only thing
+            # dockq_from_iptm.py can read. A duplicate or an unreadable shard file leaves NO
+            # merged file rather than a partial one: dockq_from_iptm refuses duplicates anyway,
+            # and a silently short file is exactly the "metric over whatever showed up" it warns
+            # against.
+            if a.val_loss_emit_iptm:
+                _merged = os.path.join(a.out, f"val_loss_ep{epoch}", "iptm_rows.csv")
+                _rows_i, _keys_i, _bad_i = [], set(), []
+                for _i, _o, _lg, _fh, _p in procs:
+                    _f = os.path.join(_o, "iptm_rows.csv")
+                    try:
+                        with open(_f) as fh:
+                            _rd = csv.DictReader(fh)
+                            for _r in _rd:
+                                _k = (_r["iface"], _r["seed"], _r["sample"])
+                                if _k in _keys_i:
+                                    _bad_i.append(f"duplicate {_k} in shard {_i}")
+                                    break
+                                _keys_i.add(_k)
+                                _rows_i.append(_r)
+                    except OSError as _e:
+                        _bad_i.append(f"shard {_i} unreadable ({_e})")
+                if _bad_i:
+                    print(f"  WARNING: epoch {epoch} ipTM rows NOT merged: {_bad_i[0]}"
+                          + (f" (+{len(_bad_i)-1} more)" if len(_bad_i) > 1 else "")
+                          + f"; {_merged} not written", flush=True)
+                else:
+                    with open(_merged, "w", newline="") as fh:
+                        _w = csv.writer(fh)
+                        _w.writerow(["iface", "seed", "sample", "iptm"])
+                        for _r in _rows_i:
+                            _w.writerow([_r["iface"], _r["seed"], _r["sample"], _r["iptm"]])
+                    print(f"  merged {len(_rows_i)} ipTM row(s) from {_nsh} shard(s) "
+                          f"-> {_merged}", flush=True)
             _mean = sum(_vals) / len(_vals)
             print(f"epoch {epoch} VALLOSS: pae {_mean:.4f}  poses {len(_vals)}", flush=True)
             _record_val_loss(epoch, step, bundle, _mean, len(_vals))
