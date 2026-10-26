@@ -131,7 +131,36 @@ def train_loss(rid):
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import plot_three
-    return plot_three.train_rank_loss(rid)
+    out = {}
+    for r in plot_three.run_chain(rid):
+        out.update(plot_three.train_rank_loss(r))
+    return out
+
+
+def pae_loss(rid):
+    """(epochs, train PAE, held-out PAE) over the chain, for a PAE-trained arm.
+
+    WHY THIS PANEL EXISTS BESIDE THE RANKING ONE. plot_arms was written for ranking arms and its
+    fourth panel draws the ranking loss unconditionally. Both PAE arms have `rank_loss: false`
+    and log no rank-loss line at all, so on them that panel drew NO training curve and, for the
+    held-out side, the canonical cross-seed ranking loss -- a yardstick neither arm minimises --
+    which reads as a loss comparison while being nothing of the kind. alpha_pae is 1.0 in both,
+    so the PAE loss IS the shared objective and the two sides of it are twins.
+    """
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import plot_three
+    return plot_three.pae_curves(rid)
+
+
+def trained_pae_not_rank(rid):
+    """True when this arm minimises PAE and not a ranking loss, read from the chain's head args."""
+    try:
+        with open(f"training/runs/{_chain(rid)[0]}/args.json") as fh:
+            a = json.load(fh)
+    except Exception:
+        return False
+    return (not a.get("rank_loss")) and float(a.get("alpha_pae") or 0.0) > 0.0
 
 
 def _cache_path(rid, budget):
@@ -159,6 +188,14 @@ def xsloss(rid, budget, shipped=False, canonical=False):
     ONLY when the run's objective happens to be the canonical one; otherwise there is no such
     number on disk and this returns empty rather than the wrong curve.
     """
+    out = {}
+    # THE WHOLE CHAIN, same reason as series(). Each member caches only its own epochs.
+    for _r in _chain(rid):
+        out.update(_xsloss_one(_r, budget, shipped=shipped, canonical=canonical))
+    return out
+
+
+def _xsloss_one(rid, budget, shipped=False, canonical=False):
     out = {}
     path, ver = _cache_path(rid, budget)
     if not path:
@@ -217,12 +254,33 @@ def _is_canonical_objective(rid):
             and bool(a.get("rank_weight_by_gap", True)) and tau_ok)
 
 
+def _chain(rid):
+    """[oldest_ancestor, ..., rid]. DELEGATED to plot_three so there is one definition of it."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import plot_three
+    return plot_three.run_chain(rid)
+
+
 def series(rid, budget, thresh):
-    """epoch -> (paired_mean, paired_sem, dockq, frac, shipped_dockq, shipped_frac, ifaces)."""
+    """epoch -> (paired_mean, paired_sem, dockq, frac, shipped_dockq, shipped_frac, ifaces).
+
+    OVER THE WHOLE RESUME CHAIN, for the reason plot_three.pae_curves documents: a resume writes
+    to a fresh directory while continuing the parent's epoch numbering, so reading one rid gave
+    the share arm as epochs 10-20 -- ip8ga4's own shards -- beside the copy arm's 1-7. The two
+    curves then shared an x axis while covering disjoint ranges of it, which is the one way this
+    overlay can be read as showing a difference that is only a missing history.
+
+    LATER RUNS WIN on a duplicated epoch: a child that recomputed an epoch holds the current
+    value. Chain members here have disjoint epochs, so the rule is a guard, not a fix.
+    """
     out = {}
-    for d in sorted(glob.glob(f"training/runs/{rid}/train_eval_shards_ep*")):
-        ep = int(os.path.basename(d).split("ep")[-1])
-        rows = epoch_rows(rid, ep, budget)
+    eps = {}
+    for r in _chain(rid):
+        for d in glob.glob(f"training/runs/{r}/train_eval_shards_ep*"):
+            eps[int(os.path.basename(d).split("ep")[-1])] = r
+    for ep in sorted(eps):
+        rows = epoch_rows(eps[ep], ep, budget)
         if not rows:
             continue
         by = defaultdict(list)
@@ -272,6 +330,10 @@ def main():
 
     objs = {spec.partition('=')[0]: objective(spec.partition('=')[0]) for spec in a.arms}
     same_obj = len({o for o in objs.values() if o is not None}) <= 1
+    # EVERY arm, not any: one PAE arm beside one ranking arm has no shared loss to draw, and the
+    # ranking panel is then still the honest choice because it at least labels its held-out side
+    # as the canonical yardstick.
+    pae_mode = all(trained_pae_not_rank(spec.partition("=")[0]) for spec in a.arms)
     # FOUR PANELS, 2x2. Five in a row was 26 inches wide and every client scaled it until the
     # rightmost was unreadable. The two losses now share one panel: they are on the same scale
     # and the gap between them is the point.
@@ -297,12 +359,20 @@ def main():
         axes[2].fill_between(ep, [x - y for x, y in zip(m, se)], [x + y for x, y in zip(m, se)],
                              color=c, alpha=0.15, lw=0)
         axes[2].plot(ep, m, color=c, lw=2, marker="o", ms=3.5, label=labels[rid])
-        tl = train_loss(rid)
-        # ACROSS ARMS the canonical column is the only comparable one; for ONE arm the
-        # own-objective column is what pairs with its training curve.
-        xl = xsloss(rid, a.budget, canonical=(len(a.arms) > 1))
-        te = [e for e in ep if e in tl]
-        xe = [e for e in ep if e in xl]
+        if pae_mode:
+            _pe, _ptr, _pvl = pae_loss(rid)
+            tl = dict(zip(_pe, _ptr))
+            xl = dict(zip(_pe, _pvl))
+        else:
+            tl = train_loss(rid)
+            # ACROSS ARMS the canonical column is the only comparable one; for ONE arm the
+            # own-objective column is what pairs with its training curve.
+            xl = xsloss(rid, a.budget, canonical=(len(a.arms) > 1))
+        # NOT restricted to `ep`. The loss is recorded every epoch while the DockQ shards are
+        # written only by an evaluated epoch, so intersecting with `ep` silently dropped loss
+        # points that exist.
+        te = sorted(tl)
+        xe = sorted(xl)
         if te:
             axes[3].plot(te, [tl[e] for e in te], color=tint(c), lw=2.2, marker="s", ms=4,
                          ls="--", label=f"{labels[rid]} \u2014 training")
@@ -321,7 +391,7 @@ def main():
                      color="#777777", fontsize=9, va="bottom")
     axes[2].set_title("paired trained \u2212 shipped, same interfaces")
     _shipped_xs = None
-    for spec in a.arms:
+    for spec in ([] if pae_mode else a.arms):
         _x = xsloss(spec.partition("=")[0], a.budget, shipped=True,
                     canonical=(len(a.arms) > 1))
         if _x:
@@ -344,11 +414,20 @@ def main():
                              va="bottom")
     twins = (len(a.arms) == 1
              and heldout_is_twin(a.arms[0].partition("=")[0], a.budget))
-    axes[3].set_title("ranking loss \u2014 light dashed = TRAINING, dark solid = HELD OUT\n"
-                      + ("same function both sides: the gap is generalisation"
-                         if twins else
-                         "held out is the CANONICAL cross-seed loss, comparable across arms"),
-                      fontsize=10.5)
+    if pae_mode:
+        # The vertical gap is NOT a clean generalisation gap: the two sides are different pools
+        # AND, as of 2026-10-26, the held-out pass still crops while training does too but on a
+        # different population. Comparing the SAME side across arms is what this panel supports.
+        axes[3].set_title("PAE loss \u2014 light dashed = TRAINING, dark solid = HELD OUT\n"
+                          "the shared objective of both arms; compare like side to like side",
+                          fontsize=10.5)
+        axes[3].set_ylabel("PAE loss")
+    else:
+        axes[3].set_title("ranking loss \u2014 light dashed = TRAINING, dark solid = HELD OUT\n"
+                          + ("same function both sides: the gap is generalisation"
+                             if twins else
+                             "held out is the CANONICAL cross-seed loss, comparable across arms"),
+                          fontsize=10.5)
     multi = len(a.arms) > 1
     for ax in axes[:4]:
         ax.set_xlabel("epoch")
