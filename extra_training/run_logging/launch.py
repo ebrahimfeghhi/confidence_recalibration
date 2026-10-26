@@ -80,6 +80,17 @@ def main():
                                                "config and the index, and a restart without a "
                                                "reason is how four launches became indistinguishable")
     ap.add_argument("--cards", default="0,1,3")
+    ap.add_argument("--numa-map", default="",
+                    help="LOCAL_RANK:NUMA_NODE pairs, e.g. 0:0,1:0,2:1 -- bind each rank's CORES "
+                         "AND MEMORY to one socket. Unpinned, the kernel scatters the ranks and "
+                         "memory follows first touch, so one rank ends up reaching across the "
+                         "interconnect for much of its data and runs identical work far slower "
+                         "(dntxmn epoch 15: cpucrop_slice 16.5/16.7/27.5 min on the same 14.9M "
+                         "kept tokens, 9.7 min of barrier idle on the two fast ranks). Which rank "
+                         "suffers changes between epochs, which is why the straggler moved. "
+                         "Splitting across sockets rather than binding all ranks to one is "
+                         "deliberate: the bottleneck is memory bandwidth, so two sockets give more "
+                         "of the scarce thing than one.")
     ap.add_argument("--run-id", default="", help="default: a fresh random id")
     ap.add_argument("--dry-run", action="store_true", help="write the config and print the command")
     ap.add_argument("--skip-gate", action="store_true",
@@ -107,8 +118,24 @@ def main():
     train = os.path.join(ROOT, "phases", "phase_k_train.py")
     torchrun = "/home/ebrahim/Protenix/.venv/bin/torchrun"
     nproc = len([c for c in a.cards.split(",") if c.strip()])
-    cmd = [torchrun, f"--nproc_per_node={nproc}", "--master_port=29540", train,
-           *rest, "--out", out]
+    # PER-RANK NUMA BINDING goes through a wrapper because one numactl around torchrun would send
+    # every rank to the same socket. --no-python makes torchrun exec the wrapper instead of
+    # prepending python, so each rank reaches numactl with its own LOCAL_RANK already set; the
+    # wrapper then execs the interpreter itself.
+    #
+    # -u IS PASSED EXPLICITLY. torchrun adds it when it launches a .py (the live ranks show
+    # `python3 -u phase_k_train.py`), but under --no-python it adds nothing, and without -u the
+    # trainer's stdout buffers -- run.log is tailed live by the watchers and read by the health
+    # check, so losing live output would break both while the run looked fine.
+    if a.numa_map:
+        wrap = os.path.join(ROOT, "shell_scripts", "numa_rank_wrap.sh")
+        if not os.access(wrap, os.X_OK):
+            sys.exit(f"STOP: --numa-map given but {wrap} is missing or not executable.")
+        cmd = [torchrun, f"--nproc_per_node={nproc}", "--master_port=29540", "--no-python",
+               wrap, sys.executable, "-u", train, *rest, "--out", out]
+    else:
+        cmd = [torchrun, f"--nproc_per_node={nproc}", "--master_port=29540", train,
+               *rest, "--out", out]
 
     # LR and epochs are pulled out of the passed-through arguments for the index, so the table is
     # readable without opening each config.
@@ -137,6 +164,9 @@ def main():
            "branch": git("rev-parse", "--abbrev-ref", "HEAD", default=""),
            "cards": a.cards,
            "nproc": nproc,
+           # IN THE RECORD, because it changes wall clock per rank and therefore every timing
+           # number in the trajectory. A run whose straggler vanished should say why.
+           "numa_map": a.numa_map,
            "command": " ".join(shlex.quote(c) for c in cmd),
            "passed_through": rest,
            "host": platform.node(),
@@ -203,6 +233,10 @@ def main():
     # is not a fix on its own -- 6% of what was resident.
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": a.cards, "LAYERNORM_TYPE": "openfold",
            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+    if a.numa_map:
+        # The wrapper REFUSES a rank with no entry rather than running it unpinned, so a typo here
+        # fails the launch instead of producing a run that is pinned in the record and not in fact.
+        env["NUMA_RANK_MAP"] = a.numa_map
     t0 = time.time()
     with open(os.path.join(out, "run.log"), "a") as lg:
         rc = subprocess.run(cmd, stdout=lg, stderr=subprocess.STDOUT, env=env).returncode
