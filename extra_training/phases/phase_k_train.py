@@ -582,6 +582,31 @@ def main():
     ap.add_argument("--val-loss-card", default="",
                     help="card for the held-out pass. Empty shares the trainer's; it loads a second "
                          "464M-parameter model, so the free-memory floor below applies.")
+    ap.add_argument("--val-loss-uncropped", action="store_true",
+                    help="run the held-out PAE pass on the FULL structure instead of the training "
+                         "crop. OFF BY DEFAULT and it must stay off mid-comparison. WHY ANYONE "
+                         "WANTS IT: evaluation should match the deployment setting, and the DockQ "
+                         "eval is already uncropped -- so today the two held-out passes see "
+                         "DIFFERENT INPUTS for the same poses, which is the only reason they "
+                         "cannot share one forward. Uncropping this one is the prerequisite for "
+                         "merging them, worth ~4-5 min of a ~10 min eval phase. WHAT IT COSTS, "
+                         "and it is not small: the pass inherits the run's crop precisely so the "
+                         "held-out number is comparable to the TRAINING curve it is read against, "
+                         "which is the only thing it is for. Uncropped, train-vs-val PAE stops "
+                         "being apples to apples and the generalisation-gap readings (copy's gap "
+                         "wider than share's by +0.0067 +- 0.0017 over 12 matched epochs) are no "
+                         "longer computable the same way. It also puts a SEAM in the val PAE "
+                         "curve at whichever epoch it lands, and makes that arm's val PAE "
+                         "incomparable to every arm measured before it -- so turn it on at the "
+                         "start of a fresh comparison, never inside a running one.")
+    ap.add_argument("--val-loss-emit-iptm", action="store_true",
+                    help="have the held-out PAE pass also write chain_pair_iptm rows, for "
+                         "run_logging/dockq_from_iptm.py to rebuild the DockQ metric from. Only "
+                         "useful together with --val-loss-uncropped: dockq_from_iptm --compare "
+                         "checks PER-POSE ipTM against the eval's own rows, and a cropped pass "
+                         "sees different inputs, so every pose would differ for a legitimate "
+                         "reason and the join error it exists to catch would be buried. With the "
+                         "inputs identical, ANY ipTM difference is the join.")
     ap.add_argument("--emit-iptm-rows", default="",
                     help="ALSO write chain_pair_iptm per (interface, seed, sample) to this csv. "
                          "EXPERIMENTAL and off by default. The held-out PAE pass and the DockQ "
@@ -3967,14 +3992,21 @@ def main():
                # THE RUN'S OWN GEOMETRY AND WEIGHTS. A different crop or a different alpha would
                # make the held-out number incomparable to the training curve it is read against,
                # which is the only thing it is for.
-               "--crop-margin", str(a.crop_margin), "--crop-contact", str(a.crop_contact),
+               # --crop-margin 0 IS WHAT "UNCROPPED" MEANS here; the argument's own help says 0
+               # is the whole structure. crop_contact and crop_size are still passed because they
+               # are inert at margin 0 and passing them keeps the recorded config complete.
+               "--crop-margin", ("0" if a.val_loss_uncropped else str(a.crop_margin)),
+               "--crop-contact", str(a.crop_contact),
                "--crop-size", str(a.crop_size), "--accum", str(a.accum),
+               *(["--emit-iptm-rows", os.path.join(out, "iptm_rows.csv")]
+                 if a.val_loss_emit_iptm else []),
                # EIGHTH INSTANCE OF THE --loss-only INHERITANCE CLASS. The three crop args above
                # are passed because "a different crop would make the held-out number incomparable
                # to the training curve it is read against"; --crop-all-poses changes the crop by
                # the same argument and was not passed, so a parent using the union would have been
                # monitored on a pose-0 crop. Caught in review.
-               *(["--crop-all-poses"] if a.crop_all_poses else []),
+               *(["--crop-all-poses"]
+                 if (a.crop_all_poses and not a.val_loss_uncropped) else []),
                # ALPHA_PAE 0 IS A TRAINING CHOICE, NOT A MEASUREMENT ONE. A ranking-only arm sets
                # --alpha-pae 0 so no PAE gradient is taken, but the held-out number this
                # subprocess exists to produce IS the PAE loss, and passing 0 through would report
