@@ -6,6 +6,8 @@ poses to pose 0 alone. That commit is only safe while the two masks agree, so th
 checkable rather than asserted: this times both and compares the masks token by token.
 
 Usage: python -I run_logging/crop_pose_equivalence.py [n_units]   (CPU only, no GPU needed)
+       n_units <= 0 audits EVERY (structure, seed) unit in the selection, which is what
+       "validated" requires; a positive n_units is a fast sample of that same population.
 
 WHY THEY CAN AGREE AT ALL. The crop is cut from the LABEL coordinates -- ground truth -- and all
 nsample poses share one ground truth, so they share one interface. The label is nonetheless stored
@@ -42,10 +44,17 @@ SKIP = set("9mx1 9q5m 9dzf 9b9j 9e7x 9q5v 9q7b 8vba 9bbn 9dc3".split())
 
 
 def units(limit):
+    """EVERY (structure, seed) UNIT, not one per structure.
+
+    The first version took the first seed of each structure, which is the wrong population for
+    this question: the permutation being audited is chosen per POSE within a unit, and nothing
+    says seed 500000's permutation is seed 500007's. 160 structures at one seed each certified
+    1/10th of the units it appeared to. Review of 9e838321 raised it.
+
+    limit <= 0 means every unit in the selection.
+    """
     sel = [r["pdb"].strip() for r in csv.DictReader(open(SELECTION))]
     sel = [p for p in sel if p and p not in SKIP]
-    random.seed(0)
-    random.shuffle(sel)
     out = []
     for pdb in sel:
         ld = os.path.join("training/fold/labels", pdb)
@@ -55,9 +64,18 @@ def units(limit):
         for f in sorted(os.listdir(ld)):
             if f.endswith(".npz") and os.path.exists(os.path.join(td, f)):
                 out.append((pdb, os.path.join(ld, f), os.path.join(td, f)))
-                break
-        if len(out) >= limit:
-            break
+    # SHUFFLED ACROSS THE WHOLE UNIT LIST, so a partial audit is a sample of structures AND seeds
+    # rather than the alphabetical head of either.
+    random.seed(0)
+    random.shuffle(out)
+    if limit > 0:
+        if len(out) < limit:
+            # FEWER THAN ASKED IS A FAILURE, NOT A SMALLER PASS. "0 of 40 differ" reads the same
+            # whether 40 units were checked or 4, and a missing cache would quietly shrink it.
+            raise SystemExit(f"STOP: asked for {limit} unit(s) but only {len(out)} exist under "
+                             f"training/fold for this selection; a short audit certifies less "
+                             f"than it appears to.")
+        out = out[:limit]
     return out
 
 
@@ -79,13 +97,24 @@ def main():
         t0 = time.perf_counter()
         ko, _ = BC.interface_crop_tokens(z, lab, CONTACT, MARGIN, all_poses=False)
         t_one += time.perf_counter() - t0
-        if ka is None or ko is None:
+        # ASYMMETRIC None IS A DIFFERENCE, NOT A SKIP. "union crops, pose 0 cannot" is precisely
+        # the pose-dependent interface this audit exists to catch, and the first version skipped
+        # it and could still exit 0. Only both-None is a legitimate skip: neither definition finds
+        # an interface, so the trainer falls back to the full structure either way. Review of
+        # 9e838321 found it.
+        if (ka is None) != (ko is None):
+            differ += 1
+            print(f"  {pdb} {os.path.basename(lp)}: CROP DEFINED FOR ONE AND NOT THE OTHER "
+                  f"(union={'None' if ka is None else int(ka.sum())}, "
+                  f"pose0={'None' if ko is None else int(ko.sum())})")
+            continue
+        if ka is None:
             nocrop += 1
-            print(f"  {pdb}: nocrop (union={ka is None} pose0={ko is None})")
+            print(f"  {pdb} {os.path.basename(lp)}: nocrop under both definitions")
             continue
         if not np.array_equal(ka, ko):
             differ += 1
-            print(f"  {pdb}: MASKS DIFFER  union {int(ka.sum())} vs pose0 {int(ko.sum())}, "
+            print(f"  {pdb} {os.path.basename(lp)}: MASKS DIFFER  union {int(ka.sum())} vs pose0 {int(ko.sum())}, "
                   f"{int((ka & ~ko).sum())} token(s) the pose-0 crop would drop")
         sz_all += int(ka.sum())
         sz_one += int(ko.sum())
