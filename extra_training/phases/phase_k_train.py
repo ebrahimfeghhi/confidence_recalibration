@@ -542,7 +542,17 @@ def main():
                          "unit against ~0.84 s of GPU and the GIL eats that margin. The crop did "
                          "not disappear, it moved from the main thread into the wait. Workers "
                          "take units round-robin, so results arrive out of order and the holding "
-                         "buffer is sized for it.")
+                         "buffer is sized for it. HISTORY, READ THIS BEFORE RAISING IT: 1083ed10 "
+                         "set 3 everywhere and was reverted in 7033430b because ggfhj5 lost epoch "
+                         "12 to what looked like a deadlock -- every rank at 0%% GPU in "
+                         "futex_wait, nine minutes with no trajectory write. The mechanism was "
+                         "found later and FIXED: _pf_pending evicted unconsumed results, and "
+                         "since a worker emits each unit exactly once, the next take waited the "
+                         "whole 120 s budget for something that could never arrive, then the unit "
+                         "after it did the same. Evictions are now recorded and such a take "
+                         "returns immediately; a take issued after every worker has finished "
+                         "returns immediately too. run_logging/prefetch_deadlock_repro.py is the "
+                         "CPU-only regression test and must stay at 0 stalls for the fixed path.")
     ap.add_argument("--prefetch-units", type=int, default=0,
                     help="prepare this many units ahead on a worker thread, overlapping the CPU "
                          "crop with the GPU's work on the previous unit. 0 disables it. Measured "
@@ -2662,9 +2672,20 @@ def main():
                     continue
 
     _pf_pending = {}
+    # UNITS THAT WERE DELIVERED AND THEN EVICTED. A worker emits each unit exactly ONCE, so an
+    # evicted result can never return to the queue -- and _pf_take's loop only exits on a match or
+    # on the budget expiring, so without this it waits the FULL 120 s for something that no longer
+    # exists, then recrops inline. The eviction pops in insertion order, i.e. the lowest-numbered
+    # stashed unit, which is precisely the one the main loop asks for next: so one eviction becomes
+    # a cascade of 120 s waits. Reproduced on CPU in run_logging/prefetch_deadlock_repro.py --
+    # W=1 gives 400 hits and 0 stalls, W=4 gives 40 consecutive full-budget stalls and does not
+    # recover. That is ggfhj5's epoch 12: every rank at 0% GPU in futex_wait, nine minutes with no
+    # trajectory write, and --dist-timeout-min 240 keeping anything from erroring out. Recording
+    # the eviction turns each of those waits into an immediate inline recrop.
+    _pf_dropped = set()
     # HIT/MISS IS REPORTED, because "crop_slice did not move" is how the first version's total
     # failure went unnoticed -- the inline fallback ticks the same counter as the fast path.
-    _pf_stat = {"hit": 0, "miss": 0, "wait_s": 0.0}
+    _pf_stat = {"hit": 0, "miss": 0, "wait_s": 0.0, "dropped": 0, "exhausted": 0}
 
     def _pf_take(lab_p, budget_s=120.0):
         """The prefetched result for this unit, WAITING for the worker if it is not ready yet.
@@ -2700,9 +2721,26 @@ def main():
             return _pf_pending.pop(lab_p)
         if _pf_q is None:
             return None
+        # ALREADY DELIVERED AND EVICTED: it will never arrive again, so do not wait for it.
+        if lab_p in _pf_dropped:
+            _pf_dropped.discard(lab_p)
+            _pf_stat["dropped"] += 1
+            _pf_stat["miss"] += 1
+            return None
         _t_w = time.perf_counter()
         deadline = _t_w + budget_s
         while True:
+            # EVERY WORKER HAS FINISHED ITS STRIDE AND THE QUEUE IS EMPTY, so nothing more can
+            # ever arrive. Observed in the reproduction: with W=4 the workers exit while the main
+            # loop is still asking for units, after which EVERY remaining take cost the whole
+            # budget. Waiting here is waiting on no one.
+            if (_pf_thread is not None
+                    and not any(_t.is_alive() for _t in _pf_thread)
+                    and _pf_q.empty()):
+                _pf_stat["exhausted"] += 1
+                _pf_stat["miss"] += 1
+                _pf_stat["wait_s"] += time.perf_counter() - _t_w
+                return None
             try:
                 k, v = _pf_q.get(timeout=max(0.05, deadline - time.perf_counter()))
             except (queue.Empty, AttributeError):
@@ -2719,14 +2757,18 @@ def main():
             # turns into a miss and an inline recrop -- the very work the prefetch exists to
             # avoid. Each held slice is ~30 MB, so this is tens of MB per rank.
             if len(_pf_pending) > max(16, 8 * max(1, a.prefetch_workers)):
-                _pf_pending.pop(next(iter(_pf_pending)))
+                # RECORD IT. Dropping silently is what turned one eviction into a cascade of
+                # full-budget waits; the set is units, not slices, so it costs nothing.
+                _dk = next(iter(_pf_pending))
+                _pf_pending.pop(_dk)
+                _pf_dropped.add(_dk)
 
     def _pf_start(units):
         nonlocal _pf_q, _pf_thread
         if not a.prefetch_units:
             return
-        _pf_stop.clear(); _pf_pending.clear()
-        _pf_stat.update(hit=0, miss=0, wait_s=0.0)
+        _pf_stop.clear(); _pf_pending.clear(); _pf_dropped.clear()
+        _pf_stat.update(hit=0, miss=0, wait_s=0.0, dropped=0, exhausted=0)
         _w = max(1, a.prefetch_workers)
         # DEEP ENOUGH FOR EVERY WORKER TO BE IN FLIGHT. At maxsize 1 with W workers, W-1 of them
         # block on put() and the extra threads buy nothing.
@@ -2751,7 +2793,7 @@ def main():
                 except queue.Empty:
                     break
             _t.join(timeout=30)
-        _pf_thread = None; _pf_q = None; _pf_pending.clear()
+        _pf_thread = None; _pf_q = None; _pf_pending.clear(); _pf_dropped.clear()
 
     def _to_dev(x):
         """Move a slice_cached_unit payload onto the device, structure preserved."""
@@ -4892,7 +4934,16 @@ def main():
                 print(f"  [rank {rank}] epoch {ep + 1} prefetch "
                       f"({max(1, a.prefetch_workers)} worker(s)): {_pf_stat['hit']}/{_pf_n} hit "
                       f"({100.0 * _pf_stat['hit'] / max(1, _pf_n):.1f}%), "
-                      f"{_pf_stat['wait_s']/60:.1f} min waiting on the worker", flush=True)
+                      f"{_pf_stat['wait_s']/60:.1f} min waiting on the worker"
+                      # REPORTED, because these two are the multi-worker failure made visible. A
+                      # non-zero `dropped` means results were delivered and evicted -- harmless
+                      # now (an immediate inline recrop) but it is the condition that used to
+                      # cost 120 s each and cascade. `exhausted` means the workers finished while
+                      # the main loop was still asking. Both were invisible before and both are
+                      # the thing to watch when --prefetch-workers goes above 1.
+                      + (f", {_pf_stat['dropped']} evicted-then-wanted, "
+                         f"{_pf_stat['exhausted']} asked after the workers finished"
+                         if (_pf_stat['dropped'] or _pf_stat['exhausted']) else ""), flush=True)
             # THE DRIFT IS THE EXPERIMENT under --l2-sp, so it is reported, not inferred. The
             # full head reached ||dW||^2 = 67,052 unconstrained over 30 epochs; this says where
             # the penalised run actually sits.
