@@ -65,8 +65,22 @@ if a.get('pose_perblock'):
     if a.get('pose_perblock_share'): f.append('--pose-perblock-share')
     if a.get('pose_perblock_copy'): f.append('--pose-perblock-copy')
 if a.get('train_only'): f += ['--train-only', a['train_only']]
-if a.get('lora_rank'): f += ['--lora-rank', str(a['lora_rank'])]
+if a.get('lora_rank'): f.append('LORA_UNSUPPORTED')
 print(' '.join(f))")
+# REFUSE A LoRA RUN RATHER THAN HALF-REBUILD IT. --lora-rank alone does not define a LoRA
+# configuration (alpha, dropout, which modules are adapted), and reconstructing only the rank
+# would build a DIFFERENT model while the script reported it had matched the arm -- the same class
+# of error as the missing --pose-perblock flags, which is the one this script exists not to make.
+# Raised in review of 8bcf8202. Extend the ARCH block with the full LoRA set before using this on
+# such a run.
+case "$ARCH" in
+  *LORA_UNSUPPORTED*)
+    echo "REFUSING: $RID is a LoRA run and this script reconstructs only --lora-rank, which does"
+    echo "  not define the configuration. It would build a different model and call it a match."
+    echo "  Add the full LoRA flags to the ARCH block first."
+    exit 1 ;;
+esac
+
 PREPARGS=""
 if [ -n "$PREP" ] && [ "$PREP" != "None" ]; then
   PREPARGS="--indices $PREP/job_indices.csv --bio-dir $PREP/job_bioassembly --mmcif-dir $PREP/job_cifs"

@@ -128,14 +128,28 @@ if a.compare:
     _iptm_ok = bool(both) and worst == worst and worst <= a.iptm_tol
     # PER-POSE SELECTION, not just the aggregate: two different ipTM vectors can agree on the
     # statistic while selecting different poses on offsetting interfaces.
-    _mine_sel = {k: max(v, key=lambda t: (t[0], -t[2], -t[3]))[1] for k, v in by.items()}
-    _eval_sel = {k: max(v, key=lambda t: (t[0], -t[2], -t[3]))[1] for k, v in eb.items()}
-    _sel_diff = [k for k in set(_mine_sel) & set(_eval_sel)
-                 if abs(_mine_sel[k] - _eval_sel[k]) > 1e-12]
+    #
+    # THE IDENTITY OF THE SELECTED POSE, NOT ITS DockQ. The first version of this check compared
+    # element [1] of the tuple, which is DockQ -- so two DIFFERENT poses that happen to share a
+    # DockQ value counted as agreement, and a near-tie whose ordering the two paths reverse would
+    # have passed while the selector itself disagreed. The whole point of the merge is to
+    # reproduce the SELECTOR, not its aggregate performance. Caught in review of 8bcf8202.
+    # Tuples are (iptm, dockq, seed, sample), so [2:4] is the pose key and [1] is DockQ.
+    _tb = lambda t: (t[0], -t[2], -t[3])
+    _mine_arg = {k: max(v, key=_tb) for k, v in by.items()}
+    _eval_arg = {k: max(v, key=_tb) for k, v in eb.items()}
+    _both_if = set(_mine_arg) & set(_eval_arg)
+    _sel_diff = [k for k in _both_if
+                 if _mine_arg[k][2:4] != _eval_arg[k][2:4]]
+    # DockQ equality stays as its OWN check: the same pose must also carry the same label, which
+    # is what catches a correct selection joined to the wrong row of results.csv.
+    _dq_diff = [k for k in _both_if
+                if abs(_mine_arg[k][1] - _eval_arg[k][1]) > 1e-12]
     _cov_ok = set(ev) == set(mine)
     print(f"  interfaces match: {_ifaces_ok}   metric match: {_metric_ok}")
     print(f"  pose-key sets identical: {_cov_ok}   "
-          f"interfaces selecting a different pose: {len(_sel_diff)}")
+          f"interfaces selecting a different pose: {len(_sel_diff)}   "
+          f"same pose but different DockQ: {len(_dq_diff)}")
     _fail = []
     if not _cov_ok:
         _fail.append(f"pose-key sets differ: {len(set(ev) - set(mine))} only in the eval, "
@@ -145,8 +159,15 @@ if a.compare:
     if not _iptm_ok:
         _fail.append(f"worst |d ipTM| {worst:.3e} exceeds --iptm-tol {a.iptm_tol:.3e}")
     if _sel_diff:
-        _fail.append(f"{len(_sel_diff)} interface(s) select a different pose, e.g. "
-                     f"{_sel_diff[:4]}")
+        _fail.append(f"{len(_sel_diff)} interface(s) select a different (seed, sample), e.g. "
+                     + ", ".join(f"{k}: mine {_mine_arg[k][2:4]} vs eval {_eval_arg[k][2:4]}"
+                                 for k in _sel_diff[:3]))
+    if _dq_diff:
+        _fail.append(f"{len(_dq_diff)} interface(s) select the SAME pose with a different DockQ, "
+                     f"e.g. " + ", ".join(f"{k}: {_mine_arg[k][1]:.4f} vs {_eval_arg[k][1]:.4f}"
+                                          for k in _dq_diff[:3])
+                     + " -- that is the (iface, seed, sample) key joining to the wrong "
+                       "results.csv row")
     if not _metric_ok:
         _fail.append(f"aggregate differs: {mean:.6f}/{frac:.6f} vs {em:.6f}/{ef:.6f}")
     if _fail:
@@ -156,5 +177,5 @@ if a.compare:
         print("The separate DockQ eval must stay. A rebuilt metric that disagrees with the eval "
               "on identical inputs is lining rows up against the wrong poses.")
         raise SystemExit(1)
-    print("\nJOIN VERIFIED: identical pose keys, ipTM within tolerance, same selected pose on "
-          "every interface, same aggregate.")
+    print("\nJOIN VERIFIED: identical pose keys, ipTM within tolerance, the same (seed, sample) "
+          "selected on every interface carrying the same DockQ, same aggregate.")

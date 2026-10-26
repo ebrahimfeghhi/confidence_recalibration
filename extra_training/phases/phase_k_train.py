@@ -4227,6 +4227,44 @@ def main():
                                 _rows_i.append(_r)
                     except OSError as _e:
                         _bad_i.append(f"shard {_i} unreadable ({_e})")
+                # COMPLETENESS, NOT JUST UNIQUENESS. Rejecting duplicates says no row appears
+                # twice; it says nothing about a row that never appeared. RKL.iptm can return
+                # None for a scored interface and the emitter skips that row silently, the child
+                # still exits 0, and the merged file comes out SHORT -- which the trajectory
+                # coverage check above cannot see, because it counts poses and these are
+                # per-interface rows. So the merged key set is checked against the population the
+                # pool and the seed range define: every interface in --val-loss-pool must carry
+                # exactly (seeds x nsample) rows. Caught in review of 8bcf8202; it is not a
+                # blocker while the separate eval still runs, and it is one the moment it does
+                # not.
+                if not _bad_i:
+                    try:
+                        _pool_if = set()
+                        with open(a.val_loss_pool) as fh:
+                            for _r in csv.DictReader(fh):
+                                _pool_if.add(f"{_r['pdb']}_{_r['chain1']}{_r['chain2']}")
+                        _lo_s, _, _hi_s = a.val_loss_seeds.partition("-")
+                        _nseed = (int(_hi_s) - int(_lo_s) + 1) if _hi_s else 1
+                        _exp_depth = _nseed * int(a.nsample)
+                        _depth = {}
+                        for _r in _rows_i:
+                            _depth[_r["iface"]] = _depth.get(_r["iface"], 0) + 1
+                        _miss_if = sorted(_pool_if - set(_depth))
+                        _extra_if = sorted(set(_depth) - _pool_if)
+                        _short = sorted(k for k, v in _depth.items() if v != _exp_depth)
+                        if _miss_if:
+                            _bad_i.append(f"{len(_miss_if)} pool interface(s) emitted no rows, "
+                                          f"e.g. {_miss_if[:3]}")
+                        if _extra_if:
+                            _bad_i.append(f"{len(_extra_if)} emitted interface(s) are not in the "
+                                          f"pool, e.g. {_extra_if[:3]}")
+                        if _short:
+                            _bad_i.append(f"{len(_short)} interface(s) do not have the expected "
+                                          f"{_exp_depth} row(s) ({_nseed} seed(s) x "
+                                          f"{a.nsample} sample(s)), e.g. "
+                                          + ", ".join(f"{k}={_depth[k]}" for k in _short[:3]))
+                    except (OSError, KeyError, ValueError) as _e:
+                        _bad_i.append(f"could not establish the expected ipTM population ({_e})")
                 if _bad_i:
                     print(f"  WARNING: epoch {epoch} ipTM rows NOT merged: {_bad_i[0]}"
                           + (f" (+{len(_bad_i)-1} more)" if len(_bad_i) > 1 else "")
