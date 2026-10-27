@@ -4,7 +4,7 @@ Regenerate with `python -I run_logging/render_findings.py --rid tv6hue`. Every n
 back from this run's own records; the shipped baselines are derived from the same eval shards
 via their `stored_iptm` column, not carried over by hand.
 
-**Epochs evaluated:** 1-9 (9 of 20.0).  **Interfaces:** 92.  **Budget:** 30.
+**Epochs evaluated:** 1-10 (10 of 20.0).  **Interfaces:** 92.  **Budget:** 30.
 
 **Resume chain:** `ij24wr` -> `tv6hue`. A resume writes to a fresh directory
 while continuing the parent's epoch numbering, so every table here spans the chain; the
@@ -31,9 +31,9 @@ Spearman is reported but is **not** the criterion.
 
 | | trained | shipped | oracle |
 |---|---|---|---|
-| selected DockQ | 0.5790 +- 0.0386 | 0.5832 +- 0.0387 | 0.6926 |
-| frac > 0.23 | 0.7283 +- 0.0466 | 0.7391 +- 0.0460 | 0.8587 |
-| Spearman rho | 0.2351 +- 0.0356 | 0.2218 | |
+| selected DockQ | 0.5626 +- 0.0385 | 0.5831 +- 0.0387 | 0.6926 |
+| frac > 0.23 | 0.7174 +- 0.0472 | 0.7391 +- 0.0460 | 0.8587 |
+| Spearman rho | 0.2437 +- 0.0345 | 0.2218 | |
 
 ## Loss, per epoch
 
@@ -51,6 +51,7 @@ comparability with the expected-DockQ arms and is **not** what this arm optimise
 | 7 | nan | -0.05057 +- 0.01006 | 0.5409 | 49.3 | 0.0493 | 2.7913 |
 | 8 | nan | -0.10417 +- 0.01983 | 0.5743 | 47.4 | 0.0474 | 2.7583 |
 | 9 | nan | -0.08719 +- 0.01784 | 0.5630 | 50.7 | 0.0507 | 2.7265 |
+| 10 | nan | -0.07618 +- 0.01425 | 0.5619 | 51.6 | 0.0516 | 2.7318 |
 
 Shipped, on these same interfaces: held-out ranking loss -0.10567, E[DockQ] 0.5719 (tau 0.05).
 
@@ -67,21 +68,22 @@ Shipped, on these same interfaces: held-out ranking loss -0.10567, E[DockQ] 0.57
 | 7 | 0.5614 +- 0.0392 | 0.7065 +- 0.0477 | 0.2271 +- 0.0350 | 0.0085 |
 | 8 | 0.5681 +- 0.0388 | 0.7174 +- 0.0472 | 0.2160 +- 0.0361 | 0.0085 |
 | 9 | 0.5790 +- 0.0386 | 0.7283 +- 0.0466 | 0.2351 +- 0.0356 | 0.0070 |
+| 10 | 0.5626 +- 0.0385 | 0.7174 +- 0.0472 | 0.2437 +- 0.0345 | 0.0095 |
 
-## Paired per-interface test, epoch 1 -> 9
+## Paired per-interface test, epoch 1 -> 10
 
 Per-interface selected-pose DockQ (argmax ipTM), 92 interfaces paired.
 
-- paired mean **+0.0054 +- 0.0075** (0.72 sigma)
-- 29 up, 17 worsened, 46 unchanged
+- paired mean **-0.0110 +- 0.0058** (1.90 sigma)
+- 24 up, 34 worsened, 34 unchanged
 
-| interface | ep1 | ep9 | delta |
+| interface | ep1 | ep10 | delta |
 |---|---|---|---|
-| `9bx7_BC` | 0.172 | 0.661 | +0.489 |
 | `9bx7_AC` | 0.587 | 0.184 | -0.403 |
-| `9mz6_AC` | 0.641 | 0.797 | +0.156 |
-| `7tzh_AC` | 0.678 | 0.775 | +0.097 |
-| `8t04_AD` | 0.761 | 0.846 | +0.085 |
+| `9mmj_AC` | 0.784 | 0.582 | -0.202 |
+| `9mz6_BC` | 0.965 | 0.843 | -0.122 |
+| `9mz6_AC` | 0.641 | 0.520 | -0.121 |
+| `9cfd_BC` | 0.285 | 0.393 | +0.108 |
 
 ## Rank of the first acceptable pose, ordering by ipTM
 
@@ -107,6 +109,7 @@ by both orderings over the same poses, so the pairing is exact.
 | 7 | 8.51 +- 3.10 | 1.0 | 65/79 | -2.76 +- 1.18 | 10/5/64 |
 | 8 | 9.15 +- 3.16 | 1.0 | 66/79 | -2.10 +- 0.95 | 9/4/66 |
 | 9 | 9.61 +- 3.43 | 1.0 | 67/79 | -1.65 +- 1.29 | 7/5/67 |
+| 10 | 9.38 +- 3.42 | 1.0 | 66/79 | -1.87 +- 1.06 | 8/5/66 |
 
 Shipped on the same interfaces: mean rank 11.25 +- 3.58, median 1.0, 68/79 at rank 1.
 
@@ -114,18 +117,18 @@ Shipped on the same interfaces: mean rank 11.25 +- 3.58, median 1.0, 68/79 at ra
 
 `--l2-sp-exclude linear_no_bias_d` leaves these trainable but outside
 `||W - W0||^2`, so the drift column above does **not** cover them. They are zero-init, so
-their norm is the direct test of whether the loss finds any use for them. From `resume_ep9.pt`:
+their norm is the direct test of whether the loss finds any use for them. From `resume_ep10.pt`:
 
 | tensor | \|\|W\|\| |
 |---|---|
-| `linear_no_bias_d.weight` | 8.3000e+01 |
-| `linear_no_bias_d_wo_onehot.weight` | 2.3503e+00 |
-| `pose_perblock_linear_no_bias_d.0.weight` | 8.2375e+01 |
-| `pose_perblock_linear_no_bias_d.1.weight` | 7.9840e+01 |
-| `pose_perblock_linear_no_bias_d.2.weight` | 8.0159e+01 |
-| `pose_perblock_linear_no_bias_d_wo_onehot.0.weight` | 2.3167e+00 |
-| `pose_perblock_linear_no_bias_d_wo_onehot.1.weight` | 2.2183e+00 |
-| `pose_perblock_linear_no_bias_d_wo_onehot.2.weight` | 2.2180e+00 |
+| `linear_no_bias_d.weight` | 8.7630e+01 |
+| `linear_no_bias_d_wo_onehot.weight` | 2.3257e+00 |
+| `pose_perblock_linear_no_bias_d.0.weight` | 8.6989e+01 |
+| `pose_perblock_linear_no_bias_d.1.weight` | 8.5145e+01 |
+| `pose_perblock_linear_no_bias_d.2.weight` | 8.5448e+01 |
+| `pose_perblock_linear_no_bias_d_wo_onehot.0.weight` | 2.3058e+00 |
+| `pose_perblock_linear_no_bias_d_wo_onehot.1.weight` | 2.1288e+00 |
+| `pose_perblock_linear_no_bias_d_wo_onehot.2.weight` | 2.1194e+00 |
 
 ## The arm as launched
 
@@ -135,5 +138,5 @@ Verbatim `--note` from `config.json`, written before any result was seen:
 
 ## Trajectory, latest epoch
 
-244 optimiser step(s), max `grad_norm` 2.7345, 0 non-finite gradient(s).
+244 optimiser step(s), max `grad_norm` 5.1695, 0 non-finite gradient(s).
 
