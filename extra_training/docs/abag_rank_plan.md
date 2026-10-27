@@ -135,3 +135,38 @@ touch `/home/ebrahim/Protenix/.venv`, which every training and eval path in this
 - `samples_per_complex: 10` against our 50 poses per training structure -- subsample per epoch, or
   raise it?
 - Is `ranking_score` (AF3's 0.8*ipTM + 0.2*pTM) worth reproducing, or set to ipTM and noted?
+
+
+---
+
+## DESIGN CORRECTION, 2026-10-27: pair sets are PER INTERFACE, and the chain mapping is PER POSE
+
+Two facts found while building the exporter, both of which invalidate what pass 1 currently does.
+
+**1. One PDB is almost never one ABAG-Rank complex.** Counted over `pool_insample.csv`'s 975
+in-sample interfaces: 105 structures have one interface, 311 have two, 40 have three, 29 have four,
+2 have six. **382 of 487 have more than one.** Grouping by PDB would merge different labelled
+interfaces under one ranking group for 78% of the training set, which is review finding 6 and not
+an edge case. `complex_id` must be the interface -- `7zra_AC`, not `7zra`.
+
+**2. Which asym pair an interface corresponds to is decided PER POSE, by OST.** `phase_k_eval`'s
+`ost_chain_pairs()` reads `ost_json/<k>.json`'s `chain_mapping` for each pose, because "the first
+antigen is not determined by sequence -- OST decides it per pose, by whichever assignment scores
+best". Its own run output records the consequence: OST's mapping **disagreed with the static
+`chain_roles` table on 145 poses across 2 structures, one of them 7zra** -- the very structure
+whose ipTM join failed. A static chain-letter-to-asym assumption is therefore not safe.
+
+**What this changes in `abag_pairsets.py`:** it currently unions *all* inter-chain pairs, i.e. every
+pair whose `asym_id` differs. For `7zra` (chains A=H, B=ag0, C=ag1) that mixes A-B, A-C and B-C
+into one set, when interface `7zra_AC` must see only A-C. The pair set must be built **per
+interface**, from the pose-specific `(asym_i, asym_j)` that `ost_chain_pairs` returns, and unioned
+over that interface's poses.
+
+**Why not simply dump every pair between the interface's two chains and skip the cutoff:** that
+removes the union problem entirely but costs ~37k pairs per interface per pose, which over 975
+interfaces x 50 poses is **~7 TB**. The cutoff is not optional at this scale. Unioned 12 A pairs per
+interface stay near ~1.6 GB.
+
+**Cost:** the CPU pass must now resolve each unit's pose directory (`BC.resolve_seed_dir`, from
+`ci_coordinate`, no GPU) and read `ost_json/<k>.json` per pose. Both are importable from
+`phase_k_eval` / `phase_j_build_cache`; neither needs a forward pass.
