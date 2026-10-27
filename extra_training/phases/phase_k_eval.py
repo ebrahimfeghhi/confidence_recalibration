@@ -391,15 +391,86 @@ def aggregate(a, rows, selfchk, want_ifaces):
     return 0
 
 
-_PS_CACHE = {}
+def _ca_coords(feat, px, pose):
+    """(T, 3) CA coordinates for one pose, and which tokens have one.
+
+    CA, NOT THE DISTOGRAM REPRESENTATIVE. distogram_rep_atom_mask is CB for ordinary residues and
+    CA only for glycine; ABAG-Rank measures CA-CA. On 10fj the two differ at 1,158 of 4,795 atoms,
+    1.42 A apart on average, and at a 12 A cutoff the CB convention loses 198 real pairs and adds
+    430 spurious ones.
+
+    DERIVED FROM THE TRUNK, not read from a label npz: pose_direction.derive_frames returns the
+    pae_rep_atom_mask, which IS the CA mask, and it was verified exact against the label npz on all
+    500 training structures. validation/fold has 53 trunks and no labels, so a label-based mask
+    could not be used on the held-out set at all.
+    """
+    import pose_direction
+    _fai, ca_mask = pose_direction.derive_frames(feat)
+    ca_mask = ca_mask.detach().cpu().numpy() if hasattr(ca_mask, "detach") else np.asarray(ca_mask)
+    a2t = feat["atom_to_token_idx"]
+    a2t = a2t.detach().cpu().numpy() if hasattr(a2t, "detach") else np.asarray(a2t)
+    asym = feat["asym_id"]
+    asym = asym.detach().cpu().numpy() if hasattr(asym, "detach") else np.asarray(asym)
+    T = len(asym)
+    xyz = px[pose] if px.ndim == 3 else px
+    out = np.full((T, 3), np.nan, dtype=np.float32)
+    seen = np.zeros(T, dtype=bool)
+    for ai in np.where(ca_mask.astype(bool))[0]:
+        t = int(a2t[ai])
+        if not seen[t]:
+            out[t] = xyz[ai]
+            seen[t] = True
+    return out, seen, asym
 
 
-def _pairset(root, pdb):
-    """The fixed inter-chain pair set for this complex, from run_logging/abag_pairsets.py."""
-    if pdb not in _PS_CACHE:
-        f = os.path.join(root, f"{pdb}.npz")
-        _PS_CACHE[pdb] = dict(np.load(f)) if os.path.exists(f) else None
-    return _PS_CACHE[pdb]
+def _dump_pose(a, pdb, seed, sample, tpp, feat, px, pose):
+    """Write ONLY what the reranker consumes, for one pose.
+
+    WHAT IS SAVED AND WHY NOTHING MORE. A dense PAE matrix is 1.5 MB a pose, ~60 GB over our
+    38,150; every inter-chain pair regardless of distance is ~2 MB a pose, ~76 GB. The reranker
+    only ever sees pairs near the interface, so only pairs under --dump-pae-cutoff are written,
+    plus -- unconditionally -- the single closest pair of every ordered chain pair, so the
+    zero-contact fallback upstream applies can always be satisfied without going back to the GPU.
+    That is ~3 GB in total.
+
+    The cutoff here is deliberately WIDER than the 12 A the model uses, so the dataset can apply
+    its own cutoff, sorting and truncation without a second pass.
+
+    asym_i/asym_j travel with each pair because an interface is a CHAIN PAIR, and which asym pair
+    an interface corresponds to is decided per pose by OST -- not by a static table. Keeping the
+    chain of each pair lets the dataset select an interface's pairs by that per-pose answer.
+    """
+    rep, seen, asym = _ca_coords(feat, px, pose)
+    if tpp.shape[0] != len(asym):
+        raise SystemExit(f"STOP: {pdb}/{seed}/{sample}: PAE is {tpp.shape[0]} tokens against "
+                         f"{len(asym)} in the trunk. Not the same molecule.")
+    d = np.linalg.norm(rep[:, None, :] - rep[None, :, :], axis=-1)
+    ok = seen[:, None] & seen[None, :]
+    inter = asym[:, None] != asym[None, :]
+    keep = inter & ok & (d <= a.dump_pae_cutoff)
+    # the closest pair of every ordered chain pair, so the fallback never needs the GPU again
+    for ci in np.unique(asym):
+        for cj in np.unique(asym):
+            if ci == cj:
+                continue
+            m = (asym[:, None] == ci) & (asym[None, :] == cj) & ok
+            if not m.any():
+                continue
+            dd = np.where(m, d, np.inf)
+            i0, j0 = np.unravel_index(np.argmin(dd), dd.shape)
+            if np.isfinite(dd[i0, j0]):
+                keep[i0, j0] = True
+    ii, jj = np.where(keep)
+    out = os.path.join(a.dump_pae, pdb)
+    os.makedirs(out, exist_ok=True)
+    np.savez_compressed(
+        os.path.join(out, f"{seed}_{sample}.npz"),
+        inter_idx=ii.astype(np.int32), inter_jdx=jj.astype(np.int32),
+        asym_i=asym[ii].astype(np.int16), asym_j=asym[jj].astype(np.int16),
+        interchain_pae_vals=tpp[ii, jj].astype(np.float32),
+        interchain_ca_distances=d[ii, jj].astype(np.float32),
+        n_tokens=np.int32(len(asym)), cutoff=np.float32(a.dump_pae_cutoff),
+        pdb=pdb, seed=np.int32(seed), sample=np.int32(sample))
 
 
 def main():
@@ -480,8 +551,10 @@ def main():
                          "--pair-iptm-only (that path already computes the PAE probabilities) and "
                          "--dump-pae-pairsets. The sample index comes from the coordinate-identity "
                          "join, not from a (pdb, seed, sample) guess.")
-    ap.add_argument("--dump-pae-pairsets", default="",
-                    help="directory of per-complex pair sets from run_logging/abag_pairsets.py")
+    ap.add_argument("--dump-pae-cutoff", type=float, default=16.0,
+                    help="CA-CA cutoff for what the dump keeps. Wider than the 12 A the model "
+                         "uses, so the dataset can apply its own cutoff and the closest-pair "
+                         "fallback without a second GPU pass.")
     ap.add_argument("--pair-iptm-only", action="store_true",
                     help="compute chain_pair_iptm directly from PAE instead of the whole Protenix "
                          "summary, whose other fields this script computes and discards. Measured "
@@ -518,9 +591,6 @@ def main():
         if not a.pair_iptm_only:
             raise SystemExit("STOP: --dump-pae needs --pair-iptm-only; the PAE probabilities it "
                              "reuses are computed only on that path.")
-        if not a.dump_pae_pairsets or not os.path.isdir(a.dump_pae_pairsets):
-            raise SystemExit(f"STOP: --dump-pae needs --dump-pae-pairsets pointing at the fixed "
-                             f"pair sets; got {a.dump_pae_pairsets!r}.")
         os.makedirs(a.dump_pae, exist_ok=True)
 
     if a.rows_in:
@@ -767,22 +837,10 @@ def main():
             # not a (pdb, seed, sample) guess. Writing the dump anywhere else would reintroduce
             # exactly the mismatch that made the ipTM join verification fail on 7zra_BC/7zra_AC.
             if a.dump_pae and "token_pair_pae" in s_i:
-                _ps = _pairset(a.dump_pae_pairsets, pdb)
-                if _ps is not None:
-                    _tp = s_i["token_pair_pae"]
-                    _tp = _tp.detach().cpu().numpy() if hasattr(_tp, "detach") else np.asarray(_tp)
-                    _tp = _tp[0] if _tp.ndim == 3 else _tp
-                    _ii, _jj = _ps["inter_idx"], _ps["inter_jdx"]
-                    if _tp.shape[0] != int(_ps["n_tokens"]):
-                        raise SystemExit(
-                            f"STOP: {pdb}: PAE is {_tp.shape[0]} tokens but its pair set was built "
-                            f"for {int(_ps['n_tokens'])}. They are not the same molecule.")
-                    _d = os.path.join(a.dump_pae, pdb)
-                    os.makedirs(_d, exist_ok=True)
-                    np.savez_compressed(
-                        os.path.join(_d, f"{sd_}_{int(ks[i])}.npz"),
-                        interchain_pae_vals=_tp[_ii, _jj].astype(np.float32),
-                        pdb=pdb, seed=int(sd_), sample=int(ks[i]))
+                _tp = s_i["token_pair_pae"]
+                _tp = _tp.detach().cpu().numpy() if hasattr(_tp, "detach") else np.asarray(_tp)
+                _tp = _tp[0] if _tp.ndim == 3 else _tp
+                _dump_pose(a, pdb, int(sd_), int(ks[i]), _tp, feat, px, i)
             cpi = s_i["chain_pair_iptm"]
             cpi = cpi.detach().cpu().numpy() if hasattr(cpi, "detach") else np.asarray(cpi)
             cpi = cpi[0] if cpi.ndim == 3 else cpi
