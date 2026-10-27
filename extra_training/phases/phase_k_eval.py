@@ -423,6 +423,82 @@ def _ca_coords(feat, px, pose):
     return out, seen, asym
 
 
+_VALID_CACHE = {}
+
+
+def _valid_tokens(a, pdb, n_tokens):
+    """[T] bool: tokens whose residue is known, from abag_rank/restypes.py.
+
+    REQUIRED, NOT OPTIONAL. Without it the closest-pair fallback can select a pair that the
+    feature builder later drops for containing an X, and the correct fallback -- the closest pair
+    of KNOWN residues -- may lie beyond the dump cutoff and be gone for good.
+    """
+    if pdb not in _VALID_CACHE:
+        f = os.path.join(a.dump_pae_restypes, f"{pdb}.npz")
+        if not os.path.exists(f):
+            raise SystemExit(
+                f"STOP: {pdb}: no residue letters at {f}. --dump-pae needs them to apply "
+                f"upstream's X filter before choosing the closest-pair fallback; run "
+                f"abag_rank/restypes.py for this population first.")
+        one = np.load(f)["residue_one_letter"]
+        _VALID_CACHE[pdb] = np.array([str(c) != "X" for c in one], dtype=bool)
+    v = _VALID_CACHE[pdb]
+    if len(v) != n_tokens:
+        raise SystemExit(f"STOP: {pdb}: {len(v)} residue letter(s) against {n_tokens} token(s).")
+    return v
+
+
+_PAE_ACC = {"pdb": None, "sum": None, "n": 0}
+
+
+def _pae_accumulate(a, pdb, tpp, shard_tag):
+    """Running per-complex sum of the DENSE PAE, so pae_col_mean can be exact.
+
+    WHY THE SPARSE DUMP IS NOT ENOUGH. Upstream's stage 1 writes EVERY inter-chain pair with no
+    distance cutoff (01_process_af3_predictions.py:1184-1190), and stage 3 means over those, so
+    `pae_col_mean` for a pair includes the poses in which that pair is far apart. Our dump keeps
+    only pairs within 16 A, so a pair at 8 A in one pose and 25 A in another contributes once
+    instead of twice and the mean is wrong -- not by a rounding error but by the whole weight of
+    the omitted poses. Centring is one of this model's central features, so that is a semantic
+    difference, not a storage one. Caught in review.
+
+    The fix does not need dense per-pose storage: the dense tensor is already in hand on the GPU,
+    so a running sum and count per complex gives the exact mean for ~1.3 MB per complex (float32
+    T x T), against ~60 GB to keep every pose. Partials are written per shard and merged, because
+    a complex's poses are split across shards.
+    """
+    acc = _PAE_ACC
+    if acc["pdb"] != pdb:
+        _pae_flush(a, shard_tag)
+        acc["pdb"], acc["sum"], acc["n"] = pdb, np.zeros_like(tpp, dtype=np.float64), 0
+    if acc["sum"].shape != tpp.shape:
+        raise SystemExit(f"STOP: {pdb}: PAE shape {tpp.shape} against accumulator "
+                         f"{acc['sum'].shape}. Not the same molecule.")
+    acc["sum"] += tpp
+    acc["n"] += 1
+
+
+def _pae_flush(a, shard_tag):
+    """Write this complex's partial sum. Merged across shards by abag_rank/merge_pae_mean.py."""
+    acc = _PAE_ACC
+    if acc["pdb"] is None or acc["n"] == 0:
+        return
+    d = os.path.join(a.dump_pae, acc["pdb"])
+    os.makedirs(d, exist_ok=True)
+    f = os.path.join(d, f"_paesum_{shard_tag}.npz")
+    # ATOMIC: a partial sum that looks complete would silently skew every centred feature of this
+    # complex, so it is written aside and renamed.
+    # np.savez_compressed APPENDS .npz to a name that lacks it, so what it actually writes is
+    # <stem>.tmp.npz, not <stem>.tmp. Renaming the name we passed raises FileNotFoundError and
+    # leaves a stray .tmp.npz that a directory scan could mistake for a result -- which is exactly
+    # what the first run of this code did. Caught by the smoke test, not by review.
+    tmp = f + ".tmp"
+    np.savez_compressed(tmp, pae_sum=acc["sum"].astype(np.float64),
+                        n_poses=np.int64(acc["n"]), pdb=acc["pdb"])
+    os.replace(tmp + ".npz", f)
+    acc["pdb"], acc["sum"], acc["n"] = None, None, 0
+
+
 def _dump_pose(a, pdb, seed, sample, tpp, feat, px, pose):
     """Write ONLY what the reranker consumes, for one pose.
 
@@ -441,11 +517,17 @@ def _dump_pose(a, pdb, seed, sample, tpp, feat, px, pose):
     chain of each pair lets the dataset select an interface's pairs by that per-pose answer.
     """
     rep, seen, asym = _ca_coords(feat, px, pose)
+    # UPSTREAM DROPS X PAIRS BEFORE THE CUTOFF AND BEFORE THE FALLBACK
+    # (preprocess_shards.process_single_sample), so a fallback chosen over all tokens can pick a
+    # pair that features.py then discards, leaving the interface with no pair at all and no way to
+    # recover one without another forward. restypes.py establishes that X residues are real here:
+    # 103 of 5,549 sequences contain one. Caught in review.
+    valid = _valid_tokens(a, pdb, len(asym))
     if tpp.shape[0] != len(asym):
         raise SystemExit(f"STOP: {pdb}/{seed}/{sample}: PAE is {tpp.shape[0]} tokens against "
                          f"{len(asym)} in the trunk. Not the same molecule.")
     d = np.linalg.norm(rep[:, None, :] - rep[None, :, :], axis=-1)
-    ok = seen[:, None] & seen[None, :]
+    ok = seen[:, None] & seen[None, :] & valid[:, None] & valid[None, :]
     inter = asym[:, None] != asym[None, :]
     keep = inter & ok & (d <= a.dump_pae_cutoff)
     # the closest pair of every ordered chain pair, so the fallback never needs the GPU again
@@ -463,14 +545,18 @@ def _dump_pose(a, pdb, seed, sample, tpp, feat, px, pose):
     ii, jj = np.where(keep)
     out = os.path.join(a.dump_pae, pdb)
     os.makedirs(out, exist_ok=True)
+    _f = os.path.join(out, f"{seed}_{sample}.npz")
+    # ATOMIC. An interrupted export must not leave a file that looks complete to a dataset builder
+    # enumerating the directory. Caught in review.
     np.savez_compressed(
-        os.path.join(out, f"{seed}_{sample}.npz"),
+        _f + ".tmp",
         inter_idx=ii.astype(np.int32), inter_jdx=jj.astype(np.int32),
         asym_i=asym[ii].astype(np.int16), asym_j=asym[jj].astype(np.int16),
         interchain_pae_vals=tpp[ii, jj].astype(np.float32),
         interchain_ca_distances=d[ii, jj].astype(np.float32),
         n_tokens=np.int32(len(asym)), cutoff=np.float32(a.dump_pae_cutoff),
         pdb=pdb, seed=np.int32(seed), sample=np.int32(sample))
+    os.replace(_f + ".tmp.npz", _f)
 
 
 def main():
@@ -551,6 +637,13 @@ def main():
                          "--pair-iptm-only (that path already computes the PAE probabilities) and "
                          "--dump-pae-pairsets. The sample index comes from the coordinate-identity "
                          "join, not from a (pdb, seed, sample) guess.")
+    ap.add_argument("--dump-pae-shard-tag", default="s0",
+                    help="names this shard's partial PAE sums; a complex's poses are split across "
+                         "shards and the partials are merged afterwards.")
+    ap.add_argument("--dump-pae-restypes", default="",
+                    help="directory of per-token residue letters from abag_rank/restypes.py. "
+                         "Required with --dump-pae: upstream drops X pairs BEFORE the cutoff and "
+                         "before the closest-pair fallback, so the fallback must know them.")
     ap.add_argument("--dump-pae-cutoff", type=float, default=16.0,
                     help="CA-CA cutoff for what the dump keeps. Wider than the 12 A the model "
                          "uses, so the dataset can apply its own cutoff and the closest-pair "
@@ -591,6 +684,10 @@ def main():
         if not a.pair_iptm_only:
             raise SystemExit("STOP: --dump-pae needs --pair-iptm-only; the PAE probabilities it "
                              "reuses are computed only on that path.")
+        if not a.dump_pae_restypes or not os.path.isdir(a.dump_pae_restypes):
+            raise SystemExit(f"STOP: --dump-pae needs --dump-pae-restypes; got "
+                             f"{a.dump_pae_restypes!r}. Upstream's X filter runs before the "
+                             f"cutoff and before the fallback, so the dump must apply it too.")
         os.makedirs(a.dump_pae, exist_ok=True)
 
     if a.rows_in:
@@ -840,6 +937,7 @@ def main():
                 _tp = s_i["token_pair_pae"]
                 _tp = _tp.detach().cpu().numpy() if hasattr(_tp, "detach") else np.asarray(_tp)
                 _tp = _tp[0] if _tp.ndim == 3 else _tp
+                _pae_accumulate(a, pdb, _tp, a.dump_pae_shard_tag)
                 _dump_pose(a, pdb, int(sd_), int(ks[i]), _tp, feat, px, i)
             cpi = s_i["chain_pair_iptm"]
             cpi = cpi.detach().cpu().numpy() if hasattr(cpi, "detach") else np.asarray(cpi)
@@ -890,6 +988,13 @@ def main():
     # refuse an ambiguous pose directory; persisting entries from a pass that then failed to join
     # some unit would hand the next pass a half-built shortcut. So it is written after the
     # no-join check below, not here. The counters print either way.
+    # THE LAST COMPLEX'S PARTIAL SUM. Without this flush the final pdb of every shard would have
+    # no _paesum file and its pae_col_mean would be computed from fewer poses than it has -- the
+    # same semantic error the accumulator exists to prevent, applied to one complex per shard.
+    if a.dump_pae:
+        _pae_flush(a, a.dump_pae_shard_tag)
+        print(f"  PAE means: partial sums written as _paesum_{a.dump_pae_shard_tag}.npz; merge "
+              f"shards before building features")
     if a.join_cache:
         print(f"join cache: {join_hits} hit(s), {join_new} newly derived "
               f"({join_hits / max(1, join_hits + join_new) * 100:.0f}% reused)")
