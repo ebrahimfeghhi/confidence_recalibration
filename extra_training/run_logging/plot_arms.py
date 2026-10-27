@@ -491,15 +491,18 @@ def main():
     for ax, ttl, ref in ((axes[0], "mean DockQ of the selected pose", sh_d),
                          (axes[1], f"fraction acceptable (DockQ > {a.thresh:g})", sh_f)):
         ax.axhline(ref, color=SHIPPED_C, ls="--", lw=1.3, zorder=0)
+        # THE LABEL SITS ON THE LINE IT NAMES, so the dashed line struck through the text and a
+        # crossing curve struck through it again. A white halo puts both behind the glyphs.
         ax.annotate(f"shipped {ref:.4f}", xy=(0.015, ref), xycoords=("axes fraction", "data"),
-                    color="#777777", fontsize=9, va="bottom")
+                    color="#777777", fontsize=9, va="bottom", zorder=5,
+                    bbox=dict(facecolor="white", edgecolor="none", pad=1.2, alpha=0.85))
         ax.set_title(ttl)
     _rho_sh = next(iter(_sh.values())) if _sh else None
     if _rho_sh is not None:
         axes[2].axhline(_rho_sh, color=SHIPPED_C, ls="--", lw=1.3, zorder=0)
         axes[2].annotate(f"shipped {_rho_sh:.4f}", xy=(0.015, _rho_sh),
                          xycoords=("axes fraction", "data"), color="#777777", fontsize=9,
-                         va="bottom")
+                         va="bottom", zorder=5, bbox=dict(facecolor="white", edgecolor="none", pad=1.2, alpha=0.85))
     axes[2].set_title("mean within-interface Spearman(ipTM, DockQ)\n"
                       "band = PAIRED s.e. vs shipped, so clearing the dashed line is the test",
                       fontsize=10.5)
@@ -549,13 +552,25 @@ def main():
         ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins="auto"))
         ax.grid(alpha=0.6, lw=0.7)
         ax.margins(x=0.03)
-        if multi or ax is axes[3]:
-            ax.legend(fontsize=9, loc="best")
+    # ONE LEGEND FOR THE FIGURE, IN THE MARGIN, NOT FOUR INSIDE THE DATA.
+    # Panels 0-2 label nothing but the arm names (shipped is annotated on the line itself), so
+    # each carried a byte-identical three-entry legend, and loc="best" has nowhere good to go on
+    # a panel whose curves cross the middle -- the legend sat on top of them. The hue -> arm map
+    # is the same for every panel, so it belongs to the figure once.
+    # PANEL 3 GETS NO LEGEND AT ALL, at the user's direction: its title already states
+    # "light dashed = TRAINING, dark solid = HELD OUT", and its hues are the same arm hues the
+    # figure legend names, so both cues are already on the page. Its own legend was the worst
+    # offender anyway -- two entries per arm, so six lines over the curves at three arms.
+    if multi:
+        _h, _l = axes[0].get_legend_handles_labels()
+        if _h:
+            fig.legend(_h, _l, loc="lower center", bbox_to_anchor=(0.5, 0.004),
+                       ncol=min(len(_h), 4), fontsize=10)
     axes[0].set_ylabel(f"held out, {n_if} interfaces")
     fig.suptitle(" vs ".join(labels[s.partition('=')[0]] for s in a.arms)
                  + f"   \u00b7   held out, {n_if} interfaces at budget {a.budget}"
                  + "   \u00b7   shipped from each run's own shards", fontsize=13, y=0.995)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.tight_layout(rect=(0, 0.052 if multi else 0, 1, 0.96))
     plt.savefig(a.out, dpi=140, bbox_inches="tight")
     print(f"wrote {a.out}")
 
