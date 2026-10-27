@@ -127,7 +127,7 @@ def confidence(model, configs, feat, s_inputs, s, z, x, n_cycle):
     return summary
 
 
-def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle):
+def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle, want_pae=False):
     """chain_pair_iptm and nothing else, for callers that read only that.
 
     WHAT THIS SKIPS AND WHY IT IS SAFE. confidence() computes the whole Protenix summary: the
@@ -168,9 +168,25 @@ def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle):
             pae_prob, has_frame=feat["has_frame"].bool(), asym_id=feat["asym_id"],
             token_is_ligand=token_is_ligand,
             **sample_confidence.get_bin_params(configs.loss.pae))
+        # EXPECTED ALIGNED ERROR IN ANGSTROMS, not logits and not probabilities. This is the same
+        # arithmetic sample_confidence.logits_to_score does at line 106 of its own module --
+        # prob @ get_bin_centers(**get_bin_params(configs.loss.pae)) -- which is what produces the
+        # `token_pair_pae` the full summary reports. pae_prob is already computed above for the
+        # chain pTM, so this costs one matmul and no extra forward.
+        # OPT-IN, DEFAULT OFF: phase_k_eval children of a running trainer re-read this file, so the
+        # existing return shape must not change underneath them.
+        tpp = None
+        if want_pae:
+            bc = sample_confidence.get_bin_centers(
+                **sample_confidence.get_bin_params(configs.loss.pae)).to(pae_prob.device)
+            tpp = (pae_prob @ bc).float()
     cpi = out["chain_pair_iptm"]
     n_pose = cpi.shape[0] if cpi.dim() == 3 else 1
-    return [{"chain_pair_iptm": cpi[i] if cpi.dim() == 3 else cpi} for i in range(n_pose)]
+    res = [{"chain_pair_iptm": cpi[i] if cpi.dim() == 3 else cpi} for i in range(n_pose)]
+    if tpp is not None:
+        for i in range(n_pose):
+            res[i]["token_pair_pae"] = tpp[i] if tpp.dim() == 3 else tpp
+    return res
 
 
 def main():

@@ -391,6 +391,17 @@ def aggregate(a, rows, selfchk, want_ifaces):
     return 0
 
 
+_PS_CACHE = {}
+
+
+def _pairset(root, pdb):
+    """The fixed inter-chain pair set for this complex, from run_logging/abag_pairsets.py."""
+    if pdb not in _PS_CACHE:
+        f = os.path.join(root, f"{pdb}.npz")
+        _PS_CACHE[pdb] = dict(np.load(f)) if os.path.exists(f) else None
+    return _PS_CACHE[pdb]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", default=f"{ROOT}/validation/fold")
@@ -461,6 +472,16 @@ def main():
                          "every pass costs a measured 3.6 min per shard for an answer that cannot "
                          "differ. OFF by default: it changes nothing about the metric, but a stale "
                          "cache would, so it is opt-in and keyed on the trunk's mtime and size.")
+    ap.add_argument("--dump-pae", default="",
+                    help="write per-pose EXPECTED ALIGNED ERROR (Angstroms) for the ABAG-Rank "
+                         "export, into <dir>/<pdb>/<seed>_<sample>.npz. Only the inter-chain pairs "
+                         "in that complex's fixed pair set are written -- dense matrices would be "
+                         "~60 GB over 38,150 poses against ~1.4 GB sparse. Requires "
+                         "--pair-iptm-only (that path already computes the PAE probabilities) and "
+                         "--dump-pae-pairsets. The sample index comes from the coordinate-identity "
+                         "join, not from a (pdb, seed, sample) guess.")
+    ap.add_argument("--dump-pae-pairsets", default="",
+                    help="directory of per-complex pair sets from run_logging/abag_pairsets.py")
     ap.add_argument("--pair-iptm-only", action="store_true",
                     help="compute chain_pair_iptm directly from PAE instead of the whole Protenix "
                          "summary, whose other fields this script computes and discards. Measured "
@@ -493,6 +514,14 @@ def main():
                     help="comma-separated row csvs from --rows-out. Runs the self-check, the "
                          "coverage contract and the metric on their union, on CPU, with no model.")
     a = ap.parse_args()
+    if a.dump_pae:
+        if not a.pair_iptm_only:
+            raise SystemExit("STOP: --dump-pae needs --pair-iptm-only; the PAE probabilities it "
+                             "reuses are computed only on that path.")
+        if not a.dump_pae_pairsets or not os.path.isdir(a.dump_pae_pairsets):
+            raise SystemExit(f"STOP: --dump-pae needs --dump-pae-pairsets pointing at the fixed "
+                             f"pair sets; got {a.dump_pae_pairsets!r}.")
+        os.makedirs(a.dump_pae, exist_ok=True)
 
     if a.rows_in:
         merge_rows(a)
@@ -708,7 +737,8 @@ def main():
             # structures with zero mismatches.
             _fai, _pae = pose_direction.derive_frames(feat)
             pose_direction.set_unit(_fai, feat["has_frame"], _pae, pdb=pdb)
-        summ = (RC.pair_iptm_only if a.pair_iptm_only else RC.confidence)(
+        summ = ((lambda *_a: RC.pair_iptm_only(*_a, want_pae=True)) if (a.pair_iptm_only and a.dump_pae)
+                else RC.pair_iptm_only if a.pair_iptm_only else RC.confidence)(
             model, configs, feat, s_in, s_tr, z, x, nc)
         summ = summ if isinstance(summ, (list, tuple)) else [summ]
         # join 2: pose -> sample, by coordinate identity. The pose DIRECTORY is itself resolved by
@@ -732,6 +762,27 @@ def main():
                       f"{str(e)[:90]})")
             continue
         for i, s_i in enumerate(summ):
+            # THE PAE DUMP RIDES THE CANONICAL JOIN. `ks` comes from BC.resolve_seed_dir, which
+            # matches poses to samples BY COORDINATE IDENTITY -- the only join in this file that is
+            # not a (pdb, seed, sample) guess. Writing the dump anywhere else would reintroduce
+            # exactly the mismatch that made the ipTM join verification fail on 7zra_BC/7zra_AC.
+            if a.dump_pae and "token_pair_pae" in s_i:
+                _ps = _pairset(a.dump_pae_pairsets, pdb)
+                if _ps is not None:
+                    _tp = s_i["token_pair_pae"]
+                    _tp = _tp.detach().cpu().numpy() if hasattr(_tp, "detach") else np.asarray(_tp)
+                    _tp = _tp[0] if _tp.ndim == 3 else _tp
+                    _ii, _jj = _ps["inter_idx"], _ps["inter_jdx"]
+                    if _tp.shape[0] != int(_ps["n_tokens"]):
+                        raise SystemExit(
+                            f"STOP: {pdb}: PAE is {_tp.shape[0]} tokens but its pair set was built "
+                            f"for {int(_ps['n_tokens'])}. They are not the same molecule.")
+                    _d = os.path.join(a.dump_pae, pdb)
+                    os.makedirs(_d, exist_ok=True)
+                    np.savez_compressed(
+                        os.path.join(_d, f"{sd_}_{int(ks[i])}.npz"),
+                        interchain_pae_vals=_tp[_ii, _jj].astype(np.float32),
+                        pdb=pdb, seed=int(sd_), sample=int(ks[i]))
             cpi = s_i["chain_pair_iptm"]
             cpi = cpi.detach().cpu().numpy() if hasattr(cpi, "detach") else np.asarray(cpi)
             cpi = cpi[0] if cpi.ndim == 3 else cpi
