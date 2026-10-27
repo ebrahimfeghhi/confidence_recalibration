@@ -36,7 +36,7 @@ Oracle ceiling: DockQ 0.6926, frac 0.8587 → **headroom 0.1096**.
 
 ![arms overlay](figures/arms_overlay.png)
 
-*Regenerated 2026-10-27 8:09 AM EDT. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
+*Regenerated 2026-10-27 8:40 AM EDT. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
 
 Shipped on `valfull` (92 interfaces, budget 30): DockQ **0.5830**, frac **0.7391**, rho **0.2218**.
 
