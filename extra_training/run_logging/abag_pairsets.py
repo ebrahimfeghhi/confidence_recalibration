@@ -63,7 +63,9 @@ def source_fingerprint(pdb, fold):
     still holds ten files and fifty poses, so a count-based check reuses pair indices derived from
     a pose population that no longer exists. Edited coordinates or token metadata are invisible to
     a count too. Name, size and mtime of every trunk AND its label file are cheap and catch all
-    three; a content hash would be stronger but would read the 1.4 TB cache. Caught in review.
+    three; a content hash would be stronger but would read the 1.4 TB cache. NANOSECOND mtime, not
+    int seconds: a file rewritten twice inside one second at the same size would otherwise keep its
+    fingerprint. Both caught in review.
     """
     parts = []
     for f in sorted(glob.glob(os.path.join(fold, "trunks", pdb, "free_*.npz"))):
@@ -71,7 +73,7 @@ def source_fingerprint(pdb, fold):
         for q in (f, lab):
             try:
                 st = os.stat(q)
-                parts.append(f"{os.path.basename(q)}:{st.st_size}:{int(st.st_mtime)}")
+                parts.append(f"{os.path.basename(q)}:{st.st_size}:{st.st_mtime_ns}")
             except OSError:
                 parts.append(f"{os.path.basename(q)}:MISSING")
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
@@ -117,6 +119,15 @@ def pair_set(pdb, fold, cutoff):
             ok = seen[:, None] & seen[None, :]
             # <= MATCHES UPSTREAM's `ca_distances <= distance_cutoff`, not <.
             m = inter & ok & (d <= cutoff)
+            # KNOWN GAP, TO BE CLOSED IN THE EXPORTER, NOT HERE: upstream drops residue pairs
+            # whose residue_one_letter is 'X' BEFORE applying the cutoff and before choosing the
+            # fallback, so its fallback is the closest pair among NON-X residues. This union has no
+            # residue letters to filter by -- they are not in the trunk cache at all (ci_s_inputs
+            # carries no restype one-hot; 400 of its 449 columns are identically zero), so they
+            # must come from the sequences or the pose CIFs. And they matter: 103 of 5,549
+            # sequences in seq_to_pdb_index.json contain X. Where a pose's closest pair involves an
+            # X residue, upstream would fall back to the closest NON-X pair, which this union may
+            # not contain. Caught in review; the exporter must pass a residue-validity mask in.
             # THE ZERO-CONTACT FALLBACK, which upstream has and a plain union does not:
             # preprocess_shards keeps the single CLOSEST inter-chain pair when a pose has none
             # under the cutoff. Without this, such a pose gets whatever pairs other poses

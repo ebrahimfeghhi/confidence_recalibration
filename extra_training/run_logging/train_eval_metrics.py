@@ -28,6 +28,7 @@ import collections
 import csv
 import glob
 import json
+import math
 import os
 import statistics
 import subprocess
@@ -113,6 +114,43 @@ def rows_in(d, budget):
     return by
 
 
+def check_population(by, seed_base, budget, label):
+    """The evaluator's validity contract, not just its arithmetic.
+
+    REPRODUCING THE SELECTION RULE IS NOT ENOUGH. This reads whatever rows_b*.csv happen to exist,
+    so a failed or missing shard leaves a perfectly plausible mean over the surviving interfaces
+    and exits 0 -- a population the canonical evaluator would refuse. That is a false-success path,
+    and the one failure mode a second implementation of a metric is most likely to introduce.
+    Caught in review.
+
+    Every interface must carry exactly budget x 5 poses, over a contiguous seed range from
+    seed_base, with unique (seed, sample) keys and finite ipTM and DockQ.
+    """
+    want = budget * 5
+    seeds_want = set(range(seed_base, seed_base + budget))
+    bad = []
+    for ifc, v in by.items():
+        s = [x for x in v if x[0] in seeds_want]
+        keys = {(x[0], x[1]) for x in s}
+        if len(s) != want:
+            bad.append(f"{ifc}: {len(s)} pose(s), expected {want}")
+        elif len(keys) != want:
+            bad.append(f"{ifc}: {want - len(keys)} duplicate (seed, sample) key(s)")
+        elif {x[0] for x in s} != seeds_want:
+            bad.append(f"{ifc}: seed set is not {seed_base}..{seed_base + budget - 1}")
+        elif not all(math.isfinite(x[2]) and math.isfinite(x[3]) and math.isfinite(x[4])
+                     for x in s):
+            bad.append(f"{ifc}: non-finite ipTM or DockQ")
+        if len(bad) >= 6:
+            break
+    if bad:
+        raise SystemExit(
+            f"STOP: the {label} rows are not a complete population, so a mean over them would not "
+            f"be the metric:\n    " + "\n    ".join(bad)
+            + "\n  Re-run the eval rather than aggregating what is on disk.")
+    return len(by)
+
+
 def summarise(by, seed_base, budget, thresh):
     """Trained vs shipped selection on the SAME interfaces, paired.
 
@@ -179,7 +217,10 @@ def main():
             if rc != 0:
                 print(f"  {rid}: eval returned {rc}; skipping")
                 continue
-        tp = summarise(rows_in(work, TRAIN_BUDGET), TRAIN_SEED_BASE, TRAIN_BUDGET, a.thresh)
+        _tr_rows = rows_in(work, TRAIN_BUDGET)
+        if _tr_rows:
+            check_population(_tr_rows, TRAIN_SEED_BASE, TRAIN_BUDGET, f"{rid} train-pool")
+        tp = summarise(_tr_rows, TRAIN_SEED_BASE, TRAIN_BUDGET, a.thresh)
         # The arm's own validation rows, re-aggregated at the SAME budget. Free: already on disk.
         # ONLY IF THEY ARE valfull. ocqtyt monitored val10's 18 interfaces, and printing those in
         # a column headed "val" beside everyone else's 92 would invite exactly the comparison the
@@ -193,7 +234,11 @@ def main():
         elif not vdirs:
             vp, vnote = None, "val skipped: no eval shard rows on disk"
         else:
-            vp, vnote = summarise(rows_in(vdirs[-1], 30), 400000, TRAIN_BUDGET, a.thresh), None
+            _v_rows = rows_in(vdirs[-1], 30)
+            # The val rows are a budget-30 file re-aggregated at 10 seeds, so the population check
+            # is run at 30 -- its own budget -- before the subset is taken.
+            check_population(_v_rows, 400000, 30, f"{rid} valfull")
+            vp, vnote = summarise(_v_rows, 400000, TRAIN_BUDGET, a.thresh), None
         out_rows.append((rid, tp, vp, vnote))
 
     print()
