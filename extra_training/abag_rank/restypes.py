@@ -46,6 +46,11 @@ def main():
     ap.add_argument("--fold", default="training/fold")
     ap.add_argument("--out", default="training/abag/restypes")
     ap.add_argument("--limit", type=int, default=0)
+    # SHARDED BY STRUCTURE so the 487 can be built in parallel: the per-structure cost is
+    # featurising it, and the dataset object each worker builds is a fixed ~1 min overhead. Each
+    # worker writes its own files and skips any that already exist, so shards cannot collide.
+    ap.add_argument("--shard", type=int, default=0)
+    ap.add_argument("--nshards", type=int, default=1)
     # phase_j_build_cache's own defaults, repeated so this pass cannot be pointed somewhere else.
     ap.add_argument("--indices", default=f"{ROOT}/training/prep/job_indices.csv")
     ap.add_argument("--bio-dir", default=f"{ROOT}/training/prep/job_bioassembly")
@@ -63,6 +68,8 @@ def main():
     pdbs = [r["pdb"] for r in csv.DictReader(open(os.path.join(ROOT, a.selection)))]
     if a.limit:
         pdbs = pdbs[:a.limit]
+    if a.nshards > 1:
+        pdbs = pdbs[a.shard::a.nshards]
     out = os.path.join(ROOT, a.out)
     os.makedirs(out, exist_ok=True)
 
