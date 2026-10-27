@@ -637,9 +637,6 @@ def main():
                          "--pair-iptm-only (that path already computes the PAE probabilities) and "
                          "--dump-pae-pairsets. The sample index comes from the coordinate-identity "
                          "join, not from a (pdb, seed, sample) guess.")
-    ap.add_argument("--dump-pae-shard-tag", default="s0",
-                    help="names this shard's partial PAE sums; a complex's poses are split across "
-                         "shards and the partials are merged afterwards.")
     ap.add_argument("--dump-pae-restypes", default="",
                     help="directory of per-token residue letters from abag_rank/restypes.py. "
                          "Required with --dump-pae: upstream drops X pairs BEFORE the cutoff and "
@@ -689,6 +686,32 @@ def main():
                              f"{a.dump_pae_restypes!r}. Upstream's X filter runs before the "
                              f"cutoff and before the fallback, so the dump must apply it too.")
         os.makedirs(a.dump_pae, exist_ok=True)
+        # RUN-LEVEL PROVENANCE. Every npz records its structure, seed and sample but nothing about
+        # WHICH MODEL produced the PAE. Exporting half a dataset, then resuming into the same
+        # directory with a different checkpoint, yields valid files carrying two models' PAE and
+        # nothing to detect it. So the identity is written once and checked on reuse. Caught in
+        # review.
+        _prov = {"ckpt": os.path.abspath(a.ckpt) if a.ckpt else "",
+                 "model_name": a.model_name, "fold": os.path.abspath(a.fold),
+                 "pool": os.path.abspath(a.pool) if a.pool else "",
+                 "seed_base": a.seed_base, "budget": a.budget,
+                 "cutoff": a.dump_pae_cutoff, "nshards": a.nshards,
+                 "restypes": os.path.abspath(a.dump_pae_restypes)}
+        _pf = os.path.join(a.dump_pae, "_provenance.json")
+        if os.path.exists(_pf):
+            _old = json.load(open(_pf))
+            _diff = {k for k in set(_old) | set(_prov) if _old.get(k) != _prov.get(k)}
+            _diff -= {"nshards"}          # sharding is a layout choice, not a model change
+            if _diff:
+                raise SystemExit(
+                    f"STOP: {a.dump_pae} was exported under different settings and resuming into "
+                    f"it would mix models in one dataset:\n    "
+                    + "\n    ".join(f"{k}: existing {_old.get(k)!r} vs now {_prov.get(k)!r}"
+                                     for k in sorted(_diff))
+                    + "\n  Export to a new directory, or delete that one deliberately.")
+        else:
+            with open(_pf, "w") as _fh:
+                json.dump(_prov, _fh, indent=1)
 
     if a.rows_in:
         merge_rows(a)
@@ -933,11 +956,18 @@ def main():
             # matches poses to samples BY COORDINATE IDENTITY -- the only join in this file that is
             # not a (pdb, seed, sample) guess. Writing the dump anywhere else would reintroduce
             # exactly the mismatch that made the ipTM join verification fail on 7zra_BC/7zra_AC.
-            if a.dump_pae and "token_pair_pae" in s_i:
+            if a.dump_pae:
+                # FATAL, NOT SKIPPED. want_pae=True always returns this key, which is exactly why
+                # its absence means something changed underneath us -- and a pose silently missing
+                # from the export while evaluation carries on is how a dataset ends up short
+                # without anything saying so. Caught in review.
+                if "token_pair_pae" not in s_i:
+                    raise SystemExit(f"STOP: {pdb}/{sd_}: --dump-pae is on but the confidence "
+                                     f"path returned no token_pair_pae.")
                 _tp = s_i["token_pair_pae"]
                 _tp = _tp.detach().cpu().numpy() if hasattr(_tp, "detach") else np.asarray(_tp)
                 _tp = _tp[0] if _tp.ndim == 3 else _tp
-                _pae_accumulate(a, pdb, _tp, a.dump_pae_shard_tag)
+                _pae_accumulate(a, pdb, _tp, f"s{a.shard}")
                 _dump_pose(a, pdb, int(sd_), int(ks[i]), _tp, feat, px, i)
             cpi = s_i["chain_pair_iptm"]
             cpi = cpi.detach().cpu().numpy() if hasattr(cpi, "detach") else np.asarray(cpi)
@@ -992,9 +1022,9 @@ def main():
     # no _paesum file and its pae_col_mean would be computed from fewer poses than it has -- the
     # same semantic error the accumulator exists to prevent, applied to one complex per shard.
     if a.dump_pae:
-        _pae_flush(a, a.dump_pae_shard_tag)
-        print(f"  PAE means: partial sums written as _paesum_{a.dump_pae_shard_tag}.npz; merge "
-              f"shards before building features")
+        _pae_flush(a, f"s{a.shard}")
+        print(f"  PAE means: partial sums written as _paesum_s{a.shard}.npz "
+              f"({a.nshards} shard(s)); run abag_rank/merge_pae_mean.py before building features")
     if a.join_cache:
         print(f"join cache: {join_hits} hit(s), {join_new} newly derived "
               f"({join_hits / max(1, join_hits + join_new) * 100:.0f}% reused)")
