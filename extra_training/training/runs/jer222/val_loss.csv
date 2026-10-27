@@ -4,3 +4,4 @@ epoch,step,n_poses,val_pae,bundle
 3,732,7950,2.834446,resume_ep3.pt
 4,976,7950,2.769603,resume_ep4.pt
 5,1220,7950,2.830382,resume_ep5.pt
+6,1464,7950,2.765285,resume_ep6.pt
