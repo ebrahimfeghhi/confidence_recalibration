@@ -1,0 +1,15 @@
+{
+ "n_interfaces": 676,
+ "k": 10,
+ "seed": 0,
+ "side": "train",
+ "ckpt": "/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad/snaps/r7030_last.pt",
+ "model_dockq": 0.4132869814373773,
+ "model_frac": 0.5340236686390533,
+ "iptm_dockq": 0.41264053266399026,
+ "iptm_frac": 0.5325443786982249,
+ "random_dockq": 0.36060798813254136,
+ "random_frac": 0.4718934911242604,
+ "oracle_dockq": 0.48474703993808105,
+ "oracle_frac": 0.6198224852071006
+}

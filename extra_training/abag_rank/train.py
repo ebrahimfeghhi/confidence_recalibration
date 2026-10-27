@@ -288,9 +288,15 @@ def main():
                     top1 += dq.gather(1, pred.argmax(dim=1, keepdim=True)).squeeze(1).tolist()
                     orc += dq.max(dim=1).values.tolist()
             model.train()
+            # FRAC ACCEPTABLE alongside the mean, because they are not interchangeable: a mean
+            # can rise by improving poses that were already acceptable while the count of
+            # interfaces over 0.23 -- the thing anyone actually cares about -- does not move.
+            vfrac = sum(1 for x in top1 if x >= 0.23) / max(len(top1), 1)
+            ofrac = sum(1 for x in orc if x >= 0.23) / max(len(orc), 1)
             line += (f"  val {vt / max(vn, 1):.4f}  soft-rho {np.mean(rhos):+.4f}  "
                      f"val top-1 DockQ {float(np.mean(top1)):.4f} "
-                     f"(oracle {np.mean(orc):.4f})")
+                     f"(oracle {np.mean(orc):.4f})"
+                     f"  val frac {vfrac:.4f} (oracle {ofrac:.4f})")
         # VALFULL IS THE VALIDATION SET, so selecting on it is exactly what it is for. The
         # held-out benchmarks are FoldBench and PXM-2025, and nothing here touches either.
         if vf is not None and (ep % a.monitor_every == 0 or ep == 1):

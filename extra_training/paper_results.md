@@ -227,12 +227,57 @@ So the task is not hopeless-by-concentration: broad headroom exists.
 
 ---
 
+## 7. ABAG-Rank: a direct-DockQ reranker does not beat ipTM IN-SAMPLE either
+
+Sections 1b and 2b are about a PAE objective that fits in-sample and then fails to transfer.
+ABAG-Rank -- a 5.2M-parameter Deep Set over inter-chain residue pairs, regressing DockQ directly
+with a soft-Spearman and distance-preservation loss -- fails one step earlier. It never fits the
+selection objective at all.
+
+Paired on the SAME K=10 candidate poses per interface, model top-1 against the ipTM top-1 it is
+handed as an input feature:
+
+| model | scored on | ipTM top-1 | model top-1 | delta |
+|---|---|---|---|---|
+| run_7030, epoch 220 | held-out 30% of training structures, 299 interfaces | 0.4252 | 0.4034 | **-0.0218** |
+| run_7030, epoch 220 | its own fitted 70%, 676 interfaces | 0.4126 | 0.4133 | **+0.0006** |
+| run_full, epoch 505 | its own fitted 975 interfaces | 0.4117 | 0.4020 | **-0.0097** |
+
+run_7030 held out 146 of 487 structures at random (`abag_rank/run_7030.sh`, seed 0, split by
+structure, membership in `split.json`). The held-out set is NOT the cluster-distance regime valfull
+sits in: 104 of the 146 share a SAbDab2 `ab_ag_cluster` with a training structure and 74 share an
+antigen cluster. So "our splits are too hard" does not explain this.
+
+**The held-out number is not the result.** The in-sample delta is zero, so there is nothing for the
+held-out set to fail to inherit, and the honest statement is that the method does not work rather
+than that it does not generalise. Supporting detail:
+
+- The model is given ipTM as a sample-level feature and scores BELOW it. Passing one number
+  through would have matched it.
+- Held-out soft Spearman +0.77, and top-1 still loses. This is section 5's rho-is-not-the-metric
+  finding in a far starker form than the confidence-head arms showed it.
+- Train 1.0394 vs val 1.1357 at epoch 220: almost no gap. 5.2M parameters on 676 interfaces for
+  220 epochs is UNDERfitting, not memorising.
+
+Taken with sections 1b and 2b: two methods with different supervision (PAE vs DockQ), capacity
+(19.8M vs 5.2M) and architecture now sit within ~0.01 of ipTM on our antibody-antigen interfaces
+while their own training objectives improve substantially.
+
+Method notes, numbers from `abag_rank/val_baseline.py`, full version in `abag_rank/RESULTS.md`:
+budget 10, not 30, so read against the local oracle 0.4847-0.4933 and not against the valfull
+figures above; every baseline paired on the same candidates by iterating the training loop's own
+DataLoader, asserted by reproducing its pinned oracle 0.4933 to four decimals; the computed
+held-out 0.4034 equals the logged epoch-220 value exactly; interfaces are in-sample but the exact
+10-pose subsets are not guaranteed to be those seen in training, so the claim is interface-level.
+
 ## Open questions as of 2026-10-27
 
 - **ANSWERED 2026-10-27 (section 1b): the in-sample conversion does NOT transfer at 30
   structures -- it inverts, to -0.0355 on valfull.** The live question is whether 487 structures
   change that; `ocqtyt` scored on the training pool (budget 10) tests whether the fitting even
   happens at that scale.
+- **ANSWERED 2026-10-27 (section 7): a direct-DockQ reranker does not beat ipTM even in-sample**,
+  so for ABAG-Rank the question of cross-complex transfer does not arise yet.
 - `jy6sah` was stopped, not converged -- both curves still climbing at epoch 136.
 - No run exists that is full head + 4 pose-copy layers + no L2 on the full training set. `ocqtyt`
   is the closest and differs only by lacking the pose layers (plus 9dzj, 1 structure of 488).
