@@ -2210,7 +2210,15 @@ def main():
                      # including the live zg5fnw's per-epoch held-out subprocess, which resumes
                      # its own bundle through this same file -- unresumable.
                      "rank_pairs": "cross", "rank_within_weight": 1.0, "rank_topk_decay": 0.0,
-                     "rank_straddle": 0.0}
+                     "rank_straddle": 0.0,
+                     # A BUNDLE PREDATING --lr-final HELD lr FLAT AFTER WARMUP, which is exactly
+                     # what lr_final 0.0 means -- the flag's own help says 0 "keeps the historical
+                     # schedule ... hold --lr flat for the whole run, which is what every arm
+                     # before this one did". So its absence is evidence of 0.0, not of an unknown
+                     # setting, and it belongs here rather than in _unknown: that STOP fires
+                     # BEFORE --resume-allow-drift is consulted and so cannot be overridden,
+                     # which made ocqtyt's epoch-26 bundle unresumable (run 4av7s8, exit 1).
+                     "lr_final": 0.0}
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
