@@ -25,6 +25,7 @@ recovered number.
 """
 import argparse
 import csv
+import glob
 import json
 import os
 import re
@@ -55,7 +56,10 @@ def build_cmd(a, bundle, out, epoch):
            "--crop-contact", str(a["crop_contact"]),
            "--crop-size", str(a["crop_size"]), "--accum", str(a["accum"])]
     if a.get("val_loss_emit_iptm"):
-        cmd += ["--emit-iptm-rows", os.path.join(os.path.dirname(out), "iptm_rows.csv")]
+        # PER SHARD. This had the shared val_loss_ep<N> directory, so several recovered shards
+        # would open ONE file with "w" and truncate each other -- the exact bug 511519e7 fixed in
+        # the trainer, reintroduced here. Caught in review.
+        cmd += ["--emit-iptm-rows", os.path.join(out, "iptm_rows.csv")]
     if a.get("crop_all_poses") and not a.get("val_loss_uncropped"):
         cmd.append("--crop-all-poses")
     cmd += ["--nsample", str(a["nsample"]),
@@ -167,6 +171,41 @@ def bundle_step(bundle, run, epoch):
     return step
 
 
+def shard_is_complete(d):
+    """A shard counts as done only if it FINISHED, not if it left a file behind.
+
+    A child that crashed after its first trajectory flush leaves a trajectory.csv that looks like
+    a result. Treating that as complete means the one shard that actually needs recovery is the
+    one the tool skips, and the population check then fails for a reason that points nowhere.
+    So completeness is read from the shard's own coverage line and the row count it implies.
+    """
+    lg, tj = os.path.join(d, "shard.log"), os.path.join(d, "trajectory.csv")
+    if not (os.path.exists(lg) and os.path.exists(tj)):
+        return False, "no log or no trajectory"
+    cov = None
+    try:
+        with open(lg, errors="replace") as fh:
+            for ln in fh:
+                if ln.startswith("SHARD COVERAGE "):
+                    cov = dict(kv.split("=", 1) for kv in ln.split()[2:] if "=" in kv)
+    except OSError as e:
+        return False, f"unreadable log ({e})"
+    if not cov:
+        return False, "no SHARD COVERAGE line (the child did not get that far)"
+    try:
+        want = int(cov["units_mine"]) * int(cov["nsample"])
+    except (KeyError, ValueError):
+        return False, "malformed coverage line"
+    try:
+        with open(tj) as fh:
+            got = sum(1 for r in csv.DictReader(fh) if r.get("pae_loss"))
+    except OSError as e:
+        return False, f"unreadable trajectory ({e})"
+    if got != want:
+        return False, f"{got} pose row(s) against {want} the coverage line claims"
+    return True, f"{got} pose(s)"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("rid")
@@ -176,6 +215,10 @@ def main():
                     help="shard index the PARENT launched successfully, to compare args against; "
                          "default = the lowest-numbered shard that already has an args.json")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--allow-unverified", action="store_true",
+                    help="publish even when no parent-launched shard exists to compare the "
+                         "rebuilt command against. Off by default: the comparison is the only "
+                         "check that the hand-rebuilt command measures the same model.")
     a = ap.parse_args()
 
     run = os.path.join(ROOT, "training", "runs", a.rid)
@@ -190,8 +233,15 @@ def main():
     base = os.path.join(run, f"val_loss_ep{a.epoch}")
 
     dirs = {i: os.path.join(base, f"shard{i}") for i in range(nsh)}
-    done = {i: d for i, d in dirs.items() if os.path.exists(os.path.join(d, "trajectory.csv"))}
+    done, why = {}, {}
+    for i, d in dirs.items():
+        ok, msg = shard_is_complete(d)
+        why[i] = msg
+        if ok:
+            done[i] = d
     todo = [i for i in range(nsh) if i not in done]
+    for i in range(nsh):
+        print(f"  shard {i}: {'COMPLETE' if i in done else 'needs re-run'} -- {why[i]}")
     print(f"{a.rid} epoch {a.epoch}: {len(done)} shard(s) already complete {sorted(done)}, "
           f"re-running {todo} on card(s) {[cards[i] for i in todo]}")
     if not todo:
@@ -201,30 +251,48 @@ def main():
         ref_i = next((i for i in sorted(done) if os.path.exists(
             os.path.join(dirs[i], "args.json"))), None)
 
+    # A DRY RUN MUST NOT TOUCH THE FILESYSTEM. This used to rotate the failed shard.log before
+    # testing the flag, so asking what the tool WOULD do destroyed the path the failure evidence
+    # lived at -- and a later real run then found no shard.log to rotate and produced no second
+    # copy. Printing comes first and returns; nothing below it runs. Caught in review.
+    if a.dry_run:
+        for i in todo:
+            cmd = build_cmd(args, bundle, dirs[i], a.epoch) + \
+                ["--manifest-shard", str(i), "--manifest-nshards", str(nsh)]
+            print(f"\nshard {i} on card {cards[i]}:\n  " + " ".join(cmd))
+        print("\n(dry run: nothing was launched and no file was moved)")
+        return 0
+
     procs = []
     for i in todo:
         out = dirs[i]
         os.makedirs(out, exist_ok=True)
-        # The failed attempt left a shard.log. Keep it -- it is the evidence of the failure --
-        # under a .failed name, so the coverage scan reads only the new one.
+        # ROTATE EVERY OUTPUT OF THE FAILED ATTEMPT, not just its log. trajectory.csv is opened
+        # with "a" by the child, so a shard that died after emitting rows would have this re-run
+        # append a SECOND copy of them and the pooling would refuse the epoch for a duplicate
+        # pose -- the same defect the trainer's retry had. They are rotated rather than deleted:
+        # a partial trajectory is the evidence of where the attempt died.
+        n = 0
+        while os.path.exists(os.path.join(out, f"shard.log.failed{n or ''}")):
+            n += 1
+        sfx = f".failed{n or ''}"
+        for old_p in ([os.path.join(out, f) for f in
+                       ("shard.log", "trajectory.csv", "iptm_rows.csv")]
+                      + sorted(glob.glob(os.path.join(out, "crop_sizes_rank*.csv")))):
+            if os.path.exists(old_p):
+                os.rename(old_p, old_p + sfx)
         lg = os.path.join(out, "shard.log")
-        if os.path.exists(lg):
-            n = 0
-            while os.path.exists(f"{lg}.failed{n or ''}"):
-                n += 1
-            os.rename(lg, f"{lg}.failed{n or ''}")
         cmd = build_cmd(args, bundle, out, a.epoch) + \
             ["--manifest-shard", str(i), "--manifest-nshards", str(nsh)]
-        if a.dry_run:
-            print(f"\nshard {i} on card {cards[i]}:\n  " + " ".join(cmd))
-            continue
         fh = open(lg, "w")
-        procs.append((i, out, lg, fh,
-                      subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True,
-                                       env=child_env(cards[i]))))
-        print(f"  shard {i} -> card {cards[i]}, pid {procs[-1][4].pid}, log {lg}")
-    if a.dry_run:
-        return 0
+        try:
+            pr = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, text=True,
+                                  env=child_env(cards[i]))
+        except Exception:
+            fh.close()
+            raise
+        procs.append((i, out, lg, fh, pr))
+        print(f"  shard {i} -> card {cards[i]}, pid {pr.pid}, log {lg}")
 
     bad = []
     for i, out, lg, fh, p in procs:
@@ -253,8 +321,17 @@ def main():
                         for k in sorted(diff)))
         print(f"  args verified identical to parent-launched shard {ref_i} "
               f"(ignoring {sorted(SHARD_FIELDS)})")
+    elif not a.allow_unverified:
+        raise SystemExit(
+            "STOP: no parent-launched shard has an args.json to verify the rebuilt command "
+            "against, so there is nothing to prove this measured the same model and population "
+            "as the epoch's surviving shards.\n"
+            "  build_cmd() duplicates heldout_pae()'s construction by hand and that comparison is "
+            "the ONLY thing that catches a divergence.\n"
+            "  Pass --allow-unverified to publish anyway, and say so wherever the number is used.")
     else:
-        print("  WARNING: no parent-launched shard with an args.json to verify against")
+        print("  WARNING: --allow-unverified: the rebuilt command was NOT checked against a "
+              "parent-launched shard. This number rests on build_cmd() being correct.")
 
     mean, npose = pool(dirs, nsh)
     print(f"\nepoch {a.epoch} VALLOSS: pae {mean:.4f}  poses {npose}   [RECOVERED]")

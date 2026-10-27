@@ -4135,14 +4135,25 @@ def main():
                 _o = os.path.join(a.out, f"val_loss_ep{epoch}", f"shard{_i}")
                 os.makedirs(_o, exist_ok=True)
                 _lg = os.path.join(_o, "shard.log")
-                # A PREVIOUS ATTEMPT'S LOG IS EVIDENCE, NOT CLUTTER -- it is the only record of
-                # why the shard failed, and the pooling below scans shard.log for the SHARD
-                # COVERAGE line, so a failed log left in place would be read as the live one.
-                if os.path.exists(_lg):
-                    _n = 0
-                    while os.path.exists(f"{_lg}.failed{_n or ''}"):
-                        _n += 1
-                    os.rename(_lg, f"{_lg}.failed{_n or ''}")
+                # ROTATE EVERY OUTPUT OF A PREVIOUS ATTEMPT, NOT JUST THE LOG.
+                # _flush() opens trajectory.csv with "a" and writes the header only when the file
+                # is absent, so a shard that crashed AFTER emitting rows would have the retry
+                # append a second copy of the poses it already wrote. The pooling then sees a
+                # duplicate pose key and voids the epoch anyway -- meaning the retry would have
+                # fixed CUDA-init failures (which happen before any row exists) and silently
+                # failed to fix every later one. Caught in review; the five-case test does not
+                # touch a real filesystem and could not have seen it.
+                # They are rotated, not deleted: a partial trajectory is the evidence of where
+                # the attempt died, and "never delete" applies to measurements too.
+                _n = 0
+                while os.path.exists(os.path.join(_o, f"shard.log.failed{_n or ''}")):
+                    _n += 1
+                _sfx = f".failed{_n or ''}"
+                for _old in ([os.path.join(_o, _f) for _f in
+                              ("shard.log", "trajectory.csv", "iptm_rows.csv")]
+                             + sorted(glob.glob(os.path.join(_o, "crop_sizes_rank*.csv")))):
+                    if os.path.exists(_old):
+                        os.rename(_old, _old + _sfx)
                 _cmd = [x for x in cmd]
                 _cmd[_cmd.index("--out") + 1] = _o
                 # AND THE EMIT PATH, for the same reason --out is rewritten: the emitter opens it
@@ -4152,9 +4163,19 @@ def main():
                         os.path.join(_o, "iptm_rows.csv")
                 _cmd += ["--manifest-shard", str(_i), "--manifest-nshards", str(_nsh)]
                 _fh = open(_lg, "w")
-                return (_i, _o, _lg, _fh,
-                        subprocess.Popen(_cmd, stdout=_fh, stderr=subprocess.STDOUT,
-                                         text=True, env=_env))
+                # IF Popen RAISES, CLOSE THE HANDLE. Otherwise the fd leaks and, worse, the
+                # exception escapes heldout_pae() into the training loop -- a measurement is not
+                # allowed to end a run. Caught in review.
+                try:
+                    _p = subprocess.Popen(_cmd, stdout=_fh, stderr=subprocess.STDOUT,
+                                          text=True, env=_env)
+                except Exception:                 # noqa: BLE001
+                    try:
+                        _fh.close()
+                    except Exception:             # noqa: BLE001
+                        pass
+                    raise
+                return (_i, _o, _lg, _fh, _p)
 
             def _await(_ps):
                 _failed = []
