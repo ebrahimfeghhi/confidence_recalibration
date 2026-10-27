@@ -57,6 +57,9 @@ def main():
     ap.add_argument("--results", default="validation/fold/results.csv")
     ap.add_argument("--budget", type=int, default=30)
     ap.add_argument("--seed-base", type=int, default=400000)
+    ap.add_argument("--allow-partial", action="store_true",
+                    help="report a metric over an incomplete population. Off by default: such a "
+                         "number is not comparable to the valfull baselines in paper_results.md.")
     ap.add_argument("--device", default="cuda")
     a = ap.parse_args()
 
@@ -65,6 +68,35 @@ def main():
                         k=1, require_full=False)
     print(f"  {len(ds)} interface(s) with poses and labels")
     ship = shipped_rows(os.path.join(ROOT, a.results), a.budget, a.seed_base)
+
+    # THE POPULATION IS REQUIRED, NOT WHATEVER SURVIVED. An interrupted export would otherwise
+    # give a plausible metric over fewer than the benchmark's interfaces, or fewer poses each, and
+    # the shipped baseline recomputed over that same reduced set would NOT make it comparable to
+    # the valfull numbers in paper_results.md. Caught in review.
+    want_if = set()
+    with open(os.path.join(ROOT, a.pool)) as fh:
+        for r in csv.DictReader(fh):
+            want_if.add(f"{r['pdb']}_{r['chain1']}{r['chain2']}")
+    have_if = {it["iface"] for it in ds.items}
+    want_depth = a.budget * 5
+    bad = []
+    if have_if != want_if:
+        bad.append(f"{len(want_if - have_if)} interface(s) absent, {len(have_if - want_if)} extra; "
+                   f"first absent: {sorted(want_if - have_if)[:4]}")
+    for it in ds.items:
+        got = [(sd, smp) for _p, sd, smp in it["poses"]
+               if a.seed_base <= sd < a.seed_base + a.budget]
+        if len(got) != want_depth or len(set(got)) != want_depth:
+            bad.append(f"{it['iface']}: {len(got)} pose(s) ({len(set(got))} unique), "
+                       f"expected {want_depth}")
+        if len(bad) >= 6:
+            break
+    if bad and not a.allow_partial:
+        raise SystemExit("STOP: the valfull population is incomplete, so this would not be the "
+                         "benchmark:\n    " + "\n    ".join(bad)
+                         + "\n  Finish the export, or pass --allow-partial and say so wherever "
+                           "the number is used.")
+    print(f"  population: {len(have_if)} interface(s) x {want_depth} pose(s), complete")
 
     dev = a.device if torch.cuda.is_available() else "cpu"
     ck = torch.load(os.path.join(ROOT, a.ckpt), map_location=dev)
@@ -85,8 +117,10 @@ def main():
                 if not (a.seed_base <= sd < a.seed_base + a.budget):
                     continue
                 z = np.load(path)
-                c1, c2 = ds._chains(z, it["iface"])
-                f, npair = FT.build(z, mean, letters, keep_chains=(c1, c2))
+                ch = ds._chains(z, it["iface"], it["pdb"], sd, smp)
+                if ch is None:
+                    continue
+                f, npair = FT.build(z, mean, letters, keep_chains=ch)
                 if npair == 0:
                     continue
                 feats.append(f)

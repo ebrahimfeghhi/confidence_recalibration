@@ -19,6 +19,7 @@ reads the chain pair from the dump's own asym_i/asym_j rather than assuming a le
 """
 import collections
 import csv
+import json
 import glob
 import os
 
@@ -110,8 +111,12 @@ class InterfacePoses(Dataset):
             z = np.load(path)
             if mean is None:
                 mean, letters = self._complex(it["pdb"], int(z["n_tokens"]))
-            c1, c2 = self._chains(z, it["iface"])
-            f, npair = FT.build(z, mean, letters, keep_chains=(c1, c2), max_n=self.max_n)
+            ch = self._chains(z, it["iface"], it["pdb"], sd, smp)
+            if ch is None:
+                # OST could not resolve this pose's chains; a guess here would attach the right
+                # DockQ to the wrong chain pair's features. Skipped, and the pick retried.
+                continue
+            f, npair = FT.build(z, mean, letters, keep_chains=ch, max_n=self.max_n)
             xs.append(f)
             lens.append(npair)
             ys.append(FT.logit_label(self.labels[(it["iface"], sd, smp)]))
@@ -123,33 +128,25 @@ class InterfacePoses(Dataset):
         return {"x": torch.from_numpy(x), "lengths": torch.tensor(lens, dtype=torch.long),
                 "y": torch.tensor(ys, dtype=torch.float32), "iface": it["iface"]}
 
-    @staticmethod
-    def _chains(z, iface):
-        """The interface's asym pair, taken from THIS pose's own dumped chains.
+    def _chainmap(self, pdb):
+        """OST's per-pose interface -> (asym_i, asym_j), from abag_rank/chain_map.py."""
+        key = ("cm", pdb)
+        if key not in self._cache:
+            f = os.path.join(self.dump, pdb, "_chainmap.json")
+            if not os.path.exists(f):
+                raise SystemExit(
+                    f"STOP: {pdb}: no _chainmap.json. An interface is a CHAIN PAIR and which asym "
+                    f"pair it is gets decided PER POSE by OST -- inferring it from the interface's "
+                    f"letters is the assumption that mismatched ipTM and DockQ on 7zra. Run "
+                    f"abag_rank/chain_map.py over this dump first.")
+            with open(f) as fh:
+                self._cache[key] = json.load(fh)
+        return self._cache[key]
 
-        An interface is a chain pair and the asym a chain letter maps to is decided per pose, so
-        the pair is read off the dump rather than inferred. With two chains present the answer is
-        unambiguous; with more, the pool's letters are resolved by their order among the unique
-        asym ids, which is write_job_cif's convention (A, B, C... in asym order).
-        """
-        uniq = sorted(set(np.asarray(z["asym_i"]).tolist()) | set(np.asarray(z["asym_j"]).tolist()))
-        letters = iface.split("_")[-1]
-        c1, c2 = letters[0], letters[1]
-        idx = {chr(ord("A") + n): a for n, a in enumerate(uniq)}
-        if c1 not in idx or c2 not in idx:
-            raise SystemExit(f"STOP: {iface}: chains {c1}{c2} are not among the dumped asym ids "
-                             f"{uniq}.")
-        return idx[c1], idx[c2]
-
-
-def collate(batch):
-    """[B, K, N, F] with N padded to the batch max; lengths keep the real counts."""
-    B, K = len(batch), batch[0]["x"].shape[0]
-    N = max(b["x"].shape[1] for b in batch)
-    x = torch.zeros(B, K, N, FT.FEATURE_DIM)
-    for i, b in enumerate(batch):
-        x[i, :, :b["x"].shape[1]] = b["x"]
-    return {"x": x,
-            "lengths": torch.stack([b["lengths"] for b in batch]),
-            "y": torch.stack([b["y"] for b in batch]),
-            "iface": [b["iface"] for b in batch]}
+    def _chains(self, z, iface, pdb, seed, sample):
+        """The (asym_i, asym_j) OST assigned THIS pose for THIS interface. Never inferred."""
+        cm = self._chainmap(pdb).get(f"{seed}_{sample}")
+        if not cm or "error" in cm:
+            return None
+        pair = cm.get(iface)
+        return (int(pair[0]), int(pair[1])) if pair else None
