@@ -27,17 +27,19 @@ jy6sah`), 138 epochs, full confidence head, no L2, 30 structures. Scored **in-sa
 | training PAE loss | ~2.9 | **1.3438** (min, ep135) | — | — |
 
 paired dDockQ vs shipped on the same rows: **+0.1965 +- 0.0306** (t ~ +6.4).
-Captures ~42% of the in-sample headroom (0.0420 -> 0.5098). Shipped puts **0 of 77** interfaces
-above 0.23; the trained head puts 39% above it.
+**Captures 42% of the headroom (0.0420 -> 0.5098), and that is a FLOOR, not a ceiling** -- the
+chain was stopped at epoch 136 with training PAE still falling and both DockQ and frac still
+rising. Shipped puts **0 of 77** interfaces above 0.23; the trained head puts **39%** above it.
+Against the ~2% of headroom the full-training-set arms capture, this is a 20x difference.
 
 **Why it matters:** DockQ and frac rise monotonically with training PAE across the whole 138
 epochs -- not a late jump -- so the PAE objective genuinely converts into pose selection. This is
 the strongest evidence against the "PAE is the wrong objective" reading, and it is what makes
 cross-complex transfer, not objective design, the live problem.
 
-**What it is not:** in-sample. 30 structures, 138 epochs, memorisation fully available. It bounds
-what fitting can do, not what generalises. Neither curve had flattened at epoch 136, so 1.34 PAE
-is not a floor.
+**Scope:** in-sample, 30 structures. It establishes what the objective can do when it has enough
+signal per complex; it does not yet show the same holds across complexes. Running this chain
+further would very likely push all three numbers higher, since nothing had converged.
 
     python -I run_logging/plot_overfit30.py jy6sah figures/overfit30_chain.png
 
