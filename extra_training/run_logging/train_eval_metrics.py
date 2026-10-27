@@ -161,21 +161,32 @@ def main():
                 print(f"  {rid}: eval returned {rc}; skipping")
                 continue
         tp = summarise(rows_in(work, TRAIN_BUDGET), TRAIN_SEED_BASE, TRAIN_BUDGET, a.thresh)
-        # The arm's own valfull rows, re-aggregated at the SAME budget. Free: already on disk.
+        # The arm's own validation rows, re-aggregated at the SAME budget. Free: already on disk.
+        # ONLY IF THEY ARE valfull. ocqtyt monitored val10's 18 interfaces, and printing those in
+        # a column headed "val" beside everyone else's 92 would invite exactly the comparison the
+        # project's own notes forbid -- val10 and valfull are never comparable. A different pool
+        # is named and skipped rather than silently averaged.
+        pool = os.path.basename(os.path.dirname(str(args.get("train_eval_pool") or "")))
         vdirs = sorted(glob.glob(os.path.join(run, "train_eval_shards_ep*")),
-                       key=lambda p: int(p.split("_ep")[-1]))
-        vp = summarise(rows_in(vdirs[-1], 30), 400000, TRAIN_BUDGET, a.thresh) if vdirs else None
-        out_rows.append((rid, tp, vp))
+                       key=lambda q: int(q.split("_ep")[-1]))
+        if pool != "valfull":
+            vp, vnote = None, f"val skipped: this arm evaluated on {pool or 'an unknown pool'}"
+        elif not vdirs:
+            vp, vnote = None, "val skipped: no eval shard rows on disk"
+        else:
+            vp, vnote = summarise(rows_in(vdirs[-1], 30), 400000, TRAIN_BUDGET, a.thresh), None
+        out_rows.append((rid, tp, vp, vnote))
 
     print()
     print(f"  BUDGET {TRAIN_BUDGET} ON BOTH SIDES (50 poses). Train = in-sample; val = valfull, "
           f"its own rows re-aggregated at 10 seeds.")
     print(f"  {'arm':9s} {'pool':6s} {'n':>4s} {'DockQ':>7s} {'shipped':>8s} {'paired':>9s} "
           f"{'se':>7s} {'frac':>7s} {'fr.ship':>8s} {'oracle':>7s}")
-    for rid, tp, vp in out_rows:
+    for rid, tp, vp, vnote in out_rows:
         for label, s in (("train", tp), ("val", vp)):
             if not s:
-                print(f"  {rid:9s} {label:6s}   (no rows)")
+                why = vnote if label == "val" and vnote else "no rows"
+                print(f"  {rid:9s} {label:6s}   ({why})")
                 continue
             print(f"  {rid:9s} {label:6s} {s['n']:4d} {s['dockq']:7.4f} {s['shipped']:8.4f} "
                   f"{s['paired']:+9.4f} {s['se']:7.4f} {s['frac']:7.4f} {s['frac_shipped']:8.4f} "
