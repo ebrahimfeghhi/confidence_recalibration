@@ -110,6 +110,41 @@ same run: textbook overfitting.
 
 ---
 
+## 2b. THE FULL HEAD DOES NOT FIT 487 STRUCTURES IN SELECTION TERMS
+
+`ocqtyt/head_ep26_step6620.pt` -- full head, no L2, no pose injection, training PAE driven 2.7384
+-> 2.1007 -- scored on **its own 975 training interfaces** at budget 10:
+
+| | trained | shipped | delta |
+|---|---|---|---|
+| mean DockQ | 0.4214 | 0.4205 | **+0.0008 +- 0.0043** |
+| fraction DockQ > 0.23 | 0.5426 | 0.5344 | +0.0082 |
+| oracle | 0.5489 | | headroom 0.1284 |
+
+**0.6% of the in-sample headroom, and indistinguishable from zero.** The PAE loss fell by 0.64 and
+the pose selection did not move.
+
+Set against the only other in-sample measurement we have:
+
+| run | structures | passes each | in-sample paired dDockQ |
+|---|---|---|---|
+| `jy6sah` (overfit30) | 30 | ~136 | **+0.1965 +- 0.0306** |
+| `ocqtyt` (full train) | 487 | 26 | **+0.0008 +- 0.0043** |
+
+So at 487 structures the head is not failing to TRANSFER -- it is not fitting the training set at
+all, in the only sense the benchmark measures. This is a different failure from the one section 1b
+documents, and it constrains how section 1 may be read: the overfit30 conversion from PAE to pose
+selection is a 30-structure, 136-pass phenomenon, not a general property of the objective.
+
+**The live test:** `ocqtyt` resumed 26 -> 50 on 2026-10-27, which roughly doubles passes per
+complex, the axis separating those two rows. If the in-sample gain appears by epoch 50 it is a
+capacity/passes story; if it stays flat while PAE keeps falling, PAE and selection decouple at
+scale and the 30-structure result says little about 487.
+
+    python -I run_logging/train_eval_metrics.py ocqtyt --no-run
+
+---
+
 ## 3. What the full-training-set arms actually deliver on valfull
 
 Measured as each arm's **level over all 20 epochs**, not its best epoch -- picking the max of 20
