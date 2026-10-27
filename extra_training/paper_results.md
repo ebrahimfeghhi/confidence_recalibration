@@ -3,6 +3,14 @@
 Results worth keeping, with enough provenance to recompute each one. Numbers here are copied from
 a command that is named beside them; if a number has no command, it is not in this file.
 
+**Every selected-pose number here uses phase_k_eval's rules**, and nothing else is allowed in:
+`max(v, key=(iptm, -seed, -sample))` for the pick and `dockq >= 0.23` for acceptability. The
+tie-break is not cosmetic -- the evaluator's own comment records that without it, "two poses with
+equal ipTM selected different DockQ depending on how the work was split". On 2026-10-27
+`train_eval_metrics.py` was found using `max(key=iptm)` and `> 0.23` instead, which moved ocqtyt's
+shipped baseline by 0.0003 and its frac by one interface in 975. Fixed, and every number below was
+regenerated.
+
 **Two distinctions that every number in here depends on.**
 
 1. **val10 (18 interfaces) and valfull (92 interfaces) are never comparable.** Different pools,
@@ -117,11 +125,11 @@ same run: textbook overfitting.
 
 | | trained | shipped | delta |
 |---|---|---|---|
-| mean DockQ | 0.4214 | 0.4205 | **+0.0008 +- 0.0043** |
-| fraction DockQ > 0.23 | 0.5426 | 0.5344 | +0.0082 |
-| oracle | 0.5489 | | headroom 0.1284 |
+| mean DockQ | 0.4214 | 0.4202 | **+0.0012 +- 0.0042** |
+| fraction DockQ >= 0.23 | 0.5436 | 0.5344 | +0.0092 |
+| oracle | 0.5489 | | headroom 0.1275 |
 
-**0.6% of the in-sample headroom, and indistinguishable from zero.** The PAE loss fell by 0.64 and
+**0.9% of the in-sample headroom, and indistinguishable from zero.** The PAE loss fell by 0.64 and
 the pose selection did not move.
 
 Set against the only other in-sample measurement we have:
@@ -129,7 +137,7 @@ Set against the only other in-sample measurement we have:
 | run | structures | passes each | in-sample paired dDockQ |
 |---|---|---|---|
 | `jy6sah` (overfit30) | 30 | ~136 | **+0.1965 +- 0.0306** |
-| `ocqtyt` (full train) | 487 | 26 | **+0.0008 +- 0.0043** |
+| `ocqtyt` (full train) | 487 | 26 | **+0.0012 +- 0.0042** |
 
 So at 487 structures the head is not failing to TRANSFER -- it is not fitting the training set at
 all, in the only sense the benchmark measures. This is a different failure from the one section 1b
@@ -171,11 +179,11 @@ Same arms, same final checkpoints, valfull rows re-aggregated.
 
 | arm | paired dDockQ @ b30 (150 poses) | paired dDockQ @ b10 (50 poses) |
 |---|---|---|
-| `ip8ga4` | +0.0074 +- 0.0040 | **+0.0124 +- 0.0051** |
-| `dntxmn` | +0.0030 +- 0.0032 | +0.0081 +- 0.0052 |
-| `tv6hue` | -0.0082 +- 0.0054 | +0.0027 +- 0.0055 |
+| `ip8ga4` | +0.0073 +- 0.0040 | **+0.0118 +- 0.0051** |
+| `dntxmn` | +0.0029 +- 0.0032 | +0.0075 +- 0.0053 |
+| `tv6hue` | -0.0084 +- 0.0054 | +0.0020 +- 0.0055 |
 
-shipped at b30 0.5830 / oracle 0.6926; at b10 0.5756 / oracle 0.6504.
+shipped at b30 0.5831 / oracle 0.6926; at b10 0.5763 / oracle 0.6504.
 
     python -I run_logging/train_eval_metrics.py ip8ga4 dntxmn tv6hue --no-run
 

@@ -20,6 +20,7 @@ distances on a different convention from everything that reads them.
 import argparse
 import csv
 import glob
+import hashlib
 import json
 import os
 import sys
@@ -53,6 +54,27 @@ def rep_coords(z, ca_mask, pose):
             out[t] = xyz[ai]
             seen[t] = True
     return out, seen
+
+
+def source_fingerprint(pdb, fold):
+    """Identity of the exact files a pair set was built from.
+
+    A POSE COUNT DOES NOT ESTABLISH THIS. Swap one seed file for a different seed and the directory
+    still holds ten files and fifty poses, so a count-based check reuses pair indices derived from
+    a pose population that no longer exists. Edited coordinates or token metadata are invisible to
+    a count too. Name, size and mtime of every trunk AND its label file are cheap and catch all
+    three; a content hash would be stronger but would read the 1.4 TB cache. Caught in review.
+    """
+    parts = []
+    for f in sorted(glob.glob(os.path.join(fold, "trunks", pdb, "free_*.npz"))):
+        lab = f.replace("/trunks/", "/labels/")
+        for q in (f, lab):
+            try:
+                st = os.stat(q)
+                parts.append(f"{os.path.basename(q)}:{st.st_size}:{int(st.st_mtime)}")
+            except OSError:
+                parts.append(f"{os.path.basename(q)}:MISSING")
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
 def pair_set(pdb, fold, cutoff):
@@ -133,6 +155,10 @@ def main():
                     help="matches config_ABAG_rank_no_esm.yaml's distance_cutoff")
     ap.add_argument("--out", default="training/abag/pairsets")
     ap.add_argument("--limit", type=int, default=0, help="first N structures, for a smoke test")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="exit 0 even when some requested structure produced no pair set. Off by "
+                         "default: a partial population that exits 0 is how a dataset loses "
+                         "structures silently.")
     a = ap.parse_args()
 
     pdbs = [r["pdb"] for r in csv.DictReader(open(os.path.join(ROOT, a.selection)))]
@@ -141,6 +167,7 @@ def main():
     out = os.path.join(ROOT, a.out)
     os.makedirs(out, exist_ok=True)
     tot_pairs = tot_poses = done = skipped = tot_bytes = n_fb = 0
+    excluded = []
     for n, pdb in enumerate(pdbs, 1):
         dst = os.path.join(out, f"{pdb}.npz")
         # A CACHED PAIR SET IS REUSED ONLY IF ITS CONFIGURATION MATCHES. Its contents depend on the
@@ -150,11 +177,10 @@ def main():
         if os.path.exists(dst):
             try:
                 old = np.load(dst)
-                n_now = 5 * len(glob.glob(os.path.join(ROOT, a.fold, "trunks", pdb, "free_*.npz")))
                 ok = (float(old["cutoff"]) == a.cutoff
-                      and int(old["n_poses"]) == n_now
                       and str(old["fold"]) == a.fold
-                      and str(old["atom_convention"]) == "CA")
+                      and str(old["atom_convention"]) == "CA"
+                      and str(old["source"]) == source_fingerprint(pdb, os.path.join(ROOT, a.fold)))
             except Exception:                     # noqa: BLE001
                 ok = False
             if ok:
@@ -163,6 +189,7 @@ def main():
             print(f"  REBUILD {pdb}: cached pair set does not match this configuration", flush=True)
         ps = pair_set(pdb, os.path.join(ROOT, a.fold), a.cutoff)
         if ps is None:
+            excluded.append(pdb)
             # With the closest-pair fallback in place this now means only "no trunks" or "no
             # inter-chain token pair at all". A structure whose poses simply have no contact under
             # the cutoff keeps its closest pair and stays in the population, as upstream does.
@@ -172,7 +199,8 @@ def main():
         np.savez_compressed(dst, inter_idx=ps["inter_idx"], inter_jdx=ps["inter_jdx"],
                             asym_id=ps["asym_id"], n_tokens=ps["n_tokens"],
                             n_poses=ps["n_poses"], cutoff=a.cutoff, fold=a.fold,
-                            atom_convention="CA", n_fallback=ps["n_fallback"])
+                            atom_convention="CA", n_fallback=ps["n_fallback"],
+                            source=source_fingerprint(pdb, os.path.join(ROOT, a.fold)))
         n_fb += ps["n_fallback"]
         tot_pairs += ps["n_pairs"]
         tot_poses += ps["n_poses"]
@@ -192,8 +220,20 @@ def main():
         print(f"  dump size for these complexes: {tot_bytes / 1e9:.3f} GB; "
               f"projected for {len(pdbs)} complexes: "
               f"{tot_bytes / max(done, 1) * len(pdbs) / 1e9:.2f} GB")
-    json.dump({"cutoff": a.cutoff, "selection": a.selection, "n_complexes": done},
+    json.dump({"cutoff": a.cutoff, "selection": a.selection, "n_complexes": done,
+               "requested": len(pdbs), "excluded": excluded, "atom_convention": "CA"},
               open(os.path.join(out, "_meta.json"), "w"), indent=1)
+    # A PARTIAL EXPORT MUST NOT EXIT 0. Skipping prints a warning, and a warning in a long log is
+    # how a dataset silently loses structures; the HDF5 exporter would then build a population
+    # nobody chose. --allow-missing makes the exclusion a decision, and _meta.json records exactly
+    # which structures it covers so the exporter can assert agreement. Caught in review.
+    if excluded and not a.allow_missing:
+        print(f"\n  STOP: {len(excluded)} of {len(pdbs)} requested structure(s) produced no pair "
+              f"set: {excluded[:8]}{' ...' if len(excluded) > 8 else ''}\n"
+              f"  The export population would silently differ from the selection. Pass "
+              f"--allow-missing to accept it deliberately; _meta.json lists the exclusions.",
+              flush=True)
+        return 1
     return 0
 
 

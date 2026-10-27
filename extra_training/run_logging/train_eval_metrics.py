@@ -98,33 +98,47 @@ def run_eval(rid, ckpt, flags, cards, work, out):
 
 
 def rows_in(d, budget):
-    """(iface -> [(seed, trained_iptm, shipped_iptm, dockq)]) from a shard directory."""
+    """iface -> [(seed, sample, trained_iptm, shipped_iptm, dockq)] from a shard directory.
+
+    THE SAMPLE INDEX IS KEPT because the canonical tie-break needs it. Without it this could not
+    reproduce phase_k_eval's selection at all.
+    """
     by = collections.defaultdict(list)
     pat = os.path.join(d, f"rows_b{budget}_*.csv")
     for f in glob.glob(pat):
         with open(f) as fh:
             for r in csv.DictReader(fh):
-                by[r["iface"]].append((int(r["seed"]), float(r["iptm"]),
+                by[r["iface"]].append((int(r["seed"]), int(r["sample"]), float(r["iptm"]),
                                        float(r["stored_iptm"]), float(r["dockq"])))
     return by
 
 
 def summarise(by, seed_base, budget, thresh):
-    """Trained vs shipped selection on the SAME interfaces, paired."""
+    """Trained vs shipped selection on the SAME interfaces, paired.
+
+    SELECTION AND THRESHOLD ARE phase_k_eval's, EXACTLY. This used `max(..., key=iptm)` and
+    `dockq > thresh`; the evaluator uses `max(v, key=lambda t: (iptm, -seed, -sample))` and
+    `>= ACCEPTABLE`. Its own comment says the tie-break exists because "row order differs between
+    a sharded run and a single-process one, so two poses with equal ipTM selected different DockQ
+    depending on how the work was split" -- which is precisely what this script was doing. The two
+    disagreed on ocqtyt's training pool: shipped DockQ 0.4205 here against 0.4202 from the
+    evaluator, and frac 0.5426 against 0.5436. Caught in review.
+    """
     cut = seed_base + budget
     tr, sh, orc = [], [], []
     for v in by.values():
         s = [x for x in v if x[0] < cut]
         if not s:
             continue
-        tr.append(max(s, key=lambda x: x[1])[3])
-        sh.append(max(s, key=lambda x: x[2])[3])
-        orc.append(max(x[3] for x in s))
+        # x = (seed, sample, trained_iptm, shipped_iptm, dockq)
+        tr.append(max(s, key=lambda x: (x[2], -x[0], -x[1]))[4])
+        sh.append(max(s, key=lambda x: (x[3], -x[0], -x[1]))[4])
+        orc.append(max(x[4] for x in s))
     if not tr:
         return None
     d = [a - b for a, b in zip(tr, sh)]
-    ft = sum(1 for x in tr if x > thresh) / len(tr)
-    fs = sum(1 for x in sh if x > thresh) / len(sh)
+    ft = sum(1 for x in tr if x >= thresh) / len(tr)
+    fs = sum(1 for x in sh if x >= thresh) / len(sh)
     return {"n": len(tr), "dockq": statistics.mean(tr), "shipped": statistics.mean(sh),
             "paired": statistics.mean(d),
             "se": (statistics.stdev(d) / len(d) ** 0.5) if len(d) > 1 else float("nan"),
