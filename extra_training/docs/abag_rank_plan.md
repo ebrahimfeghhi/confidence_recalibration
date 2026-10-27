@@ -86,11 +86,31 @@ pairs are inter-chain (66.5%), but only **1,894 fall within the 12 A cutoff the 
 | dense PAE matrix | 1.5 MB | ~60 GB |
 | inter-chain pairs at 12 A | ~8 KB | **~0.3 GB** |
 
-200x smaller, and it is exactly the set the model consumes. The dump therefore writes
-`(inter_idx, inter_jdx, interchain_pae_vals, interchain_ca_distances)` for pairs under the cutoff,
-not `pae_matrix`. Consequence to flag in review: `03_prepare_dataset.py` computes per-complex
-`pae_col_*` and `ca_distances_col_*` normalisation stats, which may expect the dense matrix -- that
-is the one place the sparse choice could bite, and it is checked before the dump runs.
+200x smaller, and it is exactly the set the model consumes.
+
+**But a PER-POSE cutoff breaks their stage 3, and this is the detail that would have cost a GPU
+hour.** `03_prepare_dataset.py` does `np.stack(pae_list, axis=0)` over a complex's samples to get
+`pae_col_mean/median/std`, which requires every pose of a complex to have the SAME pair count.
+Per-pose 12 A sets do not: measured on 10fj they range 1,784 to 2,018 across its 50 poses. Their
+own stage 1 avoids this by writing ALL inter-chain pairs and letting the dataloader apply the
+cutoff -- but that is 259,600 pairs per pose for 10fj, ~2 MB/pose for PAE+CA, **~76 GB** over
+38,150 poses, which is worse than dense.
+
+**Resolution: a FIXED pair set per complex, the union over its poses.** Measured on 10fj: the union
+of 12 A inter-chain pairs across all 50 poses is **4,096** -- only 2.2x the per-pose mean, and 1.05%
+of T^2.
+
+| scheme | per pose (PAE+CA) | 38,150 poses | stage 3 stacks? |
+|---|---|---|---|
+| dense `pae_matrix` | 1.5 MB | ~60 GB | yes |
+| all inter-chain pairs (their stage 1) | ~2 MB | ~76 GB | yes |
+| per-pose 12 A cutoff | ~15 KB | ~0.6 GB | **NO** |
+| **union over the complex's poses** | **~33 KB** | **~1.3 GB** | **yes** |
+
+So the exporter runs in two passes: a CPU pass that fixes each complex's pair set from the
+coordinates, then the GPU pass that dumps PAE on that fixed set. `inter_idx`/`inter_jdx` are
+written once per complex rather than per pose. The dataloader's own per-sample `valid_pair_mask`
+still filters by actual distance afterwards, so the model sees exactly what it would have.
 
 ## Split
 
