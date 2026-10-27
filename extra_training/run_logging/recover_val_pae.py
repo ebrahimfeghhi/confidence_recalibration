@@ -27,6 +27,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -130,6 +131,42 @@ def pool(shard_dirs, nsh):
     return sum(vals) / len(vals), len(vals)
 
 
+def bundle_step(bundle, run, epoch):
+    """The optimiser step this epoch ended on, from the bundle itself where possible.
+
+    The trainer writes `step` into val_loss.csv from its live counter. Recovering after the fact
+    has to get it from somewhere else, and the honest source is the checkpoint: it carries the
+    step it was saved at. A head_ep<N>_step<S>.pt beside it is used as a cross-check, and a
+    disagreement raises rather than picking one -- a wrong step column would silently misplace
+    the point on every step-indexed plot.
+    """
+    from_ckpt = None
+    try:
+        import torch
+        b = torch.load(bundle, map_location="cpu", weights_only=False)
+        if isinstance(b, dict):
+            for k in ("step", "global_step", "optimizer_step"):
+                if isinstance(b.get(k), int):
+                    from_ckpt = b[k]
+                    break
+    except Exception as e:                        # noqa: BLE001
+        print(f"  (could not read a step from the bundle: {type(e).__name__}: {e})")
+    from_name = None
+    for f in os.listdir(run):
+        m = re.fullmatch(rf"head_ep{epoch}_step(\d+)\.pt", f)
+        if m:
+            from_name = int(m.group(1))
+            break
+    if from_ckpt is not None and from_name is not None and from_ckpt != from_name:
+        raise SystemExit(f"STOP: bundle says step {from_ckpt} but head_ep{epoch}_step{from_name}.pt "
+                         f"says {from_name}; refusing to guess the step column.")
+    step = from_ckpt if from_ckpt is not None else from_name
+    if step is None:
+        raise SystemExit(f"STOP: no step for epoch {epoch} from the bundle or a "
+                         f"head_ep{epoch}_step*.pt; refusing to write a guessed step column.")
+    return step
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("rid")
@@ -221,6 +258,31 @@ def main():
 
     mean, npose = pool(dirs, nsh)
     print(f"\nepoch {a.epoch} VALLOSS: pae {mean:.4f}  poses {npose}   [RECOVERED]")
+
+    # WRITE IT WHERE EVERY READER LOOKS. A recovered number that lives only in this script's
+    # stdout is still a missing PAE value as far as the plots, EXPERIMENTS.md and every later
+    # comparison are concerned. The trainer's own writer is append-only (it is shared by the
+    # sharded and unsharded paths and documented as "Append one held-out point"), so appending
+    # here cannot race a rewrite -- but it CAN duplicate, so the epoch is checked first.
+    vp = os.path.join(run, "val_loss.csv")
+    have = set()
+    if os.path.exists(vp):
+        with open(vp) as fh:
+            for row in csv.DictReader(fh):
+                try:
+                    have.add(int(row["epoch"]))
+                except (KeyError, TypeError, ValueError):
+                    continue
+    if a.epoch in have:
+        print(f"  val_loss.csv already has epoch {a.epoch}; NOT appending a second row")
+        return 0
+    # THE STEP COLUMN IS DERIVED, NOT GUESSED. The bundle's own step is the authority; the
+    # per-epoch cadence is only a cross-check, and a disagreement means the assumption is wrong.
+    step = bundle_step(bundle, run, a.epoch)
+    with open(vp, "a", newline="") as fh:
+        csv.writer(fh).writerow([a.epoch, step, npose, f"{mean:.6f}",
+                                 os.path.basename(bundle)])
+    print(f"  appended to {vp}: epoch {a.epoch}, step {step}, {npose} poses, {mean:.6f}")
     return 0
 
 
