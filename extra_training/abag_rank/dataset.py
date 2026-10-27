@@ -214,3 +214,23 @@ class InterfacePoses(Dataset):
             return None
         pair = cm.get(iface)
         return (int(pair[0]), int(pair[1])) if pair else None
+
+
+def collate(batch):
+    """[B, K, N, F] with N padded to the batch max; lengths keep the real per-pose counts.
+
+    LOST AND RESTORED: an earlier patch replaced everything from _chains() to the end of this
+    file and took this function with it, so `from dataset import collate` raised ImportError and
+    training could not start at all. Caught in review. sample_features carries ipTM, which the
+    model consumes past the pooling.
+    """
+    B = len(batch)
+    N = max(b["x"].shape[1] for b in batch)
+    x = torch.zeros(B, batch[0]["x"].shape[0], N, FT.FEATURE_DIM)
+    for i, b in enumerate(batch):
+        x[i, :, :b["x"].shape[1]] = b["x"]
+    return {"x": x,
+            "lengths": torch.stack([b["lengths"] for b in batch]),
+            "y": torch.stack([b["y"] for b in batch]),
+            "sample_features": torch.stack([b["sample_features"] for b in batch]),
+            "iface": [b["iface"] for b in batch]}
