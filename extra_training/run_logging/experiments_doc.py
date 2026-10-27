@@ -45,6 +45,12 @@ def _arms():
     found = {}
     for f in sorted(glob.glob(os.path.join(ROOT, "training", "runs", "*", "args.json"))):
         rid = os.path.basename(os.path.dirname(f))
+        # training/runs/latest is a symlink to the live arm. It carries the same args.json and the
+        # same epochs as its target, so it ties on the epoch count and can win the tie-break -- and
+        # then the table names an arm "latest", which is not a run id and stops meaning the same arm
+        # the moment the symlink moves. Discovery is over real run directories only.
+        if os.path.islink(os.path.dirname(f)):
+            continue
         try:
             a = json.load(open(f))
         except Exception:
