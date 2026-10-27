@@ -1099,7 +1099,51 @@ def main():
     accum_eff = accum_local * world
     print(f"  accum: {a.accum} requested -> K={structs_per_step} structure(s)/step x {world} "
           f"rank(s) x {a.nsample} pose(s) = {accum_eff} poses per step ({accum_local}/rank)")
-    model, configs = RC.build_model(a.ckpt_dir, a.model_name, dev)
+    # CAPTURE WHAT THE CUDA FAILURE ACTUALLY LOOKED LIKE, rather than inferring it afterwards.
+    # tv6hue epoch 4 lost two of three held-out shards inside torch._C._cuda_init() and left only
+    # the Python traceback, which does not say which card the child had, what its CPU affinity or
+    # memory policy were, how much GPU memory was free at that instant, or how long it had been
+    # running. Three hypotheses (NUMA inheritance, simultaneous context creation, memory
+    # pressure) all survive that traceback, and a probe reproducing the conditions on an idle box
+    # initialised 36 times out of 36 -- so the next occurrence has to be the thing that decides
+    # it. This costs one line per --loss-only child and nothing in a training run.
+    if a.loss_only:
+        try:
+            # LOCAL IMPORT: the module-level `subprocess` name does not exist -- the only other
+            # import of it in this file is inside _git_commit(). Without this the probe would
+            # raise NameError, be swallowed by the except below, and print nothing useful, which
+            # is the exact failure mode this block exists to prevent.
+            import subprocess as _sp
+            with open("/proc/self/status") as _fh:
+                _st = {l.split(":")[0]: l.split(":", 1)[1].strip() for l in _fh if ":" in l}
+            _free = _sp.run(
+                ["nvidia-smi", "--query-gpu=index,uuid,memory.used,memory.total",
+                 "--format=csv,noheader"], capture_output=True, text=True, timeout=60).stdout
+            print(f"  child env: CUDA_VISIBLE_DEVICES="
+                  f"{os.environ.get('CUDA_VISIBLE_DEVICES')!r}  "
+                  f"cpus={_st.get('Cpus_allowed_list')}  mems={_st.get('Mems_allowed_list')}  "
+                  f"rss={_st.get('VmRSS')}  torch={torch.__version__}", flush=True)
+            print(f"  child sees: {' | '.join(_free.strip().splitlines())}", flush=True)
+        except Exception as _e:                   # noqa: BLE001
+            print(f"  (child env probe failed: {type(_e).__name__}: {_e})", flush=True)
+    _t_cuda = time.time()
+    try:
+        model, configs = RC.build_model(a.ckpt_dir, a.model_name, dev)
+    except Exception as _e:                       # noqa: BLE001
+        # The traceback alone cost us the diagnosis last time. Say what the device state was at
+        # the moment it failed, then re-raise unchanged so the caller's handling is untouched.
+        print(f"  CHILD BUILD FAILED after {time.time() - _t_cuda:.2f}s: "
+              f"{type(_e).__name__}: {_e}", flush=True)
+        try:
+            import torch as _t
+            print(f"  at failure: device_count={_t.cuda.device_count()} "
+                  f"is_available={_t.cuda.is_available()} "
+                  f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')!r}", flush=True)
+        except Exception:                         # noqa: BLE001
+            pass
+        raise
+    if a.loss_only:
+        print(f"  child built model in {time.time() - _t_cuda:.2f}s", flush=True)
     configs.train_confidence_only = True
     configs.loss.weight.alpha_pae = float(a.alpha_pae)
     configs.loss.weight.alpha_confidence = float(a.alpha_confidence)
@@ -4193,15 +4237,26 @@ def main():
                         _failed.append((_i, _tail))
                 return _failed
 
-            # STAGGERED, NOT SIMULTANEOUS. On tv6hue epoch 4 two of three children died inside
-            # torch._C._cuda_init() -- "CUDA driver initialization failed" and "No CUDA GPUs are
-            # available" -- while the third completed normally in 2.1 min at 3.80 GB. That is a
-            # driver-level context-creation failure, not OOM (which says "CUDA out of memory")
-            # and not compute-mode exclusivity (all three cards report Default). The one thing
-            # the three children do that nothing else here does is create CUDA contexts at the
-            # same instant, against cards whose training ranks are still holding ~67 GB each, so
-            # they are spaced out. THIS IS A MITIGATION, NOT A DIAGNOSIS: the root cause is not
-            # established, which is exactly why the retry below exists and does not rely on it.
+            # A 2 s STAGGER, AND IT IS MEASURED TO BE NEARLY POINTLESS -- kept only because it
+            # costs 4 seconds and cannot hurt. Say so plainly rather than let it read as a fix.
+            # On tv6hue epoch 4 two of three children died inside torch._C._cuda_init() -- "CUDA
+            # driver initialization failed" and "No CUDA GPUs are available" -- while the third
+            # completed normally. Not OOM (that says "CUDA out of memory") and not compute-mode
+            # exclusivity (all three cards report Default).
+            # WHY THE STAGGER DOES ALMOST NOTHING, measured on a real child: the model build,
+            # which is where CUDA is first touched, takes 67.6 s. A child reaches context
+            # creation about a minute after it is launched, so a 2 s offset at launch is well
+            # inside the jitter and all three can still initialise at the same instant. Raised in
+            # review and confirmed by instrumenting the child.
+            # The RETRY is what the guarantee rests on, and on the retry path the children are
+            # run strictly ONE AT A TIME, which is the only thing that actually removes the
+            # concurrency. The first attempt stays parallel because that is the 30 min/epoch path.
+            # THE ROOT CAUSE IS STILL NOT ESTABLISHED. A probe reproducing the suspected
+            # conditions -- inherited --membind=0 against node-1 GPUs, three contexts created at
+            # once -- initialised 36 times out of 36 on this box, so neither NUMA inheritance nor
+            # simple concurrency is sufficient on its own. The child now records its affinity,
+            # memory policy, RSS, torch version and every card's free memory, so the next
+            # occurrence produces evidence instead of another guess.
             _handles = {}
             for _i in range(_nsh):
                 if _i:
@@ -4226,10 +4281,21 @@ def main():
                 for _i, _tail in _bad:
                     print(f"    shard {_i} said:\n      " + "\n      ".join(_tail), flush=True)
                 time.sleep(15.0 * _try)
+                # ONE AT A TIME ON A RETRY, NOT TWO SECONDS APART. A 2 s launch gap does not put
+                # 2 s between two CUDA context creations: each child imports torch and builds the
+                # model first, and those take long enough to swallow the offset entirely -- which
+                # is exactly how three children launched in a loop ended up initialising at the
+                # same instant in the first place. Waiting for each retry to EXIT before starting
+                # the next is the only way to guarantee no concurrency, and on the retry path the
+                # cost is real but small: failures are rare, a shard is ~2.1 min, and 4 extra
+                # minutes beats losing the epoch's held-out point. The FIRST attempt stays
+                # parallel, because that is the 30 min/epoch path and it almost always works.
+                # Raised in review.
+                _still = []
                 for _i in _idx:
                     _handles[_i] = _spawn(_i)
-                    time.sleep(2.0)
-                _bad = _await([_handles[_i] for _i in _idx])
+                    _still += _await([_handles[_i]])
+                _bad = _still
             procs = [_handles[_i] for _i in range(_nsh)]
             if _bad:
                 # ANY shard failing voids the epoch's number. Pooling the survivors would report a

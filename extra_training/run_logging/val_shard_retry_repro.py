@@ -33,7 +33,9 @@ SOURCE_LINES = [
     "if not _bad:",
     "_idx = [_i for _i, _ in _bad]",
     "_handles[_i] = _spawn(_i)",
-    "_bad = _await([_handles[_i] for _i in _idx])",
+    "_still = []",
+    "_still += _await([_handles[_i]])",
+    "_bad = _still",
     "procs = [_handles[_i] for _i in range(_nsh)]",
     'if os.path.exists(_old):',
     "os.rename(_old, _old + _sfx)",
@@ -142,9 +144,14 @@ class Harness:
             if not _bad:
                 break
             _idx = [_i for _i, _ in _bad]
+            # SEQUENTIAL on the retry path, matching the trainer: each retry must EXIT before
+            # the next starts, because a launch stagger does not stagger CUDA init (the model
+            # build alone measures 67.6 s).
+            _still = []
             for _i in _idx:
                 _handles[_i] = self._spawn(_i)
-            _bad = self._await([_handles[_i] for _i in _idx])
+                _still += self._await([_handles[_i]])
+            _bad = _still
         procs = [_handles[_i] for _i in range(self.nsh)]
         return procs, _bad
     # ---- end transcription ----
