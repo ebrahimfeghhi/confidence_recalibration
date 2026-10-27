@@ -83,7 +83,7 @@ def main():
                 n_bad += len(samples)
                 continue
             for smp in samples:
-                pairs, err = EV.ost_chain_pairs(unit_dir, pdb, smp, refs)
+                pairs, err = EV.ost_chain_pairs(unit_dir, pdb, smp, refs[pdb])
                 if pairs is None:
                     out[f"{sd}_{smp}"] = {"error": err}
                     n_bad += 1

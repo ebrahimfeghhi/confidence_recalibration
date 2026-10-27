@@ -71,7 +71,16 @@ class InterfacePoses(Dataset):
             for c1, c2 in chains:
                 iface = f"{pdb}_{c1}{c2}"
                 keyed = [(p, *self._key(p)) for p in poses]
-                ok = [(p, s, k) for p, s, k in keyed if (iface, s, k) in self.labels]
+                # ELIGIBILITY IS DECIDED HERE, NOT AFTER SAMPLING. A pose needs a label AND an
+                # OST chain mapping for this interface; dropping one after the group of K was
+                # drawn left x with K slots while lengths and y had K-1, so collate or the model
+                # saw inconsistent shapes -- and if every drawn pose were unresolved, max(lens)
+                # raised before the item could be returned. Caught in review.
+                cm = self._chainmap_safe(pdb)
+                ok = [(p, s, k) for p, s, k in keyed
+                      if (iface, s, k) in self.labels
+                      and isinstance(cm.get(f"{s}_{k}"), dict)
+                      and iface in cm.get(f"{s}_{k}", {})]
                 if require_full and len(ok) < self.k:
                     continue
                 if ok:
@@ -113,9 +122,11 @@ class InterfacePoses(Dataset):
                 mean, letters = self._complex(it["pdb"], int(z["n_tokens"]))
             ch = self._chains(z, it["iface"], it["pdb"], sd, smp)
             if ch is None:
-                # OST could not resolve this pose's chains; a guess here would attach the right
-                # DockQ to the wrong chain pair's features. Skipped, and the pick retried.
-                continue
+                # Cannot happen: _index() only admits poses whose mapping resolves. Raising
+                # rather than skipping, because silently returning K-1 poses is the bug this
+                # eligibility filter exists to remove.
+                raise SystemExit(f"STOP: {it['iface']} {sd}_{smp} lost its chain mapping between "
+                                 f"indexing and sampling.")
             f, npair = FT.build(z, mean, letters, keep_chains=ch, max_n=self.max_n)
             xs.append(f)
             lens.append(npair)
@@ -127,6 +138,14 @@ class InterfacePoses(Dataset):
                 x[i, :len(f)] = f
         return {"x": torch.from_numpy(x), "lengths": torch.tensor(lens, dtype=torch.long),
                 "y": torch.tensor(ys, dtype=torch.float32), "iface": it["iface"]}
+
+    def _chainmap_safe(self, pdb):
+        """The chain map, or {} when absent -- used at INDEX time, where a missing map should
+        exclude the complex rather than abort the whole dataset build."""
+        try:
+            return self._chainmap(pdb)
+        except SystemExit:
+            return {}
 
     def _chainmap(self, pdb):
         """OST's per-pose interface -> (asym_i, asym_j), from abag_rank/chain_map.py."""

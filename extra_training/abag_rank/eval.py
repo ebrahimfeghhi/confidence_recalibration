@@ -126,6 +126,16 @@ def main():
                 feats.append(f)
                 lens.append(npair)
                 meta.append((sd, smp, ds.labels[(it["iface"], sd, smp)]))
+            # COVERAGE IS CHECKED ON WHAT WAS SCORED. The filesystem check above proves the npz
+            # files exist; it cannot know that a pose's OST mapping resolves or that it keeps any
+            # pair after the X filter and cutoff. Without this, an interface could pass the
+            # 150-pose assertion and then be ranked on 140 candidates, silently. Caught in review.
+            if len(meta) != want_depth and not a.allow_partial:
+                raise SystemExit(
+                    f"STOP: {it['iface']} scored {len(meta)} of {want_depth} candidate(s) -- "
+                    f"poses were dropped for an unresolved chain mapping or an empty interface "
+                    f"after filtering. Selecting from a reduced candidate set is not the "
+                    f"benchmark. Pass --allow-partial to accept it deliberately.")
             if not feats:
                 missing += 1
                 continue

@@ -107,13 +107,18 @@ def build(pose, pae_col_mean, letters, keep_chains=None, cutoff=CUTOFF, max_n=MA
     remap = np.full(len(letters), -1, dtype=np.int64)
     remap[keep_tok] = np.arange(int(keep_tok.sum()))
     rii, rjj = remap[ii], remap[jj]
+    #    UPSTREAM CONTRADICTS ITSELF HERE, so the choice is stated rather than assumed.
+    #    triangular_positional_encoding.py:46 (used by dataloader.py) normalises by
+    #    cantor(mx-1, mx-1); preprocess_shards.py:98 (which builds the shards dataloader3.py
+    #    reads) normalises by cantor(mx, mx). The two differ for every pair -- for (2, 5) they
+    #    give 0.825 and 0.55 -- and the -1 version can exceed 1. We follow preprocess_shards,
+    #    the documented dataset-prep path. Caught in review.
     mx = int(max(rii.max(), rjj.max())) if len(rii) else 0
     k = cantor(rii, rjj).astype(np.float64)
-    if mx > 1:
-        kmax = ((2 * (mx - 1)) * (2 * (mx - 1) + 1)) / 2 + (mx - 1)
-        cantor_norm = k / kmax
-    else:
+    if mx == 0:
         cantor_norm = np.zeros_like(k)
+    else:
+        cantor_norm = k / (((2 * mx) * (2 * mx + 1)) / 2 + mx)
     dist = np.abs(rii - rjj).astype(np.float64)
     dmax = dist.max() if len(dist) else 0.0
     dist_norm = dist / dmax if dmax > 0 else np.zeros_like(dist)

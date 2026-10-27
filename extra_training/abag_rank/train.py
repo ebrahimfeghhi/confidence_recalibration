@@ -45,7 +45,7 @@ def soft_rank(x, tau):
     return torch.sigmoid(d).sum(-1)
 
 
-def spearman_loss(pred, target, tau=0.02):
+def spearman_loss(pred, target, tau=0.05):
     """1 - soft Spearman, per complex, IN PROBABILITY SPACE.
 
     Upstream calls this with pred_sig/true_sig -- sigmoids of the logits -- not the logits
@@ -92,11 +92,14 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=1e-5)
     ap.add_argument("--smooth-l1-beta", type=float, default=0.5)
-    ap.add_argument("--spearman-tau", type=float, default=0.02,
-                    help="upstream's training default; 0.2 is the function's own default and is "
-                         "10x too soft for probability-space inputs")
+    ap.add_argument("--spearman-tau", type=float, default=0.05,
+                    help="the EFFECTIVE upstream value: configs/losses/one_minus_rho.yaml sets "
+                         "spearman_tau 0.05, which the config merge applies over train.py's own "
+                         "0.02 fallback. Reading the function default alone gives the wrong "
+                         "number. Caught in review.")
     ap.add_argument("--w-rank", type=float, default=1.0)
-    ap.add_argument("--w-dist", type=float, default=1.0)
+    ap.add_argument("--w-dist", type=float, default=0.1,
+                    help="upstream's distance_lambda fallback (train.py:423), not 1.0")
     ap.add_argument("--val-frac", type=float, default=0.1,
                     help="interfaces held out of TRAINING for model selection. valfull is never "
                          "touched here -- it is the external benchmark and selecting on it would "
@@ -152,7 +155,8 @@ def main():
             # a muchness, where an ordering is noise. Applying them uniformly, on logits, was a
             # different objective wearing the same name.
             ps, ts = torch.sigmoid(pred), torch.sigmoid(y)
-            relw = (ts.std(dim=-1, unbiased=False) / 0.07).clamp(0.0, 1.0)
+            # UNBIASED std, as upstream's torch default is -- not unbiased=False.
+            relw = (ts.std(dim=-1) / 0.07).clamp(0.0, 1.0)
             l_rank = (spearman_loss(ps, ts, tau=a.spearman_tau) * relw).mean()
             l_dist = (distance_loss(ps, ts) * relw).mean()
             loss = l_val + a.w_rank * l_rank + a.w_dist * l_dist
