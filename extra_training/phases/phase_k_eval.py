@@ -699,7 +699,13 @@ def main():
                  "restypes": os.path.abspath(a.dump_pae_restypes)}
         _pf = os.path.join(a.dump_pae, "_provenance.json")
         if os.path.exists(_pf):
-            _old = json.load(open(_pf))
+            try:
+                _old = json.load(open(_pf))
+            except (ValueError, OSError) as _e:
+                raise SystemExit(f"STOP: {_pf} is unreadable ({type(_e).__name__}: {_e}). With "
+                                 f"the atomic write below this should be impossible; an "
+                                 f"unparseable provenance means the directory is being written "
+                                 f"by something else.")
             _diff = {k for k in set(_old) | set(_prov) if _old.get(k) != _prov.get(k)}
             _diff -= {"nshards"}          # sharding is a layout choice, not a model change
             if _diff:
@@ -710,8 +716,15 @@ def main():
                                      for k in sorted(_diff))
                     + "\n  Export to a new directory, or delete that one deliberately.")
         else:
-            with open(_pf, "w") as _fh:
+            # ATOMIC, because all shards start within milliseconds and this path is racy three
+            # ways: two shards can both find the file absent and both write it, and a third can
+            # read it mid-write and fail to parse. A unique temp name plus os.replace makes every
+            # read see either no file or a complete one, and makes concurrent writers idempotent
+            # -- they are in the same run, so their content is identical. Caught in review.
+            _tmp = f"{_pf}.{os.getpid()}.tmp"
+            with open(_tmp, "w") as _fh:
                 json.dump(_prov, _fh, indent=1)
+            os.replace(_tmp, _pf)
 
     if a.rows_in:
         merge_rows(a)
