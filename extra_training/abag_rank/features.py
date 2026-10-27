@@ -89,12 +89,34 @@ def build(pose, pae_col_mean, letters, keep_chains=None, cutoff=CUTOFF, max_n=MA
     colmean = pae_col_mean[ii, jj].astype(np.float64)
     centered = pae - colmean
 
-    # 5. positional encoding, normalised as upstream does
-    T = len(letters)
-    k = cantor(ii, jj).astype(np.float64)
-    kmax = float(cantor(np.int64(T - 1), np.int64(T - 1))) or 1.0
-    cantor_norm = k / kmax
-    dist_norm = np.abs(ii - jj).astype(np.float64) / max(T - 1, 1)
+    # 5. positional encoding -- upstream's apply_triangular_encoding, literally.
+    #
+    #    TWO THINGS THAT ARE NOT T-1. Upstream normalises the Cantor code by the largest index
+    #    PRESENT AMONG THE SELECTED PAIRS, and the index distance by that selection's OWN maximum
+    #    distance -- not by the sequence length. Using T-1 for either gives systematically
+    #    different numbers on every complex, and more different the more of the sequence sits
+    #    outside the interface. Caught in review.
+    #
+    #    AND THE INDICES ARE REMAPPED AFTER THE X FILTER. Upstream drops X residues and
+    #    renumbers what remains contiguously, so a pair's position is its position among KNOWN
+    #    residues. ii/jj here are original token indices; rii/rjj are the remapped ones. The
+    #    positional features use the remapped pair, pae_col_mean uses the ORIGINAL pair, because
+    #    that matrix is in original token coordinates -- mixing them would be an alignment bug of
+    #    exactly the kind this file exists to avoid.
+    keep_tok = np.array([str(c) != "X" for c in letters], dtype=bool)
+    remap = np.full(len(letters), -1, dtype=np.int64)
+    remap[keep_tok] = np.arange(int(keep_tok.sum()))
+    rii, rjj = remap[ii], remap[jj]
+    mx = int(max(rii.max(), rjj.max())) if len(rii) else 0
+    k = cantor(rii, rjj).astype(np.float64)
+    if mx > 1:
+        kmax = ((2 * (mx - 1)) * (2 * (mx - 1) + 1)) / 2 + (mx - 1)
+        cantor_norm = k / kmax
+    else:
+        cantor_norm = np.zeros_like(k)
+    dist = np.abs(rii - rjj).astype(np.float64)
+    dmax = dist.max() if len(dist) else 0.0
+    dist_norm = dist / dmax if dmax > 0 else np.zeros_like(dist)
 
     # 6. one-hots
     rid = np.array([RES_ID.get(str(c), RES_ID["X"]) for c in letters], dtype=np.int64)

@@ -80,7 +80,7 @@ def main():
     with torch.no_grad():
         for it in ds.items:
             mean, letters = ds._complex(it["pdb"], 0)
-            rows = []
+            feats, lens, meta = [], [], []
             for path, sd, smp in it["poses"]:
                 if not (a.seed_base <= sd < a.seed_base + a.budget):
                     continue
@@ -89,21 +89,41 @@ def main():
                 f, npair = FT.build(z, mean, letters, keep_chains=(c1, c2))
                 if npair == 0:
                     continue
-                x = torch.from_numpy(f).unsqueeze(0).unsqueeze(0).to(dev)
-                ln = torch.tensor([[npair]], dtype=torch.long, device=dev)
-                score = float(model(x, ln).squeeze())
-                rows.append((sd, smp, score, ds.labels[(it["iface"], sd, smp)]))
-            if not rows:
+                feats.append(f)
+                lens.append(npair)
+                meta.append((sd, smp, ds.labels[(it["iface"], sd, smp)]))
+            if not feats:
                 missing += 1
                 continue
+            # ALL CANDIDATES IN ONE FORWARD PASS, [1, K, N, F].
+            #
+            # SCORING POSES ONE AT A TIME IS MATHEMATICALLY WRONG with this aggregator.
+            # attn_pool_concat_stats normalises its pooled features ACROSS THE K POSES of a
+            # complex (deep_set.py:199-205), so at K=1 the mean IS the single pose, the numerator
+            # is exactly zero, and every pooled feature vanishes -- verified numerically, max|v|
+            # = 0.000e+00. The only surviving input is size_feat = sqrt(n_pairs), so a per-pose
+            # evaluator ranks candidates BY THEIR PAIR COUNT and reports a perfectly plausible
+            # DockQ from it. Caught in review; this is the bug that would have made us conclude
+            # the model does not generalise when the evaluator was discarding everything it learned.
+            K = len(feats)
+            N = max(len(f) for f in feats)
+            x = torch.zeros(1, K, N, FT.FEATURE_DIM)
+            for i, f in enumerate(feats):
+                x[0, i, :len(f)] = torch.from_numpy(f)
+            ln = torch.tensor([lens], dtype=torch.long, device=dev)
+            scores = model(x.to(dev), ln).squeeze(-1).squeeze(0).tolist()
+            rows = [(sd, smp, sc, dq) for (sd, smp, dq), sc in zip(meta, scores)]
             # phase_k_eval's tie-break, exactly: score, then lowest seed, then lowest sample.
             picked.append(max(rows, key=lambda t: (t[2], -t[0], -t[1]))[3])
             oracle.append(max(t[3] for t in rows))
-            sr = [r for r in ship.get(it["iface"], []) if (r[0], r[1]) in {(t[0], t[1]) for t in rows}]
+            have = {(t[0], t[1]) for t in rows}
+            sr = [r for r in ship.get(it["iface"], []) if (r[0], r[1]) in have]
             shipped.append(max(sr, key=lambda t: (t[2], -t[0], -t[1]))[3] if sr else float("nan"))
 
     n = len(picked)
     d = [p - s for p, s in zip(picked, shipped) if not np.isnan(s)]
+    print(f"\n  NOTE: trained at K=10 poses per complex, scored here at K={a.budget * 5}. The "
+          f"aggregator normalises across K, so scores are group-dependent by construction.")
     print(f"\n  RERANKER on {n} interface(s) at budget {a.budget}"
           + (f"; {missing} interface(s) had no scorable pose" if missing else ""))
     print(f"    mean DockQ   {statistics.mean(picked):.4f}")

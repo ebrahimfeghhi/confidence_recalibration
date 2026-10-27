@@ -45,8 +45,15 @@ def soft_rank(x, tau):
     return torch.sigmoid(d).sum(-1)
 
 
-def spearman_loss(pred, target, tau=0.2):
-    """1 - soft Spearman, per complex. Needs K >= 2 or it is meaningless."""
+def spearman_loss(pred, target, tau=0.02):
+    """1 - soft Spearman, per complex, IN PROBABILITY SPACE.
+
+    Upstream calls this with pred_sig/true_sig -- sigmoids of the logits -- not the logits
+    themselves, and its training path uses tau 0.02, not 0.2. Both matter: logit gaps are far
+    larger than DockQ gaps near 0 and 1, so running the soft rank on logits changes which pairs
+    the sigmoid treats as "close enough to swap", and a 10x temperature changes it again. Caught
+    in review.
+    """
     K = pred.size(-1)
     if K < 2:
         return torch.zeros(pred.size(0), device=pred.device)
@@ -56,12 +63,20 @@ def spearman_loss(pred, target, tau=0.2):
 
 
 def distance_loss(pred, target):
-    """Pairwise gaps among a complex's poses must match. Guards against collapse."""
-    if pred.size(-1) < 2:
+    """Pairwise gaps among a complex's poses must match, SUMMED over unique pairs.
+
+    Upstream sums the squared errors over the unique upper-triangular pose pairs; averaging over
+    all K x K entries instead divides by K^2 and counts the zero diagonal, which at K=10 makes
+    this term ~45x smaller than upstream's for the same errors. Combined with running it on
+    logits rather than probabilities, the objective was materially different. Caught in review.
+    """
+    K = pred.size(-1)
+    if K < 2:
         return torch.zeros(pred.size(0), device=pred.device)
     dp = (pred.unsqueeze(2) - pred.unsqueeze(1)).abs()
     dt = (target.unsqueeze(2) - target.unsqueeze(1)).abs()
-    return (dp - dt).pow(2).mean(dim=(1, 2))
+    iu = torch.triu_indices(K, K, offset=1, device=pred.device)
+    return (dp - dt).pow(2)[:, iu[0], iu[1]].sum(dim=-1)
 
 
 def main():
@@ -77,6 +92,9 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=1e-5)
     ap.add_argument("--smooth-l1-beta", type=float, default=0.5)
+    ap.add_argument("--spearman-tau", type=float, default=0.02,
+                    help="upstream's training default; 0.2 is the function's own default and is "
+                         "10x too soft for probability-space inputs")
     ap.add_argument("--w-rank", type=float, default=1.0)
     ap.add_argument("--w-dist", type=float, default=1.0)
     ap.add_argument("--val-frac", type=float, default=0.1,
@@ -129,8 +147,14 @@ def main():
             x, lens, y = b["x"].to(dev), b["lengths"].to(dev), b["y"].to(dev)
             pred = model(x, lens).squeeze(-1)
             l_val = F.smooth_l1_loss(pred, y, beta=a.smooth_l1_beta)
-            l_rank = spearman_loss(pred, y).mean()
-            l_dist = distance_loss(pred, y).mean()
+            # PROBABILITY SPACE for the two group losses, and upstream's relevance weighting:
+            # clamp(std(true_sig)/0.07, 0, 1) down-weights complexes whose poses are all much of
+            # a muchness, where an ordering is noise. Applying them uniformly, on logits, was a
+            # different objective wearing the same name.
+            ps, ts = torch.sigmoid(pred), torch.sigmoid(y)
+            relw = (ts.std(dim=-1, unbiased=False) / 0.07).clamp(0.0, 1.0)
+            l_rank = (spearman_loss(ps, ts, tau=a.spearman_tau) * relw).mean()
+            l_dist = (distance_loss(ps, ts) * relw).mean()
             loss = l_val + a.w_rank * l_rank + a.w_dist * l_dist
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -147,7 +171,9 @@ def main():
                 pred = model(x, lens).squeeze(-1)
                 vt += float(F.smooth_l1_loss(pred, y, beta=a.smooth_l1_beta)) * len(y)
                 vn += len(y)
-                rhos.append(float(1.0 - spearman_loss(pred, y).mean()))
+                rhos.append(float(1.0 - spearman_loss(torch.sigmoid(pred),
+                                                      torch.sigmoid(y),
+                                                      tau=a.spearman_tau).mean()))
         vl = vt / max(vn, 1)
         print(f"  epoch {ep:3d}  train {tot / max(n, 1):.4f}  val {vl:.4f}  "
               f"val soft-rho {np.mean(rhos):+.4f}", flush=True)
