@@ -29,10 +29,20 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def rep_coords(z, pose):
-    """(T, 3) representative-atom coordinates for one pose, by the distogram mask."""
+def rep_coords(z, ca_mask, pose):
+    """(T, 3) CA coordinates for one pose, and which tokens have one.
+
+    CA, NOT THE DISTOGRAM REPRESENTATIVE. ci_feat_distogram_rep_atom_mask selects CB for ordinary
+    amino acids and CA only for glycine; ABAG-Rank's compute_residue_distance_info() takes CA when
+    present and falls back to CB. Measured on 10fj the two masks differ at 1,158 of 4,795 atoms and
+    their representatives sit 1.42 A apart on average (max 1.56), coinciding for exactly the 46
+    glycine tokens. At a 12 A cutoff a 1.4 A shift moves real pairs across the boundary, and a pair
+    the fixed union omits can never be recovered downstream. So the CA mask from the LABEL npz
+    (lf_pae_rep_atom_mask) is used instead -- verified identical across a complex's seeds. Caught
+    in review.
+    """
     a2t = z["ci_feat_atom_to_token_idx"]
-    mask = z["ci_feat_distogram_rep_atom_mask"].astype(bool)
+    mask = ca_mask
     T = len(z["ci_feat_asym_id"])
     out = np.full((T, 3), np.nan, dtype=np.float32)
     seen = np.zeros(T, dtype=bool)
@@ -51,24 +61,66 @@ def pair_set(pdb, fold, cutoff):
     if not files:
         return None
     union = None
-    asym = None
+    asym = a2t0 = ca0 = None
     npose = 0
+    n_fallback = [0]
     for f in files:
         z = np.load(f)
+        lab = f.replace("/trunks/", "/labels/")
+        if not os.path.exists(lab):
+            raise SystemExit(f"STOP: {pdb}: no label npz beside {os.path.basename(f)}; the CA mask "
+                             f"lives there and guessing it would silently change the pair set.")
+        ca = np.load(lab)["lf_pae_rep_atom_mask"].astype(bool)
+        # TOKEN IDENTITY ACROSS SEEDS IS ASSERTED, NOT ASSUMED. The union only means anything if
+        # index i is the SAME residue in every seed. Equal shapes do not establish that: a seed
+        # with the same token count but a different ordering would silently merge incompatible
+        # pairs, and nothing downstream could detect it. Caught in review.
         if asym is None:
             asym = z["ci_feat_asym_id"]
+            a2t0 = z["ci_feat_atom_to_token_idx"]
+            ca0 = ca
             inter = asym[:, None] != asym[None, :]
+        else:
+            for name, got, want in (("asym_id", z["ci_feat_asym_id"], asym),
+                                    ("atom_to_token_idx", z["ci_feat_atom_to_token_idx"], a2t0),
+                                    ("ca_rep_atom_mask", ca, ca0)):
+                if not np.array_equal(got, want):
+                    raise SystemExit(
+                        f"STOP: {pdb}: {name} differs between seeds ({os.path.basename(files[0])} "
+                        f"vs {os.path.basename(f)}). Index i is not the same residue in both, so "
+                        f"a union over their pairs would be meaningless.")
         for p in range(z["ci_coordinate"].shape[0]):
-            rep, seen = rep_coords(z, p)
+            rep, seen = rep_coords(z, ca, p)
             d = np.linalg.norm(rep[:, None, :] - rep[None, :, :], axis=-1)
             ok = seen[:, None] & seen[None, :]
-            m = inter & ok & (d < cutoff)
+            # <= MATCHES UPSTREAM's `ca_distances <= distance_cutoff`, not <.
+            m = inter & ok & (d <= cutoff)
+            # THE ZERO-CONTACT FALLBACK, which upstream has and a plain union does not:
+            # preprocess_shards keeps the single CLOSEST inter-chain pair when a pose has none
+            # under the cutoff. Without this, such a pose gets whatever pairs other poses
+            # contributed -- possibly at 25 A -- instead of its own closest. Those poses are
+            # exactly the contact-free decoys a reranker must learn to reject. Caught in review.
+            if not m.any():
+                dd = np.where(inter & ok, d, np.inf)
+                if np.isfinite(dd).any():
+                    i0, j0 = np.unravel_index(np.argmin(dd), dd.shape)
+                    m = np.zeros_like(m)
+                    m[i0, j0] = True
+                    n_fallback[0] += 1
+            else:
+                # ALSO add this pose's closest pair even when it has contacts, so the union can
+                # serve the fallback for any pose; it is one pair and usually already present.
+                dd = np.where(inter & ok, d, np.inf)
+                if np.isfinite(dd).any():
+                    i0, j0 = np.unravel_index(np.argmin(dd), dd.shape)
+                    m[i0, j0] = True
             union = m if union is None else (union | m)
             npose += 1
     if union is None or not union.any():
         return None
     i, j = np.where(union)
     return {"pdb": pdb, "n_tokens": int(len(asym)), "n_poses": npose,
+            "n_fallback": n_fallback[0],
             "n_pairs": int(len(i)), "inter_idx": i.astype(np.int32),
             "inter_jdx": j.astype(np.int32), "asym_id": asym.astype(np.int32)}
 
@@ -88,20 +140,40 @@ def main():
         pdbs = pdbs[:a.limit]
     out = os.path.join(ROOT, a.out)
     os.makedirs(out, exist_ok=True)
-    tot_pairs = tot_poses = done = skipped = tot_bytes = 0
+    tot_pairs = tot_poses = done = skipped = tot_bytes = n_fb = 0
     for n, pdb in enumerate(pdbs, 1):
         dst = os.path.join(out, f"{pdb}.npz")
+        # A CACHED PAIR SET IS REUSED ONLY IF ITS CONFIGURATION MATCHES. Its contents depend on the
+        # cutoff, the fold it was built from and how many poses existed at the time; reusing one
+        # across a cutoff change or a new seed would keep stale pairs while writing fresh metadata
+        # that claims otherwise. Caught in review.
         if os.path.exists(dst):
-            done += 1
-            continue
+            try:
+                old = np.load(dst)
+                n_now = 5 * len(glob.glob(os.path.join(ROOT, a.fold, "trunks", pdb, "free_*.npz")))
+                ok = (float(old["cutoff"]) == a.cutoff
+                      and int(old["n_poses"]) == n_now
+                      and str(old["fold"]) == a.fold
+                      and str(old["atom_convention"]) == "CA")
+            except Exception:                     # noqa: BLE001
+                ok = False
+            if ok:
+                done += 1
+                continue
+            print(f"  REBUILD {pdb}: cached pair set does not match this configuration", flush=True)
         ps = pair_set(pdb, os.path.join(ROOT, a.fold), a.cutoff)
         if ps is None:
+            # With the closest-pair fallback in place this now means only "no trunks" or "no
+            # inter-chain token pair at all". A structure whose poses simply have no contact under
+            # the cutoff keeps its closest pair and stays in the population, as upstream does.
             skipped += 1
-            print(f"  SKIP {pdb}: no trunks or no inter-chain pair under {a.cutoff} A", flush=True)
+            print(f"  SKIP {pdb}: no trunks, or no inter-chain token pair exists", flush=True)
             continue
         np.savez_compressed(dst, inter_idx=ps["inter_idx"], inter_jdx=ps["inter_jdx"],
                             asym_id=ps["asym_id"], n_tokens=ps["n_tokens"],
-                            n_poses=ps["n_poses"], cutoff=a.cutoff)
+                            n_poses=ps["n_poses"], cutoff=a.cutoff, fold=a.fold,
+                            atom_convention="CA", n_fallback=ps["n_fallback"])
+        n_fb += ps["n_fallback"]
         tot_pairs += ps["n_pairs"]
         tot_poses += ps["n_poses"]
         # bytes this complex will cost in the dump: one float32 PAE and one float32 CA distance
@@ -112,7 +184,8 @@ def main():
         if n % 25 == 0 or n == len(pdbs):
             print(f"  {n}/{len(pdbs)}  last {pdb}: T={ps['n_tokens']} poses={ps['n_poses']} "
                   f"pairs={ps['n_pairs']:,}", flush=True)
-    print(f"\n  {done} complex(es) written, {skipped} skipped")
+    print(f"\n  {done} complex(es) written, {skipped} skipped, "
+          f"{n_fb} pose(s) had NO pair within the cutoff and kept their closest")
     if tot_pairs:
         print(f"  {tot_pairs:,} pairs over {tot_poses:,} poses; mean {tot_pairs/max(done,1):,.0f} "
               f"pairs/complex")
