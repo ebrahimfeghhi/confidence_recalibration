@@ -582,6 +582,13 @@ def main():
     ap.add_argument("--val-loss-card", default="",
                     help="card for the held-out pass. Empty shares the trainer's; it loads a second "
                          "464M-parameter model, so the free-memory floor below applies.")
+    ap.add_argument("--val-loss-shard-retries", type=int, default=2,
+                    help="how many times to re-run a FAILED held-out PAE shard before voiding "
+                         "the epoch's number. The shards read a bundle already on disk and the "
+                         "weights cannot move while they run, so a re-run measures exactly the "
+                         "same model as its siblings; 0 restores the old void-on-any-failure "
+                         "behaviour. tv6hue epoch 4 lost two of three shards to a transient "
+                         "CUDA context-creation failure and voided a point worth 2.1 min of work.")
     ap.add_argument("--val-loss-uncropped", action="store_true",
                     help="run the held-out PAE pass on the FULL structure instead of the training "
                          "crop. OFF BY DEFAULT and it must stay off mid-comparison. WHY ANYONE "
@@ -4120,14 +4127,22 @@ def main():
             # 64 KiB pipe buffer BLOCKS until the parent gets round to reading it -- serialising
             # the very passes this change exists to run in parallel. Files also keep the whole
             # diagnostic instead of the last four lines of a failure. Caught in review.
-            procs = []
             os.makedirs(os.path.join(a.out, f"val_loss_ep{epoch}"), exist_ok=True)
-            for _i, _c in enumerate(_cards):
+
+            def _spawn(_i):
                 _env = dict(env)
-                _env["CUDA_VISIBLE_DEVICES"] = _c
+                _env["CUDA_VISIBLE_DEVICES"] = _cards[_i]
                 _o = os.path.join(a.out, f"val_loss_ep{epoch}", f"shard{_i}")
                 os.makedirs(_o, exist_ok=True)
                 _lg = os.path.join(_o, "shard.log")
+                # A PREVIOUS ATTEMPT'S LOG IS EVIDENCE, NOT CLUTTER -- it is the only record of
+                # why the shard failed, and the pooling below scans shard.log for the SHARD
+                # COVERAGE line, so a failed log left in place would be read as the live one.
+                if os.path.exists(_lg):
+                    _n = 0
+                    while os.path.exists(f"{_lg}.failed{_n or ''}"):
+                        _n += 1
+                    os.rename(_lg, f"{_lg}.failed{_n or ''}")
                 _cmd = [x for x in cmd]
                 _cmd[_cmd.index("--out") + 1] = _o
                 # AND THE EMIT PATH, for the same reason --out is rewritten: the emitter opens it
@@ -4137,22 +4152,64 @@ def main():
                         os.path.join(_o, "iptm_rows.csv")
                 _cmd += ["--manifest-shard", str(_i), "--manifest-nshards", str(_nsh)]
                 _fh = open(_lg, "w")
-                procs.append((_i, _o, _lg, _fh,
-                              subprocess.Popen(_cmd, stdout=_fh, stderr=subprocess.STDOUT,
-                                               text=True, env=_env)))
-            _bad = []
-            for _i, _o, _lg, _fh, _p in procs:
-                _p.wait()
-                try:
-                    _fh.close()
-                except Exception:                 # noqa: BLE001
-                    pass
-                if _p.returncode != 0:
+                return (_i, _o, _lg, _fh,
+                        subprocess.Popen(_cmd, stdout=_fh, stderr=subprocess.STDOUT,
+                                         text=True, env=_env))
+
+            def _await(_ps):
+                _failed = []
+                for _i, _o, _lg, _fh, _p in _ps:
+                    _p.wait()
                     try:
-                        _tail = open(_lg).read().strip().splitlines()[-6:]
-                    except OSError:
-                        _tail = [f"(no readable log at {_lg})"]
-                    _bad.append((_i, _tail))
+                        _fh.close()
+                    except Exception:             # noqa: BLE001
+                        pass
+                    if _p.returncode != 0:
+                        try:
+                            _tail = open(_lg).read().strip().splitlines()[-6:]
+                        except OSError:
+                            _tail = [f"(no readable log at {_lg})"]
+                        _failed.append((_i, _tail))
+                return _failed
+
+            # STAGGERED, NOT SIMULTANEOUS. On tv6hue epoch 4 two of three children died inside
+            # torch._C._cuda_init() -- "CUDA driver initialization failed" and "No CUDA GPUs are
+            # available" -- while the third completed normally in 2.1 min at 3.80 GB. That is a
+            # driver-level context-creation failure, not OOM (which says "CUDA out of memory")
+            # and not compute-mode exclusivity (all three cards report Default). The one thing
+            # the three children do that nothing else here does is create CUDA contexts at the
+            # same instant, against cards whose training ranks are still holding ~67 GB each, so
+            # they are spaced out. THIS IS A MITIGATION, NOT A DIAGNOSIS: the root cause is not
+            # established, which is exactly why the retry below exists and does not rely on it.
+            _handles = {}
+            for _i in range(_nsh):
+                if _i:
+                    time.sleep(2.0)
+                _handles[_i] = _spawn(_i)
+            _bad = _await(list(_handles.values()))
+
+            # RETRY THE FAILED SHARDS BEFORE VOIDING THE EPOCH. Losing the whole epoch's held-out
+            # point to a transient that cost one child 40 seconds is a bad trade: the measurement
+            # is 2.1 min of a 30 min cycle, it reads a bundle already written to disk, and the
+            # weights cannot move while it runs, so re-running a failed shard measures exactly the
+            # same model as its siblings. Before this, ANY shard failure voided the number, and
+            # tv6hue epoch 4 is the first time in the project that actually happened.
+            # ONLY THE FAILED INDICES ARE RE-RUN. Re-running a shard that already succeeded would
+            # throw away good work and give the pooling a second chance to see a duplicate.
+            for _try in range(1, int(getattr(a, "val_loss_shard_retries", 2) or 0) + 1):
+                if not _bad:
+                    break
+                _idx = [_i for _i, _ in _bad]
+                print(f"  held-out shard(s) {_idx} of epoch {epoch} failed; retry {_try} of "
+                      f"{int(getattr(a, 'val_loss_shard_retries', 2) or 0)}", flush=True)
+                for _i, _tail in _bad:
+                    print(f"    shard {_i} said:\n      " + "\n      ".join(_tail), flush=True)
+                time.sleep(15.0 * _try)
+                for _i in _idx:
+                    _handles[_i] = _spawn(_i)
+                    time.sleep(2.0)
+                _bad = _await([_handles[_i] for _i in _idx])
+            procs = [_handles[_i] for _i in range(_nsh)]
             if _bad:
                 # ANY shard failing voids the epoch's number. Pooling the survivors would report a
                 # mean over a BIASED subset of the held-out set -- a different population than
@@ -4162,8 +4219,9 @@ def main():
                     print(f"  WARNING: held-out shard {_i} of epoch {epoch} failed:\n    "
                           + "\n    ".join(_tail), flush=True)
                 print(f"  WARNING: epoch {epoch} has no held-out point; {len(_bad)} of {_nsh} "
-                      f"shard(s) failed and a partial pool would be a different population.",
-                      flush=True)
+                      f"shard(s) failed after "
+                      f"{int(getattr(a, 'val_loss_shard_retries', 2) or 0)} retry/retries and a "
+                      f"partial pool would be a different population.", flush=True)
                 return None
             # POOLED AS A PLAIN MEAN OVER POSES. Each shard owns whole structures, every pose
             # appears in exactly one shard exactly once, so concatenating the rows and taking one
