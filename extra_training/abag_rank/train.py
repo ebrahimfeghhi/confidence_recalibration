@@ -21,6 +21,7 @@ simulated ranker, delivered +0.0024. If this model improves rho but not selected
 the same failure again, not a new one.
 """
 import argparse
+import json
 import os
 import sys
 
@@ -212,6 +213,17 @@ def main():
     va_idx = [i for i, it in enumerate(ds.items) if it["pdb"] in val_pdbs]
     print(f"  internal split: {len(tr_idx)} train / {len(va_idx)} val interface(s) "
           f"over {len(pdbs) - nval}/{nval} structure(s)")
+    # PERSIST THE SPLIT. It is a pure function of (seed, val_frac, the eligible interface set),
+    # and that last term is NOT stable across time: a chainmap or a label appearing later changes
+    # `pdbs` and therefore reshuffles the whole split at the same seed. Writing the membership is
+    # what makes the held-out number auditable afterwards, and what lets a rerun prove it got the
+    # same boundary instead of assuming it.
+    with open(os.path.join(ROOT, a.out, "split.json"), "w") as fh:
+        json.dump({"seed": a.seed, "val_frac": a.val_frac,
+                   "n_structures": len(pdbs), "n_val_structures": nval,
+                   "n_train_interfaces": len(tr_idx), "n_val_interfaces": len(va_idx),
+                   "val_pdbs": sorted(val_pdbs),
+                   "train_pdbs": [p for p in sorted(pdbs) if p not in val_pdbs]}, fh, indent=1)
 
     dl = DataLoader(torch.utils.data.Subset(ds, tr_idx), batch_size=a.batch, shuffle=True,
                     collate_fn=collate, num_workers=8, drop_last=True)
