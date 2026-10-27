@@ -45,6 +45,49 @@ further would very likely push all three numbers higher, since nothing had conve
 
 ---
 
+## 1b. ...and it does NOT transfer. The same checkpoint is WORSE than shipped on valfull
+
+**The problem is cross-complex generalisation.** `jy6sah/head_ep136_step2448.pt` -- the exact
+checkpoint that produced the result above -- scored on valfull's 92 held-out interfaces at budget
+30, sharded over 3 cards, 9.1 min:
+
+| | jy6sah | shipped | delta |
+|---|---|---|---|
+| mean DockQ | **0.5476** | 0.5831 | **-0.0355** |
+| fraction DockQ > 0.23 | **0.6957** | 0.7391 | **-0.0434** (4 fewer interfaces of 92) |
+| oracle | 0.6926 | | |
+
+Same checkpoint, two pools:
+
+| | in-sample (overfit30, 77 ifaces) | held out (valfull, 92 ifaces) |
+|---|---|---|
+| paired dDockQ vs shipped | **+0.1965 +- 0.0306** | **-0.0355** |
+| frac vs shipped | 0.0000 -> 0.3896 | 0.7391 -> 0.6957 |
+
+So a head that captures 42% of in-sample headroom **destroys** 0.036 DockQ out of sample -- about
+15x larger in magnitude than the best full-training-set arm's gain (+0.0024). Training the PAE
+objective to convergence on a complex makes selection much better ON THAT COMPLEX and worse
+everywhere else.
+
+**This had never been measured.** The whole overfit30 chain ran with `val_loss_pool=None` and zero
+validation eval directories across all 7 runs -- it only ever scored itself on its own 30
+structures. The transfer failure was assumed, not known, until 2026-10-27.
+
+Scope: 30 training structures is the most extreme version of the gap. It does not predict what 487
+structures do -- that is section 2's question.
+
+Join was clean: 13,800 of 13,800 intended keys, 0 duplicates, 0 unresolvable, 0 non-finite.
+
+    LAYERNORM_TYPE=openfold python -I phases/phase_k_eval_sharded.py \
+      --cards 4,5,7 --ckpt training/runs/jy6sah/head_ep136_step2448.pt --budget 30 \
+      --work training/runs/jy6sah/valfull_eval --out training/runs/jy6sah/metric_valfull.json \
+      --extra "--fold validation/fold --results validation/fold/results.csv \
+               --pool training/valfull/pool.csv --roles validation/fold/chain_roles.csv \
+               --seed-base 400000 --join-cache training/valfull/join_cache.json \
+               --pair-iptm-only --prefetch"
+
+---
+
 ## 2. Capacity is not the limit on the full training set
 
 Training PAE loss, final value, all arms on `full_train` (487-488 structures), same objective,
@@ -143,8 +186,10 @@ So the task is not hopeless-by-concentration: broad headroom exists.
 
 ## Open questions as of 2026-10-27
 
-- **Does the in-sample conversion survive 487 structures?** `ocqtyt` scored on the training pool
-  (budget 10) answers it; queued behind `dntxmn`.
+- **ANSWERED 2026-10-27 (section 1b): the in-sample conversion does NOT transfer at 30
+  structures -- it inverts, to -0.0355 on valfull.** The live question is whether 487 structures
+  change that; `ocqtyt` scored on the training pool (budget 10) tests whether the fitting even
+  happens at that scale.
 - `jy6sah` was stopped, not converged -- both curves still climbing at epoch 136.
 - No run exists that is full head + 4 pose-copy layers + no L2 on the full training set. `ocqtyt`
   is the closest and differs only by lacking the pose layers (plus 9dzj, 1 structure of 488).

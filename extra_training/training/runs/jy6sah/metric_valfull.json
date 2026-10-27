@@ -1,0 +1,12 @@
+{
+ "n_interfaces": 92,
+ "budget": 30,
+ "mean_dockq": 0.5476,
+ "frac_acc": 0.6957,
+ "oracle_mean_dockq": 0.6926,
+ "oracle_frac_acc": 0.8587,
+ "ckpt": "training/runs/jy6sah/head_ep136_step2448.pt",
+ "headroom": 0.145,
+ "baseline_mean_dockq": 0.5831,
+ "baseline_frac_acc": 0.7391
+}

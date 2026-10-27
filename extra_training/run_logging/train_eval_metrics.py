@@ -34,7 +34,12 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TRAIN_POOL = os.path.join(ROOT, "training", "full_train", "pool.csv")
+# 9dzj IS EXCLUDED. It is the one structure in full_train/pool.csv that the arms did NOT
+# train on (their selection is structures_no9dzj.csv), and its fold is missing the sample
+# JSONs for seed 500001 -- 5 poses with no usable OST chain mapping, which made the
+# aggregate refuse 2 of 3 shards and report nothing. Dropping it is right on both counts:
+# this is an IN-SAMPLE measurement, and 9dzj is out of sample.
+TRAIN_POOL = os.path.join(ROOT, "training", "full_train", "pool_insample.csv")
 TRAIN_FOLD = os.path.join(ROOT, "training", "fold")
 TRAIN_SEED_BASE = 500000
 TRAIN_BUDGET = 10          # 10 seeds is all the training fold has
