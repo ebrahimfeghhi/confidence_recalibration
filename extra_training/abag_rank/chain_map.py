@@ -25,6 +25,7 @@ drops it.
 import argparse
 import collections
 import glob
+import hashlib
 import json
 import os
 import sys
@@ -33,6 +34,20 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "phases"))
+
+
+def _fingerprint(fold, dump, pdb):
+    """Identity of the trunks and pose files this complex's mapping was derived from."""
+    parts = []
+    for f in sorted(glob.glob(os.path.join(fold, "trunks", pdb, "free_*.npz"))) + \
+             sorted(f for f in glob.glob(os.path.join(dump, pdb, "*.npz"))
+                    if not os.path.basename(f).startswith("_")):
+        try:
+            st = os.stat(f)
+            parts.append(f"{os.path.basename(f)}:{st.st_size}:{st.st_mtime_ns}")
+        except OSError:
+            parts.append(f"{os.path.basename(f)}:MISSING")
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:32]
 
 
 def main():
@@ -56,8 +71,19 @@ def main():
     n_ok = n_bad = 0
     for pdb in pdbs:
         out_f = os.path.join(dump, pdb, "_chainmap.json")
+        # A STALE MAP IS WORSE THAN NO MAP: it attaches an interface's DockQ label to the wrong
+        # model-chain pair, which is the 7zra failure class wearing a valid-looking file. The
+        # inputs are fingerprinted -- the trunks the coordinates came from and the pose files
+        # whose samples were mapped -- so a refold or a re-export regenerates rather than reuses.
+        # Caught in review.
+        fp = _fingerprint(os.path.join(ROOT, a.fold), dump, pdb)
         if os.path.exists(out_f):
-            continue
+            try:
+                if json.load(open(out_f)).get("_source") == fp:
+                    continue
+            except (ValueError, OSError):
+                pass
+            print(f"  REGENERATE {pdb}: chain map does not match its inputs", flush=True)
         poses = sorted(f for f in glob.glob(os.path.join(dump, pdb, "*.npz"))
                        if not os.path.basename(f).startswith("_"))
         if not poses:
@@ -91,6 +117,7 @@ def main():
                     out[f"{sd}_{smp}"] = {ifc: [int(i), int(j)] for ifc, i, j in pairs}
                     n_ok += 1
         tmp = out_f + ".tmp"
+        out["_source"] = fp
         with open(tmp, "w") as fh:
             json.dump(out, fh)
         os.replace(tmp, out_f)

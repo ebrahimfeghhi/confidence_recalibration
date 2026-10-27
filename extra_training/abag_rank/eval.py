@@ -103,16 +103,18 @@ def main():
     model = DeepSet(input_dim=ck.get("feature_dim", FT.FEATURE_DIM),
                     phi_hidden_dims=[512, 256, 128, 256],
                     rho_hidden_dims=[2048, 1024, 512, 256, 128], output_dim=1,
-                    aggregator="attn_pool_concat_stats", sample_level_dim=0).to(dev)
+                    aggregator="attn_pool_concat_stats",
+                    sample_level_dim=ck.get("sample_level_dim", 1)).to(dev)
     model.load_state_dict(ck["model"])
     model.eval()
-    print(f"  checkpoint from epoch {ck.get('epoch')} (internal val {ck.get('val'):.4f})")
+    print(f"  checkpoint from epoch {ck.get('epoch')} "
+          f"(internal val top-1 DockQ {ck.get('val_top1', float('nan')):.4f})")
 
     picked, shipped, oracle, missing = [], [], [], 0
     with torch.no_grad():
         for it in ds.items:
             mean, letters = ds._complex(it["pdb"], 0)
-            feats, lens, meta = [], [], []
+            feats, lens, meta, sfs = [], [], [], []
             for path, sd, smp in it["poses"]:
                 if not (a.seed_base <= sd < a.seed_base + a.budget):
                     continue
@@ -125,6 +127,7 @@ def main():
                     continue
                 feats.append(f)
                 lens.append(npair)
+                sfs.append([ds.iptm.get((it["iface"], sd, smp), 0.0)])
                 meta.append((sd, smp, ds.labels[(it["iface"], sd, smp)]))
             # COVERAGE IS CHECKED ON WHAT WAS SCORED. The filesystem check above proves the npz
             # files exist; it cannot know that a pose's OST mapping resolves or that it keeps any
@@ -155,7 +158,8 @@ def main():
             for i, f in enumerate(feats):
                 x[0, i, :len(f)] = torch.from_numpy(f)
             ln = torch.tensor([lens], dtype=torch.long, device=dev)
-            scores = model(x.to(dev), ln).squeeze(-1).squeeze(0).tolist()
+            sfv = torch.tensor([sfs], dtype=torch.float32, device=dev)
+            scores = model(x.to(dev), ln, sfv).squeeze(-1).squeeze(0).tolist()
             rows = [(sd, smp, sc, dq) for (sd, smp, dq), sc in zip(meta, scores)]
             # phase_k_eval's tie-break, exactly: score, then lowest seed, then lowest sample.
             picked.append(max(rows, key=lambda t: (t[2], -t[0], -t[1]))[3])

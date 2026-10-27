@@ -32,12 +32,27 @@ import features as FT
 
 class InterfacePoses(Dataset):
     def __init__(self, pool_csv, dump_dir, restype_dir, results_csv, k=10, max_n=FT.MAX_N,
-                 seed=0, require_full=True):
+                 seed=0, require_full=True, allow_partial=False):
         self.dump, self.rt, self.k, self.max_n = dump_dir, restype_dir, k, max_n
         self.rng = np.random.default_rng(seed)
-        self.labels = self._labels(results_csv)
-        self.items = self._index(pool_csv, require_full)
         self._cache = {}
+        self.labels = self._labels(results_csv)
+        self.iptm = self._iptms(results_csv)
+        self.excluded = []
+        self.items = self._index(pool_csv, require_full)
+        # THE POPULATION IS ASSERTED, NOT WHATEVER SURVIVED. Structures can drop out for a
+        # missing dump, a missing PAE mean, a missing chain map or too few eligible poses, and a
+        # model trained on a quietly smaller -- possibly biased -- set is not comparable to the
+        # confidence-head arms, which are defined over a stated population. Caught in review.
+        if self.excluded and not allow_partial:
+            raise SystemExit(
+                f"STOP: {len(self.excluded)} interface(s) of "
+                f"{len(self.excluded) + len(self.items)} were excluded, so this is not the "
+                f"population the comparison is defined over:\n    "
+                + "\n    ".join(self.excluded[:8])
+                + ("\n    ..." if len(self.excluded) > 8 else "")
+                + "\n  Finish the export, or pass allow_partial and say so wherever the number "
+                  "is used.")
 
     @staticmethod
     def _labels(results_csv):
@@ -47,6 +62,26 @@ class InterfacePoses(Dataset):
             for r in csv.DictReader(fh):
                 try:
                     out[(r["iface"], int(r["seed"]), int(r["sample"]))] = float(r["dockq"])
+                except (KeyError, ValueError):
+                    continue
+        return out
+
+    @staticmethod
+    def _iptms(results_csv):
+        """(iface, seed, sample) -> ipTM, the sample-level feature upstream feeds past the pool.
+
+        UPSTREAM USES ipTM AND pTM; WE HAVE ONLY ipTM. results.csv carries no pTM column and
+        recovering it would need another forward pass over all 38,150 poses. ipTM is the
+        discriminative one -- it is what the shipped head selects on, and the baseline this whole
+        project is measured against -- while pTM is a global confidence that varies little within
+        a complex. So this is ipTM-only, which is a stated deviation from the no-ESM baseline
+        rather than the dim=0 ablation it was before. Raised in review.
+        """
+        out = {}
+        with open(results_csv) as fh:
+            for r in csv.DictReader(fh):
+                try:
+                    out[(r["iface"], int(r["seed"]), int(r["sample"]))] = float(r["iptm"])
                 except (KeyError, ValueError):
                     continue
         return out
@@ -63,8 +98,12 @@ class InterfacePoses(Dataset):
             poses = [p for p in poses if "_paesum" not in os.path.basename(p)
                      and "_pae_mean" not in os.path.basename(p)]
             if not poses:
+                for c1, c2 in chains:
+                    self.excluded.append(f"{pdb}_{c1}{c2}: no pose dumps")
                 continue
             if not os.path.exists(os.path.join(self.dump, pdb, "_pae_mean.npz")):
+                for c1, c2 in chains:
+                    self.excluded.append(f"{pdb}_{c1}{c2}: no merged _pae_mean.npz")
                 # WITHOUT THE DENSE MEAN EVERY CENTRED FEATURE IS WRONG, and wrong in a direction
                 # that flatters every pose. Skipping is the only safe default.
                 continue
@@ -82,7 +121,10 @@ class InterfacePoses(Dataset):
                       and isinstance(cm.get(f"{s}_{k}"), dict)
                       and iface in cm.get(f"{s}_{k}", {})]
                 if require_full and len(ok) < self.k:
+                    self.excluded.append(f"{iface}: {len(ok)} eligible pose(s), need {self.k}")
                     continue
+                if not ok:
+                    self.excluded.append(f"{iface}: no pose with both a label and a chain map")
                 if ok:
                     items.append({"iface": iface, "pdb": pdb, "poses": ok})
         return items
@@ -113,7 +155,7 @@ class InterfacePoses(Dataset):
         poses = it["poses"]
         pick = (self.rng.choice(len(poses), self.k, replace=len(poses) < self.k)
                 if len(poses) != self.k else np.arange(self.k))
-        xs, lens, ys = [], [], []
+        xs, lens, ys, sf = [], [], [], []
         mean = letters = None
         for p in pick:
             path, sd, smp = poses[int(p)]
@@ -131,13 +173,16 @@ class InterfacePoses(Dataset):
             xs.append(f)
             lens.append(npair)
             ys.append(FT.logit_label(self.labels[(it["iface"], sd, smp)]))
+            sf.append([self.iptm.get((it["iface"], sd, smp), 0.0)])
         N = max(1, max(lens))
         x = np.zeros((self.k, N, FT.FEATURE_DIM), dtype=np.float32)
         for i, f in enumerate(xs):
             if len(f):
                 x[i, :len(f)] = f
         return {"x": torch.from_numpy(x), "lengths": torch.tensor(lens, dtype=torch.long),
-                "y": torch.tensor(ys, dtype=torch.float32), "iface": it["iface"]}
+                "y": torch.tensor(ys, dtype=torch.float32),
+                "sample_features": torch.tensor(sf, dtype=torch.float32),
+                "iface": it["iface"]}
 
     def _chainmap_safe(self, pdb):
         """The chain map, or {} when absent -- used at INDEX time, where a missing map should

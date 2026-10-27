@@ -138,17 +138,17 @@ def main():
     dev = a.device if torch.cuda.is_available() else "cpu"
     model = DeepSet(input_dim=FT.FEATURE_DIM, phi_hidden_dims=[512, 256, 128, 256],
                     rho_hidden_dims=[2048, 1024, 512, 256, 128], output_dim=1,
-                    aggregator="attn_pool_concat_stats", sample_level_dim=0).to(dev)
+                    aggregator="attn_pool_concat_stats", sample_level_dim=1).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=a.lr, weight_decay=a.weight_decay)
     print(f"  {sum(p.numel() for p in model.parameters()):,} parameters on {dev}")
 
-    best = float("inf")
+    best = -float("inf")   # selecting on top-1 DockQ, higher is better
     for ep in range(1, a.epochs + 1):
         model.train()
         tot = n = 0.0
         for b in dl:
             x, lens, y = b["x"].to(dev), b["lengths"].to(dev), b["y"].to(dev)
-            pred = model(x, lens).squeeze(-1)
+            pred = model(x, lens, b["sample_features"].to(dev)).squeeze(-1)
             l_val = F.smooth_l1_loss(pred, y, beta=a.smooth_l1_beta)
             # PROBABILITY SPACE for the two group losses, and upstream's relevance weighting:
             # clamp(std(true_sig)/0.07, 0, 1) down-weights complexes whose poses are all much of
@@ -168,25 +168,36 @@ def main():
             n += len(y)
         model.eval()
         vt = vn = 0.0
-        rhos = []
+        rhos, top1, orc = [], [], []
         with torch.no_grad():
             for b in dv:
                 x, lens, y = b["x"].to(dev), b["lengths"].to(dev), b["y"].to(dev)
-                pred = model(x, lens).squeeze(-1)
+                pred = model(x, lens, b["sample_features"].to(dev)).squeeze(-1)
                 vt += float(F.smooth_l1_loss(pred, y, beta=a.smooth_l1_beta)) * len(y)
                 vn += len(y)
-                rhos.append(float(1.0 - spearman_loss(torch.sigmoid(pred),
-                                                      torch.sigmoid(y),
+                rhos.append(float(1.0 - spearman_loss(torch.sigmoid(pred), torch.sigmoid(y),
                                                       tau=a.spearman_tau).mean()))
+                # TOP-1 IS THE CRITERION THE PROJECT IS JUDGED ON. Selecting checkpoints on
+                # regression loss would repeat the mistake this whole project has measured: a
+                # better loss, and a better rank correlation, need not improve the single pick.
+                # Our own arms moved rho 0.2301 -> ~0.255 and selected DockQ by +0.0024. So the
+                # best checkpoint is the one that PICKS best, and the val DockQ here is recovered
+                # from the logit label by the inverse of features.logit_label.
+                dq = torch.sigmoid(y)
+                sel = dq.gather(1, pred.argmax(dim=1, keepdim=True)).squeeze(1)
+                top1 += sel.tolist()
+                orc += dq.max(dim=1).values.tolist()
         vl = vt / max(vn, 1)
+        t1 = float(np.mean(top1)) if top1 else 0.0
         print(f"  epoch {ep:3d}  train {tot / max(n, 1):.4f}  val {vl:.4f}  "
-              f"val soft-rho {np.mean(rhos):+.4f}", flush=True)
-        if vl < best:
-            best = vl
-            torch.save({"model": model.state_dict(), "epoch": ep, "val": vl,
-                        "feature_dim": FT.FEATURE_DIM},
+              f"soft-rho {np.mean(rhos):+.4f}  val top-1 DockQ {t1:.4f} "
+              f"(oracle {np.mean(orc):.4f})", flush=True)
+        if t1 > best:
+            best = t1
+            torch.save({"model": model.state_dict(), "epoch": ep, "val_loss": vl,
+                        "val_top1": t1, "feature_dim": FT.FEATURE_DIM, "sample_level_dim": 1},
                        os.path.join(ROOT, a.out, "best.pt"))
-    print(f"  best internal val {best:.4f} -> {os.path.join(a.out, 'best.pt')}")
+    print(f"  best internal val top-1 DockQ {best:.4f} -> {os.path.join(a.out, 'best.pt')}")
     return 0
 
 
