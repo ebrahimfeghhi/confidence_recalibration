@@ -4,8 +4,11 @@
 These are the claims the design rests on, so they are asserted rather than argued.
 """
 import math
+import os
 import sys
 sys.path.insert(0, __import__("os").path.dirname(__file__))
+
+import torch
 
 import rank_loss as R
 
@@ -360,6 +363,109 @@ try:
     check("tau <= 0 raises", False, "no exception")
 except ValueError:
     check("tau <= 0 raises", True, "ValueError")
+
+# ---------------------------------------------------------------- ABAG-Rank's two group forms
+#
+# PORTED, SO THE TEST IS EQUIVALENCE, NOT PLAUSIBILITY. These two losses exist upstream; the thing
+# that can go wrong is a port that is subtly a different objective, which is exactly what happened
+# to the first version of the distance term there (averaged over K^2 instead of summed over unique
+# pairs, making it ~45x weaker). So the first checks compare against abag_rank/train.py directly.
+
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("_abt", os.path.join(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__))), "abag_rank", "train.py"))
+_abt = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_abt)
+
+_S = [0.70, 0.69, 0.69, 0.69, 0.66]
+_D = [0.81, 0.42, 0.42, 0.11, 0.55]
+_ls, _cs, _ = R.pair_terms_spearman(_S, _D, rel_scale=0.0)
+_ld, _cd, _ = R.pair_terms_distance(_S, _D, rel_scale=0.0)
+_St = torch.tensor([_S], dtype=torch.float64, requires_grad=True)
+_Dt = torch.tensor([_D], dtype=torch.float64)
+_as = _abt.spearman_loss(_St, _Dt, tau=R.DEFAULT_SPEARMAN_TAU)[0]
+_ad = _abt.distance_loss(_St, _Dt)[0]
+_gs = torch.autograd.grad(_as, _St, retain_graph=True)[0][0].tolist()
+_gd = torch.autograd.grad(_ad, _St)[0][0].tolist()
+check("spearman value matches ABAG-Rank", abs(_ls - float(_as)) < 1e-12,
+      f"{_ls:.12f} vs {float(_as):.12f}")
+check("spearman coeffs match ABAG-Rank autograd",
+      max(abs(x - y) for x, y in zip(_cs, _gs)) < 1e-12)
+check("distance value matches ABAG-Rank", abs(_ld - float(_ad)) < 1e-12,
+      f"{_ld:.12f} vs {float(_ad):.12f}")
+check("distance coeffs match ABAG-Rank autograd",
+      max(abs(x - y) for x, y in zip(_cd, _gd)) < 1e-12)
+
+# BOTH LOSSES SEE ONLY SCORE DIFFERENCES, so adding a constant to every score cannot change them
+# and the coefficients MUST sum to zero. This is the invariant that catches a sign error or a
+# missing pair, and it is why neither term can be won by moving the whole group up or down --
+# which is the entire reason they are the structure-invariant objective.
+check("spearman coeffs sum to zero", abs(sum(_cs)) < 1e-10, f"{sum(_cs):.3e}")
+check("distance coeffs sum to zero", abs(sum(_cd)) < 1e-10, f"{sum(_cd):.3e}")
+_shift = [x + 0.137 for x in _S]
+check("spearman is shift-invariant",
+      abs(R.pair_terms_spearman(_shift, _D, rel_scale=0.0)[0] - _ls) < 1e-12)
+check("distance is shift-invariant",
+      abs(R.pair_terms_distance(_shift, _D, rel_scale=0.0)[0] - _ld) < 1e-12)
+
+# UNLIKE SPEARMAN, THE DISTANCE TERM IS NOT SCALE-INVARIANT: it pins the gaps, so halving every
+# score must change it. If this ever passes, the two terms have collapsed into one.
+_half = [x * 0.5 for x in _S]
+check("distance is NOT scale-invariant",
+      abs(R.pair_terms_distance(_half, _D, rel_scale=0.0)[0] - _ld) > 1e-6)
+check("spearman is near scale-SENSITIVE via tau",
+      abs(R.pair_terms_spearman(_half, _D, rel_scale=0.0)[0] - _ls) > 1e-9,
+      "soft ranks read gaps against tau, so a rescale does move it")
+
+# THE RELEVANCE GATE. A group whose DockQ values are identical carries no ordering, and upstream
+# silences it rather than training on noise.
+check("flat group is gated to zero", R.pair_terms_spearman(_S, [0.4] * 5)[0] == 0.0)
+check("gate is linear below the scale",
+      abs(R._relevance([0.5, 0.5, 0.5, 0.5, 0.57], 0.07)
+          - (torch.tensor([0.5, 0.5, 0.5, 0.5, 0.57], dtype=torch.float64).std(unbiased=True)
+             / 0.07).item()) < 1e-9)
+check("gate saturates at 1", R._relevance([0.0, 1.0, 0.5, 0.2, 0.8], 0.07) == 1.0)
+check("gate off returns 1", R._relevance([0.5] * 5, 0.0) == 1.0)
+
+# GROUP_COEFFS MUST PARTITION BY SEED, not pool the poses. Two seeds of the same interface are two
+# independent orderings; pooling them would make this a cross-seed objective wearing a within-seed
+# name, which is the exact confusion the trainer's banner guard exists to prevent.
+_sk = {(500000, 0): 0.70, (500000, 1): 0.69, (500000, 2): 0.66,
+       (500001, 0): 0.40, (500001, 1): 0.55, (500001, 2): 0.52}
+_dk = {(500000, 0): 0.81, (500000, 1): 0.42, (500000, 2): 0.11,
+       (500001, 0): 0.20, (500001, 1): 0.70, (500001, 2): 0.45}
+_c_all, _n_all, _l_all = R.group_coeffs(_sk, _dk, form="spearman", rel_scale=0.0)
+_e0 = R.pair_terms_spearman([0.70, 0.69, 0.66], [0.81, 0.42, 0.11], rel_scale=0.0)
+_e1 = R.pair_terms_spearman([0.40, 0.55, 0.52], [0.20, 0.70, 0.45], rel_scale=0.0)
+check("group_coeffs partitions by seed", abs(_l_all - (_e0[0] + _e1[0])) < 1e-12,
+      f"{_l_all:.9f} vs {_e0[0] + _e1[0]:.9f}")
+check("per-seed coeffs are preserved",
+      max(abs(_c_all[(500000, i)] - _e0[1][i]) for i in range(3)) < 1e-12)
+check("each seed is its own zero-sum group",
+      abs(sum(_c_all[(500000, i)] for i in range(3))) < 1e-10
+      and abs(sum(_c_all[(500001, i)] for i in range(3))) < 1e-10)
+
+# THE COMBINED FORM IS THE WEIGHTED SUM, with the weight already inside the coefficients so the
+# reported loss describes the gradient actually taken.
+_c_sp, _, _l_sp = R.group_coeffs(_sk, _dk, form="spearman", rel_scale=0.0)
+_c_di, _, _l_di = R.group_coeffs(_sk, _dk, form="distance", rel_scale=0.0)
+_c_both, _, _l_both = R.group_coeffs(_sk, _dk, form="spearman_distance", dist_weight=0.1,
+                                     rel_scale=0.0)
+# AND THE SINGLE FORMS ARE UNWEIGHTED, which is what makes this addition meaningful: dist_weight
+# is a RELATIVE weight, so form="distance" returns the raw term and only the combined form scales
+# it. The first version of group_coeffs applied it in both, and this check is what exposed it.
+check("combined loss = rho + 0.1 * dist", abs(_l_both - (_l_sp + 0.1 * _l_di)) < 1e-12,
+      f"{_l_both:.9f} vs {_l_sp + 0.1 * _l_di:.9f}")
+check("combined coeffs = rho + 0.1 * dist",
+      max(abs(_c_both[k] - (_c_sp[k] + 0.1 * _c_di[k])) for k in _c_both) < 1e-12)
+check("single distance form is NOT pre-weighted",
+      abs(_l_di - (R.pair_terms_distance([0.70, 0.69, 0.66], [0.81, 0.42, 0.11], rel_scale=0.0)[0]
+                   + R.pair_terms_distance([0.40, 0.55, 0.52], [0.20, 0.70, 0.45],
+                                           rel_scale=0.0)[0])) < 1e-12)
+
+# A SINGLETON SEED CANNOT BE RANKED and must drop out rather than divide by zero.
+_c_one, _n_one, _l_one = R.group_coeffs({(7, 0): 0.5}, {(7, 0): 0.4}, form="spearman")
+check("singleton group returns empty", _c_one == {} and _n_one == 0 and _l_one == 0.0)
 
 print("\n" + ("ALL PASS" if not FAILS else f"{len(FAILS)} FAILURE(S): {FAILS}"))
 sys.exit(1 if FAILS else 0)

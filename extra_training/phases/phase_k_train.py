@@ -131,6 +131,23 @@ def main():
                          "2,000 steps of a 100,000-step run (2%%). At batch 256 three epochs of our "
                          "cache is 292 optimiser steps, so 2,000 would be 685%% of the run and the "
                          "learning rate would never reach its set value. 20 is 6.8%%.")
+    ap.add_argument("--lr-decay-start-epoch", type=float, default=0.0,
+                    help="HOLD --lr FLAT UNTIL THIS EPOCH, then begin decaying toward --lr-final. "
+                         "0 (default) keeps the historical behaviour: decay starts the moment "
+                         "warmup ends. Expressed in EPOCHS, not steps, because that is how the "
+                         "run's own curves are read; it is converted using the run's expected "
+                         "steps-per-epoch, the same horizon the cosine already uses.")
+    ap.add_argument("--lr-decay-end-epoch", type=float, default=0.0,
+                    help="REACH --lr-final BY THIS EPOCH and hold it flat afterwards. 0 (default) "
+                         "spreads the decay over the whole run, which is what every arm before "
+                         "this one did. Setting it shortens the decay window, so the lr lands at "
+                         "--lr-final early and the remaining epochs train at that floor.")
+    ap.add_argument("--lr-decay-shape", default="cosine", choices=["cosine", "exponential"],
+                    help="COSINE (default) matches the existing schedule exactly, so an arm that "
+                         "leaves the two epoch flags at 0 is bit-identical to before. EXPONENTIAL "
+                         "is geometric in the lr, lr*(lr_final/lr)**p, which is the better shape "
+                         "when the span is large: 1e-2 -> 1e-5 is a 1000x drop, and cosine spends "
+                         "most of the window in its top decade.")
     ap.add_argument("--lr-final", type=float, default=0.0,
                     help="COSINE DECAY TARGET. 0 (default) keeps the historical schedule: warm up "
                          "over --warmup-steps and then hold --lr flat for the whole run, which is "
@@ -199,7 +216,31 @@ def main():
                          "DockQ is driven by the big misses.")
     ap.add_argument("--no-rank-weight-by-gap", dest="rank_weight_by_gap",
                     action="store_false", help="weight every pose pair equally instead.")
-    ap.add_argument("--rank-form", choices=("linear", "softplus", "expected"), default="linear",
+    ap.add_argument("--rank-spearman-tau", type=float, default=0.0,
+                    help="SOFT-RANK TEMPERATURE for --rank-form spearman, in the units of the "
+                         "quantity ranked (ipTM and DockQ, both 0..1). 0 takes "
+                         "rank_loss.DEFAULT_SPEARMAN_TAU = 0.05, which is ABAG-Rank's own training "
+                         "value. NOT --rank-tau: that is a margin scale for the softplus form, "
+                         "measured as the median cross-seed ipTM gap, and the two are unrelated.")
+    ap.add_argument("--rank-dist-weight", type=float, default=0.1,
+                    help="WEIGHT ON THE DISTANCE-PRESERVATION TERM relative to 1.0 on the ranking "
+                         "term, for --rank-form spearman_distance. 0.1 is ABAG-Rank's effective "
+                         "value (its configs define distance_lambda_start, while train.py:423 "
+                         "reads distance_lambda and falls back to 0.1). Note the term SUMS over "
+                         "pairs, so a 5-pose within-seed group gives ~4.5x less than upstream's "
+                         "10-pose group for the same per-pair error; raise this to compensate if "
+                         "you want upstream's magnitude rather than its weighting.")
+    ap.add_argument("--rank-rel-scale", type=float, default=0.07,
+                    help="RELEVANCE GATE for the two group forms: the group's loss is scaled by "
+                         "clamp(std(DockQ)/this, 0, 1), upstream's. 0 disables it. EXPECT IT TO "
+                         "BITE: 59%% of our training interfaces have pose-to-pose DockQ std below "
+                         "0.07 measured over all 50 poses, and a within-seed group of 5 should "
+                         "spread less, so a large share of groups will be down-weighted or "
+                         "silenced. The run logs the mean weight -- read it before concluding "
+                         "anything about the term's effect.")
+    ap.add_argument("--rank-form", choices=("linear", "softplus", "expected",
+                                            "spearman", "distance", "spearman_distance"),
+                    default="linear",
                     help="SHAPE of the ranking term. linear and softplus are PAIRWISE; expected "
                          "is not.\n"
                          "expected is L = -sum_i softmax(ipTM/tau)_i * DockQ_i over every pose of "
@@ -1443,7 +1484,12 @@ def main():
         # deployed objective" while training within-seed linear pairs is how a run gets written up
         # as the wrong experiment, so a non-default setting on a path that ignores it is refused
         # rather than announced.
-        _ignores = (a.rank_form == "expected") or not a.rank_cross_seed
+        # THE TWO GROUP FORMS IGNORE THEM TOO, for the same reason the expected form does: they
+        # are defined on a whole ordering, so there is no pair to include, weight or decay. Added
+        # to this guard rather than documented, because the banner below would otherwise print a
+        # pair family for a loss that has none.
+        _group_form = a.rank_form in ("spearman", "distance", "spearman_distance")
+        _ignores = (a.rank_form == "expected") or _group_form or not a.rank_cross_seed
         _nondefault = [f"--rank-pairs {a.rank_pairs}" for _ in (1,) if a.rank_pairs != "cross"] \
             + [f"--rank-within-weight {a.rank_within_weight:g}" for _ in (1,)
                if a.rank_within_weight != 1.0] \
@@ -1452,7 +1498,12 @@ def main():
         if _ignores and _nondefault:
             raise SystemExit(
                 "STOP: " + ", ".join(_nondefault) + " cannot take effect here. "
-                + ("--rank-form expected is pair-free -- group_coeffs returns before the pair "
+                + (f"--rank-form {a.rank_form} is defined on the whole ordering of a group, not "
+                   "on pairs, so the family, the within-seed weight, the rank decay and the "
+                   "straddle filter are all inapplicable. Its own knobs are "
+                   "--rank-spearman-tau, --rank-dist-weight and --rank-rel-scale."
+                   if _group_form else
+                   "--rank-form expected is pair-free -- group_coeffs returns before the pair "
                    "loop, so the family, the within-seed weight and the rank decay are all "
                    "inapplicable."
                    if a.rank_form == "expected" else
@@ -1463,7 +1514,10 @@ def main():
                   "objective the run is not training.")
 
         # THE FAMILY IS NAMED BEFORE THE TAU, because the tau is only interpretable against it.
-        _fam_txt = {"cross": "CROSS-SEED pairs only (different seeds) -- the deployed objective",
+        _fam_txt = {"cross": ("GROUPS OF ONE SEED -- ABAG-Rank's group terms, partitioned by seed "
+                              "inside group_coeffs; --rank-pairs does not apply"
+                              if _group_form else
+                              "CROSS-SEED pairs only (different seeds) -- the deployed objective"),
                     "within": "WITHIN-SEED pairs only (same seed) -- a PROXY for selection, not "
                               "the deployed objective",
                     "all": "BOTH families at ONE tau"}[a.rank_pairs]
@@ -1531,6 +1585,14 @@ def main():
             print(f"  CROSS-SEED GROUPS: {a.rank_structs_per_step} structure(s) x all seeds per "
                   f"step; a pose's coefficient uses every other pose of its interface, so pass A "
                   f"scores the whole step before the first backward")
+        elif a.rank_form in ("spearman", "distance", "spearman_distance"):
+            raise SystemExit(
+                f"STOP: --rank-form {a.rank_form} requires --rank-cross-seed. Its coefficients "
+                "depend on every score in the group, so they need pass A, and pass A only runs on "
+                "the cross-seed step grouping. THIS IS NOT A CROSS-SEED OBJECTIVE: the groups are "
+                "partitioned by seed inside group_coeffs, so each group is one seed's --nsample "
+                "poses. --rank-cross-seed is what makes a step hold whole structures so pass A "
+                "can score them; the grouping it implies is then overridden.")
         elif a.rank_form in ("softplus", "expected"):
             raise SystemExit(
                 f"STOP: --rank-form {a.rank_form} without --rank-cross-seed is not implemented. "
@@ -2114,6 +2176,11 @@ def main():
                  # so a resume that added or dropped the cosine would be a different experiment.
                  "lr_final": a.lr_final,
                  "lr": a.lr, "warmup_steps": a.warmup_steps,
+                 # The decay WINDOW and SHAPE change the lr at every step just as lr_final does,
+                 # so they belong beside it rather than being silently re-derived on resume.
+                 "lr_decay_start_epoch": a.lr_decay_start_epoch,
+                 "lr_decay_end_epoch": a.lr_decay_end_epoch,
+                 "lr_decay_shape": a.lr_decay_shape,
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
@@ -2183,6 +2250,10 @@ def main():
         # like any other field -- which means a resume that ENABLES cropping shows up as real
         # drift and needs --resume-allow-drift, because it genuinely changes the objective.
         _PRE_CROP = {"lora_rank": 0, "lora_alpha": 0.0, "lora_targets": "", "lora_dropout": 0.0,
+                     # A bundle written before these flags existed ran the full-run schedule, which
+                     # is exactly what the 0 defaults mean, and "cosine" is what it computed.
+                     "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
+                     "lr_decay_shape": "cosine",
                  "train_only": "",
                      "crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
                      # ABSENCE IS EVIDENCE, as for the two above: a bundle written before
@@ -3674,7 +3745,14 @@ def main():
                 pairs=a.rank_pairs,
                 within_weight=a.rank_within_weight,
                 rank_decay_k=a.rank_topk_decay,
-                straddle=a.rank_straddle)
+                straddle=a.rank_straddle,
+                # GROUP-FORM KNOBS. Ignored by every pairwise form, and the pairwise knobs above
+                # are ignored by these two -- which is why the startup guard refuses the
+                # combinations rather than letting a flag look honoured.
+                spearman_tau=(a.rank_spearman_tau if a.rank_spearman_tau > 0
+                              else RKL.DEFAULT_SPEARMAN_TAU),
+                dist_weight=a.rank_dist_weight,
+                rel_scale=a.rank_rel_scale)
             if npair == 0:
                 continue
             n_groups += 1
@@ -5038,9 +5116,27 @@ def main():
                     # COSINE AFTER WARMUP. Driven by `step`, which resume restores, so a resumed
                     # run picks up the schedule where it left off instead of restarting the decay.
                     if a.lr_final > 0.0 and _lr_horizon[0] > a.warmup_steps and step >= a.warmup_steps:
-                        _p = min(1.0, (step - a.warmup_steps)
-                                 / float(_lr_horizon[0] - a.warmup_steps))
-                        cur_lr = a.lr_final + 0.5 * (lr - a.lr_final) * (1.0 + math.cos(math.pi * _p))
+                        # THE DECAY WINDOW. Both ends default to the historical schedule: start at
+                        # the end of warmup, end on the last expected step. Given in epochs and
+                        # converted with the run's own steps-per-epoch, derived from the SAME
+                        # expected-step horizon the cosine uses -- not from steps counted so far,
+                        # which would make the window move as the run progresses.
+                        _spe = _lr_horizon[0] / max(1e-9, float(a.epochs))
+                        _d0 = (a.warmup_steps if a.lr_decay_start_epoch <= 0.0
+                               else max(a.warmup_steps, a.lr_decay_start_epoch * _spe))
+                        _d1 = (_lr_horizon[0] if a.lr_decay_end_epoch <= 0.0
+                               else a.lr_decay_end_epoch * _spe)
+                        if step < _d0:
+                            cur_lr = lr                       # still in the flat hold
+                        elif _d1 <= _d0:
+                            cur_lr = a.lr_final               # degenerate window: land immediately
+                        else:
+                            _p = min(1.0, (step - _d0) / float(_d1 - _d0))
+                            if a.lr_decay_shape == "exponential":
+                                cur_lr = lr * (a.lr_final / lr) ** _p
+                            else:
+                                cur_lr = a.lr_final + 0.5 * (lr - a.lr_final) * (
+                                    1.0 + math.cos(math.pi * _p))
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
                     n_in_accum += 1

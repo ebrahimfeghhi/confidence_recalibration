@@ -547,9 +547,34 @@ def rank_decay_weights(sv, k):
     return v
 
 
+DEFAULT_SPEARMAN_TAU = 0.05
+"""Soft-rank temperature, in the units of the quantity being ranked.
+
+0.05 is ABAG-Rank's own training value (configs/losses/one_minus_rho.yaml), and it is applied here
+to ipTM and DockQ -- both on 0..1 -- which is the space upstream runs it in. It is NOT DEFAULT_TAU:
+that one is a margin scale for the softplus loss, measured as the median cross-seed ipTM gap, and
+the two numbers answer different questions. Reusing it here would couple a temperature to a
+measurement that has nothing to do with rank saturation.
+"""
+
+DEFAULT_REL_SCALE = 0.07
+"""Relevance gate: a group's loss is scaled by clamp(std(DockQ) / 0.07, 0, 1).
+
+Upstream's, and the reason it exists is that a complex whose poses are all equally good carries no
+ordering to learn, so its gradient is noise. It matters MORE here than upstream, not less: a
+within-seed group holds 5 poses rather than 50, and 59% of our training interfaces already sit
+below 0.07 measured over all 50. Expect this gate to suppress a large share of within-seed groups,
+and read the logged mean weight before concluding anything about the term's effect.
+
+Set rel_scale=0.0 to disable the gate.
+"""
+
+
 def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
                  weight_by_gap=True, dq_tol=1e-6, pairs="cross", within_weight=1.0,
-                 rank_decay_k=0.0, straddle=0.0):
+                 rank_decay_k=0.0, straddle=0.0,
+                 spearman_tau=DEFAULT_SPEARMAN_TAU, dist_weight=0.1,
+                 rel_scale=DEFAULT_REL_SCALE):
     """Coefficients for ONE interface over poses drawn from SEVERAL SEEDS.
 
     s_by_key / dq_by_key are {(seed, sample): float} over the whole group -- after pass A's
@@ -603,6 +628,56 @@ def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
         loss = -(torch.softmax(s / tau, dim=0) * d).sum()
         loss.backward()
         return ({k: float(g) for k, g in zip(keys, s.grad)}, n, float(loss.detach()))
+
+    if form in ("spearman", "distance", "spearman_distance"):
+        # ABAG-RANK'S TWO GROUP TERMS, APPLIED WITHIN EACH SEED.
+        #
+        # Both are group-level rather than pairwise, so `pairs`, `within_weight`, `weight_by_gap`,
+        # `rank_decay_k` and `straddle` DO NOT APPLY and are deliberately not consulted -- a
+        # pairwise filter has no meaning for a loss defined on a whole ordering. The trainer
+        # refuses those flags alongside these forms rather than letting them look honoured.
+        #
+        # ONE SEED IS ONE GROUP. The keys are (seed, sample), so partitioning on key[0] gives the
+        # --nsample samples of a single seed, which is the grouping asked for. Each seed's
+        # coefficients are summed into the same output dict, so a step holding several seeds of an
+        # interface contributes several independent groups rather than one pooled ordering.
+        #
+        # Partitioned HERE rather than in the trainer so that pass A, its completeness assertion,
+        # the all_gather and the group divisor are reused exactly as the cross-seed forms left
+        # them; the trainer cannot tell the difference.
+        by_seed = {}
+        for _ix, _k in enumerate(keys):
+            by_seed.setdefault(_k[0], []).append(_ix)
+        out, tot_l, tot_n = {}, 0.0, 0
+        for _sd, _idxs in sorted(by_seed.items()):
+            if len(_idxs) < 2:
+                continue
+            _ss = [sv[i] for i in _idxs]
+            _dd = [dv[i] for i in _idxs]
+            _acc = [0.0] * len(_idxs)
+            if form in ("spearman", "spearman_distance"):
+                _l, _c, _n = pair_terms_spearman(_ss, _dd, tau=spearman_tau,
+                                                 rel_scale=rel_scale)
+                tot_l += _l
+                tot_n += _n
+                _acc = [a + b for a, b in zip(_acc, _c)]
+            if form in ("distance", "spearman_distance"):
+                _l, _c, _n = pair_terms_distance(_ss, _dd, rel_scale=rel_scale)
+                # dist_weight APPLIES ONLY WHEN COMBINING. It is a RELATIVE weight against the
+                # ranking term's 1.0 -- ABAG-Rank's own split -- so applying it to the term on its
+                # own would make `--rank-form distance` quietly 10x smaller than the flag reads,
+                # with --alpha-rank then scaling an already-scaled term. Caught by the combined-
+                # form test, which expected the two single forms to add up and found they did not.
+                _w = dist_weight if form == "spearman_distance" else 1.0
+                tot_l += _w * _l
+                if form == "distance":
+                    tot_n += _n
+                _acc = [a + _w * b for a, b in zip(_acc, _c)]
+            for _ix, _cv in zip(_idxs, _acc):
+                out[keys[_ix]] = out.get(keys[_ix], 0.0) + _cv
+        if not tot_n:
+            return {}, 0, 0.0
+        return out, tot_n, float(tot_l)
 
     if tau <= 0 and form == "softplus":
         raise ValueError(f"tau must be positive, got {tau!r}")
@@ -716,3 +791,95 @@ def group_loss(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
     if npair == 0 or den <= 0.0:
         return 0.0, 0
     return ((2.0 * tau / den) * num if form == "softplus" else num / den), npair
+
+
+def _relevance(dq_vals, rel_scale):
+    """clamp(std(dq) / rel_scale, 0, 1); 1.0 when the gate is off.
+
+    UNBIASED std (ddof=1), matching torch's default, which is what upstream's .std() computes. The
+    biased version is smaller on 5 samples by a factor sqrt(4/5), which would gate ~11% harder at
+    exactly the group size this path uses.
+    """
+    if not rel_scale:
+        return 1.0
+    n = len(dq_vals)
+    if n < 2:
+        return 0.0
+    m = sum(dq_vals) / n
+    var = sum((x - m) ** 2 for x in dq_vals) / (n - 1)
+    return min(max(var ** 0.5 / rel_scale, 0.0), 1.0)
+
+
+def pair_terms_spearman(s_vals, dq_vals, tau=DEFAULT_SPEARMAN_TAU,
+                        rel_scale=DEFAULT_REL_SCALE):
+    """(loss, coeffs, n_pairs) for one group: 1 - soft Spearman, ABAG-Rank's ranking term.
+
+    SCORE-DEPENDENT, unlike `coeffs`. The soft rank is a sum of sigmoids over score gaps, so the
+    coefficients move as the scores do and CANNOT be precomputed from labels. A caller therefore
+    needs the whole group's scores before the first backward -- the same two-pass requirement the
+    softplus form has.
+
+    The soft rank is sum_j sigmoid((x_i - x_j)/tau): how confidently i beats each other pose,
+    summed. At tau 0.05 a gap of 0.05 in ipTM reads as roughly one rank of separation and gaps far
+    below it read as a coin flip, which is what makes this differentiable where a sort is not.
+
+    TIES ARE KEPT, unlike the linear loss. There a tie is noise -- it asks the head to separate two
+    equally good poses. Here an equal pair simply contributes equal target ranks, which is
+    information: it says do not order these two. Dropping them would also leave the rank denominator
+    n(n^2-1) inconsistent with the number of items actually ranked.
+    """
+    n = len(s_vals)
+    if n < 2:
+        return 0.0, [0.0] * n, 0
+    w = _relevance(dq_vals, rel_scale)
+    if w <= 0.0:
+        return 0.0, [0.0] * n, 0
+    s = torch.tensor(s_vals, dtype=torch.float64, requires_grad=True)
+    t = torch.tensor(dq_vals, dtype=torch.float64)
+    rs = torch.sigmoid((s.unsqueeze(-1) - s.unsqueeze(-2)) / tau).sum(-1)
+    rt = torch.sigmoid((t.unsqueeze(-1) - t.unsqueeze(-2)) / tau).sum(-1)
+    mse = (rs - rt).pow(2).sum()
+    rho = 1.0 - 6.0 * mse / (n * (n ** 2 - 1))
+    # CLAMPED like upstream. Note a clamped rho has zero gradient, so a perfectly ordered or
+    # perfectly reversed group stops contributing -- which is correct for the former and a known
+    # dead spot for the latter.
+    loss = w * (1.0 - rho.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
+    loss.backward()
+    return float(loss.detach()), [float(g) for g in s.grad], n * (n - 1) // 2
+
+
+def pair_terms_distance(s_vals, dq_vals, rel_scale=DEFAULT_REL_SCALE):
+    """(loss, coeffs, n_pairs) for one group: ABAG-Rank's distance-preservation term.
+
+        L = sum_{i<j} ( |s_i - s_j| - |dq_i - dq_j| )^2
+
+    Stronger than an ordering: it pins the SPACING. Two poses 0.3 apart in DockQ are penalised for
+    being 0.02 apart in ipTM even when their order is right.
+
+    SUMMED over unique pairs, not averaged, which is upstream's convention -- averaging over all
+    n^2 entries counts the zero diagonal and makes the term ~n/2 times weaker. Be aware the sum
+    scales with the pair count, so a within-seed group of 5 (10 pairs) produces a term about 4.5x
+    smaller than ABAG-Rank's group of 10 (45 pairs) for the same per-pair error. --rank-dist-weight
+    is the knob to compensate; it is not automatic, because silently rescaling would make this run
+    incomparable to upstream's published weighting.
+
+    ASSUMES THE SCORE AND THE LABEL SHARE A SCALE. Both are 0..1 here (predicted ipTM against
+    DockQ), which is the space upstream uses. It would be meaningless on a raw PAE in Angstroms:
+    unlike the ranking term this loss is not scale-invariant, so a score in different units makes
+    every target gap wrong rather than merely rescaled.
+    """
+    n = len(s_vals)
+    if n < 2:
+        return 0.0, [0.0] * n, 0
+    w = _relevance(dq_vals, rel_scale)
+    if w <= 0.0:
+        return 0.0, [0.0] * n, 0
+    s = torch.tensor(s_vals, dtype=torch.float64, requires_grad=True)
+    total, npair = s.new_zeros(()), 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            total = total + ((s[i] - s[j]).abs() - abs(dq_vals[i] - dq_vals[j])) ** 2
+            npair += 1
+    loss = w * total
+    loss.backward()
+    return float(loss.detach()), [float(g) for g in s.grad], npair
