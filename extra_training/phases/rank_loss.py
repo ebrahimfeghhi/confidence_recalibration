@@ -974,10 +974,16 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
     Only keys present in BOTH dicts are used -- a pose whose label is missing is skipped rather
     than imputed, and the caller is expected to refuse a run whose label coverage is short.
 
-    dL/ds_i = (2/P) * r_i, and sum_i dL/ds_i == 0 identically. With standardize=True the
-    prediction is divided by its own (floored) std as well, which makes the loss invariant to
-    shrinking the scores -- collapse becomes impossible rather than merely penalised -- at the
-    cost of equalising interfaces whose outcomes are not equal.
+    dL/ds_i = (2/P) * r_i, and sum_i dL/ds_i == 0 identically.
+
+    standardize=True divides the centred prediction by its own std as well. THE INVARIANCE IS
+    ONLY ABOVE THE FLOOR, which the gate measured and an earlier version of this docstring got
+    wrong: it claimed collapse "becomes impossible rather than merely penalised". Once a shrunk
+    prediction's std falls below std_floor the clamp engages and the loss changes again -- for the
+    test group, scaling the prediction by 0.1 moved it 0.3718 -> 0.3557. So scale-invariance holds
+    for moderate shrinking and collapse is still penalised in the limit. That is the more useful
+    behaviour, but it is not invariance, and the cost remains equalising interfaces whose outcomes
+    are not equal.
     """
     keys = sorted(set(s_by_key) & set(g_by_key))
     P = len(keys)

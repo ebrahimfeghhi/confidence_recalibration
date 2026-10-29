@@ -238,11 +238,47 @@ def main():
                          "spread less, so a large share of groups will be down-weighted or "
                          "silenced. The run logs the mean weight -- read it before concluding "
                          "anything about the term's effect.")
+    ap.add_argument("--rank-pool", choices=("max", "mean"), default="max",
+                    help="HOW A POSE'S ipTM IS POOLED OVER ANCHOR ROWS, in BOTH pass A and the "
+                         "pass-B term, so the quantity trained is the quantity scored. max is "
+                         "shipped ipTM. mean measured +0.0107 +- 0.0039 (t=2.70) better than the "
+                         "max at the ORACLE on 738 winnable interfaces (65.9% of oracle headroom "
+                         "against 59.0%) and -0.0130 +- 0.0048 (t=-2.68) WORSE when swapped onto "
+                         "the current trained head -- better if trained for, worse if swapped in. "
+                         "It also gives gradient to every row rather than to the argmax alone, "
+                         "which removes the moving-target problem the max has.")
+    ap.add_argument("--rel-labels", default="",
+                    help="directory of <pdb>.npz true-iTM labels from "
+                         "run_logging/build_itm_labels.py, keyed (seed, sample, asym_x, asym_y) "
+                         "-> g_mean, g_max. REQUIRED by --rank-form rel, which regresses on them "
+                         "instead of on DockQ.")
+    ap.add_argument("--rel-standardize", action="store_true",
+                    help="ABLATION. Also divide each interface's centred prediction and label by "
+                         "its own std (floored), which makes the loss invariant to shrinking the "
+                         "scores so collapse becomes impossible rather than merely penalised. OFF "
+                         "by default because it equalises interfaces whose outcomes are NOT equal: "
+                         "measured, corr(within-interface std of the true iTM, DockQ range) = "
+                         "+0.745, so wide-spread interfaces are exactly where a wrong pick is "
+                         "expensive, and the narrow ones have frac acceptable median 1.00.")
     ap.add_argument("--rank-form", choices=("linear", "softplus", "expected",
-                                            "spearman", "distance", "spearman_distance"),
+                                            "spearman", "distance", "spearman_distance",
+                                            "rel"),
                     default="linear",
                     help="SHAPE of the ranking term. linear and softplus are PAIRWISE; expected "
                          "is not.\n"
+                         "rel is MEAN-CENTRED REGRESSION ON THE TRUE iTM and is not a ranking "
+                         "loss at all: L = (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2 over "
+                         "an interface's poses, with g from --rel-labels. It exists because the "
+                         "head's failure is measured to be positional, not collapse: on d32kqp "
+                         "epoch 66, corr(interface MEAN ipTM, interface MEAN DockQ) = +0.866 "
+                         "while the median WITHIN-interface Spearman is +0.317 against +0.690 for "
+                         "the true iTM. Subtracting each interface's own mean from both sides "
+                         "removes the across-complex signal the head already has, so the only "
+                         "thing left to earn is the within-complex ordering selection uses. Its "
+                         "coefficients sum to EXACTLY zero, so it cannot move an interface's "
+                         "level and its accumulated gradient cancels by construction -- set "
+                         "--alpha-rank from gradient NORMS via --grad-probe, never from loss "
+                         "values.\n"
                          "expected is L = -sum_i softmax(ipTM/tau)_i * DockQ_i over every pose of "
                          "the interface: the expected DockQ of the pose the model would SELECT. "
                          "It exists because a pairwise loss spends gradient in proportion to how "
@@ -1085,6 +1121,27 @@ def main():
     # epoch boundary was not enough: that is hours in, and the tree can already have moved.
     _git_commit()
 
+    # REL CONFIG IS CHECKED BEFORE ANY HARDWARE. These refusals were originally placed with the
+    # rest of the ranking-loss setup, which runs after CUDA initialisation -- so a
+    # misconfiguration cost a GPU allocation to discover, and the gate could not reach them
+    # without a free card. A config error should never need hardware to be caught.
+    if a.rank_loss and a.rank_form == "rel":
+        if not a.rank_cross_seed:
+            raise SystemExit(
+                "STOP: --rank-form rel needs --rank-cross-seed. The loss centres on an "
+                "INTERFACE's poses across all its seeds; within one seed it would centre on "
+                f"{a.nsample} poses and remove most of the signal it exists to use.")
+        if not a.rel_labels:
+            raise SystemExit("STOP: --rank-form rel needs --rel-labels (see "
+                             "run_logging/build_itm_labels.py).")
+        if not os.path.isdir(a.rel_labels):
+            raise SystemExit(f"STOP: --rel-labels {a.rel_labels} is not a directory.")
+        _rm = os.path.join(a.rel_labels, "manifest.json")
+        if not os.path.exists(_rm):
+            raise SystemExit(
+                f"STOP: {_rm} is missing, so the label set cannot be identified. Rebuild with "
+                f"run_logging/build_itm_labels.py, which writes it.")
+
     if os.environ.get("LAYERNORM_TYPE") != "openfold":
         raise SystemExit("STOP: set LAYERNORM_TYPE=openfold. Without it the trunk's coordinates are "
                          "silently NaN -- phase_j_replay.py's guard fired on this first.")
@@ -1626,6 +1683,41 @@ def main():
     # interface, which is why it cannot be built per unit the way the linear one is. _xs_div is the
     # number of interface-groups in the step, so the term is a mean over groups; it is a one-element
     # list because pass A writes it and the pose loop reads it from a different frame.
+    # RELATIVE-iTM LABEL CACHE, loaded lazily per structure and kept. One <pdb>.npz is a few KB
+    # and a structure recurs every epoch, so reading it once per process is right; loading all 368
+    # at startup would be wasted on a rank that never sees most of them.
+    _rel_cache = {}
+    _rel_stat = {"groups": 0, "poses": 0, "short_groups": 0, "csum": 0.0, "missing_files": 0}
+
+    def _rel_labels(pdb):
+        """{(seed, sample, ax, ay): g} for one structure, from --rel-labels.
+
+        A MISSING FILE IS FATAL, not empty. An empty dict would make every group "short", the loop
+        would skip them all, and the run would train on PAE alone while its log and saved guard
+        both said --rank-form rel -- the row-weight bool-cast failure in another costume.
+        """
+        if pdb in _rel_cache:
+            return _rel_cache[pdb]
+        if not a.rel_labels:
+            raise SystemExit("STOP: --rank-form rel needs --rel-labels; build it with "
+                             "run_logging/build_itm_labels.py")
+        f = os.path.join(a.rel_labels, f"{pdb}.npz")
+        if not os.path.exists(f):
+            _rel_stat["missing_files"] += 1
+            raise SystemExit(
+                f"STOP: no relative-iTM label file for {pdb} at {f}. Every training structure "
+                f"needs one; rebuild with run_logging/build_itm_labels.py and check its manifest "
+                f"covers this manifest-selection.")
+        z = np.load(f)
+        col = "g_max" if a.rank_pool == "max" else "g_mean"
+        # THE LABEL MUST MATCH THE POOLING. Training the mean-pooled score toward a max-pooled
+        # label would regress onto a different quantity than the one being produced, and both
+        # columns exist precisely so this is a lookup rather than a conversion.
+        d = {(int(sd), int(sp), int(x), int(y)): float(g)
+             for sd, sp, x, y, g in zip(z["seed"], z["sample"], z["ax"], z["ay"], z[col])}
+        _rel_cache[pdb] = d
+        return d
+
     _xs_coef, _xs_div, _xs_stat = {}, [1], {"groups": 0, "pairs": 0, "loss": 0.0, "steps": 0,
                                              "last_groups": 0, "skipped": 0}
     # THE CURRENT STEP'S EXPECTED POSE COUNT. accum_local is a constant only when every
@@ -1686,6 +1778,22 @@ def main():
         _rl_missing = sorted(set(_scored_asym) - _rl_pdbs)
         import rank_loss as _RKL_cfg
         _tau_eff = _rank_tau if _rank_tau is not None else _RKL_cfg.DEFAULT_TAU
+        if a.rank_form == "rel":
+            # The refusals for this form run EARLY, before any hardware -- see the block beside
+            # the LAYERNORM_TYPE check. This is only the report.
+            _man = os.path.join(a.rel_labels, "manifest.json")
+            _mj = json.load(open(_man)) if os.path.exists(_man) else {}
+            print(f"RELATIVE iTM REGRESSION on chain_pair ipTM pooled by {a.rank_pool.upper()}: "
+                  f"L = (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2 per interface over all "
+                  f"its seeds, alpha {a.alpha_rank:g}"
+                  + (", STANDARDISED by the within-interface std" if a.rel_standardize else "")
+                  + f". Labels {a.rel_labels} ({_mj.get('structures', '?')} structure(s), "
+                  f"{_mj.get('rows', '?')} row(s), column "
+                  f"{'g_max' if a.rank_pool == 'max' else 'g_mean'}, digest "
+                  f"{str(_mj.get('digest', '?'))[:12]}). The coefficients sum to EXACTLY zero, so "
+                  f"this term cannot move an interface's level and its accumulated gradient "
+                  f"cancels by construction -- alpha must come from --grad-probe norms, not from "
+                  f"loss values.")
         print(f"RANKING LOSS on chain_pair_iptm: form {a.rank_form}, alpha {a.alpha_rank:g}, "
               f"weight_by_gap={a.rank_weight_by_gap}, {len(_rank_lab)} labelled "
               f"(pdb, seed, interface) group(s) from {_rl_p}"
@@ -2397,6 +2505,8 @@ def main():
                  "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
+                 "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
+                 "rel_standardize": a.rel_standardize,
                  "rank_weight_by_gap": a.rank_weight_by_gap,
                  # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
                  # shape, so a resume that moved any of them silently would be a different
@@ -2521,6 +2631,7 @@ def main():
                      "pose_perblock": False, "pose_perblock_tied": False,
                      "pose_perblock_share": False, "pose_perblock_copy": False,
                      "rank_loss": False, "alpha_rank": 1.0,
+                     "rank_pool": "max", "rel_labels": "", "rel_standardize": False,
                      "rank_weight_by_gap": True, "l2_sp": 0.0, "l2_sp_exclude": "",
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
@@ -3593,7 +3704,10 @@ def main():
                 import rank_loss as RKL
                 _sc = {}
                 for _p in sorted(_scored_asym.get(pdb) or ()):
-                    _v = RKL.iptm(pred["pae"], feat_head, configs, _p)
+                    # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
+                    # describe one quantity and the backward would move another.
+                    _v = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
+                                         pool=a.rank_pool)
                     if _v is not None:
                         _sc[_p] = float(_v.detach())
                 del pred, x, plddt, pae, pde, resolved
@@ -3640,7 +3754,10 @@ def main():
                                      f"({_si.shape[0]} entries).")
                 _samp = int(_si[i])
                 for _p in sorted(_scored_asym.get(pdb) or ()):
-                    _v = RKL.iptm(pred["pae"], feat_head, configs, _p)
+                    # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
+                    # describe one quantity and the backward would move another.
+                    _v = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
+                                         pool=a.rank_pool)
                     if _v is None:
                         continue
                     _ifc = _iface_of.get((pdb, _p))
@@ -3784,7 +3901,8 @@ def main():
                     for _p, _cv in _cs_src:
                         if not _cv:
                             continue
-                        _sr = RKL.iptm(pred["pae"], feat_head, configs, _p)
+                        _sr = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
+                                              pool=a.rank_pool)
                         if _sr is None:
                             continue
                         _obj = _obj + (a.alpha_rank * _cv / _cs_div) * _sr
@@ -3984,20 +4102,42 @@ def main():
         n_groups = 0
         for (_pdb, _pair), s_by in groups.items():
             dq_by = {}
-            for (_sd, _i) in s_by:
-                _lab = _rank_lab.get(_rank_key(_pdb, _sd, _pair))
-                if _lab is not None and _i in _lab:
-                    dq_by[(_sd, _i)] = float(_lab[_i])
+            if a.rank_form == "rel":
+                # THE LABEL IS THE TRUE iTM, NOT DockQ. Keyed (seed, sample) to match s_by.
+                _gl = _rel_labels(_pdb)
+                for (_sd, _i) in s_by:
+                    _g = _gl.get((int(_sd), int(_i), int(_pair[0]), int(_pair[1])))
+                    if _g is None:
+                        _g = _gl.get((int(_sd), int(_i), int(_pair[1]), int(_pair[0])))
+                    if _g is not None:
+                        dq_by[(_sd, _i)] = float(_g)
+            else:
+                for (_sd, _i) in s_by:
+                    _lab = _rank_lab.get(_rank_key(_pdb, _sd, _pair))
+                    if _lab is not None and _i in _lab:
+                        dq_by[(_sd, _i)] = float(_lab[_i])
             if len(dq_by) < 2:
+                _rel_stat["short_groups"] += 1
                 continue
             # THE FORM IS PASSED THROUGH, NOT RE-DERIVED. This read
             #     form=("softplus" if a.rank_form == "softplus" else "linear")
             # which sent any third form to the LINEAR loss while every log line and the saved
             # guard still said otherwise -- a run that looks right and is the wrong experiment.
             # rank_loss.group_coeffs raises on an unknown form, so a typo fails loudly instead.
-            c, npair, lval = RKL.group_coeffs(
-                s_by, dq_by,
-                form=a.rank_form,
+            if a.rank_form == "rel":
+                # NOT group_coeffs. rel is a regression, not a pairwise family, so none of the
+                # pairwise knobs apply and passing them would make flags look honoured.
+                c, npair, lval = RKL.rel_coeffs(s_by, dq_by,
+                                                standardize=a.rel_standardize)
+                _rel_stat["groups"] += 1
+                _rel_stat["poses"] += npair
+                if npair:
+                    _rel_stat["csum"] = max(_rel_stat["csum"],
+                                            abs(sum(c.values())))
+            else:
+                c, npair, lval = RKL.group_coeffs(
+                 s_by, dq_by,
+                 form=a.rank_form,
                 # THE DEFAULT DEPENDS ON THE FORM. DEFAULT_TAU is a margin scale in ipTM units;
                 # the expected form's tau is a softmax temperature. Falling back to 0.0305 for
                 # the expected form would be a sharper selection than the 0.05 default intends,
@@ -4014,8 +4154,8 @@ def main():
                 # combinations rather than letting a flag look honoured.
                 spearman_tau=(a.rank_spearman_tau if a.rank_spearman_tau > 0
                               else RKL.DEFAULT_SPEARMAN_TAU),
-                dist_weight=a.rank_dist_weight,
-                rel_scale=a.rank_rel_scale)
+                 dist_weight=a.rank_dist_weight,
+                 rel_scale=a.rank_rel_scale)
             if npair == 0:
                 continue
             n_groups += 1
@@ -5264,6 +5404,8 @@ def main():
                                   "pae_row_mass": a.pae_row_mass,
                                   "pae_row_floor": a.pae_row_floor,
                                   "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
+                 "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
+                 "rel_standardize": a.rel_standardize,
                                   "rank_weight_by_gap": a.rank_weight_by_gap,
                                   "rank_form": a.rank_form,
                                   "rank_tau": (float(a.rank_tau)
