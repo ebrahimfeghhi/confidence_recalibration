@@ -1,0 +1,14 @@
+{
+ "n": 7,
+ "beta_median": 246.9,
+ "beta_min": 29.98,
+ "beta_max": 1316.0,
+ "beta_spread": 43.89593062041361,
+ "cos_median": 0.3609,
+ "cos_mean": 0.21654285714285715,
+ "cos_min": -0.5053,
+ "cos_max": 0.7023,
+ "cos_negative": 3,
+ "pool": "mean",
+ "note": "one accumulation window per seed, identical weights, before clipping; rel coefficients sum to zero by construction so both the magnitude and the sign of the accumulated gradient are dominated by which structures land in the window"
+}
