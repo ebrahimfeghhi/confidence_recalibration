@@ -29,22 +29,63 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-rid = sys.argv[1] if len(sys.argv) > 1 else sys.exit("need a run id")
-out = sys.argv[2] if len(sys.argv) > 2 else f"figures/train_pae_{rid}.png"
-traj = os.path.join(ROOT, "training", "runs", rid, "trajectory.csv")
-if not os.path.exists(traj):
-    sys.exit(f"  no trajectory.csv for {rid} yet")
+args = [x for x in sys.argv[1:] if not x.startswith("--")]
+CHAIN = "--chain" in sys.argv
+# --ymin PINS THE BOTTOM OF THE AXIS. Default is matplotlib's autoscale; setting it is a reading
+# aid, not a claim -- a floor at 1.0 says "PAE cannot go below 1 here", which is not established,
+# so the axis label says it is an axis choice.
+YMIN = None
+for _a in sys.argv[1:]:
+    if _a.startswith("--ymin"):
+        YMIN = float(_a.split("=", 1)[1]) if "=" in _a else float(
+            sys.argv[sys.argv.index(_a) + 1])
+# --winnable-only RESTRICTS TO THE 368 STRUCTURES THE ROW-WEIGHT ARM TRAINS ON. The 119 dropped
+# ones have no pose above DockQ 0.23, sit at PAE 1.10 against 1.96 for the rest, and are 25% of
+# poses -- so a pooled curve is 0.21 below the number for the structures that can be won. Without
+# this flag an arm trained on 368 looks like a 0.21 regression against one trained on 487 when
+# nothing has regressed, which is the one way this plot can actively mislead.
+WINNABLE = "--winnable-only" in sys.argv
+_keep = None
+if WINNABLE:
+    _drop = os.path.join(ROOT, "training", "full_train", "dropped_unwinnable.txt")
+    if not os.path.exists(_drop):
+        sys.exit(f"  --winnable-only needs {_drop}")
+    _skip = {ln.strip() for ln in open(_drop) if ln.strip()}
+    _keep = lambda p: p not in _skip  # noqa: E731
+    print(f"  --winnable-only: excluding {len(_skip)} structure(s) with no pose above DockQ 0.23")
+rid = args[0] if args else sys.exit("need a run id")
+out = args[1] if len(args) > 1 else f"figures/train_pae_{rid}.png"
+
+# --chain FOLLOWS THE RESUME LINEAGE. A run that resumed from another holds only its OWN epochs:
+# jy6sah's trajectory starts at epoch 101 because six earlier runs produced 1-100. Plotting it
+# alone shows the tail of a curve and looks like the whole thing, which is how a chain's real
+# starting loss gets lost. run_chain is the same resolver plot_overfit30 uses.
+rids = [rid]
+if CHAIN:
+    sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+    import plot_three as P
+    rids = list(P.run_chain(rid))
+    print(f"  chain: {' -> '.join(rids)}")
 
 per = defaultdict(list)
-with open(traj, newline="") as fh:
-    for r in csv.DictReader(fh):
-        e, v = r.get("epoch"), r.get("pae_loss")
-        if e in (None, "") or v in (None, ""):
-            continue
-        try:
-            per[int(float(e))].append(float(v))
-        except ValueError:
-            continue
+for r_ in rids:
+    traj = os.path.join(ROOT, "training", "runs", r_, "trajectory.csv")
+    if not os.path.exists(traj):
+        if r_ == rid:
+            sys.exit(f"  no trajectory.csv for {r_} yet")
+        print(f"  (no trajectory.csv for {r_}, skipped)")
+        continue
+    with open(traj, newline="") as fh:
+        for r in csv.DictReader(fh):
+            e, v = r.get("epoch"), r.get("pae_loss")
+            if e in (None, "") or v in (None, ""):
+                continue
+            if _keep is not None and not _keep((r.get("pdb") or "").strip()):
+                continue
+            try:
+                per[int(float(e))].append(float(v))
+            except ValueError:
+                continue
 if not per:
     sys.exit(f"  trajectory.csv for {rid} has no finished poses yet")
 
@@ -72,8 +113,13 @@ if len(eps) > 1:
                 xytext=(6, -14), textcoords="offset points")
 ax.set_xlabel("epoch")
 ax.set_ylabel("masked PAE loss (training)")
-ax.set_title(f"{rid} -- training PAE\nno anchor, no eval pass: this run has NO held-out curve "
-             f"to pair this against")
+# THE SUBTITLE IS CONDITIONAL. It used to assert "no eval pass, no held-out curve", which is
+# true of fawgtu and false of any run that monitored val -- printing it on jy6sah would caption
+# the plot with a claim about the wrong run.
+ax.set_title(f"{rid}" + (" (chained)" if CHAIN and len(rids) > 1 else "")
+             + (" -- winnable structures only" if WINNABLE else ""))
+if YMIN is not None:
+    ax.set_ylim(bottom=YMIN)
 ax.grid(alpha=0.4)
 ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=8))
 ax.legend(loc="upper right", fontsize=9)
