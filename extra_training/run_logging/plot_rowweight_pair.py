@@ -66,12 +66,17 @@ def curve(rid, col, win=False):
     return d
 
 
+_CHAIN_SEEN = set()
+
+
 def chained_curve(head, col, win=False):
     """Union of the chain's per-epoch pose lists, keeping the longest list per epoch."""
     sys.path.insert(0, os.path.join(ROOT, "run_logging"))
     import plot_three as P
     rids = list(P.run_chain(head))
-    print(f"  control chain: {' -> '.join(rids)}")
+    if head not in _CHAIN_SEEN:
+        _CHAIN_SEEN.add(head)
+        print(f"  {head} chain: {' -> '.join(rids)}")
     best = {}
     for rid in rids:
         if not os.path.exists(os.path.join(ROOT, "training", "runs", rid, "trajectory.csv")):
@@ -87,8 +92,11 @@ def mean_series(d):
     eps = [e for e in sorted(d) if len(d[e]) >= EP_MIN]
     return eps, [float(np.mean(d[e])) for e in eps]
 
-w_e, w_v = mean_series(curve(RID, "pae_loss"))
-u_e, u_v = mean_series(curve(RID, "pae_loss_unweighted"))
+# THE ARM IS A CHAIN TOO once it has been resumed: nskyne holds epochs 1-55 and d32kqp 56-70.
+# Reading the newest id alone would show a curve starting at epoch 56 and looked at casually that
+# reads as the whole run -- the same truncation that silently capped the control at epoch 36.
+w_e, w_v = mean_series(chained_curve(RID, "pae_loss"))
+u_e, u_v = mean_series(chained_curve(RID, "pae_loss_unweighted"))
 c_e, c_v = mean_series(chained_curve(CONTROL_HEAD, "pae_loss", win=True))
 r_e, r_v = mean_series(chained_curve(CONTROL_HEAD, "pae_loss", win=False))
 if not u_e:

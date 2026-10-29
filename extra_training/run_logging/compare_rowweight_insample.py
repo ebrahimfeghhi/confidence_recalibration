@@ -24,6 +24,8 @@ Usage:
   python -I run_logging/compare_rowweight_insample.py --report-only  # tabulate what already exists
 """
 import argparse
+import shutil
+import glob
 import json
 import os
 import subprocess
@@ -40,13 +42,20 @@ SEED_BASE = 500000
 # interfaces.
 JOIN_CACHE = "training/full_train/join_cache_winnable.json"
 
-# EPOCH 60 FOR BOTH, at the user's direction. The cleanest comparison available: 60 epochs each,
-# both after ten epochs at a 1e-4 floor, both scored on the same 738 interfaces. The lineage got
-# there by hand-stepped drops (1e-2 to epoch 40, 1e-3 to 50, 1e-4 to 60) and nskyne by a cosine
-# over epochs 20-50, so the SCHEDULE differs alongside the row weighting and the manifest -- three
-# changes, not one. Stated here because the table cannot show it.
-ARMS = [("lineage", 60, "training/runs/45q96x/resume_ep60.pt"),
-        ("rowweight", 60, "training/runs/nskyne/resume_ep60.pt")]
+# EPOCH 55 FOR BOTH, at the user's direction. nskyne was stopped at 55 complete epochs rather than
+# run to 60, so 55 is the last checkpoint it has; the lineage has a resume_ep55.pt as well, so the
+# pair is epoch-matched rather than 55-against-60. Both are past their lr floor by then -- the
+# lineage sat at 1e-4 from epoch 51, nskyne's cosine reached 1e-4 at epoch 50.
+#
+# THE ROW-WEIGHTED ARM IS EVALUATED FIRST, also at the user's direction, so its number lands
+# before the control's rather than after a second eval pass.
+#
+# WHAT STILL DIFFERS BESIDES THE ROW WEIGHTING: the lr schedule (the lineage reached 1e-4 by
+# hand-stepped drops at 1e-2 to epoch 40, 1e-3 to 50; nskyne by a cosine over epochs 20-50) and
+# the training manifest (487 structures against 368). Three changes, not one. Stated here because
+# the table cannot show it.
+ARMS = [("rowweight", 55, "training/runs/nskyne/resume_ep55.pt"),
+        ("lineage", 55, "training/runs/45q96x/resume_ep55.pt")]
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--cards", default="4,5,7")
@@ -94,12 +103,31 @@ def evaluate(label, ep, bundle):
     if not os.path.exists(os.path.join(ROOT, bundle)):
         print(f"  {tag}: SKIP -- {bundle} does not exist yet")
         return 0
+    # HEAD EXTRACTION USES extract_heads.py'S REAL INTERFACE: a run id plus --epochs, writing
+    # head_ep<N>_step<S>.pt INTO THE RUN DIRECTORY. This used to pass --bundle/--out, which that
+    # script has never accepted; the call failed with "unrecognized arguments" the first time this
+    # script was actually executed, because every prior invocation had been --dry-run and the dry
+    # path never reaches here. Reusing the script rather than unwrapping the bundle inline keeps
+    # its "no 'head' key" guard and its atomic write.
     head = os.path.join(OUT_D, f"{tag}_head.pt")
     if not os.path.exists(head):
+        rid = os.path.basename(os.path.dirname(bundle))
         if sh([PY, "-I", os.path.join(ROOT, "run_logging", "extract_heads.py"),
-               "--bundle", os.path.join(ROOT, bundle), "--out", head]):
+               rid, "--epochs", str(ep)]):
             print(f"  {tag}: head extraction FAILED")
             return 1
+        cand = sorted(glob.glob(os.path.join(ROOT, "training", "runs", rid,
+                                             f"head_ep{ep}_step*.pt")))
+        if not cand:
+            cand = sorted(glob.glob(os.path.join(ROOT, "training", "runs", rid,
+                                                 f"head_ep{ep}.pt")))
+        if len(cand) != 1:
+            print(f"  {tag}: expected exactly one head_ep{ep} file for {rid}, found {cand}")
+            return 1
+        # COPIED, not symlinked, so the evaluated object cannot change underneath a later re-read.
+        shutil.copyfile(cand[0], head + ".tmp")
+        os.replace(head + ".tmp", head)
+        print(f"  {tag}: head {os.path.basename(cand[0])} -> {os.path.basename(head)}")
     pf, g = pose_flags(os.path.join(ROOT, bundle))
     print(f"  {tag}: pose flags {pf or ['none']}  "
           f"(row-weighted: frac {g.get('pae_row_frac', 'absent')})")
