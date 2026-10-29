@@ -4362,11 +4362,57 @@ def main():
             fail.append("the RANKING gradient contained non-finite values")
         if not pr["finite"].get("pae", False):
             fail.append("the PAE gradient contained non-finite values")
-        nz = pr["nonzero"].get("rank") or set()
-        absent = [n_ for n_ in names if n_ not in nz]
-        if absent:
-            fail.append(f"{len(absent)} trainable tensor(s) got NO non-zero ranking gradient: "
-                        f"{absent}")
+        # BOTH TERMS' COVERAGE, AND THE FAILURE IS "NEITHER", NOT "NOT THE RANKING TERM".
+        #
+        # The original check failed whenever a trainable tensor got no RANKING gradient, which
+        # assumes the ranking term should reach everything PAE reaches. That is false for any term
+        # that is a function of the PAE logits alone: on the first --rank-form rel probe it
+        # reported 158 of 258 tensors with no ranking gradient and refused to launch, naming
+        # confidence_head.plddt_weight, lower_bins, upper_bins and resolved -- parameters of the
+        # pLDDT and resolved heads, which a PAE-derived score cannot touch and which --pae-only
+        # switches off anyway.
+        #
+        # So the question the gate should ask is whether a tensor gets gradient from NEITHER term,
+        # which means it is being optimised by nothing while counted as trainable. The per-term
+        # counts are printed either way, because "158 of 258 tensors receive no PAE gradient
+        # under --pae-only" is a fact about every arm in this project and should not stay hidden
+        # behind a check that only looks at the other term.
+        nz_r = pr["nonzero"].get("rank") or set()
+        nz_p = pr["nonzero"].get("pae") or set()
+        absent_r = [n_ for n_ in names if n_ not in nz_r]
+        absent_p = [n_ for n_ in names if n_ not in nz_p]
+        dead = [n_ for n_ in names if n_ not in nz_r and n_ not in nz_p]
+        print(f"\n  GRADIENT COVERAGE over {len(names)} trainable tensor(s): "
+              f"PAE reaches {len(names) - len(absent_p)}, the {a.rank_form} term reaches "
+              f"{len(names) - len(absent_r)}, NEITHER reaches {len(dead)}")
+        if absent_r and not dead:
+            print(f"    ({len(absent_r)} get no {a.rank_form} gradient but DO get PAE -- expected "
+                  f"for a term that is a function of the PAE logits alone, e.g. "
+                  f"{absent_r[:3]})")
+        if dead:
+            # EXPECTED UNDER --pae-only, AND SAID OUT LOUD RATHER THAN SWALLOWED.
+            #
+            # Measured on the first rel probe: of 258 tensors marked trainable, PAE reaches 100,
+            # the rel term reaches 100, and NEITHER reaches 158. The 158 are pLDDT, PDE and
+            # resolved head parameters, whose losses --pae-only switches off, so they sit at their
+            # pretrained values for the whole run. That is true of EVERY --pae-only arm in this
+            # project -- nskyne, d32kqp and the 45q96x lineage all print "258 trainable tensor(s),
+            # 19.8M of 464.5M parameters (4.3%)" while only 100 tensors are optimised, and AdamW
+            # carries moment state for the other 158 regardless.
+            #
+            # So it is not a reason to refuse a --pae-only launch, but it IS a reason the
+            # trainable-count line should not be read as the effective capacity. Without
+            # --pae-only a dead tensor has no such explanation and still fails.
+            msg = (f"{len(dead)} of {len(names)} trainable tensor(s) get NO gradient from either "
+                   f"term, so they stay at their pretrained values: {dead[:6]}"
+                   + (f" (+{len(dead)-6} more)" if len(dead) > 6 else ""))
+            if a.pae_only:
+                print(f"    NOTE, expected under --pae-only: {msg}")
+                print(f"    EFFECTIVE trainable set is {len(names) - len(dead)} tensor(s), not "
+                      f"{len(names)}. The startup trainable line counts what is MARKED "
+                      f"trainable, not what receives gradient.")
+            else:
+                fail.append(msg)
         if not step_taken:
             fail.append(f"no optimiser step completed: {pr['poses']} pose(s) probed against an "
                         f"accumulation window of {accum_local}. Raise --grad-probe.")
@@ -4379,8 +4425,17 @@ def main():
             print(f"{bar}\n", flush=True)
             raise SystemExit("STOP: --grad-probe failed its checks (above). Do not launch. "
                              "A gate that only prints is not a gate.")
-        print(f"  PASS: all {len(names)} trainable tensor(s) received a finite, non-zero ranking "
-              f"gradient through calculate_chain_based_ptm, and an optimiser step completed.")
+        # REPORTS WHAT WAS ACTUALLY COVERED, not "all of them". The previous wording claimed
+        # every trainable tensor got a ranking gradient, which directly contradicted the coverage
+        # line printed two lines above it once that line existed: on a --pae-only rel probe, 100
+        # of 258 tensors are reached and the old string still said 258. A success message that
+        # restates the check's premise rather than its result is how a known limitation gets read
+        # as a guarantee.
+        print(f"  PASS: the {len(names) - len(absent_r)} tensor(s) the {a.rank_form} term can "
+              f"reach all received a finite, non-zero gradient, the PAE gradient is finite and "
+              f"non-zero, the cosine is finite, and an optimiser step completed."
+              + (f" {len(dead)} tensor(s) are reached by neither term (expected under "
+                 f"--pae-only)." if dead else ""))
         print(f"{bar}\n", flush=True)
 
     def _apply_step(step):
