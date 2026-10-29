@@ -6,8 +6,22 @@ of interest: pae_loss is the row-weighted term the arm trains, pae_loss_unweight
 poses scored with every row equal. Their separation is what the weighting costs on the 80% of rows
 ipTM does not read. Plotted apart, that separation has to be held in the head.
 
-fawgtu is the matched control -- fresh, unweighted, same lr 1e-2 through its first 20 epochs --
-restricted to the same 368 winnable structures, since it trained on 487.
+THE CONTROL IS A CHAIN, NOT ONE RUN. fawgtu holds only epochs 1-36; the unweighted 60-epoch
+lineage continues fawgtu -> j9pspo -> tvden2 -> j8axco -> 45q96x. Reading fawgtu alone silently
+truncated the control at 36 and drew nothing past it, which is how a 60-epoch control gets
+reported as a 35-epoch one. CONTROL_HEAD is resolved through plot_three.run_chain, the same
+resolver plot_train_pae.py --chain uses.
+
+BOUNDARY EPOCHS ARE DEDUPED BY POSE COUNT, not pooled. Each resume re-enters at the epoch it
+stopped on, so epochs 36, 48 and 51 appear in two runs -- once as a partial tail (830, 78, 82
+poses) and once complete. Pooling them averages two different weight states into one point; this
+takes whichever run holds the most poses for that epoch and drops the other.
+
+THE CONTROL'S LR IS NOT nskyne'S. The chain ran 1e-2 to epoch 40, 1e-3 for 41-50, 1e-4 from 51;
+nskyne runs a cosine 1e-2 -> 1e-4 over epochs 20-50. Both land at 1e-4 but the paths differ, so
+past about epoch 20 the two arms differ in schedule as well as in loss and the delta is not
+attributable to the weighting alone. Restricted to the same 368 winnable structures, since the
+control trained on 487.
 """
 import csv
 import os
@@ -24,6 +38,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RID = sys.argv[1] if len(sys.argv) > 1 else "nskyne"
 OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/rowweight_pair_{RID}.png"
 EP_MIN = 5400
+CONTROL_HEAD = "45q96x"
 SKIP = {l.strip() for l in open(os.path.join(ROOT, "training", "full_train",
                                              "dropped_unwinnable.txt")) if l.strip()}
 
@@ -44,13 +59,30 @@ def curve(rid, col, win=False):
     return d
 
 
+def chained_curve(head, col, win=False):
+    """Union of the chain's per-epoch pose lists, keeping the longest list per epoch."""
+    sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+    import plot_three as P
+    rids = list(P.run_chain(head))
+    print(f"  control chain: {' -> '.join(rids)}")
+    best = {}
+    for rid in rids:
+        if not os.path.exists(os.path.join(ROOT, "training", "runs", rid, "trajectory.csv")):
+            print(f"    (no trajectory.csv for {rid}, skipped)")
+            continue
+        for e, vals in curve(rid, col, win=win).items():
+            if e not in best or len(vals) > len(best[e][1]):
+                best[e] = (rid, vals)
+    return {e: v for e, (_r, v) in best.items()}
+
+
 def mean_series(d):
     eps = [e for e in sorted(d) if len(d[e]) >= EP_MIN]
     return eps, [float(np.mean(d[e])) for e in eps]
 
 w_e, w_v = mean_series(curve(RID, "pae_loss"))
 u_e, u_v = mean_series(curve(RID, "pae_loss_unweighted"))
-c_e, c_v = mean_series(curve("fawgtu", "pae_loss", win=True))
+c_e, c_v = mean_series(chained_curve(CONTROL_HEAD, "pae_loss", win=True))
 if not u_e:
     sys.exit("  no complete epochs yet")
 
@@ -59,10 +91,21 @@ plt.rcParams.update({"font.size": 10.5, "axes.titlesize": 12, "axes.labelsize": 
                      "grid.color": "#dddddd", "legend.frameon": False,
                      "figure.facecolor": "white"})
 fig, ax = plt.subplots(figsize=(9.0, 5.2))
+# THE CONTROL IS DRAWN TO ITS OWN END, NOT CLIPPED TO nskyne'S CURRENT EPOCH. It is finished, so
+# its later epochs are the target nskyne has to reach, and clipping them hid that target. The part
+# past nskyne's newest epoch is drawn lighter so it reads as "not yet matched" rather than as a
+# comparison already made.
 lim = max(u_e)
-ax.plot([e for e in c_e if e <= lim], [v for e, v in zip(c_e, c_v) if e <= lim],
+_cn = [(e, v) for e, v in zip(c_e, c_v) if e <= lim]
+_cf = [(e, v) for e, v in zip(c_e, c_v) if e >= lim]
+ax.plot([e for e, _ in _cn], [v for _, v in _cn],
         color="#888888", lw=2, ls="--", marker="o", ms=3.5,
-        label="fawgtu, unweighted control")
+        label=f"unweighted control (chain, {min(c_e)}-{max(c_e)})")
+if len(_cf) > 1:
+    ax.plot([e for e, _ in _cf], [v for _, v in _cf], color="#bbbbbb", lw=1.4, ls="--",
+            marker="o", ms=3, label=f"control, ahead of {RID} (ends {_cf[-1][1]:.4f})")
+    ax.annotate(f"{_cf[-1][1]:.4f}", (_cf[-1][0], _cf[-1][1]), fontsize=9, color="#888888",
+                xytext=(4, -11), textcoords="offset points")
 ax.plot(u_e, u_v, color="#b03a3a", lw=2, marker="o", ms=4.5,
         label=f"{RID} all rows equal")
 ax.plot(w_e, w_v, color="#2f6fb0", lw=2, marker="o", ms=4.5,
