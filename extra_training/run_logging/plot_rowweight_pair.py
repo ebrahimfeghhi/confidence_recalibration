@@ -17,16 +17,6 @@ stopped on, so epochs 36, 48 and 51 appear in two runs -- once as a partial tail
 poses) and once complete. Pooling them averages two different weight states into one point; this
 takes whichever run holds the most poses for that epoch and drops the other.
 
-TWO PANELS BECAUSE THE EPOCH AXIS IS NOT MATCHED COMPUTE. nskyne trains on the 368 winnable
-structures and the control trained on 487, so an nskyne epoch is 5,520 poses and a control epoch
-is 7,306 -- 1.32x larger. Plotted against epoch index the control has seen 32% more training
-poses at every x, and nskyne's whole 60-epoch budget (331,200 poses) only reaches control epoch
-45. The right panel puts cumulative training poses on x so the two curves are read at equal
-compute; the control's line simply runs further right because it did more work in total.
-
-The pose counts are taken WITHOUT the winnable filter, because the control did train on all 487 --
-the filter belongs on the y value (what we score) and not on the x value (what it saw).
-
 THE CONTROL'S LR IS NOT nskyne'S. The chain ran 1e-2 to epoch 40, 1e-3 for 41-50, 1e-4 from 51;
 nskyne runs a cosine 1e-2 -> 1e-4 over epochs 20-50. Both land at 1e-4 but the paths differ, so
 past about epoch 20 the two arms differ in schedule as well as in loss and the delta is not
@@ -100,8 +90,7 @@ plt.rcParams.update({"font.size": 10.5, "axes.titlesize": 12, "axes.labelsize": 
                      "axes.spines.top": False, "axes.spines.right": False,
                      "grid.color": "#dddddd", "legend.frameon": False,
                      "figure.facecolor": "white"})
-POSES_PER_EPOCH = {RID: 5520, "control": 7306}
-fig, (ax, bx) = plt.subplots(1, 2, figsize=(14.4, 5.4))
+fig, ax = plt.subplots(figsize=(9.0, 5.2))
 # THE CONTROL IS DRAWN TO ITS OWN END, NOT CLIPPED TO nskyne'S CURRENT EPOCH. It is finished, so
 # its later epochs are the target nskyne has to reach, and clipping them hid that target. The part
 # past nskyne's newest epoch is drawn lighter so it reads as "not yet matched" rather than as a
@@ -127,25 +116,6 @@ ax.set_title(f"{RID}: what the row weighting costs on the rows ipTM does not rea
 ax.grid(alpha=0.4)
 ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=10))
 ax.legend(loc="upper right", fontsize=9)
-
-# RIGHT PANEL -- x IS CUMULATIVE TRAINING POSES, the same y values rescaled on x only.
-_pc, _pa = POSES_PER_EPOCH["control"], POSES_PER_EPOCH[RID]
-bx.plot([e * _pc / 1000 for e in c_e], c_v, color="#888888", lw=2, ls="--", marker="o", ms=3.5,
-        label="unweighted control")
-bx.plot([e * _pa / 1000 for e in u_e], u_v, color="#b03a3a", lw=2, marker="o", ms=4.5,
-        label=f"{RID} all rows equal")
-bx.plot([e * _pa / 1000 for e in w_e], w_v, color="#2f6fb0", lw=2, marker="o", ms=4.5,
-        label=f"{RID} row-weighted (trained)")
-_budget = 60 * _pa / 1000
-bx.axvline(_budget, color="#444444", lw=1, ls=":")
-bx.annotate(f"{RID} 60-epoch budget\n({_budget:.0f}k poses = control ep {60 * _pa / _pc:.0f})",
-            (_budget, max(c_v)), fontsize=8, color="#444444", ha="right", va="top",
-            xytext=(-5, -2), textcoords="offset points")
-bx.set_xlabel("cumulative training poses (thousands)")
-bx.set_ylabel("masked PAE loss (training)")
-bx.set_title("same curves at equal compute")
-bx.grid(alpha=0.4)
-bx.legend(loc="upper right", fontsize=9)
 fig.tight_layout()
 os.makedirs(os.path.join(ROOT, os.path.dirname(OUT)) or ".", exist_ok=True)
 fig.savefig(os.path.join(ROOT, OUT), dpi=140, bbox_inches="tight")
