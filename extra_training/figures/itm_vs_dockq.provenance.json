@@ -1,0 +1,132 @@
+{
+ "script": "plot_itm_vs_dockq.py",
+ "argv": [],
+ "cwd": "/home/ebrahim/confidence_recalibration/extra_training",
+ "written": "2026-10-29T14:29:52-0700",
+ "python": "3.12.3",
+ "git_commit": "dba819b712ec1772c3a4b020e4bd40e8c64c6d67",
+ "git_dirty": true,
+ "inputs": [
+  {
+   "path": "training/runs/gt_iptm_ceiling/gt_iptm_s*.csv",
+   "kind": "glob",
+   "n_files": 9,
+   "files": [
+    {
+     "path": "training/runs/gt_iptm_ceiling/gt_iptm_s0.csv",
+     "kind": "file",
+     "size": 147284,
+     "mtime": "2026-10-29T11:35:25",
+     "sha256": "f88a4d3ce52b22516108c0a63faa1ba1e262deda9801a079c082b3d57ba2a8ef",
+     "partial": false
+    },
+    {
+     "path": "training/runs/gt_iptm_ceiling/gt_iptm_s1.csv",
+     "kind": "file",
+     "size": 147644,
+     "mtime": "2026-10-29T11:35:01",
+     "sha256": "f351efb6c1a029e31c027899b19c0fce820c16386896642ae027e1516c79f2ee",
+     "partial": false
+    },
+    {
+     "path": "training/runs/gt_iptm_ceiling/gt_iptm_s2.csv",
+     "kind": "file",
+     "size": 148004,
+     "mtime": "2026-10-29T11:35:22",
+     "sha256": "35f6cbbad757e15cacedda6f59ed9e9c629553a0d5b01c16f255f82632c412f4",
+     "partial": false
+    },
+    {
+     "path": "training/runs/gt_iptm_ceiling/gt_iptm_s3.csv",
+     "kind": "file",
+     "size": 147104,
+     "mtime": "2026-10-29T11:35:06",
+     "sha256": "72d14dd91a939e74f8ab605478cfbbca4f5cfdf74611f85fe4d3ac083af8d860",
+     "partial": false
+    },
+    {
+     "path": "training/runs/gt_iptm_ceiling/gt_iptm_s4.csv",
+     "kind": "file",
+     "size": 148544,
+     "mtime": "2026-10-29T11:35:11",
+     "sha256": "b71fd26a4a00908d163502ba60313b533222c3956be92caf93e4a5c6d3fc6594",
+     "partial": false
+    },
+    {
+     "path": "training/runs/gt_iptm_ceiling/gt_iptm_s5.csv",
+     "kind": "file",
+     "size": 147824,
+     "mtime": "2026-10-29T11:35:13",
+     "sha256": "c0945ed709b0567f7694f04877044fdfc8a154550f928932d123b6e4aa5127bf",
+     "partial": false
+    },
+    {
+     "path": "training/runs/gt_iptm_ceiling/gt_iptm_s6.csv",
+     "kind": "file",
+     "size": 147104,
+     "mtime": "2026-10-29T11:35:27",
+     "sha256": "3e8eaefe4b94e1e21532322244e53415595af1b6aae1b23942fa714d7098b760",
+     "partial": false
+    },
+    {
+     "path": "training/runs/gt_iptm_ceiling/gt_iptm_s7.csv",
+     "kind": "file",
+     "size": 147644,
+     "mtime": "2026-10-29T11:35:28",
+     "sha256": "b108be51c45afbaf3568ac2eae268824f2e40fd9a9a6f001d312e52848960c5b",
+     "partial": false
+    },
+    {
+     "path": "training/runs/gt_iptm_ceiling/gt_iptm_s8.csv",
+     "kind": "file",
+     "size": 147644,
+     "mtime": "2026-10-29T11:35:30",
+     "sha256": "56d1fecfa4298cb2e8a53ae6ee5f752c8c863974e4f8b5628ac1d8d30cfc6df9",
+     "partial": false
+    }
+   ],
+   "truncated": false
+  },
+  {
+   "path": "training/runs/rowweight_compare/rowweight_ep55/rows_b10_*_s*.csv",
+   "kind": "glob",
+   "n_files": 3,
+   "files": [
+    {
+     "path": "training/runs/rowweight_compare/rowweight_ep55/rows_b10_rowweight_ep55_head_s0.csv",
+     "kind": "file",
+     "size": 627319,
+     "mtime": "2026-10-29T09:21:02",
+     "sha256": "945b429f4b3b51db53522cc3cba8fce8c90211fdc32c6ed33cc798dfac60540f",
+     "partial": false
+    },
+    {
+     "path": "training/runs/rowweight_compare/rowweight_ep55/rows_b10_rowweight_ep55_head_s1.csv",
+     "kind": "file",
+     "size": 630539,
+     "mtime": "2026-10-29T09:21:00",
+     "sha256": "5a565582ed0bd9f2773ae216da671ed0440495db8be62dc210747c67d27e67b8",
+     "partial": false
+    },
+    {
+     "path": "training/runs/rowweight_compare/rowweight_ep55/rows_b10_rowweight_ep55_head_s2.csv",
+     "kind": "file",
+     "size": 630006,
+     "mtime": "2026-10-29T09:21:15",
+     "sha256": "0b3614e772ad9eea352c8ab04d9c59b75e2fae0fcccd98b780452a4466c6eaf5",
+     "partial": false
+    }
+   ],
+   "truncated": false
+  }
+ ],
+ "outputs": [
+  {
+   "path": "figures/itm_vs_dockq.png",
+   "size": 592808,
+   "sha256": "3236c5f46702a03c814db90f55ef0b01e45d96e429798e78288c171356bed031"
+  }
+ ],
+ "output_digest": "e6fce1b5532eb072aa554b5b385fa7c5170528204e421d107d3c13abb1774369",
+ "determinism": "no RNG; inputs iterated in sorted order; shards are a fixed stride"
+}

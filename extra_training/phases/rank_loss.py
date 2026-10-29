@@ -883,3 +883,124 @@ def pair_terms_distance(s_vals, dq_vals, rel_scale=DEFAULT_REL_SCALE):
     loss = w * total
     loss.backward()
     return float(loss.detach()), [float(g) for g in s.grad], npair
+
+
+# ---------------------------------------------------------------------------------------------
+# RELATIVE (MEAN-CENTRED) iTM REGRESSION
+#
+# THE PROBLEM IT TARGETS, measured on d32kqp epoch 66 over 738 winnable interfaces:
+#   corr(interface MEAN predicted ipTM, interface MEAN DockQ) = +0.866   <- the head HAS this
+#   median WITHIN-interface Spearman vs DockQ                 = +0.317   <- the head LACKS this
+#   the same quantity for the TRUE iTM                        = +0.690   <- what is available
+# So the head has learned "is this complex easy" almost perfectly and barely learned "which pose
+# of this complex is best", which is the only thing selection uses. The across-complex signal is
+# also the LARGER one (ipTM sd 0.277 across structures against 0.208 within), so a per-pose loss
+# fits it first and leaves the part we need.
+#
+# Subtracting each interface's own mean from BOTH the prediction and the label removes that
+# signal from the objective entirely: "this complex scores around 0.6" cancels and earns nothing.
+# What remains is the deviation of each pose from its own interface's mean.
+#
+# THE COEFFICIENTS SUM TO EXACTLY ZERO, which is worth stating because it is the loss's defining
+# property and its main risk:
+#   L        = (1/P) sum_i r_i^2 ,   r_i = (s_i - mean_s) - (g_i - mean_g)
+#   dL/ds_i  = (2/P) sum_j r_j (delta_ij - 1/P) = (2/P) r_i      because sum_j r_j == 0
+# so sum_i dL/ds_i == 0 identically. The term therefore CANNOT move the interface's overall
+# level -- by design -- and its accumulated gradient is a sum of terms that cancel by
+# construction. That is why alpha must be set from gradient NORMS over a whole accumulation
+# window rather than from loss values, and why the per-pose alignment is worth measuring
+# separately: a small accumulated norm here does not mean small per-pose gradients.
+#
+# NOT DIVIDED BY THE WITHIN-INTERFACE STD, deliberately. Standardising would equalise every
+# interface's contribution, but interfaces do not contribute equally to the metric: measured,
+# corr(std of true iTM, DockQ range) = +0.745, so wide-spread interfaces are exactly the ones
+# where a wrong pick is expensive and letting them carry more gradient is roughly correct
+# importance weighting. Dividing by std also spends equal effort on interfaces where every pose
+# is already acceptable (frac acceptable median 1.00 among the narrow ones). It remains a
+# one-line ablation -- see rel_coeffs(standardize=True) -- rather than part of the design.
+DEFAULT_REL_STD_FLOOR = 0.02
+
+
+def iptm_pooled(pae_logits, feat, configs, pair, pool="mean"):
+    """chain_pair ipTM for ONE pose and pair, pooled over anchor rows by `pool`.
+
+    pool="max" is shipped ipTM and reproduces iptm() exactly. pool="mean" averages the anchor
+    rows instead, which measured +0.0107 +- 0.0039 (t=2.70) better than the max at the ORACLE and
+    -0.0130 +- 0.0048 (t=-2.68) WORSE on the current trained head -- i.e. better if trained for,
+    worse if swapped in. Differentiable when pae_logits requires grad.
+
+    THE ARITHMETIC IS pae_row_weight.row_t's, pinned against Protenix's own calculate_iptm by
+    run_logging/test_pae_row_weight.py, and the mean is pinned against row_t by
+    run_logging/test_pool_mean.py. Rows with no scored target in this pair are EXCLUDED from the
+    mean; their t_i is 0 by construction and including them would drag the mean toward zero by an
+    amount set by crop size rather than by pose quality.
+    """
+    if pool == "max":
+        return iptm(pae_logits, feat, configs, pair)
+    if pool != "mean":
+        raise ValueError(f"pool must be 'mean' or 'max', got {pool!r}")
+    import pae_row_weight as rw
+    from protenix.model import sample_confidence
+    bp = sample_confidence.get_bin_params(configs.loss.pae)
+    asym = feat["asym_id"].reshape(-1).long()
+    hf = feat["has_frame"].reshape(-1).bool()
+    lig = (torch.zeros_like(feat["asym_id"]).scatter_add(
+        0, feat["atom_to_token_idx"], feat["is_ligand"].long()) > 0).reshape(-1)
+    live = hf & (~lig)
+    i, j = pair
+    tok = (asym == i) | (asym == j)
+    if int(tok.sum()) == 0 or int(live.sum()) == 0:
+        return None
+    arow = asym[live]
+    tm = (tok.unsqueeze(0) & (arow.unsqueeze(1) != asym.unsqueeze(0))
+          & ((arow == i) | (arow == j)).unsqueeze(1))
+    if int(tm.sum()) == 0:
+        return None
+    t, cnt = rw.row_t(pae_logits, live, tm, n_pair_tokens=int(tok.sum()),
+                      min_bin=bp["min_bin"], max_bin=bp["max_bin"])
+    if t is None:
+        return None
+    keep = cnt > 0
+    if not bool(keep.any()):
+        return None
+    return t[keep].mean()
+
+
+def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_FLOOR):
+    """Mean-centred regression coefficients for ONE interface's poses.
+
+    s_by_key / g_by_key: {(seed, sample): float}. Returns ({key: dL/ds}, n_poses, loss).
+
+    Only keys present in BOTH dicts are used -- a pose whose label is missing is skipped rather
+    than imputed, and the caller is expected to refuse a run whose label coverage is short.
+
+    dL/ds_i = (2/P) * r_i, and sum_i dL/ds_i == 0 identically. With standardize=True the
+    prediction is divided by its own (floored) std as well, which makes the loss invariant to
+    shrinking the scores -- collapse becomes impossible rather than merely penalised -- at the
+    cost of equalising interfaces whose outcomes are not equal.
+    """
+    keys = sorted(set(s_by_key) & set(g_by_key))
+    P = len(keys)
+    if P < 2:
+        return {}, P, 0.0
+    s = torch.tensor([float(s_by_key[k]) for k in keys], dtype=torch.float64)
+    g = torch.tensor([float(g_by_key[k]) for k in keys], dtype=torch.float64)
+    sc = s - s.mean()
+    gc = g - g.mean()
+    if standardize:
+        sc = sc / sc.std(unbiased=False).clamp_min(std_floor)
+        gc = gc / gc.std(unbiased=False).clamp_min(std_floor)
+    r = sc - gc
+    loss = float((r ** 2).mean())
+    c = (2.0 / P) * r
+    # EXPLICIT ZERO-SUM. It holds algebraically; asserting it here catches a future edit that
+    # breaks the property silently, because a non-zero sum would let this term shift the
+    # interface's level, which is the one thing it is defined not to do.
+    c = c - c.mean()
+    return {k: float(v) for k, v in zip(keys, c)}, P, loss
+
+
+def rel_loss_value(s_by_key, g_by_key, standardize=False,
+                   std_floor=DEFAULT_REL_STD_FLOOR):
+    """The loss value alone, for logging. Same arithmetic as rel_coeffs."""
+    return rel_coeffs(s_by_key, g_by_key, standardize, std_floor)[2]
