@@ -17,6 +17,13 @@ stopped on, so epochs 36, 48 and 51 appear in two runs -- once as a partial tail
 poses) and once complete. Pooling them averages two different weight states into one point; this
 takes whichever run holds the most poses for that epoch and drops the other.
 
+THE CONTROL IS DRAWN TWICE, FILTERED AND NOT. Only the filtered curve (368 winnable structures)
+is comparable to nskyne, which trains on those 368 alone. The unfiltered curve (all 487) is the
+control's own raw training number and runs 0.21-0.29 LOWER, because the 119 dropped structures
+sit near PAE 1.10 against 1.96 for the rest and are a quarter of its poses. It is on the axis
+because that lower number is what this run's logs actually say, and comparing nskyne against it
+would read as a 0.21 regression when nothing has regressed. It is NOT a comparison curve.
+
 THE CONTROL'S LR IS NOT nskyne'S. The chain ran 1e-2 to epoch 40, 1e-3 for 41-50, 1e-4 from 51;
 nskyne runs a cosine 1e-2 -> 1e-4 over epochs 20-50. Both land at 1e-4 but the paths differ, so
 past about epoch 20 the two arms differ in schedule as well as in loss and the delta is not
@@ -83,6 +90,7 @@ def mean_series(d):
 w_e, w_v = mean_series(curve(RID, "pae_loss"))
 u_e, u_v = mean_series(curve(RID, "pae_loss_unweighted"))
 c_e, c_v = mean_series(chained_curve(CONTROL_HEAD, "pae_loss", win=True))
+r_e, r_v = mean_series(chained_curve(CONTROL_HEAD, "pae_loss", win=False))
 if not u_e:
     sys.exit("  no complete epochs yet")
 
@@ -106,6 +114,8 @@ if len(_cf) > 1:
             marker="o", ms=3, label=f"control, ahead of {RID} (ends {_cf[-1][1]:.4f})")
     ax.annotate(f"{_cf[-1][1]:.4f}", (_cf[-1][0], _cf[-1][1]), fontsize=9, color="#888888",
                 xytext=(4, -11), textcoords="offset points")
+ax.plot(r_e, r_v, color="#3a8a5f", lw=1.6, ls="-.", marker="o", ms=3,
+        label="control, ALL 487 (not comparable)")
 ax.plot(u_e, u_v, color="#b03a3a", lw=2, marker="o", ms=4.5,
         label=f"{RID} all rows equal")
 ax.plot(w_e, w_v, color="#2f6fb0", lw=2, marker="o", ms=4.5,
@@ -120,9 +130,11 @@ fig.tight_layout()
 os.makedirs(os.path.join(ROOT, os.path.dirname(OUT)) or ".", exist_ok=True)
 fig.savefig(os.path.join(ROOT, OUT), dpi=140, bbox_inches="tight")
 print(f"  {len(u_e)} epoch(s) -> {OUT}")
-print(f"  {'ep':>3}  {'weighted':>9} {'all-equal':>10} {'gap':>8}  {'control':>8} {'delta':>8}")
+print(f"  {'ep':>3}  {'weighted':>9} {'all-equal':>10} {'gap':>8}  {'ctl-368':>8} {'delta':>8}"
+      f" {'ctl-487':>9}")
 for e in u_e:
     g = (w_v[w_e.index(e)] - u_v[u_e.index(e)]) if e in w_e else float("nan")
     c = c_v[c_e.index(e)] if e in c_e else float("nan")
+    r = r_v[r_e.index(e)] if e in r_e else float("nan")
     print(f"  {e:>3}  {w_v[w_e.index(e)]:>9.4f} {u_v[u_e.index(e)]:>10.4f} {g:>+8.4f}  "
-          f"{c:>8.4f} {u_v[u_e.index(e)]-c:>+8.4f}")
+          f"{c:>8.4f} {u_v[u_e.index(e)]-c:>+8.4f} {r:>9.4f}")
