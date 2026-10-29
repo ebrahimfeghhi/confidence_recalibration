@@ -5169,6 +5169,14 @@ def main():
         _jc = os.path.join(os.path.dirname(os.path.abspath(train_pool or a.train_eval_pool or ".")),
                            "join_cache.json") if train_pool else os.path.join(a.out, "join_cache.json")
         extra = extra + ["--join-cache", _jc, "--pair-iptm-only", "--prefetch"]
+        # THE EVALUATOR MUST SELECT BY WHAT THE RUN IS TRAINING. --rank-pool mean optimises the
+        # mean-pooled ipTM, and this pass selected by the MAX -- so the automatic validation curve
+        # measured a different rule from the objective and neither number meant what it said.
+        # Caught in review. --pool-mean also makes the evaluator report the shipped MAX selection
+        # from the same pass, so the baseline is preserved rather than traded away: both appear as
+        # mean_dockq / mean_dockq_select_max in its json.
+        if a.rank_pool == "mean" and a.rank_loss:
+            extra = extra + ["--pool-mean", "--select-by", "mean"]
         # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
         # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
         # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one

@@ -175,7 +175,6 @@ def merge_rows(a):
         raise SystemExit(f"STOP: {len(missing)} shard row file(s) absent: {missing}. A shard that "
                          f"died would otherwise silently shrink the metric's coverage.")
     rows, selfchk, metas = [], [], []
-    mean_v = {}
     for x in paths:
         mp = x + ".meta.json"
         if not os.path.exists(mp):
@@ -186,13 +185,9 @@ def merge_rows(a):
             for r in csv.DictReader(fh):
                 v = float(r["iptm"])
                 dq = float(r["dockq"]) if r["dockq"] != "" else None
-                rows.append((r["iface"], int(r["seed"]), int(r["sample"]), v, dq))
-                # KEYED, NOT APPENDED TO THE ROW. `rows` is unpacked as a 5-tuple in several
-                # places; widening it is exactly the failure that wrote pae_loss_unweighted empty
-                # by updating one of two append sites.
-                if r.get("iptm_mean") not in (None, ""):
-                    mean_v[(r["iface"], int(r["seed"]), int(r["sample"]))] = \
-                        float(r["iptm_mean"])
+                vm = (float(r["iptm_mean"])
+                      if r.get("iptm_mean") not in (None, "") else None)
+                rows.append((r["iface"], int(r["seed"]), int(r["sample"]), v, dq, vm))
                 if r["stored_iptm"] != "":
                     sv = float(r["stored_iptm"])
                     selfchk.append((abs(v - sv), r["iface"], int(r["seed"]), int(r["sample"]),
@@ -235,7 +230,16 @@ def merge_rows(a):
 
 
 def aggregate(a, rows, selfchk, want_ifaces):
-    """The self-check, the coverage contract and the metric. Shared by the sharded and plain paths."""
+    """The self-check, the coverage contract and the metric. Shared by the sharded and plain paths.
+
+    ROW FORMAT IS (iface, seed, sample, iptm, dockq, iptm_mean-or-None), SIX FIELDS, ON BOTH
+    PATHS. It was briefly five on the merge path and six on the single-process one, with aggregate
+    unpacking five -- so the plain path raised ValueError and the merge path raised NameError on a
+    mean_v that was local to merge_rows. Both were introduced by the --pool-mean change and caught
+    in review. One format, normalised here at the top, is the only thing that keeps the two paths
+    from drifting again: a helper that reads rows[i][5] would hide the mismatch instead.
+    """
+    rows = [(r[0], r[1], r[2], r[3], r[4], (r[5] if len(r) > 5 else None)) for r in rows]
     # ---- THE SELF-CHECK
     if not a.ckpt and not a.no_self_check:
         if not selfchk:
@@ -275,23 +279,23 @@ def aggregate(a, rows, selfchk, want_ifaces):
     # `if dq is not None` silently dropped every pose without a DockQ, and the only coverage check
     # was that an interface had at least ONE scored pose -- so one of 500 passed. All four of the
     # reviewer's conditions are now required: every intended key, unique rows, finite scores.
-    seen = collections.Counter((iface, sd_, k) for iface, sd_, k, _v, _dq in rows)
+    seen = collections.Counter((iface, sd_, k) for iface, sd_, k, _v, _dq, _vm in rows)
     dup = [kk for kk, c in seen.items() if c > 1]
     if dup:
         raise SystemExit(f"STOP: {len(dup)} duplicate (iface, seed, sample) row(s), e.g. {dup[:4]}. "
                          f"A duplicated pose would be weighted twice in the selection.")
-    nonfinite = [(iface, sd_, k) for iface, sd_, k, v, dq in rows
+    nonfinite = [(iface, sd_, k) for iface, sd_, k, v, dq, _vm in rows
                  if not np.isfinite(v) or (dq is not None and not np.isfinite(dq))]
     if nonfinite:
         raise SystemExit(f"STOP: {len(nonfinite)} row(s) carry a non-finite ipTM or DockQ, e.g. "
                          f"{nonfinite[:4]}. argmax over a nan is undefined.")
-    nodq = sorted((f"{i}/{s_}/{k}") for i, s_, k, _v, dq in rows if dq is None)
+    nodq = sorted((f"{i}/{s_}/{k}") for i, s_, k, _v, dq, _vm in rows if dq is None)
     if nodq and not a.allow_partial:
         raise SystemExit(f"STOP: {len(nodq)} scored pose(s) have no DockQ in {a.results}, e.g. "
                          f"{nodq[:5]}. Dropping them silently changes what the mean is over; "
                          f"recover them with phase_j_fill_scores.py or pass --allow-partial.")
     byif = collections.defaultdict(list)
-    for iface, sd_, k, v, dq in rows:
+    for iface, sd_, k, v, dq, _vm in rows:
         if dq is not None:
             byif[iface].append((v, dq, sd_, k))
     missing_if = sorted(want_ifaces - set(byif))
@@ -304,7 +308,7 @@ def aggregate(a, rows, selfchk, want_ifaces):
     # same number of poses passes when a seed is missing from EVERY interface: the depths stay equal
     # and the label still claims the full sweep. The intended set is the cross product the budget
     # asserts -- every pool interface x every seed in the budget x every sample.
-    have = {(iface, int(sd_), int(k)) for iface, sd_, k, _v, dq in rows if dq is not None}
+    have = {(iface, int(sd_), int(k)) for iface, sd_, k, _v, dq, _vm in rows if dq is not None}
     want = {(iface, sd_, k) for iface in want_ifaces
             for sd_ in range(a.seed_base, a.seed_base + a.budget)
             for k in range(a.nsample)}
@@ -323,7 +327,7 @@ def aggregate(a, rows, selfchk, want_ifaces):
             f"assertion: a seed missing from every interface leaves the depths equal. Pass "
             f"--allow-partial to report a number that does not mean what its label says.")
     n_pose = collections.Counter()
-    for iface, sd_, _k, _v, dq in rows:
+    for iface, sd_, _k, _v, dq, _vm in rows:
         if dq is not None:
             n_pose[iface] += 1
     want_depth = max(n_pose.values()) if n_pose else 0
@@ -341,11 +345,9 @@ def aggregate(a, rows, selfchk, want_ifaces):
     # THE SECOND SELECTION, on the SAME poses. Built from the mean-pooled column when the pass
     # wrote one, so the two readouts differ only in which score chose the pose.
     byif_m = collections.defaultdict(list)
-    if mean_v:
-        for iface, sd_, k, _v, dq in rows:
-            vm = mean_v.get((iface, sd_, k))
-            if dq is not None and vm is not None:
-                byif_m[iface].append((vm, dq, sd_, k))
+    for iface, sd_, k, _v, dq, vm in rows:
+        if dq is not None and vm is not None:
+            byif_m[iface].append((vm, dq, sd_, k))
     if a.select_by == "mean" and not byif_m:
         raise SystemExit(
             "STOP: --select-by mean needs an iptm_mean column, which only --pool-mean writes. "
@@ -398,7 +400,7 @@ def aggregate(a, rows, selfchk, want_ifaces):
     base_iptm = {(ifc, sd_, k): sv for _d, ifc, sd_, k, _v, sv in selfchk}
     b_by = collections.defaultdict(list)
     n_nobase = 0
-    for iface, sd_, k, _v, dq in rows:
+    for iface, sd_, k, _v, dq, _vm in rows:
         if dq is None:
             continue
         sv = base_iptm.get((iface, sd_, k))

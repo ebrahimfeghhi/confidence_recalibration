@@ -253,6 +253,11 @@ def test_trainer_uses_the_sample_index_for_rel_labels():
     ev = open(os.path.join(R, "phases", "phase_k_eval.py")).read()
     check("the evaluator can select by the mean-pooled score",
           '"--select-by"' in ev and 'a.select_by == "mean"' in ev)
+    check("the trainer PROPAGATES the pooling choice to its own eval pass",
+          'a.rank_pool == "mean" and a.rank_loss' in src
+          and '"--pool-mean", "--select-by", "mean"' in src)
+    check("the evaluator normalises both paths to one row format",
+          "(r[5] if len(r) > 5 else None)" in ev)
 
 
 if __name__ == "__main__":
