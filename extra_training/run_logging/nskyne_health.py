@@ -31,16 +31,45 @@ if done:
     d = [max(wall[e]) - min(wall[e]) for e in done]
     print(f"    median epoch {sorted(d)[len(d)//2]/60:.1f} min")
 
-# the three training ranks and the three holders, by memory, never by pattern
+# RANK LIVENESS COMES FROM /proc, NOT FROM GPU MEMORY. The memory test ("> 50 GB is a rank") is
+# wrong at exactly the moment this script runs. It is invoked at an epoch boundary, where torch
+# releases its cache, so all three ranks drop out of the rank band and INTO the holder band: on
+# 2026-10-29 at the epoch 49/50 boundary it printed "ranks up: 0, holder procs seen: 6" and raised
+# a false alarm while all three ranks were alive, mid-step, and writing trajectory.csv that same
+# second. Two separate failures in one reading -- a false rank alarm, and three ranks silently
+# counted as holders, which would have masked a holder actually dying.
+#
+# The ranks have fixed pids for the life of the run, and the user's standing instruction is to
+# derive them explicitly rather than scan. So: liveness is /proc/<pid>, and nvidia-smi is used
+# only to say how much memory each one currently holds.
+RANK_PIDS = [l.strip() for l in
+             open(os.path.join(ROOT, "training", "runs", RID + "_rank_pids")).read().split()
+             ] if os.path.exists(
+                 os.path.join(ROOT, "training", "runs", RID + "_rank_pids")) else []
 out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory",
                       "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
-ranks = {l.split(",")[0].strip() for l in out.splitlines()
-         if l.strip() and float(l.split(",")[1]) > 50000}
-holders = {l.split(",")[0].strip() for l in out.splitlines()
-           if l.strip() and 500 < float(l.split(",")[1]) <= 50000}
-print(f"    ranks up: {len(ranks)}   holder procs seen: {len(holders)}")
-if len(ranks) != 3:
-    alarms.append(f"expected 3 training ranks, see {len(ranks)}")
+mib = {}
+for l in out.splitlines():
+    if not l.strip():
+        continue
+    pid, m = l.split(",")[0].strip(), float(l.split(",")[1])
+    mib[pid] = max(mib.get(pid, 0.0), m)
+
+if not RANK_PIDS:
+    alarms.append(f"no training/runs/{RID}_rank_pids file -- cannot check rank liveness by pid")
+    print("    ranks up: UNKNOWN (no rank-pid file)")
+else:
+    alive = [p for p in RANK_PIDS if os.path.isdir(f"/proc/{p}")]
+    print(f"    ranks up: {len(alive)}/{len(RANK_PIDS)} by pid"
+          + (f"   GPU MiB {[int(mib.get(p, 0)) for p in RANK_PIDS]}" if mib else ""))
+    if len(alive) != len(RANK_PIDS):
+        alarms.append("rank pid(s) GONE: "
+                      + ",".join(p for p in RANK_PIDS if p not in alive))
+
+# HOLDERS ARE EVERY OTHER GPU PROCESS, with the ranks excluded by pid rather than by a memory
+# band, which is what made them countable as holders in the first place.
+holders = {p for p, m in mib.items() if p not in set(RANK_PIDS) and m > 500}
+print(f"    holder procs seen: {len(holders)}")
 if len(holders) < 3:
     alarms.append(f"a GPU HOLDER may be gone: only {len(holders)} holder proc(s) visible")
 
