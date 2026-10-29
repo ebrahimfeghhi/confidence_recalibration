@@ -175,6 +175,7 @@ def merge_rows(a):
         raise SystemExit(f"STOP: {len(missing)} shard row file(s) absent: {missing}. A shard that "
                          f"died would otherwise silently shrink the metric's coverage.")
     rows, selfchk, metas = [], [], []
+    mean_v = {}
     for x in paths:
         mp = x + ".meta.json"
         if not os.path.exists(mp):
@@ -186,6 +187,12 @@ def merge_rows(a):
                 v = float(r["iptm"])
                 dq = float(r["dockq"]) if r["dockq"] != "" else None
                 rows.append((r["iface"], int(r["seed"]), int(r["sample"]), v, dq))
+                # KEYED, NOT APPENDED TO THE ROW. `rows` is unpacked as a 5-tuple in several
+                # places; widening it is exactly the failure that wrote pae_loss_unweighted empty
+                # by updating one of two append sites.
+                if r.get("iptm_mean") not in (None, ""):
+                    mean_v[(r["iface"], int(r["seed"]), int(r["sample"]))] = \
+                        float(r["iptm_mean"])
                 if r["stored_iptm"] != "":
                     sv = float(r["stored_iptm"])
                     selfchk.append((abs(v - sv), r["iface"], int(r["seed"]), int(r["sample"]),
@@ -330,6 +337,22 @@ def aggregate(a, rows, selfchk, want_ifaces):
     # then the lowest sample -- the same answer either way.
     def _pick(v):
         return max(v, key=lambda t: (t[0], -t[2], -t[3]))
+
+    # THE SECOND SELECTION, on the SAME poses. Built from the mean-pooled column when the pass
+    # wrote one, so the two readouts differ only in which score chose the pose.
+    byif_m = collections.defaultdict(list)
+    if mean_v:
+        for iface, sd_, k, _v, dq in rows:
+            vm = mean_v.get((iface, sd_, k))
+            if dq is not None and vm is not None:
+                byif_m[iface].append((vm, dq, sd_, k))
+    if a.select_by == "mean" and not byif_m:
+        raise SystemExit(
+            "STOP: --select-by mean needs an iptm_mean column, which only --pool-mean writes. "
+            "Selecting by a column that is not there would silently fall back to the max and "
+            "report it under the wrong label.")
+    if a.select_by == "mean":
+        byif, byif_m = byif_m, byif
     sel = [_pick(v)[1] for v in byif.values()]
     orc = [max(dq for _v, dq, _s, _k in v) for v in byif.values()]
     n = len(sel)
@@ -339,9 +362,24 @@ def aggregate(a, rows, selfchk, want_ifaces):
            "oracle_mean_dockq": round(statistics.mean(orc), 4),
            "oracle_frac_acc": round(sum(1 for d in orc if d >= ACCEPTABLE) / n, 4),
            "ckpt": a.ckpt or "shipped"}
+    out["select_by"] = a.select_by
     out["headroom"] = round(out["oracle_mean_dockq"] - out["mean_dockq"], 4)
-    print(f"\nMETRIC ({out['ckpt']}, {n} interfaces, budget {a.budget} seeds)")
+    # BOTH POOLINGS REPORTED, so a mean-trained arm and the shipped max baseline can be read off
+    # one pass and nobody has to trust that the two runs were otherwise identical.
+    if byif_m:
+        _alt = [_pick(v)[1] for v in byif_m.values()]
+        _an = "max" if a.select_by == "mean" else "mean"
+        out[f"mean_dockq_select_{_an}"] = round(statistics.mean(_alt), 4)
+        out[f"frac_acc_select_{_an}"] = round(
+            sum(1 for d in _alt if d >= ACCEPTABLE) / len(_alt), 4)
+    print(f"\nMETRIC ({out['ckpt']}, {n} interfaces, budget {a.budget} seeds, "
+          f"selected by {a.select_by.upper()}-pooled ipTM)")
     print(f"  mean_dockq {out['mean_dockq']:.4f}   frac_acc {out['frac_acc']:.4f}")
+    for _k in ("mean_dockq_select_mean", "mean_dockq_select_max"):
+        if _k in out:
+            _f = _k.replace("mean_dockq", "frac_acc")
+            print(f"  the OTHER pooling ({_k.rsplit('_', 1)[-1]}): mean_dockq "
+                  f"{out[_k]:.4f}   frac_acc {out[_f]:.4f}")
     print(f"  oracle     {out['oracle_mean_dockq']:.4f}   {out['oracle_frac_acc']:.4f}   "
           f"headroom {out['headroom']:.4f}")
     # THE BASELINE IS THE SHIPPED HEAD OVER *THIS* POOL, DERIVED, NEVER HARDCODED.
@@ -645,6 +683,14 @@ def main():
                     help="CA-CA cutoff for what the dump keeps. Wider than the 12 A the model "
                          "uses, so the dataset can apply its own cutoff and the closest-pair "
                          "fallback without a second GPU pass.")
+    ap.add_argument("--select-by", choices=("max", "mean"), default="max",
+                    help="WHICH POOLED ipTM SELECTS THE POSE. max is shipped ipTM and the default, "
+                         "so every existing number stays comparable. mean requires --pool-mean and "
+                         "is what an arm trained with --rank-pool mean must be scored by: training "
+                         "one quantity and selecting by another measures neither. Both selections "
+                         "are REPORTED whenever --pool-mean is on, so the choice only moves which "
+                         "one is the headline. Added after review found the trainer optimising the "
+                         "mean while this evaluator selected by the max.")
     ap.add_argument("--pool-mean", action="store_true",
                     help="ALSO compute chain_pair ipTM pooled as the MEAN over anchor rows and "
                          "write it as an extra iptm_mean column. ADDITIVE AND DEFAULT OFF: the "

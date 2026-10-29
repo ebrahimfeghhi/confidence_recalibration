@@ -991,17 +991,37 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
         return {}, P, 0.0
     s = torch.tensor([float(s_by_key[k]) for k in keys], dtype=torch.float64)
     g = torch.tensor([float(g_by_key[k]) for k in keys], dtype=torch.float64)
-    sc = s - s.mean()
     gc = g - g.mean()
     if standardize:
-        sc = sc / sc.std(unbiased=False).clamp_min(std_floor)
-        gc = gc / gc.std(unbiased=False).clamp_min(std_floor)
-    r = sc - gc
-    loss = float((r ** 2).mean())
-    c = (2.0 / P) * r
-    # EXPLICIT ZERO-SUM. It holds algebraically; asserting it here catches a future edit that
-    # breaks the property silently, because a non-zero sum would let this term shift the
-    # interface's level, which is the one thing it is defined not to do.
+        # AUTOGRAD, NOT THE CLOSED FORM. The closed form (2/P) r_i is the gradient of the
+        # UNSTANDARDISED loss. With standardize=True the denominator is a function of s, so
+        # dL/ds_i picks up a term through d(std)/ds_i that the closed form omits entirely.
+        # Measured on a 5-pose group: the closed form gave
+        #   [-0.44738, -0.03322, 0.26788, 0.13618, 0.07654]
+        # against the true
+        #   [-3.33852, +0.52290, 1.12625, 1.36759, 0.32179]
+        # -- wrong by ~7x AND with a SIGN FLIP on pose 1, so the term would have pushed that pose
+        # the wrong way while reporting a loss that disagreed with its own gradient. Caught in
+        # external review. P is at most a few hundred, so differentiating a 1-D tensor here costs
+        # nothing next to the forward pass that produced s.
+        sl = s.clone().requires_grad_(True)
+        sc_ = sl - sl.mean()
+        sc_ = sc_ / sc_.std(unbiased=False).clamp_min(std_floor)
+        gc_ = gc / gc.std(unbiased=False).clamp_min(std_floor)
+        L = ((sc_ - gc_) ** 2).mean()
+        L.backward()
+        c = sl.grad.detach().clone()
+        loss = float(L.detach())
+    else:
+        r = (s - s.mean()) - gc
+        loss = float((r ** 2).mean())
+        c = (2.0 / P) * r
+    # EXPLICIT ZERO-SUM. It holds algebraically for the default path; asserting it here catches a
+    # future edit that breaks the property silently, because a non-zero sum would let this term
+    # shift the interface's level, which is the one thing it is defined not to do. It holds for
+    # the standardised path too -- centring makes the loss invariant to a constant shift of s, so
+    # its gradient is orthogonal to the all-ones direction -- and subtracting the mean removes
+    # only float error.
     c = c - c.mean()
     return {k: float(v) for k, v in zip(keys, c)}, P, loss
 

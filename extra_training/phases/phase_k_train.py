@@ -3702,6 +3702,32 @@ def main():
             # would have been computed for a different function than the one being differentiated.
             if score_only:
                 import rank_loss as RKL
+                # THE POSE INDEX IS NOT THE SAMPLE INDEX, and the external labels are keyed by
+                # the SAMPLE. The label npz carries the permutation in `sample_index`; measured on
+                # the TRAINING fold it is non-identity in 3971 of 4000 files (99.3%) over 120
+                # distinct patterns, e.g. 10fj/free_500000 -> [0, 4, 3, 2, 1]. This file already
+                # documents the same trap for --emit-iptm-rows, where writing `i` moved the
+                # aggregate by only 0.0009 while 73.8% of rows carried another sample's DockQ.
+                # The rel target repeated it until external review caught it: pose 1 was being
+                # regressed onto pose 4's true iTM.
+                _si_a = None
+                if hasattr(lab, "get"):
+                    _si_a = lab.get("sample_index")
+                if _si_a is None:
+                    try:
+                        _si_a = lab["sample_index"]
+                    except Exception:            # noqa: BLE001
+                        _si_a = None
+                if _si_a is None:
+                    raise SystemExit(
+                        f"STOP: pass A needs `sample_index` in {lab_p} to key the group's labels "
+                        f"the way results.csv and the rel label cache do. Without it a pose would "
+                        f"be trained against another pose's label.")
+                _si_a = np.asarray(_si_a).reshape(-1)
+                if i >= _si_a.shape[0]:
+                    raise SystemExit(f"STOP: pose {i} has no sample_index entry in {lab_p} "
+                                     f"({_si_a.shape[0]} entries).")
+                _samp_a = int(_si_a[i])
                 _sc = {}
                 for _p in sorted(_scored_asym.get(pdb) or ()):
                     # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
@@ -3711,7 +3737,7 @@ def main():
                     if _v is not None:
                         _sc[_p] = float(_v.detach())
                 del pred, x, plddt, pae, pde, resolved
-                return {"pose": i, "iptm": _sc}
+                return {"pose": i, "sample": _samp_a, "iptm": _sc}
             if a.emit_iptm_rows and _scored_asym.get(pdb):
                 # THE SAME FUNCTION PASS A USES. If this computed ipTM differently from the
                 # ranking loss's own scorer, the emitted rows would describe a statistic the run
@@ -3848,7 +3874,14 @@ def main():
                     for _p, _cv in _cs_src:
                         if not _cv:
                             continue
-                        _sp_ = RKL_probe.iptm(pred["pae"], feat_head, configs, _p)
+                        # SAME POOLING AS THE BACKWARD. This read RKL_probe.iptm, which is
+                        # MAX-pooled, while training's backward uses iptm_pooled(pool=rank_pool).
+                        # So the first rel probe's headline numbers -- parity alpha 121.7 and
+                        # cos(PAE,rel) +0.2043 -- described the max-pooled score and NOT the
+                        # objective being trained. Caught in external review; the parity must be
+                        # re-measured.
+                        _sp_ = RKL_probe.iptm_pooled(pred["pae"], feat_head, configs, _p,
+                                                     pool=a.rank_pool)
                         if _sp_ is None:
                             continue
                         _tm = (a.alpha_rank * _cv / _cs_div) * _sp_
@@ -4027,11 +4060,15 @@ def main():
         _rng_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
         _t_a = time.perf_counter()
         local = {}
+        # pose -> TRUE sample index, carried separately so _xs_coef can stay keyed by the POSE
+        # index pass B looks up while the LABEL lookup uses the sample index.
+        local_samp = {}
         try:
             for _pdb, _lab, _cands in step_units:
                 _tp = resolve_trunk(_pdb, _lab, _cands)
                 _sd = _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1]
                 for _m in run_unit(_pdb, _lab, _tp, score_only=True):
+                    local_samp[(_pdb, _sd, int(_m["pose"]))] = int(_m["sample"])
                     for _pair, _v in _m["iptm"].items():
                         local[(_pdb, _sd, int(_m["pose"]), _pair)] = float(_v)
         finally:
@@ -4087,12 +4124,19 @@ def main():
             _t_g = time.perf_counter()
             _bag = [None] * world
             dist.all_gather_object(_bag, local)
+            # THE PERMUTATION IS GATHERED TOO. Without it a rank would hold scores for another
+            # rank's poses and no way to key their labels, and the group would silently shrink.
+            _bag_s = [None] * world
+            dist.all_gather_object(_bag_s, local_samp)
             _tick("rank_gather", _t_g)
-            allsc = {}
+            allsc, allsamp = {}, {}
             for _d in _bag:
                 allsc.update(_d or {})
+            for _d in _bag_s:
+                allsamp.update(_d or {})
         else:
             allsc = dict(local)
+            allsamp = dict(local_samp)
 
         # GROUPED BY (pdb, interface), which is what an interface IS. Keyed by (seed, sample)
         # inside the group so group_coeffs can tell cross-seed pairs from within-seed ones.
@@ -4106,9 +4150,17 @@ def main():
                 # THE LABEL IS THE TRUE iTM, NOT DockQ. Keyed (seed, sample) to match s_by.
                 _gl = _rel_labels(_pdb)
                 for (_sd, _i) in s_by:
-                    _g = _gl.get((int(_sd), int(_i), int(_pair[0]), int(_pair[1])))
+                    # SAMPLE INDEX FOR THE LABEL, POSE INDEX FOR THE KEY. The cache is keyed by
+                    # the sample; s_by and _xs_coef are keyed by the pose. Using _i on both sides
+                    # trained pose 1 against pose 4's label on 99.3% of units.
+                    _sx = allsamp.get((_pdb, _sd, int(_i)))
+                    if _sx is None:
+                        raise SystemExit(
+                            f"STOP: no sample_index recorded for {_pdb}/{_sd} pose {_i}, so its "
+                            f"true-iTM label cannot be keyed. Pass A must emit one per pose.")
+                    _g = _gl.get((int(_sd), int(_sx), int(_pair[0]), int(_pair[1])))
                     if _g is None:
-                        _g = _gl.get((int(_sd), int(_i), int(_pair[1]), int(_pair[0])))
+                        _g = _gl.get((int(_sd), int(_sx), int(_pair[1]), int(_pair[0])))
                     if _g is not None:
                         dq_by[(_sd, _i)] = float(_g)
             else:
@@ -4116,6 +4168,17 @@ def main():
                     _lab = _rank_lab.get(_rank_key(_pdb, _sd, _pair))
                     if _lab is not None and _i in _lab:
                         dq_by[(_sd, _i)] = float(_lab[_i])
+            if a.rank_form == "rel" and len(dq_by) != len(s_by):
+                # EXACT COVERAGE REQUIRED. The completeness guard elsewhere validates DockQ
+                # labels, not this cache, so a partially covered group would quietly train on
+                # fewer poses than it scored -- and a group centred on a SUBSET has a different
+                # mean, so the surviving poses' targets would all be wrong, not merely fewer.
+                raise SystemExit(
+                    f"STOP: {_pdb} interface {_pair} scored {len(s_by)} pose(s) but only "
+                    f"{len(dq_by)} have a true-iTM label. Centring on a subset changes the mean "
+                    f"for every surviving pose, so this is not a partial-data case. Rebuild the "
+                    f"cache with run_logging/build_itm_labels.py and check its manifest covers "
+                    f"this manifest-selection.")
             if len(dq_by) < 2:
                 _rel_stat["short_groups"] += 1
                 continue
