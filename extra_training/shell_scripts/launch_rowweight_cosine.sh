@@ -6,11 +6,28 @@
 #
 #   1. --pae-row-frac 0.2 --pae-row-mass 0.8. The PAE term is reweighted toward the anchor rows
 #      ipTM can read. ipTM is max_i t_i over 29-801 rows (median 332), so selection reads ONE row
-#      while the unweighted term grades all of them equally. The top 20% of rows by t_i (floor 10)
-#      now carry 80% of the loss and the rest share 20%: a top row weighs 16x a bottom row and
-#      effective sample size is ~103 of 332. It does NOT change any label -- every pair is still
-#      trained toward its true error bin -- which is why it was preferred to a ranking loss on
-#      ipTM. See phases/pae_row_weight.py and run_logging/test_pae_row_weight.py.
+#      while the unweighted term grades all of them equally. Within EACH scored chain pair's block
+#      the top 20% of its rows by that pair's own t_i (floor 10) carry 80% of that block's loss and
+#      the rest share 20%: a top row weighs 16x a bottom row, effective sample size ~103 of 332.
+#      It does NOT change any label -- every pair is still trained toward its true error bin --
+#      which is why it was preferred to a ranking loss on ipTM.
+#
+#      PER CHAIN PAIR, NOT PER STRUCTURE, and that distinction was a review finding: selection
+#      reads chain_pair_iptm[x,y], one max per INTERFACE with its own d0 over just those two
+#      chains, and 298 of these 368 structures score two or more pairs. Ranking on the union of
+#      their blocks ranked rows by a quantity no ipTM reads -- the test shows only 11 of the top 20
+#      rows agree between the two.
+#
+#      ALSO FROM REVIEW, and the reason this script runs the gate: the first version cast the
+#      weights to the bool dtype of PAELoss's own pair_mask, so every weight became True and the
+#      term was an EXACT no-op -- it would have trained 60 epochs as a plain unweighted arm while
+#      logging itself as row-weighted. The gate now asserts the weighted loss DIFFERS from the
+#      unweighted one, through the real PAELoss. See phases/pae_row_weight.py and
+#      run_logging/test_pae_row_weight.py.
+#
+#      pae_loss IN trajectory.csv IS THE WEIGHTED TERM, because that is what is trained, and a
+#      mean-1 weight does not preserve the value. The comparable curve is pae_loss_unweighted,
+#      read back every pose from the replayed label: plot_train_pae.py --unweighted plots it.
 #
 #   2. structures_winnable.csv: 368 structures, not 487. The 119 dropped have NO pose above DockQ
 #      0.23 over all 100 labelled poses, so every cross-chain error exceeds 32 A, the PAE label is
@@ -38,7 +55,8 @@
 # 0. Resuming would start the schedule in its own past.
 #
 # THE LAUNCH LOG MUST PRINT, or this is not the arm it claims to be:
-#   - "PAE term ROW-WEIGHTED: top 20% of anchor rows by t_i (floor 10 rows) carry 80% ..."
+#   - "PAE term ROW-WEIGHTED, PER SCORED CHAIN PAIR: ... k=67, a top row weighing 3.96 against
+#     0.25 (15.8x), effective sample size 103 of 332. Weights DETACHED, mask FLOAT."
 #   - "368 structure(s)" on the manifest line and 738 interfaces on the PAE mask line
 #   - 258 trainable tensors
 #   - NO "anchor SNAPSHOT" line (that would mean --l2-sp survived)

@@ -53,6 +53,12 @@ if WINNABLE:
     _skip = {ln.strip() for ln in open(_drop) if ln.strip()}
     _keep = lambda p: p not in _skip  # noqa: E731
     print(f"  --winnable-only: excluding {len(_skip)} structure(s) with no pose above DockQ 0.23")
+# --unweighted READS pae_loss_unweighted INSTEAD OF pae_loss. With --pae-row-frac on, pae_loss is
+# the row-weighted term -- what is trained -- and a mean-1 row weight does not preserve the value,
+# because the weighted mean equals the unweighted one only if per-row loss is uncorrelated with the
+# weight and the weight is chosen BY t_i. So pae_loss is NOT comparable across a weighted and an
+# unweighted arm; pae_loss_unweighted is, and it is written every pose for exactly that reason.
+COL = "pae_loss_unweighted" if "--unweighted" in sys.argv else "pae_loss"
 rid = args[0] if args else sys.exit("need a run id")
 out = args[1] if len(args) > 1 else f"figures/train_pae_{rid}.png"
 
@@ -77,7 +83,7 @@ for r_ in rids:
         continue
     with open(traj, newline="") as fh:
         for r in csv.DictReader(fh):
-            e, v = r.get("epoch"), r.get("pae_loss")
+            e, v = r.get("epoch"), r.get(COL)
             if e in (None, "") or v in (None, ""):
                 continue
             if _keep is not None and not _keep((r.get("pdb") or "").strip()):
@@ -87,7 +93,9 @@ for r_ in rids:
             except ValueError:
                 continue
 if not per:
-    sys.exit(f"  trajectory.csv for {rid} has no finished poses yet")
+    sys.exit(f"  trajectory.csv for {rid} has no {COL} rows yet"
+             + ("  (that column only exists on a --pae-row-frac arm)"
+                if COL.endswith("unweighted") else ""))
 
 eps = sorted(per)
 mean = [float(np.mean(per[e])) for e in eps]
@@ -112,7 +120,8 @@ if len(eps) > 1:
     ax.annotate(f"epoch {eps[0]}: {mean[0]:.4f}", (eps[0], mean[0]), fontsize=9, color="#777777",
                 xytext=(6, -14), textcoords="offset points")
 ax.set_xlabel("epoch")
-ax.set_ylabel("masked PAE loss (training)")
+ax.set_ylabel("masked PAE loss (training)"
+              + (", row-UNWEIGHTED" if COL.endswith("unweighted") else ""))
 # THE SUBTITLE IS CONDITIONAL. It used to assert "no eval pass, no held-out curve", which is
 # true of fawgtu and false of any run that monitored val -- printing it on jy6sah would caption
 # the plot with a claim about the wrong run.

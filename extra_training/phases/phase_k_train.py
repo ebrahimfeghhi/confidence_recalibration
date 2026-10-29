@@ -1350,8 +1350,8 @@ def main():
     # "m" is the scored-cross-chain pair mask; "w" the per-anchor-row multiplier --pae-row-frac
     # installs; "bins"/"pm" are stashed by _masked_calc on diagnostic poses only, so the per-row
     # loss can be read back AFTER the forward without recomputing the label.
-    _pae_keep = {"m": None, "w": None, "bins": None, "pm": None, "stash": False,
-                 "pdb": None, "unit": None}
+    _pae_keep = {"m": None, "wm": None, "blocks": None, "bins": None, "pm": None,
+                 "stash": False, "pdb": None, "unit": None, "replay": None, "unw_label": None}
     _scored_asym = {}
     _pae_mask_stats = {"masked": 0, "unmasked": 0}
     if a.emit_iptm_rows and not a.loss_only:
@@ -1407,16 +1407,28 @@ def main():
         _orig_calc = loss_fn.pae_loss.calculate_label
 
         def _masked_calc(*args, **kw):
+            # REPLAY SERVES THE SECOND, UNWEIGHTED FORWARD of the same pose without recomputing
+            # the label. calculate_label does the frame alignment; only the cross-entropy needs
+            # redoing to read the unweighted number, and that number has to be per-pose rather
+            # than sampled so trajectory.csv stays comparable with every unweighted arm.
+            rp = _pae_keep["replay"]
+            if rp is not None:
+                return rp
             sq, bins, pm = _orig_calc(*args, **kw)
             m = _pae_keep["m"]
             if m is not None:
                 pm = pm * m.to(pm.dtype)
-            # ROW WEIGHTING RIDES THE EXISTING PAIR MASK. PAELoss already reduces as
-            # sum(loss * pair_mask) / sum(pair_mask), a weighted mean, so a real-valued mask is a
-            # weighted PAE term with no change to Protenix. w is [N_frame]; pm is [N_frame, N_token].
-            w = _pae_keep["w"]
-            if w is not None:
-                pm = pm * w.to(pm.dtype).reshape(-1, 1)
+            # THE WEIGHTED MASK MUST BE FLOAT, EXPLICITLY. PAELoss reduces as
+            # sum(loss * pair_mask) / sum(pair_mask) -- already a weighted mean -- so a real-valued
+            # mask is a weighted PAE term with no change to Protenix. But calculate_label returns a
+            # BOOL pair_mask, so the earlier `w.to(pm.dtype)` cast every weight to True and the
+            # whole term was a silent no-op that still logged itself as weighted. Caught in review;
+            # test_pae_row_weight.py now asserts the weighted mask DIFFERS from the unweighted one.
+            wm = _pae_keep["wm"]
+            if wm is not None:
+                pm = pm.to(torch.float32) * wm.to(torch.float32)
+            _pae_keep["unw_label"] = (sq, bins, (pm > 0).to(torch.float32) if wm is not None
+                                      else pm)
             if _pae_keep["stash"]:
                 _pae_keep["bins"], _pae_keep["pm"] = bins, pm
             return sq, bins, pm
@@ -1443,8 +1455,13 @@ def main():
             raise SystemExit("STOP: --pae-row-frac needs --pae-scored-pairs. t_i is a mean over a "
                              "row's SCORED cross-chain targets; with no pool there is no cross "
                              "block to average over and the ranking of rows would be meaningless.")
-        if not 0.0 < float(a.pae_row_mass) <= 1.0:
-            raise SystemExit(f"STOP: --pae-row-mass must be in (0, 1], got {a.pae_row_mass}.")
+        if not 0.0 < float(a.pae_row_mass) < 1.0:
+            raise SystemExit(
+                f"STOP: --pae-row-mass must be in (0, 1), got {a.pae_row_mass}. At 1.0 every row "
+                f"outside the top set gets weight 0, which is a hard top-k mask: those rows are "
+                f"then unsupervised and free to drift over-confident, and since ipTM is a max an "
+                f"over-confident row is exactly the one selection reads. Pass 0.8 for the "
+                f"16x-focus-with-a-floor this flag is for.")
         if not 0.0 < float(a.pae_row_frac) <= 1.0:
             raise SystemExit(f"STOP: --pae-row-frac must be in (0, 1], got {a.pae_row_frac}.")
         if int(a.pae_row_floor) < 1:
@@ -1460,50 +1477,89 @@ def main():
         _row_seen = {"n": 0}
         _row_diag_p = os.path.join(a.out, f"pae_rows_rank{rank}.csv")
         _row_diag_fh = {"fh": None, "w": None}
+        _pae_unw = {"v": float("nan")}
 
-        def _row_log(pdb, unit, t, w, k, n, weighted, kw):
-            """t_i quantiles, realised k, effective sample size, the unweighted loss, and the rank
-            correlation between t_i and that row's own PAE loss.
+        def _unweighted(kw):
+            """The m-masked but row-UNWEIGHTED loss for this pose, every pose.
 
-            THE CORRELATION IS THE MEASUREMENT. If the high-t_i rows are already the best fit ones
-            this weighting has no headroom and the arm is answered without waiting for DockQ.
+            WHY EVERY POSE. trajectory.csv's pae_loss column is whatever the trained term returns,
+            and that is now a reweighted mean. A mean-1 weight does NOT preserve the value unless
+            the per-row loss is uncorrelated with the weight -- and the weight is chosen BY t_i,
+            which the rho column exists to show is correlated. So the weighted number is not
+            comparable with any unweighted arm, and a 1-in-50 sample is not a curve. The label is
+            replayed rather than recomputed, so this costs one cross-entropy, not an alignment.
+            """
+            lab = _pae_keep["unw_label"]
+            if lab is None:
+                return float("nan")
+            try:
+                with torch.no_grad():
+                    _pae_keep["replay"] = lab
+                    return float(_orig_pae_fwd(**kw))
+            except Exception as _e:
+                print(f"  WARNING: unweighted PAE readback failed "
+                      f"({type(_e).__name__}: {_e})", flush=True)
+                return float("nan")
+            finally:
+                _pae_keep["replay"] = None
+
+        def _row_log(pdb, unit, n, weighted, unw, kw):
+            """Realised effective sample size, t_i quantiles, and the rank correlation between
+            t_i and that row's own PAE loss.
+
+            THE CORRELATION IS THE MEASUREMENT. If the high-t_i rows are already the best-fit ones
+            then this weighting has no headroom, and that is answerable from the first epoch rather
+            than from DockQ sixty epochs later.
             """
             try:
                 with torch.no_grad():
-                    unw = float(_orig_pae_fwd(**kw))     # w is already cleared by the caller
                     bins, pm = _pae_keep["bins"], _pae_keep["pm"]
-                    rho, rl_mean = float("nan"), float("nan")
+                    rho, rl_mean, ess, k_real = [float("nan")] * 3 + [0]
+                    tq = [float("nan")] * 3
                     if bins is not None and pm is not None:
+                        ess = _rw.effective_sample_size(pm)
                         hf = kw["has_frame"].reshape(-1).bool()
-                        lg = kw["logits"][..., hf, :, :].float()
-                        ce = -(bins.float() * torch.log_softmax(lg, dim=-1)).sum(-1)
-                        while ce.dim() > 2:
-                            ce = ce.mean(0)
-                        # DIVIDE THE ROW WEIGHT BACK OUT. pm carries it, so correlating against pm
-                        # would correlate t_i with a quantity the weighting itself produced.
-                        bm = pm.to(ce.dtype)
-                        if w is not None:
-                            bm = bm / w.to(bm.dtype).reshape(-1, 1).clamp_min(1e-12)
-                        cnt = bm.sum(-1)
-                        rl = (ce * bm).sum(-1) / cnt.clamp_min(1.0)
+                        # CHUNKED for the same reason row_t is: a full fp32 log_softmax over the
+                        # crop is ~555 MB at our largest, inside the live autograd graph.
+                        lg = kw["logits"]
+                        while lg.dim() > 4:
+                            lg = lg[0]
+                        lg = lg[:, hf] if lg.dim() == 4 else lg[hf].unsqueeze(0)
+                        bq = bins if bins.dim() == lg.dim() else bins.unsqueeze(0)
+                        nrow = int(hf.sum())
+                        ce = torch.zeros(nrow, lg.shape[-2], device=lg.device,
+                                         dtype=torch.float32)
+                        for lo in range(0, nrow, _rw.ROW_CHUNK):
+                            hi = min(lo + _rw.ROW_CHUNK, nrow)
+                            c = lg[:, lo:hi].float()
+                            ce[lo:hi] = -(bq[:, lo:hi].float()
+                                          * torch.log_softmax(c, dim=-1)).sum(-1).mean(0)
+                            del c
+                        base = (pm > 0).to(ce.dtype)     # the unweighted support of the same mask
+                        cnt = base.sum(-1)
+                        rl = (ce * base).sum(-1) / cnt.clamp_min(1.0)
                         ok = cnt > 0
-                        if int(ok.sum()) > 2:
+                        k_real = int(ok.sum())
+                        if k_real > 2:
+                            tt = pm.to(torch.float64).sum(-1)      # realised row weight
                             def _rk(x):
                                 return torch.argsort(torch.argsort(x)).to(torch.float64)
-                            x, y = _rk(t[ok]), _rk(rl[ok])
+                            x, y = _rk(tt[ok]), _rk(rl[ok].double())
                             x, y = x - x.mean(), y - y.mean()
                             den = float(x.norm() * y.norm())
                             if den > 0:
                                 rho = float((x * y).sum() / den)
-                        rl_mean = float(rl[ok].mean()) if int(ok.sum()) else float("nan")
-                    ess = _rw.effective_sample_size(w, n)
-                    tq = [float(v) for v in torch.quantile(
-                        t.double(), torch.tensor([0.5, 0.9, 1.0], dtype=torch.float64,
-                                                 device=t.device))]
-                row = {"pdb": pdb, "unit": unit, "n_rows": n, "k": k, "ess": round(ess, 2),
-                       "pae_weighted": round(float(weighted), 6), "pae_unweighted": round(unw, 6),
-                       "row_loss_mean": round(rl_mean, 6), "rho_t_vs_rowloss": round(rho, 6),
-                       "t_p50": round(tq[0], 6), "t_p90": round(tq[1], 6), "t_max": round(tq[2], 6)}
+                            q = torch.tensor([0.5, 0.9, 1.0], dtype=torch.float64,
+                                             device=tt.device)
+                            tq = [float(v) for v in torch.quantile(tt[ok], q)]
+                        rl_mean = float(rl[ok].mean()) if k_real else float("nan")
+                row = {"pdb": pdb, "unit": unit, "n_rows": n, "n_scored_rows": k_real,
+                       "ess": round(ess, 2), "pae_weighted": round(float(weighted), 6),
+                       "pae_unweighted": round(float(unw), 6),
+                       "row_loss_mean": round(rl_mean, 6),
+                       "rho_rowweight_vs_rowloss": round(rho, 6),
+                       "rw_p50": round(tq[0], 6), "rw_p90": round(tq[1], 6),
+                       "rw_max": round(tq[2], 6)}
                 if _row_diag_fh["fh"] is None:
                     _row_diag_fh["fh"] = open(_row_diag_p, "a", newline="")
                     _row_diag_fh["w"] = csv.DictWriter(_row_diag_fh["fh"], fieldnames=list(row))
@@ -1511,8 +1567,11 @@ def main():
                         _row_diag_fh["w"].writeheader()
                 _row_diag_fh["w"].writerow(row)
                 _row_diag_fh["fh"].flush()
-            except Exception as _e:      # a diagnostic must never take the run down
-                print(f"  WARNING: row diagnostic failed ({type(_e).__name__}: {_e})", flush=True)
+            except Exception as _e:
+                # NAMED, NOT SWALLOWED. An OOM here used to leave pae_rows_rank*.csv silently
+                # empty while the launch note called it the diagnostic that answers the premise.
+                print(f"  WARNING: row diagnostic failed for {pdb}/{unit} "
+                      f"({type(_e).__name__}: {_e})", flush=True)
 
         def _row_weighted_fwd(**kw):
             hf = kw["has_frame"].reshape(-1).bool()
@@ -1520,34 +1579,37 @@ def main():
             _row_seen["n"] += 1
             diag = (int(a.pae_row_log_every) > 0
                     and _row_seen["n"] % int(a.pae_row_log_every) == 0)
-            if n == 0:
-                _pae_keep["w"] = None
+            _pae_keep["unw_label"] = None
+            blocks = _pae_keep["blocks"]
+            if n == 0 or not blocks:
+                _pae_keep["wm"] = None
                 return _orig_pae_fwd(**kw)
             with torch.no_grad():
-                t = _rw.row_t(kw["logits"], hf, _pae_keep["m"], _pl.min_bin, _pl.max_bin)
-                if t is None:
-                    _pae_keep["w"] = None
-                    return _orig_pae_fwd(**kw)
-                w, k = _rw.row_weights(t, _rf, _rm, _rfl)
-            _pae_keep["w"] = w
+                _pae_keep["wm"] = _rw.weighted_mask(
+                    kw["logits"], hf, blocks, _rf, _rm, _rfl, _pl.min_bin, _pl.max_bin)
             _pae_keep["stash"] = bool(diag)
             try:
                 out = _orig_pae_fwd(**kw)
             finally:
-                _pae_keep["w"], _pae_keep["stash"] = None, False
+                _pae_keep["wm"], _pae_keep["stash"] = None, False
+            unw = _unweighted(kw)
+            _pae_unw["v"] = unw
             if diag:
-                _row_log(_pae_keep.get("pdb"), _pae_keep.get("unit"), t, w, k, n, out, kw)
-                _pae_keep["bins"], _pae_keep["pm"] = None, None
+                _row_log(_pae_keep.get("pdb"), _pae_keep.get("unit"), n, out, unw, kw)
+            _pae_keep["bins"] = _pae_keep["pm"] = _pae_keep["unw_label"] = None
             return out
 
         loss_fn.pae_loss.forward = _row_weighted_fwd
-        print(f"PAE term ROW-WEIGHTED: top {_rf:.0%} of anchor rows by t_i (floor {_rfl} rows) "
-              f"carry {_rm:.0%} of the loss; the rest share {1 - _rm:.0%}. "
-              f"At the median 332 rows that is k=67, a top row weighing "
-              f"{_rm * 332 / 67:.2f} against {(1 - _rm) * 332 / 265:.2f} "
-              f"({_rm * 265 / ((1 - _rm) * 67):.1f}x), effective sample size "
-              f"{_rw.predicted_ess(332, _rf, _rm, _rfl):.0f} of 332. "
-              f"Weights DETACHED. Diagnostic every {a.pae_row_log_every} pose(s) -> "
+        _bk = min(332, max(_rfl, -(-int(_rf * 332) // 1)))
+        _bw = _rw.row_weights(torch.arange(332, dtype=torch.float32), None, _rf, _rm, _rfl)[0]
+        print(f"PAE term ROW-WEIGHTED, PER SCORED CHAIN PAIR: within each pair's block the top "
+              f"{_rf:.0%} of its rows by t_i (floor {_rfl}) carry {_rm:.0%} of that block's loss "
+              f"and the rest share {1 - _rm:.0%}. On a 332-row block that is k={_bk}, a top row "
+              f"weighing {float(_bw.max()):.2f} against {float(_bw[_bw > 0].min()):.2f} "
+              f"({float(_bw.max()) / float(_bw[_bw > 0].min()):.1f}x), effective sample size "
+              f"{_rw.predicted_ess(332, _rf, _rm, _rfl):.0f} of 332. Weights DETACHED, mask FLOAT. "
+              f"The unweighted value is read back EVERY pose into pae_loss_unweighted; the full "
+              f"diagnostic runs every {a.pae_row_log_every} pose(s) -> "
               f"{os.path.basename(_row_diag_p)}")
 
     # RANKING LOSS SETUP. Refused rather than silently degraded when its inputs are absent: without
@@ -1946,21 +2008,34 @@ def main():
         pairs = _scored_asym.get(pdb)
         if not pairs:
             _pae_keep["m"] = None
+            _pae_keep["blocks"] = None
             _pae_mask_stats["unmasked"] += 1
             _pae_mask_check()
             return
         aa = asym.reshape(-1).long()
         fa = aa[has_frame.reshape(-1).bool()]
         keep = torch.zeros((fa.numel(), aa.numel()), dtype=torch.bool, device=aa.device)
+        # PER-PAIR BLOCKS, KEPT SEPARATELY. Selection reads chain_pair_iptm[x, y] -- one max per
+        # INTERFACE, each over just those two chains and with its own d0. 298 of the 368 training
+        # structures score two or more pairs, so ranking rows on the union would rank a row in the
+        # antigen by its heavy- and light-chain targets averaged together, which is a quantity no
+        # ipTM reads. --pae-row-frac weights each block on its own t_i; the union is still what the
+        # unweighted term uses, and the blocks sum back to it at uniform weights.
+        blocks = []
         for x, y in pairs:
-            keep |= ((fa[:, None] == x) & (aa[None, :] == y))
-            keep |= ((fa[:, None] == y) & (aa[None, :] == x))
+            blk = (((fa[:, None] == x) & (aa[None, :] == y))
+                   | ((fa[:, None] == y) & (aa[None, :] == x)))
+            keep |= blk
+            if bool(blk.any()):
+                blocks.append((blk, int(((aa == x) | (aa == y)).sum())))
         if not bool(keep.any()):
             _pae_keep["m"] = None
+            _pae_keep["blocks"] = None
             _pae_mask_stats["unmasked"] += 1
             _pae_mask_check()
             return
         _pae_keep["m"] = keep
+        _pae_keep["blocks"] = blocks
         _pae_mask_stats["masked"] += 1
 
     w = {k: loss_fn.loss_weight[k] for k in ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss")}
@@ -2760,7 +2835,13 @@ def main():
     # reconstruct the other ranks' poses because they were never written.
     traj_cols = ["wall_s", "step", "unit_i", "pdb", "unit", "pose", "lr"] + list(TERMS) + \
                 ["batch_" + k for k in TERMS] + ["batch_n", "partial_step", "step_ok"] + \
-                ["grad_norm", "outside_head", "epoch", "step_taken", "nonfinite_grad"]
+                ["grad_norm", "outside_head", "epoch", "step_taken", "nonfinite_grad"] + \
+                (["pae_loss_unweighted"] if float(a.pae_row_frac) > 0 else [])
+    # pae_loss IS THE WEIGHTED TERM once --pae-row-frac is on, because it is what is trained, and
+    # a mean-1 row weight does NOT preserve the value: the weighted mean equals the unweighted one
+    # only if the per-row loss is uncorrelated with the weight, and the weight is chosen BY t_i.
+    # So the comparable curve lives in pae_loss_unweighted, read back every pose from the replayed
+    # label, and plot_train_pae.py --unweighted reads that column instead.
     # the per-structure item build is the cost --preload-items exists to amortise, so it is measured
     # rather than assumed; reported at the end against the number of structures actually visited.
     # WHERE AN EPOCH'S WALL CLOCK ACTUALLY GOES, accumulated per rank and printed at every epoch
@@ -3588,6 +3669,8 @@ def main():
             out = {k: (float(met[k]) if k in met else 0.0) for k in TERMS}
             out["loss"] = float(met["loss"])
             out["pose"] = i
+            if float(a.pae_row_frac) > 0:
+                out["pae_loss_unweighted"] = _pae_unw["v"]
             # SCALED BY THE EFFECTIVE BATCH, so summing the ranks reconstructs the full-batch mean.
             # NOT UNDER --loss-only: there are no gradients to accumulate, and calling backward
             # would be the one way this mode could change the weights it is supposed to measure.
