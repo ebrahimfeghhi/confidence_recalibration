@@ -79,18 +79,26 @@ def run_shard(k):
         if not ud:
             rows.append((pdb, sd, -1, "no_unit_dir", "", ""))
             continue
-        exp = sorted(static[pdb])
+        # A CHAIN PAIR IS UNORDERED, and the first version of this audit compared ORDERED
+        # tuples. ('9hng_BC', 1, 0) and ('9hng_BC', 0, 1) are the same interface, and t_i's token
+        # mask is (asym==x)|(asym==y), which is symmetric -- so they produce an identical label.
+        # Comparing them as ordered tuples reported 1158 of 18400 poses (6.29%) "disagreeing"
+        # across 54 structures, a contamination that does not exist. The rebuilt OST-mapped
+        # labels differed from the static ones on 0 of 36,900 rows, which is what exposed it.
+        norm = lambda t: (t[0], min(t[1], t[2]), max(t[1], t[2]))        # noqa: E731
+        exp = sorted(norm(t) for t in static[pdb])
         for i in range(a.nsample):
             got, why = ost_chain_pairs(ud, pdb, i, refs.get(pdb) or [])
             if got is None:
                 rows.append((pdb, sd, i, "unresolvable", why[:60], ""))
                 continue
-            if sorted(got) == exp:
+            if sorted(norm(t) for t in got) == exp:
                 rows.append((pdb, sd, i, "agree", "", ""))
             else:
                 rows.append((pdb, sd, i, "disagree",
                              ";".join(f"{a_}:{b_},{c_}" for a_, b_, c_ in exp),
-                             ";".join(f"{a_}:{b_},{c_}" for a_, b_, c_ in sorted(got))))
+                             ";".join(f"{a_}:{b_},{c_}"
+                                      for a_, b_, c_ in sorted(norm(t) for t in got))))
         if n and n % 50 == 0:
             el = time.time() - t0
             print(f"  shard {k}: {n}/{len(mine)} units, {el:.0f}s "

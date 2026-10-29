@@ -285,7 +285,8 @@ def run_shard(k):
         w.writerows(rows)
     os.replace(tmp, f)
     print(f"  shard {k}: {len(rows)} row(s) -> {os.path.relpath(f, ROOT)} "
-          f"({time.time()-t0:.0f}s)", flush=True)
+          f"({time.time()-t0:.0f}s, mapping="
+          f"{'per-pose OST' if a.ost_mapping else 'static chain_roles'})", flush=True)
     if k == 0 and unres:
         print(f"  NOTE: {len(unres)} pool pair(s) unresolved in chain_roles, e.g. {unres[:5]}")
     return 0
@@ -367,6 +368,11 @@ if __name__ == "__main__":
             [sys.executable, "-I", os.path.abspath(__file__), "--shard", str(k),
              "--workers", str(a.workers), "--rows-dir", a.rows_dir, "--pool", a.pool,
              "--roles", a.roles, "--fold", a.fold, "--out", a.out]
+            # EVERY FLAG THAT CHANGES THE OUTPUT MUST BE FORWARDED. --ost-mapping was not, so a
+            # run launched with it did its work in shards that never saw it: the "OST-mapped"
+            # labels came out bit-identical to the static ones on all 36,900 rows, which is what
+            # exposed it. The parent's own `a` is not the workers' `a`.
+            + (["--ost-mapping"] if a.ost_mapping else [])
             + (["--limit-units", str(a.limit_units)] if a.limit_units else []))
             for k in range(a.workers)]
         rc = [p.wait() for p in ps]
@@ -378,5 +384,7 @@ if __name__ == "__main__":
                    inputs=[a.pool, a.roles, os.path.join(a.rows_dir, "rows_b10_*_s*.csv"),
                            os.path.join(a.fold, "labels"), os.path.join(a.fold, "trunks")],
                    outputs_glob="gt_iptm_s*.csv",
-                   extra={"workers": a.workers, "seeds": list(SEEDS)})
+                   extra={"workers": a.workers, "seeds": list(SEEDS),
+                          "chain_mapping": "per-pose OST" if a.ost_mapping
+                                           else "static chain_roles"})
         report()

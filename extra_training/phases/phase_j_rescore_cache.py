@@ -133,8 +133,8 @@ def _chain_pair_itm_mean(pae_prob, has_frame, asym_id, token_is_ligand, min_bin,
 
     WHY THIS EXISTS. ipTM is max_i t_i, so a pose's whole score rests on one anchor row. Measured
     by run_logging/itm_ceiling.py on 738 interfaces at 50 candidates, ranking poses by the TRUE
-    iTM recovers 59.0% of the oracle headroom under max pooling and 65.9% under mean, +0.0107 +-
-    0.0039 paired (t=2.70). That is an ORACLE result and says nothing about a real head, which is
+    iTM recovers 58.6% of the oracle headroom under max pooling and 67.7% under mean, +0.0140 +-
+    0.0034 paired (t=4.06). That is an ORACLE result and says nothing about a real head, which is
     what this computes so the question can be settled on actual predictions.
 
     SAME ARITHMETIC AS pae_row_weight.row_t, which the test suite pins against Protenix's own

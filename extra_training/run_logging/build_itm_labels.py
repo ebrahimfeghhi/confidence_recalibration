@@ -15,7 +15,7 @@ gets attached to the wrong chain pair.
 
 BOTH POOLINGS ARE STORED. The arm being built trains on the MEAN, but the max is the shipped
 readout and the mean-vs-max question is not settled on a trained head (measured: mean wins at the
-oracle by +0.0107 paired t=2.70, and LOSES on the current head by -0.0130 t=-2.68). Storing both
+oracle by +0.0140 paired t=4.06, and LOSES on the current head by -0.0130 t=-2.68). Storing both
 costs nothing and lets the target be switched without rebuilding.
 
 OUTPUT: <fold>/itm_labels/<pdb>.npz with parallel int/float arrays, plus a manifest.json carrying
@@ -56,6 +56,28 @@ where = {}
 for pdb, lst in pairs_by_pdb.items():
     for iface, ax, ay in lst:
         where[iface] = (pdb, ax, ay)
+
+# REFUSE A STATICALLY-MAPPED CEILING. The labels must come from the per-pose OST join, the one
+# phase_k_eval scores with. The first attempt at this used the static chain_roles join and was
+# wrong on 3,154 of 36,900 rows (8.55%) across 52 structures -- and the "fix" run silently used
+# the static join anyway, because the parent never forwarded --ost-mapping to its workers. That
+# was caught only because the rebuilt labels came out bit-identical. The ceiling's own provenance
+# now records the mapping, so this can be checked rather than remembered.
+# AN UNRECORDED MAPPING IS ALSO REFUSED, not just a recorded static one. The first version of
+# this guard only fired when chain_mapping said something non-OST -- so the original static
+# ceiling, written before that field existed, sailed straight through it. A mapping that cannot be
+# confirmed is not a mapping that can be trusted, and the cost of being wrong here is 8.55% of
+# labels pointing at the wrong chain pair.
+_cp = os.path.join(ROOT, a.ceiling, "provenance.json")
+_cm = ((json.load(open(_cp)) or {}).get("chain_mapping", "")
+       if os.path.exists(_cp) else "")
+if "OST" not in _cm:
+    sys.exit(f"STOP: {a.ceiling} reports chain_mapping "
+             f"{_cm!r} -- training labels must come from the PER-POSE OST join the evaluator "
+             f"scores with, and an unrecorded mapping cannot be confirmed to be one. Rerun "
+             f"run_logging/itm_ceiling.py with --ost-mapping (it records the mapping in its own "
+             f"provenance.json).")
+print(f"  ceiling mapping: {_cm}")
 
 rows = collections.defaultdict(list)
 n_in = n_skip = 0

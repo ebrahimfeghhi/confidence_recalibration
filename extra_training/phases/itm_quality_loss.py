@@ -70,8 +70,8 @@ WHAT EACH PIECE IS FOR, because every one of them answers a measured failure:
   explicit balance coefficient would at least make it a decision.
 
   THE MEAN OVER ROWS, NOT THE MAX. Measured by run_logging/itm_ceiling.py on the 738 winnable
-  interfaces at 50 candidates: ranking poses by the TRUE iTM recovers 59.0% of the oracle headroom
-  with max pooling and 65.9% with mean pooling, mean minus max +0.0107 +- 0.0039 paired (t=2.70).
+  interfaces at 50 candidates: ranking poses by the TRUE iTM recovers 58.6% of the oracle headroom
+  with max pooling and 67.7% with mean pooling, mean minus max +0.0140 +- 0.0034 paired (t=4.06).
   So ~7 points of headroom are lost to the pooling alone. The mean also removes the failure
   diagnosed on 9gvn_BF, where the max rested the whole pose's score on one row and, in the
   saturated tail of 1/(1+(c/d0)^2), which row won became arbitrary and the ordering inverted.
@@ -94,7 +94,7 @@ on 8ce4_BF a DockQ-0.069 pose has g = 0.1642 while the best acceptable pose (Doc
 g = 0.1018, so this loss trains the bad pose up and holds the good one down.
 
 The consequence is a hard cap: fitting this loss perfectly yields exactly the true-iTM selector,
-which run_logging/itm_ceiling.py measures at 65.9% of oracle headroom with mean pooling. This loss
+which run_logging/itm_ceiling.py measures at 67.7% of oracle headroom with mean pooling. This loss
 cannot exceed that by construction. (For scale, the row-weighted arm reached 8.5%, so the cap is
 not currently the binding constraint -- but it is a cap, and the ceiling table in the docs is
 simultaneously the argument for PAE and the ceiling on this loss.) An earlier version of this

@@ -109,11 +109,11 @@ poses ranked by their **true** iTM:
 | selector | mean DockQ | frac acc | % of oracle headroom |
 |---|---|---|---|
 | shipped ipTM (baseline) | 0.5479 | 0.7060 | — |
-| true iTM, **max** over rows | 0.6385 | 0.8767 | **59.0%** |
-| true iTM, **mean** over rows | 0.6492 | 0.8821 | **65.9%** |
+| true iTM, **max** over rows | 0.6378 | 0.8753 | **58.6%** |
+| true iTM, **mean** over rows | 0.6518 | 0.8848 | **67.7%** |
 | oracle (best DockQ) | 0.7015 | 0.9363 | 100% |
 
-Mean minus max, paired: **+0.0107 ± 0.0039 (t=+2.70)**. So roughly 7 points of reachable headroom
+Mean minus max, paired: **+0.0140 ± 0.0034 (t=+4.06)**. So roughly 7 points of reachable headroom
 are lost to the pooling choice alone, before any question of how well PAE is learned. That is more
 than either trained arm has achieved.
 
@@ -267,7 +267,7 @@ A real example: on `8ce4_BF` a DockQ-0.069 pose has `g` = 0.1642 while the best 
 (DockQ 0.816) has `g` = 0.1018. This loss trains the bad pose *up* and holds the good one *down*.
 
 **Consequence — a hard cap.** Fitting this loss perfectly yields exactly the true-iTM selector,
-which `itm_ceiling.py` measures at **65.9%** of oracle headroom. This loss cannot exceed that by
+which `itm_ceiling.py` measures at **67.7%** of oracle headroom. This loss cannot exceed that by
 construction. The ceiling table above is simultaneously the argument for PAE being the right
 target *and* the ceiling on this loss, and the first draft presented only the first reading.
 
@@ -333,7 +333,7 @@ row-weight bool cast, which logged itself as working while being an exact no-op.
 
 ## Open questions for review
 
-1. **The target.** `g_p` caps this at 65.9% and misorders 9.6% of mixed groups. Should the target
+1. **The target.** `g_p` caps this at 67.7% and misorders 9.6% of mixed groups. Should the target
    be something monotone in DockQ instead, accepting that it is then no longer PAE-native? This is
    the question that matters most and it is unresolved.
 2. **The down-direction dilution.** The single-pose steal costs 4.7% of the up-direction's

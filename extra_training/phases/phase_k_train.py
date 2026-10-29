@@ -241,9 +241,9 @@ def main():
     ap.add_argument("--rank-pool", choices=("max", "mean"), default="max",
                     help="HOW A POSE'S ipTM IS POOLED OVER ANCHOR ROWS, in BOTH pass A and the "
                          "pass-B term, so the quantity trained is the quantity scored. max is "
-                         "shipped ipTM. mean measured +0.0107 +- 0.0039 (t=2.70) better than the "
-                         "max at the ORACLE on 738 winnable interfaces (65.9% of oracle headroom "
-                         "against 59.0%) and -0.0130 +- 0.0048 (t=-2.68) WORSE when swapped onto "
+                         "shipped ipTM. mean measured +0.0140 +- 0.0034 (t=4.06) better than the "
+                         "max at the ORACLE on 738 winnable interfaces (67.7% of oracle headroom "
+                         "against 58.6%) and -0.0130 +- 0.0048 (t=-2.68) WORSE when swapped onto "
                          "the current trained head -- better if trained for, worse if swapped in. "
                          "It also gives gradient to every row rather than to the argmax alone, "
                          "which removes the moving-target problem the max has.")

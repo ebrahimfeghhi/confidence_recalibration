@@ -913,11 +913,18 @@ def pair_terms_distance(s_vals, dq_vals, rel_scale=DEFAULT_REL_SCALE):
 #
 # NOT DIVIDED BY THE WITHIN-INTERFACE STD, deliberately. Standardising would equalise every
 # interface's contribution, but interfaces do not contribute equally to the metric: measured,
-# corr(std of true iTM, DockQ range) = +0.745, so wide-spread interfaces are exactly the ones
+# corr(std of true iTM, DockQ range) = +0.745 on the static-mapped labels; not recomputed after the remap, so treat it as indicative, so wide-spread interfaces are exactly the ones
 # where a wrong pick is expensive and letting them carry more gradient is roughly correct
 # importance weighting. Dividing by std also spends equal effort on interfaces where every pose
 # is already acceptable (frac acceptable median 1.00 among the narrow ones). It remains a
 # one-line ablation -- see rel_coeffs(standardize=True) -- rather than part of the design.
+# EVERY CEILING FIGURE QUOTED IN THIS SECTION COMES FROM THE PER-POSE OST MAPPING
+# (training/runs/itm_ceiling_ost), not from the static chain_roles join. The static version was
+# used first and was wrong on 3,154 of 36,900 labels (8.55%) across 52 structures -- 7stf, for
+# instance, maps 7stf_BC to asym (3,1) statically and (3,0) per pose, a different chain and not a
+# reordering. Remapping moved the mean-vs-max result from +0.0107 (t=2.70) to +0.0140 (t=4.06),
+# so the conclusion strengthened rather than reversed. run_logging/audit_chain_mapping.py
+# measures the disagreement and build_itm_labels.py refuses a statically-mapped ceiling.
 DEFAULT_REL_STD_FLOOR = 0.02
 
 
@@ -925,7 +932,7 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean"):
     """chain_pair ipTM for ONE pose and pair, pooled over anchor rows by `pool`.
 
     pool="max" is shipped ipTM and reproduces iptm() exactly. pool="mean" averages the anchor
-    rows instead, which measured +0.0107 +- 0.0039 (t=2.70) better than the max at the ORACLE and
+    rows instead, which measured +0.0140 +- 0.0034 (t=4.06) better than the max at the ORACLE and
     -0.0130 +- 0.0048 (t=-2.68) WORSE on the current trained head -- i.e. better if trained for,
     worse if swapped in. Differentiable when pae_logits requires grad.
 

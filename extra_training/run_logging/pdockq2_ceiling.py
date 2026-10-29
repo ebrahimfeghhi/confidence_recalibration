@@ -2,7 +2,7 @@
 """pDockQ2's ceiling: what it would select with PERFECT PAE **and** perfect pLDDT.
 
 THE QUESTION. itm_ceiling.py asks how much oracle headroom a perfect PAE recovers through the
-ipTM formula (59.0% max-pooled, 65.9% mean-pooled on the 738 winnable interfaces). pDockQ2 is a
+ipTM formula (58.6% max-pooled, 67.7% mean-pooled on the 738 winnable interfaces). pDockQ2 is a
 different formula over the same kind of inputs, so it has its own ceiling, and comparing the two
 ceilings separates "our predictions are bad" from "our scoring function is lossy".
 
