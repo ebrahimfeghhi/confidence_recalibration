@@ -1698,6 +1698,46 @@ def main():
                    ((_PKE.interface_chain_pairs(a.pae_scored_pairs, os.path.join(a.fold,
                                                 "chain_roles.csv"))[0]).items()
                     if (a.rank_form == "rel" and a.pae_scored_pairs) else {}.items())}
+    # IFACE -> STATIC ASYM PAIR, for the DockQ lookup ONLY. _rank_lab is keyed by the asym pair
+    # rank_loss.parse_iface derives from chain_roles, while rel keys everything by the interface
+    # name. DockQ is a property of the INTERFACE -- results.csv is keyed by its `iface` column --
+    # so which asym representation indexes it is an internal detail and the static one is
+    # correct here. This is NOT the same question as which pair to SCORE, which is per pose.
+    _rel_dqkey = {}
+    if a.rank_form == "rel" and a.pae_scored_pairs:
+        for _p2, _l2 in _PKE.interface_chain_pairs(
+                a.pae_scored_pairs, os.path.join(a.fold, "chain_roles.csv"))[0].items():
+            for _ifc2, _x2, _y2 in _l2:
+                _rel_dqkey[_ifc2] = (min(_x2, _y2), max(_x2, _y2))
+
+    def _spearman(xs, ys):
+        """Rank correlation without scipy: rank both, then Pearson. Ties get average ranks."""
+        n = len(xs)
+        if n < 3:
+            return None
+
+        def rank(v):
+            order = sorted(range(n), key=lambda k: v[k])
+            r = [0.0] * n
+            i = 0
+            while i < n:
+                j = i
+                while j + 1 < n and v[order[j + 1]] == v[order[i]]:
+                    j += 1
+                avg = (i + j) / 2.0 + 1.0
+                for k in range(i, j + 1):
+                    r[order[k]] = avg
+                i = j + 1
+            return r
+
+        rx, ry = rank(xs), rank(ys)
+        mx, my = sum(rx) / n, sum(ry) / n
+        sx = sum((v - mx) ** 2 for v in rx) ** 0.5
+        sy = sum((v - my) ** 2 for v in ry) ** 0.5
+        if sx == 0 or sy == 0:
+            return None
+        return sum((a_ - mx) * (b_ - my) for a_, b_ in zip(rx, ry)) / (sx * sy)
+
     _ost_cache = {}
 
     def _pose_pairs(pdb, lab_p, samp):
@@ -4340,6 +4380,42 @@ def main():
                                                 standardize=a.rel_standardize)
                 _rel_stat["groups"] += 1
                 _rel_stat["poses"] += npair
+                # DIAGNOSTIC 1: WITHIN-INTERFACE SPEARMAN of the predicted mean-pooled ipTM
+                # against DockQ -- the arm's actual prediction. The head measured +0.317 at
+                # d32kqp epoch 66 against +0.690 for the TRUE iTM, and this is the quantity that
+                # should move between them. It is far more sensitive than selected DockQ (t=7.6
+                # against t=2.7) because it uses all 50 poses rather than just the argmax.
+                #
+                # DIAGNOSTIC 2: SCORE SPREAD, std of the predicted ipTM over the interface's
+                # poses, against std of the TRUE iTM on the same poses. Below 1 the model is
+                # collapsing its scores, above 1 it is exaggerating pose-to-pose differences, and
+                # ~1 means it has the magnitude right. Every ranking arm in this repo lowered its
+                # loss by margin collapse (x5frz6: within-seed std 0.00593 -> 0.00147 while the
+                # loss fell), so this is the falsifier for that failure mode in one number.
+                _ks = sorted(s_by)
+                _sv = [float(s_by[_k2]) for _k2 in _ks]
+                _gv = [float(dq_by[_k2]) for _k2 in _ks if _k2 in dq_by]
+                _dk = _rel_dqkey.get(_pair)
+                _dv = []
+                if _dk is not None:
+                    for (_sd2, _i2) in _ks:
+                        _lab2 = _rank_lab.get(_rank_key(_pdb, _sd2, _dk))
+                        _sx2 = allsamp.get((_pdb, _sd2, int(_i2)))
+                        if _lab2 is not None and _sx2 is not None and _sx2 in _lab2:
+                            _dv.append(float(_lab2[_sx2]))
+                if len(_dv) == len(_sv) and len(_sv) >= 3:
+                    _rho = _spearman(_sv, _dv)
+                    if _rho is not None:
+                        _rel_stat.setdefault("rho", []).append(_rho)
+                if len(_gv) == len(_sv) and len(_sv) >= 3:
+                    _ms = sum(_sv) / len(_sv)
+                    _mg = sum(_gv) / len(_gv)
+                    _ss = (sum((v - _ms) ** 2 for v in _sv) / len(_sv)) ** 0.5
+                    _sg = (sum((v - _mg) ** 2 for v in _gv) / len(_gv)) ** 0.5
+                    _rel_stat.setdefault("sd_s", []).append(_ss)
+                    _rel_stat.setdefault("sd_g", []).append(_sg)
+                    if _sg > 1e-9:
+                        _rel_stat.setdefault("sd_ratio", []).append(_ss / _sg)
                 if npair:
                     _rel_stat["csum"] = max(_rel_stat["csum"],
                                             abs(sum(c.values())))
@@ -6071,6 +6147,23 @@ def main():
                 # which forms WITHIN-SEED pairs only -- printed "cross-seed" at every epoch while
                 # the startup banner said the opposite. The pair count was the only thing that
                 # gave it away: 6,656 against the ~86,600 a cross-seed objective would form.
+                if a.rank_form == "rel" and _rel_stat.get("rho"):
+                    def _med(v):
+                        w = sorted(v)
+                        return w[len(w) // 2] if w else float("nan")
+                    _rh = _rel_stat["rho"]
+                    print(f"  [rank {rank}] epoch {ep + 1} WITHIN-INTERFACE SPEARMAN "
+                          f"(predicted mean ipTM vs DockQ): median {_med(_rh):+.4f} over "
+                          f"{len(_rh)} interface-group(s)   [the head was +0.3170 at d32kqp ep66; "
+                          f"the TRUE iTM reaches +0.6900 -- this is the arm's prediction]")
+                    if _rel_stat.get("sd_ratio"):
+                        print(f"  [rank {rank}] epoch {ep + 1} SCORE SPREAD: median std(predicted) "
+                              f"{_med(_rel_stat['sd_s']):.4f} against std(true iTM) "
+                              f"{_med(_rel_stat['sd_g']):.4f}, median ratio "
+                              f"{_med(_rel_stat['sd_ratio']):.3f}   "
+                              f"[<1 collapsing, >1 exaggerating, ~1 right magnitude]")
+                    for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio"):
+                        _rel_stat[_k3] = []
                 print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({a.rank_form}, "
                       f"{a.rank_pairs}-seed pairs): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
