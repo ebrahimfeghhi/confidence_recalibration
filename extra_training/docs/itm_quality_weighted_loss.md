@@ -1,4 +1,4 @@
-# Quality-weighted asymmetric iTM regression
+# Quality-weighted asymmetric regression of mean-row ipTM onto DockQ
 
 **Status:** proposed, not yet run. Reference implementation in `phases/itm_quality_loss.py`,
 gate in `run_logging/test_itm_quality_loss.py` (29 assertions, all passing).
@@ -6,11 +6,15 @@ gate in `run_logging/test_itm_quality_loss.py` (29 assertions, all passing).
 This document is for review. Every design choice below is traced to a measurement in this repo;
 where a choice is a judgement call rather than a measurement, it says so.
 
-> **READ THE KNOWN DEFECTS FIRST.** An adversarial review of the first draft found that this
-> loss's own global minimum selects the wrong pose on 5.8% of interfaces, and that the direction
-> which steals the argmax is still diluted. Both are measured, both survived into the design, and
-> both are in *What this does not do* below. The first draft also carried three claims that were
-> not supported; they are corrected in place and listed at the end.
+> **THE TARGET CHANGED FROM THE FIRST VERSION: it is now DockQ itself, not the true iTM.** The
+> first version's global minimum selected the wrong pose on 9.6% of mixed interfaces and was
+> capped at 65.9% of oracle headroom; targeting DockQ makes the zero-loss optimum the oracle
+> (0/415 wrong, 100% of headroom). The reasoning that led to the iTM target was a false
+> constraint, explained under *Why DockQ and not the true iTM*.
+>
+> **One measured defect still stands:** the direction that steals the argmax is diluted — one bad
+> pose taking the top costs 4.7% of what calling the good pose bad costs. See
+> *What this does not do*.
 
 ---
 
@@ -20,16 +24,74 @@ For one scored chain pair of one structure, over its P candidate poses:
 
 ```
 s_p = mean over anchor rows of t_i(predicted PAE logits)       # the model's score
-g_p = mean over anchor rows of t_i(TRUE error bins)            # the target, detached
+y_p = dockq_p                                                  # the target, detached
 w_p = sigmoid((dockq_p - 0.23) / 0.05)                         # how acceptable the pose is
 
-up   = sum_p   w_p   * relu(g_p - s_p)^2  /  max(sum_p   w_p,   1)
-down = sum_p (1-w_p) * relu(s_p - g_p)^2  /  max(sum_p (1-w_p), 1)
+up   = sum_p   w_p   * relu(y_p - s_p)^2  /  max(sum_p   w_p,   1)
+down = sum_p (1-w_p) * relu(s_p - y_p)^2  /  max(sum_p (1-w_p), 1)
 L    = up + down
 ```
 
-In words: **push acceptable poses up toward their true score, push unacceptable poses down toward
-theirs, and ignore the other two directions.**
+In words: **push acceptable poses up toward their DockQ, push unacceptable poses down toward
+theirs, and ignore the other two directions** — those cannot change an argmax.
+
+The target and the weight come from the same quantity. That is deliberate, and it is what removes
+the entire class of defects the first version had.
+
+## The transformation from PAE to DockQ
+
+There isn't a new one. `s_p` is `pae_row_weight.row_t` exactly as it already exists: softmax the
+PAE logits, weight each bin by `1/(1+(c_b/d0)²)`, average over the pair's cross-chain targets,
+then average over anchor rows.
+
+**No new parameters.** The model changes `s_p` only by changing its predicted errors, and it has
+full range to do so: errors ≪ `d0` send `s_p` → 1, errors ≫ `d0` send it → 0.
+
+**Why not a learned head on top of the PAE features:** selection would no longer read
+`chain_pair_iptm`, so the entire eval path changes — and that is ABAG-Rank, measured at +0.0006
+in-sample and −0.0218 held out. Reusing the formula leaves inference untouched.
+
+**One burden this imposes**, stated because it is not obvious: `d0 = 1.24·(max(N,19)−15)^(1/3) −
+1.8` depends on the interface's token count and DockQ does not, so the same predicted errors give
+different `s_p` on a large and a small complex. The model must compensate for `d0` to hit the same
+DockQ on both. Learnable, but it is work the iTM target did not require.
+
+**And it forces the pooling decision.** `s_p` here is the MEAN over anchor rows, while shipped
+ipTM and every eval in this repo select by the MAX. Training the mean while selecting by the max
+trains a quantity nobody reads, so mean pooling has to land with this — and the existing
+checkpoints should be rescored under mean pooling *first*, so the two changes can be told apart.
+`itm_ceiling.py` puts the pooling alone at ~7 points of headroom.
+
+## Why DockQ and not the true iTM
+
+The first version regressed onto `g_p`, the iTM computed from the *true* error bins, on the
+reasoning that `s_p` is a bounded structured function of the logits and so could not be asked for
+arbitrary values.
+
+**That reasoning was wrong.** `s_p = mean of 1/(1+(err/d0)²)` and the model controls `err`, so
+`s_p` spans (0,1) for *any* structure. Nothing constrained it to a sub-range.
+
+The false constraint cost exactly what it bought, and it was measured:
+
+| | zero-loss optimum picks a bad pose | mean DockQ | % headroom |
+|---|---|---|---|
+| target `g_p` (true iTM) | **40/415** mixed groups | 0.6492 | 66.1% |
+| target DockQ | **0/415** | 0.7015 | **100%** |
+
+Within-group Kendall tau(`g_p`, DockQ) is only **+0.48**. On `8ce4_BF` a DockQ-0.069 pose has
+`g` = 0.1642 while the best acceptable pose (DockQ 0.816) has `g` = 0.1018 — so the old loss
+trained the bad pose *up* and held the good one *down*, and since `s == g` gives `L = 0` it was
+perfectly satisfied doing so.
+
+**An intermediate design was rejected** and is recorded so it is not re-proposed: quantile-map
+DockQ into iTM's range, keeping DockQ's ordering with "reachable" values. It also gave 0/415 and
+100%, but it permutes values *between* poses, so two poses with identical DockQ get different
+targets depending on where they fell in a global sort — not even a function of the pose. An
+isotonic `φ(dockq)` would fix that, but both were solving the non-problem above.
+
+**What the retarget costs**, unchanged: `s_p` stops being an error estimate. The model emits
+whatever logits make the row-mean transform equal DockQ, so ipTM becomes a selection score and
+nothing downstream may read it as a calibrated confidence.
 
 ---
 
@@ -158,12 +220,14 @@ loss. A clearly acceptable pose puts all its weight on "do not underrate me"; a 
 puts all of it on "do not overrate me". At DockQ 0.23 the split is 50/50, which is plain
 regression for that pose.
 
-### `w_p` from DockQ, not from `g_p`
+### The weight and the target are both DockQ
 
-An earlier draft used `g_p` for both the target and the weight. That conflates two jobs: `g_p` is
-*what the model must predict*, while the weight should encode *whether the pose is acceptable* —
-and acceptability is defined by DockQ ≥ 0.23, not by an iTM value. DockQ labels exist for every
-training pose, so separating them costs nothing.
+An earlier draft used `g_p` (true iTM) as the target and DockQ for the weight, arguing the two
+jobs were different. They are different jobs, but pointing them at different *quantities* is what
+let them disagree — see *Why DockQ and not the true iTM*. Both now come from DockQ.
+
+One consequence worth naming: `w_p` is now a function of the target itself, so the two knobs are
+no longer independent and the sigmoid width is the only thing controlling the asymmetry.
 
 ### The sigmoid width, 0.05
 
@@ -251,34 +315,6 @@ groupings.
 
 ## What this does not do
 
-### The big one: the loss's global minimum has the wrong argmax
-
-`g_p` (true iTM) and DockQ are different quantities and agree less than the design assumed.
-Measured over all 738 interfaces × 50 poses:
-
-- within-group Kendall tau(`g_p`, DockQ) = **+0.48** — about a quarter of pose pairs are ordered
-  the wrong way by `g_p`
-- in **40 of 415** groups holding both acceptable and unacceptable poses (**9.6%**), some
-  *unacceptable* pose has a higher true iTM than **every** acceptable one
-- `s == g` gives `L = 0` exactly, so on those 40 the loss is **perfectly satisfied by a wrong
-  selection**, and strictly *prefers* it to the selection-correct prediction
-
-A real example: on `8ce4_BF` a DockQ-0.069 pose has `g` = 0.1642 while the best acceptable pose
-(DockQ 0.816) has `g` = 0.1018. This loss trains the bad pose *up* and holds the good one *down*.
-
-**Consequence — a hard cap.** Fitting this loss perfectly yields exactly the true-iTM selector,
-which `itm_ceiling.py` measures at **65.9%** of oracle headroom. This loss cannot exceed that by
-construction. The ceiling table above is simultaneously the argument for PAE being the right
-target *and* the ceiling on this loss, and the first draft presented only the first reading.
-
-For scale: the row-weighted arm reached 8.5%, so the cap is not the binding constraint today. But
-if selection is the goal, a target monotone in DockQ would not have this cap. That is the open
-design question, and it is not settled.
-
-The earlier claim under *"`w_p` from DockQ, not from `g_p`"* — that separating them "costs
-nothing" — was wrong. Separating them is precisely what lets the weight and the target point in
-opposite directions. `test_zero_loss_optimum_can_have_the_wrong_argmax` pins the pathology.
-
 ### The down direction is still diluted, and it is the one that steals the argmax
 
 The separate normalisation fixes the *up* term. A bad pose's coefficient is
@@ -333,10 +369,7 @@ row-weight bool cast, which logged itself as working while being an exact no-op.
 
 ## Open questions for review
 
-1. **The target.** `g_p` caps this at 65.9% and misorders 9.6% of mixed groups. Should the target
-   be something monotone in DockQ instead, accepting that it is then no longer PAE-native? This is
-   the question that matters most and it is unresolved.
-2. **The down-direction dilution.** The single-pose steal costs 4.7% of the up-direction's
+1. **The down-direction dilution.** The single-pose steal costs 4.7% of the up-direction's
    penalty. Fix by normalising the down term differently, or by an explicit up:down coefficient?
 3. **`max(mass, 1)`.** The gate admits [0.05, 10] and the floor silently changes the down term's
    scale in 36% of real groups. An explicit balance coefficient with `P` in the denominator may be
@@ -363,8 +396,11 @@ Found by adversarial review, verified independently, fixed in place:
 2. *"The floor was forced by the gate"* — the gate admits any floor in [0.05, 10].
 3. *"Flooring at 1.0 fixes both without touching the case the normalisation was added for"* — true
    for `m_up`, but it changes `m_dn`'s scale in 36% of real groups.
-4. *"Separating the weight from the target costs nothing"* — it costs the tau +0.48 / 9.6%
-   disagreement above.
+4. *"Separating the weight from the target costs nothing"* — it cost the tau +0.48 / 9.6%
+   disagreement, which is why the target is now DockQ.
+5. *"`s_p` is a bounded structured function and cannot be asked for arbitrary values"* — **false**,
+   and it is the claim that produced the wrong target. The model controls the predicted errors, so
+   `s_p` spans (0,1) for any structure.
 
 Gate holes found and closed: `test_asymmetry_is_real` used P=1 groups, where **both masses hit the
 floor**, so it never exercised the normalisation — 7 of 23 mutations passed the original gate,

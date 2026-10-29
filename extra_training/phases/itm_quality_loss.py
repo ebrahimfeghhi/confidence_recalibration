@@ -1,16 +1,56 @@
-"""Quality-weighted asymmetric regression of mean-row iTM. Reference implementation.
+"""Quality-weighted asymmetric regression of mean-row ipTM ONTO DockQ. Reference implementation.
 
 See docs/itm_quality_weighted_loss.md for the rationale and the measurements it rests on.
 
 THE LOSS, for one interface's P candidate poses:
 
     s_p = mean over anchor rows of t_i(predicted PAE logits)      # the model's score
-    g_p = mean over anchor rows of t_i(TRUE error bins)           # the target, detached
+    y_p = dockq_p                                                 # the target, detached
     w_p = sigmoid((dockq_p - 0.23) / width)                       # how acceptable the pose is
 
-    up   = sum_p   w_p   * relu(g_p - s_p)^2  /  max(sum_p   w_p,   1)   # acceptable, underrated
-    down = sum_p (1-w_p) * relu(s_p - g_p)^2  /  max(sum_p (1-w_p), 1)   # unacceptable, overrated
+    up   = sum_p   w_p   * relu(y_p - s_p)^2  /  max(sum_p   w_p,   1)   # acceptable, underrated
+    down = sum_p (1-w_p) * relu(s_p - y_p)^2  /  max(sum_p (1-w_p), 1)   # unacceptable, overrated
     L    = up + down
+
+THE TARGET IS DockQ ITSELF, not the true iTM, and that is a correction to the first version of
+this file. The first version regressed onto g_p = the iTM computed from the TRUE error bins, on
+the reasoning that s_p is a bounded structured function of the logits and so could not be asked to
+output arbitrary values. THAT REASONING WAS WRONG: s_p = mean of 1/(1+(err/d0)^2) and the model
+controls err, so driving the predicted errors far below d0 sends s_p toward 1 and far above it
+sends s_p toward 0. s_p spans (0,1) for ANY structure. Nothing constrained it to a sub-range.
+
+The g_p target cost exactly what that false constraint bought, and it was measured: g_p and DockQ
+agree at only within-group Kendall tau +0.48, in 40 of 415 mixed groups (9.6%) an UNACCEPTABLE
+pose had a higher true iTM than every acceptable one, and since s == g gives L == 0 the loss was
+perfectly satisfied by the wrong selection there -- it PREFERRED it. That capped the method at the
+true-iTM selector's 65.9% of oracle headroom by construction. Targeting DockQ removes all of it:
+the zero-loss optimum is the oracle, 0/415 wrong, 100% of headroom.
+
+AN INTERMEDIATE DESIGN WAS REJECTED and is recorded so it is not re-proposed: quantile-map DockQ
+into iTM's range, so the ordering is DockQ's but the values stay "reachable". It gave the same
+0/415 and 100%, but it is a permutation of values BETWEEN poses, so two poses with identical DockQ
+get different targets depending on where they fell in a global sort -- not even a function of the
+pose. An isotonic fit phi(dockq) would fix that, but it was solving the non-problem above.
+
+WHAT THIS COSTS, unchanged by the correction: s_p stops being an error estimate. The model emits
+whatever logits make the row-mean transform equal DockQ, so ipTM becomes a selection score and
+nothing downstream may read it as a calibrated confidence.
+
+AND WHAT IT FORCES: s_p here is the MEAN over anchor rows, while shipped ipTM and every eval in
+this repo select by the MAX. Training the mean and selecting by the max trains a quantity nobody
+reads. So the mean-pooling change is not an optional companion experiment -- it has to land with
+this, and the existing checkpoints should be rescored under mean pooling FIRST so the two changes
+can be told apart (itm_ceiling.py puts the pooling alone at ~7 points of headroom).
+
+NO NEW PARAMETERS AND NO NEW TRANSFORMATION. s_p is pae_row_weight.row_t exactly as it already
+exists. A learned head mapping PAE features to DockQ would mean selection no longer reads
+chain_pair_iptm, which changes the whole eval path and is ABAG-Rank -- measured at +0.0006
+in-sample, -0.0218 held out. Reusing the formula keeps inference unchanged.
+
+ONE BURDEN THIS IMPOSES, stated because it is not obvious: d0 = 1.24*(max(N,19)-15)^(1/3) - 1.8
+depends on the interface's token count, and DockQ does not. So the same predicted errors give
+different s_p on a large and a small complex, and the model must compensate for d0 to hit the same
+DockQ on both. Learnable, but it is work the g_p target did not require.
 
 WHAT EACH PIECE IS FOR, because every one of them answers a measured failure:
 
@@ -84,22 +124,11 @@ chosen as the compromise and is a dial, not a derived value.
 
 WHAT THIS DOES NOT DO.
 
-THE BIGGEST ONE, measured: g_p AND DockQ DISAGREE, so this loss's own global minimum has the wrong
-argmax on some interfaces. Within-group Kendall tau(g_p, DockQ) is only +0.48 over the 738
-interfaces x 50 poses; in 40 of the 415 groups holding both acceptable and unacceptable poses
-(9.6%) some UNACCEPTABLE pose has a higher true iTM than EVERY acceptable one. Since s == g gives
-L == 0 exactly, the loss is perfectly satisfied by a prediction that selects an unacceptable pose
-on those 40, and it PENALISES the selection-correct prediction there. Example from the real data:
-on 8ce4_BF a DockQ-0.069 pose has g = 0.1642 while the best acceptable pose (DockQ 0.816) has
-g = 0.1018, so this loss trains the bad pose up and holds the good one down.
-
-The consequence is a hard cap: fitting this loss perfectly yields exactly the true-iTM selector,
-which run_logging/itm_ceiling.py measures at 65.9% of oracle headroom with mean pooling. This loss
-cannot exceed that by construction. (For scale, the row-weighted arm reached 8.5%, so the cap is
-not currently the binding constraint -- but it is a cap, and the ceiling table in the docs is
-simultaneously the argument for PAE and the ceiling on this loss.) An earlier version of this
-docstring claimed that separating the weight (DockQ) from the target (g_p) "costs nothing"; it
-costs exactly this.
+FIXED BY TARGETING DockQ, and recorded because the fix is the whole reason for the retarget: with
+the true iTM as the target this loss's own global minimum selected an UNACCEPTABLE pose on 40 of
+415 mixed groups and strictly preferred that to the correct answer, capping the method at 65.9% of
+oracle headroom. With DockQ as the target the zero-loss optimum IS the oracle: 0 of 415 wrong,
+100% of headroom. Nothing about the loss's shape changed -- only what it is pointed at.
 
 THE DOWN DIRECTION IS STILL DILUTED, which is the direction that steals the argmax. The up term's
 dilution is fixed by the separate normalisation, but a bad pose's coefficient is
@@ -151,11 +180,16 @@ def quality_weight(dockq, threshold=DEFAULT_THRESHOLD, width=DEFAULT_WIDTH):
     return torch.sigmoid(z), torch.sigmoid(-z)
 
 
-def itm_quality_loss(s, g, dockq=None, w=None, threshold=DEFAULT_THRESHOLD,
+def itm_quality_loss(s, y, dockq=None, w=None, threshold=DEFAULT_THRESHOLD,
                      width=DEFAULT_WIDTH, return_parts=False):
-    """Loss for ONE interface's poses. s: [P] with grad; g, dockq: [P] detached.
+    """Loss for ONE interface's poses. s: [P] with grad; y (= DockQ), dockq: [P] detached.
 
-    Pass either `dockq` (weights are derived) or `w` directly. `g` and `w` are detached here
+    `y` IS THE TARGET and is normally the same tensor as `dockq`: the target and the weight come
+    from the same quantity, which is what removes the disagreement defect. They are separate
+    arguments so an ablation can still regress onto something else (the true iTM, an isotonic
+    map) while keeping DockQ weights.
+
+    Pass either `dockq` (weights are derived) or `w` directly. `y` and `w` are detached here
     regardless of what is handed in -- a gradient into the label or the weight would let the model
     lower the loss by moving the target, which is the failure a ranking loss has in a different
     form.
@@ -166,11 +200,11 @@ def itm_quality_loss(s, g, dockq=None, w=None, threshold=DEFAULT_THRESHOLD,
     """
     if (dockq is None) == (w is None):
         raise ValueError("pass exactly one of dockq= or w=")
-    g = g.detach().to(torch.float32)
+    y = y.detach().to(torch.float32)
     s = s.to(torch.float32)
-    if s.shape != g.shape or s.dim() != 1:
-        raise ValueError(f"s and g must be the same 1-D shape, got {tuple(s.shape)} "
-                         f"and {tuple(g.shape)}")
+    if s.shape != y.shape or s.dim() != 1:
+        raise ValueError(f"s and y must be the same 1-D shape, got {tuple(s.shape)} "
+                         f"and {tuple(y.shape)}")
     if w is None:
         w, w_dn = quality_weight(dockq.detach().to(torch.float32), threshold, width)
     else:
@@ -187,8 +221,8 @@ def itm_quality_loss(s, g, dockq=None, w=None, threshold=DEFAULT_THRESHOLD,
 
     # RELU BEFORE THE SQUARE. Each term sees one direction of error and is exactly zero for the
     # other, so the two harmless mistakes contribute no gradient at all rather than a small one.
-    under = torch.relu(g - s) ** 2        # acceptable pose scored too low
-    over = torch.relu(s - g) ** 2         # unacceptable pose scored too high
+    under = torch.relu(y - s) ** 2        # acceptable pose scored too low
+    over = torch.relu(s - y) ** 2         # unacceptable pose scored too high
 
     # FLOORED AT ONE POSE'S WORTH OF WEIGHT. See the module docstring: without the floor a
     # direction with tiny total weight is amplified back to full strength and the asymmetry
@@ -208,7 +242,7 @@ def itm_quality_loss(s, g, dockq=None, w=None, threshold=DEFAULT_THRESHOLD,
     return loss
 
 
-def dL_ds(s, g, dockq=None, w=None, threshold=DEFAULT_THRESHOLD, width=DEFAULT_WIDTH):
+def dL_ds(s, y, dockq=None, w=None, threshold=DEFAULT_THRESHOLD, width=DEFAULT_WIDTH):
     """dL/ds_p in closed form, for the pass-A path that applies the group loss one pose at a time.
 
     The existing cross-seed ranking machinery collects per-pose coefficients in a no-grad pass and
@@ -216,13 +250,13 @@ def dL_ds(s, g, dockq=None, w=None, threshold=DEFAULT_THRESHOLD, width=DEFAULT_W
     loss fits that path because its gradient w.r.t. s_p depends on the other poses ONLY through
     the two weight masses, which pass A can compute without any graph:
 
-        dL/ds_p = -2 w_p relu(g_p - s_p) / max(sum(w), 1)
-                  +2 (1-w_p) relu(s_p - g_p) / max(sum(1-w), 1)
+        dL/ds_p = -2 w_p relu(y_p - s_p) / max(sum(w), 1)
+                  +2 (1-w_p) relu(s_p - y_p) / max(sum(1-w), 1)
 
     Returned detached, since it IS the coefficient and not part of the graph.
     """
     with torch.no_grad():
-        g = g.to(torch.float32)
+        y = y.to(torch.float32)
         s = s.to(torch.float32)
         if w is None:
             w, w_dn = quality_weight(dockq.to(torch.float32), threshold, width)
@@ -231,5 +265,5 @@ def dL_ds(s, g, dockq=None, w=None, threshold=DEFAULT_THRESHOLD, width=DEFAULT_W
             w_dn = 1.0 - w
         m_up = w.sum().clamp_min(1.0)
         m_dn = w_dn.sum().clamp_min(1.0)
-        return (-2.0 * w * torch.relu(g - s) / m_up
-                + 2.0 * w_dn * torch.relu(s - g) / m_dn)
+        return (-2.0 * w * torch.relu(y - s) / m_up
+                + 2.0 * w_dn * torch.relu(s - y) / m_dn)
