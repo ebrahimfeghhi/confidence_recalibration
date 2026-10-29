@@ -66,12 +66,28 @@ else:
         alarms.append("rank pid(s) GONE: "
                       + ",".join(p for p in RANK_PIDS if p not in alive))
 
-# HOLDERS ARE EVERY OTHER GPU PROCESS, with the ranks excluded by pid rather than by a memory
-# band, which is what made them countable as holders in the first place.
-holders = {p for p, m in mib.items() if p not in set(RANK_PIDS) and m > 500}
-print(f"    holder procs seen: {len(holders)}")
-if len(holders) < 3:
-    alarms.append(f"a GPU HOLDER may be gone: only {len(holders)} holder proc(s) visible")
+# HOLDERS ARE PINNED BY PID, for the same reason the ranks are. "Every other GPU process over
+# 500 MiB" counts other users' jobs as holders: on 2026-10-29 two foreign processes appeared and
+# the count read 5 when there are 3. The alarm only fires below 3, so an inflated count can MASK a
+# holder dying -- 3 holders minus one plus two strangers is still 4 -- which is the exact failure
+# the earlier memory-band version had, in a new guise. A holder dying releases a card to the rest
+# of the box, and it is the thing the user asked to be flagged, so it is checked by identity.
+HOLDER_F = os.path.join(ROOT, "training", "runs", "gpu_holder_pids")
+HOLDER_PIDS = [l.strip() for l in open(HOLDER_F).read().split() if l.strip()] \
+    if os.path.exists(HOLDER_F) else []
+if not HOLDER_PIDS:
+    alarms.append(f"no {os.path.relpath(HOLDER_F, ROOT)} file -- cannot check the GPU holders "
+                  f"by pid, which is the one thing the user asked to be flagged")
+    print("    holders: UNKNOWN (no holder-pid file)")
+else:
+    h_alive = [p for p in HOLDER_PIDS if os.path.isdir(f"/proc/{p}")]
+    foreign = {p for p, m in mib.items()
+               if p not in set(RANK_PIDS) | set(HOLDER_PIDS) and m > 500}
+    print(f"    holders up: {len(h_alive)}/{len(HOLDER_PIDS)} by pid"
+          + (f"   ({len(foreign)} foreign GPU proc(s) on the box)" if foreign else ""))
+    if len(h_alive) != len(HOLDER_PIDS):
+        alarms.append("GPU HOLDER pid(s) GONE: "
+                      + ",".join(p for p in HOLDER_PIDS if p not in h_alive))
 
 mem = {}
 for line in open("/proc/meminfo"):
