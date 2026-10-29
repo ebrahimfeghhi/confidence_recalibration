@@ -2156,16 +2156,23 @@ def main():
                 f"on, so every pose fell back to the UNMASKED PAE term while the run is labelled "
                 f"masked. Check that {a.pae_scored_pairs} covers --manifest-selection.")
 
-    def _set_pae_mask(pdb, asym, has_frame, unit=None):
+    def _set_pae_mask(pdb, asym, has_frame, unit=None, pairs_override=None):
         """[N_frame, N_token] over the CROPPED tokens: keep only scored cross-chain entries.
 
         Falls back to no mask -- never to an all-zero one. An empty mask would make PAELoss divide
         by eps and return a meaningless number rather than fail, which is the worst outcome.
+
+        pairs_override EXISTS FOR --rank-form rel. _scored_asym is built once per structure from
+        chain_roles, while rel resolves each interface's asym pair PER POSE through OST. On the 52
+        structures where the two disagree, PAE would anchor a different interface from the one rel
+        is ranking -- 7stf's (3,1) against (3,0) -- so the two terms would be supervising
+        different objects on the same pose. That is objective misalignment, not gradient noise.
+        Raised in review. The override is per pose because OST's answer is.
         """
         _pae_keep["pdb"], _pae_keep["unit"] = pdb, unit
-        if not _scored_asym:
+        if not _scored_asym and pairs_override is None:
             return
-        pairs = _scored_asym.get(pdb)
+        pairs = pairs_override if pairs_override is not None else _scored_asym.get(pdb)
         if not pairs:
             _pae_keep["m"] = None
             _pae_keep["blocks"] = None
@@ -3742,7 +3749,30 @@ def main():
                       "coordinate_mask": torch.as_tensor(_cm[i].astype(np.float32), device=dev)}
             else:
                 _, ld = BC.minimal_loss_inputs(lab, i, dev, torch)
-            _set_pae_mask(pdb, feat_head["asym_id"], feat_cache["has_frame"], arm_seed)
+            # THE POSE'S SAMPLE INDEX, resolved ONCE here and reused by the mask, pass A and
+            # pass B. Three readers previously resolved it separately, and the first version of
+            # the rel wiring had one of them use the pose index instead.
+            _samp_i = None
+            if a.rank_form == "rel" and a.rank_loss:
+                _sv_i = lab.get("sample_index") if hasattr(lab, "get") else None
+                if _sv_i is None:
+                    try:
+                        _sv_i = lab["sample_index"]
+                    except Exception:                 # noqa: BLE001
+                        _sv_i = None
+                if _sv_i is None:
+                    raise SystemExit(
+                        f"STOP: --rank-form rel needs `sample_index` in {lab_p} to resolve this "
+                        f"pose's chain pair; without it the PAE mask and the rel target could "
+                        f"describe different interfaces.")
+                _samp_i = int(np.asarray(_sv_i).reshape(-1)[i])
+            # PAE IS MASKED TO THE SAME PAIRS rel RANKS, per pose, under --rank-form rel.
+            _po = None
+            if _samp_i is not None:
+                _po = {(min(_x, _y), max(_x, _y))
+                       for _ifc, _x, _y in _pose_pairs(pdb, lab_p, _samp_i)}
+            _set_pae_mask(pdb, feat_head["asym_id"], feat_cache["has_frame"], arm_seed,
+                          pairs_override=_po)
             # PASS A STOPS HERE. The scoring sweep needs the pose's ipTM and nothing else: no loss,
             # no metrics, no backward. Returning before calculate_losses is not an optimisation, it
             # is the point -- pass A must not touch the loss state that pass B reports, and it runs
@@ -3760,24 +3790,27 @@ def main():
                 # aggregate by only 0.0009 while 73.8% of rows carried another sample's DockQ.
                 # The rel target repeated it until external review caught it: pose 1 was being
                 # regressed onto pose 4's true iTM.
-                _si_a = None
-                if hasattr(lab, "get"):
-                    _si_a = lab.get("sample_index")
-                if _si_a is None:
-                    try:
-                        _si_a = lab["sample_index"]
-                    except Exception:            # noqa: BLE001
-                        _si_a = None
-                if _si_a is None:
-                    raise SystemExit(
-                        f"STOP: pass A needs `sample_index` in {lab_p} to key the group's labels "
-                        f"the way results.csv and the rel label cache do. Without it a pose would "
-                        f"be trained against another pose's label.")
-                _si_a = np.asarray(_si_a).reshape(-1)
-                if i >= _si_a.shape[0]:
-                    raise SystemExit(f"STOP: pose {i} has no sample_index entry in {lab_p} "
-                                     f"({_si_a.shape[0]} entries).")
-                _samp_a = int(_si_a[i])
+                # ONE RESOLUTION, SHARED. _samp_i was resolved above for the PAE mask; under rel
+                # it is always set, and for the other forms pass A still needs it for its key.
+                if _samp_i is not None:
+                    _samp_a = _samp_i
+                else:
+                    _si_a = lab.get("sample_index") if hasattr(lab, "get") else None
+                    if _si_a is None:
+                        try:
+                            _si_a = lab["sample_index"]
+                        except Exception:            # noqa: BLE001
+                            _si_a = None
+                    if _si_a is None:
+                        raise SystemExit(
+                            f"STOP: pass A needs `sample_index` in {lab_p} to key the group's "
+                            f"labels the way results.csv and the rel label cache do. Without it a "
+                            f"pose would be trained against another pose's label.")
+                    _si_a = np.asarray(_si_a).reshape(-1)
+                    if i >= _si_a.shape[0]:
+                        raise SystemExit(f"STOP: pose {i} has no sample_index entry in {lab_p} "
+                                         f"({_si_a.shape[0]} entries).")
+                    _samp_a = int(_si_a[i])
                 _sc = {}
                 # KEYED BY WHAT IS STABLE ACROSS POSES. For rel the unit of comparison is the
                 # reference interface; its asym pair is resolved PER POSE, so the key is the
@@ -3933,7 +3966,7 @@ def main():
                 # iptm_pooled and died on `i, j = pair` with "too many values to unpack". Found by
                 # actually running the probe; the static gate had passed. This file has the same
                 # lesson written at line 3707 about `_cs_div`: one binding, above both readers.
-                _si_b = None
+                _si_b = _samp_i
                 # NAMED _rel_pp, NOT _pp. The --grad-probe block below iterates
                 # `for (_n, _pp), _g in zip(trainable_params, _gs)`, so a dict called _pp in this
                 # scope is shadowed by a torch Parameter by the time _asym_for reads it --
@@ -3941,17 +3974,10 @@ def main():
                 # it; the static gate could not see a name collision.
                 _rel_pp = None
                 if a.rank_form == "rel" and _cs_src:
-                    _sv = lab.get("sample_index") if hasattr(lab, "get") else None
-                    if _sv is None:
-                        try:
-                            _sv = lab["sample_index"]
-                        except Exception:            # noqa: BLE001
-                            _sv = None
-                    if _sv is None:
+                    if _si_b is None:
                         raise SystemExit(
-                            f"STOP: pass B needs `sample_index` in {lab_p} to resolve this pose's "
-                            f"chain pair the way its label was built.")
-                    _si_b = int(np.asarray(_sv).reshape(-1)[i])
+                            f"STOP: pass B has no sample index for {pdb} pose {i}; it is resolved "
+                            f"once beside the PAE mask and must be set under --rank-form rel.")
                     _rel_pp = {_ifc: (_x, _y) for _ifc, _x, _y
                                in _pose_pairs(pdb, lab_p, _si_b)}
 

@@ -267,6 +267,20 @@ def test_trainer_uses_the_sample_index_for_rel_labels():
     # the per-pose dict must not be called _pp -- it was, and _asym_for read a torch Parameter.
     check("the per-pose pair dict does not collide with the probe's _pp loop variable",
           "_rel_pp" in src and "_v = _pp.get(" not in src)
+    # THE PAE MASK MUST SUPERVISE THE SAME INTERFACE rel RANKS. _scored_asym is built once per
+    # structure from chain_roles; rel resolves the pair PER POSE through OST. On the 52
+    # disagreeing structures PAE would anchor one interface while rel ranked another -- 7stf's
+    # (3,1) against (3,0) -- which is objective misalignment, not gradient noise. Raised in
+    # review.
+    check("the PAE mask accepts a per-pose pair override",
+          "def _set_pae_mask(pdb, asym, has_frame, unit=None, pairs_override=None)" in src
+          and "pairs = pairs_override if pairs_override is not None" in src)
+    check("the call site passes the POSE's OST pairs under rel",
+          "pairs_override=_po" in src
+          and "_pose_pairs(pdb, lab_p, _samp_i)" in src)
+    check("the sample index is resolved ONCE and shared by the mask, pass A and pass B",
+          src.count("_samp_i = int(np.asarray(_sv_i)") == 1
+          and "_si_b = _samp_i" in src and "_samp_a = _samp_i" in src)
     check("the per-pose resolution REFUSES rather than falling back to the static pair",
           "Falling back to the static pair is the exact mismatch" in src)
     bl = open(os.path.join(R, "run_logging", "build_itm_labels.py")).read()
