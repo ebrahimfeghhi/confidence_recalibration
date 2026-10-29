@@ -1,0 +1,81 @@
+{
+ "script": "audit_chain_mapping.py",
+ "argv": [
+  "--workers",
+  "9"
+ ],
+ "cwd": "/home/ebrahim/confidence_recalibration/extra_training",
+ "written": "2026-10-29T15:40:00-0700",
+ "python": "3.12.3",
+ "git_commit": "f359919f71b7d3d0100a91c2d281ada13eac4252",
+ "git_dirty": true,
+ "inputs": [
+  {
+   "path": "training/full_train/pool_winnable.csv",
+   "kind": "file",
+   "size": 7399,
+   "mtime": "2026-10-28T17:14:30",
+   "sha256": "8247a1a7c36306e6eabc296b568cdd6573b3a873a63e90388f3ad7c8f946b97b",
+   "partial": false
+  },
+  {
+   "path": "training/fold/chain_roles.csv",
+   "kind": "file",
+   "size": 21303,
+   "mtime": "2026-10-13T18:02:10",
+   "sha256": "021940d8982a2777a82bb9a872bdea9f89f7625f3681eea3c1764587dcd14f8c",
+   "partial": false
+  }
+ ],
+ "outputs": [
+  {
+   "path": "training/runs/chain_mapping_audit/audit_s0.csv",
+   "size": 55731,
+   "sha256": "fdc6d7de1dfd25dc3f5e1b5c022f5d15567329f1cb74b553a2992834ef48bb60"
+  },
+  {
+   "path": "training/runs/chain_mapping_audit/audit_s1.csv",
+   "size": 55022,
+   "sha256": "803cf5a563e77bfe9da4cc5f226fa05dd2994081f82acebf634b2834ae6517cd"
+  },
+  {
+   "path": "training/runs/chain_mapping_audit/audit_s2.csv",
+   "size": 55335,
+   "sha256": "20d7cb2e75f2a03a3ad851d4db46647a20189a6854d5832172632a26120828b4"
+  },
+  {
+   "path": "training/runs/chain_mapping_audit/audit_s3.csv",
+   "size": 56677,
+   "sha256": "50b2fb3890f30263559ca38b1a775010022c0eb3e812fc798422c2371b68b27d"
+  },
+  {
+   "path": "training/runs/chain_mapping_audit/audit_s4.csv",
+   "size": 55494,
+   "sha256": "d4b0e73e12cde7c530e9c43bcb4178aa024f463482654a71cd509b8fc13f924c"
+  },
+  {
+   "path": "training/runs/chain_mapping_audit/audit_s5.csv",
+   "size": 57044,
+   "sha256": "a99006f1fe4d0c2eeb3e4733f447f657984ff97706ce445b1525593af7ae622a"
+  },
+  {
+   "path": "training/runs/chain_mapping_audit/audit_s6.csv",
+   "size": 55721,
+   "sha256": "531d453e3e555fd77477f13658dac3a0aa73c55809ac878086cc4b2c73ca9fa3"
+  },
+  {
+   "path": "training/runs/chain_mapping_audit/audit_s7.csv",
+   "size": 58776,
+   "sha256": "66befde92c2ac35bc507cc1eea54a08d9ec0644347b4d14710e1898504ecf2e0"
+  },
+  {
+   "path": "training/runs/chain_mapping_audit/audit_s8.csv",
+   "size": 58786,
+   "sha256": "4072cd53690df254bb2904d4bf074717bf5a528485143acd469c5e5cf238ad5c"
+  }
+ ],
+ "output_digest": "6d07da6c9357f2d76ee42114c5a09d5995ae9adbf76f0c4dd85eb8aac82c03d4",
+ "determinism": "no RNG; inputs iterated in sorted order; shards are a fixed stride",
+ "seeds": "500000-500009",
+ "nsample": 5
+}

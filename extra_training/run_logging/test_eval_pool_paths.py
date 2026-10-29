@@ -173,6 +173,43 @@ def main():
             check("  and gives the same max metric as the --pool-mean pass",
                   j3["mean_dockq"] == j["mean_dockq"] and j3["frac_acc"] == j["frac_acc"],
                   f"{j3['mean_dockq']:.4f} vs {j['mean_dockq']:.4f}")
+        # 4. A PARTIAL mean column must be refused under --select-by mean, not silently
+        #    narrowed. The coverage check reads the max column, so it passes -- which is exactly
+        #    how a mean-selected metric could be computed over fewer candidates than the max
+        #    selector saw while still being labelled "budget N". Raised in review.
+        paths = shard_csvs(d, with_mean=True)
+        pool, roles = synth_pool(d)
+        for blank, label in ((True, "missing"), (False, "non-finite")):
+            rowsf = []
+            with open(paths[0]) as fh:
+                rd = list(csv.reader(fh))
+            rd[2][-1] = "" if blank else "nan"        # one pose loses its mean
+            with open(paths[0], "w", newline="") as fh:
+                csv.writer(fh).writerows(rd)
+            for sb, want_rc in (("mean", 1), ("max", 0)):
+                o2 = os.path.join(d, f"p_{label}_{sb}.json")
+                rp = subprocess.run(
+                    [PY_BIN, "-I", os.path.join(R, "phases", "phase_k_eval.py"),
+                     "--rows-in", ",".join(paths), "--budget", "1", "--ckpt", "synthetic",
+                     "--no-self-check", "--pool", pool, "--roles", roles,
+                     "--seed-base", "500000", "--allow-partial",
+                     "--pool-mean", "--select-by", sb, "--out", o2],
+                    capture_output=True, text=True, timeout=600,
+                    env=dict(os.environ, LAYERNORM_TYPE="openfold"))
+                txt = rp.stdout + rp.stderr
+                if sb == "mean":
+                    # REFUSED EVEN UNDER --allow-partial. That flag is for the intended-key
+                    # contract on the MAX column; letting it waive this one would let the single
+                    # thing this guard prevents through on the same switch.
+                    check(f"a {label} iptm_mean is REFUSED under --select-by mean, even with "
+                          f"--allow-partial",
+                          rp.returncode != 0 and "SMALLER candidate set" in txt,
+                          (txt.strip().splitlines() or ["(none)"])[-1][:95])
+                else:
+                    check(f"a {label} iptm_mean does not break --select-by max",
+                          rp.returncode == 0, (txt.strip().splitlines() or ["ok"])[-1][:80])
+            shard_csvs(d, with_mean=True)    # restore for the next iteration
+
         r4, _ = run_cli(d, False, "mean")
         check("--select-by mean REFUSES without a mean column rather than falling back",
               r4.returncode != 0 and "needs an iptm_mean column" in (r4.stdout + r4.stderr),

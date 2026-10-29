@@ -35,6 +35,7 @@ import csv
 import functools
 import glob
 import json
+import math
 import os
 import statistics
 import sys
@@ -344,10 +345,43 @@ def aggregate(a, rows, selfchk, want_ifaces):
 
     # THE SECOND SELECTION, on the SAME poses. Built from the mean-pooled column when the pass
     # wrote one, so the two readouts differ only in which score chose the pose.
+    # THE MEAN COLUMN GETS THE SAME CONTRACT AS THE MAX ONE.
+    #
+    # The first version simply skipped poses whose iptm_mean was missing or non-finite, so a pass
+    # that scored every pose on the max and only some on the mean would report a mean-selected
+    # metric over a SMALLER candidate set -- with the coverage check passing, because that check
+    # reads the max column. A selector handed fewer candidates is not comparable to one handed
+    # all of them, and the label would still say "budget N". Raised in review.
     byif_m = collections.defaultdict(list)
+    _m_missing, _m_nonfinite = [], []
     for iface, sd_, k, _v, dq, vm in rows:
-        if dq is not None and vm is not None:
-            byif_m[iface].append((vm, dq, sd_, k))
+        if dq is None:
+            continue
+        if vm is None:
+            _m_missing.append((iface, sd_, k))
+            continue
+        if not math.isfinite(vm):
+            _m_nonfinite.append((iface, sd_, k))
+            continue
+        byif_m[iface].append((vm, dq, sd_, k))
+    if (_m_missing or _m_nonfinite) and byif_m:
+        # Partial means the column exists but does not cover the pass. Absent entirely is the
+        # legacy format and is handled by the --select-by refusal below.
+        msg = (f"{len(_m_missing)} pose(s) have no iptm_mean and {len(_m_nonfinite)} have a "
+               f"non-finite one, out of {sum(len(v) for v in byif.values())} scored pose(s). "
+               f"e.g. missing {_m_missing[:3]}, non-finite {_m_nonfinite[:3]}")
+        # UNCONDITIONAL WHEN THE MEAN IS THE SELECTOR, and deliberately NOT waivable by
+        # --allow-partial. That flag exists for the intended-key contract on the MAX column; using
+        # it here would let the one thing this guard exists to prevent through on the same switch.
+        # A mean-selected metric over fewer candidates than the max selector saw is not a weaker
+        # version of the number, it is a different number wearing the same label.
+        if a.select_by == "mean":
+            raise SystemExit(
+                f"STOP: {msg}\n  --select-by mean would then choose from a SMALLER candidate set "
+                f"than the max selector saw, while the coverage check passes because it reads the "
+                f"max column. Fix the pass (every scored pose needs a finite iptm_mean) or select "
+                f"by the max; --allow-partial does NOT waive this.")
+        print(f"  WARNING: {msg}; any mean-selected number below is over that reduced set.")
     if a.select_by == "mean" and not byif_m:
         raise SystemExit(
             "STOP: --select-by mean needs an iptm_mean column, which only --pool-mean writes. "

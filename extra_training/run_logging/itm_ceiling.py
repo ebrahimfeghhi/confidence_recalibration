@@ -92,7 +92,9 @@ sys.path.insert(0, os.path.join(ROOT, "phases"))
 sys.path.insert(0, "/home/ebrahim/Protenix")
 import pae_row_weight as rw  # noqa: E402
 import provenance as PROV
-from phase_k_eval import interface_chain_pairs  # noqa: E402
+from phase_k_eval import (interface_chain_pairs, ost_chain_pairs,   # noqa: E402
+                          pool_ref_pairs)
+import phase_j_build_cache as BC                                    # noqa: E402
 from protenix.model.loss import PAELoss  # noqa: E402
 
 SEEDS = tuple(range(500000, 500010))     # the training fold's own seeds, fixed
@@ -110,6 +112,15 @@ ap.add_argument("--fold", default="training/fold")
 ap.add_argument("--out", default="training/runs/gt_iptm_ceiling")
 ap.add_argument("--limit-units", type=int, default=0, help="stop after N units; timing probe only")
 ap.add_argument("--verify", action="store_true", help="assert the fast path equals row_t, then exit")
+ap.add_argument("--ost-mapping", action="store_true",
+                help="resolve each interface's chains PER POSE through OST, the way phase_k_eval "
+                     "does, instead of once per structure through chain_roles. MEASURED by "
+                     "run_logging/audit_chain_mapping.py on the training fold: the two disagree "
+                     "on 1158 of 18400 (structure, seed, pose) checks (6.29%), across 54 of 368 "
+                     "structures, with zero unresolvable -- so it is genuine disagreement, not "
+                     "ambiguity. The static join was acceptable for a ceiling ESTIMATE (ranking "
+                     "noise) and is NOT acceptable for the labels this feeds into training, where "
+                     "a swapped pair trains toward another interface's target. Raised in review.")
 ap.add_argument("--report-only", action="store_true")
 a = ap.parse_args()
 OUT = os.path.join(ROOT, a.out)
@@ -167,17 +178,37 @@ def pair_mask_for(pm, asym, hf, ax, ay):
               & (asym[hf].unsqueeze(1) != asym.unsqueeze(0)), int(tok.sum())
 
 
-def gt_for_unit(pdb, seed, pairs, pl):
+def gt_for_unit(pdb, seed, pairs, pl, refs=None):
     """{(iface, sample): (gt_iptm_max, gt_iptm_mean)} for one (structure, seed)."""
     got = unit_tensors(pdb, seed)
     if got is None:
         return {}
     asym, hf, fai, rep, tr, lb = got
     out, wcache = {}, {}
+    ud = None
+    if a.ost_mapping:
+        try:
+            ud = BC.seed_dir(os.path.join(ROOT, a.fold), pdb, seed)
+        except Exception:                                   # noqa: BLE001
+            raise SystemExit(
+                f"STOP: --ost-mapping cannot resolve a unit directory for {pdb}/{seed}, so this "
+                f"pose's chains cannot be mapped the way phase_k_eval maps them. Refusing rather "
+                f"than falling back to chain_roles, which is the mapping this flag exists to "
+                f"avoid.")
     for p in range(int(lb["n_pose"])):
         idx, pm = pose_label(pl, tr, lb, p, hf, fai, rep)
         samp = int(lb["sample_index"][p])
-        for iface, ax, ay in pairs:
+        # PER-POSE PAIRS, KEYED BY THE SAMPLE INDEX. ost_chain_pairs takes the SAMPLE k, not the
+        # storage position, exactly as phase_k_eval calls it.
+        use = pairs
+        if a.ost_mapping:
+            use, why = ost_chain_pairs(ud, pdb, samp, refs or [])
+            if use is None:
+                raise SystemExit(
+                    f"STOP: --ost-mapping has no chain mapping for {pdb}/{seed} sample {samp} "
+                    f"({why}). A label built from the static mapping here is exactly what this "
+                    f"flag exists to prevent.")
+        for iface, ax, ay in use:
             tm, ntok = pair_mask_for(pm, asym, hf, ax, ay)
             if int(tm.sum()) == 0:
                 continue
@@ -235,10 +266,11 @@ def run_shard(k):
     if a.limit_units:
         mine = mine[:a.limit_units]
     pl = PAELoss()
+    refs = pool_ref_pairs(os.path.join(ROOT, a.pool)) if a.ost_mapping else {}
     rows, t0 = [], time.time()
     for i, (pdb, seed) in enumerate(mine):
         for (iface, samp), (vmax, vmean) in gt_for_unit(
-                pdb, seed, pairs_by_pdb[pdb], pl).items():
+                pdb, seed, pairs_by_pdb[pdb], pl, refs.get(pdb)).items():
             rows.append((iface, seed, samp, f"{vmax:.6f}", f"{vmean:.6f}"))
         if i and i % 25 == 0:
             el = time.time() - t0
