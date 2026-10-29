@@ -1,0 +1,27 @@
+{
+ "ok": true,
+ "complete": true,
+ "n_manifest_structures": 4,
+ "n_structures": 4,
+ "limit": 0,
+ "manifest_digest": "16bf5a8503b19313",
+ "n_units": 40,
+ "manifest_selection": "training/full_train/structures_smoke.csv",
+ "manifest_skip": "9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3",
+ "seeds": "500000-500009",
+ "checked_seed": 500000,
+ "mismatches": [],
+ "missing_trunks": [],
+ "schema": 2,
+ "written": "2026-10-28T18:17:31-0700",
+ "seconds": 0.0,
+ "derived": true,
+ "derived_from": {
+  "parent": "/home/ebrahim/confidence_recalibration/extra_training/training/full_train/alignment_preflight_no9dzj.json",
+  "parent_selection": "/home/ebrahim/confidence_recalibration/extra_training/training/full_train/structures_no9dzj.csv",
+  "parent_digest": "258f939fd53397bf",
+  "parent_n_structures": 487,
+  "parent_written": "2026-10-23T23:27:55-0700",
+  "note": "every structure here was checked individually by the parent run; this file recomputed the parent's digest from its own selection csv to confirm the parent describes that population, then confirmed containment. No trunk or label was read. Re-run phase_k_alignment_preflight.py if the cache has been rebuilt since the parent."
+ }
+}

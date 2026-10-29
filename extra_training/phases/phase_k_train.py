@@ -5439,7 +5439,11 @@ def main():
                                          "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
                                          "epoch": ep + 1, "step_taken": 0, "nonfinite_grad": 1,
                                          "partial_step": 0, "step_ok": 0,
-                                         **{k: met[k] for k in TERMS}, **means})
+                                         **{k: met[k] for k in TERMS},
+                                         **({"pae_loss_unweighted":
+                                             met.get("pae_loss_unweighted", float("nan"))}
+                                            if float(a.pae_row_frac) > 0 else {}),
+                                         **means})
                             continue
                         step += 1
                         if a.save_every and step % a.save_every == 0 and write_traj:
@@ -5452,7 +5456,11 @@ def main():
                                  "epoch": ep + 1, "step_taken": took,
                                  "nonfinite_grad": bad_grad,
                                  "partial_step": 0, "step_ok": 1 if took else 0,
-                                 **{k: met[k] for k in TERMS}, **means})
+                                 **{k: met[k] for k in TERMS},
+                                 **({"pae_loss_unweighted":
+                                     met.get("pae_loss_unweighted", float("nan"))}
+                                    if float(a.pae_row_frac) > 0 else {}),
+                                 **means})
                     if write_traj and len(rows) % 20 == 0:
                         _flush(traj_p, traj_cols, rows); rows = []
                     # THE CROP LOG FLUSHES ON EVERY RANK, and with the trajectory rather than only

@@ -1,0 +1,5 @@
+cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,resolution,method,msa_ok
+1017,9nk9,pdb_00009nk9_A_+,3854,E92,128,2,2.10,XRAY,1
+2193,9g13,pdb_00009g13_G_+,3505,E135,139,2,1.80,XRAY,1
+1753,8b8i,pdb_00008b8i_H_+,2759,E69,173,2,2.75,XRAY,1
+2012,8ozb,pdb_00008ozb_A_+,3210,P165,192,2,2.09,XRAY,1
