@@ -1,0 +1,138 @@
+{
+ "script": "pdockq2_ceiling.py",
+ "argv": [
+  "--workers",
+  "9"
+ ],
+ "cwd": "/home/ebrahim/confidence_recalibration/extra_training",
+ "written": "2026-10-29T14:25:05-0700",
+ "python": "3.12.3",
+ "git_commit": "1ae32b7e937914eb3800b1f5037c85b2ca094e78",
+ "git_dirty": true,
+ "inputs": [
+  {
+   "path": "training/full_train/pool_winnable.csv",
+   "kind": "file",
+   "size": 7399,
+   "mtime": "2026-10-28T17:14:30",
+   "sha256": "8247a1a7c36306e6eabc296b568cdd6573b3a873a63e90388f3ad7c8f946b97b",
+   "partial": false
+  },
+  {
+   "path": "training/fold/chain_roles.csv",
+   "kind": "file",
+   "size": 21303,
+   "mtime": "2026-10-13T18:02:10",
+   "sha256": "021940d8982a2777a82bb9a872bdea9f89f7625f3681eea3c1764587dcd14f8c",
+   "partial": false
+  },
+  {
+   "path": "training/runs/rowweight_compare/rowweight_ep55/rows_b10_*_s*.csv",
+   "kind": "glob",
+   "n_files": 3,
+   "files": [
+    {
+     "path": "training/runs/rowweight_compare/rowweight_ep55/rows_b10_rowweight_ep55_head_s0.csv",
+     "kind": "file",
+     "size": 627319,
+     "mtime": "2026-10-29T09:21:02",
+     "sha256": "945b429f4b3b51db53522cc3cba8fce8c90211fdc32c6ed33cc798dfac60540f",
+     "partial": false
+    },
+    {
+     "path": "training/runs/rowweight_compare/rowweight_ep55/rows_b10_rowweight_ep55_head_s1.csv",
+     "kind": "file",
+     "size": 630539,
+     "mtime": "2026-10-29T09:21:00",
+     "sha256": "5a565582ed0bd9f2773ae216da671ed0440495db8be62dc210747c67d27e67b8",
+     "partial": false
+    },
+    {
+     "path": "training/runs/rowweight_compare/rowweight_ep55/rows_b10_rowweight_ep55_head_s2.csv",
+     "kind": "file",
+     "size": 630006,
+     "mtime": "2026-10-29T09:21:15",
+     "sha256": "0b3614e772ad9eea352c8ab04d9c59b75e2fae0fcccd98b780452a4466c6eaf5",
+     "partial": false
+    }
+   ],
+   "truncated": false
+  },
+  {
+   "path": "training/fold/labels",
+   "kind": "dir",
+   "n_files": 0,
+   "bytes": 0,
+   "listing_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "path": "training/fold/trunks",
+   "kind": "dir",
+   "n_files": 0,
+   "bytes": 0,
+   "listing_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+ ],
+ "outputs": [
+  {
+   "path": "training/runs/pdockq2_ceiling/pdq2_s0.csv",
+   "size": 186403,
+   "sha256": "d240a5fb63f12ec16fdaa05e8ebb16c0d316b0ee093efa801e4cb18317803467"
+  },
+  {
+   "path": "training/runs/pdockq2_ceiling/pdq2_s1.csv",
+   "size": 186933,
+   "sha256": "f4d5911d52edde66fa6b5d9301978dd8729b01ba760c686d2d9e7e684b19a904"
+  },
+  {
+   "path": "training/runs/pdockq2_ceiling/pdq2_s2.csv",
+   "size": 187367,
+   "sha256": "9c1c06c3c41f1d786dece59413d9a13ef060881d41aa31103a75a7da062666e8"
+  },
+  {
+   "path": "training/runs/pdockq2_ceiling/pdq2_s3.csv",
+   "size": 186290,
+   "sha256": "7345ef687207f249e03f4089fba9548660942f1cab5a7871387b316a50c732c4"
+  },
+  {
+   "path": "training/runs/pdockq2_ceiling/pdq2_s4.csv",
+   "size": 188030,
+   "sha256": "ca91a82b71fe06c476201bacd9a9a1dc58a5bcbf7b91d1a1bc57fe7039212079"
+  },
+  {
+   "path": "training/runs/pdockq2_ceiling/pdq2_s5.csv",
+   "size": 187201,
+   "sha256": "f1211bf620e28b0d639e2c1c4c50d72f3492487bab7a9a31b66ebb1c65d646cb"
+  },
+  {
+   "path": "training/runs/pdockq2_ceiling/pdq2_s6.csv",
+   "size": 186231,
+   "sha256": "a08767e7a91302d877357829d18e56a02b635218ef9e2465ca6207b6f4164a95"
+  },
+  {
+   "path": "training/runs/pdockq2_ceiling/pdq2_s7.csv",
+   "size": 186947,
+   "sha256": "f40cf52a7304594f2d75b1237510c03b308418f7c98745e630880d86781335cc"
+  },
+  {
+   "path": "training/runs/pdockq2_ceiling/pdq2_s8.csv",
+   "size": 186903,
+   "sha256": "6c6c52e2655b3693574c4b5cf906ea86a2f86b158dede894359794ad4a918f07"
+  }
+ ],
+ "output_digest": "f57214d090775da7fce884a7f82ff045604842fce18922b67e3e4fa07bb7f096",
+ "determinism": "no RNG; inputs iterated in sorted order; shards are a fixed stride",
+ "workers": 9,
+ "seeds": [
+  500000,
+  500001,
+  500002,
+  500003,
+  500004,
+  500005,
+  500006,
+  500007,
+  500008,
+  500009
+ ]
+}

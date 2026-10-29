@@ -87,9 +87,11 @@ import torch
 torch.set_num_threads(1)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
 sys.path.insert(0, os.path.join(ROOT, "phases"))
 sys.path.insert(0, "/home/ebrahim/Protenix")
 import pae_row_weight as rw  # noqa: E402
+import provenance as PROV
 from phase_k_eval import interface_chain_pairs  # noqa: E402
 from protenix.model.loss import PAELoss  # noqa: E402
 
@@ -339,4 +341,10 @@ if __name__ == "__main__":
         print(f"\n  {a.workers} worker(s) finished in {(time.time()-t0)/60:.1f} min, rc={rc}")
         if any(rc):
             sys.exit(f"STOP: shard(s) failed with {rc}")
+        # PROVENANCE BEFORE THE REPORT, so a failed report still leaves the record of what ran.
+        PROV.write(OUT, ROOT,
+                   inputs=[a.pool, a.roles, os.path.join(a.rows_dir, "rows_b10_*_s*.csv"),
+                           os.path.join(a.fold, "labels"), os.path.join(a.fold, "trunks")],
+                   outputs_glob="gt_iptm_s*.csv",
+                   extra={"workers": a.workers, "seeds": list(SEEDS)})
         report()

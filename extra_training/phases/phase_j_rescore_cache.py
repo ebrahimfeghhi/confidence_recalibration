@@ -127,7 +127,72 @@ def confidence(model, configs, feat, s_inputs, s, z, x, n_cycle):
     return summary
 
 
-def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle, want_pae=False):
+def _chain_pair_itm_mean(pae_prob, has_frame, asym_id, token_is_ligand, min_bin, max_bin,
+                         no_bins):
+    """chain_pair_iptm's matrix, but the MEAN over anchor rows instead of the max.
+
+    WHY THIS EXISTS. ipTM is max_i t_i, so a pose's whole score rests on one anchor row. Measured
+    by run_logging/itm_ceiling.py on 738 interfaces at 50 candidates, ranking poses by the TRUE
+    iTM recovers 59.0% of the oracle headroom under max pooling and 65.9% under mean, +0.0107 +-
+    0.0039 paired (t=2.70). That is an ORACLE result and says nothing about a real head, which is
+    what this computes so the question can be settled on actual predictions.
+
+    SAME ARITHMETIC AS pae_row_weight.row_t, which the test suite pins against Protenix's own
+    calculate_iptm, except that it takes PROBABILITIES rather than logits -- pair_iptm_only has
+    already softmaxed, and softmaxing twice would be a different number.
+
+    PER CHAIN PAIR, with that pair's own d0 and only its cross-chain targets. Using the crop-wide
+    d0 or the union of pairs is what calculate_ptm does and is wrong for an interface.
+    """
+    from protenix.model import sample_confidence
+    # PER POSE. pae_prob is [N_pose, N_tok, N_tok, bins] and chain_pair_iptm is [N_pose, C, C];
+    # an earlier draft took pae_prob[0] and assigned that one pose's value to every pose, which
+    # would have reported pose 0's score for all five and looked entirely plausible.
+    pp_all = pae_prob if pae_prob.dim() == 4 else pae_prob.unsqueeze(0)
+    hf = has_frame.reshape(-1).bool()
+    asym = asym_id.reshape(-1).long()
+    dev = pp_all.device
+    chains = sorted(set(asym.tolist()))
+    n_chain = max(chains) + 1
+    bc = sample_confidence.get_bin_centers(min_bin=min_bin, max_bin=max_bin,
+                                           no_bins=no_bins).to(dev).float()
+    # LIGAND TOKENS ARE EXCLUDED exactly as calculate_chain_based_ptm excludes them; keeping them
+    # would score rows Protenix does not score and make the two poolings incomparable.
+    live = hf & (~token_is_ligand.reshape(-1).bool())
+    arow = asym[live]
+    out = torch.zeros((pp_all.shape[0], n_chain, n_chain), device=dev, dtype=torch.float32)
+    # The target mask and d0 depend only on the chain layout, so they are built once and reused
+    # across poses; only the probability tensor changes.
+    masks = []
+    for xi in range(len(chains)):
+        for yi in range(xi + 1, len(chains)):
+            cx, cy = chains[xi], chains[yi]
+            tok = (asym == cx) | (asym == cy)
+            nd = int(tok.sum())
+            if nd == 0:
+                continue
+            d0 = 1.24 * (max(nd, 19) - 15) ** (1.0 / 3.0) - 1.8
+            tm = (tok.unsqueeze(0) & (arow.unsqueeze(1) != asym.unsqueeze(0))
+                  & ((arow == cx) | (arow == cy)).unsqueeze(1)).float()
+            cnt = tm.sum(-1)
+            if float(cnt.sum()) == 0:
+                continue
+            masks.append((cx, cy, tm, cnt, 1.0 / (1.0 + (bc / d0) ** 2)))
+    for pi in range(pp_all.shape[0]):
+        rows_p = pp_all[pi][live].float()                 # [N_frame, N_tok, bins]
+        for cx, cy, tm, cnt, wb in masks:
+            t = ((rows_p @ wb) * tm).sum(-1) / cnt.clamp_min(1.0)
+            keep = cnt > 0
+            if not bool(keep.any()):
+                continue
+            v = float(t[keep].mean())
+            out[pi, cx, cy] = v
+            out[pi, cy, cx] = v
+    return out
+
+
+def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle, want_pae=False,
+                   want_mean=False):
     """chain_pair_iptm and nothing else, for callers that read only that.
 
     WHAT THIS SKIPS AND WHY IT IS SAFE. confidence() computes the whole Protenix summary: the
@@ -175,6 +240,14 @@ def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle, want_pae=Fa
         # chain pTM, so this costs one matmul and no extra forward.
         # OPT-IN, DEFAULT OFF: phase_k_eval children of a running trainer re-read this file, so the
         # existing return shape must not change underneath them.
+        cim = None
+        if want_mean:
+            # OPT-IN, DEFAULT OFF, like want_pae: phase_k_eval children of a running trainer
+            # re-read this file, so the return shape must not change underneath them.
+            bp = sample_confidence.get_bin_params(configs.loss.pae)
+            cim = _chain_pair_itm_mean(
+                pae_prob, has_frame=feat["has_frame"], asym_id=feat["asym_id"],
+                token_is_ligand=token_is_ligand, **bp)
         tpp = None
         if want_pae:
             bc = sample_confidence.get_bin_centers(
@@ -186,6 +259,9 @@ def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle, want_pae=Fa
     if tpp is not None:
         for i in range(n_pose):
             res[i]["token_pair_pae"] = tpp[i] if tpp.dim() == 3 else tpp
+    if cim is not None:
+        for i in range(n_pose):
+            res[i]["chain_pair_itm_mean"] = cim[i] if cim.dim() == 3 else cim
     return res
 
 

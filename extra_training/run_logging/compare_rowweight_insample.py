@@ -59,12 +59,20 @@ ARMS = [("rowweight", 55, "training/runs/nskyne/resume_ep55.pt"),
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--cards", default="4,5,7")
+ap.add_argument("--pool-mean", action="store_true",
+                help="also write the MEAN-over-rows pooled ipTM as an iptm_mean column, so both "
+                     "poolings come out of ONE pass. Selection and the self-check stay on the "
+                     "max; the mean is compared offline.")
+ap.add_argument("--arm", default="", help="label:epoch:bundle -- score just this one checkpoint")
 ap.add_argument("--dry-run", action="store_true")
 ap.add_argument("--report-only", action="store_true")
 ap.add_argument("--allow-busy", action="store_true",
                 help="evaluate even if cards_busy.py reports occupancy. OFF by default: landing "
                      "this on top of a live training arm slows it and risks an OOM.")
 a = ap.parse_args()
+if a.arm:
+    _l, _e, _b = a.arm.split(":", 2)
+    ARMS = [(_l, int(_e), _b)]
 OUT_D = os.path.join(ROOT, "training", "runs", "rowweight_compare")
 
 
@@ -134,7 +142,8 @@ def evaluate(label, ep, bundle):
     extra = ["--fold", FOLD, "--results", os.path.join(FOLD, "results.csv"),
              "--pool", POOL, "--roles", os.path.join(FOLD, "chain_roles.csv"),
              "--seed-base", str(SEED_BASE)] + pf + [
-             "--join-cache", JOIN_CACHE, "--pair-iptm-only", "--prefetch"]
+             "--join-cache", JOIN_CACHE, "--pair-iptm-only", "--prefetch"] + (
+             ["--pool-mean"] if a.pool_mean else [])
     return sh([PY, "-I", os.path.join(ROOT, "phases", "phase_k_eval_sharded.py"),
                "--cards", a.cards, "--ckpt", head, "--budget", str(BUDGET),
                "--work", os.path.join(OUT_D, tag), "--out", out,

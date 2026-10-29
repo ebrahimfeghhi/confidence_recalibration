@@ -645,6 +645,14 @@ def main():
                     help="CA-CA cutoff for what the dump keeps. Wider than the 12 A the model "
                          "uses, so the dataset can apply its own cutoff and the closest-pair "
                          "fallback without a second GPU pass.")
+    ap.add_argument("--pool-mean", action="store_true",
+                    help="ALSO compute chain_pair ipTM pooled as the MEAN over anchor rows and "
+                         "write it as an extra iptm_mean column. ADDITIVE AND DEFAULT OFF: the "
+                         "selection, the self-check and every existing column stay on the MAX, "
+                         "which is what shipped ipTM is and what every baseline in this repo "
+                         "used, so the two poolings can be compared offline from one pass "
+                         "instead of being swapped and recomputed. Needs --pair-iptm-only, "
+                         "whose path already has the PAE probabilities.")
     ap.add_argument("--pair-iptm-only", action="store_true",
                     help="compute chain_pair_iptm directly from PAE instead of the whole Protenix "
                          "summary, whose other fields this script computes and discards. Measured "
@@ -940,8 +948,8 @@ def main():
             # structures with zero mismatches.
             _fai, _pae = pose_direction.derive_frames(feat)
             pose_direction.set_unit(_fai, feat["has_frame"], _pae, pdb=pdb)
-        summ = ((lambda *_a: RC.pair_iptm_only(*_a, want_pae=True)) if (a.pair_iptm_only and a.dump_pae)
-                else RC.pair_iptm_only if a.pair_iptm_only else RC.confidence)(
+        summ = ((lambda *_a: RC.pair_iptm_only(*_a, want_pae=a.dump_pae, want_mean=a.pool_mean))
+                if a.pair_iptm_only else RC.confidence)(
             model, configs, feat, s_in, s_tr, z, x, nc)
         summ = summ if isinstance(summ, (list, tuple)) else [summ]
         # join 2: pose -> sample, by coordinate identity. The pose DIRECTORY is itself resolved by
@@ -985,6 +993,16 @@ def main():
             cpi = s_i["chain_pair_iptm"]
             cpi = cpi.detach().cpu().numpy() if hasattr(cpi, "detach") else np.asarray(cpi)
             cpi = cpi[0] if cpi.ndim == 3 else cpi
+            cim = None
+            if a.pool_mean:
+                if "chain_pair_itm_mean" not in s_i:
+                    raise SystemExit("STOP: --pool-mean is on but the confidence path returned no "
+                                     "chain_pair_itm_mean. Silently writing an empty column would "
+                                     "look like 'mean pooling does nothing'.")
+                cim = s_i["chain_pair_itm_mean"]
+                cim = (cim.detach().cpu().numpy() if hasattr(cim, "detach")
+                       else np.asarray(cim))
+                cim = cim[0] if cim.ndim == 3 else cim
             k = int(ks[i])
             # JOIN 1, PER POSE. OST's own chain mapping for THIS pose, falling back to the static
             # chain_roles table only when it cannot be read -- and counting both, so the output says
@@ -1009,8 +1027,10 @@ def main():
                 if max(ai, aj) >= cpi.shape[0]:
                     continue
                 v = float(cpi[ai, aj])
+                vm = (float(cim[ai, aj]) if cim is not None and max(ai, aj) < cim.shape[0]
+                      else None)
                 key = (iface, sd_, k)
-                rows.append((iface, sd_, k, v, dockq.get(key)))
+                rows.append((iface, sd_, k, v, dockq.get(key), vm))
                 if key in stored_iptm:
                     # THE KEY, NOT JUST THE MAGNITUDE. Reporting "1014 rows disagree, max 0.2378"
                     # says a join is wrong and nothing about WHICH, so the next step is a 73-minute
@@ -1069,8 +1089,9 @@ def main():
         # a shard that has any, so a partial shard can be kept without being silently counted.
         with open(a.rows_out, "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(["iface", "seed", "sample", "iptm", "dockq", "stored_iptm"])
-            for iface, sd2, k2, v2, dq in rows:
+            w.writerow(["iface", "seed", "sample", "iptm", "dockq", "stored_iptm"]
+                       + (["iptm_mean"] if a.pool_mean else []))
+            for iface, sd2, k2, v2, dq, vm in rows:
                 key = (iface, sd2, k2)
                 sv = stored_iptm.get(key)
                 # FULL PRECISION, NOT 6 DECIMALS. repr() round-trips a float exactly.
@@ -1081,7 +1102,8 @@ def main():
                 # alone. dockq keeps 4 decimals: that is the precision results.csv has.
                 w.writerow([iface, sd2, k2, repr(v2),
                             "" if dq is None else f"{dq:.4f}",
-                            "" if sv is None else repr(sv)])
+                            "" if sv is None else repr(sv)]
+                           + ([("" if vm is None else repr(vm))] if a.pool_mean else []))
         with open(a.rows_out + ".meta.json", "w") as fh:
             json.dump({"shard": a.shard, "nshards": a.nshards, "units": len(units),
                        "rows": len(rows), "n_ost": n_ost, "n_unresolvable": n_static,
