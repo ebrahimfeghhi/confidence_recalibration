@@ -5218,6 +5218,16 @@ def main():
                                   "world": world, "seed": a.seed, "accum": a.accum,
                                   "nsample": a.nsample, "lr": a.lr,
                                   "lr_final": a.lr_final,
+                                  # ALSO HALF-WIRED, and this one decides the lr at every step of
+                                  # the cosine arm: the decay window and shape were compared but
+                                  # never written, so a bundle moved without its args.json fell
+                                  # through to the pre-crop defaults (0, 0, "cosine") and a resume
+                                  # would silently run a WHOLE-RUN cosine instead of the 20-50
+                                  # window it was configured for. Found by test_guard_fields.py
+                                  # the first time it ran, not by reading the diff.
+                                  "lr_decay_start_epoch": a.lr_decay_start_epoch,
+                                  "lr_decay_end_epoch": a.lr_decay_end_epoch,
+                                  "lr_decay_shape": a.lr_decay_shape,
                                   "warmup_steps": a.warmup_steps, "epochs": a.epochs,
                                   "manifest_skip": a.manifest_skip,
                                   "manifest_digest": _manifest_digest,
@@ -5241,9 +5251,18 @@ def main():
                                   # in review of 04503a9.
                                   "pose_perblock_share": a.pose_perblock_share,
                                   "pose_perblock_copy": a.pose_perblock_copy,
-                                  "pose_perblock_copy": a.pose_perblock_copy,
                                   "l2_sp": a.l2_sp,
                                   "l2_sp_exclude": a.l2_sp_exclude,
+                                  # FIFTH TIME. The three row-weight fields went into the
+                                  # comparison side and not here, so a bundle moved without its
+                                  # args.json would carry no record of the PAE objective and read
+                                  # as UNWEIGHTED. Found in review of c431fb93. The pattern is now
+                                  # tested rather than re-noticed: test_guard_fields.py asserts
+                                  # every compared field is also saved, so a sixth is a failing
+                                  # gate instead of a comment.
+                                  "pae_row_frac": a.pae_row_frac,
+                                  "pae_row_mass": a.pae_row_mass,
+                                  "pae_row_floor": a.pae_row_floor,
                                   "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                                   "rank_weight_by_gap": a.rank_weight_by_gap,
                                   "rank_form": a.rank_form,
@@ -5827,13 +5846,20 @@ def main():
     _units_by_pdb = {}
     for _p, _lp, _c in flat:
         _units_by_pdb[_p] = _units_by_pdb.get(_p, 0) + 1
+    _units_per_rank = _LRS.units_per_rank(_units_by_pdb, world,
+                                          bool(a.rank_cross_seed), len(flat))
     _spe_ep = _LRS.steps_per_epoch(_units_by_pdb, world, a.nsample, accum_local,
                                    cross_seed=bool(a.rank_cross_seed), n_units=len(flat))
-    _full = _spe_ep - 1
+    # THE SPLIT, REPORTED HONESTLY. _full is whole accumulations and the partial exists only when
+    # the poses do not divide accum_local -- at 368 structures they do (1,104 x 5 / 30 = 184), so
+    # there is no partial step and the old unconditional "+ 1 partial" overstated the horizon.
+    _poses_pr = _units_per_rank * a.nsample
+    _full = _poses_pr // max(1, accum_local)
+    _part = 1 if _poses_pr % max(1, accum_local) else 0
     _expect = _spe_ep * max(1, math.ceil(a.epochs))
     _naive = ((len(flat) // max(1, world)) * a.nsample // accum_local + 1)
-    if _naive != _full + 1:
-        print(f"  steps/epoch {_full + 1} from the epoch builder, NOT {_naive} from "
+    if _naive != _spe_ep:
+        print(f"  steps/epoch {_spe_ep} from the epoch builder, NOT {_naive} from "
               f"len(flat)//world: {len(flat)} unit(s) over {len(_units_by_pdb)} structure(s), of "
               f"which this rank walks {_units_per_rank} "
               f"(floor(seeds/{world}) whole group(s) per structure; the remainder sits out and is "
@@ -5844,7 +5870,7 @@ def main():
               f"COSINE {a.lr:g} -> {a.lr_final:g} over steps {a.warmup_steps}..{_expect}")
     print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
           f"~{_expect} optimiser step(s) for {a.epochs} epoch(s) "
-          f"({_full} full + 1 partial per epoch); no step cap, the epoch loop decides")
+          f"({_full} full + {_part} partial per epoch); no step cap, the epoch loop decides")
     print(f"  lr schedule: {_sched}")
     print(f"trajectory -> {traj_p}")
     json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)

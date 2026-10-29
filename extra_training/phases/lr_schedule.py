@@ -42,6 +42,20 @@ def lr_at_step(step, lr, lr_final, warmup_steps, steps_per_epoch, epochs,
     return lr_final + 0.5 * (lr - lr_final) * (1.0 + math.cos(math.pi * p))
 
 
+def units_per_rank(units_by_pdb, world, cross_seed=False, n_units=None):
+    """Units ONE RANK walks in one epoch, as the epoch builder groups them.
+
+    build_epoch takes floor(n_seeds / world) WHOLE seed-groups of each structure, so the remainder
+    -- one seed per structure at ten seeds and world 3 -- sits out, reseeded each epoch. That makes
+    the per-rank count a SUM OF FLOORS, not one division of the total: 368 x floor(10/3) = 1,104,
+    where len(flat) // world gives 1,226 and counts a seed that never trains.
+    """
+    if cross_seed:
+        return int(n_units if n_units is not None
+                   else sum(units_by_pdb.values())) // max(1, world)
+    return sum(v // max(1, world) for v in units_by_pdb.values())
+
+
 def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False, n_units=None):
     """Optimiser steps in one epoch, DERIVED FROM THE EPOCH BUILDER'S OWN GROUPING.
 
@@ -51,11 +65,7 @@ def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False,
     the total divided by world is right. The +1 is the partial accumulation the loop flushes at
     every epoch boundary.
     """
-    if cross_seed:
-        per_rank = int(n_units if n_units is not None
-                       else sum(units_by_pdb.values())) // max(1, world)
-    else:
-        per_rank = sum(v // max(1, world) for v in units_by_pdb.values())
+    per_rank = units_per_rank(units_by_pdb, world, cross_seed, n_units)
     # CEILING, NOT FLOOR PLUS ONE. The loop flushes a partial accumulation at the epoch
     # boundary, but only when one exists -- and at 368 structures the division is exact
     # (1,104 units x 5 poses / 30 = 184), so an unconditional +1 claims 185 and stretches

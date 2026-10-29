@@ -40,5 +40,27 @@ while :; do
   [ "$(date +%s)" -lt "$DEADLINE" ] || { echo "GAVE UP: cards still busy ($BUSY)"; exit 1; }
   sleep 20
 done
-echo "$(TZ=America/New_York date '+%I:%M %p %Z')  cards free; launching"
+echo "$(TZ=America/New_York date '+%I:%M %p %Z')  cards free"
+
+# SMOKE THE GLUE FIRST. The unit gates cover phases/pae_row_weight.py and phases/lr_schedule.py,
+# which are the parts that were already right. The bug review caught -- row weights cast to the
+# bool dtype of PAELoss's pair_mask, making the term a silent no-op -- lived in the forward
+# wrapper and the mask hook, which no test can import and which a no-op does not crash. Two
+# minutes on one card, asserting on the trainer's own artifacts, against sixty epochs of a run
+# that would have logged itself as working.
+echo "$(TZ=America/New_York date '+%I:%M %p %Z')  smoke-testing the row-weight glue on real poses"
+if ! ./shell_scripts/smoke_rowweight.sh; then
+  echo "HOLDING: the smoke test failed. NOT launching. The cards stay free and 45q96x is"
+  echo "untouched; see training/runs/_smoke_rowweight/smoke.log."
+  exit 1
+fi
+
+# the smoke run held a card; wait for it to be released before asking for all three
+while :; do
+  BUSY=$($PY_BIN -I run_logging/cards_busy.py 2>&1 | tail -1)
+  [ "$BUSY" = "0" ] && break
+  [ "$(date +%s)" -lt "$DEADLINE" ] || { echo "GAVE UP: cards busy after the smoke ($BUSY)"; exit 1; }
+  sleep 10
+done
+echo "$(TZ=America/New_York date '+%I:%M %p %Z')  smoke passed; launching"
 exec ./shell_scripts/launch_rowweight_cosine.sh
