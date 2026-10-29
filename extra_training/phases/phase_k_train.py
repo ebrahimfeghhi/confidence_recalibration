@@ -2172,6 +2172,18 @@ def main():
         _pae_keep["pdb"], _pae_keep["unit"] = pdb, unit
         if not _scored_asym and pairs_override is None:
             return
+        # COUNTED AND REPORTED, because "the override is wired" and "the override CHANGES
+        # something" are different claims and only the second matters. Twice today a change to
+        # this code path produced numbers bit-identical to the version it replaced -- once
+        # because --ost-mapping was not forwarded to the workers, once here -- and in both cases
+        # the identical numbers were the only evidence anything was wrong. So the run says how
+        # many poses got an override and on how many it DIFFERED from the static pairs.
+        if pairs_override is not None:
+            _ov = _pae_keep.setdefault("ov", {"poses": 0, "differed": 0, "pdbs": set()})
+            _ov["poses"] += 1
+            if set(pairs_override) != set(_scored_asym.get(pdb) or ()):
+                _ov["differed"] += 1
+                _ov["pdbs"].add(pdb)
         pairs = pairs_override if pairs_override is not None else _scored_asym.get(pdb)
         if not pairs:
             _pae_keep["m"] = None
@@ -4579,6 +4591,18 @@ def main():
         absent_r = [n_ for n_ in names if n_ not in nz_r]
         absent_p = [n_ for n_ in names if n_ not in nz_p]
         dead = [n_ for n_ in names if n_ not in nz_r and n_ not in nz_p]
+        _ov = _pae_keep.get("ov")
+        if _ov:
+            print(f"\n  PAE MASK OVERRIDE (--rank-form rel): applied on {_ov['poses']} pose(s), "
+                  f"DIFFERED from the static chain_roles pairs on {_ov['differed']} "
+                  f"({100 * _ov['differed'] / max(1, _ov['poses']):.1f}%)"
+                  + (f" across {len(_ov['pdbs'])} structure(s), e.g. "
+                     f"{sorted(_ov['pdbs'])[:4]}" if _ov["pdbs"] else
+                     " -- NO structure in this window disagrees, so the fix is UNEXERCISED here "
+                     "and the numbers are EXPECTED to match the pre-fix run"))
+        elif a.rank_form == "rel":
+            print("\n  PAE MASK OVERRIDE: NOT APPLIED on any pose, which under --rank-form rel "
+                  "means the per-pose pairs never reached _set_pae_mask -- the fix is not live.")
         print(f"\n  GRADIENT COVERAGE over {len(names)} trainable tensor(s): "
               f"PAE reaches {len(names) - len(absent_p)}, the {a.rank_form} term reaches "
               f"{len(names) - len(absent_r)}, NEITHER reaches {len(dead)}")
