@@ -209,7 +209,9 @@ def test_pose_index_is_not_the_sample_index():
     check("sample_index is a NON-identity permutation on this fold", nonid > 0.5 * len(labs),
           f"{nonid} of {len(labs)} ({100*nonid/len(labs):.1f}%) non-identity")
 
-    # and the two lookups genuinely differ: same pose, two keys, two labels
+    # AND THE TWO LOOKUPS GENUINELY DIFFER: same pose, two keys, two labels. Keyed by
+    # (seed, sample, iface) now -- the asym pair was removed from the cache because OST resolves
+    # it per pose, which was the mismatch review caught.
     cache = os.path.join(R, "training", "fold", "itm_labels")
     differ = tot = 0
     for f in labs[:200]:
@@ -217,22 +219,20 @@ def test_pose_index_is_not_the_sample_index():
         cp = os.path.join(cache, f"{pdb}.npz")
         if not os.path.exists(cp):
             continue
-        z = np.load(f, allow_pickle=True)
-        si = np.asarray(z["sample_index"]).reshape(-1)
-        c = np.load(cp)
+        si = np.asarray(np.load(f, allow_pickle=True)["sample_index"]).reshape(-1)
+        c = np.load(cp, allow_pickle=True)
         sd = int(os.path.basename(f)[5:-4])
-        by = {(int(a_), int(b_), int(x), int(y)): float(g)
-              for a_, b_, x, y, g in zip(c["seed"], c["sample"], c["ax"], c["ay"], c["g_mean"])}
+        by = {(int(s_), int(sp), str(ifc)): float(g)
+              for ifc, s_, sp, g in zip(c["iface"], c["seed"], c["sample"], c["g_mean"])}
+        ifaces = sorted({k[2] for k in by})
         for i in range(len(si)):
-            for (s2, sm, x, y), g in list(by.items())[:1]:
-                if s2 != sd:
-                    continue
-            ks = [(sd, int(si[i]), x, y) for (s3, sm3, x, y) in by if s3 == sd][:1]
-            kp = [(sd, i, x, y) for (s3, sm3, x, y) in by if s3 == sd][:1]
-            if ks and kp and ks[0] in by and kp[0] in by:
-                tot += 1
-                if abs(by[ks[0]] - by[kp[0]]) > 1e-9:
-                    differ += 1
+            for ifc in ifaces[:1]:
+                k_samp = (sd, int(si[i]), ifc)
+                k_pose = (sd, i, ifc)
+                if k_samp in by and k_pose in by:
+                    tot += 1
+                    if abs(by[k_samp] - by[k_pose]) > 1e-9:
+                        differ += 1
     check("keying by pose index gives a DIFFERENT label than keying by sample index",
           tot > 0 and differ > 0.5 * tot,
           f"{differ} of {tot} pose(s) would get the wrong label ({100*differ/max(tot,1):.0f}%)")
@@ -250,6 +250,30 @@ def test_trainer_uses_the_sample_index_for_rel_labels():
           "RKL_probe.iptm_pooled(" in src and "RKL_probe.iptm(pred" not in src)
     check("rel requires EXACT label coverage per group",
           'len(dq_by) != len(s_by)' in src)
+    # THE MISMATCH REVIEW CAUGHT: labels were computed on the pose's OST pair but keyed by the
+    # STATIC pair, and the trainer scored the static pair. All three must now agree.
+    check("the trainer resolves the chain pair PER POSE through OST for rel",
+          "_PKE.ost_chain_pairs(ud, pdb, int(samp)" in src and "def _pose_pairs" in src)
+    check("pass A keys rel scores by the reference INTERFACE, not an asym pair",
+          'if a.rank_form == "rel":' in src and "_pose_pairs(pdb, lab_p, _samp_a)" in src)
+    # ONE RESOLUTION ABOVE BOTH READERS. The first attempt resolved the pair only inside the
+    # backward block, so the --grad-probe block -- which has its own scoring loop -- passed the
+    # iface NAME to iptm_pooled and died on `i, j = pair`. Static checks had passed; running it
+    # found it. So the assertion is now that there is a single helper BOTH call sites use.
+    check("one per-pose pair resolution serves both the probe and the backward",
+          "def _asym_for(" in src and src.count("_asym_for(_p)") >= 2
+          and "_pose_pairs(pdb, lab_p, _si_b)" in src)
+    # NAME COLLISION GUARD. _pp in that scope is the probe's (name, Parameter) loop variable, so
+    # the per-pose dict must not be called _pp -- it was, and _asym_for read a torch Parameter.
+    check("the per-pose pair dict does not collide with the probe's _pp loop variable",
+          "_rel_pp" in src and "_v = _pp.get(" not in src)
+    check("the per-pose resolution REFUSES rather than falling back to the static pair",
+          "Falling back to the static pair is the exact mismatch" in src)
+    bl = open(os.path.join(R, "run_logging", "build_itm_labels.py")).read()
+    check("the label cache is keyed by the reference interface id",
+          'iface=np.array(' in bl and '"(seed, sample, iface) -> g_mean, g_max"' in bl)
+    check("an OLD asym-keyed cache is refused rather than read",
+          'is an OLD label cache keyed by an asym pair' in src)
     ev = open(os.path.join(R, "phases", "phase_k_eval.py")).read()
     check("the evaluator can select by the mean-pooled score",
           '"--select-by"' in ev and 'a.select_by == "mean"' in ev)

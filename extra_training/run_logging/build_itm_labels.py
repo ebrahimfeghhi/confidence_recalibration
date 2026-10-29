@@ -7,11 +7,16 @@ one of the 36,900 training poses (738 winnable interfaces x 10 seeds x 5 samples
 quantity that cannot change -- the true error of a fixed pose against a fixed structure. So it is
 computed once, cached, and read.
 
-THE KEY IS (pdb, seed, sample, asym_x, asym_y), NOT the interface name. The trainer works in model
-asym indices; the CSVs are keyed by interface id (e.g. 9gvn_BF, reference chain letters). The
-mapping is phase_k_eval.interface_chain_pairs over the SAME pool and roles files the trainer's PAE
-mask is built from, so the two agree by construction. Using a different join here is how a label
-gets attached to the wrong chain pair.
+THE KEY IS (seed, sample, IFACE), NOT the asym pair -- and that is a correction. The first version
+keyed by (seed, sample, asym_x, asym_y) using interface_chain_pairs' STATIC mapping, while the
+value itself had been computed on that pose's OST-resolved pair. On the 52 structures where the
+two disagree that silently paired predicted ipTM for one chain pair with true iTM for another:
+7stf's cache said (3,1) while its value came from (3,0). The coverage check could not see it
+because the keys matched. Caught in review.
+
+The interface id (e.g. 9gvn_BF, in REFERENCE chain letters) is the one identifier that is stable
+across poses -- the asym pair is not, because OST resolves it per pose. So the label is keyed by
+it, and the trainer resolves the asym pair per pose for BOTH its prediction and its lookup.
 
 BOTH POOLINGS ARE STORED. The arm being built trains on the MEAN, but the max is the shipped
 readout and the mean-vs-max question is not settled on a trained head (measured: mean wins at the
@@ -49,13 +54,15 @@ ap.add_argument("--roles", default="training/fold/chain_roles.csv")
 ap.add_argument("--out", default="training/fold/itm_labels")
 a = ap.parse_args()
 
+# IFACE -> PDB ONLY. The asym pair deliberately does NOT come from here: it varies per pose and
+# the trainer resolves it itself. All this needs is which structure's file a row belongs in, and
+# that the interface is one the pool actually names.
 pairs_by_pdb, unres = interface_chain_pairs(os.path.join(ROOT, a.pool),
                                             os.path.join(ROOT, a.roles))
-# iface id -> (pdb, ax, ay)
 where = {}
 for pdb, lst in pairs_by_pdb.items():
-    for iface, ax, ay in lst:
-        where[iface] = (pdb, ax, ay)
+    for iface, _ax, _ay in lst:
+        where[iface] = pdb
 
 # REFUSE A STATICALLY-MAPPED CEILING. The labels must come from the per-pose OST join, the one
 # phase_k_eval scores with. The first attempt at this used the static chain_roles join and was
@@ -84,12 +91,11 @@ n_in = n_skip = 0
 for f in sorted(glob.glob(os.path.join(ROOT, a.ceiling, "gt_iptm_s*.csv"))):
     for r in csv.DictReader(open(f)):
         n_in += 1
-        w = where.get(r["iface"])
-        if w is None:
+        pdb = where.get(r["iface"])
+        if pdb is None:
             n_skip += 1
             continue
-        pdb, ax, ay = w
-        rows[pdb].append((int(r["seed"]), int(r["sample"]), ax, ay,
+        rows[pdb].append((r["iface"], int(r["seed"]), int(r["sample"]),
                           float(r["gt_iptm_mean"]), float(r["gt_iptm_max"])))
 if not rows:
     sys.exit(f"STOP: no rows joined from {a.ceiling}; is the ceiling pass done?")
@@ -100,19 +106,23 @@ agg = hashlib.sha256()
 n_out = 0
 for pdb in sorted(rows):
     v = sorted(rows[pdb])
-    arr = np.array(v, dtype=np.float64)
     p = os.path.join(OUT, f"{pdb}.npz")
-    np.savez_compressed(p + ".tmp", seed=arr[:, 0].astype(np.int64),
-                        sample=arr[:, 1].astype(np.int64), ax=arr[:, 2].astype(np.int64),
-                        ay=arr[:, 3].astype(np.int64), g_mean=arr[:, 4].astype(np.float32),
-                        g_max=arr[:, 5].astype(np.float32))
+    np.savez_compressed(
+        p + ".tmp",
+        iface=np.array([x[0] for x in v]),
+        seed=np.array([x[1] for x in v], dtype=np.int64),
+        sample=np.array([x[2] for x in v], dtype=np.int64),
+        g_mean=np.array([x[3] for x in v], dtype=np.float32),
+        g_max=np.array([x[4] for x in v], dtype=np.float32))
     os.replace(p + ".tmp.npz", p)
     agg.update(pdb.encode()); agg.update(str(len(v)).encode())
     n_out += len(v)
 
 man = {"structures": len(rows), "rows": n_out, "rows_read": n_in, "rows_unmapped": n_skip,
        "digest": agg.hexdigest(), "pool": a.pool, "roles": a.roles, "ceiling": a.ceiling,
-       "keys": "(seed, sample, asym_x, asym_y) -> g_mean, g_max",
+       "keys": "(seed, sample, iface) -> g_mean, g_max",
+       "key_note": "keyed by the REFERENCE interface id, not an asym pair: the asym pair is "
+                   "resolved per pose by OST and is not stable across poses",
        "unresolved_pool_pairs": unres[:20]}
 with open(os.path.join(OUT, "manifest.json"), "w") as fh:
     json.dump(man, fh, indent=1)

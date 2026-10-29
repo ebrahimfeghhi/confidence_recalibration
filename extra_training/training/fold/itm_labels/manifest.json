@@ -1,0 +1,13 @@
+{
+ "structures": 368,
+ "rows": 36900,
+ "rows_read": 36900,
+ "rows_unmapped": 0,
+ "digest": "042fc685dd076dbc1ec3162d3e93c14d6787adbbebe7dce0008ed0a36d39376c",
+ "pool": "training/full_train/pool_winnable.csv",
+ "roles": "training/fold/chain_roles.csv",
+ "ceiling": "training/runs/itm_ceiling_ost",
+ "keys": "(seed, sample, iface) -> g_mean, g_max",
+ "key_note": "keyed by the REFERENCE interface id, not an asym pair: the asym pair is resolved per pose by OST and is not stable across poses",
+ "unresolved_pool_pairs": []
+}

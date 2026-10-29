@@ -1689,6 +1689,51 @@ def main():
     _rel_cache = {}
     _rel_stat = {"groups": 0, "poses": 0, "short_groups": 0, "csum": 0.0, "missing_files": 0}
 
+    # THE SAME MODULE phase_k_eval USES, so the per-pose chain join is literally the evaluator's
+    # and cannot drift from it.
+    import phase_k_eval as _PKE
+    _rel_refs = (_PKE.pool_ref_pairs(a.pae_scored_pairs)
+                 if (a.rank_form == "rel" and a.pae_scored_pairs) else {})
+    _rel_ifaces = {_p: [t[0] for t in _l] for _p, _l in
+                   ((_PKE.interface_chain_pairs(a.pae_scored_pairs, os.path.join(a.fold,
+                                                "chain_roles.csv"))[0]).items()
+                    if (a.rank_form == "rel" and a.pae_scored_pairs) else {}.items())}
+    _ost_cache = {}
+
+    def _pose_pairs(pdb, lab_p, samp):
+        """[(iface, ax, ay)] for ONE pose, from OST -- the SAME join phase_k_eval scores with.
+
+        WHY NOT THE STATIC PAIRS. --rank-form rel's labels are computed on the pose's OST-resolved
+        pair; scoring the static pair and looking the label up by interface name would pair
+        predicted ipTM for one chain pair with true iTM for another. Measured: the two mappings
+        disagree on 1,095 of 18,400 (structure, seed, pose) checks across 52 of 368 structures,
+        and 7stf resolves 7stf_BC to (3,1) statically against (3,0) per pose -- a different chain,
+        not a reordering. The first version of this arm had exactly that mismatch and no coverage
+        check could see it, because the keys still matched. Caught in review.
+
+        REFUSES rather than falling back. A fallback to the static pair is the defect itself.
+        """
+        import phase_j_build_cache as _BC
+        key = (pdb, os.path.basename(lab_p), int(samp))
+        if key in _ost_cache:
+            return _ost_cache[key]
+        sd = _rank_key(pdb, os.path.basename(lab_p)[:-4], (0, 0))[1]
+        try:
+            ud = _BC.seed_dir(a.fold, pdb, int(sd))
+        except Exception as _e:                              # noqa: BLE001
+            raise SystemExit(
+                f"STOP: --rank-form rel cannot resolve a unit directory for {pdb}/{sd} "
+                f"({type(_e).__name__}), so this pose's chains cannot be mapped the way its "
+                f"label was built.")
+        got, why = _PKE.ost_chain_pairs(ud, pdb, int(samp), _rel_refs.get(pdb) or [])
+        if got is None:
+            raise SystemExit(
+                f"STOP: --rank-form rel has no OST chain mapping for {pdb}/{sd} sample {samp} "
+                f"({why}). Falling back to the static pair is the exact mismatch this resolution "
+                f"exists to prevent.")
+        _ost_cache[key] = sorted(got)
+        return _ost_cache[key]
+
     def _rel_labels(pdb):
         """{(seed, sample, ax, ay): g} for one structure, from --rel-labels.
 
@@ -1708,13 +1753,18 @@ def main():
                 f"STOP: no relative-iTM label file for {pdb} at {f}. Every training structure "
                 f"needs one; rebuild with run_logging/build_itm_labels.py and check its manifest "
                 f"covers this manifest-selection.")
-        z = np.load(f)
+        z = np.load(f, allow_pickle=True)
         col = "g_max" if a.rank_pool == "max" else "g_mean"
         # THE LABEL MUST MATCH THE POOLING. Training the mean-pooled score toward a max-pooled
         # label would regress onto a different quantity than the one being produced, and both
         # columns exist precisely so this is a lookup rather than a conversion.
-        d = {(int(sd), int(sp), int(x), int(y)): float(g)
-             for sd, sp, x, y, g in zip(z["seed"], z["sample"], z["ax"], z["ay"], z[col])}
+        if "iface" not in z.files:
+            raise SystemExit(
+                f"STOP: {f} is an OLD label cache keyed by an asym pair. Those caches paired a "
+                f"value computed on the pose's OST pair with the STATIC pair as its key, which is "
+                f"the mismatch review caught. Rebuild with run_logging/build_itm_labels.py.")
+        d = {(int(sd), int(sp), str(ifc)): float(g)
+             for ifc, sd, sp, g in zip(z["iface"], z["seed"], z["sample"], z[col])}
         _rel_cache[pdb] = d
         return d
 
@@ -3729,13 +3779,21 @@ def main():
                                      f"({_si_a.shape[0]} entries).")
                 _samp_a = int(_si_a[i])
                 _sc = {}
-                for _p in sorted(_scored_asym.get(pdb) or ()):
+                # KEYED BY WHAT IS STABLE ACROSS POSES. For rel the unit of comparison is the
+                # reference interface; its asym pair is resolved PER POSE, so the key is the
+                # iface and the pair is a per-pose detail of how the score is computed.
+                if a.rank_form == "rel":
+                    _items = [(_ifc, (_x, _y)) for _ifc, _x, _y
+                              in _pose_pairs(pdb, lab_p, _samp_a)]
+                else:
+                    _items = [(_p, _p) for _p in sorted(_scored_asym.get(pdb) or ())]
+                for _k_, _p in _items:
                     # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
                     # describe one quantity and the backward would move another.
                     _v = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
                                          pool=a.rank_pool)
                     if _v is not None:
-                        _sc[_p] = float(_v.detach())
+                        _sc[_k_] = float(_v.detach())
                 del pred, x, plddt, pae, pde, resolved
                 return {"pose": i, "sample": _samp_a, "iptm": _sc}
             if a.emit_iptm_rows and _scored_asym.get(pdb):
@@ -3869,6 +3927,49 @@ def main():
                 # only on the per-unit linear path, so gating on it alone made the probe silently
                 # measure nothing under --rank-cross-seed -- it would have reported a ranking
                 # gradient of zero and the parity alpha as infinite.
+                # ONE RESOLUTION, ABOVE BOTH READERS. The first version resolved the per-pose
+                # chain pair only inside the backward block, so the --grad-probe block below --
+                # which has its own scoring loop -- passed the IFACE NAME straight to
+                # iptm_pooled and died on `i, j = pair` with "too many values to unpack". Found by
+                # actually running the probe; the static gate had passed. This file has the same
+                # lesson written at line 3707 about `_cs_div`: one binding, above both readers.
+                _si_b = None
+                # NAMED _rel_pp, NOT _pp. The --grad-probe block below iterates
+                # `for (_n, _pp), _g in zip(trainable_params, _gs)`, so a dict called _pp in this
+                # scope is shadowed by a torch Parameter by the time _asym_for reads it --
+                # "AttributeError: 'Parameter' object has no attribute 'get'". Found by running
+                # it; the static gate could not see a name collision.
+                _rel_pp = None
+                if a.rank_form == "rel" and _cs_src:
+                    _sv = lab.get("sample_index") if hasattr(lab, "get") else None
+                    if _sv is None:
+                        try:
+                            _sv = lab["sample_index"]
+                        except Exception:            # noqa: BLE001
+                            _sv = None
+                    if _sv is None:
+                        raise SystemExit(
+                            f"STOP: pass B needs `sample_index` in {lab_p} to resolve this pose's "
+                            f"chain pair the way its label was built.")
+                    _si_b = int(np.asarray(_sv).reshape(-1)[i])
+                    _rel_pp = {_ifc: (_x, _y) for _ifc, _x, _y
+                               in _pose_pairs(pdb, lab_p, _si_b)}
+
+                def _asym_for(_k):
+                    """The asym pair to score for a coefficient key.
+
+                    Under rel the key is a reference interface name and the pair is per pose;
+                    under every other form the key IS the pair.
+                    """
+                    if _rel_pp is None:
+                        return _k
+                    _v = _rel_pp.get(_k)
+                    if _v is None:
+                        raise SystemExit(
+                            f"STOP: no per-pose chain pair for interface {_k} on {pdb} pose {i}; "
+                            f"its coefficient cannot be applied to the score it describes.")
+                    return _v
+
                 if a.grad_probe and _cs_src:
                     _rt = None
                     for _p, _cv in _cs_src:
@@ -3880,8 +3981,8 @@ def main():
                         # cos(PAE,rel) +0.2043 -- described the max-pooled score and NOT the
                         # objective being trained. Caught in external review; the parity must be
                         # re-measured.
-                        _sp_ = RKL_probe.iptm_pooled(pred["pae"], feat_head, configs, _p,
-                                                     pool=a.rank_pool)
+                        _sp_ = RKL_probe.iptm_pooled(pred["pae"], feat_head, configs,
+                                                     _asym_for(_p), pool=a.rank_pool)
                         if _sp_ is None:
                             continue
                         _tm = (a.alpha_rank * _cv / _cs_div) * _sp_
@@ -3934,8 +4035,8 @@ def main():
                     for _p, _cv in _cs_src:
                         if not _cv:
                             continue
-                        _sr = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
-                                              pool=a.rank_pool)
+                        _sr = RKL.iptm_pooled(pred["pae"], feat_head, configs,
+                                              _asym_for(_p), pool=a.rank_pool)
                         if _sr is None:
                             continue
                         _obj = _obj + (a.alpha_rank * _cv / _cs_div) * _sr
@@ -4091,10 +4192,18 @@ def main():
         # ASSERTED PER RANK, BEFORE THE GATHER. Every rank verifies its own units, so the merged
         # set is complete by construction -- there is no need to know the other ranks' units here.
         # Found by review of f01dec8a.
-        _exp = {(_pdb, _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1], _i, _pair)
-                for _pdb, _lab, _cands in step_units
-                for _pair in (_scored_asym.get(_pdb) or ())
-                for _i in range(a.nsample)}
+        if a.rank_form == "rel":
+            # EXPECTED KEYS ARE (pdb, seed, pose, IFACE) for rel, because that is what pass A
+            # emits. Built from the pool's interface names, which every pose must score.
+            _exp = {(_pdb, _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1], _i, _ifc)
+                    for _pdb, _lab, _cands in step_units
+                    for _ifc in (_rel_ifaces.get(_pdb) or ())
+                    for _i in range(a.nsample)}
+        else:
+            _exp = {(_pdb, _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1], _i, _pair)
+                    for _pdb, _lab, _cands in step_units
+                    for _pair in (_scored_asym.get(_pdb) or ())
+                    for _i in range(a.nsample)}
         _got = set(local)
         if _exp != _got:
             _missing = sorted(_exp - _got)[:6]
@@ -4158,9 +4267,8 @@ def main():
                         raise SystemExit(
                             f"STOP: no sample_index recorded for {_pdb}/{_sd} pose {_i}, so its "
                             f"true-iTM label cannot be keyed. Pass A must emit one per pose.")
-                    _g = _gl.get((int(_sd), int(_sx), int(_pair[0]), int(_pair[1])))
-                    if _g is None:
-                        _g = _gl.get((int(_sd), int(_sx), int(_pair[1]), int(_pair[0])))
+                    # _pair IS THE IFACE NAME under rel, not an asym tuple -- see pass A.
+                    _g = _gl.get((int(_sd), int(_sx), str(_pair)))
                     if _g is not None:
                         dq_by[(_sd, _i)] = float(_g)
             else:
