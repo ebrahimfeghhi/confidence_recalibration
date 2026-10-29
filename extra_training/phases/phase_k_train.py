@@ -1642,6 +1642,8 @@ def main():
     # THE COSINE HORIZON, in optimiser steps, filled in just before train_loop from the same
     # `_expect` the startup banner prints. A list because train_loop closes over it and the value
     # is not known until the unit list has been flattened and sharded.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import lr_schedule as _LRS
     _lr_horizon = [0]
     _rank_tau = float(a.rank_tau) if a.rank_tau is not None else None
     _probe = {"rows": [], "units": 0, "poses": 0, "sum": {}, "finite": {}, "nonzero": {}}
@@ -2417,6 +2419,13 @@ def main():
                  # so a resume that added or dropped the cosine would be a different experiment.
                  "lr_final": a.lr_final,
                  "lr": a.lr, "warmup_steps": a.warmup_steps,
+                 # ROW WEIGHTING CHANGES THE OBJECTIVE. The PAE term becomes a weighted mean
+                 # over anchor rows, so moving frac, mass or the floor on resume blends two
+                 # objectives into one curve -- the same failure the l2_sp and lr_final entries
+                 # above exist to stop. Caught in review of 38a83283.
+                 "pae_row_frac": a.pae_row_frac,
+                 "pae_row_mass": a.pae_row_mass,
+                 "pae_row_floor": a.pae_row_floor,
                  # The decay WINDOW and SHAPE change the lr at every step just as lr_final does,
                  # so they belong beside it rather than being silently re-derived on resume.
                  "lr_decay_start_epoch": a.lr_decay_start_epoch,
@@ -2495,6 +2504,11 @@ def main():
                      # is exactly what the 0 defaults mean, and "cosine" is what it computed.
                      "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
                      "lr_decay_shape": "cosine",
+                     # ABSENCE IS EVIDENCE: a bundle written before --pae-row-frac existed ran the
+                     # unweighted term, which is exactly what frac 0 means. The mass and floor
+                     # defaults are inert at frac 0 but are migrated so a resume that only turns
+                     # weighting ON still shows up as drift on the frac field.
+                     "pae_row_frac": 0.0, "pae_row_mass": 0.8, "pae_row_floor": 10,
                  "train_only": "",
                      "crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
                      # ABSENCE IS EVIDENCE, as for the two above: a bundle written before
@@ -5361,31 +5375,15 @@ def main():
                     _T["prefetch_issue"] -= _T["fingerprint_hash"] - _h0
                 for _m in run_unit(pdb, lab_p, trunk_p):
                     i, met = _m["pose"], _m      # floats only; the tensors are already freed
-                    cur_lr = lr * min(1.0, (step + 1) / max(1, a.warmup_steps))
-                    # COSINE AFTER WARMUP. Driven by `step`, which resume restores, so a resumed
-                    # run picks up the schedule where it left off instead of restarting the decay.
-                    if a.lr_final > 0.0 and _lr_horizon[0] > a.warmup_steps and step >= a.warmup_steps:
-                        # THE DECAY WINDOW. Both ends default to the historical schedule: start at
-                        # the end of warmup, end on the last expected step. Given in epochs and
-                        # converted with the run's own steps-per-epoch, derived from the SAME
-                        # expected-step horizon the cosine uses -- not from steps counted so far,
-                        # which would make the window move as the run progresses.
-                        _spe = _lr_horizon[0] / max(1e-9, float(a.epochs))
-                        _d0 = (a.warmup_steps if a.lr_decay_start_epoch <= 0.0
-                               else max(a.warmup_steps, a.lr_decay_start_epoch * _spe))
-                        _d1 = (_lr_horizon[0] if a.lr_decay_end_epoch <= 0.0
-                               else a.lr_decay_end_epoch * _spe)
-                        if step < _d0:
-                            cur_lr = lr                       # still in the flat hold
-                        elif _d1 <= _d0:
-                            cur_lr = a.lr_final               # degenerate window: land immediately
-                        else:
-                            _p = min(1.0, (step - _d0) / float(_d1 - _d0))
-                            if a.lr_decay_shape == "exponential":
-                                cur_lr = lr * (a.lr_final / lr) ** _p
-                            else:
-                                cur_lr = a.lr_final + 0.5 * (lr - a.lr_final) * (
-                                    1.0 + math.cos(math.pi * _p))
+                    # THE SCHEDULE LIVES IN phases/lr_schedule.py so it can be asserted before
+                    # a sixty-epoch run rather than inferred after one. Driven by `step`, which
+                    # resume restores, so a resumed run picks the schedule up where it left off.
+                    # _lr_horizon[0] is steps-per-epoch x epochs, derived from the EPOCH BUILDER's
+                    # grouping -- see the comment at its assignment for the 205-vs-184 bug.
+                    cur_lr = _LRS.lr_at_step(
+                        step, lr, a.lr_final, a.warmup_steps,
+                        _lr_horizon[0] / max(1.0, float(a.epochs)), a.epochs,
+                        a.lr_decay_start_epoch, a.lr_decay_end_epoch, a.lr_decay_shape)
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
                     n_in_accum += 1
@@ -5818,8 +5816,28 @@ def main():
     # already knows when it is finished; `--limit-units` and the lr probe remain for capped runs.
     # 9mfb4y escaped by one step (cap 481, 480 taken) only because total_poses counts all 491
     # structures while the loop runs the 489 that survive shard truncation -- two errors cancelling.
-    _full = (len(flat) // max(1, world)) * a.nsample // accum_local
-    _expect = (_full + 1) * max(1, math.ceil(a.epochs))
+    # THE HORIZON MUST COME FROM THE EPOCH BUILDER, NOT FROM len(flat) // world. build_epoch
+    # takes floor(n_seeds / world) WHOLE seed-groups of each structure, so at ten seeds and world 3
+    # one seed per structure sits out and the rank walks 3 groups, not 10/3. len(flat) // world
+    # counts that sitting-out seed, and the error lands on the LEARNING RATE: at 368 structures it
+    # claimed 205 steps per epoch against an actual 184, which stretches the decay window by 11%.
+    # The configured "1e-2 flat to epoch 20, 1e-4 by epoch 50" came out as flat to 22.3 and 1e-4 at
+    # 55.7, leaving lr ~7.95e-4 at epoch 50 -- eight times the intended value -- so the schedule
+    # the arm is testing was not the schedule it ran. Caught in review of 38a83283.
+    _units_by_pdb = {}
+    for _p, _lp, _c in flat:
+        _units_by_pdb[_p] = _units_by_pdb.get(_p, 0) + 1
+    _spe_ep = _LRS.steps_per_epoch(_units_by_pdb, world, a.nsample, accum_local,
+                                   cross_seed=bool(a.rank_cross_seed), n_units=len(flat))
+    _full = _spe_ep - 1
+    _expect = _spe_ep * max(1, math.ceil(a.epochs))
+    _naive = ((len(flat) // max(1, world)) * a.nsample // accum_local + 1)
+    if _naive != _full + 1:
+        print(f"  steps/epoch {_full + 1} from the epoch builder, NOT {_naive} from "
+              f"len(flat)//world: {len(flat)} unit(s) over {len(_units_by_pdb)} structure(s), of "
+              f"which this rank walks {_units_per_rank} "
+              f"(floor(seeds/{world}) whole group(s) per structure; the remainder sits out and is "
+              f"reseeded each epoch). The lr schedule uses the former.")
     steps_cap = 0
     _lr_horizon[0] = _expect
     _sched = ("flat after warmup (no decay)" if a.lr_final <= 0.0 else

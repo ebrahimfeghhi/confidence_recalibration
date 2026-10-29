@@ -11,6 +11,18 @@
 # leaving 45q96x alone.
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
+
+# ONE LAUNCHER, ENFORCED BY flock. Two copies of this script both waiting on the same checkpoint
+# would both see the cards free in the same instant and both launch, and the cards_busy guard
+# inside the launch script cannot prevent that -- it runs before either has taken a card. flock
+# makes the second copy exit immediately instead. It also means a copy whose shell died without
+# the script dying cannot be double-queued: the lock is held by the process, not written to disk.
+exec 9>training/runs/.rowweight_chain.lock
+if ! flock -n 9; then
+  echo "another copy of this chain already holds the lock; exiting"
+  exit 0
+fi
+
 PY_BIN=/home/ebrahim/Protenix/.venv/bin/python
 CKPT=training/runs/45q96x/resume_ep60.pt
 DEADLINE=$(( $(date +%s) + 7200 ))

@@ -42,6 +42,14 @@
 #      hand-stepped version of this (fawgtu 1-40 at 1e-2, 41-50 at 1e-3, 51-60 at 1e-4) is what
 #      the schedule is modelled on; each manual step bought one good epoch and then decayed.
 #
+#      THE STEP HORIZON WAS WRONG AND IS NOW TESTED. It came from len(flat) // world, but
+#      build_epoch takes floor(n_seeds / world) WHOLE seed-groups per structure, so one of ten
+#      seeds sits out each epoch. That claimed 205 steps/epoch against 184 actual, which stretched
+#      the window: flat hold to epoch 22.3, 1e-4 at 55.7, and lr 7.95e-4 at epoch 50 -- EIGHT
+#      TIMES intended. The schedule now lives in phases/lr_schedule.py and
+#      run_logging/test_lr_schedule.py pins the lr at epochs 20, 35, 50 and 60 plus a regression
+#      guard that reproduces those wrong numbers. This script runs it and refuses on failure.
+#
 # WHAT IS DELIBERATELY UNCHANGED from launch_fullhead_noanchor_40ep.sh, so the three changes above
 # are the only ones: same fold, skip list, crop 3400, margin 10, contact 5, accum 85, nsample 5,
 # seeds 500000-500009, warmup 20 steps, --pae-only, --blocks-per-ckpt 0, no L2, no evals.
@@ -59,6 +67,8 @@
 #     0.25 (15.8x), effective sample size 103 of 332. Weights DETACHED, mask FLOAT."
 #   - "368 structure(s)" on the manifest line and 738 interfaces on the PAE mask line
 #   - 258 trainable tensors
+#   - "steps/epoch 184 from the epoch builder, NOT 205 from len(flat)//world"
+#   - "COSINE 0.01 -> 0.0001 over steps 20..11040"  (184 x 60)
 #   - NO "anchor SNAPSHOT" line (that would mean --l2-sp survived)
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
@@ -67,6 +77,8 @@ BUSY=$($PY_BIN -I run_logging/cards_busy.py 2>&1 | tail -1)
 [ "$BUSY" = "0" ] || { echo "REFUSING: cards 4,5,7 are occupied ($BUSY)"; exit 1; }
 $PY_BIN -I run_logging/test_pae_row_weight.py || {
   echo "REFUSING: the row-weight correctness gate failed"; exit 1; }
+$PY_BIN -I run_logging/test_lr_schedule.py || {
+  echo "REFUSING: the lr schedule gate failed"; exit 1; }
 echo "launching row-weighted PAE, 368 winnable structures, cosine 1e-2 -> 1e-4 over epochs 20-50"
 LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --cards 4,5,7 --numa-map 0:0,1:0,2:1 --note "ROW-WEIGHTED PAE + WINNABLE STRUCTURES ONLY + COSINE LR, fresh 60-epoch run on cards 4,5,7, no evals, checkpoints only. THREE CHANGES AT ONCE, so nothing here is cleanly attributable to one of them -- said plainly rather than discovered at analysis time. (1) --pae-row-frac 0.2 --pae-row-mass 0.8 --pae-row-floor 10: the PAE term is reweighted toward the anchor rows ipTM can read, because ipTM is max_i t_i over 29-801 rows (median 332) and selection reads ONE row while the unweighted term grades every row equally. Top 20% of rows by t_i carry 80% of the loss, the rest share 20%, so a top row weighs 16x a bottom row and Kish effective sample size is about 103 of 332. Mass is deliberately NOT 1.0: zero-weight rows would be unsupervised and free to drift over-confident, and since ipTM is a max an over-confident row is exactly the one selected. THE LABELS ARE UNTOUCHED -- every pair still trains toward its own true error bin -- which is why this was preferred to a ranking loss on ipTM, which is shift-invariant and so cannot learn absolute confidence level and can be lowered by distorting ipTM away from calibration. Weights are DETACHED. Gate: phases/pae_row_weight.py is tested by run_logging/test_pae_row_weight.py, which asserts max(row_t) equals Protenix's own calculate_iptm (exact, 0.00e+00) and that --pae-row-frac 1.0 reproduces the unweighted term bit for bit; the launch script runs it and refuses on failure. (2) 368 structures, not 487: the 119 dropped have no pose above DockQ 0.23 across all 100 labelled poses, so every cross-chain error exceeds 32 A, the PAE label is the top bin everywhere, and 'say maximum error' scores well with no error detection. Measured on 45q96x epochs 55+ they sit at PAE 1.1023 vs 1.9592 for the rest at 25% of poses, so the 1.73 the unweighted arms report is 0.21 below the number for winnable structures. THIS RUN SHOULD START NEAR 1.96 AND BE READ AGAINST THAT. Cost stated: those 119 are the only structures where the correct answer is 'I am wrong, be unconfident', so this arm cannot speak to out-of-distribution calibration -- it is a selection experiment. (3) Cosine lr 1e-2 held flat to epoch 20, decaying to 1e-4 by epoch 50, flat 51-60, replacing the hand-stepped 1e-2/1e-3/1e-4 of the fawgtu lineage where each manual step bought one good epoch then decayed. --frame-direction stays on so this matches the configuration 45q96x ended in, hence 258 trainable tensors not 254. Everything else is verbatim from launch_fullhead_noanchor_40ep.sh. NO L2, no --val-loss-* monitor, no --train-eval-* pass: nothing in this run can see overfitting while it happens, so the checkpoints must be scored afterwards rather than assumed good. The diagnostic that can answer the premise without waiting for DockQ is pae_rows_rank*.csv, written every 50th pose: if rho between t_i and that row's own PAE loss shows the high-t_i rows are already the best fit, this weighting has no headroom." \
