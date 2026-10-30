@@ -37,8 +37,22 @@ EP = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else None
 # noise times a factor that grows with N. The per-epoch table printed below always lists EVERY
 # eval epoch, so the selection is visible rather than implied.
 BEST = "--best" in sys.argv
-OUT = (sys.argv[3] if len(sys.argv) > 3
-       else f"figures/rel_bars_{RID}.png")
+# --only mean | max RESTRICTS THE FIGURE TO ONE POOLING beside the shipped reference, so mean
+# DockQ, frac acceptable and Spearman can each be read for that pooling alone -- the three
+# metrics need not move together, and at epoch 5 they did not: MAX was nominally ahead on mean
+# DockQ (+0.0055 against +0.0027) while MEAN was ahead on Spearman (+0.0920 against +0.0369).
+#
+# THE SHIPPED BAR IS MAX-POOLED IN BOTH FIGURES, and that is a gap rather than a choice: nothing
+# has ever run the shipped head with --pool-mean, so there is no shipped mean-pooled number to
+# compare against. Part of the MEAN figure's gain could therefore be the POOLING rather than the
+# training, and the figure says so. One eval pass closes it.
+ONLY = None
+for _i, _a in enumerate(sys.argv):
+    if _a == "--only" and _i + 1 < len(sys.argv):
+        ONLY = sys.argv[_i + 1]
+if ONLY not in (None, "mean", "max"):
+    sys.exit("  --only takes 'mean' or 'max'")
+OUT = None      # set after ONLY is parsed
 RUN = os.path.join(ROOT, "training", "runs", RID)
 
 dirs = sorted(glob.glob(os.path.join(RUN, "train_eval_shards_ep*")),
@@ -84,10 +98,18 @@ ep = int(re.search(r"ep(\d+)$", d).group(1))
 by, full, keep = load(d)
 n = len(keep)
 pick = lambda j: np.array([max(by[i], key=lambda t: t[j])[3] for i in keep])  # noqa: E731
-S = [("shipped ipTM", pick(2), "#8a8a8a"),
-     ("ours, MEAN pooling", pick(1), "#2f6fb0"),
-     ("ours, MAX pooling", pick(0), "#b03a3a")]
+_ALL_S = [("shipped ipTM", pick(2), "#8a8a8a"),
+          ("ours, MEAN pooling", pick(1), "#2f6fb0"),
+          ("ours, MAX pooling", pick(0), "#b03a3a")]
+if ONLY == "mean":
+    S = [_ALL_S[0], _ALL_S[1]]
+elif ONLY == "max":
+    S = [_ALL_S[0], _ALL_S[2]]
+else:
+    S = _ALL_S
 base = S[0][1]
+OUT = (f"figures/rel_bars_{RID}_{ONLY}.png" if ONLY
+       else f"figures/rel_bars_{RID}.png")
 
 # PER-INTERFACE SPEARMAN for the third panel. Computed here rather than only printed, because it
 # has more statistical power than the selection delta -- it reads all 150 candidates per interface
@@ -198,7 +220,13 @@ if cx is not None:
 # ONE compact header instead of a suptitle plus two padded panel titles competing for the
 # same strip of space.
 fig.text(0.012, 0.985, f"{RID} epoch {ep}  -  held-out valfull, budget 30, "
-         f"paired on identical poses", fontsize=11, fontweight="bold", va="top")
+         f"paired on identical poses"
+         + (f"   [{ONLY.upper()} pooling]" if ONLY else ""),
+         fontsize=11, fontweight="bold", va="top")
+if ONLY == "mean":
+    fig.text(0.012, 0.012, "note: the shipped reference is MAX-pooled -- no shipped mean-pooled "
+             "number exists yet, so part of this gap could be the pooling rather than the "
+             "training", fontsize=8, color="#b03a3a")
 if BEST and len(ALL) > 1:
     fig.text(0.012, 0.945, f"BEST of {len(ALL)} eval epochs by mean-pooled DockQ -- a "
              f"best-of-N number is biased upward; see the per-epoch table",
