@@ -3,7 +3,7 @@
      shipped (MAX)  median +0.1709  mean +0.2218  negative 26%
         ours, MEAN  median +0.2599  mean +0.2473  negative 24%   +0.0890 vs shipped
          ours, MAX  median +0.2620  mean +0.2511  negative 28%   +0.0911 vs shipped
-  epoch 10 (BEST of 5), 92 interfaces at 150 candidates -> figures/rel_bars_o2qczq.png
+  epoch 10 (BEST of 6), 92 interfaces at 150 candidates -> figures/rel_bars_o2qczq.png
 
   EVERY eval epoch (so the --best selection is visible):
       ep  shipped     MEAN     dMEAN      MAX      dMAX
@@ -12,6 +12,7 @@
       15   0.5830   0.5778   -0.0052   0.5831   +0.0001
       20   0.5832   0.5851   +0.0018   0.5849   +0.0016
       25   0.5831   0.5764   -0.0067   0.5817   -0.0014
+      30   0.5832   0.5836   +0.0003   0.5897   +0.0064
 
       shipped ipTM (MAX)  mean 0.5831  frac 0.7391
       ours, MEAN pooling  mean 0.5882  frac 0.7609  delta +0.0051 +- 0.0064 (t=+0.80)
