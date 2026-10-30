@@ -320,6 +320,40 @@ same thing from the other side: held-out within-interface Spearman went +0.2629 
 THE MEASUREMENT THAT MATTERS NEXT is therefore not another ranking metric. It is whether any loss
 of this family moves the TOP of each interface's distribution rather than its middle.
 
+### 8b. WHERE the ranking gain sits: among the poses nobody picks
+
+`run_logging/rank_gain_location.py` splits the same in-sample rows the -0.0087 came from. "The top"
+is the 10 poses with the highest TRUE DockQ -- the only ones a selector could usefully order:
+
+| selector | rho all 50 | rho top 10 | rank of best pose | picks best | best in top 5 |
+|---|---|---|---|---|---|
+| ours, MEAN-pooled | +0.2819 | **+0.0326** | 18.0 / 50 | 3.79% | 20.7% |
+| ours, MAX-pooled | +0.2857 | **+0.0667** | 17.0 / 50 | 4.74% | 22.0% |
+| shipped ipTM (MAX) | +0.1931 | **-0.0246** | 21.0 / 50 | 3.98% | 18.2% |
+| random | 0 | 0 | 25.5 / 50 | 2.00% | 10.0% |
+
+**The +0.089 of Spearman is real and it is entirely outside the top.** Restricted to the ten poses
+worth picking, every selector is uncorrelated with DockQ: +0.03, +0.07, -0.02. Spearman over 50
+poses is dominated by the ~40 nobody would select, so sorting those correctly moves the statistic
+and cannot move the argmax. At the top, where it would pay, the arm picks the best pose 3.79% of
+the time against the shipped head's 3.98% -- both a whisker above the 2.00% of random choice.
+
+That also says the TARGET shares the defect, not just the learned approximation: the true iTM this
+loss regresses onto ranks the whole field far better than it ranks the top, so a perfect fit to it
+would inherit the same blindness. Section 5's "rho is a poor proxy for the metric" is the same
+finding one level up.
+
+TIES ARE WHY THIS NEEDED CARE. stored_iptm is recorded at 4 decimal places, so the rank of the best
+pose and the top-1 rate must be computed from counts of strictly-better and tied poses, not from a
+sort: resolving ties by row order moved the shipped head's median rank between 21 and 22 and its
+top-1 rate between 3.98% and 4.3% depending only on the glob order of three shard files.
+
+A CAVEAT ON THE PER-EPOCH SPEARMAN CURVE. The in-sample diagnostic printed every epoch (+0.2994 ->
++0.5392) is computed inside the training loop on CROPPED inputs, crop 3400 with a 10-residue
+interface margin. This eval is uncropped. Same checkpoint, same metric, same poses: +0.5392 cropped
+against +0.2819 uncropped. The curve therefore overstates the arm's ranking gain, and the defensible
+figure for it is the +0.089 over the shipped head measured here.
+
 ## Open questions as of 2026-10-27
 
 - **ANSWERED 2026-10-30 (section 8): a within-interface ranking loss can move the
