@@ -546,6 +546,52 @@ THE RESULT STANDS EITHER WAY: section 9b's +0.0376 held-out DockQ under matched 
 unaffected by this. What section 10 removes is the cheapest route to collecting it.
 
 
+## 11. Checkpointing clears the uncropped forward OOM, and the headroom is ~2 GB
+
+Section 10's OOM was refused-by-design territory: per-block orientation could not run with
+activation checkpointing, because the orientation copies read `pose_direction._CALL["dir"]` from a
+global that the outer forward clears, so a block recomputed during backward saw None or a LATER
+pose's geometry. That is now FIXED rather than worked around -- `_prep_blocks` captures the
+geometry and `_add_dir` takes it as an argument, the same treatment the onehot/dist tensors got.
+
+`test_perblock_ckpt_equiv.py` gates it, blocks_per_ckpt=1 against off, 3 poses with different
+geometry each, the cache cleared between poses as pose_direction clears it:
+
+| quantity | result |
+|---|---|
+| forward output | 8.237043381 vs 8.237043381 |
+| frame_dir_proj.weight | max abs diff 0.000e+00, grad 1.533 |
+| pose_perblock_frame_dir.0 / .1 / .2 | 0.000e+00, grads 1.318 / 1.409 / 1.263 |
+| every parameter (18 tensors) | worst 0.000e+00 |
+| NEGATIVE CONTROL (pre-fix `_add_dir`) | fails, raising in backward |
+
+All four orientation projections carry NON-ZERO weights and non-zero gradients, because
+frame_dir_proj is zero-initialised by construction and every copy copies it -- at shipped
+initialisation a completely broken orientation pathway would compare equal.
+
+**THE MEMORY PROBE THEN GOT PAST THE FORWARD.** With `--blocks-per-ckpt 1` the nine-largest probe
+reached 100+ poses and three optimiser steps' worth of work, where section 10's run died before
+pose 1 inside `triangle_multiplicative_update`. So checkpointing does clear that peak -- which was
+NOT a foregone conclusion, since it reduces activations retained ACROSS blocks and not the
+triangle multiplication's own allocation.
+
+**AND THE HEADROOM IS THE PROBLEM.** Live `nvidia-smi` over the run, cards of 97,887 MiB:
+
+| poses done | card 4 | card 5 | card 7 |
+|---|---|---|---|
+| 60 | 90,190 | 88,616 | 91,896 |
+| 100 | 90,190 | 92,776 | **96,116** |
+
+Card 7 reached 96,116 MiB -- **1,771 MiB free, 98.2% of the card** -- and the figure is still
+CLIMBING, not settled. The pass bar set before the probe was 80 GB reserved (15 GB headroom), with
+80-90 called marginal.
+
+This is the worst-case manifest by construction: nine structures of 1297-1543 tokens, and
+`--rank-structs-per-step 3` puts three of them in a step. But those nine are IN the real manifest
+and `--shuffle structure` will combine them, so the real run meets this peak rather than averaging
+it away. "It fits once" and "it fits for 60 epochs x 122 steps" are different claims.
+
+
 ## Open questions as of 2026-10-27
 
 - **ANSWERED 2026-10-30 (section 10): uncropped training does not fit.** OOM in the
