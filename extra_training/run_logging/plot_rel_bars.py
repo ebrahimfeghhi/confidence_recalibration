@@ -98,7 +98,11 @@ ep = int(re.search(r"ep(\d+)$", d).group(1))
 by, full, keep = load(d)
 n = len(keep)
 pick = lambda j: np.array([max(by[i], key=lambda t: t[j])[3] for i in keep])  # noqa: E731
-_ALL_S = [("shipped ipTM", pick(2), "#8a8a8a"),
+# THE SHIPPED BAR SAYS "MAX" IN ITS OWN LABEL, in every figure. A footnote on one figure is not
+# enough: the comparison is shipped-MAX against ours-MEAN there, and a reader scanning the bars
+# should not have to find the note to know that. Nothing has ever run the shipped head with
+# --pool-mean, so there is no shipped mean-pooled number to compare against.
+_ALL_S = [("shipped ipTM (MAX)", pick(2), "#8a8a8a"),
           ("ours, MEAN pooling", pick(1), "#2f6fb0"),
           ("ours, MAX pooling", pick(0), "#b03a3a")]
 if ONLY == "mean":
@@ -117,7 +121,8 @@ OUT = (f"figures/rel_bars_{RID}_{ONLY}.png" if ONLY
 RHO = {}
 try:
     from scipy import stats as _stt
-    for _nm, _j in (("shipped ipTM", 2), ("ours, MEAN pooling", 1), ("ours, MAX pooling", 0)):
+    for _nm, _j in (("shipped ipTM (MAX)", 2), ("ours, MEAN pooling", 1),
+                    ("ours, MAX pooling", 0)):
         _v = []
         for _ifc in keep:
             _a = np.array([[x[_j], x[3]] for x in by[_ifc]], dtype=float)
@@ -177,7 +182,8 @@ bx.set_xticks(xs)
 _bl = []
 _fb = float((base >= 0.23).mean())
 for i, (nm, v, _c) in enumerate(S):
-    short = nm.replace("ours, ", "").replace(" pooling", "").replace("shipped ipTM", "shipped")
+    short = (nm.replace("ours, ", "").replace(" pooling", "")
+               .replace("shipped ipTM (MAX)", "shipped (MAX)"))
     _bl.append(short if i == 0
                else f"{short}\n{float((v >= 0.23).mean()) - _fb:+.4f}")
 bx.set_xticklabels(_bl, fontsize=9.5)
@@ -191,7 +197,7 @@ bx.set_axisbelow(True)
 # median rather than the mean because that is the statistic reported everywhere else for this
 # quantity, and a per-interface rho distribution is skewed and has negative values.
 if cx is not None:
-    _rb = np.median(RHO["shipped ipTM"])
+    _rb = np.median(RHO["shipped ipTM (MAX)"])
     for i, (nm, _v, col) in enumerate(S):
         _r = RHO.get(nm)
         if _r is None or not len(_r):
@@ -207,7 +213,7 @@ if cx is not None:
     cx.axhline(0.0, color="#999999", lw=0.9)
     cx.set_xticks(xs)
     cx.set_xticklabels(
-        [(nm.replace("ours, ", "").replace(" pooling", "").replace("shipped ipTM", "shipped")
+        [(nm.replace("ours, ", "").replace(" pooling", "").replace("shipped ipTM (MAX)", "shipped (MAX)")
           + ("" if i == 0 else
              f"\n{float(np.median(RHO[nm])) - _rb:+.4f}"))
          for i, (nm, _v, _c) in enumerate(S)], fontsize=9.5)
@@ -223,10 +229,12 @@ fig.text(0.012, 0.985, f"{RID} epoch {ep}  -  held-out valfull, budget 30, "
          f"paired on identical poses"
          + (f"   [{ONLY.upper()} pooling]" if ONLY else ""),
          fontsize=11, fontweight="bold", va="top")
-if ONLY == "mean":
-    fig.text(0.012, 0.012, "note: the shipped reference is MAX-pooled -- no shipped mean-pooled "
-             "number exists yet, so part of this gap could be the pooling rather than the "
-             "training", fontsize=8, color="#b03a3a")
+fig.text(0.012, 0.012,
+         "the shipped reference is MAX-pooled in every panel -- no shipped mean-pooled number "
+         "exists yet"
+         + (", so part of this gap could be the pooling rather than the training"
+            if ONLY == "mean" else ""),
+         fontsize=8, color="#b03a3a")
 if BEST and len(ALL) > 1:
     fig.text(0.012, 0.945, f"BEST of {len(ALL)} eval epochs by mean-pooled DockQ -- a "
              f"best-of-N number is biased upward; see the per-epoch table",
@@ -245,7 +253,7 @@ try:
     from scipy import stats as _st
     print("\n  held-out WITHIN-INTERFACE SPEARMAN (median over interfaces):")
     _rhos = {}
-    for _nm, _j in (("shipped ipTM", 2), ("ours, MEAN", 1), ("ours, MAX", 0)):
+    for _nm, _j in (("shipped (MAX)", 2), ("ours, MEAN", 1), ("ours, MAX", 0)):
         _v = []
         for _ifc in keep:
             _a = np.array([[x[_j], x[3]] for x in by[_ifc]], dtype=float)
@@ -254,7 +262,7 @@ try:
         _v = np.array(_v)
         _rhos[_nm] = _v
         _d = ("" if _j == 2 else
-              f"   {np.median(_v) - np.median(_rhos['shipped ipTM']):+.4f} vs shipped")
+              f"   {np.median(_v) - np.median(_rhos['shipped (MAX)']):+.4f} vs shipped")
         print(f"    {_nm:>14}  median {np.median(_v):+.4f}  mean {_v.mean():+.4f}  "
               f"negative {100*(_v < 0).mean():.0f}%{_d}")
 except ImportError:
