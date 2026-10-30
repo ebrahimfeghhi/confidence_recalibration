@@ -439,6 +439,52 @@ SO SECTION 8's CONCLUSION WAS AN ARTEFACT OF THE INPUT MISMATCH, not a property 
 mean-centred iTM objective taught the head a great deal; reading it on full structures threw that
 away. Section 8b's "the gain is entirely among poses nobody picks" was measuring the same artefact.
 
+### 9b. HELD OUT, MATCHED CROP: Spearman AND selected DockQ both improve
+
+valfull, 92 interfaces, budget 30 (150 candidates), both heads cropped identically, paired per
+interface:
+
+| selector | mean DockQ | frac acc | rho | vs shipped | t |
+|---|---|---|---|---|---|
+| shipped, MAX-pooled | 0.5802 | 0.7283 | +0.2645 | -- | -- |
+| shipped, MEAN-pooled | 0.5865 | 0.7391 | +0.3119 | -- | -- |
+| ours ep30, MAX-pooled | **0.6178** | **0.7826** | **+0.4017** | **+0.0376** | **+2.86** |
+| ours ep30, MEAN-pooled | 0.6028 | 0.7717 | +0.3492 | +0.0164 | +1.19 |
+
+Within-interface Spearman, ours minus shipped, paired over the 92 interfaces:
+**MAX +0.0845 (t=+4.10)**, MEAN +0.0390 (t=+1.97).
+
+**Both of the things that had to move, moved.** Held-out ranking improves and held-out selection
+improves with it, which is what every previous arm here failed to do -- the recorded finals are
+ip8ga4 +0.0073, dntxmn +0.0029, tv6hue -0.0084 at this budget.
+
+CROPPING DOES NOT FLATTER THE SHIPPED HEAD HERE. Its cropped 0.5802/0.5865 sits on top of its
+uncropped 0.5832, i.e. it gains nothing from the crop on valfull, while this arm goes 0.5897 ->
+0.6178 under MAX and 0.5836 -> 0.6028 under MEAN. The effect is specific to the trained head.
+
+MAX BEATS MEAN HELD OUT, for this arm, although the loss optimises the MEAN: 0.6178 against
+0.6028, and +0.0845 against +0.0390 on Spearman. In-sample MEAN is (slightly) ahead, 0.6305 to
+0.6261. Not explained; it is the opposite of the ceiling argument the arm was configured on
+(mean-pooled true iTM reaches 67.7% of oracle headroom against max's 58.6%) and it should not be
+designed around until it is understood.
+
+### 9c. THE CROP IS DEFINED BY GROUND TRUTH, so this is not a deployable configuration
+
+`interface_crop_tokens` finds interface tokens "by ground-truth coordinates" -- it reads
+`label_coordinate` from the label npz. The window handed to the head is therefore chosen using the
+answer. At inference there is no label, so **no number in sections 9 and 9b is a deployment
+number**, including the held-out ones.
+
+What they ARE is a clean head-to-head: both heads got the identical oracle-informed window, the
+shipped head gained nothing from it on valfull, and this arm gained +0.0376. That isolates what
+the loss taught from the input mismatch that was hiding it, which is exactly what sections 8-8c
+could not separate.
+
+WHAT WOULD MAKE IT DEPLOYABLE is a crop that does not read the label -- the obvious candidate
+being the PREDICTED pose's own inter-chain contacts, which are available at inference. Whether the
+gain survives that substitution is unmeasured and is the next thing to measure. "Train uncropped"
+is the other direction and does not have this problem at all.
+
 WHAT THIS DOES NOT YET SHOW. These are the structures the arm trained on, so memorisation is
 available to it, and the held-out pair (valfull, budget 30, both heads cropped) is the measurement
 that matters. It also does NOT make the arm useful as it stands: deployment is uncropped, and
