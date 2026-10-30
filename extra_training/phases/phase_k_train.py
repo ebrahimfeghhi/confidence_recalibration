@@ -5332,7 +5332,7 @@ def main():
         """Save the head, score it, log it. Returns the metric dict.
 
         With `train_pool`, scores that pool of TRAINING interfaces using the run's own --fold and
-        --seeds instead of the validation set, and writes metric_train_ep<N>.json. Everything else
+        --seeds instead of the validation set, and writes metric_<pool>_ep<N>.json. Everything else
         -- the subprocess, the sharding, the guards -- is the same path, because the two metrics
         have to be comparable and a second implementation would not stay that way.
 
@@ -5350,7 +5350,17 @@ def main():
         torch.save(_head_ckpt_tensors(), cp)
         kind = ("pool@" + os.path.basename((a.train_eval_fold or a.fold).rstrip("/"))
                 if train_pool else "validation")
-        mj = os.path.join(a.out, ("metric_train_ep%d.json" if train_pool else "metric_ep%d.json")
+        # NAMED AFTER THE POOL, NOT THE MECHANISM. These used to be metric_train_ep<N>.json
+        # whatever --train-eval-pool pointed at, so on this arm -- which points it at
+        # training/valfull/pool.csv -- five files called "metric_train" held the only HELD-OUT
+        # numbers the run produced. A pool is in-sample or it is not and only the pool knows, so
+        # the pool's directory names the file: metric_valfull_ep25.json. "heldout" would be the
+        # wrong word to standardise on, since --train-eval-pool aimed at the training pool really
+        # is in-sample. run_logging/eval_dirs.pool_tag is the reader-side counterpart of this one
+        # line and test_eval_dir_names.py asserts the two cannot drift apart.
+        _ptag = (os.path.basename(os.path.dirname(os.path.abspath(train_pool)).rstrip("/"))
+                 or "pool") if train_pool else ""
+        mj = os.path.join(a.out, (f"metric_{_ptag}_ep%d.json" if train_pool else "metric_ep%d.json")
                           % epoch)
         extra = []
         if train_pool:
@@ -5416,7 +5426,7 @@ def main():
         # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one
         # shard on each card -- ~6 GB beside a parked rank's ~6 GB on a 98 GB card -- and merges.
         cards = a.eval_cards or os.environ.get("CUDA_VISIBLE_DEVICES", "")
-        shard_work = os.path.join(a.out, ("train_eval_shards_ep%d" if train_pool
+        shard_work = os.path.join(a.out, (f"{_ptag}_eval_shards_ep%d" if train_pool
                                            else "eval_shards_ep%d") % epoch)
         budget = _train_eval_budget if train_pool else a.eval_budget
         if len([c for c in cards.split(",") if c.strip()]) > 1:

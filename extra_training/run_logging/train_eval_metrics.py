@@ -35,6 +35,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import eval_dirs                                                             # noqa: E402
 # 9dzj IS EXCLUDED. It is the one structure in full_train/pool.csv that the arms did NOT
 # train on (their selection is structures_no9dzj.csv), and its fold is missing the sample
 # JSONs for seed 500001 -- 5 poses with no usable OST chain mapping, which made the
@@ -227,7 +229,7 @@ def main():
         # project's own notes forbid -- val10 and valfull are never comparable. A different pool
         # is named and skipped rather than silently averaged.
         pool = os.path.basename(os.path.dirname(str(args.get("train_eval_pool") or "")))
-        vdirs = sorted(glob.glob(os.path.join(run, "train_eval_shards_ep*")),
+        vdirs = sorted(eval_dirs.shard_dirs(run).values(),
                        key=lambda q: int(q.split("_ep")[-1]))
         if pool != "valfull":
             vp, vnote = None, f"val skipped: this arm evaluated on {pool or 'an unknown pool'}"

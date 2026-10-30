@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 
 EASTERN = ZoneInfo("America/New_York")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import eval_dirs                                                             # noqa: E402
 
 
 def main():
@@ -25,12 +27,16 @@ def main():
     ap.add_argument("--total", type=int, default=20, help="epochs the run will finish at")
     ap.add_argument("--window", type=int, default=4, help="how many recent epochs to average")
     a = ap.parse_args()
-    fs = sorted(glob.glob(os.path.join(ROOT, "training", "runs", a.rid,
-                                       "metric_train_ep*.json")), key=os.path.getmtime)
+    # BOTH CONVENTIONS, and the EPOCH comes from the resolver rather than from slicing the
+    # filename -- metric_<pool>_ep<N>.json has a variable-length tag, so the old
+    # split("metric_train_ep") would have returned the whole basename on a renamed file.
+    _m = eval_dirs.metric_jsons(os.path.join(ROOT, "training", "runs", a.rid))
+    fs = sorted(_m.values(), key=os.path.getmtime)
     if len(fs) < 2:
         print(f"{a.rid}: {len(fs)} evaluated epoch(s); need 2 to measure a pace")
         return 1
-    eps = [int(os.path.basename(f).split("metric_train_ep")[1].split(".")[0]) for f in fs]
+    _byp = {v: k for k, v in _m.items()}
+    eps = [_byp[f] for f in fs]
     ts = [os.path.getmtime(f) for f in fs]
     gaps = [(ts[i + 1] - ts[i]) / 60 for i in range(len(ts) - 1)]
     w = gaps[-a.window:]

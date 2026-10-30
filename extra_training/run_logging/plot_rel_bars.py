@@ -29,6 +29,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import eval_dirs                                                             # noqa: E402
 RID = sys.argv[1] if len(sys.argv) > 1 else "o2qczq"
 EP = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else None
 # --best PICKS THE EPOCH WITH THE HIGHEST HELD-OUT MEAN DockQ under MEAN pooling, which is the
@@ -60,11 +62,12 @@ import plot_three                                                            # n
 RUNS = [os.path.join(ROOT, "training", "runs", r) for r in plot_three.run_chain(RID)]
 RUN = RUNS[-1]
 
-# LATER RUNS WIN on a repeated epoch: dict keyed by epoch, filled oldest chain member first.
-_byep = {}
-for _run in RUNS:
-    for _d in glob.glob(os.path.join(_run, "train_eval_shards_ep*")):
-        _byep[int(re.search(r"ep(\d+)$", _d).group(1))] = _d
+# BOTH NAMING CONVENTIONS, later runs winning a repeated epoch. eval_dirs reads
+# <pool>_eval_shards_ep<N> and the legacy train_eval_shards_ep<N> with one glob, which a resumed
+# arm needs regardless of any renaming: the parent was written under one convention and the
+# resume writes the other.
+_byep = eval_dirs.chain_shard_dirs([os.path.basename(r) for r in RUNS],
+                                   os.path.join(ROOT, "training", "runs"))
 dirs = [_byep[e] for e in sorted(_byep)]
 if EP is not None:
     dirs = [d for d in dirs if int(re.search(r"ep(\d+)$", d).group(1)) == EP]

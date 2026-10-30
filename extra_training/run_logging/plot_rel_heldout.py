@@ -39,6 +39,8 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import eval_dirs                                                             # noqa: E402
 RID = sys.argv[1] if len(sys.argv) > 1 else "o2qczq"
 OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/rel_heldout_{RID}.png"
 RUN = os.path.join(ROOT, "training", "runs", RID)
@@ -48,8 +50,8 @@ SHIPPED_ABS = 0.5831          # paper_results.md section 4, valfull b30
 ORACLE_ABS = 0.6926
 
 rows = []
-for d in sorted(glob.glob(os.path.join(RUN, "train_eval_shards_ep*"))):
-    m = re.search(r"train_eval_shards_ep(\d+)$", d)
+for ep_, d in sorted(eval_dirs.shard_dirs(RUN).items()):
+    m = re.search(r"_eval_shards_ep(\d+)$", d)
     if not m:
         continue
     ep = int(m.group(1))
@@ -91,7 +93,7 @@ for d in sorted(glob.glob(os.path.join(RUN, "train_eval_shards_ep*"))):
                      abs_mx=float(mx.mean()), abs_mn=None if mn is None else float(mn.mean())))
 
 if not rows:
-    sys.exit(f"  no train_eval_shards_ep*/rows_*.csv under {RID} yet")
+    sys.exit(f"  no <pool>_eval_shards_ep*/rows_*.csv under {RID} yet")
 
 # THE FORM FOLLOWS THE DATA. With one or two eval points a line chart is all furniture and no
 # information -- the first version drew one errorbar point plus three overlapping grey bands with

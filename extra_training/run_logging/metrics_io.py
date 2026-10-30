@@ -20,6 +20,10 @@ import glob
 import json
 import os
 import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import eval_dirs                                                             # noqa: E402
 
 DOCKQ_LINE = re.compile(r"epoch (\d+) TRAIN: mean_dockq ([0-9.]+)\s+frac_acc ([0-9.]+)")
 TOOK_LINE = re.compile(r"\[rank (\d+)\] epoch (\d+) took ([0-9.]+) min -- (.*)")
@@ -166,7 +170,8 @@ def load(root, runs, budget, full_steps=0):
             for mm in MEM_LINE.finditer(txt):
                 m.mem.setdefault(int(mm.group(2)), {})[int(mm.group(1))] = (
                     float(mm.group(3)), float(mm.group(4)), mm.group(5))
-        for jp in sorted(glob.glob(os.path.join(d, "metric_train_ep*.json"))):
+        # BOTH CONVENTIONS: metric_<pool>_ep<N>.json and the legacy metric_train_ep<N>.json.
+        for _e, jp in sorted(eval_dirs.metric_jsons(d).items()):
             try:
                 j = json.load(open(jp))
                 ep = int(re.search(r"ep(\d+)\.json$", jp).group(1))
