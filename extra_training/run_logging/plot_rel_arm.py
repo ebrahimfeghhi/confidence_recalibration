@@ -40,26 +40,42 @@ RID = sys.argv[1] if len(sys.argv) > 1 else "6t9h7d"
 OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/rel_arm_{RID}.png"
 EP_POSES = 5520
 
-traj = os.path.join(ROOT, "training", "runs", RID, "trajectory.csv")
-log = os.path.join(ROOT, "training", "runs", RID, "run.log")
-if not os.path.exists(traj):
+# THE WHOLE CHAIN, oldest first. A resume writes to a FRESH run directory while continuing the
+# parent's epoch numbering, so reading only RID would plot epochs 28-60 of a 60-epoch arm and drop
+# everything before the pause -- the exact bug that made the control look like a 35-epoch run.
+# plot_three.run_chain resolves it from args.json's recorded --resume path, not from the name.
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import plot_three                                                            # noqa: E402
+RIDS = list(plot_three.run_chain(RID))
+_present = [r for r in RIDS
+            if os.path.exists(os.path.join(ROOT, "training", "runs", r, "trajectory.csv"))]
+if not _present:
     sys.exit(f"  no trajectory.csv for {RID} yet")
 
+# A LATER RUN WINS on any epoch both wrote. A resume re-runs the epoch it was interrupted in, so
+# the parent's partial rows for that epoch would otherwise be averaged in with the full ones.
 pae = defaultdict(list)
-for r in csv.DictReader(open(traj)):
-    try:
-        e, v = r.get("epoch"), r.get("pae_loss")
-        if e in (None, "") or v in (None, ""):
+for _r in _present:
+    _ep = defaultdict(list)
+    for r in csv.DictReader(open(os.path.join(ROOT, "training", "runs", _r,
+                                              "trajectory.csv"))):
+        try:
+            e, v = r.get("epoch"), r.get("pae_loss")
+            if e in (None, "") or v in (None, ""):
+                continue
+            f = float(v)
+            if np.isfinite(f):
+                _ep[int(float(e))].append(f)
+        except (ValueError, TypeError):
             continue
-        f = float(v)
-        if np.isfinite(f):
-            pae[int(float(e))].append(f)
-    except (ValueError, TypeError):
-        continue
+    pae.update(_ep)
 
-# rank 0's per-epoch rel loss and the two diagnostics, from the log
+# rank 0's per-epoch rel loss and the two diagnostics, from the log of every run in the chain
 rel, rho, sdr = {}, {}, {}
-if os.path.exists(log):
+for _r in RIDS:
+    log = os.path.join(ROOT, "training", "runs", _r, "run.log")
+    if not os.path.exists(log):
+        continue
     _t = open(log, errors="replace").read()
     for m in re.finditer(r"\[rank 0\] epoch (\d+) rank-loss \(rel[^)]*\): ([+-][0-9.]+)", _t):
         rel[int(m.group(1))] = float(m.group(2))

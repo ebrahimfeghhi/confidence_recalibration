@@ -53,10 +53,19 @@ for _i, _a in enumerate(sys.argv):
 if ONLY not in (None, "mean", "max"):
     sys.exit("  --only takes 'mean' or 'max'")
 OUT = None      # set after ONLY is parsed
-RUN = os.path.join(ROOT, "training", "runs", RID)
+# EVERY RUN IN THE CHAIN. A resume writes its eval dirs under a FRESH run id while continuing the
+# epoch numbering, so globbing RID alone would silently drop every eval point from before a pause.
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import plot_three                                                            # noqa: E402
+RUNS = [os.path.join(ROOT, "training", "runs", r) for r in plot_three.run_chain(RID)]
+RUN = RUNS[-1]
 
-dirs = sorted(glob.glob(os.path.join(RUN, "train_eval_shards_ep*")),
-              key=lambda d: int(re.search(r"ep(\d+)$", d).group(1)))
+# LATER RUNS WIN on a repeated epoch: dict keyed by epoch, filled oldest chain member first.
+_byep = {}
+for _run in RUNS:
+    for _d in glob.glob(os.path.join(_run, "train_eval_shards_ep*")):
+        _byep[int(re.search(r"ep(\d+)$", _d).group(1))] = _d
+dirs = [_byep[e] for e in sorted(_byep)]
 if EP is not None:
     dirs = [d for d in dirs if int(re.search(r"ep(\d+)$", d).group(1)) == EP]
 if not dirs:

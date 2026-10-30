@@ -63,6 +63,13 @@ ap.add_argument("--pool-mean", action="store_true",
                 help="also write the MEAN-over-rows pooled ipTM as an iptm_mean column, so both "
                      "poolings come out of ONE pass. Selection and the self-check stay on the "
                      "max; the mean is compared offline.")
+ap.add_argument("--select-by-mean", action="store_true",
+                help="SELECT by the MEAN-pooled ipTM, not just report it. Required for an arm "
+                     "trained with --rank-pool mean: scoring it by the max measures a quantity "
+                     "the objective never optimised, which is the mismatch review caught in the "
+                     "trainer's own eval path. Implies --pool-mean (the evaluator refuses a "
+                     "missing iptm_mean column under --select-by mean) and makes the json report "
+                     "BOTH poolings, as mean_dockq and mean_dockq_select_max.")
 ap.add_argument("--arm", default="", help="label:epoch:bundle -- score just this one checkpoint")
 ap.add_argument("--dry-run", action="store_true")
 ap.add_argument("--report-only", action="store_true")
@@ -143,7 +150,8 @@ def evaluate(label, ep, bundle):
              "--pool", POOL, "--roles", os.path.join(FOLD, "chain_roles.csv"),
              "--seed-base", str(SEED_BASE)] + pf + [
              "--join-cache", JOIN_CACHE, "--pair-iptm-only", "--prefetch"] + (
-             ["--pool-mean"] if a.pool_mean else [])
+             (["--pool-mean"] if (a.pool_mean or a.select_by_mean) else []) + (
+             ["--select-by", "mean"] if a.select_by_mean else []))
     return sh([PY, "-I", os.path.join(ROOT, "phases", "phase_k_eval_sharded.py"),
                "--cards", a.cards, "--ckpt", head, "--budget", str(BUDGET),
                "--work", os.path.join(OUT_D, tag), "--out", out,
