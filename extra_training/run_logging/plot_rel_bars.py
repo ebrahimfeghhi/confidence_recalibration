@@ -124,8 +124,18 @@ elif ONLY == "max":
 else:
     S = _ALL_S
 base = S[0][1]
-OUT = (f"figures/rel_bars_{RID}_{ONLY}.png" if ONLY
-       else f"figures/rel_bars_{RID}.png")
+# --out KEEPS THE FIGURE PATH STABLE ACROSS A RESUME. A resumed arm gets a fresh run id, so the
+# default name would move from rel_bars_o2qczq.png to rel_bars_t4jtjr.png mid-run and the repo
+# would carry two half-figures of one arm. The watcher passes the chain ROOT's name.
+_OUT_ARG = None
+for _i, _a in enumerate(sys.argv):
+    if _a == "--out" and _i + 1 < len(sys.argv):
+        _OUT_ARG = sys.argv[_i + 1]
+if _OUT_ARG:
+    OUT = (_OUT_ARG[:-4] + f"_{ONLY}.png") if (ONLY and _OUT_ARG.endswith(".png")) else _OUT_ARG
+else:
+    OUT = (f"figures/rel_bars_{RID}_{ONLY}.png" if ONLY
+           else f"figures/rel_bars_{RID}.png")
 
 # PER-INTERFACE SPEARMAN for the third panel. Computed here rather than only printed, because it
 # has more statistical power than the selection delta -- it reads all 150 candidates per interface

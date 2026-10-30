@@ -15,6 +15,15 @@ exec 9>"training/runs/.relwatch.${1:-default}.lock"
 flock -n 9 || { echo "another copy holds the lock; exiting"; exit 0; }
 RID="${1:-gu3kh7}"
 PY_BIN=/home/ebrahim/Protenix/.venv/bin/python
+# THE FIGURES ARE NAMED AFTER THE CHAIN ROOT, not after RID. A resume gets a fresh run id, so
+# naming by RID would move the arm's figures to a new path halfway through and leave the repo
+# with two partial figures of one run. The root is resolved from args.json's recorded --resume
+# path by the same function the plotters use.
+STEM=$($PY_BIN -I -c "
+import sys; sys.path.insert(0, 'run_logging'); import plot_three
+print(list(plot_three.run_chain('$RID'))[0])" 2>/dev/null || echo "$RID")
+[ -n "$STEM" ] || STEM="$RID"
+echo "watching $RID; figures and tables keyed to the chain root $STEM"
 LAST=0
 [ -f "training/runs/${RID}_last_pushed" ] && LAST=$(cat "training/runs/${RID}_last_pushed")
 DEADLINE=$(( $(date +%s) + 172800 ))
@@ -42,22 +51,29 @@ print(max([k for k, v in c.items() if v >= 5500] or [0]))
         && break
       sleep 5
     done
-    $PY_BIN -I run_logging/plot_rel_arm.py "$RID" > "training/runs/${RID}_table.txt" 2>&1
+    $PY_BIN -I run_logging/plot_rel_arm.py "$RID" "figures/rel_arm_${STEM}.png" \
+      > "training/runs/${STEM}_table.txt" 2>&1
     # THE HELD-OUT BAR FIGURE TOO, whenever an eval has produced rows. Only the per-epoch 2x2
     # was being pushed, so the figure that carries the actual held-out result -- shipped against
     # both poolings, with a dot per interface -- existed only on disk.
-    if ls -d "training/runs/$RID"/train_eval_shards_ep* >/dev/null 2>&1; then
-      $PY_BIN -I run_logging/plot_rel_bars.py "$RID" --best \
-        > "training/runs/${RID}_heldout.txt" 2>&1 || true
+    # BOTH NAMING CONVENTIONS -- the eval dirs are <pool>_eval_shards_ep<N> now, and a resumed
+    # chain holds the legacy train_eval_shards_ep<N> under the parent run id.
+    if ls -d "training/runs/$RID"/*_eval_shards_ep* >/dev/null 2>&1 \
+       || ls -d "training/runs/$STEM"/*_eval_shards_ep* >/dev/null 2>&1; then
+      $PY_BIN -I run_logging/plot_rel_bars.py "$RID" --best --out "figures/rel_bars_${STEM}.png" \
+        > "training/runs/${STEM}_heldout.txt" 2>&1 || true
     fi
     echo "$DONE" > "training/runs/${RID}_last_pushed"
-    git add -f "figures/rel_arm_${RID}.png" "training/runs/${RID}_table.txt" \
+    git add -f "figures/rel_arm_${STEM}.png" "training/runs/${STEM}_table.txt" \
               "training/runs/${RID}_last_pushed" >/dev/null 2>&1
-    [ -f "figures/rel_bars_${RID}.png" ] && git add -f "figures/rel_bars_${RID}.png" \
-              "training/runs/${RID}_heldout.txt" >/dev/null 2>&1
+    [ -f "figures/rel_bars_${STEM}.png" ] && git add -f "figures/rel_bars_${STEM}.png" \
+              "training/runs/${STEM}_heldout.txt" >/dev/null 2>&1
     # THE EPOCH'S OWN NUMBERS IN THE COMMIT MESSAGE, so the history is readable without
     # checking out the figure.
-    ROW=$(tail -1 "training/runs/${RID}_table.txt")
+    # THE LAST COMPLETED EPOCH, not the last line. plot_rel_arm prints the in-flight epoch as a
+    # PARTIAL row, and tail -1 picked it up the moment a resume had already started the next
+    # epoch before the watcher's first pass -- putting "29 ... PARTIAL" in the epoch-28 commit.
+    ROW=$(grep -v PARTIAL "training/runs/${STEM}_table.txt" | tail -1)
     git commit -q -m "$RID epoch $DONE: $ROW
 
 Per-epoch artefact push for the rel-iTM arm (beta 75, mean pooling). Columns are
