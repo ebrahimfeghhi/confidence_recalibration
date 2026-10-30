@@ -127,8 +127,11 @@ def draw(ax, xs, ys, colour, title, last_fmt="{:.4f}", hollow_last=False):
 draw(ax_pae, eps, pv, "#b03a3a", "PAE loss  (mean over the epoch's poses)",
      hollow_last=partial)
 if partial:
-    ax_pae.annotate(f"epoch {eps[-1]} partial, n={pn[-1]}", (0.98, 0.04),
-                    xycoords="axes fraction", ha="right", fontsize=8, color="#999999")
+    # ABOVE THE AXES, not at (0.98, 0.04): the PAE curve ends in the lower right, so the note
+    # printed straight through the last few epochs' markers.
+    ax_pae.annotate(f"epoch {eps[-1]} partial, n={pn[-1]}", (0.98, 0.97),
+                    xycoords="axes fraction", ha="right", va="top", fontsize=7.5,
+                    color="#999999")
 
 _re = sorted(rel)
 draw(ax_rel, _re, [rel[e] for e in _re], "#2f6fb0",
@@ -149,16 +152,16 @@ _rhe = sorted(rho)
 # axis -- with the ONE matched uncropped pair this arm has, measured by
 # run_logging/rank_gain_location.py at epoch 27. Read the curve for its SHAPE; read the uncropped
 # markers for where the arm actually stands.
-_UNCROPPED = ((0.6898, "true iTM, uncropped  +0.6898", "#3a8a5f"),
-              (0.2994, "d32kqp ep66, uncropped  +0.2994", "#3a8a5f"),
-              (0.2819, "THIS ARM ep27, uncropped  +0.2819", "#b03a3a"),
-              (0.1931, "shipped head, uncropped  +0.1931", "#8a8a8a"))
-for _y, _lab, _c in _UNCROPPED:
-    ax_rho.axhline(_y, color=_c, lw=0.9, ls="--", alpha=0.6)
-    ax_rho.annotate(_lab, (0.99, _y), xycoords=("axes fraction", "data"), ha="right",
-                    va="bottom", fontsize=7.5, color=_c, alpha=0.95)
+# ONE LINE OF TEXT, NOT FOUR DASHED LINES. Drawn on the axis they collided twice over: the panel
+# is ~0.63 of Spearman tall, and ours-uncropped (+0.2819) sits 0.0175 from d32kqp (+0.2994), so
+# the two labels printed on top of each other. They also do not BELONG on this axis -- they are
+# uncropped and the curve is cropped, so a reader should not be able to lay a ruler across them.
 draw(ax_rho, _rhe, [rho[e] for e in _rhe], "#3a8a5f",
-     "within-interface Spearman vs DockQ  (curve CROPPED, dashed refs UNCROPPED)", "{:+.4f}")
+     "within-interface Spearman vs DockQ  (CROPPED)", "{:+.4f}")
+ax_rho.annotate("uncropped @ep27:   shipped +0.193    ours +0.282    "
+                "d32kqp ep66 +0.299    true iTM +0.690",
+                (0.02, 0.97), xycoords="axes fraction", ha="left", va="top",
+                fontsize=7.5, color="#777777")
 ax_rho.set_ylim(0.15, 0.78)
 
 _sde = sorted(sdr)
