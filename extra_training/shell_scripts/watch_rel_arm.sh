@@ -11,7 +11,7 @@
 # flock'd: two copies pushing to the same branch would race on the index.
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
-exec 9>training/runs/.relwatch.lock
+exec 9>"training/runs/.relwatch.${1:-default}.lock"
 flock -n 9 || { echo "another copy holds the lock; exiting"; exit 0; }
 RID="${1:-gu3kh7}"
 PY_BIN=/home/ebrahim/Protenix/.venv/bin/python
