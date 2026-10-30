@@ -242,6 +242,26 @@ def aggregate(a, rows, selfchk, want_ifaces):
     """
     rows = [(r[0], r[1], r[2], r[3], r[4], (r[5] if len(r) > 5 else None)) for r in rows]
     # ---- THE SELF-CHECK
+    #
+    # IT CANNOT APPLY UNDER A CROP, and this is not a loophole -- it is the premise failing. The
+    # check compares the recomputed shipped ipTM against results.csv's stored value, and
+    # results.csv was produced by the ordinary FULL-STRUCTURE pipeline. Scoring the shipped head
+    # on cropped inputs deliberately computes a different quantity: measured on the 738 training
+    # interfaces at 50.9% of tokens kept, 35,843 of 36,900 rows move by more than 0.002 and the
+    # largest moves by 0.80. A check that fires on the experiment working is not protecting
+    # anything.
+    #
+    # SO IT IS REPORTED RATHER THAN ENFORCED, and ONLY under --crop-margin. Uncropped it stays a
+    # hard stop, which is the case it was written for. It is NOT given its own flag: a flag to
+    # silence it would eventually be passed on an uncropped run, which is exactly the failure it
+    # exists to catch. The condition is the crop itself.
+    #
+    # WHAT STILL GUARDS THE JOINS under a crop: the coverage check below, which enforces every
+    # intended (iface, seed, sample) key with no duplicates and no non-finite values, and the
+    # pose->sample join, which is done by coordinate identity against the UNCROPPED coordinates
+    # and so is unaffected by cropping. What is genuinely weaker is join 1's independent
+    # confirmation, and that is stated here rather than left for a reader to notice.
+    _crop_selfcheck_informational = a.crop_margin > 0
     if not a.ckpt and not a.no_self_check:
         if not selfchk:
             raise SystemExit("STOP: no recomputed ipTM could be compared against results.csv, so "
@@ -271,10 +291,28 @@ def aggregate(a, rows, selfchk, want_ifaces):
                     for d, ifc, sd2, k2, v2, sv in sorted(bad, key=lambda t: -t[0]):
                         fh.write(f"{ifc},{sd2},{k2},{v2:.6f},{sv:.6f},{d:.6f}\n")
                 print(f"  every offending row written to {a.selfcheck_out}")
-            raise SystemExit(f"STOP: the shipped head does not reproduce {over} stored ipTM value(s). "
-                             f"One of the three joins -- interface->chain pair, pose->sample, or "
-                             f"(iface,seed,sample)->DockQ -- is wrong.")
-        print("  the joins reproduce the fold's own ipTM, so the metric below is measuring the head")
+            if _crop_selfcheck_informational:
+                print(f"  NOT A FAILURE UNDER --crop-margin {a.crop_margin:g}: results.csv holds "
+                      f"the UNCROPPED shipped ipTM, and this pass scores the shipped head on "
+                      f"CROPPED inputs on purpose, so these rows are EXPECTED to differ. The "
+                      f"difference is the measurement. Join 1 therefore has no independent "
+                      f"confirmation in this pass; coverage below still enforces every intended "
+                      f"key, and the pose->sample join runs on uncropped coordinates.")
+            else:
+                raise SystemExit(
+                    f"STOP: the shipped head does not reproduce {over} stored ipTM value(s). "
+                    f"One of the three joins -- interface->chain pair, pose->sample, or "
+                    f"(iface,seed,sample)->DockQ -- is wrong.")
+        elif _crop_selfcheck_informational:
+            # EVERY ROW WITHIN TOLERANCE UNDER A CROP IS ITS OWN ALARM: it means the crop changed
+            # nothing the head reads, so the "cropped" number is the uncropped one.
+            raise SystemExit(
+                f"STOP: --crop-margin {a.crop_margin:g} was applied and yet every recomputed "
+                f"shipped ipTM still matches results.csv within {a.iptm_tol}. The crop cannot "
+                f"have reached the head, so this metric is an uncropped number mislabelled.")
+        else:
+            print("  the joins reproduce the fold's own ipTM, so the metric below is measuring "
+                  "the head")
 
     # ---- COVERAGE, ENFORCED KEY BY KEY BEFORE ANY NUMBER IS COMPUTED
     # `if dq is not None` silently dropped every pose without a DockQ, and the only coverage check
