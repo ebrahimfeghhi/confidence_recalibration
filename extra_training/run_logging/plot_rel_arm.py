@@ -78,82 +78,88 @@ full = max(pn[:-1]) if len(pn) > 1 else 0
 partial = len(eps) > 1 and pn[-1] < full * 0.98
 k = len(eps) - 1 if partial else len(eps)
 
-plt.rcParams.update({"font.size": 10.5, "axes.titlesize": 12, "axes.labelsize": 10.5,
-                     "axes.spines.top": False, "grid.color": "#dddddd",
-                     "legend.frameon": False, "figure.facecolor": "white"})
-fig, (ax, cx) = plt.subplots(1, 2, figsize=(15.0, 5.4))
-C_PAE, C_REL = "#b03a3a", "#2f6fb0"
-ax.plot(eps[:k], pv[:k], color=C_PAE, lw=2, marker="o", ms=4.5, label="PAE (left axis)")
+# FOUR SINGLE-AXIS PANELS, NOT TWO WITH TWIN AXES. The first version put PAE and rel on one
+# panel with twin y-axes and the two diagnostics on another the same way: four axes, four
+# colour-coded tick sets, two legends and reference annotations that collided with the curves.
+# Each quantity has its own scale and its own question, so each gets its own panel; the only
+# thing they share is the epoch axis.
+plt.rcParams.update({"font.size": 10, "axes.titlesize": 10.5, "axes.labelsize": 9.5,
+                     "axes.spines.top": False, "axes.spines.right": False,
+                     "axes.grid": True, "grid.color": "#e8e8e8", "grid.linewidth": 0.8,
+                     "legend.frameon": False, "figure.facecolor": "white",
+                     "xtick.labelsize": 9, "ytick.labelsize": 9})
+fig, axes = plt.subplots(2, 2, figsize=(11.0, 6.4), sharex=True)
+(ax_pae, ax_rel), (ax_rho, ax_sd) = axes
+
+
+def draw(ax, xs, ys, colour, title, last_fmt="{:.4f}", hollow_last=False):
+    if not xs:
+        ax.text(0.5, 0.5, "no data yet", transform=ax.transAxes, ha="center", va="center",
+                color="#999999", fontsize=9)
+        ax.set_title(title, loc="left")
+        return
+    k = len(xs) - 1 if hollow_last else len(xs)
+    ax.plot(xs[:k], ys[:k], color=colour, lw=1.8, marker="o", ms=3.5)
+    if hollow_last:
+        ax.plot(xs[k:], ys[k:], color=colour, lw=1.2, ls=":", marker="o", ms=5.5,
+                mfc="white", mew=1.4)
+    ax.annotate(last_fmt.format(ys[-1]), (xs[-1], ys[-1]), color=colour, fontsize=9,
+                fontweight="bold", xytext=(5, 2), textcoords="offset points")
+    ax.set_title(title, loc="left", color=colour)
+
+
+draw(ax_pae, eps, pv, "#b03a3a", "PAE loss  (mean over the epoch's poses)",
+     hollow_last=partial)
 if partial:
-    ax.plot(eps[k:], pv[k:], color=C_PAE, lw=1.2, ls=":", marker="o", ms=7, mfc="white",
-            mew=1.6, label=f"epoch {eps[-1]} PARTIAL (n={pn[-1]} of ~{full})")
-ax.set_xlabel("epoch")
-ax.set_ylabel("PAE loss (training, masked)", color=C_PAE)
-ax.tick_params(axis="y", labelcolor=C_PAE)
-ax.grid(alpha=0.4)
-ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=10))
+    ax_pae.annotate(f"epoch {eps[-1]} partial, n={pn[-1]}", (0.98, 0.04),
+                    xycoords="axes fraction", ha="right", fontsize=8, color="#999999")
 
-bx = ax.twinx()
-bx.spines["top"].set_visible(False)
-if rel:
-    re_, rv = zip(*sorted(rel.items()))
-    bx.plot(re_, rv, color=C_REL, lw=2, marker="s", ms=4.5,
-            label="relative iTM term (right axis)")
-    bx.annotate(f"{rv[-1]:.4f}", (re_[-1], rv[-1]), fontsize=9, color=C_REL,
-                xytext=(5, 3), textcoords="offset points")
-else:
-    bx.text(0.5, 0.5, "no 'rank-loss (rel, ...)' line in run.log yet",
-            transform=bx.transAxes, ha="center", color=C_REL, fontsize=9)
-bx.set_ylabel("relative iTM loss (per interface-group)", color=C_REL)
-bx.tick_params(axis="y", labelcolor=C_REL)
+_re = sorted(rel)
+draw(ax_rel, _re, [rel[e] for e in _re], "#2f6fb0",
+     "relative iTM term  (mean over interface-groups)", "{:.5f}")
 
-ax.set_title(f"{RID}: the two training terms\n"
-             f"DIFFERENT DENOMINATORS -- PAE is a mean over the epoch's poses, "
-             f"rel a mean over rank 0's interface-groups")
+# SPEARMAN gets a shaded band between where the head was and what the true iTM reaches, which
+# says "this is the distance to cover" without two more annotated lines crossing the data.
+_rhe = sorted(rho)
+# THE REFERENCE IS THE MEAN-POOLED TRAINED HEAD, +0.2994, not +0.3171. The first version used
+# 0.317, which is d32kqp ep66 under MAX pooling -- comparing this arm's mean-pooled diagnostic
+# against a max-pooled reference. Recomputed from that run's own rows: MAX +0.3171, MEAN +0.2994,
+# and the true iTM reaches +0.6898 under mean pooling. The shipped head is +0.1931 (max-pooled;
+# there is no mean-pooled shipped number without a dedicated eval pass).
+ax_rho.axhspan(0.2994, 0.6898, color="#3a8a5f", alpha=0.07, lw=0)
+for _y, _lab in ((0.2994, "d32kqp ep66, mean-pooled  +0.2994"),
+                 (0.6898, "true iTM  +0.6898")):
+    ax_rho.axhline(_y, color="#3a8a5f", lw=0.9, ls="--", alpha=0.55)
+    ax_rho.annotate(_lab, (0.99, _y), xycoords=("axes fraction", "data"), ha="right",
+                    va="bottom", fontsize=8, color="#3a8a5f", alpha=0.9)
+draw(ax_rho, _rhe, [rho[e] for e in _rhe], "#3a8a5f",
+     "within-interface Spearman vs DockQ", "{:+.4f}")
+ax_rho.set_ylim(0.15, 0.78)
 
-# RIGHT PANEL: the two diagnostics, which are the arm's actual prediction rather than its loss.
-# Spearman should move off +0.317 toward the true iTM's +0.690; the spread ratio should sit near
-# 1, and a fall below it is the margin-collapse shape every ranking arm here showed.
-C_RHO, C_SD = "#3a8a5f", "#8a5f3a"
-if rho:
-    _re, _rv = zip(*sorted(rho.items()))
-    cx.plot(_re, _rv, color=C_RHO, lw=2, marker="o", ms=4.5,
-            label="within-interface Spearman (left)")
-    cx.annotate(f"{_rv[-1]:+.4f}", (_re[-1], _rv[-1]), fontsize=9, color=C_RHO,
-                xytext=(5, 3), textcoords="offset points")
-cx.axhline(0.317, color="#999999", lw=1, ls="--")
-cx.annotate("head at d32kqp ep66: +0.317", (0.02, 0.317), xycoords=("axes fraction", "data"),
-            fontsize=8.5, color="#777777", va="bottom")
-cx.axhline(0.690, color="#b03a3a", lw=1, ls="--")
-cx.annotate("TRUE iTM ceiling: +0.690", (0.02, 0.690), xycoords=("axes fraction", "data"),
-            fontsize=8.5, color="#b03a3a", va="bottom")
-cx.set_xlabel("epoch")
-cx.set_ylabel("within-interface Spearman vs DockQ", color=C_RHO)
-cx.tick_params(axis="y", labelcolor=C_RHO)
-cx.set_ylim(-0.05, 0.80)
-cx.grid(alpha=0.4)
-cx.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=10))
-dx = cx.twinx()
-dx.spines["top"].set_visible(False)
-if sdr:
-    _se, _sv2 = zip(*sorted(sdr.items()))
-    dx.plot(_se, _sv2, color=C_SD, lw=1.8, ls="-.", marker="s", ms=4,
-            label="std(predicted) / std(true iTM) (right)")
-dx.axhline(1.0, color=C_SD, lw=0.8, alpha=0.5)
-dx.set_ylabel("score-spread ratio   [<1 collapsing, >1 exaggerating]", color=C_SD)
-dx.tick_params(axis="y", labelcolor=C_SD)
-cx.set_title("THE ARM'S PREDICTION, not its loss\n"
-             "Spearman should rise off +0.317 toward +0.690; the ratio should stay near 1")
-h3, l3 = cx.get_legend_handles_labels()
-h4, l4 = dx.get_legend_handles_labels()
-if h3 or h4:
-    cx.legend(h3 + h4, l3 + l4, loc="lower right", fontsize=9)
-h1, l1 = ax.get_legend_handles_labels()
-h2, l2 = bx.get_legend_handles_labels()
-ax.legend(h1 + h2, l1 + l2, loc="upper right", fontsize=9)
-fig.tight_layout()
+_sde = sorted(sdr)
+# TWO REFERENCES: 1.0 is matching the truth, and 0.450 is where the row-weight arm sat at
+# epoch 66, so "is this arm less collapsed than the last one" is readable directly.
+ax_sd.axhspan(0.450, 1.0, color="#8a5f3a", alpha=0.07, lw=0)
+for _y, _lab in ((1.0, "matches the truth"), (0.450, "d32kqp ep66  0.450")):
+    ax_sd.axhline(_y, color="#8a5f3a", lw=0.9, ls="--", alpha=0.55)
+    ax_sd.annotate(_lab, (0.99, _y), xycoords=("axes fraction", "data"), ha="right",
+                   va="bottom", fontsize=8, color="#8a5f3a", alpha=0.9)
+draw(ax_sd, _sde, [sdr[e] for e in _sde], "#8a5f3a",
+     "score spread  std(predicted) / std(true iTM)", "{:.3f}")
+if _sde:
+    ax_sd.set_ylim(0, max(1.15, max(sdr.values()) * 1.15))
+
+for _a in (ax_rho, ax_sd):
+    _a.set_xlabel("epoch")
+for _a in axes.ravel():
+    _a.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=8))
+fig.suptitle(f"{RID}   relative-iTM arm, beta 75, mean pooling", x=0.012, ha="left",
+             fontsize=11.5, fontweight="bold")
+fig.text(0.012, 0.945, "top row: the two training terms   |   bottom row: the arm's prediction",
+         fontsize=8.5, color="#777777")
+fig.tight_layout(rect=(0, 0, 1, 0.93))
 os.makedirs(os.path.join(ROOT, os.path.dirname(OUT)), exist_ok=True)
-fig.savefig(os.path.join(ROOT, OUT), dpi=140, bbox_inches="tight")
+fig.savefig(os.path.join(ROOT, OUT), dpi=150, bbox_inches="tight")
 print(f"  {len(eps)} epoch(s) -> {OUT}")
 print(f"  {'ep':>3} {'PAE':>9} {'rel':>10} {'rho':>8} {'sd_ratio':>9} {'poses':>7}")
 for e, v, n in zip(eps, pv, pn):

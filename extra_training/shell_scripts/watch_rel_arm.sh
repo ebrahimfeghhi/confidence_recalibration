@@ -32,6 +32,16 @@ except FileNotFoundError:
 print(max([k for k, v in c.items() if v >= 5500] or [0]))
 " 2>/dev/null || echo 0)
   if [ "${DONE:-0}" -gt "$LAST" ]; then
+    # WAIT FOR THE EPOCH'S OWN LOG LINES BEFORE PLOTTING. The trigger is the pose count in
+    # trajectory.csv, but the epoch-summary lines -- rank-loss, WITHIN-INTERFACE SPEARMAN, SCORE
+    # SPREAD -- are printed AFTER the last pose, so the first push plotted them as "-" and lost
+    # that epoch's diagnostics. Waits up to 5 minutes, then plots anyway rather than stalling the
+    # whole watcher on a line that may never come.
+    for _ in $(seq 1 60); do
+      grep -q "\[rank 0\] epoch ${DONE} rank-loss" "training/runs/$RID/run.log" 2>/dev/null \
+        && break
+      sleep 5
+    done
     $PY_BIN -I run_logging/plot_rel_arm.py "$RID" > "training/runs/${RID}_table.txt" 2>&1
     echo "$DONE" > "training/runs/${RID}_last_pushed"
     git add -f "figures/rel_arm_${RID}.png" "training/runs/${RID}_table.txt" \
