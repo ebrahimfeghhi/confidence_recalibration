@@ -1,0 +1,34 @@
+  plan: 1 checkpoint(s), pool training/full_train/pool_winnable.csv, budget 10, cards 4,5,7
+         rel27 ep27: training/runs/o2qczq/resume_ep27.pt  [present]
+    $ /home/ebrahim/Protenix/.venv/bin/python -I /home/ebrahim/confidence_recalibration/extra_training/run_logging/extract_heads.py o2qczq --epochs 27
+  epoch  27: 258 tensor(s) -> head_ep27_step3294.pt  (bundle says epoch 27, step 3294)
+
+  1 bundle(s) processed in training/runs/o2qczq
+  rel27_ep27: head head_ep27_step3294.pt -> rel27_ep27_head.pt
+  rel27_ep27: pose flags ['--pose-perblock', '--pose-perblock-copy', '--frame-direction']  (row-weighted: frac 0.0)
+    $ /home/ebrahim/Protenix/.venv/bin/python -I /home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_eval_sharded.py --cards 4,5,7 --ckpt ...
+merged 3 shard(s): 3680 unit(s), 36900 row(s)
+join 1: OST's per-pose chain mapping used on 18400 pose(s), unresolvable on 0
+  it DISAGREED with chain_roles on 1158 pose(s), across 54 structure(s): 9hng:48, 8ce4:40, 7stf:36, 7ugq:35, 9gvn:33, 8jqm:31, 8yvm:30, 8zyx:30
+coverage: 738 interface(s), 50 scored pose(s) each, 36900 row(s) total, 36900 of 36900 intended key(s), 0 duplicates, 0 non-finite
+
+METRIC (/home/ebrahim/confidence_recalibration/extra_training/training/runs/rowweight_compare/rel27_ep27_head.pt, 738 interfaces, budget 10 seeds, selected by MEAN-pooled ipTM)
+  mean_dockq 0.5387   frac_acc 0.6992
+  the OTHER pooling (max): mean_dockq 0.5466   frac_acc 0.7127
+  oracle     0.7015   0.9363   headroom 0.1628
+  baseline   0.5474   0.7060   (shipped head over THESE 738 interface(s) at budget 10, from results.csv's recorded ipTM at 4dp)
+  wrote /home/ebrahim/confidence_recalibration/extra_training/training/runs/rowweight_compare/rel27_ep27_b10.json
+  shard 0 -> card 4
+  shard 1 -> card 5
+  shard 2 -> card 7
+  3 shard(s) finished in 25.4 min
+  total 25.4 min on 3 card(s)
+
+  IN-SAMPLE SELECTION on [738] interface(s) at budget 10
+  oracle mean DockQ [0.7015]   shipped-ipTM baseline [0.5474]
+
+         arm  ep   mean DockQ  frac acc   vs shipped  % headroom
+       rel27  27       0.5387    0.6992      -0.0087       -5.6%
+
+  Both arms scored on the SAME 738 winnable interfaces, so the 119 unwinnable structures the
+  row-weighted arm drops cannot inflate its frac acceptable.

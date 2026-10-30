@@ -270,7 +270,62 @@ DataLoader, asserted by reproducing its pinned oracle 0.4933 to four decimals; t
 held-out 0.4034 equals the logged epoch-220 value exactly; interfaces are in-sample but the exact
 10-pose subsets are not guaranteed to be those seen in training, so the claim is interface-level.
 
+## 8. Mean-centred iTM regression: the ranking metric moves and selection does NOT follow
+
+The loss was built against a measured gap. On `d32kqp` epoch 66 over the 738 winnable interfaces,
+`corr(interface MEAN predicted ipTM, interface MEAN DockQ) = +0.866` while the median WITHIN-interface
+Spearman against DockQ was only +0.2994 (mean-pooled), against +0.6898 for the TRUE iTM. The head had
+learned which complexes are easy and not which pose is best, and only the second is used in selection.
+Centring both prediction and target on the interface mean removes the across-complex signal from the
+objective, so the within-complex ordering is the only thing left to earn:
+
+    L = PAE + 75 * (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2
+
+**IT WORKED ON ITS OWN METRIC.** Over 27 epochs (`o2qczq`, beta 75, mean pooling, 368 winnable
+structures) the in-sample median within-interface Spearman went **+0.2994 -> +0.5392**, and the
+predicted-score spread ratio went 0.433 -> 0.867 against the true iTM's. That is 43% of the distance
+from the shipped head to the true-iTM ceiling, on the exact quantity the loss targets.
+
+**IT DID NOT CONVERT INTO SELECTION, IN-SAMPLE, AT ALL.** Scored at epoch 27 on the SAME 738
+interfaces it trains on, at budget 10 (= all 50 training poses per interface), 25.4 min on 3 cards:
+
+| selector | mean DockQ | frac acc | vs shipped | % headroom |
+|---|---|---|---|---|
+| shipped ipTM | 0.5474 | 0.7060 | -- | -- |
+| oracle | 0.7015 | 0.9363 | +0.1541 | 100% |
+| rel ep27, MEAN-selected | 0.5387 | 0.6992 | **-0.0087** | **-5.6%** |
+| rel ep27, MAX-selected | 0.5466 | 0.7127 | -0.0008 | -0.5% |
+
+Set against the other arms scored on this identical pool and budget (all MAX-selected):
+
+| arm | epoch | mean DockQ | vs shipped | % headroom |
+|---|---|---|---|---|
+| lineage | 55 | 0.5546 | +0.0072 | +4.7% |
+| row-weighted | 55 | 0.5609 | +0.0135 | +8.8% |
+| row-weighted | 66 | 0.5614 | +0.0140 | +9.1% |
+| **rel (mean-centred)** | **27** | **0.5466** | **-0.0008** | **-0.5%** |
+
+**NOT EPOCH-MATCHED, and that is the one real caveat**: 27 against 55 and 66. Some of the gap to the
+other arms could be training time. The sign is not a matter of training time, though -- this arm is
+BELOW the shipped head it started from, on its own training data, having improved the ranking
+correlation by +0.24.
+
+WHAT THAT RULES OUT. "The head cannot represent within-complex pose quality" is dead -- it can, and
+this loss teaches it. What does not follow is the step from a better median rank correlation to a
+better argmax. Selection reads ONE pose per interface; a loss that improves the ordering across all
+50 can do so by sorting the poses nobody picks. The held-out numbers over the same stretch say the
+same thing from the other side: held-out within-interface Spearman went +0.2629 (ep5) -> +0.1377
+(ep25), BELOW the shipped head's +0.1709, while the in-sample version climbed.
+
+THE MEASUREMENT THAT MATTERS NEXT is therefore not another ranking metric. It is whether any loss
+of this family moves the TOP of each interface's distribution rather than its middle.
+
 ## Open questions as of 2026-10-27
+
+- **ANSWERED 2026-10-30 (section 8): a within-interface ranking loss can move the
+  ranking metric a long way and still not move selection, in-sample.** +0.24 of median
+  within-interface Spearman bought -0.0087 of in-sample mean DockQ. Rank correlation over
+  all 50 poses is not the quantity selection reads.
 
 - **ANSWERED 2026-10-27 (section 1b): the in-sample conversion does NOT transfer at 30
   structures -- it inverts, to -0.0355 on valfull.** The live question is whether 487 structures
