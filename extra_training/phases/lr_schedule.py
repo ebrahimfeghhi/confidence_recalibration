@@ -56,15 +56,30 @@ def units_per_rank(units_by_pdb, world, cross_seed=False, n_units=None):
     return sum(v // max(1, world) for v in units_by_pdb.values())
 
 
-def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False, n_units=None):
+def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False, n_units=None,
+                    structs_per_step=0):
     """Optimiser steps in one epoch, DERIVED FROM THE EPOCH BUILDER'S OWN GROUPING.
 
     build_epoch walks floor(n_seeds / world) whole seed-groups of each structure -- the remainder
     sits out, reseeded each epoch -- so the per-rank unit count is a sum of floors, not a single
     division of the total. build_epoch_cross_seed keeps every seed and rotates the split, so there
-    the total divided by world is right. The +1 is the partial accumulation the loop flushes at
-    every epoch boundary.
+    the total divided by world is right.
+
+    CROSS-SEED WITH structs_per_step DOES NOT USE accum_local AT ALL, and missing that stretched a
+    live run's schedule by 1.68x. build_epoch_cross_seed chunks the SHUFFLED STRUCTURE LIST into
+    groups of --rank-structs-per-step and makes each chunk one optimiser step, because a pose's
+    coefficient needs every other pose of its interface in the same step. So the step count is
+    floor(n_structures / S) -- 122 at 368 structures and S=3 -- and dividing poses by accum_local
+    instead gave 205. The decay would then have reached 1e-4 near epoch 84 rather than 50. This is
+    the same class of error the function was written to fix (205 assumed against 184 actual),
+    recurring in the branch the first fix did not cover, and it is why structs_per_step is now a
+    parameter rather than inferred.
+
+    A SHORT FINAL CHUNK IS DROPPED by the builder, not padded, so this is a floor and not a
+    ceiling: at 368 and S=3 the last 2 structures do not form a step.
     """
+    if cross_seed and structs_per_step and structs_per_step > 0:
+        return max(1, len(units_by_pdb) // int(structs_per_step))
     per_rank = units_per_rank(units_by_pdb, world, cross_seed, n_units)
     # CEILING, NOT FLOOR PLUS ONE. The loop flushes a partial accumulation at the epoch
     # boundary, but only when one exists -- and at 368 structures the division is exact

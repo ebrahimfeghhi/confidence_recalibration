@@ -6376,7 +6376,9 @@ def main():
     _units_per_rank = _LRS.units_per_rank(_units_by_pdb, world,
                                           bool(a.rank_cross_seed), len(flat))
     _spe_ep = _LRS.steps_per_epoch(_units_by_pdb, world, a.nsample, accum_local,
-                                   cross_seed=bool(a.rank_cross_seed), n_units=len(flat))
+                                   cross_seed=bool(a.rank_cross_seed), n_units=len(flat),
+                                   structs_per_step=(a.rank_structs_per_step
+                                                     if a.rank_cross_seed else 0))
     # THE SPLIT, REPORTED HONESTLY. _full is whole accumulations and the partial exists only when
     # the poses do not divide accum_local -- at 368 structures they do (1,104 x 5 / 30 = 184), so
     # there is no partial step and the old unconditional "+ 1 partial" overstated the horizon.

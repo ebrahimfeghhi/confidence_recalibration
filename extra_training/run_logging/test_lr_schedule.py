@@ -105,6 +105,41 @@ def main():
                  "--lr-decay-end-epoch 50", "--epochs 60", "--nsample 5", "--accum 85"):
         check(f"launch script still passes {frag}", frag in txt)
 
+    # ---- CROSS-SEED WITH --rank-structs-per-step: the horizon bug, round two ----
+    #
+    # build_epoch_cross_seed chunks the shuffled STRUCTURE list into groups of S and makes each
+    # chunk one optimiser step, because a pose's coefficient needs every other pose of its
+    # interface in the same step. So accum_local does not govern the step count at all. The live
+    # rel arm (gu3kh7) printed "COSINE 0.01 -> 0.0001 over steps 20..12300" -- 205 steps/epoch --
+    # against 122 actual, which would have reached 1e-4 near epoch 84 instead of 50. Same class as
+    # the 205-against-184 error this file was written for, in the branch that fix did not cover.
+    ubp368 = {f"s{i}": 10 for i in range(368)}
+    spe_cs = LRS.steps_per_epoch(ubp368, world=3, nsample=5, accum_local=30,
+                               cross_seed=True, structs_per_step=3)
+    check("cross-seed with S=3 gives floor(368/3) = 122 steps/epoch, not 205",
+          spe_cs == 122, f"got {spe_cs}")
+    check("  and the SHORT final chunk is dropped, so it is a floor not a ceiling",
+          LRS.steps_per_epoch({f"s{i}": 10 for i in range(10)}, world=3, nsample=5,
+                            accum_local=30, cross_seed=True, structs_per_step=3) == 3,
+          "10 structures at S=3 -> 3 steps, the last one short and dropped")
+    check("the non-cross-seed path is UNCHANGED at 184",
+          LRS.steps_per_epoch(ubp368, world=3, nsample=5, accum_local=30) == 184)
+    check("structs_per_step is ignored without cross_seed",
+          LRS.steps_per_epoch(ubp368, world=3, nsample=5, accum_local=30,
+                            structs_per_step=3) == 184)
+    for ep, want in ((20, 1e-2), (50, 1e-4), (60, 1e-4)):
+        got = LRS.lr_at_step(ep * spe_cs, lr=0.01, lr_final=1e-4, warmup_steps=20,
+                           steps_per_epoch=spe_cs, epochs=60, decay_start_epoch=20,
+                           decay_end_epoch=50, shape="cosine")
+        check(f"cross-seed lr at epoch {ep} is {want:.0e}", abs(got - want) < 1e-9,
+              f"got {got:.4e}")
+    # REGRESSION GUARD reproducing the live run's wrong horizon
+    bad = LRS.lr_at_step(50 * spe_cs, lr=0.01, lr_final=1e-4, warmup_steps=20,
+                       steps_per_epoch=205, epochs=60, decay_start_epoch=20,
+                       decay_end_epoch=50, shape="cosine")
+    check("the bug WOULD have left lr far above 1e-4 at epoch 50", bad > 5e-4,
+          f"{bad:.3e} = {bad / 1e-4:.0f}x the intended floor")
+
     print(f"\n  {len(FAIL)} failure(s)" + (f": {FAIL}" if FAIL else ""))
     return 1 if FAIL else 0
 
