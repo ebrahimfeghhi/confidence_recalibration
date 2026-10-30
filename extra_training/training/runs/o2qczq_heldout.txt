@@ -1,3 +1,8 @@
+
+  held-out WITHIN-INTERFACE SPEARMAN (median over interfaces):
+      shipped ipTM  median +0.1709  mean +0.2218  negative 26%
+        ours, MEAN  median +0.2629  mean +0.2520  negative 26%   +0.0920 vs shipped
+         ours, MAX  median +0.2079  mean +0.2338  negative 25%   +0.0369 vs shipped
   epoch 5, 92 interfaces at 150 candidates -> figures/rel_bars_o2qczq.png
             shipped ipTM  mean 0.5830  frac 0.7391
       ours, MEAN pooling  mean 0.5857  frac 0.7500  delta +0.0027 +- 0.0057 (t=+0.48)

@@ -89,11 +89,31 @@ S = [("shipped ipTM", pick(2), "#8a8a8a"),
      ("ours, MAX pooling", pick(0), "#b03a3a")]
 base = S[0][1]
 
+# PER-INTERFACE SPEARMAN for the third panel. Computed here rather than only printed, because it
+# has more statistical power than the selection delta -- it reads all 150 candidates per interface
+# while selection reads only the argmax -- so it belongs on the figure, not in a log line.
+RHO = {}
+try:
+    from scipy import stats as _stt
+    for _nm, _j in (("shipped ipTM", 2), ("ours, MEAN pooling", 1), ("ours, MAX pooling", 0)):
+        _v = []
+        for _ifc in keep:
+            _a = np.array([[x[_j], x[3]] for x in by[_ifc]], dtype=float)
+            if _a[:, 0].std() > 1e-9 and _a[:, 1].std() > 1e-9:
+                _v.append(_stt.spearmanr(_a[:, 0], _a[:, 1]).statistic)
+        RHO[_nm] = np.array(_v)
+except ImportError:
+    RHO = {}
+
 plt.rcParams.update({"font.size": 10.5, "axes.titlesize": 11, "axes.labelsize": 10,
                      "axes.spines.top": False, "axes.spines.right": False,
                      "figure.facecolor": "white", "xtick.labelsize": 9.5})
-fig, (ax, bx) = plt.subplots(1, 2, figsize=(11.2, 5.2),
-                             gridspec_kw={"width_ratios": [1.45, 1]})
+_ncol = 3 if RHO else 2
+fig, _axs = plt.subplots(1, _ncol, figsize=(5.4 * _ncol, 5.2),
+                         gridspec_kw={"width_ratios": ([1.3, 0.85, 1.3] if RHO
+                                                       else [1.45, 1])})
+ax, bx = _axs[0], _axs[1]
+cx = _axs[2] if RHO else None
 rng = np.random.default_rng(0)          # jitter only; fixed so the figure is reproducible
 xs = np.arange(len(S))
 
@@ -145,6 +165,36 @@ bx.set_title("fraction acceptable  (DockQ >= 0.23)", pad=10)
 bx.grid(axis="y", color="#eeeeee", lw=0.8)
 bx.set_axisbelow(True)
 
+# THIRD PANEL: within-interface Spearman, bar at the MEDIAN with one dot per interface. The
+# median rather than the mean because that is the statistic reported everywhere else for this
+# quantity, and a per-interface rho distribution is skewed and has negative values.
+if cx is not None:
+    _rb = np.median(RHO["shipped ipTM"])
+    for i, (nm, _v, col) in enumerate(S):
+        _r = RHO.get(nm)
+        if _r is None or not len(_r):
+            continue
+        _m = float(np.median(_r))
+        cx.bar(i, _m, width=0.62, color=col, alpha=0.30, edgecolor=col, linewidth=1.4,
+               zorder=1)
+        cx.scatter(i + rng.uniform(-0.19, 0.19, len(_r)), _r, s=11, color=col, alpha=0.45,
+                   edgecolor="none", zorder=2)
+        cx.plot([i - 0.33, i + 0.33], [_m] * 2, color=col, lw=2.4, zorder=3)
+        cx.annotate(f"{_m:+.4f}", (i, _m), ha="center", va="bottom", fontsize=10, color=col,
+                    fontweight="bold", xytext=(0, 6), textcoords="offset points", zorder=4)
+    cx.axhline(0.0, color="#999999", lw=0.9)
+    cx.set_xticks(xs)
+    cx.set_xticklabels(
+        [(nm.replace("ours, ", "").replace(" pooling", "").replace("shipped ipTM", "shipped")
+          + ("" if i == 0 else
+             f"\n{float(np.median(RHO[nm])) - _rb:+.4f}"))
+         for i, (nm, _v, _c) in enumerate(S)], fontsize=9.5)
+    cx.set_ylabel("within-interface Spearman vs DockQ")
+    cx.set_ylim(-1.05, 1.05)
+    cx.set_title("ranking quality  (median, one dot per interface)", pad=10)
+    cx.grid(axis="y", color="#eeeeee", lw=0.8)
+    cx.set_axisbelow(True)
+
 # ONE compact header instead of a suptitle plus two padded panel titles competing for the
 # same strip of space.
 fig.text(0.012, 0.985, f"{RID} epoch {ep}  -  held-out valfull, budget 30, "
@@ -156,6 +206,32 @@ if BEST and len(ALL) > 1:
 fig.tight_layout(rect=(0, 0, 1, 0.955))
 os.makedirs(os.path.join(ROOT, os.path.dirname(OUT)), exist_ok=True)
 fig.savefig(os.path.join(ROOT, OUT), dpi=150, bbox_inches="tight")
+# HELD-OUT WITHIN-INTERFACE SPEARMAN, the diagnostic the trainer logs for TRAIN only. The
+# original request was for train AND validation and only train was implemented; it needs no GPU,
+# because the eval rows already carry iptm_mean and dockq per pose.
+#
+# IT HAS MORE POWER THAN THE SELECTION DELTA and should be read first: it uses all 150 candidates
+# per interface while selection reads only the argmax. At epoch 5 the selection delta was
+# +0.0027 (t=0.48) while the Spearman gain over shipped was +0.0920 in the median.
+try:
+    from scipy import stats as _st
+    print("\n  held-out WITHIN-INTERFACE SPEARMAN (median over interfaces):")
+    _rhos = {}
+    for _nm, _j in (("shipped ipTM", 2), ("ours, MEAN", 1), ("ours, MAX", 0)):
+        _v = []
+        for _ifc in keep:
+            _a = np.array([[x[_j], x[3]] for x in by[_ifc]], dtype=float)
+            if _a[:, 0].std() > 1e-9 and _a[:, 1].std() > 1e-9:
+                _v.append(_st.spearmanr(_a[:, 0], _a[:, 1]).statistic)
+        _v = np.array(_v)
+        _rhos[_nm] = _v
+        _d = ("" if _j == 2 else
+              f"   {np.median(_v) - np.median(_rhos['shipped ipTM']):+.4f} vs shipped")
+        print(f"    {_nm:>14}  median {np.median(_v):+.4f}  mean {_v.mean():+.4f}  "
+              f"negative {100*(_v < 0).mean():.0f}%{_d}")
+except ImportError:
+    print("  (scipy unavailable; skipping the held-out Spearman)")
+
 print(f"  epoch {ep}{' (BEST of %d)' % len(ALL) if BEST and len(ALL) > 1 else ''}, "
       f"{n} interfaces at {full} candidates -> {OUT}")
 if len(ALL) > 1:
