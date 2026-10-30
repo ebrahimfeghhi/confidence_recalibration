@@ -137,7 +137,7 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --eval-pool-fold validation/fold --eval-pool-seed-base 400000 \
   --eval-pool-budget 30 --eval-pool-every 1 \
   --prefetch-units 2 --prefetch-workers 4 \
-  --blocks-per-ckpt 0 --dist-backend gloo --dist-timeout-min 240 \
+  --blocks-per-ckpt 1 --dist-backend gloo --dist-timeout-min 240 \
   --max-rss-gb 80 --preload-min-free-gb 260 \
   --require-replay training/ft3_pilot_replay.log --allow-code-drift
 rc=$?
