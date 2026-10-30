@@ -348,6 +348,46 @@ pose and the top-1 rate must be computed from counts of strictly-better and tied
 sort: resolving ties by row order moved the shipped head's median rank between 21 and 22 and its
 top-1 rate between 3.98% and 4.3% depending only on the glob order of three shard files.
 
+### 8c. THE IN-SAMPLE EVAL IS UNCROPPED AND THE ARM TRAINED CROPPED
+
+`phases/phase_k_eval.py` has no crop code at all -- no flag, no path -- so every number in sections
+8 and 8b was measured on FULL structures. The trainer crops every pose:
+
+  199,800 pose-crop records over epochs 1-27, 100.0% marked cropped
+  tokens, full structure   median 617    mean 649    max 1543
+  tokens, kept after crop  median 333    mean 331    max  801
+  kept fraction            median 0.534, and 1.0 on 0.0% of poses
+
+**The head has never once seen a full structure during this training.** "In-sample" in section 8
+means the STRUCTURES are the training structures; it does not mean the INPUTS are the training
+inputs, and on this arm they are not -- the median pose arrives at the head with 47% of its tokens
+removed.
+
+WHAT THAT DOES AND DOES NOT CHANGE.
+
+It does NOT rescue the selection result as a statement about USEFULNESS. The goal is DockQ on full
+antibody-antigen complexes, inference runs uncropped, and uncropped is where the arm is -0.0087
+against the shipped head. A method that only helps on cropped inputs helps nobody.
+
+It DOES undercut the result as a statement about LEARNING. The comparison in section 8 is
+ours-uncropped against shipped-uncropped, which sounds paired and is not symmetric: the shipped
+head's recorded ipTM comes from the ordinary full-structure pipeline, so it is being read on its
+own distribution while this arm is read off its. The gap between +0.5392 cropped and +0.2819
+uncropped for the SAME checkpoint is the size of that asymmetry, and it is larger than every
+effect in sections 8 and 8b put together.
+
+So "the loss raises the ranking metric and does not convert into selection" is established on
+uncropped inputs only, and the honest form of section 8's conclusion is: ON THE INPUTS IT WILL
+ACTUALLY BE USED WITH, this arm is not better than the shipped head, and we do not yet know whether
+that is because the loss teaches nothing useful or because the arm cannot be read off its training
+distribution.
+
+THE MEASUREMENT THAT SEPARATES THEM is the shipped head's CROPPED within-interface Spearman on the
+same cropped inputs -- one loss-only pass through the trainer, no optimiser steps. If cropping
+lifts both heads equally, the cropped curve is a measurement artefact and section 8 stands as
+written. If it lifts this arm specifically, the arm learned something crop-dependent and the
+train/eval input mismatch is a CAUSE of the non-transfer rather than a footnote on it.
+
 A CAVEAT ON THE PER-EPOCH SPEARMAN CURVE. The in-sample diagnostic printed every epoch (+0.2994 ->
 +0.5392) is computed inside the training loop on CROPPED inputs, crop 3400 with a 10-residue
 interface margin. This eval is uncropped. Same checkpoint, same metric, same poses: +0.5392 cropped
