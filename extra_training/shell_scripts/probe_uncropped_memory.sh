@@ -131,7 +131,7 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --pose-perblock --pose-perblock-copy --frame-direction \
   --fold training/fold \
   --crop-margin 0 \
-  --minimal-items --alignment-preflight training/full_train/alignment_preflight_winnable.json \
+  --minimal-items --alignment-preflight training/full_train/alignment_preflight_largest9.json \
   --manifest-selection training/full_train/structures_largest9.csv \
   --manifest-skip '9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3' \
   --epochs 1 --lr 0.01 --warmup-steps 20 --seed 0 --accum 85 --nsample 5 \

@@ -492,7 +492,66 @@ uncropped it is not better than shipped. What it argues for is training uncroppe
 closing the train/eval input gap, rather than abandoning the objective.
 
 
+## 10. UNCROPPED TRAINING DOES NOT FIT. OOM in the forward pass, all three ranks
+
+The experiment of section 9 points at one change -- train uncropped, so the head is never read off
+a distribution it did not see -- with everything else held. `probe_uncropped_memory.sh` measured
+whether it fits before 60 epochs were spent finding out: one epoch, the NINE largest structures
+(9tuz 1543 tokens down to 9q69 1297), `--crop-margin 0`, every other setting inherited from
+`launch_rel_itm_beta75_uncropped.sh`.
+
+**It OOMed on all three ranks, in the FORWARD pass, before a single pose completed** -- no
+trajectory.csv row was ever written.
+
+| rank | card total | allocated by PyTorch | tried to allocate | free |
+|---|---|---|---|---|
+| 0 | 94.97 GiB | 91.69 GiB | 822 MiB | 224 MiB |
+| 1 | 94.97 GiB | 89.42 GiB | 3.83 GiB | 3.59 GiB |
+| 2 | 94.97 GiB | 91.42 GiB | 4.29 GiB | 1.56 GiB |
+
+The GPU holders account for 1.16 GiB each; the rest is the run.
+
+WHERE, exactly: `confidence.py forward` -> `pose_perblock.memory_efficient_forward` ->
+`pose_direction.memory_efficient_forward` -> `confidence.memory_efficient_forward` ->
+`pose_perblock.run` -> `triangular.py:497 kernel_triangular_mult` ->
+`triangle_multiplicative_update` -> `torch.einsum("dbki,dbkj->dbij", a, b)`. There is no backward
+frame in any of the three tracebacks. The triangle update is the O(n^2) pair term in the
+confidence head's pairformer, and the arm trains with `--blocks-per-ckpt 0`, so every block's
+activations are held for a backward that never arrived.
+
+**IT IS NOT FRAGMENTATION.** Reserved-but-unallocated was 61.66, 44.97 and 83.88 MiB on the three
+ranks -- under 0.1% of the card. `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` would recover
+nothing. The demand is real.
+
+**AND IT IS NOT MARGINAL.** The cropped arm peaks at 67.08 GiB allocated with a largest unit of
+801 tokens. Uncropped the largest is 1543, 3.71x in every n^2 term, and the forward alone passed
+91 GiB before dying. There is no headroom to find by tuning the allocator.
+
+WHAT IS NOT AVAILABLE AS A FIX: activation checkpointing. `--blocks-per-ckpt` must stay 0 because
+the per-block orientation copies read `pose_direction`'s direction cache, which the outer forward
+clears after the stack -- checkpointing would silently change what those copies see, which is a
+correctness change dressed as a memory setting.
+
+WHAT IS AVAILABLE, none of it free and none of it taken here:
+  - fewer poses per unit (`--nsample`), which is the direct lever since memory scales with
+    tokens x poses -- but the relative-iTM loss centres on the mean over an interface's poses, so
+    this changes the objective, not just the batch;
+  - a LARGER crop rather than none (margin 25 instead of 10), which shrinks the train/eval gap
+    without closing it and is still ground-truth-derived, so it stays undeployable;
+  - a crop from the PREDICTED pose's own inter-chain contacts, which needs no label, is available
+    at inference, and would close the gap at both ends -- the option section 9c already named;
+  - splitting the confidence head's pairformer across cards, which is a real engineering change.
+
+THE RESULT STANDS EITHER WAY: section 9b's +0.0376 held-out DockQ under matched cropping is
+unaffected by this. What section 10 removes is the cheapest route to collecting it.
+
+
 ## Open questions as of 2026-10-27
+
+- **ANSWERED 2026-10-30 (section 10): uncropped training does not fit.** OOM in the
+  forward pass on all three ranks at ~91 GiB of a 94.97 GiB card, on the largest
+  structures, not fragmentation and not marginal. The next cheapest way to close the
+  train/eval input gap is a crop derived from the PREDICTED pose rather than the label.
 
 - **2026-10-30 (section 9): sections 8 and 8b were confounded by the train/eval input
   mismatch.** Matched cropping moves the same epoch-30 checkpoint from -0.0087 to
