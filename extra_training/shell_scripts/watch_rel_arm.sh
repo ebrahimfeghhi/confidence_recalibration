@@ -38,7 +38,15 @@ try:
         if e not in (None, ''): c[int(float(e))] += 1
 except FileNotFoundError:
     pass
-print(max([k for k, v in c.items() if v >= 5500] or [0]))
+# THE RUN SAYS WHEN AN EPOCH IS DONE. A pose-count threshold of 5500 was inherited from an arm
+# with a different epoch size; on a 6100-pose epoch it fired at 5600 and this watcher pushed
+# epoch 1 with rel, rho and sd_ratio all '-' and a PAE averaged over 92% of the poses. The
+# five-minute wait below could not save it -- the missing 500 poses were twelve minutes away.
+import re, os
+_lg = 'training/runs/$RID/run.log'
+_t = open(_lg, errors='replace').read() if os.path.exists(_lg) else ''
+_e = [int(m) for m in re.findall(r'\[rank 0\] epoch (\d+) rank-loss', _t)]
+print(max(_e) if _e else 0)
 " 2>/dev/null || echo 0)
   if [ "${DONE:-0}" -gt "$LAST" ]; then
     # WAIT FOR THE EPOCH'S OWN LOG LINES BEFORE PLOTTING. The trigger is the pose count in
