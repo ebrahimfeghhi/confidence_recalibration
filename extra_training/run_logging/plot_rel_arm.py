@@ -137,19 +137,28 @@ draw(ax_rel, _re, [rel[e] for e in _re], "#2f6fb0",
 # SPEARMAN gets a shaded band between where the head was and what the true iTM reaches, which
 # says "this is the distance to cover" without two more annotated lines crossing the data.
 _rhe = sorted(rho)
-# THE REFERENCE IS THE MEAN-POOLED TRAINED HEAD, +0.2994, not +0.3171. The first version used
-# 0.317, which is d32kqp ep66 under MAX pooling -- comparing this arm's mean-pooled diagnostic
-# against a max-pooled reference. Recomputed from that run's own rows: MAX +0.3171, MEAN +0.2994,
-# and the true iTM reaches +0.6898 under mean pooling. The shipped head is +0.1931 (max-pooled;
-# there is no mean-pooled shipped number without a dedicated eval pass).
-ax_rho.axhspan(0.2994, 0.6898, color="#3a8a5f", alpha=0.07, lw=0)
-for _y, _lab in ((0.2994, "d32kqp ep66, mean-pooled  +0.2994"),
-                 (0.6898, "true iTM  +0.6898")):
-    ax_rho.axhline(_y, color="#3a8a5f", lw=0.9, ls="--", alpha=0.55)
+# THE CURVE AND THE REFERENCES ARE MEASURED ON DIFFERENT INPUTS, and the band used to hide it.
+# This curve comes from the TRAINING loop, so every pose is CROPPED -- crop 3400 with a
+# 10-residue interface margin. Every reference number in this project (d32kqp ep66, the true-iTM
+# ceiling, the shipped head) comes from the evaluator, which has no crop flags and always runs the
+# FULL structure. Shading from 0.2994 to 0.6898 under a cropped curve therefore drew the arm
+# crossing most of a gap it was not measured against: the same epoch-27 checkpoint reads +0.5392
+# cropped here and +0.2819 uncropped on the identical 738 interfaces.
+#
+# SO THE BAND IS GONE and the references are drawn as what they are -- uncropped, on their own
+# axis -- with the ONE matched uncropped pair this arm has, measured by
+# run_logging/rank_gain_location.py at epoch 27. Read the curve for its SHAPE; read the uncropped
+# markers for where the arm actually stands.
+_UNCROPPED = ((0.6898, "true iTM, uncropped  +0.6898", "#3a8a5f"),
+              (0.2994, "d32kqp ep66, uncropped  +0.2994", "#3a8a5f"),
+              (0.2819, "THIS ARM ep27, uncropped  +0.2819", "#b03a3a"),
+              (0.1931, "shipped head, uncropped  +0.1931", "#8a8a8a"))
+for _y, _lab, _c in _UNCROPPED:
+    ax_rho.axhline(_y, color=_c, lw=0.9, ls="--", alpha=0.6)
     ax_rho.annotate(_lab, (0.99, _y), xycoords=("axes fraction", "data"), ha="right",
-                    va="bottom", fontsize=8, color="#3a8a5f", alpha=0.9)
+                    va="bottom", fontsize=7.5, color=_c, alpha=0.95)
 draw(ax_rho, _rhe, [rho[e] for e in _rhe], "#3a8a5f",
-     "within-interface Spearman vs DockQ", "{:+.4f}")
+     "within-interface Spearman vs DockQ  (curve CROPPED, dashed refs UNCROPPED)", "{:+.4f}")
 ax_rho.set_ylim(0.15, 0.78)
 
 _sde = sorted(sdr)
