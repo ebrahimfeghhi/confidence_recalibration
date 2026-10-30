@@ -1,0 +1,10 @@
+cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,resolution,method,msa_ok
+1838,8u4s,pdb_00008u4s_B_A,2917,P418,1499,4,3.35,EM,1
+1887,9df0,pdb_00009df0_H_L,3600,P215,1391,3,2.80,EM,1
+2333,9ofo,pdb_00009ofo_H_L,3771,P119,1364,3,2.82,EM,1
+2556,9q69,pdb_00009q69_C_D,4168,P295,1297,3,3.35,EM,1
+2591,9tuz,pdb_00009tuz_B_C,4214,E171,1543,3,3.40,EM,1
+64,9ub1,pdb_00009ub1_G_H,3822,P30,1418,4,2.35,EM,1
+64,9uax,pdb_00009uax_A_B,3879,P30,1416,4,2.71,EM,1
+654,8eeu,pdb_00008eeu_H_L,2656,P288,1489,3,3.50,EM,1
+98,9dz4,pdb_00009dz4_C_B,3512,P548,1473,3,2.99,EM,1
