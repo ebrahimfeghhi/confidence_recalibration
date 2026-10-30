@@ -139,10 +139,13 @@ axes[0].legend(frameon=False, fontsize=8.5, ncol=2, loc="lower left",
 axes[-1].set_xlabel("epoch")
 # TWO SHORT LINES RATHER THAN ONE LONG ONE. The single-line title ran off the right edge of the
 # figure and lost the words that said what the pool was.
-fig.suptitle(f"{RID}   uncropped rel-iTM arm, beta 75", x=0.012, y=0.990, ha="left",
-             fontsize=11.5, fontweight="bold", va="top")
-fig.text(0.012, 0.9555, f"held out: valfull, {S['n'][-1]} interfaces at budget 30   "
-         f"both sides UNCROPPED, comparable to the shipped head as deployed"
+# THE WORD "HELD OUT" GOES IN THE BOLD LINE. It was in the grey subtitle, which is the line a
+# reader skips -- two figures from the same arm then looked interchangeable and the only thing
+# telling them apart was the filename.
+fig.suptitle(f"{RID}   HELD-OUT metrics  (valfull, never trained on)", x=0.012, y=0.990,
+             ha="left", fontsize=11.5, fontweight="bold", va="top")
+fig.text(0.012, 0.9555, f"uncropped arm, beta 75   {S['n'][-1]} interfaces at budget 30   "
+         f"both sides uncropped = deployment-comparable"
          + (f"   [baseline drift {drift:.4f}]" if drift > 1e-6 else ""),
          ha="left", va="top", fontsize=8, color="#777777")
 fig.tight_layout(rect=[0, 0, 1, 0.938])

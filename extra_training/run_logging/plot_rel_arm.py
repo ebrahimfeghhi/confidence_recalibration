@@ -181,9 +181,12 @@ for _a in (ax_rho, ax_sd):
     _a.set_xlabel("epoch")
 for _a in axes.ravel():
     _a.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=8))
-fig.suptitle(f"{RID}   relative-iTM arm, beta 75, mean pooling", x=0.012, ha="left",
+# SAYS "TRAINING" IN THE BOLD LINE, for the same reason the held-out figure says "HELD-OUT":
+# these two figures come from one arm and were previously distinguishable only by filename.
+fig.suptitle(f"{RID}   TRAINING metrics  (in-sample, the 368 structures it fits)",
+             x=0.012, ha="left",
              fontsize=11.5, fontweight="bold")
-fig.text(0.012, 0.945, "top row: the two training terms   |   bottom row: the arm's prediction",
+fig.text(0.012, 0.938, "top row: the two training terms   |   bottom row: the arm's prediction",
          fontsize=8.5, color="#777777")
 fig.tight_layout(rect=(0, 0, 1, 0.93))
 os.makedirs(os.path.join(ROOT, os.path.dirname(OUT)), exist_ok=True)
