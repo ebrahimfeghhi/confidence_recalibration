@@ -658,6 +658,38 @@ def main():
                          "pathway before loading, and reads frame_atom_index / pae_rep_atom_mask "
                          "from the label npz beside each trunk. phase_k_train passes this "
                          "automatically; without it the checkpoint load refuses the extra tensor.")
+    # CROPPING, SO A HEAD CAN BE SCORED ON THE INPUTS IT WAS TRAINED ON.
+    #
+    # This evaluator had no crop path at all, so every number it has ever produced is on FULL
+    # structures -- while phase_k_train crops EVERY pose it trains on (o2qczq: 199,800 of 199,800,
+    # median 53% of tokens kept). "In-sample" therefore meant the structures were training
+    # structures and NOT that the inputs were training inputs, and a head read off its training
+    # distribution is not being given a fair reading.
+    #
+    # THE SAME TWO FUNCTIONS THE TRAINER CALLS, not a reimplementation of them:
+    # BC.interface_crop_tokens then BC.slice_cached_unit. The crop has no RNG -- it is a function
+    # of the trunk, the label and (contact, margin, all_poses) -- so passing the arm's own values
+    # reproduces its crop exactly. Verified on 40 randomly sampled (pdb, seed) units against the
+    # trainer's own crop_sizes_rank*.csv: 40 of 40 kept_tok reproduced exactly.
+    #
+    # UNCROPPED IS STILL THE DEFAULT, and should stay the default: inference runs on whole
+    # structures, so the uncropped number is the one that says whether a head is USEFUL. The
+    # cropped number says whether it LEARNED something, which is a different question.
+    ap.add_argument("--crop-margin", type=float, default=0.0,
+                    help="crop each unit to the interface plus this margin in angstroms before "
+                         "scoring, exactly as phase_k_train does. 0 (the default) scores the full "
+                         "structure. Requires label npz files, which --labels locates.")
+    ap.add_argument("--crop-contact", type=float, default=5.0,
+                    help="heavy-atom distance defining an interface token, matching "
+                         "phase_k_train --crop-contact. Only read when --crop-margin > 0.")
+    ap.add_argument("--crop-all-poses", action="store_true",
+                    help="define the crop from the union over all poses rather than pose 0, "
+                         "matching phase_k_train --crop-all-poses. MUST match the arm being "
+                         "scored; the arms in this project do not pass it.")
+    ap.add_argument("--labels", default="",
+                    help="label npz root for --crop-margin; defaults to <fold>/labels. The crop "
+                         "needs ground-truth coordinates, which is why this evaluator could "
+                         "previously avoid reading labels entirely.")
     ap.add_argument("--pose-perblock", action="store_true",
                     help="the checkpoint was trained with phase_k_train --pose-perblock, so the "
                          "head carries pose_perblock_proj tensors the stock model does not. "
@@ -1012,13 +1044,46 @@ def main():
     _pf_future = None
 
     rows, selfchk, n_nosample = [], [], 0
+    _n_cropped = _n_nocrop = _tok_full = _tok_kept = 0
+    _labels_root = a.labels or os.path.join(a.fold, "labels")
+    if a.crop_margin > 0:
+        print(f"CROPPED SCORING: interface + {a.crop_margin:g} A margin, contact "
+              f"{a.crop_contact:g} A, all_poses={a.crop_all_poses}, labels {_labels_root}")
     for n, (pdb, sd_, tp) in enumerate(units, 1):
         if _pf_pool is not None:
             if _pf_future is not None:
                 _pf_future.result()          # this unit's bytes; started one iteration ago
             if n < len(units):
                 _pf_future = _pf_pool.submit(_warm, units[n][2])
-        feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
+        # THE JOIN NEEDS THE UNCROPPED COORDINATES. BC.resolve_seed_dir matches ci_coordinate
+        # against the pose cifs by coordinate IDENTITY, so handing it a cropped array would break
+        # the one join in this file that is not a (pdb, seed, sample) guess -- and silently, since
+        # a failed join just drops the unit. The crop applies to what the HEAD consumes; px stays
+        # whole. This also keeps every existing join cache valid, because the join is unchanged.
+        _px_full = None
+        if a.crop_margin > 0:
+            _lp = os.path.join(_labels_root, pdb, f"free_{sd_}.npz")
+            if not os.path.exists(_lp):
+                raise SystemExit(f"STOP: --crop-margin needs a label npz and {_lp} does not "
+                                 f"exist. Point --labels at the right root, or drop the flag and "
+                                 f"score uncropped.")
+            _zc = np.load(tp)
+            _lab = np.load(_lp, allow_pickle=True)
+            _px_full = np.asarray(_zc["ci_coordinate"])
+            _kt, _ka = BC.interface_crop_tokens(_zc, _lab, a.crop_contact, a.crop_margin,
+                                                all_poses=a.crop_all_poses)
+            if _kt is None:
+                # THE TRAINER'S OWN BEHAVIOUR on an undefinable crop: train on the full structure
+                # rather than guess. Counted and reported, never silent.
+                feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
+                _n_nocrop += 1
+            else:
+                feat, s_in, s_tr, z, x, nc = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev,
+                                                                  torch)[:6]
+                _n_cropped += 1
+                _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
+        else:
+            feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
         if a.frame_direction:
             # DERIVED FROM THE TRUNK, not read from a label npz. An earlier version read
             # lf_frame_atom_index and lf_pae_rep_atom_mask from the labels beside the trunk and
@@ -1037,7 +1102,8 @@ def main():
         # join 2: pose -> sample, by coordinate identity. The pose DIRECTORY is itself resolved by
         # the trunk, because a refold leaves two finished directories for one seed and neither
         # filesystem order nor poses/index.tsv says which run wrote this trunk.
-        px = x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)
+        px = (_px_full if _px_full is not None else
+              (x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)))
         _jk = _join_key(pdb, sd_, tp) if a.join_cache else None
         try:
             if _jk is not None and _jk in join_cache:
@@ -1156,6 +1222,16 @@ def main():
         os.replace(tmp, a.join_cache)       # atomic: a half-written cache is the one a reader takes
         print(f"join cache -> {a.join_cache} ({len(join_cache)} entry(ies))")
 
+    # THE CROP IS REPORTED, NEVER ASSUMED. A --crop-margin that silently cropped nothing would
+    # produce an "uncropped" number under a cropped label, which is the whole failure this run is
+    # about.
+    if a.crop_margin > 0:
+        _kf = (_tok_kept / _tok_full) if _tok_full else float("nan")
+        print(f"\ncrop: {_n_cropped} unit(s) cropped, {_n_nocrop} undefinable and scored whole; "
+              f"kept {_tok_kept}/{_tok_full} token(s) ({100*_kf:.1f}%)")
+        if _n_cropped == 0:
+            raise SystemExit("STOP: --crop-margin was passed and NOT ONE unit was cropped. The "
+                             "metric would be an uncropped number wearing a cropped label.")
     print(f"\njoin 1: OST's per-pose chain mapping used on {n_ost} pose(s), unresolvable on "
           f"{n_static}")
     if a.rows_out:
