@@ -43,9 +43,18 @@ print(max([k for k, v in c.items() if v >= 5500] or [0]))
       sleep 5
     done
     $PY_BIN -I run_logging/plot_rel_arm.py "$RID" > "training/runs/${RID}_table.txt" 2>&1
+    # THE HELD-OUT BAR FIGURE TOO, whenever an eval has produced rows. Only the per-epoch 2x2
+    # was being pushed, so the figure that carries the actual held-out result -- shipped against
+    # both poolings, with a dot per interface -- existed only on disk.
+    if ls -d "training/runs/$RID"/train_eval_shards_ep* >/dev/null 2>&1; then
+      $PY_BIN -I run_logging/plot_rel_bars.py "$RID" --best \
+        > "training/runs/${RID}_heldout.txt" 2>&1 || true
+    fi
     echo "$DONE" > "training/runs/${RID}_last_pushed"
     git add -f "figures/rel_arm_${RID}.png" "training/runs/${RID}_table.txt" \
               "training/runs/${RID}_last_pushed" >/dev/null 2>&1
+    [ -f "figures/rel_bars_${RID}.png" ] && git add -f "figures/rel_bars_${RID}.png" \
+              "training/runs/${RID}_heldout.txt" >/dev/null 2>&1
     # THE EPOCH'S OWN NUMBERS IN THE COMMIT MESSAGE, so the history is readable without
     # checking out the figure.
     ROW=$(tail -1 "training/runs/${RID}_table.txt")
