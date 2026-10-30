@@ -394,7 +394,64 @@ interface margin. This eval is uncropped. Same checkpoint, same metric, same pos
 against +0.2819 uncropped. The curve therefore overstates the arm's ranking gain, and the defensible
 figure for it is the +0.089 over the shipped head measured here.
 
+## 9. MATCHED CROPPING: the arm is +0.0733 in-sample, not -0.0087
+
+Section 8 scored a cropped-trained head on full structures and section 8c said why that is not a
+fair reading. `phases/phase_k_eval.py` now crops (`--crop-margin`), calling the same two library
+functions the trainer calls, with every setting -- margin, contact, all-poses, the pose pathways,
+the pooling -- read from the scored checkpoint's own guard. `run_logging/test_eval_crop.py`
+reproduces the trainer's recorded `kept_tok` exactly on 25 of 25 sampled units.
+
+FOUR PASSES, because the rows' `stored_iptm` is the shipped head's RECORDED ipTM from the
+full-structure pipeline; using it as the cropped baseline would rebuild the very asymmetry being
+removed. The shipped head gets its own cropped pass.
+
+**IN-SAMPLE, 738 winnable interfaces, budget 10 (= all 50 training poses), both heads at 50.9% of
+tokens kept, epoch 30 of the beta-75 arm:**
+
+| head | input | mean DockQ | frac acc |
+|---|---|---|---|
+| shipped | uncropped (recorded) | 0.5474 | 0.7060 |
+| shipped | **cropped** | 0.5572 | 0.7209 |
+| ours ep30 | uncropped | 0.5387 | 0.6992 |
+| ours ep30 | **cropped** | **0.6305** | **0.8523** |
+| oracle | -- | 0.7015 | 0.9363 |
+
+**Matched cropped, ours minus shipped: +0.0733 mean DockQ and +0.1314 frac acceptable.** The same
+checkpoint read uncropped is -0.0087. Cropping does flatter the shipped head, by +0.0098, so that
+confound is real and it is small; it does not account for ours moving +0.0918 on the identical
+interfaces and candidates.
+
+AND THE GAIN IS NOW AT THE TOP OF THE LIST, which is what section 8b said it was not:
+
+| | uncropped | cropped |
+|---|---|---|
+| Spearman, all 50 poses | +0.2819 | +0.5810 |
+| Spearman, top 10 by true DockQ | +0.0326 | **+0.2040** |
+| picks the truly best pose | 3.79% | **15.99%** |
+| best pose inside its top 5 | 20.7% | **41.7%** |
+
+(random picks best 2.00%). The cropped +0.5810 also lands beside the training loop's own +0.5593
+at this epoch, so the evaluator's crop reproduces the trainer's in effect and not only in token
+counts.
+
+SO SECTION 8's CONCLUSION WAS AN ARTEFACT OF THE INPUT MISMATCH, not a property of the loss. The
+mean-centred iTM objective taught the head a great deal; reading it on full structures threw that
+away. Section 8b's "the gain is entirely among poses nobody picks" was measuring the same artefact.
+
+WHAT THIS DOES NOT YET SHOW. These are the structures the arm trained on, so memorisation is
+available to it, and the held-out pair (valfull, budget 30, both heads cropped) is the measurement
+that matters. It also does NOT make the arm useful as it stands: deployment is uncropped, and
+uncropped it is not better than shipped. What it argues for is training uncropped, or otherwise
+closing the train/eval input gap, rather than abandoning the objective.
+
+
 ## Open questions as of 2026-10-27
+
+- **2026-10-30 (section 9): sections 8 and 8b were confounded by the train/eval input
+  mismatch.** Matched cropping moves the same epoch-30 checkpoint from -0.0087 to
+  +0.0733 in-sample and moves the top-10 Spearman from +0.03 to +0.20. The held-out
+  matched pair is running; it is the number that decides whether to train uncropped.
 
 - **ANSWERED 2026-10-30 (section 8): a within-interface ranking loss can move the
   ranking metric a long way and still not move selection, in-sample.** +0.24 of median
