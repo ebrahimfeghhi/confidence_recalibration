@@ -503,7 +503,7 @@ def main():
                     help="also score every N optimiser steps. 0 disables. A full pass is 5,300 "
                          "validation units at 0.82 s/unit = ~73 min, MEASURED on GATE 1 2026-10-16 (73 units/min over 5,300). An earlier 0.187 s/unit here came from a small probe of small structures with the model already warm and was 4.4x optimistic, so at 97 steps/epoch this "
                          "is normally left off in favour of --eval-every-epoch.")
-    ap.add_argument("--train-eval-pool", default="",
+    ap.add_argument("--eval-pool", "--train-eval-pool", dest="train_eval_pool", default="",
                     help="score the head on THIS pool of TRAINING interfaces at epoch boundaries, "
                          "in addition to (or instead of) validation. The question `is the model "
                          "learning at all` is about the training set, and --eval-every-epoch only "
@@ -511,10 +511,10 @@ def main():
                          "it scores exactly the poses it trained on. Sharded over every card the "
                          "run was given, with the other ranks parked at a barrier, same as the "
                          "validation path.")
-    ap.add_argument("--train-eval-every", type=int, default=2,
+    ap.add_argument("--eval-pool-every", "--train-eval-every", dest="train_eval_every", type=int, default=2,
                     help="epochs between training-set evaluations. Ignored without "
                          "--train-eval-pool.")
-    ap.add_argument("--train-eval-fold", default="",
+    ap.add_argument("--eval-pool-fold", "--train-eval-fold", dest="train_eval_fold", default="",
                     help="score --train-eval-pool against THIS fold instead of --fold. The point "
                          "is to watch a held-out signal every few epochs without paying for the "
                          "whole validation set: a 10-structure validation pool is ~1,000 units "
@@ -524,10 +524,10 @@ def main():
                          "different seeds, and with --train-eval-budget, which otherwise defaults "
                          "to the count of THIS run's --seeds and would silently score a tenth of "
                          "a 100-seed fold.")
-    ap.add_argument("--train-eval-seed-base", type=int, default=-1,
+    ap.add_argument("--eval-pool-seed-base", "--train-eval-seed-base", dest="train_eval_seed_base", type=int, default=-1,
                     help="the first seed of --train-eval-fold. -1 (default) uses this run's own "
                          "--seeds, which is right only when the pool lives in --fold.")
-    ap.add_argument("--train-eval-budget", type=int, default=0,
+    ap.add_argument("--eval-pool-budget", "--train-eval-budget", dest="train_eval_budget", type=int, default=0,
                     help="seeds per interface for the training-set metric. 0 derives it from "
                          "--seeds, which is the only honest default: the pool has no more depth "
                          "than the run trained on.")
@@ -5348,7 +5348,10 @@ def main():
         if not is_main:
             return          # the caller already holds the other ranks at a barrier
         torch.save(_head_ckpt_tensors(), cp)
-        kind = ("pool@" + os.path.basename((a.train_eval_fold or a.fold).rstrip("/"))
+        # NAMED AFTER THE POOL, like the files it writes. "pool@fold" named the FOLD, which is
+        # "fold" for every pool in this project and so said nothing; and the flags that drive this
+        # are spelled --eval-pool-* precisely so no line anywhere calls an evaluation "train".
+        kind = (os.path.basename(os.path.dirname(os.path.abspath(train_pool)).rstrip("/")) or "pool"
                 if train_pool else "validation")
         # NAMED AFTER THE POOL, NOT THE MECHANISM. These used to be metric_train_ep<N>.json
         # whatever --train-eval-pool pointed at, so on this arm -- which points it at

@@ -22,6 +22,18 @@
 # trainer REFUSES --crop-log with margin 0 saying "nothing is cropped". --crop-contact is dropped
 # from this script entirely so no reader has to wonder whether it still bites.
 #
+# EVALUATED EVERY EPOCH, not every 5. The valfull pass is ~6 min and it is UNCROPPED either way
+# -- the evaluator never cropped -- so it costs the same here as it did on the cropped arm, while
+# the epoch it sits beside grows from 29.9 min to ~123. That turns a 20% overhead into ~5%, for
+# five times the held-out resolution. It matters because this run is NOT a 60-epoch commitment:
+# the held-out series has swung +-0.08 Spearman between adjacent eval points, and the decision to
+# spend the remaining four days is taken at epochs 5 and 10 on whatever points exist by then.
+#
+# THE FLAGS ARE SPELLED --eval-pool-*, not --train-eval-*. Same dests, so a resume still compares
+# the same guard fields; the old spellings remain as aliases. The mechanism's name put the word
+# "train" on the only HELD-OUT numbers this project produces, which is how metric_train_ep25.json
+# came to hold a valfull result.
+#
 # MEMORY IS THE RISK AND IT IS NOT SETTLED. The cropped arm peaks at 67.08 GB allocated with a
 # largest unit of 801 tokens; uncropped the largest is 1543 (9tuz), a 3.71x growth in every n^2
 # activation. The usual lever is unavailable -- --blocks-per-ckpt must stay 0, because the
@@ -121,9 +133,9 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --save-every 250 \
   --pae-scored-pairs training/full_train/pool_winnable.csv --pae-only \
   --shuffle structure --seeds 500000-500009 \
-  --train-eval-pool training/valfull/pool.csv \
-  --train-eval-fold validation/fold --train-eval-seed-base 400000 \
-  --train-eval-budget 30 --train-eval-every 5 \
+  --eval-pool training/valfull/pool.csv \
+  --eval-pool-fold validation/fold --eval-pool-seed-base 400000 \
+  --eval-pool-budget 30 --eval-pool-every 1 \
   --prefetch-units 2 --prefetch-workers 4 \
   --blocks-per-ckpt 0 --dist-backend gloo --dist-timeout-min 240 \
   --max-rss-gb 80 --preload-min-free-gb 260 \
