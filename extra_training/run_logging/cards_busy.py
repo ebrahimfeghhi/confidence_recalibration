@@ -28,7 +28,26 @@ import subprocess
 import sys
 
 # The reservation processes. They are ours; never signal them, and do not count them as intruders.
-HOLDERS = {306042, 306045, 306050}
+# READ FROM training/runs/gpu_holder_pids, NOT HARDCODED. A holder restarted at a smaller --gib
+# gets a NEW pid, and a holder pid this set does not know reads as an INTRUDER -- which makes this
+# print non-zero, which makes every launch script and the watchdog refuse cards that are in fact
+# ours. The literals below are the pids that ran from 2026-10-17, kept only as a fallback for a
+# missing file.
+def _holder_pids():
+    import os
+    f = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                     "training", "runs", "gpu_holder_pids")
+    try:
+        with open(f) as fh:
+            v = {int(x) for x in fh.read().split() if x.strip().isdigit()}
+        if v:
+            return v
+    except Exception:
+        pass
+    return {306042, 306045, 306050}
+
+
+HOLDERS = _holder_pids()
 DEFAULT_CARDS = "4,5,7"
 
 

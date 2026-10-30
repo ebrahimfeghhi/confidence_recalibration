@@ -9,6 +9,7 @@
 # Usage: run_health.sh <rid>
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
+HOLDERS=" $( [ -r training/runs/gpu_holder_pids ] && tr '\n' ' ' < training/runs/gpu_holder_pids || echo '306042 306045 306050' ) "
 PY=/home/ebrahim/Protenix/.venv/bin/python
 RID="${1:?usage: run_health.sh <rid>}"
 RUNDIR="$(pwd)/training/runs/$RID"
@@ -18,12 +19,12 @@ echo "=== $RID at $(TZ=America/New_York date '+%-I:%M %p %Z') ==="
 N=0
 for P in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | tr -d ' ' | sort -u); do
   case "$P" in ""|*[!0-9]*) continue ;; esac
-  case " 306042 306045 306050 " in *" $P "*) continue ;; esac
+  case "$HOLDERS" in *" $P "*) continue ;; esac
   [ -r "/proc/$P/cmdline" ] || continue
   case "$(tr '\0' ' ' < "/proc/$P/cmdline")" in *"--out $RUNDIR "*|*"--out $RUNDIR/"*) N=$((N+1)) ;; esac
 done
 echo "  ranks alive: $N/3"
-H=0; for p in 306042 306045 306050; do [ -d /proc/$p ] && H=$((H+1)); done
+H=0; for p in $HOLDERS; do [ -d /proc/$p ] && H=$((H+1)); done
 echo "  GPU holders: $H/3$([ "$H" -lt 3 ] && echo '   *** FLAG: a holder is gone ***')"
 
 # PROGRESS AND PACE, from the trajectory the run writes.

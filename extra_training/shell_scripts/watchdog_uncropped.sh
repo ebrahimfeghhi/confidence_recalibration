@@ -22,6 +22,7 @@
 # Usage: watchdog_uncropped.sh <rid> [poll_s]
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
+HOLDERS=" $( [ -r training/runs/gpu_holder_pids ] && tr '\n' ' ' < training/runs/gpu_holder_pids || echo '306042 306045 306050' ) "
 PY=/home/ebrahim/Protenix/.venv/bin/python
 RID="${1:?usage: watchdog_uncropped.sh <rid> [poll_s]}"
 POLL="${2:-120}"
@@ -38,7 +39,7 @@ alive_count() {
   local n=0 P CMD
   for P in $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | tr -d ' ' | sort -u); do
     case "$P" in ""|*[!0-9]*) continue ;; esac
-    case " 306042 306045 306050 " in *" $P "*) continue ;; esac     # GPU holders, never counted
+    case "$HOLDERS" in *" $P "*) continue ;; esac     # GPU holders, never counted
     [ -r "/proc/$P/cmdline" ] || continue
     CMD="$(tr '\0' ' ' < "/proc/$P/cmdline")"
     case "$CMD" in *"--out $RUNDIR "*|*"--out $RUNDIR/"*) n=$((n+1)) ;; esac

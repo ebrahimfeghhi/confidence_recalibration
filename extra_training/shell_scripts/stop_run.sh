@@ -25,7 +25,7 @@
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
-HOLDERS=" 306042 306045 306050 "
+HOLDERS=" $( [ -r training/runs/gpu_holder_pids ] && tr '\n' ' ' < training/runs/gpu_holder_pids || echo '306042 306045 306050' ) "
 TERM_WAIT=60      # seconds to allow a clean exit; an epoch boundary is ~3.5 min of training
 KILL_WAIT=20
 
