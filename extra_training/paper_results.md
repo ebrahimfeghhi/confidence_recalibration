@@ -655,13 +655,17 @@ at ALL SEVEN epochs -- one interface of 92, never moving, carrying no informatio
 | 4 | ours, MEAN | +0.2230 | -0.1381 | 66.5/150 | 4.35% | 6.5% |
 | 7 | ours, MEAN | +0.2334 | -0.1133 | 70.0/150 | 2.17% | 4.3% |
 | 7 | ours, MAX | +0.2509 | -0.1352 | 68.0/150 | 0.00% | 3.3% |
+| 8 | ours, MEAN | +0.2370 | -0.1191 | 76.0/150 | 1.09% | 4.3% |
+| 9 | ours, MEAN | +0.2321 | -0.1356 | 73.0/150 | 1.09% | 4.3% |
+| 9 | ours, MAX | +0.2294 | -0.1501 | 70.0/150 | 0.00% | 3.3% |
 | -- | shipped ipTM | +0.1709 | -0.0607 | 68.8/150 | 0.00% | 3.3% |
 
 Random picks the best pose 0.7% of the time and puts it in its top 5 3.3%.
 
-**Ordering over all 150 candidates improved and stayed above shipped: +0.2074 -> +0.2334 against
-shipped's +0.1709. Ordering over the ten poses worth picking is NEGATIVE at every epoch and WORSE
-than shipped at every epoch: -0.1133 against -0.0607 at epoch 7.** The gain is in separating bad
+**Ordering over all 150 candidates improved and stayed above shipped: +0.2074 -> +0.2321 at
+epoch 9 against shipped's +0.1709. Ordering over the ten poses worth picking is NEGATIVE at every
+epoch and WORSE than shipped at every epoch: -0.1356 against -0.0607 at epoch 9, and it has not
+trended toward zero over nine epochs.** The gain is in separating bad
 poses from other bad poses. Selection reads only the top, which is why dMEAN peaked at epoch 4 and
 decayed for three straight epochs back to its epoch-2 level.
 
@@ -692,5 +696,82 @@ it does not move mean DockQ, which is what section 1's target is stated in.
 - MAX pooling is the readout nothing optimises and it crossed above MEAN on selected DockQ at
   epoch 6 (+0.0040 against +0.0024). Two readouts trading places is further evidence that neither
   selection number carries signal at this sample size.
-- Training-side health is not in question: PAE 3.1671 -> 3.0077, the rel term monotone
-  0.01230 -> 0.01141, sd_ratio 0.240 -> 0.368 and still widening, so no margin collapse.
+- Training-side health is not in question: PAE 3.1671 -> 3.0004, the rel term 0.01230 -> 0.01143,
+  sd_ratio 0.240 -> 0.388 and still widening, so no margin collapse. Through epoch 9 the arm is
+  training cleanly and the gain is still in the wrong place.
+
+## 13. LABEL-FREE PREDICTED-INTERFACE CROPPING RECOVERS NOTHING. Section 9b needed the ground-truth crop specifically
+
+Section 9b's +0.0376 (MAX) was measured with a crop built from the TRUE structure, so it is not a
+deployable number. The question this section answers: does the gain survive when the crop is built
+from the model's OWN predicted poses, using no labels at all?
+
+**It does not.** Four eval passes, same epoch-30 cropped checkpoint (`t4jtjr/head_ep30_step3660.pt`),
+92 interfaces, 150 candidates each, OURS and SHIPPED scored on the IDENTICAL crop:
+
+| margin | pooling | ours | shipped | delta | t | rho ours | rho shipped | d rho | t |
+|--------|---------|------|---------|-------|---|----------|-------------|-------|---|
+| 5 A | MEAN | 0.5745 | 0.5848 | **-0.0104** | -0.98 | +0.2597 | +0.2351 | +0.0123 | +0.44 |
+| 5 A | MAX | 0.5889 | 0.5831 | **+0.0058** | +1.25 | +0.2997 | +0.1955 | +0.0266 | +1.06 |
+| 2.5 A | MEAN | 0.5813 | 0.5855 | **-0.0042** | -0.80 | +0.2523 | +0.2313 | +0.0068 | +0.25 |
+| 2.5 A | MAX | 0.5837 | 0.5853 | **-0.0016** | -0.29 | +0.2786 | +0.1969 | +0.0405 | +1.64 |
+
+Reference, SAME checkpoint, GROUND-TRUTH crop (section 9b): MEAN **+0.0226**, MAX **+0.0376**.
+
+The control that matters is the shipped head on the same crop, NOT `baseline_mean_dockq` (the
+stored uncropped ipTM, 0.5831), which differs from both arms by the crop itself. Computed by
+`run_logging/predcrop_compare.py`, which refuses if the two passes do not cover the same
+interfaces and the same pose set.
+
+### IT IS NOT A SIZE PROBLEM, AND NOT A COVERAGE PROBLEM
+
+The obvious explanation -- the label-free crop is too loose, so the arm never sees the regime it was
+trained in -- is measurable and false:
+
+| crop | tokens kept, median | recall of GT-crop tokens | interface coverage |
+|------|---------------------|--------------------------|--------------------|
+| ground-truth (section 9b) | 51.0% | 1.0000 | 1.0000 |
+| predicted union, 5 A margin | 74.4% | 0.8873 | 1.0000 |
+| predicted union, 2.5 A margin | 57.1% | 0.7248 | 1.0000 (p10 0.9359) |
+
+At 2.5 A the crop is 57% of the structure against the ground-truth crop's 51%, it keeps every true
+interface token on every one of the 53 structures measured, and it still recovers nothing. The crop
+is the right SIZE and contains the right REGION; what it does not reproduce is the ground-truth
+crop's exact token set.
+
+### WHAT DID TRANSFER: ORDERING, NOT SELECTION
+
+`rho` beats shipped at both margins and under both poolings (+0.0068 to +0.0405). Selected DockQ
+does not follow. **This is the section 12 dissociation for the third time, now on a third crop
+regime.** Ranking quality is portable across crops; the top of the ranking is not.
+
+### CONSTRUCTION, SO THIS IS REPRODUCIBLE
+
+`run_logging/build_union_crop_masks.py` writes one boolean token mask per structure: for each of
+the 150 candidate poses, take the tokens within 5 A of a cross-chain contact, expand by the margin,
+then UNION over all poses. One shared crop per structure, so every candidate is scored by the same
+ipTM `d0` and the scores stay comparable -- a per-pose crop was ruled out for exactly this reason
+(`d0` measured moving 3.00 -> 4.81 A within one interface, changing the TM weight at 8 A from 0.123
+to 0.266). The mask carries a `__meta` record: margin, contact threshold, seed range, budget,
+nsample, pool/trunk/label paths, the unit SHA digest (`22d4c9246e51d750`) and the builder commit.
+`--verify-rule` asserts bit-identity against `BC.interface_crop_tokens` on all 53 structures.
+`phase_k_eval.py --crop-tokens` consumes it; `--crop-tokens` and `--crop-margin` are mutually
+exclusive at parse time.
+
+### HONEST LIMITS
+
+- No t clears 2. The claim is "no recovery", which the three negative/near-zero deltas support
+  jointly; no single one is significant.
+- Interface coverage is seeded from labels. It is a DIAGNOSTIC of a label-free crop, not part of
+  the crop rule -- the mask itself reads only predicted coordinates.
+- `9y7n` sits at 0.6000 interface coverage at EVERY margin including 10 A. That is not a crop
+  failure: across 500 poses its best DockQ is 0.0540, so no pose goes near the true epitope and
+  there is nothing for a predicted crop to find.
+- Margin was fixed by one rule and reported on both pools, because the margin that matches the
+  ground-truth crop SIZE differs between them (valfull 2.5 A -> 57.1%; train 2.5 A -> 41.4%).
+
+### WHAT THIS CLOSES
+
+Predicted-interface cropping is not worth retraining on. The cheap test was run precisely to avoid
+that cost, and it came back negative. Section 9b's gain is not recoverable without labels, which
+means it is not a result we can ship.
