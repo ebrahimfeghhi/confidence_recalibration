@@ -98,8 +98,15 @@ def heldout(rids):
             sh = np.array([spearmanr([p[2] for p in by[k]], [p[3] for p in by[k]]).correlation
                            for k in ks])
             m = np.isfinite(om) & np.isfinite(sh)
+            # BOTH POOLINGS AND FRAC ACCEPTABLE. The arm trains the MEAN, so MEAN is primary,
+            # but a readout nothing optimises crossing the one that is optimised is evidence the
+            # optimised one is noise -- it happened at epoch 6 -- so MAX is carried too.
+            mx = np.array([select_tied.expected_pick(by[k], 1, 3)[0] for k in ks])
+            fa_o = np.mean([select_tied.expected_pick(by[k], 0, 3, 0.23)[1] for k in ks])
+            fa_s = np.mean([select_tied.expected_pick(by[k], 2, 3, 0.23)[1] for k in ks])
             out[ep] = (float(ours.mean() - shp.mean()), float(np.median(om[m])),
-                       float(np.median(sh[m])), len(ks))
+                       float(np.median(sh[m])), len(ks),
+                       float(mx.mean() - shp.mean()), float(fa_o), float(fa_s))
     return out
 
 
@@ -107,13 +114,14 @@ tc, tu = train_table(CROP), train_table(UNCROP)
 hc, hu = heldout(CROP), heldout(UNCROP)
 
 CC, CU = "#b2182b", "#2166ac"
-fig, ax = plt.subplots(3, 2, figsize=(13.4, 11.2))
+fig, ax = plt.subplots(4, 2, figsize=(13.4, 14.6))
 fig.suptitle("CROPPED vs UNCROPPED arm, same loss (beta 75, mean-pooled), "
              f"epochs 1-{MAXEP}", fontsize=14, fontweight="bold", y=0.985, va="top")
 fig.text(0.5, 0.945,
-         "TOP TWO ROWS: training metrics -- NOT COMPARABLE between arms, the cropped arm's are "
-         "computed over 333 of 617 tokens.\nBOTTOM ROW: held out, 92 interfaces, BOTH arms "
-         "evaluated UNCROPPED -- this is the comparison that counts.",
+         "ROWS 1-2: training metrics -- NOT COMPARABLE between arms, the cropped arm's are "
+         "computed over 333 of 617 tokens.\nROWS 3-4: held out, 92 interfaces, BOTH arms "
+         "evaluated UNCROPPED -- this is the comparison that counts.   "
+         "Selection is MEAN-pooled ipTM unless a panel says MAX.",
          ha="center", va="top", fontsize=9.5, color="#333333")
 
 
@@ -137,8 +145,9 @@ for axis, key, title in ((ax[0][0], "pae", "PAE loss (train)"),
     axis.legend(fontsize=8.5, loc="best")
 
 # --- held out, the comparable row -------------------------------------------------------------
-for axis, idx, title, zline in ((ax[2][0], 0, "HELD OUT: mean selected DockQ minus shipped", True),
-                                (ax[2][1], 1, "HELD OUT: within-interface Spearman", False)):
+for axis, idx, title, zline in ((ax[2][0], 0, "HELD OUT: selected DockQ - shipped  (MEAN)", True),
+                                (ax[2][1], 1, "HELD OUT: within-interface Spearman  (MEAN)",
+                                 False)):
     # THE CROPPED ARM IS DASHED BECAUSE IT WAS MEASURED EVERY FIVE EPOCHS. A solid line between
     # epoch 5 and epoch 10 would draw a trajectory through four epochs nobody evaluated, which is
     # the same overclaim as interpolating. Dashed + markers says "two measurements" honestly.
@@ -157,27 +166,58 @@ for axis, idx, title, zline in ((ax[2][0], 0, "HELD OUT: mean selected DockQ min
         axis.axhline(sh, color="#555555", ls="--", lw=1.2)
         axis.text(0.015, 0.03, f"shipped {sh:+.4f}", transform=axis.transAxes, fontsize=8.5,
                   color="#555555")
-    axis.set_title(title + "   [both uncropped -- COMPARABLE]", fontsize=10, fontweight="bold")
+    axis.set_title(title, fontsize=10.5, fontweight="bold")
     axis.set_xlabel("epoch")
     axis.grid(alpha=0.25)
     axis.margins(y=0.3)
     axis.legend(fontsize=8.5, loc="best")
 
+_step = 1 if MAXEP <= 12 else 2
+_ticks = list(range(1, MAXEP + 1, _step))
 for row in ax:
     for axis in row:
-        e = [t for t in axis.get_xticks() if float(t).is_integer()]
-        axis.set_xticks(sorted({int(t) for t in e if 1 <= t <= MAXEP}) or [1])
+        axis.set_xticks(_ticks)
+        axis.set_xlim(0.6, MAXEP + 0.4)
 
-fig.tight_layout(rect=[0, 0, 1, 0.925])
+# --- row 4: frac acceptable, and the MAX-pooled readout the loss does not optimise -----------
+for axis, idx, title, ref in ((ax[3][0], 5, "HELD OUT: frac acceptable  (MEAN)", 6),
+                              (ax[3][1], 4, "HELD OUT: selected DockQ - shipped  (MAX)", None)):
+    for tbl, c, lab, st in ((hc, CC, "cropped (every 5 ep)", "o--"),
+                            (hu, CU, "uncropped (every epoch)", "o-")):
+        e = sorted(k for k in tbl if k <= MAXEP)
+        if e:
+            axis.plot(e, [tbl[k][idx] for k in e], st, color=c, lw=2.1, ms=6.4, label=lab,
+                      alpha=0.95)
+    if ref is not None:
+        sv = (list(hu.values()) + list(hc.values()))[0][ref]
+        axis.axhline(sv, color="#555555", ls="--", lw=1.2)
+        axis.text(0.015, 0.04, f"shipped {sv:.4f}   (a step is 1/92 = 0.0109)",
+                  transform=axis.transAxes, fontsize=8.5, color="#555555")
+    else:
+        axis.axhline(0, color="#555555", ls="--", lw=1.2)
+        axis.text(0.015, 0.04, "0 = shipped head   (the loss trains the MEAN, not this)",
+                  transform=axis.transAxes, fontsize=8.5, color="#555555")
+    axis.set_title(title, fontsize=10.5, fontweight="bold")
+    axis.set_xlabel("epoch")
+    axis.grid(alpha=0.25)
+    axis.margins(y=0.32)
+    axis.legend(fontsize=8.5, loc="best")
+
+fig.tight_layout(rect=[0, 0, 1, 0.94])
 fig.savefig(os.path.join(ROOT, OUT), dpi=135)
 print(f"-> {OUT}")
 print(f"\nHELD OUT, both arms evaluated UNCROPPED, 92 interfaces:")
-print("   ep   cropped dMEAN   uncropped dMEAN      cropped rho   uncropped rho")
+print("        cropped arm                     uncropped arm")
+print("   ep   dMEAN    dMAX    rho     facc   dMEAN    dMAX    rho     facc")
 for ep in sorted(set(hc) | set(hu)):
     if ep > MAXEP:
         continue
-    c = hc.get(ep)
-    u = hu.get(ep)
-    print(f"   {ep:2d}   {'%+.4f' % c[0] if c else '     --':>13}   "
-          f"{'%+.4f' % u[0] if u else '     --':>15}   "
-          f"{'%+.4f' % c[1] if c else '     --':>14}   {'%+.4f' % u[1] if u else '     --':>13}")
+    def f(t, i, w=7, p=4):
+        return ("%+.*f" % (p, t[i])) if t else "     --"
+    def g(t, i):
+        return ("%.4f" % t[i]) if t else "    --"
+    c, u = hc.get(ep), hu.get(ep)
+    print(f"   {ep:2d}  {f(c,0)} {f(c,4)} {f(c,1)}  {g(c,5)}  "
+          f"{f(u,0)} {f(u,4)} {f(u,1)}  {g(u,5)}")
+_sh = (list(hu.values()) + list(hc.values()))[0]
+print(f"\n   shipped: facc {_sh[6]:.4f}, rho {_sh[2]:+.4f}; one interface of 92 = 0.0109 of facc")
