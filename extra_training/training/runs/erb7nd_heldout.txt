@@ -1,16 +1,17 @@
 
   held-out WITHIN-INTERFACE SPEARMAN (median over interfaces):
      shipped (MAX)  median +0.1709  mean +0.2218  negative 26%
-        ours, MEAN  median +0.2225  mean +0.2325  negative 26%   +0.0516 vs shipped
-         ours, MAX  median +0.1973  mean +0.2342  negative 30%   +0.0264 vs shipped
-  epoch 3 (BEST of 3), 92 interfaces at 150 candidates -> figures/rel_bars_erb7nd.png
+        ours, MEAN  median +0.2230  mean +0.2358  negative 25%   +0.0520 vs shipped
+         ours, MAX  median +0.2733  mean +0.2441  negative 28%   +0.1024 vs shipped
+  epoch 4 (BEST of 4), 92 interfaces at 150 candidates -> figures/rel_bars_erb7nd.png
 
   EVERY eval epoch (so the --best selection is visible):
       ep  shipped     MEAN     dMEAN      MAX      dMAX
        1   0.5834   0.5832   -0.0001   0.5816   -0.0018
        2   0.5834   0.5848   +0.0014   0.5847   +0.0013
-       3   0.5834   0.5859   +0.0026   0.5842   +0.0009   <- shown
+       3   0.5834   0.5859   +0.0026   0.5842   +0.0009
+       4   0.5834   0.5890   +0.0057   0.5826   -0.0008   <- shown
 
       shipped ipTM (MAX)  mean 0.5834  frac 0.7391
-      ours, MEAN pooling  mean 0.5859  frac 0.7500  delta +0.0026 +- 0.0047 (t=+0.54)
-       ours, MAX pooling  mean 0.5842  frac 0.7391  delta +0.0009 +- 0.0058 (t=+0.15)
+      ours, MEAN pooling  mean 0.5890  frac 0.7500  delta +0.0057 +- 0.0046 (t=+1.23)
+       ours, MAX pooling  mean 0.5826  frac 0.7391  delta -0.0008 +- 0.0063 (t=-0.12)
