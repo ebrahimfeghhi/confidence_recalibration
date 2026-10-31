@@ -28,6 +28,30 @@ size alone already moves DockQ, then any gain from predicted-pose cropping must 
 this baseline, and the honest finding would be "predicted contact count is a pose selector",
 not "the confidence head transfers".
 
+MEASURED, FULL POOL (92 interfaces, 13,800 poses) AND WHY THE SUBSET MISLED:
+
+                                     20 ifaces     92 ifaces (full)
+    select by CONTACT COUNT alone       0.5887               0.4524
+    select by CROP SIZE alone           0.5662               0.5107
+    shipped ipTM                        0.5889               0.5834
+    oracle                              0.6821               0.6926
+    rho(contact count, DockQ)          +0.1580              +0.0557
+
+On 20 interfaces contact count looked LEVEL with shipped and I reported it as a
+bar the experiment would have to clear. On the full pool it is 0.4524 against
+0.5834 -- thirteen points WORSE -- and its within-interface Spearman is three
+times smaller. The subset was an accident. Counting predicted contacts is not a
+pose selector, there is no hidden baseline beyond shipped itself, and the
+contact-count row belongs in the table as a FLOOR, not as a bar.
+
+The d0 finding is unaffected and is the one that changes the design: d0 varies
+3.00 -> 4.81 A across the poses of a single interface, moving the TM weight at
+8 A from 0.123 to 0.266, so --crop-all-poses (one token set per interface) is
+the variant to run first.
+
+NEVER QUOTE A SELECTION NUMBER ON A SUBSET AGAIN. 20 interfaces was enough to
+confuse a 0.0002 difference with a 0.13 one.
+
 NO LABELS ARE READ FOR THE CROP. Coordinates come from `ci_coordinate` in the trunk cache, which
 is what the fold PREDICTED for that pose. DockQ comes from results.csv only to score the result.
 """
