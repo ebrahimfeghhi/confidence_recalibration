@@ -618,3 +618,79 @@ it away. "It fits once" and "it fits for 60 epochs x 122 steps" are different cl
 - `jy6sah` was stopped, not converged -- both curves still climbing at epoch 136.
 - No run exists that is full head + 4 pose-copy layers + no L2 on the full training set. `ocqtyt`
   is the closest and differs only by lacking the pose layers (plus 9dzj, 1 structure of 488).
+
+## 12. UNCROPPED, BETA 75: the ranking gain survives the leak removal, and it is still in the wrong place
+
+`erb7nd`, launched 2026-10-30 3:22 PM EDT. Section 9's result was undeployable because
+`interface_crop_tokens` defines the interface from `label_coordinate`, i.e. ground truth (section
+9c). This arm is section 9's experiment with that one leak removed: `--crop-margin 0`, everything
+else identical -- same loss (PAE + beta 75 mean-centred relative iTM), same architecture including
+the pose-injection layers, same optimiser, no L2-SP, no LoRA, fresh from the pretrained head.
+`--blocks-per-ckpt 1` was required to fit (sections 10 and 11) and is the one unavoidable
+difference from the cropped arm, alongside eval-every-epoch.
+
+### Held out, valfull, 92 interfaces, never trained on, BOTH SIDES UNCROPPED
+
+| ep | dMEAN | t(dMEAN) | rho ALL | paired d | t(rho) | rho TOP-10 |
+|----|-------|----------|---------|----------|--------|------------|
+| 1 | -0.0001 | -0.03 | +0.2074 | +0.0105 | +0.62 | -0.1541 |
+| 2 | +0.0014 | +0.31 | +0.2001 | +0.0034 | +0.24 | -0.1250 |
+| 3 | +0.0026 | +0.54 | +0.2225 | +0.0106 | +0.67 | -0.1129 |
+| 4 | +0.0057 | +1.23 | +0.2230 | +0.0139 | +0.97 | -0.1301 |
+| 5 | +0.0050 | +1.06 | +0.2343 | +0.0211 | +1.54 | -0.1426 |
+| 6 | +0.0024 | +0.56 | +0.2358 | +0.0200 | +1.52 | -0.1191 |
+| 7 | +0.0016 | +0.31 | +0.2334 | +0.0153 | +1.20 | -0.1133 |
+
+Shipped is 0.5834 mean selected DockQ and +0.1709 median within-interface Spearman at every
+epoch, recomputed per epoch from the same rows. frac acceptable is 0.7500 against shipped 0.7391
+at ALL SEVEN epochs -- one interface of 92, never moving, carrying no information.
+
+### THE RESULT: `rank_gain_location.py`, the same diagnostic as section 8b
+
+    run_logging/rank_gain_location.py training/runs/erb7nd/valfull_eval_shards_ep<N> --top 10
+
+| epoch | selector | rho all | rho top | rank of best | picks best | best in top5 |
+|-------|----------|---------|---------|--------------|------------|--------------|
+| 1 | ours, MEAN | +0.2074 | -0.1541 | 66.5/150 | 2.17% | 5.4% |
+| 4 | ours, MEAN | +0.2230 | -0.1381 | 66.5/150 | 4.35% | 6.5% |
+| 7 | ours, MEAN | +0.2334 | -0.1133 | 70.0/150 | 2.17% | 4.3% |
+| 7 | ours, MAX | +0.2509 | -0.1352 | 68.0/150 | 0.00% | 3.3% |
+| -- | shipped ipTM | +0.1709 | -0.0607 | 68.8/150 | 0.00% | 3.3% |
+
+Random picks the best pose 0.7% of the time and puts it in its top 5 3.3%.
+
+**Ordering over all 150 candidates improved and stayed above shipped: +0.2074 -> +0.2334 against
+shipped's +0.1709. Ordering over the ten poses worth picking is NEGATIVE at every epoch and WORSE
+than shipped at every epoch: -0.1133 against -0.0607 at epoch 7.** The gain is in separating bad
+poses from other bad poses. Selection reads only the top, which is why dMEAN peaked at epoch 4 and
+decayed for three straight epochs back to its epoch-2 level.
+
+THIS IS SECTION 8b REPRODUCED WITHOUT THE GROUND-TRUTH CROP. The cropped arm showed +0.2819 rho
+all with +0.0326 rho top and picks-best 3.79% against shipped 3.98%. Removing the leak changed the
+magnitudes and left the shape intact, which RULES OUT the crop as the explanation for the
+dissociation. The dissociation is a property of the loss.
+
+WHAT THE LOSS DOES: the relative-iTM term sums squared error over all 50 poses per scored chain
+pair with equal weight, so nearly all of its gradient comes from the ~40 poses no selector reads.
+It optimised what it was asked to optimise. A selection-relevant objective has to concentrate
+where selection happens.
+
+### THE ONE THING ON OUR SIDE, AND ITS SIZE
+
+picks-best is 2.17% at epochs 1 and 7 and 4.35% at epoch 4, against **0.00% for shipped** and 0.7%
+for random. On 92 interfaces, 2.17% is TWO interfaces and 4.35% is FOUR. It is not nothing --
+shipped never picks the best pose on this pool -- but two interfaces cannot support a claim, and
+it does not move mean DockQ, which is what section 1's target is stated in.
+
+### HONEST LIMITS
+
+- No t statistic in this section clears 2. The negative `rho top` is worth believing because it is
+  consistent across all seven epochs and against both poolings, NOT because any single value is
+  significant.
+- `rho top` is computed against TRUE DockQ, so it is a diagnostic, not a deployment number. It
+  says where a gain sits; it cannot be computed at deployment time.
+- MAX pooling is the readout nothing optimises and it crossed above MEAN on selected DockQ at
+  epoch 6 (+0.0040 against +0.0024). Two readouts trading places is further evidence that neither
+  selection number carries signal at this sample size.
+- Training-side health is not in question: PAE 3.1671 -> 3.0077, the rel term monotone
+  0.01230 -> 0.01141, sd_ratio 0.240 -> 0.368 and still widening, so no margin collapse.
