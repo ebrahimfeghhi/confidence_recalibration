@@ -724,6 +724,17 @@ def main():
                     help="define the crop from the union over all poses rather than pose 0, "
                          "matching phase_k_train --crop-all-poses. MUST match the arm being "
                          "scored; the arms in this project do not pass it.")
+    ap.add_argument("--crop-tokens", default="",
+                    help="score on a PRECOMPUTED token mask per structure instead of the "
+                         "ground-truth interface crop. The npz is written by "
+                         "run_logging/build_union_crop_masks.py and holds <pdb> -> bool[n_token], "
+                         "the UNION over every candidate pose of that pose's own PREDICTED "
+                         "interface. THE POINT: --crop-margin defines the crop from "
+                         "label_coordinate, so no number it produces is a deployment number "
+                         "(section 9c). This mask is built from ci_coordinate -- what the fold "
+                         "predicted -- so it needs no experimental structure and could be built "
+                         "at inference. Mutually exclusive with --crop-margin: two crop rules at "
+                         "once is a silent mismatch waiting to happen, and the run refuses it.")
     ap.add_argument("--labels", default="",
                     help="label npz root for --crop-margin; defaults to <fold>/labels. The crop "
                          "needs ground-truth coordinates, which is why this evaluator could "
@@ -837,6 +848,16 @@ def main():
                     help="comma-separated row csvs from --rows-out. Runs the self-check, the "
                          "coverage contract and the metric on their union, on CPU, with no model.")
     a = ap.parse_args()
+    # CHECKED FROM argv, BEFORE ANYTHING LOADS. Two crop rules at once is knowable here, and a
+    # refusal that waits for the model load arrives minutes later and on a worker.
+    if a.crop_tokens and a.crop_margin > 0:
+        raise SystemExit("STOP: --crop-tokens and --crop-margin both set. They are two different "
+                         "crop rules -- a precomputed label-free mask and a ground-truth "
+                         "interface crop -- and the run would apply one while the log named the "
+                         "other. Pass exactly one.")
+    if a.crop_tokens and not os.path.exists(a.crop_tokens):
+        raise SystemExit(f"STOP: --crop-tokens {a.crop_tokens} does not exist. Build it with "
+                         f"run_logging/build_union_crop_masks.py.")
     if a.dump_pae:
         if not a.pair_iptm_only:
             raise SystemExit("STOP: --dump-pae needs --pair-iptm-only; the PAE probabilities it "
@@ -1082,6 +1103,16 @@ def main():
     _pf_future = None
 
     rows, selfchk, n_nosample = [], [], 0
+    _CROPTOK = {}
+    if a.crop_tokens:
+        _ctz = np.load(a.crop_tokens)
+        _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
+                    if not k.endswith("__n")}
+        _ctn = {k[:-3]: np.asarray(_ctz[k]) for k in _ctz.files if k.endswith("__n")}
+        _kf = [float(v[1]) / float(v[2]) for v in _ctn.values()] or [float("nan")]
+        print(f"CROP: precomputed LABEL-FREE token masks from {a.crop_tokens} -- "
+              f"{len(_CROPTOK)} structure(s), median kept fraction {float(np.median(_kf)):.4f}, "
+              f"built from {int(np.median([v[0] for v in _ctn.values()]))} pose(s) each (median)")
     _n_cropped = _n_nocrop = _tok_full = _tok_kept = 0
     _labels_root = a.labels or os.path.join(a.fold, "labels")
     if a.crop_margin > 0:
@@ -1099,7 +1130,36 @@ def main():
         # a failed join just drops the unit. The crop applies to what the HEAD consumes; px stays
         # whole. This also keeps every existing join cache valid, because the join is unchanged.
         _px_full = None
-        if a.crop_margin > 0:
+        if a.crop_tokens:
+            # THE MASK IS LOOKED UP BY PDB AND ITS ABSENCE IS FATAL, never a silent fall-through
+            # to the full structure: a pass where half the units were cropped and half were not
+            # would still write a complete metric and name itself after the crop.
+            _kt = _CROPTOK.get(pdb)
+            if _kt is None:
+                raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb}. The file names "
+                                 f"{len(_CROPTOK)} structure(s); this pool needs {pdb} too. "
+                                 f"Rebuild the mask over this pool.")
+            _zc = np.load(tp)
+            _px_full = np.asarray(_zc["ci_coordinate"])
+            _a2t = np.asarray(_zc["ci_feat_atom_to_token_idx"]).reshape(-1)
+            _ntok = int(np.asarray(_zc["ci_feat_asym_id"]).reshape(-1).shape[0])
+            if _kt.shape[0] != _ntok:
+                raise SystemExit(f"STOP: {pdb}'s mask has {_kt.shape[0]} token(s) but its cached "
+                                 f"trunk has {_ntok}. The mask was built against a different "
+                                 f"cache and slicing with it would scramble the structure.")
+            _lp = os.path.join(_labels_root, pdb, f"free_{sd_}.npz")
+            if not os.path.exists(_lp):
+                raise SystemExit(f"STOP: --crop-tokens still needs the label npz to slice the "
+                                 f"unit's label arrays and {_lp} does not exist. The CROP is "
+                                 f"label-free; the slicing bookkeeping is not.")
+            _lab = np.load(_lp, allow_pickle=True)
+            _inr = (_a2t >= 0) & (_a2t < _ntok)
+            _ka = np.zeros(_a2t.shape[0], dtype=bool)
+            _ka[_inr] = _kt[_a2t[_inr]]
+            feat, s_in, s_tr, z, x, nc = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev, torch)[:6]
+            _n_cropped += 1
+            _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
+        elif a.crop_margin > 0:
             _lp = os.path.join(_labels_root, pdb, f"free_{sd_}.npz")
             if not os.path.exists(_lp):
                 raise SystemExit(f"STOP: --crop-margin needs a label npz and {_lp} does not "
