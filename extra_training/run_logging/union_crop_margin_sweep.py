@@ -20,6 +20,28 @@ it: the crop never sees a label. Measuring "did we keep the real contacts" requi
 they are, which is exactly what we are not allowed to use at inference and exactly what we are
 allowed to use when auditing.
 
+MEASURED ON BOTH POOLS. The margin that matches the ground-truth crop's size is NOT the same on
+the two, so it cannot be tuned on one and used on the other:
+
+    VALFULL, 53 structures (full 481 tokens, GT crop 51.0%)
+      margin 2.5 -> 57.1%   recall 0.7248   iface cov 1.0000 (p10 0.9359)
+      margin 5.0 -> 74.4%   recall 0.8873   iface cov 1.0000 (p10 1.0000)
+      margin 10  -> 90.6%   recall 1.0000   iface cov 1.0000
+
+    TRAIN, 368 structures (full 619 tokens, GT crop 53.3%)
+      margin 2.5 -> 41.4%   recall 0.5875   iface cov 1.0000 (p10 0.9500)
+      margin 5.0 -> 59.7%   recall 0.8069   iface cov 1.0000 (p10 1.0000)
+      margin 10  -> 82.1%   recall 0.9985   iface cov 1.0000
+
+5 A is a good size match on TRAIN (59.7% against 53.3%) and a poor one on VALFULL (74.4% against
+51.0%); 2.5 A is the reverse. Training structures are larger and their predicted poses cluster
+more tightly, so the union is relatively smaller. Fix the margin by one rule, report both pools,
+and do not tune it per pool.
+
+CROSS-CHECKED AGAINST THE TRAINER ITSELF: crop_sizes_rank*.csv over 199,800 cropped poses gives a
+median kept fraction of 0.5336 against this script's 53.3% on the same pool, so the reference is
+the crop the arm trained on and not a reimplementation of it.
+
 THE EXPANSION IS RECOMPUTED PER MARGIN, THE CONTACTS ONCE. Interface seeding (the cKDTree
 query_pairs over every atom, which is the expensive part) does not depend on the margin, so all
 margins share it. That is also why the margin-10 column must still reproduce
