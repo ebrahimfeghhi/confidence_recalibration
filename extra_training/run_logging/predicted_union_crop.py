@@ -14,6 +14,32 @@ the coordinate array as an argument. `--verify` feeds it the label arrays and as
 BIT-IDENTICAL to interface_crop_tokens on every structure measured; if that assertion fails, every
 comparison below is between a crop and a different crop's reimplementation and means nothing.
 
+MEASURED, FULL POOL (53 structures, 150 poses each, 92 interfaces):
+
+    full structure            median  481 tokens
+    GROUND-TRUTH crop         median  236 tokens  (49.1% of full)   d0 5.70 A
+    PREDICTED union crop      median  426 tokens  (88.6% of full)   d0 7.42 A
+    predicted, ONE pose only  median  323 tokens  (67.2% of full)
+
+    recall    (GT tokens kept by the predicted union)   1.0000  (p10 0.9849)
+    precision (predicted-union tokens that are GT)      0.6119
+    Jaccard                                             0.6119
+
+THE UNION FINDS THE INTERFACE AND THEN KEEPS ALMOST EVERYTHING ELSE TOO. Recall
+is 1.0000: the decoys' own interfaces cover the true one on every structure
+measured, worst case 0.930. But it discards 11.4% of the structure where the
+ground-truth crop discards 50.9%, so as a CONCENTRATOR it does about a fifth of
+the work. A single pose's crop (67.2%) is nearer the ground-truth crop in size
+than the union is -- the union's breadth is the price of not knowing which pose
+is right.
+
+WHAT THAT PREDICTS. Section 12 measured the available gain as concentrating
+supervision on near pairs; removing an eighth of the tokens concentrates little,
+so this crop should recover materially less than section 9b's +0.0376 (MAX) /
++0.0226 (MEAN). It is still worth scoring, because it costs one eval and it
+settles whether section 9b was concentration or leakage -- but it should not be
+launched expecting 9b's number.
+
 ANY-CHAIN CONTACTS, as the ground-truth crop uses. interface_crop_tokens seeds its interface from
 heavy-atom pairs on DIFFERENT chains, which for an H/L/antigen complex includes the heavy-light
 pair. Restricting the predicted version to antibody-antigen only would compare two different
