@@ -59,6 +59,7 @@ OUT = None      # set after ONLY is parsed
 # epoch numbering, so globbing RID alone would silently drop every eval point from before a pause.
 sys.path.insert(0, os.path.join(ROOT, "run_logging"))
 import plot_three                                                            # noqa: E402
+import select_tied                                                           # noqa: E402
 RUNS = [os.path.join(ROOT, "training", "runs", r) for r in plot_three.run_chain(RID)]
 RUN = RUNS[-1]
 
@@ -100,7 +101,9 @@ for dd in dirs:
     g_, fl_, kp_ = load(dd)
     if not kp_:
         continue
-    pk = lambda j: np.array([max(g_[i], key=lambda t: t[j])[3] for i in kp_])  # noqa: E731
+    # TIES AVERAGED -- see run_logging/select_tied.py.
+    pk = lambda j: np.array(  # noqa: E731
+        [select_tied.expected_pick(g_[i], j, 3)[0] for i in kp_])
     ALL.append((e_, dd, float(pk(1).mean()), float(pk(0).mean()), float(pk(2).mean()), len(kp_)))
 if not ALL:
     sys.exit("  no eval epoch has a complete candidate set with both columns")
@@ -109,7 +112,8 @@ ep = int(re.search(r"ep(\d+)$", d).group(1))
 
 by, full, keep = load(d)
 n = len(keep)
-pick = lambda j: np.array([max(by[i], key=lambda t: t[j])[3] for i in keep])  # noqa: E731
+pick = lambda j: np.array(  # noqa: E731
+    [select_tied.expected_pick(by[i], j, 3)[0] for i in keep])
 # THE SHIPPED BAR SAYS "MAX" IN ITS OWN LABEL, in every figure. A footnote on one figure is not
 # enough: the comparison is shipped-MAX against ours-MEAN there, and a reader scanning the bars
 # should not have to find the note to know that. Nothing has ever run the shipped head with

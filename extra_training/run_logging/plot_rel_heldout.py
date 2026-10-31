@@ -41,6 +41,7 @@ from matplotlib.ticker import MaxNLocator
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "run_logging"))
 import eval_dirs                                                             # noqa: E402
+import select_tied                                                           # noqa: E402
 RID = sys.argv[1] if len(sys.argv) > 1 else "o2qczq"
 OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/rel_heldout_{RID}.png"
 RUN = os.path.join(ROOT, "training", "runs", RID)
@@ -74,7 +75,9 @@ for ep_, d in sorted(eval_dirs.shard_dirs(RUN).items()):
     if len(keep) < 10:
         continue
     have_mean = all(all(x[1] is not None for x in by[i]) for i in keep)
-    pick = lambda j: np.array([max(by[i], key=lambda t: t[j])[3] for i in keep])  # noqa: E731
+    # TIES AVERAGED -- see run_logging/select_tied.py. max() resolved them by row order.
+    pick = lambda j: np.array(  # noqa: E731
+        [select_tied.expected_pick(by[i], j, 3)[0] for i in keep])
     base = pick(2)
     mx = pick(0)
     mn = pick(1) if have_mean else None

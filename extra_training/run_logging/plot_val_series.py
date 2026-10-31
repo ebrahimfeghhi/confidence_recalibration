@@ -36,6 +36,7 @@ from matplotlib.ticker import MaxNLocator
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "run_logging"))
 import eval_dirs                                                             # noqa: E402
+import select_tied                                                           # noqa: E402
 import plot_three                                                            # noqa: E402
 
 RID = sys.argv[1] if len(sys.argv) > 1 else "erb7nd"
@@ -90,9 +91,13 @@ for ep in sorted(dirs):
     eps.append(ep)
     S["n"].append(len(keep))
     for tag, j in (("max", 0), ("mean", 1), ("ship", 2)):
-        dq = np.array([max(g[i], key=lambda t: t[j])[3] for i in keep])
+        # TIES AVERAGED, NOT SORTED THROUGH. stored_iptm is 4dp, so poses tie; max() would pick by
+        # row order, which follows the shard glob -- and moved the FIXED shipped baseline by
+        # 0.0001 between epochs scoring identical candidates.
+        picked = [select_tied.expected_pick(g[i], j, 3, ACC) for i in keep]
+        dq = np.array([x[0] for x in picked])
         S[f"{tag}_dq"].append(float(dq.mean()))
-        S[f"{tag}_fa"].append(float((dq >= ACC).mean()))
+        S[f"{tag}_fa"].append(float(np.mean([x[1] for x in picked])))
         S[f"{tag}_rho"].append(float(np.median(
             [spearman([p[j] for p in g[i]], [p[3] for p in g[i]]) for i in keep])))
 
@@ -145,7 +150,7 @@ axes[-1].set_xlabel("epoch")
 fig.suptitle(f"{RID}   HELD-OUT metrics  (valfull, never trained on)", x=0.012, y=0.990,
              ha="left", fontsize=11.5, fontweight="bold", va="top")
 fig.text(0.012, 0.9555, f"uncropped arm, beta 75   {S['n'][-1]} interfaces at budget 30   "
-         f"both sides uncropped = deployment-comparable"
+         f"both sides uncropped   ties averaged (shipped 0.0003 above phase_k_eval's rule)"
          + (f"   [baseline drift {drift:.4f}]" if drift > 1e-6 else ""),
          ha="left", va="top", fontsize=8, color="#777777")
 fig.tight_layout(rect=[0, 0, 1, 0.938])
