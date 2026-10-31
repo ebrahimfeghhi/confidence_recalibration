@@ -1,4 +1,4 @@
-  2 epoch(s) -> figures/train_series_erb7nd.png
+  2 epoch(s) -> figures/rel_arm_erb7nd.png
    ep       PAE        rel      rho  sd_ratio   poses
     1    3.1671    0.01230  +0.1652     0.240    6100
-    2    2.8740          -        -         -     400  PARTIAL
+    2    3.0628          -        -         -    5680  PARTIAL
