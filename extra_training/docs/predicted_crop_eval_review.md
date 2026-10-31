@@ -75,8 +75,9 @@ At an epoch boundary of `erb7nd`, after its train + val complete, pause, run, re
 # ours
 phase_k_eval --ckpt training/runs/t4jtjr/head_ep30_step3660.pt \
   --crop-tokens training/runs/union_crop/valfull_m5.npz --pool-mean --select-by mean ...
-# shipped, SAME crops
-phase_k_eval --shipped --crop-tokens training/runs/union_crop/valfull_m5.npz ...
+# shipped, SAME crops -- NO --ckpt. There is no --shipped flag; an empty --ckpt IS the
+# shipped head (phase_k_eval.py:687), and `not a.ckpt` is also what enables the self-check.
+phase_k_eval --crop-tokens training/runs/union_crop/valfull_m5.npz ...
 ```
 
 **Two passes, not one.** `stored_iptm` is the fold's *uncropped* value; scoring a cropped head

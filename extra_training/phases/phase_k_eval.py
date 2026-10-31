@@ -261,7 +261,14 @@ def aggregate(a, rows, selfchk, want_ifaces):
     # pose->sample join, which is done by coordinate identity against the UNCROPPED coordinates
     # and so is unaffected by cropping. What is genuinely weaker is join 1's independent
     # confirmation, and that is stated here rather than left for a reader to notice.
-    _crop_selfcheck_informational = a.crop_margin > 0
+    # EITHER CROP MODE, NOT JUST --crop-margin. Raised in review of 33f24f87. The shipped pass
+    # under --crop-tokens scores the shipped head on CROPPED inputs while results.csv holds the
+    # UNCROPPED value, so every row is expected to differ -- exactly as under --crop-margin. With
+    # the condition keyed to crop_margin alone the shipped baseline pass would have hit the hard
+    # STOP below and the experiment would have had no baseline at all.
+    _crop_mode = ("--crop-margin %g" % a.crop_margin) if a.crop_margin > 0 else (
+        ("--crop-tokens %s" % os.path.basename(a.crop_tokens)) if a.crop_tokens else "")
+    _crop_selfcheck_informational = bool(_crop_mode)
     if not a.ckpt and not a.no_self_check:
         if not selfchk:
             raise SystemExit("STOP: no recomputed ipTM could be compared against results.csv, so "
@@ -292,7 +299,7 @@ def aggregate(a, rows, selfchk, want_ifaces):
                         fh.write(f"{ifc},{sd2},{k2},{v2:.6f},{sv:.6f},{d:.6f}\n")
                 print(f"  every offending row written to {a.selfcheck_out}")
             if _crop_selfcheck_informational:
-                print(f"  NOT A FAILURE UNDER --crop-margin {a.crop_margin:g}: results.csv holds "
+                print(f"  NOT A FAILURE UNDER {_crop_mode}: results.csv holds "
                       f"the UNCROPPED shipped ipTM, and this pass scores the shipped head on "
                       f"CROPPED inputs on purpose, so these rows are EXPECTED to differ. The "
                       f"difference is the measurement. Join 1 therefore has no independent "
@@ -307,7 +314,7 @@ def aggregate(a, rows, selfchk, want_ifaces):
             # EVERY ROW WITHIN TOLERANCE UNDER A CROP IS ITS OWN ALARM: it means the crop changed
             # nothing the head reads, so the "cropped" number is the uncropped one.
             raise SystemExit(
-                f"STOP: --crop-margin {a.crop_margin:g} was applied and yet every recomputed "
+                f"STOP: {_crop_mode} was applied and yet every recomputed "
                 f"shipped ipTM still matches results.csv within {a.iptm_tol}. The crop cannot "
                 f"have reached the head, so this metric is an uncropped number mislabelled.")
         else:
@@ -1323,13 +1330,14 @@ def main():
     # THE CROP IS REPORTED, NEVER ASSUMED. A --crop-margin that silently cropped nothing would
     # produce an "uncropped" number under a cropped label, which is the whole failure this run is
     # about.
-    if a.crop_margin > 0:
+    if a.crop_margin > 0 or a.crop_tokens:
+        _cm = ("--crop-margin %g" % a.crop_margin) if a.crop_margin > 0 else "--crop-tokens"
         _kf = (_tok_kept / _tok_full) if _tok_full else float("nan")
         print(f"\ncrop: {_n_cropped} unit(s) cropped, {_n_nocrop} undefinable and scored whole; "
               f"kept {_tok_kept}/{_tok_full} token(s) ({100*_kf:.1f}%)")
         if _n_cropped == 0:
-            raise SystemExit("STOP: --crop-margin was passed and NOT ONE unit was cropped. The "
-                             "metric would be an uncropped number wearing a cropped label.")
+            raise SystemExit(f"STOP: {_cm} was passed and NOT ONE unit was cropped. The "
+                             f"metric would be an uncropped number wearing a cropped label.")
     print(f"\njoin 1: OST's per-pose chain mapping used on {n_ost} pose(s), unresolvable on "
           f"{n_static}")
     if a.rows_out:

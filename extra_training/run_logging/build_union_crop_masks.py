@@ -38,6 +38,19 @@ ap.add_argument("--out", required=True)
 ap.add_argument("--contact", type=float, default=5.0)
 ap.add_argument("--margin", type=float, default=5.0)
 ap.add_argument("--seeds", type=int, default=0, help="0 = every unit that HAS A LABEL npz")
+ap.add_argument("--seed-base", type=int, default=None,
+                help="first seed of the evaluated range. With --budget this names the EXACT "
+                     "units the union is built from, e.g. --seed-base 400000 --budget 30 uses "
+                     "free_400000..free_400029 and nothing else. Raised in review: the union "
+                     "must contain precisely the candidates being evaluated, and relying on "
+                     "'whichever units happen to have a label npz' made that true only by "
+                     "coincidence -- a label rebuild that added seeds would silently widen "
+                     "every crop.")
+ap.add_argument("--budget", type=int, default=None,
+                help="number of seeds in the evaluated range, matching phase_k_eval --budget.")
+ap.add_argument("--nsample", type=int, default=5,
+                help="poses per seed, matching the fold. --require-poses is derived as "
+                     "--budget * --nsample when both are given, instead of being hardcoded.")
 ap.add_argument("--require-poses", type=int, default=0,
                 help="hard-stop if any structure EXAMINED fewer candidate poses than this. "
                      "THE UNION MUST SPAN EXACTLY THE POSES THE EVAL SCORES. Here the two "
@@ -107,9 +120,20 @@ for pdb in pdbs:
     if not (os.path.isdir(tdir) and os.path.isdir(ldir)):
         skipped.append((pdb, "no trunk/label dir"))
         continue
-    units = sorted(f for f in os.listdir(tdir) if f.endswith(".npz"))
-    if a.seeds:
-        units = units[:a.seeds]
+    if a.seed_base is not None and a.budget:
+        # NAMED, NOT DISCOVERED. Every unit in the range must exist; a missing one is fatal
+        # rather than a quietly smaller union.
+        units = [f"free_{sd}.npz" for sd in range(a.seed_base, a.seed_base + a.budget)]
+        miss = [u for u in units if not os.path.exists(os.path.join(tdir, u))]
+        if miss:
+            raise SystemExit(f"STOP: {pdb} is missing {len(miss)} unit(s) of the evaluated seed "
+                             f"range {a.seed_base}..{a.seed_base + a.budget - 1}, e.g. "
+                             f"{miss[:3]}. The union would cover fewer candidates than the eval "
+                             f"scores.")
+    else:
+        units = sorted(f for f in os.listdir(tdir) if f.endswith(".npz"))
+        if a.seeds:
+            units = units[:a.seeds]
     if not units:
         skipped.append((pdb, "no units"))
         continue
@@ -157,10 +181,13 @@ for pdb in pdbs:
     out[pdb + "__n"] = np.array([npose, int(uni.sum()), int(uni.size), nseen, nocontact],
                                 dtype=np.int64)
 
+# DERIVED, NOT HARDCODED. Raised in review: 150 was this pool's budget x nsample written out by
+# hand, which would be silently wrong on any other pool.
+_req = a.require_poses or ((a.budget * a.nsample) if (a.budget and a.nsample) else 0)
 short = [(k.replace("__n", ""), int(out[k][3])) for k in out
-         if k.endswith("__n") and a.require_poses and out[k][3] < a.require_poses]
+         if k.endswith("__n") and _req and out[k][3] < _req]
 if short:
-    raise SystemExit(f"STOP: {len(short)} structure(s) EXAMINED fewer than {a.require_poses} "
+    raise SystemExit(f"STOP: {len(short)} structure(s) EXAMINED fewer than {_req} "
                      f"candidate poses, e.g. {short[:4]}. A union built over a subset of the "
                      f"scored candidates is not the crop this experiment specifies. (Poses that "
                      f"were examined but had no cross-chain contact are fine and counted "
@@ -183,7 +210,8 @@ try:
 except Exception:
     _rev = "unknown"
 _meta = dict(margin=a.margin, contact=a.contact, pool=a.pool, trunks=a.trunks, labels=a.labels,
-             seeds=a.seeds, require_poses=a.require_poses, n_structures=n_src,
+             seeds=a.seeds, seed_base=a.seed_base, budget=a.budget,
+             nsample=a.nsample, require_poses=_req, n_structures=n_src,
              unit_digest=hashlib.sha256(
                  "|".join(f"{k}:{','.join(units_used[k])}" for k in sorted(units_used))
                  .encode()).hexdigest()[:16],
