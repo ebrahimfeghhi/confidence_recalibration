@@ -41,17 +41,26 @@ from matplotlib.ticker import MaxNLocator
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "run_logging"))
 import eval_dirs                                                             # noqa: E402
+import plot_three                                                            # noqa: E402
 import select_tied                                                           # noqa: E402
 RID = sys.argv[1] if len(sys.argv) > 1 else "o2qczq"
 OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/rel_heldout_{RID}.png"
 RUN = os.path.join(ROOT, "training", "runs", RID)
+
+# THE WHOLE RESUME CHAIN, exactly as plot_rel_arm.py does it. A resume writes its evals to a FRESH
+# run directory while continuing the parent's epoch numbering, so reading only RID plotted ONE
+# point for a ten-epoch arm -- mieumn's epoch 10 with epochs 1-9 of erb7nd dropped on the floor.
+# chain_shard_dirs lets a later run win an epoch both wrote, which matters because a resume
+# re-evaluates the epoch it was interrupted in.
+RIDS = list(plot_three.run_chain(RID))
+_RUNS_ROOT = os.path.join(ROOT, "training", "runs")
 PRIOR = [("ip8ga4", 0.0073, 0.0040), ("dntxmn", 0.0029, 0.0032),
          ("tv6hue", -0.0084, 0.0054)]
 SHIPPED_ABS = 0.5831          # paper_results.md section 4, valfull b30
 ORACLE_ABS = 0.6926
 
 rows = []
-for ep_, d in sorted(eval_dirs.shard_dirs(RUN).items()):
+for ep_, d in sorted(eval_dirs.chain_shard_dirs(RIDS, _RUNS_ROOT).items()):
     m = re.search(r"_eval_shards_ep(\d+)$", d)
     if not m:
         continue
