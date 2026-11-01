@@ -34,6 +34,7 @@ import collections
 import csv
 import functools
 import glob
+import hashlib
 import json
 import math
 import os
@@ -85,6 +86,20 @@ def pool_ref_pairs(pool_csv):
             pdb, c1, c2 = r["pdb"], r["chain1"], r["chain2"]
             out[pdb].append((f"{pdb}_{c1}{c2}", c1, c2))
     return out
+
+
+def _cpi_index(asym_vec):
+    """{original asym id: row in chain_pair_iptm}, replicating Protenix's compaction.
+
+    sample_confidence.py remaps asym ids to 0..N-1 whenever `len(unique) != max+1`, which is
+    exactly when a crop has removed a whole chain. Building the mapping from sorted unique ids
+    unconditionally gives the identity in the ordinary contiguous case, so this is safe to apply
+    always rather than only when a chain is missing -- and applying it always is what keeps the
+    cropped and uncropped paths reading the same code.
+    """
+    import numpy as _np
+    v = asym_vec.detach().cpu().numpy() if hasattr(asym_vec, "detach") else _np.asarray(asym_vec)
+    return {int(o): i for i, o in enumerate(_np.unique(v.reshape(-1)))}
 
 
 def ost_chain_pairs(unit_dir, pdb, k, refs):
@@ -963,6 +978,8 @@ def main():
     pairs_by_pdb, unresolved = interface_chain_pairs(a.pool, a.roles)
     refs_by_pdb = pool_ref_pairs(a.pool)
     n_ost, n_static, n_differ, differ_pdbs = 0, 0, 0, collections.Counter()
+    n_chain_gone, chain_gone = 0, []
+    fallback_poses = []          # poses scored WHOLE because their crop was undefinable
     unmapped = []
     if unresolved:
         raise SystemExit(f"STOP: {len(unresolved)} pool interface(s) cannot be mapped to model "
@@ -1268,15 +1285,21 @@ def main():
                     _u6 = _u6_shared if _u6_shared is not None else RC.load_unit(tp, dev)[:6]
                     if a.crop_predicted_margin > 0:
                         _n_nocrop += 1
+                        # NOT NEGLIGIBLE BY COUNT ALONE. Selection is an argmax per interface, so
+                        # a single full-structure pose can be the one that wins. Recorded by
+                        # (pdb, seed, pose) so the aggregate can say whether one was selected.
+                        fallback_poses.append((pdb, int(sd_), int(_pi)))
                 else:
                     _u6 = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev, torch)[:6]
                     _n_cropped += 1
                     _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
-                    # THE PREMISE OF THIS MODE, RECORDED. If the per-pose crops turned out
-                    # identical across a structure's poses, this would silently be a
-                    # per-structure crop costing 5x the compute, and the pooled kept-fraction
-                    # could not tell anyone. Reported at the end as a spread.
-                    _crop_sizes.setdefault(pdb, []).append(int(_kt.sum()))
+                    # THE PREMISE OF THIS MODE, RECORDED -- BY MASK, NOT BY COUNT. Two crops
+                    # of equal size can be completely different token sets, so comparing counts
+                    # would call [0,1,4,5,6,7] and [0,1,2,3,6,7] "the same crop". The digest is
+                    # of the mask bits; the count is kept separately, as a spread diagnostic.
+                    _crop_sizes.setdefault(pdb, []).append(
+                        (int(_kt.sum()),
+                         hashlib.blake2b(np.packbits(_kt).tobytes(), digest_size=8).hexdigest()))
                 _perpose.append((_pi, _u6))
             feat = _perpose[0][1][0]
         else:
@@ -1334,6 +1357,10 @@ def main():
                 print(f"  {pdb}/{sd_}: cannot join poses to samples ({type(e).__name__}: "
                       f"{str(e)[:90]})")
             continue
+        # WHICH asym_id VECTOR produced each pose's matrix. Under per-pose cropping every pose
+        # has its own, so one per-unit vector would remap the wrong chains.
+        _asym_for = ((lambda _i: _perpose[_i][1][0]["asym_id"]) if _perpose
+                     else (lambda _i: feat["asym_id"]))
         for i, s_i in enumerate(summ):
             # THE PAE DUMP RIDES THE CANONICAL JOIN. `ks` comes from BC.resolve_seed_dir, which
             # matches poses to samples BY COORDINATE IDENTITY -- the only join in this file that is
@@ -1385,11 +1412,33 @@ def main():
                 if pose_pairs != pairs_by_pdb[pdb]:
                     n_differ += 1
                     differ_pdbs[pdb] += 1
+            # PROTENIX COMPACTS THE ASYM IDS before it builds chain_pair_iptm
+            # (sample_confidence.py:508-512: when len(unique) != max+1 it remaps them to
+            # 0..N-1). A crop that removes a WHOLE chain therefore shifts every row of that
+            # matrix, and indexing it with the original ids reads a different chain pair --
+            # silently, because the old `max(ai,aj) >= cpi.shape[0]` guard just dropped the
+            # overflowing pair and scored the rest against the wrong partner. Rebuilding the
+            # same mapping from the asym_id actually handed to the head is the fix; it is the
+            # identity whenever nothing was dropped, so uncropped runs are unaffected.
+            _cmap = _cpi_index(_asym_for(i))
             for iface, ai, aj in pose_pairs:
-                if max(ai, aj) >= cpi.shape[0]:
+                mi, mj = _cmap.get(int(ai)), _cmap.get(int(aj))
+                if mi is None or mj is None:
+                    # AN EVALUATED CHAIN DID NOT SURVIVE THE CROP. There is no score for a pair
+                    # whose chain is absent, and inventing one from a neighbouring row is the
+                    # bug above. Recorded per pose and surfaced at the end.
+                    n_chain_gone += 1
+                    if len(chain_gone) < 20:
+                        chain_gone.append(f"{pdb}/{sd_} sample {k}: {iface} needs asym "
+                                          f"{ai},{aj}; crop kept {sorted(_cmap)}")
                     continue
-                v = float(cpi[ai, aj])
-                vm = (float(cim[ai, aj]) if cim is not None and max(ai, aj) < cim.shape[0]
+                if max(mi, mj) >= cpi.shape[0]:
+                    raise SystemExit(f"STOP: {pdb}/{sd_} sample {k}: remapped chain index "
+                                     f"{mi},{mj} is outside a {cpi.shape[0]}-chain matrix. The "
+                                     f"asym_id handed to the head and the matrix it returned "
+                                     f"disagree.")
+                v = float(cpi[mi, mj])
+                vm = (float(cim[mi, mj]) if cim is not None and max(mi, mj) < cim.shape[0]
                       else None)
                 key = (iface, sd_, k)
                 rows.append((iface, sd_, k, v, dockq.get(key), vm))
@@ -1451,20 +1500,35 @@ def main():
         print(f"\ncrop: {_n_cropped} {_what} cropped, {_n_nocrop} undefinable and scored whole; "
               f"kept {_tok_kept}/{_tok_full} token(s) ({100*_kf:.1f}%)")
         if a.crop_predicted_margin > 0 and _crop_sizes:
-            # DOES THE CROP ACTUALLY VARY BETWEEN POSES? If it did not, this mode would be a
-            # per-structure crop at 5x the compute and nothing else here would say so.
-            _sp = [(max(v) - min(v)) for v in _crop_sizes.values() if len(v) > 1]
-            _same = sum(1 for v in _crop_sizes.values() if len(v) > 1 and max(v) == min(v))
+            # DOES THE CROP ACTUALLY VARY BETWEEN POSES? Two separate questions, reported
+            # separately: how much the SIZE moves (which is what ipTM's d0 follows) and whether
+            # the token SET is ever literally identical across a structure's poses. Identical
+            # masks are a legitimate outcome, not proof of a broken rule, so this reports and
+            # does not stop -- an earlier version stopped on equal COUNTS, which is not even
+            # the same question.
+            _multi = {k: v for k, v in _crop_sizes.items() if len(v) > 1}
+            _sp = sorted(max(c for c, _ in v) - min(c for c, _ in v) for v in _multi.values())
+            _ident = sum(1 for v in _multi.values() if len({d for _, d in v}) == 1)
             if _sp:
-                _sp_sorted = sorted(_sp)
-                print(f"  per-pose crop spread within a structure (max-min tokens): "
-                      f"min {_sp_sorted[0]}, median {_sp_sorted[len(_sp_sorted)//2]}, "
-                      f"max {_sp_sorted[-1]}; {_same} of {len(_sp)} structure(s) had NO variation")
-                if _same == len(_sp):
-                    raise SystemExit("STOP: every structure's poses got an IDENTICAL crop. "
-                                     "--crop-predicted-margin would then be a per-structure crop "
-                                     "costing one forward pass per pose, and the result would be "
-                                     "labelled per-pose. Something is wrong with the rule.")
+                print(f"  per-pose crop, size spread within a structure (max-min tokens): "
+                      f"min {_sp[0]}, median {_sp[len(_sp)//2]}, max {_sp[-1]}")
+                print(f"  structures whose poses got a BIT-IDENTICAL mask: {_ident} of "
+                      f"{len(_multi)}" + ("   <-- the crop is not per-pose in effect"
+                                          if _ident == len(_multi) else ""))
+        if fallback_poses:
+            # SELECTION IS AN ARGMAX, so one full-structure pose among 7,950 can still be the
+            # one that wins an interface. Listed, and written beside the rows so the aggregate
+            # can say whether any of them was selected.
+            print(f"  {len(fallback_poses)} pose(s) scored on the FULL structure (no contact): "
+                  f"{fallback_poses[:10]}")
+            if a.rows_out:
+                with open(a.rows_out + ".fallback.json", "w") as _fh:
+                    json.dump([list(t) for t in fallback_poses], _fh)
+        if n_chain_gone:
+            print(f"  {n_chain_gone} pair(s) had a chain removed by the crop and were NOT "
+                  f"scored:")
+            for _g in chain_gone[:10]:
+                print(f"      {_g}")
         if _n_cropped == 0:
             raise SystemExit(f"STOP: {_cm} was passed and NOT ONE unit was cropped. The "
                              f"metric would be an uncropped number wearing a cropped label.")
