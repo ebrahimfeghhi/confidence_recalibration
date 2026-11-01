@@ -866,6 +866,32 @@ def main():
                          "block (most saved, about 30%% more compute). Protenix supports it "
                          "natively on PairformerStack and it engages only when gradients are "
                          "enabled, so the evaluator is unaffected. 0 disables it.")
+    ap.add_argument("--ckpt-token-threshold", type=int, default=0,
+                    help="SIZE-CONDITIONAL ACTIVATION CHECKPOINTING. Units at or below this many "
+                         "tokens run with checkpointing OFF; larger units keep "
+                         "--blocks-per-ckpt. 0 (default) disables the rule, so every unit uses "
+                         "--blocks-per-ckpt and nothing changes.\n"
+                         "WHY IT IS SAFE TO VARY PER UNIT. The peak is a PER-POSE property, not a "
+                         "per-step one: _one_pose is a function, its frame is destroyed on "
+                         "return, and every large tensor is freed before the next pose allocates "
+                         "(the pose-lifetime fix). So a small unit running without checkpointing "
+                         "cannot add to the peak that a large unit sets -- it only has to stay "
+                         "UNDER it. The run's peak is 87.71 GB allocated on cards of 95.6 GB with "
+                         "the largest unit at 1543 tokens, and that is the number a threshold "
+                         "must not raise.\n"
+                         "WHY IT PAYS. blocks_per_ckpt=1 recomputes every one of the head's four "
+                         "pairformer blocks in backward, about 30%% more compute, and it is "
+                         "applied to the 400-token units because the 1543-token ones need it. "
+                         "gpu_backward is 70.3 min of a 143.9 min epoch.\n"
+                         "SET IT FROM run_logging/bench_ckpt_by_size.py, NOT BY GUESSING. The "
+                         "benchmark measures peak memory and CUDA-event time per unit at each "
+                         "setting and reports the largest token count whose unchecked peak stays "
+                         "under the checkpointed peak, with a margin. A threshold chosen by "
+                         "arithmetic would be an OOM 40 minutes into an epoch.\n"
+                         "IT CHANGES NO MATHEMATICS. Checkpointing trades compute for memory and "
+                         "is gradient-exact; test_perblock_ckpt_equiv.py already gates "
+                         "blocks_per_ckpt=1 against off at 0.000e+00 on every parameter, which is "
+                         "exactly the equivalence this relies on.")
     ap.add_argument("--alpha-confidence", type=float, default=1.0,
                     help="weight on the four confidence losses. Protenix ships 1e-4 because in full "
                          "AF3-style training these terms sit beside the diffusion and distogram "
@@ -1032,6 +1058,16 @@ def main():
             "residues. Pass --minimal-items with its --alignment-preflight marker.")
     if a.crop_margin < 0:
         raise SystemExit("STOP: --crop-margin cannot be negative.")
+    # A THRESHOLD WITH NOTHING TO TURN OFF IS A NO-OP THAT READS LIKE A SETTING. With
+    # --blocks-per-ckpt 0 every unit is already uncheckpointed, so the rule would select between
+    # "off" and "off" and the run would look configured when it is not.
+    if a.ckpt_token_threshold > 0 and not a.blocks_per_ckpt:
+        raise SystemExit(
+            "STOP: --ckpt-token-threshold needs --blocks-per-ckpt > 0. With checkpointing already "
+            "off for every unit the threshold selects between off and off, which changes nothing "
+            "and hides that it changed nothing.")
+    if a.ckpt_token_threshold < 0:
+        raise SystemExit("STOP: --ckpt-token-threshold cannot be negative.")
     if a.val_loss_every:
         # CHECKED AT LAUNCH, NOT AT THE FIRST EPOCH BOUNDARY. On the full training set that
         # boundary is 37 minutes in, and a monitor that fails there is a monitor nobody has for
@@ -3090,6 +3126,10 @@ def main():
     # and is not representative of the 499 that follow.
     _T = collections.defaultdict(float)
     _TN = collections.defaultdict(int)
+    # [units run UNCHECKPOINTED, units run CHECKPOINTED] under --ckpt-token-threshold. Reported
+    # per epoch because a threshold that silently matches nothing -- or everything -- looks
+    # exactly like a threshold that works until the timings fail to move.
+    _ckpt_hist = [0, 0]
 
     def _tick(key, t0):
         _T[key] += time.perf_counter() - t0
@@ -3557,6 +3597,17 @@ def main():
                          f"provenance is refused rather than resolved arbitrarily.")
 
     def run_unit(pdb, lab_p, trunk_p, score_only=False):
+        # WHERE THE RESIDUAL IS, SPLIT ONCE. Epoch 17 left 14.9 min of 143.9 unaccounted -- the
+        # second-largest single item in the table and the only one nobody can act on, because
+        # "residual" does not say whether it is inside a unit or between units. unit_setup closes
+        # the first half of that question: it covers everything from entering a unit to the moment
+        # its first pose starts, which is the trunk read, the fingerprint, the dataset item and
+        # the loss-feature prep that the existing per-step buckets step over. Whatever is left
+        # after this is OUTSIDE the units, and that is a different fix.
+        #
+        # NOT A _gpu_span. This region launches no kernels of its own; a CUDA event here would
+        # time the queue drain of the previous unit's poses and attribute it to setup.
+        _t_unit_setup = time.perf_counter()
         """Forward + loss for every pose of one unit. Yields (pose_index, loss_tensor, metrics).
 
         score_only=True makes this PASS A: a no_grad forward per pose that yields
@@ -3727,6 +3778,15 @@ def main():
         # FROM THE HEAD'S FEATURES, which carry asym_id on both paths. feat_cache does not, on the
         # minimal path: the loss never reads it, so it is not in the nine.
         n_tok = int(feat_head["asym_id"].shape[-1]) if "asym_id" in feat_head else -1
+        # SIZE-CONDITIONAL CHECKPOINTING, decided here because this is the first point in the unit
+        # where the token count is known and no pose has run yet. Assigned on EVERY unit rather
+        # than only when it changes, so the stack can never carry a previous unit's setting into
+        # this one -- a silent carry-over would be an OOM on the next large unit.
+        if a.ckpt_token_threshold > 0:
+            _bpc = (None if 0 <= n_tok <= a.ckpt_token_threshold
+                    else (a.blocks_per_ckpt or None))
+            model.confidence_head.pairformer_stack.blocks_per_ckpt = _bpc
+            _ckpt_hist[0 if _bpc is None else 1] += 1
         # ONCE PER UNIT, BEFORE ANY POSE RUNS. From feat_cache, not feat_head: the trunk cache
         # carries has_frame but neither frame_atom_index nor pae_rep_atom_mask, and all three are
         # in LOSS_FEATS. Under cropping feat_cache IS crop_feat_loss, so these are the cropped
@@ -3759,6 +3819,8 @@ def main():
         # crop_feat_loss is always set and both the per-unit and per-pose minimal_loss_inputs
         # branches are dead code for this workload.
         _tick("loss_feature_prep", _t_fc)
+
+        _tick("unit_setup", _t_unit_setup)
 
         def _one_pose(i):
             x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
@@ -6206,14 +6268,36 @@ def main():
                 _rank_seen["units"] = 0
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
                   f"residual {(_ep_s - _acc)/60:.1f}m "
-                  f"(exclusive buckets only; gpu_* overlap pose_total)", flush=True)
+                  f"(exclusive buckets only; gpu_* overlap pose_total, "
+                  f"unit_setup overlaps the per-unit leaves)", flush=True)
+            # THE RESIDUAL, SPLIT. unit_setup is a SUPERSET of label_open, fingerprint_hash,
+            # trunk_read_plus_crop_tokens, crop_slice and loss_feature_prep, so it is deliberately
+            # NOT in _EXCL -- including it would double-count the same minutes, which is the trap
+            # the comment beside rank_pass_a describes. What it buys is the part of the residual
+            # it EXPLAINS: setup time not already claimed by those leaves is inside-unit work, and
+            # whatever is left after that is between-unit work, which is a different fix.
+            _us = dict((k, v) for k, v, c in _parts if c)
+            if _us.get("unit_setup"):
+                _leaves = sum(_us.get(k, 0.0) for k in
+                              ("label_open", "fingerprint_hash", "trunk_read_plus_crop_tokens",
+                               "crop_slice", "cpucrop_label", "cpucrop_slice", "cpucrop_tokens",
+                               "cpucrop_trunk", "loss_feature_prep", "prefetch_issue",
+                               "prefetch_wait"))
+                print(f"  [rank {rank}] epoch {ep + 1} unit_setup {_us['unit_setup']/60:.1f}m, "
+                      f"of which {_leaves/60:.1f}m is already in named leaves -> "
+                      f"{(_us['unit_setup'] - _leaves)/60:.1f}m of the residual is INSIDE units, "
+                      f"the rest is between them", flush=True)
             if torch.cuda.is_available():
                 _gb = 1 << 30
                 print(f"  [rank {rank}] epoch {ep + 1} memory: peak allocated "
                       f"{torch.cuda.max_memory_allocated()/_gb:.2f} GB, peak reserved "
                       f"{torch.cuda.max_memory_reserved()/_gb:.2f} GB, "
-                      f"blocks_per_ckpt={model.confidence_head.pairformer_stack.blocks_per_ckpt}",
+                      f"blocks_per_ckpt={model.confidence_head.pairformer_stack.blocks_per_ckpt}"
+                      + (f", ckpt_threshold={a.ckpt_token_threshold} tok -> "
+                         f"{_ckpt_hist[0]} unit(s) UNCHECKPOINTED, {_ckpt_hist[1]} checkpointed"
+                         if a.ckpt_token_threshold > 0 else ""),
                       flush=True)
+            _ckpt_hist[0] = _ckpt_hist[1] = 0
             # EVERY RANK SAVES ITS OWN, at the boundary rather than at exit: x3k2m4 died after
             # epoch 1 and would have discarded all 4,880 hashes it had just computed.
             _fp_cache_save()
