@@ -1,0 +1,8 @@
+  A training/runs/perpose_eval/split_check: 13800 pose(s)
+  B training/runs/t4jtjr/valfull_eval_shards_ep30: 13800 pose(s)
+  iptm       max |A-B| = 1.788e-07 at ('8y31_AE', '400023', '1')   over tol(1e-05): 0
+  iptm_mean  max |A-B| = 0.000e+00 at None   over tol(1e-05): 0
+  iptm       selected pose differs on 0 of 92 interface(s)
+  iptm_mean  selected pose differs on 0 of 92 interface(s)
+
+  MATCH: every pose agrees within 1e-05 on iptm,iptm_mean, and BOTH selectors pick the same pose on every interface. Splitting the pose dimension changes neither a score nor a decision.

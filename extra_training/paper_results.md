@@ -775,3 +775,76 @@ exclusive at parse time.
 Predicted-interface cropping is not worth retraining on. The cheap test was run precisely to avoid
 that cost, and it came back negative. Section 9b's gain is not recoverable without labels, which
 means it is not a result we can ship.
+
+## 14. THE SAME CROP RULE IS +0.0376 WITH TRUE COORDINATES AND -0.0063 WITH PREDICTED ONES
+
+Section 13 showed that a label-free UNION crop recovers nothing, and left open whether the loss was
+the union (many interfaces at once) rather than the labels. This closes that: it runs the IDENTICAL
+rule PER POSE -- that pose's own inter-chain contacts within 5 A, every token within 10 A of them --
+with the only change being WHICH COORDINATES define the interface.
+
+Same checkpoint as section 9b (`t4jtjr/head_ep30_step3660.pt`), 92 interfaces, 150 candidates.
+
+| crop built from | MEAN | MAX | vs shipped (MEAN) | vs shipped (MAX) |
+|-----------------|------|-----|-------------------|------------------|
+| `label_coordinate` (section 9b) | 0.6028 | 0.6178 | **+0.0163** | **+0.0376** |
+| `ci_coordinate`, per pose | 0.5764 | 0.5768 | **-0.0067** | **-0.0063** |
+| shipped, uncropped | 0.5831 | 0.5831 | -- | -- |
+
+**One substitution -- true coordinates for predicted ones, nothing else -- turns +0.0376 into
+-0.0063.** Section 9b's gain is not a cropping effect. It is a label effect.
+
+### THE CROP DID WHAT IT WAS ASKED TO, so this is not a plumbing failure
+
+Per-shard, from the evaluator's own report: 7,949 of 7,950 poses cropped, 57.9-58.0% of tokens
+kept, per-pose size spread within a structure 60-68 tokens at the median (min 6, max 197), and
+**0 of 53 structures had bit-identical masks across their poses** -- the crop really is per-pose,
+not a per-structure crop wearing a per-pose label. The one uncropped pose is `8piz/400001/4`, a
+fully dissociated decoy with no cross-chain contact at 5 A; it was scored on the full structure and
+`fallback_selected.py` confirms **neither selector picked it on any interface**, so it cannot
+explain the result.
+
+### THE CONTROL, WHICH HAD TO PASS FIRST
+
+Per-pose cropping forces one pose per forward pass instead of five per unit. If that split moved
+scores by itself, every number above would measure the split. `--pose-split-check` ran the split
+UNCROPPED against the batched reference (`t4jtjr/valfull_eval_shards_ep30`):
+
+```
+iptm       max |A-B| = 1.8e-07      over tol(1e-5): 0
+iptm_mean  max |A-B| = 0.0          over tol(1e-5): 0
+selected pose differs on 0 of 92 interface(s), BOTH selectors
+```
+
+1.8e-07 is float32 round-off from the changed reduction order. The selected-pose check is separate
+from the tolerance on purpose: two poses 1e-7 apart can swap on a 1e-6 perturbation, so "every
+value matches" does not imply "every decision matches". Raised in review.
+
+### WHY IT GOES THE WRONG WAY -- A HYPOTHESIS, NOT A RESULT
+
+A ground-truth crop centres EVERY pose on the TRUE interface, so a bad pose is cropped to the
+region where it is wrong and is judged there. A predicted crop centres each pose on ITS OWN
+predicted interface, so a bad pose is judged on the region where it is locally self-consistent.
+The ground-truth crop does not merely concentrate the model; it tells the model where the answer
+is, and that is what section 9b was measuring.
+
+This predicts the sign we observe -- flattering bad poses pushes them up the ranking, which costs
+selection -- but it is not tested. The test is to correlate each pose's score gain against the
+distance between its predicted crop and the true one.
+
+### HONEST LIMITS
+
+- The shipped-head pass on these same per-pose crops was NOT run. The decision rule agreed in
+  advance was to skip it if ours came in below the uncropped shipped number, which it did on both
+  poolings. So this section establishes that the method does not beat shipped; it does not
+  separate how much of the -0.0063 is the head and how much is the crop.
+- No t statistic. The claim is a sign change of 0.044 against a shipped baseline, not a
+  significant positive.
+- The 9b row is the uncropped-shipped comparison (0.5831). The matched shipped-on-GT-crop number
+  is 0.5802 MAX, which is where section 9b's +0.0376 comes from.
+
+### WHAT THIS CLOSES
+
+Interface cropping, per-pose or unioned, cannot be made label-free. Both routes have now been
+measured on the same checkpoint and neither recovers any part of section 9b. The gain was never
+portable.

@@ -1,0 +1,16 @@
+merged 3 shard(s): 1590 unit(s), 13800 row(s)
+join 1: OST's per-pose chain mapping used on 7950 pose(s), unresolvable on 0
+  it DISAGREED with chain_roles on 145 pose(s), across 2 structure(s): 9eg6:78, 7zra:67
+coverage: 92 interface(s), 150 scored pose(s) each, 13800 row(s) total, 13800 of 13800 intended key(s), 0 duplicates, 0 non-finite
+
+METRIC (training/runs/t4jtjr/head_ep30_step3660.pt, 92 interfaces, budget 30 seeds, selected by MEAN-pooled ipTM)
+  mean_dockq 0.5764   frac_acc 0.7174
+  the OTHER pooling (max): mean_dockq 0.5768   frac_acc 0.7174
+  oracle     0.6926   0.8587   headroom 0.1162
+  baseline   0.5831   0.7391   (shipped head over THESE 92 interface(s) at budget 30, from results.csv's recorded ipTM at 4dp)
+  wrote training/runs/perpose_eval/ours_pp10.json
+  shard 0 -> card 4
+  shard 1 -> card 5
+  shard 2 -> card 7
+  3 shard(s) finished in 11.3 min
+  total 11.3 min on 3 card(s)
