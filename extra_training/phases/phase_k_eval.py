@@ -728,7 +728,8 @@ def main():
                          "structure. Requires label npz files, which --labels locates.")
     ap.add_argument("--crop-contact", type=float, default=5.0,
                     help="heavy-atom distance defining an interface token, matching "
-                         "phase_k_train --crop-contact. Only read when --crop-margin > 0.")
+                         "phase_k_train --crop-contact. Read by --crop-margin and "
+                         "--crop-predicted-margin.")
     ap.add_argument("--crop-all-poses", action="store_true",
                     help="define the crop from the union over all poses rather than pose 0, "
                          "matching phase_k_train --crop-all-poses. MUST match the arm being "
@@ -878,6 +879,15 @@ def main():
     a = ap.parse_args()
     # CHECKED FROM argv, BEFORE ANYTHING LOADS. Two crop rules at once is knowable here, and a
     # refusal that waits for the model load arrives minutes later and on a worker.
+    if a.dump_pae and (a.crop_margin > 0 or a.crop_tokens or a.crop_predicted_margin > 0):
+        raise SystemExit("STOP: --dump-pae cannot be combined with a crop. The dump and the "
+                         "per-structure PAE accumulator both assume ONE token layout per "
+                         "structure: _pae_accumulate keys its running sum by pdb, and _dump_pose "
+                         "indexes the PAE with the unit's asym_id. Under --crop-predicted-margin "
+                         "every pose has its own token count, and under --crop-margin/"
+                         "--crop-tokens the CA coordinates come from the full atom array while "
+                         "the indices come from the cropped one. Where the shapes happen to "
+                         "match it does not stop -- it writes the wrong chain pairs.")
     if a.crop_predicted_margin > 0 and (a.crop_margin > 0 or a.crop_tokens):
         raise SystemExit("STOP: --crop-predicted-margin cannot be combined with --crop-margin or "
                          "--crop-tokens. They are three different crop rules and running two at "
@@ -1153,6 +1163,14 @@ def main():
     if a.crop_margin > 0:
         print(f"CROPPED SCORING: interface + {a.crop_margin:g} A margin, contact "
               f"{a.crop_contact:g} A, all_poses={a.crop_all_poses}, labels {_labels_root}")
+    if a.crop_predicted_margin > 0:
+        print(f"CROPPED SCORING, PER POSE, FROM PREDICTED COORDINATES: interface + "
+              f"{a.crop_predicted_margin:g} A margin, contact {a.crop_contact:g} A. One forward "
+              f"pass per pose; token count varies between poses and so does ipTM's d0.")
+    if a.pose_split_check:
+        print("POSE-SPLIT CHECK: one pose per forward pass, NO crop. These scores must reproduce "
+              "the batched path exactly, or every per-pose crop number is measuring the split.")
+    _crop_sizes = {}          # pdb -> [kept tokens per pose], the premise of the per-pose mode
     for n, (pdb, sd_, tp) in enumerate(units, 1):
         if _pf_pool is not None:
             if _pf_future is not None:
@@ -1232,6 +1250,10 @@ def main():
                                      f"ci_coordinate -- but re-indexing the sliced unit is not.")
                 _lab = np.load(_lp, allow_pickle=True)
                 _pm = np.isfinite(_px_full).all(axis=-1)
+            # LOADED ONCE when nothing is cropped: under --pose-split-check all five slices are
+            # identical, and re-reading the unit per pose put five copies of a 333 MB npz on the
+            # device at once for no change in the result.
+            _u6_shared = RC.load_unit(tp, dev)[:6] if a.crop_predicted_margin <= 0 else None
             for _pi in range(_px_full.shape[0]):
                 _kt = None
                 if a.crop_predicted_margin > 0:
@@ -1243,13 +1265,18 @@ def main():
                     # and printed, never silent -- 1 pose of 7,950 on valfull is a fully
                     # dissociated decoy, and if that number ever grows the metric is quietly
                     # becoming an uncropped one.
-                    _u6 = RC.load_unit(tp, dev)[:6]
+                    _u6 = _u6_shared if _u6_shared is not None else RC.load_unit(tp, dev)[:6]
                     if a.crop_predicted_margin > 0:
                         _n_nocrop += 1
                 else:
                     _u6 = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev, torch)[:6]
                     _n_cropped += 1
                     _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
+                    # THE PREMISE OF THIS MODE, RECORDED. If the per-pose crops turned out
+                    # identical across a structure's poses, this would silently be a
+                    # per-structure crop costing 5x the compute, and the pooled kept-fraction
+                    # could not tell anyone. Reported at the end as a spread.
+                    _crop_sizes.setdefault(pdb, []).append(int(_kt.sum()))
                 _perpose.append((_pi, _u6))
             feat = _perpose[0][1][0]
         else:
@@ -1417,8 +1444,27 @@ def main():
             "--crop-tokens" if a.crop_tokens
             else "--crop-predicted-margin %g" % a.crop_predicted_margin)
         _kf = (_tok_kept / _tok_full) if _tok_full else float("nan")
-        print(f"\ncrop: {_n_cropped} unit(s) cropped, {_n_nocrop} undefinable and scored whole; "
+        # POSES, NOT UNITS, under the per-pose mode: it crops once per pose, so this counter
+        # reads ~7,950 on valfull where the per-unit modes read 53. Printing "unit(s)" either
+        # way is a misreading waiting to happen.
+        _what = "pose(s)" if a.crop_predicted_margin > 0 else "unit(s)"
+        print(f"\ncrop: {_n_cropped} {_what} cropped, {_n_nocrop} undefinable and scored whole; "
               f"kept {_tok_kept}/{_tok_full} token(s) ({100*_kf:.1f}%)")
+        if a.crop_predicted_margin > 0 and _crop_sizes:
+            # DOES THE CROP ACTUALLY VARY BETWEEN POSES? If it did not, this mode would be a
+            # per-structure crop at 5x the compute and nothing else here would say so.
+            _sp = [(max(v) - min(v)) for v in _crop_sizes.values() if len(v) > 1]
+            _same = sum(1 for v in _crop_sizes.values() if len(v) > 1 and max(v) == min(v))
+            if _sp:
+                _sp_sorted = sorted(_sp)
+                print(f"  per-pose crop spread within a structure (max-min tokens): "
+                      f"min {_sp_sorted[0]}, median {_sp_sorted[len(_sp_sorted)//2]}, "
+                      f"max {_sp_sorted[-1]}; {_same} of {len(_sp)} structure(s) had NO variation")
+                if _same == len(_sp):
+                    raise SystemExit("STOP: every structure's poses got an IDENTICAL crop. "
+                                     "--crop-predicted-margin would then be a per-structure crop "
+                                     "costing one forward pass per pose, and the result would be "
+                                     "labelled per-pose. Something is wrong with the rule.")
         if _n_cropped == 0:
             raise SystemExit(f"STOP: {_cm} was passed and NOT ONE unit was cropped. The "
                              f"metric would be an uncropped number wearing a cropped label.")
