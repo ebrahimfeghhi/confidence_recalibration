@@ -34,6 +34,13 @@ ap.add_argument("--contact", type=float, default=5.0)
 ap.add_argument("--margin", type=float, default=10.0)
 ap.add_argument("--seed-base", type=int, default=400000)
 ap.add_argument("--budget", type=int, default=30)
+ap.add_argument("--gt-all-poses", action="store_true",
+                help="audit the GT crop with all_poses=True. OFF BY DEFAULT because "
+                     "phase_k_eval's --crop-all-poses is a store_true that defaults to FALSE, so "
+                     "the historical runs cropped from POSE 0 ONLY. Auditing the union instead "
+                     "is a weaker test in the wrong direction: a union can keep a chain that "
+                     "pose 0 drops, so it can return a clean verdict for a crop that was not "
+                     "clean. Raised in review.")
 a = ap.parse_args()
 
 pdbs = []
@@ -49,13 +56,17 @@ for mp in [m for m in a.masks.split(",") if m]:
 
 lost = {k: [] for k in ["GT crop (label coords)"] + list(masks)}
 lost["per-pose predicted crop"] = []
-n_struct = n_pose = 0
+n_struct = n_pose = n_unit = n_gt_undef = 0
+missing = []
+expect_units = 0
 
 for pdb in pdbs:
     tdir, ldir = os.path.join(a.trunks, pdb), os.path.join(a.labels, pdb)
     t0 = os.path.join(tdir, f"free_{a.seed_base}.npz")
     l0 = os.path.join(ldir, f"free_{a.seed_base}.npz")
+    expect_units += a.budget
     if not (os.path.exists(t0) and os.path.exists(l0)):
+        missing.append(f"structure {pdb}: no trunk/label at seed {a.seed_base}")
         continue
     n_struct += 1
     z0 = np.load(t0, allow_pickle=True)
@@ -63,25 +74,37 @@ for pdb in pdbs:
     asym = np.asarray(z0["ci_feat_asym_id"]).reshape(-1)
     allc = set(np.unique(asym).tolist())
 
-    kt, _ = BC.interface_crop_tokens(z0, lab0, a.contact, a.margin, all_poses=True)
-    if kt is not None:
-        miss = allc - set(np.unique(asym[kt]).tolist())
-        if miss:
-            lost["GT crop (label coords)"].append((pdb, sorted(miss), len(allc)))
-
     for nm, mk in masks.items():
-        if pdb in mk:
-            m = np.asarray(mk[pdb]).astype(bool)
-            miss = allc - set(np.unique(asym[m]).tolist())
-            if miss:
-                lost[nm].append((pdb, sorted(miss), len(allc)))
+        if pdb not in mk:
+            # COVERAGE IS PART OF THE AUDIT. A missing mask entry used to be skipped silently,
+            # so an audit over zero structures printed the same clean verdict as a real one.
+            missing.append(f"{nm}: no mask entry for {pdb}")
+            continue
+        m = np.asarray(mk[pdb]).astype(bool)
+        miss = allc - set(np.unique(asym[m]).tolist())
+        if miss:
+            lost[nm].append((pdb, sorted(miss), len(allc)))
 
     for sd in range(a.seed_base, a.seed_base + a.budget):
         tp, lp = os.path.join(tdir, f"free_{sd}.npz"), os.path.join(ldir, f"free_{sd}.npz")
         if not (os.path.exists(tp) and os.path.exists(lp)):
+            missing.append(f"unit {pdb}/free_{sd}.npz absent")
             continue
+        n_unit += 1
         zc = np.load(tp, allow_pickle=True)
         lb = np.load(lp, allow_pickle=True)
+
+        # THE GT CROP, PER UNIT, AT THE HISTORICAL SETTING. Every unit, not just the first seed:
+        # the label npz is written per unit and its coordinates are permuted per pose, so one
+        # seed does not stand for thirty.
+        kt, _ = BC.interface_crop_tokens(zc, lb, a.contact, a.margin, all_poses=a.gt_all_poses)
+        if kt is None:
+            n_gt_undef += 1
+        else:
+            miss = allc - set(np.unique(asym[kt]).tolist())
+            if miss:
+                lost["GT crop (label coords)"].append(
+                    (f"{pdb}/{sd}", sorted(miss), len(allc)))
         px = np.asarray(zc["ci_coordinate"])
         pm = np.isfinite(px).all(axis=-1)
         for pi in range(px.shape[0]):
@@ -93,8 +116,8 @@ for pdb in pdbs:
             if miss:
                 lost["per-pose predicted crop"].append((f"{pdb}/{sd}/{pi}", sorted(miss), len(allc)))
 
-print(f"  chain survival audit -- {n_struct} structure(s), {n_pose} pose(s), "
-      f"contact {a.contact} A, margin {a.margin} A")
+print(f"  chain survival audit -- {n_struct} structure(s), {n_unit} unit(s), {n_pose} pose(s), "
+      f"contact {a.contact} A, margin {a.margin} A, GT all_poses={a.gt_all_poses}")
 print(f"  a crop that drops a whole chain makes Protenix compact the asym ids, and the "
       f"evaluator's\n  original-id indexing then reads the wrong chain pair.\n")
 bad = 0
@@ -104,6 +127,18 @@ for nm, v in lost.items():
         print(f"      {row[0]} lost chain(s) {row[1]} of {row[2]}")
     bad += len(v)
 print()
+# A VERDICT ON AN EMPTY AUDIT IS WORSE THAN NO VERDICT. Nothing may be skipped silently.
+if missing:
+    print(f"  INCOMPLETE: {len(missing)} expected item(s) were not examined, e.g.")
+    for m in missing[:8]:
+        print(f"      {m}")
+    raise SystemExit("STOP: the audit did not cover everything it was asked to, so it cannot "
+                     "certify anything. Fix the inputs or narrow the request explicitly.")
+if n_unit != expect_units or n_struct == 0:
+    raise SystemExit(f"STOP: examined {n_unit} unit(s) across {n_struct} structure(s), expected "
+                     f"{expect_units}. An audit that silently examined nothing prints the same "
+                     f"clean verdict as one that examined everything.")
+print(f"  coverage: {n_unit}/{expect_units} unit(s), {n_gt_undef} GT crop(s) undefinable")
 print("  VERDICT: " + ("no crop in any mode drops a whole chain on this pool, so the "
                        "mis-indexing is NOT live here" if bad == 0 else
                        f"{bad} crop(s) drop a chain -- the mis-indexing IS live"))

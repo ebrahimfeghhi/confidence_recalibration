@@ -1195,6 +1195,7 @@ def main():
             if n < len(units):
                 _pf_future = _pf_pool.submit(_warm, units[n][2])
         _perpose = []
+        _fallback_pi = set()     # cached pose indices; translated to sample ids after the join
         # THE JOIN NEEDS THE UNCROPPED COORDINATES. BC.resolve_seed_dir matches ci_coordinate
         # against the pose cifs by coordinate IDENTITY, so handing it a cropped array would break
         # the one join in this file that is not a (pdb, seed, sample) guess -- and silently, since
@@ -1288,7 +1289,7 @@ def main():
                         # NOT NEGLIGIBLE BY COUNT ALONE. Selection is an argmax per interface, so
                         # a single full-structure pose can be the one that wins. Recorded by
                         # (pdb, seed, pose) so the aggregate can say whether one was selected.
-                        fallback_poses.append((pdb, int(sd_), int(_pi)))
+                        _fallback_pi.add(int(_pi))
                 else:
                     _u6 = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev, torch)[:6]
                     _n_cropped += 1
@@ -1361,6 +1362,14 @@ def main():
         # has its own, so one per-unit vector would remap the wrong chains.
         _asym_for = ((lambda _i: _perpose[_i][1][0]["asym_id"]) if _perpose
                      else (lambda _i: feat["asym_id"]))
+        if _fallback_pi:
+            # AFTER THE JOIN, NOT BEFORE. rows are keyed by the joined sample id ks[i]; the
+            # fallback was detected at crop time, where only the cached pose index exists. Writing
+            # the pose index meant the sidecar could not be matched to a row without redoing the
+            # coordinate join -- which is the whole reason the join cache exists.
+            for _pi in sorted(_fallback_pi):
+                if _pi < len(ks):
+                    fallback_poses.append((pdb, int(sd_), int(ks[_pi])))
         for i, s_i in enumerate(summ):
             # THE PAE DUMP RIDES THE CANONICAL JOIN. `ks` comes from BC.resolve_seed_dir, which
             # matches poses to samples BY COORDINATE IDENTITY -- the only join in this file that is
@@ -1437,9 +1446,27 @@ def main():
                                      f"{mi},{mj} is outside a {cpi.shape[0]}-chain matrix. The "
                                      f"asym_id handed to the head and the matrix it returned "
                                      f"disagree.")
+                # THE TWO MATRICES DO NOT SHARE AN INDEXING CONVENTION, and this is the one
+                # place that reads both.
+                #   cpi  comes from Protenix, which COMPACTS asym ids to 0..N-1
+                #        (sample_confidence.py:508-512)            -> index with mi, mj
+                #   cim  comes from our _chain_pair_itm_mean, which allocates max(id)+1 rows and
+                #        writes at the ORIGINAL ids
+                #        (phase_j_rescore_cache.py:155)            -> index with ai, aj
+                # Using the compacted index on BOTH was the bug: with chains 0,2,3 surviving, the
+                # MEAN for pair (0,2) read row 1, an all-zero row, and (0,3) read (0,2)'s value.
+                # They agree whenever no chain is missing, which is why this never showed up
+                # uncropped.
                 v = float(cpi[mi, mj])
-                vm = (float(cim[mi, mj]) if cim is not None and max(mi, mj) < cim.shape[0]
-                      else None)
+                vm = None
+                if cim is not None:
+                    if max(int(ai), int(aj)) >= cim.shape[0]:
+                        raise SystemExit(
+                            f"STOP: {pdb}/{sd_} sample {k}: original chain index {ai},{aj} is "
+                            f"outside a {cim.shape[0]}-row MEAN matrix. That matrix is allocated "
+                            f"at max(asym_id)+1, so this means the pair's chains are not in the "
+                            f"asym_id the head was given.")
+                    vm = float(cim[int(ai), int(aj)])
                 key = (iface, sd_, k)
                 rows.append((iface, sd_, k, v, dockq.get(key), vm))
                 if key in stored_iptm:

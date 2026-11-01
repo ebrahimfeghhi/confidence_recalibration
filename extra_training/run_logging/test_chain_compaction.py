@@ -43,6 +43,29 @@ if abs(float(cpi[0, 2]) - 0.002309) > 1e-9:
 if cmap.get(3) != 2:
     fails.append("original chain 3 should map to matrix row 2, not be skipped")
 
+# ---- 1b. THE MEAN MATRIX USES THE OTHER CONVENTION -----------------------
+# _chain_pair_itm_mean allocates max(chain_ids)+1 rows and writes at the ORIGINAL ids
+# (phase_j_rescore_cache.py:155), so with chains [0,2,3] surviving it is 4x4 with row 1 empty.
+# Indexing it with the COMPACTED index is the bug this pins.
+cim = np.zeros((4, 4))
+cim[0, 2] = cim[2, 0] = 0.101853
+cim[0, 3] = cim[3, 0] = 0.002309
+if abs(float(cim[0, 2]) - 0.101853) > 1e-9:
+    fails.append("fixture is wrong: cim[0,2] should be the correct MEAN for pair (0,2)")
+if abs(float(cim[cmap[0], cmap[2]]) - 0.0) > 1e-9:
+    fails.append("fixture is wrong: the compacted lookup should hit the empty row")
+# what the code must now do: cpi by compacted, cim by ORIGINAL
+for _ai, _aj, _want_max, _want_mean in ((0, 2, 0.101853, 0.101853), (0, 3, 0.002309, 0.002309)):
+    _mi, _mj = cmap[_ai], cmap[_aj]
+    if abs(float(cpi[_mi, _mj]) - _want_max) > 1e-9:
+        fails.append(f"MAX pair ({_ai},{_aj}) read {float(cpi[_mi,_mj])}, want {_want_max}")
+    if abs(float(cim[_ai, _aj]) - _want_mean) > 1e-9:
+        fails.append(f"MEAN pair ({_ai},{_aj}) read {float(cim[_ai,_aj])}, want {_want_mean}")
+# and the specific wrong answers the reviewer reproduced, so the test fails if it regresses
+if abs(float(cim[cmap[0], cmap[2]]) - 0.0) > 1e-9 or \
+        abs(float(cim[cmap[0], cmap[3]]) - 0.101853) > 1e-9:
+    fails.append("the compacted-index MEAN lookups should give 0 and 0.101853 -- the bug")
+
 # ---- 2. identity when nothing is dropped ---------------------------------
 if K._cpi_index(np.array([0, 0, 1, 1, 2])) != {0: 0, 1: 1, 2: 2}:
     fails.append("contiguous asym ids must map to themselves; uncropped runs must be unaffected")

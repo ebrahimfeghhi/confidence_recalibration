@@ -1,0 +1,11 @@
+  chain survival audit -- 53 structure(s), 1590 unit(s), 7950 pose(s), contact 5.0 A, margin 10.0 A, GT all_poses=False
+  a crop that drops a whole chain makes Protenix compact the asym ids, and the evaluator's
+  original-id indexing then reads the wrong chain pair.
+
+  GT crop (label coords)       crops that lost a chain: 0
+  valfull_m5.npz               crops that lost a chain: 0
+  valfull_m2.5.npz             crops that lost a chain: 0
+  per-pose predicted crop      crops that lost a chain: 0
+
+  coverage: 1590/1590 unit(s), 0 GT crop(s) undefinable
+  VERDICT: no crop in any mode drops a whole chain on this pool, so the mis-indexing is NOT live here
