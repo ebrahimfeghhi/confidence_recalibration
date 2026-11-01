@@ -23,6 +23,7 @@ usually incomplete and its mean is over fewer poses.
 
 Usage:  python -I run_logging/plot_rel_arm.py [run_id] [out.png]
 """
+import json
 import csv
 import os
 import re
@@ -156,13 +157,32 @@ _rhe = sorted(rho)
 # is ~0.63 of Spearman tall, and ours-uncropped (+0.2819) sits 0.0175 from d32kqp (+0.2994), so
 # the two labels printed on top of each other. They also do not BELONG on this axis -- they are
 # uncropped and the curve is cropped, so a reader should not be able to lay a ruler across them.
+# WHETHER THE CURVE IS CROPPED IS A PROPERTY OF THE ARM, NOT OF THIS SCRIPT. The label and the
+# ep27 reference line were hardcoded for the cropped arm (o2qczq -> t4jtjr, --crop-margin 10) and
+# then printed verbatim over the UNCROPPED arm, calling its full-structure curve "CROPPED" and
+# laying a cropped-arm reference beside it. Read it from the run's own args.json instead; a resume
+# cannot change crop_margin without --resume-override, so the plotted run's value is the chain's.
+_cm = None
+for _r in RIDS:
+    _ap = os.path.join(ROOT, "training", "runs", _r, "args.json")
+    if os.path.exists(_ap):
+        _cm = float(json.load(open(_ap)).get("crop_margin", 0.0) or 0.0)
+        break
+if _cm is None:
+    raise SystemExit(f"STOP: no args.json anywhere in the chain {RIDS}, so whether this arm "
+                     f"trains cropped is unknown and the axis cannot be labelled honestly.")
+
 draw(ax_rho, _rhe, [rho[e] for e in _rhe], "#3a8a5f",
-     "within-interface Spearman vs DockQ  (CROPPED)", "{:+.4f}")
-ax_rho.annotate("uncropped @ep27:   shipped +0.193    ours +0.282    "
-                "d32kqp ep66 +0.299    true iTM +0.690",
-                (0.02, 0.97), xycoords="axes fraction", ha="left", va="top",
-                fontsize=7.5, color="#777777")
-ax_rho.set_ylim(0.15, 0.78)
+     "within-interface Spearman vs DockQ  "
+     + (f"(CROPPED, margin {_cm:g} A)" if _cm > 0 else "(UNCROPPED, full structures)"),
+     "{:+.4f}")
+# The ep27 markers are the CROPPED arm's own matched pair. They belong only on that arm's panel.
+if _cm > 0:
+    ax_rho.annotate("uncropped @ep27:   shipped +0.193    ours +0.282    "
+                    "d32kqp ep66 +0.299    true iTM +0.690",
+                    (0.02, 0.97), xycoords="axes fraction", ha="left", va="top",
+                    fontsize=7.5, color="#777777")
+    ax_rho.set_ylim(0.15, 0.78)
 
 _sde = sorted(sdr)
 # TWO REFERENCES: 1.0 is matching the truth, and 0.450 is where the row-weight arm sat at
