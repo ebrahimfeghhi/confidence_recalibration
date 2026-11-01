@@ -234,3 +234,37 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 13/60: 1220 unit(s)
   epoch 13/60: 1220 unit(s)
   epoch 13/60: 1220 unit(s)
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/mieumn/head_step1500.pt
+  epoch 13 took 145.7 min for 1220 unit(s), 122 optimiser step(s), 1.43 s/pose
+  epoch 13 took 145.7 min for 1220 unit(s), 122 optimiser step(s), 1.43 s/pose
+  [rank 2] epoch 13 took 145.7 min -- apply_step_total 1.1m/122  cpucrop_label 0.0m/12  cpucrop_slice 0.1m/12  cpucrop_tokens 0.0m/12  cpucrop_trunk 0.0m/12  gpu_backward 73.6m/6100  gpu_forward 41.6m/12200  grad_collective_plus_wait 0.7m/122  label_open 0.0m/2440  loss_feature_prep 0.1m/2440  loss_stats_collective_plus_wait 14.3m/122  pose_a_total 21.3m/6100  pose_total 87.3m/6100  prefetch_issue 0.0m/1219  rank_gather 5.2m/122  rank_pass_a 27.3m/122
+  [rank 2] epoch 13 prefetch (4 worker(s)): 0/0 hit (0.0%), 0.0 min waiting on the worker
+  [rank 2] epoch 13 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2707 over 733 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 1] epoch 13 took 145.7 min -- apply_step_total 1.1m/122  cpucrop_label 0.0m/12  cpucrop_slice 0.1m/12  cpucrop_tokens 0.0m/12  cpucrop_trunk 0.0m/12  gpu_backward 70.0m/6100  gpu_forward 40.1m/12200  grad_collective_plus_wait 0.8m/122  label_open 0.0m/2440  loss_feature_prep 0.1m/2440  loss_stats_collective_plus_wait 18.3m/122  pose_a_total 20.5m/6100  pose_total 83.3m/6100  prefetch_issue 0.0m/1219  rank_gather 4.9m/122  rank_pass_a 27.6m/122
+  [rank 1] epoch 13 prefetch (4 worker(s)): 0/0 hit (0.0%), 0.0 min waiting on the worker
+  [rank 1] epoch 13 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2707 over 733 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 2] epoch 13 SCORE SPREAD: median std(predicted) 0.0223 against std(true iTM) 0.0695, median ratio 0.378   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 2] epoch 13 rank-loss (rel, cross-seed pairs): +0.01106 over 733 interface-group(s) in 122 step(s), 36650 pair(s)
+  [rank 2] epoch 13 accounted 130.0m of 145.7m, residual 15.7m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 1] epoch 13 SCORE SPREAD: median std(predicted) 0.0223 against std(true iTM) 0.0695, median ratio 0.378   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 1] epoch 13 rank-loss (rel, cross-seed pairs): +0.01106 over 733 interface-group(s) in 122 step(s), 36650 pair(s)
+  [rank 1] epoch 13 accounted 129.0m of 145.7m, residual 16.6m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 2] epoch 13 memory: peak allocated 87.71 GB, peak reserved 89.39 GB, blocks_per_ckpt=1
+  [rank 1] epoch 13 memory: peak allocated 87.71 GB, peak reserved 89.51 GB, blocks_per_ckpt=1
+  epoch 13 took 145.7 min for 1220 unit(s), 122 optimiser step(s), 1.43 s/pose
+  [rank 0] epoch 13 took 145.7 min -- apply_step_total 1.1m/122  cpucrop_label 0.0m/12  cpucrop_slice 0.0m/12  cpucrop_tokens 0.0m/12  cpucrop_trunk 0.0m/12  gpu_backward 72.4m/6100  gpu_forward 41.3m/12200  grad_collective_plus_wait 0.7m/122  label_open 0.0m/2440  loss_feature_prep 0.1m/2440  loss_stats_collective_plus_wait 15.2m/122  pose_a_total 21.1m/6100  pose_total 86.0m/6100  prefetch_issue 0.0m/1219  rank_gather 3.9m/122  rank_pass_a 28.6m/122
+  [rank 0] epoch 13 prefetch (4 worker(s)): 0/0 hit (0.0%), 0.0 min waiting on the worker
+  [rank 0] epoch 13 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2707 over 733 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 0] epoch 13 SCORE SPREAD: median std(predicted) 0.0223 against std(true iTM) 0.0695, median ratio 0.378   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 0] epoch 13 rank-loss (rel, cross-seed pairs): +0.01106 over 733 interface-group(s) in 122 step(s), 36650 pair(s)
+  [rank 0] epoch 13 accounted 128.2m of 145.7m, residual 17.5m (exclusive buckets only; gpu_* overlap pose_total)
+  [rank 0] epoch 13 memory: peak allocated 87.71 GB, peak reserved 89.35 GB, blocks_per_ckpt=1
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/mieumn/resume_ep13.pt (227 MiB: head + AdamW moments + step)
+  evaluating epoch 13 (valfull) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:5479: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/mieumn/metric_valfull_ep13.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 13 TRAIN: mean_dockq 0.5847  frac_acc 0.7500  oracle 0.6926 / 0.8587  headroom 0.1079  (92 interfaces)
+  epoch 14/60: 1220 unit(s)
+  epoch 14/60: 1220 unit(s)  epoch 14/60: 1220 unit(s)
+
