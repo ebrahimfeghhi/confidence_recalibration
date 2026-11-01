@@ -1,0 +1,77 @@
+  [1/53] 22gi       n_tok=430   poses=150  min=307 med=318 max=324   0.0 min elapsed, ~1.6 min left
+  [2/53] 29tj       n_tok=250   poses=150  min=168 med=177 max=186   0.0 min elapsed, ~1.2 min left
+  [3/53] 7q4q       n_tok=452   poses=150  min=342 med=348 max=355   0.1 min elapsed, ~1.4 min left
+  [4/53] 7qu1       n_tok=619   poses=150  min=370 med=412 max=445   0.1 min elapsed, ~1.6 min left
+  [5/53] 7qu2       n_tok=600   poses=150  min=391 med=419 max=463   0.2 min elapsed, ~1.6 min left
+  [6/53] 7r58       n_tok=638   poses=150  min=364 med=409 max=532   0.2 min elapsed, ~1.7 min left
+  [7/53] 7shy       n_tok=482   poses=150  min=237 med=264 max=334   0.3 min elapsed, ~1.7 min left
+  [8/53] 7si0       n_tok=481   poses=150  min=236 med=262 max=338   0.3 min elapsed, ~1.6 min left
+  [9/53] 7sqw       n_tok=534   poses=150  min=361 med=367 max=375   0.3 min elapsed, ~1.6 min left
+  [10/53] 7su0       n_tok=547   poses=150  min=363 med=387 max=422   0.4 min elapsed, ~1.6 min left
+  [11/53] 7t2p       n_tok=765   poses=150  min=237 med=317 max=446   0.4 min elapsed, ~1.6 min left
+  [12/53] 7tzh       n_tok=426   poses=150  min=192 med=245 max=312   0.4 min elapsed, ~1.5 min left
+  [13/53] 7y8j       n_tok=243   poses=150  min=165 med=168 max=186   0.5 min elapsed, ~1.4 min left
+  [14/53] 7zmk       n_tok=690   poses=150  min=362 med=430 max=476   0.5 min elapsed, ~1.4 min left
+  [15/53] 7zra       n_tok=524   poses=150  min=263 med=354 max=392   0.6 min elapsed, ~1.4 min left
+  [16/53] 8apy       n_tok=333   poses=150  min=166 med=170 max=173   0.6 min elapsed, ~1.3 min left
+  [17/53] 8df1       n_tok=799   poses=150  min=389 med=410 max=487   0.6 min elapsed, ~1.3 min left
+  [18/53] 8gq1       n_tok=539   poses=150  min=326 med=391 max=400   0.7 min elapsed, ~1.3 min left
+  [19/53] 8og0       n_tok=432   poses=150  min=312 med=325 max=332   0.7 min elapsed, ~1.3 min left
+  [20/53] 8omz       n_tok=564   poses=150  min=139 med=216 max=316   0.7 min elapsed, ~1.2 min left
+  [21/53] 8piz       n_tok=288   poses=149  min=17 med=114 max=182   0.8 min elapsed, ~1.2 min left
+  [22/53] 8pjp       n_tok=286   poses=150  min=39 med=90 max=171   0.8 min elapsed, ~1.1 min left
+  [23/53] 8t04       n_tok=448   poses=150  min=206 med=229 max=287   0.8 min elapsed, ~1.1 min left
+  [24/53] 8t05       n_tok=448   poses=150  min=213 med=244 max=276   0.8 min elapsed, ~1.0 min left
+  [25/53] 8t06       n_tok=448   poses=150  min=209 med=232 max=342   0.9 min elapsed, ~1.0 min left
+  [26/53] 8tbq       n_tok=553   poses=150  min=388 med=403 max=438   0.9 min elapsed, ~1.0 min left
+  [27/53] 8v8f       n_tok=249   poses=150  min=172 med=178 max=184   0.9 min elapsed, ~0.9 min left
+  [28/53] 8xqj       n_tok=606   poses=150  min=221 med=292 max=352   1.0 min elapsed, ~0.9 min left
+  [29/53] 8y31       n_tok=782   poses=150  min=396 med=415 max=465   1.0 min elapsed, ~0.9 min left
+  [30/53] 8z2v       n_tok=593   poses=150  min=379 med=421 max=451   1.1 min elapsed, ~0.8 min left
+  [31/53] 8z3a       n_tok=593   poses=150  min=406 med=426 max=459   1.1 min elapsed, ~0.8 min left
+  [32/53] 8z74       n_tok=607   poses=150  min=234 med=312 max=374   1.2 min elapsed, ~0.8 min left
+  [33/53] 9bx7       n_tok=446   poses=150  min=329 med=337 max=346   1.2 min elapsed, ~0.7 min left
+  [34/53] 9c7x       n_tok=455   poses=150  min=346 med=353 max=363   1.2 min elapsed, ~0.7 min left
+  [35/53] 9cfd       n_tok=443   poses=150  min=323 med=330 max=341   1.3 min elapsed, ~0.6 min left
+  [36/53] 9cn2       n_tok=454   poses=150  min=212 med=243 max=338   1.3 min elapsed, ~0.6 min left
+  [37/53] 9e6k       n_tok=546   poses=150  min=355 med=385 max=392   1.3 min elapsed, ~0.6 min left
+  [38/53] 9eg6       n_tok=347   poses=150  min=250 med=300 max=332   1.4 min elapsed, ~0.5 min left
+  [39/53] 9egn       n_tok=231   poses=150  min=76 med=132 max=173   1.4 min elapsed, ~0.5 min left
+  [40/53] 9fgy       n_tok=255   poses=150  min=109 med=116 max=122   1.4 min elapsed, ~0.5 min left
+  [41/53] 9fvb       n_tok=424   poses=150  min=92 med=125 max=167   1.4 min elapsed, ~0.4 min left
+  [42/53] 9fve       n_tok=426   poses=150  min=77 med=123 max=168   1.5 min elapsed, ~0.4 min left
+  [43/53] 9ima       n_tok=787   poses=150  min=427 med=444 max=507   1.5 min elapsed, ~0.4 min left
+  [44/53] 9lme       n_tok=342   poses=150  min=103 med=151 max=205   1.5 min elapsed, ~0.3 min left
+  [45/53] 9mfg       n_tok=424   poses=150  min=132 med=158 max=225   1.6 min elapsed, ~0.3 min left
+  [46/53] 9mmj       n_tok=463   poses=150  min=316 med=335 max=366   1.6 min elapsed, ~0.2 min left
+  [47/53] 9mz6       n_tok=463   poses=150  min=318 med=337 max=365   1.6 min elapsed, ~0.2 min left
+  [48/53] 9nr6       n_tok=602   poses=150  min=212 med=233 max=250   1.7 min elapsed, ~0.2 min left
+  [49/53] 9q1l       n_tok=482   poses=150  min=346 med=352 max=368   1.7 min elapsed, ~0.1 min left
+  [50/53] 9qrv       n_tok=550   poses=150  min=352 med=378 max=438   1.7 min elapsed, ~0.1 min left
+  [51/53] 9rye       n_tok=699   poses=150  min=127 med=131 max=204   1.8 min elapsed, ~0.1 min left
+  [52/53] 9ryf       n_tok=699   poses=150  min=126 med=131 max=204   1.8 min elapsed, ~0.0 min left
+  [53/53] 9y7n       n_tok=706   poses=150  min=380 med=418 max=492   1.9 min elapsed, ~0.0 min left
+  PER-POSE crop, contact 5.0 A, margin 10.0 A -- 53 structure(s), 7950 candidate pose(s)
+  1 pose(s) had no cross-chain contact and are excluded; 0 unit(s) had no label npz
+
+  WITHIN one structure, across its own candidates:
+    quantity                                 p10    median       p90       max
+    spread, tokens (max - min)            17.000    75.000   133.000   209.000
+    spread, as frac of structure           0.040     0.121     0.297     0.573
+    size ratio, max / min                  1.055     1.244     1.990    10.706
+    implied d0 swing, A                    0.157     0.679     1.724     5.266
+    median crop, frac of structure         0.373     0.592     0.745     0.865
+
+  the union over all poses, for reference:
+    union as frac of structure             0.732     0.906     0.996     1.000
+    median pose crop / union               0.385     0.677     0.933     0.966
+
+  the five widest-spreading structures:
+    pdb          n_tok     min     med     max   ratio  d0 swing
+    8piz           288      17     114     182   10.71      5.27
+    8pjp           286      39      90     171    4.38      3.10
+    9egn           231      76     132     173    2.28      1.82
+    8omz           564     139     216     316    2.27      2.13
+    9lme           342     103     151     205    1.99      1.61
+
+  per-structure rows -> training/runs/union_crop/perpose_spread_m10.0.json
