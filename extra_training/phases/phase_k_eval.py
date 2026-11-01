@@ -267,7 +267,9 @@ def aggregate(a, rows, selfchk, want_ifaces):
     # the condition keyed to crop_margin alone the shipped baseline pass would have hit the hard
     # STOP below and the experiment would have had no baseline at all.
     _crop_mode = ("--crop-margin %g" % a.crop_margin) if a.crop_margin > 0 else (
-        ("--crop-tokens %s" % os.path.basename(a.crop_tokens)) if a.crop_tokens else "")
+        ("--crop-tokens %s" % os.path.basename(a.crop_tokens)) if a.crop_tokens else (
+            ("--crop-predicted-margin %g" % a.crop_predicted_margin)
+            if a.crop_predicted_margin > 0 else ""))
     _crop_selfcheck_informational = bool(_crop_mode)
     if not a.ckpt and not a.no_self_check:
         if not selfchk:
@@ -742,6 +744,25 @@ def main():
                          "predicted -- so it needs no experimental structure and could be built "
                          "at inference. Mutually exclusive with --crop-margin: two crop rules at "
                          "once is a silent mismatch waiting to happen, and the run refuses it.")
+    ap.add_argument("--crop-predicted-margin", type=float, default=0.0,
+                    help="PER-POSE crop from PREDICTED coordinates: for each pose, take its own "
+                         "inter-chain contacts within --crop-contact of ci_coordinate, keep every "
+                         "token within this margin of them, and score that pose on that crop. "
+                         "THE EXPERIMENT: --crop-margin runs the identical rule on "
+                         "label_coordinate, so running both answers whether swapping ground-truth "
+                         "coordinates for predicted ones preserves the gain. Both call "
+                         "BC.crop_tokens_from_coords, so the rule cannot drift between them. "
+                         "Token count varies between poses, hence so does ipTM's d0 -- that is "
+                         "measured here, not designed around. A pose with no inter-chain contact "
+                         "is scored on the FULL structure and counted, which is what the trainer "
+                         "already does for an undefinable crop. Mutually exclusive with "
+                         "--crop-margin and --crop-tokens.")
+    ap.add_argument("--pose-split-check", action="store_true",
+                    help="score one pose per forward pass with NO crop. Scores must match the "
+                         "batched path exactly; this exists because --crop-predicted-margin has "
+                         "to score poses one at a time, and if splitting the pose dimension "
+                         "changed a score on its own, every per-pose crop number would be "
+                         "measuring the split rather than the crop.")
     ap.add_argument("--labels", default="",
                     help="label npz root for --crop-margin; defaults to <fold>/labels. The crop "
                          "needs ground-truth coordinates, which is why this evaluator could "
@@ -857,6 +878,13 @@ def main():
     a = ap.parse_args()
     # CHECKED FROM argv, BEFORE ANYTHING LOADS. Two crop rules at once is knowable here, and a
     # refusal that waits for the model load arrives minutes later and on a worker.
+    if a.crop_predicted_margin > 0 and (a.crop_margin > 0 or a.crop_tokens):
+        raise SystemExit("STOP: --crop-predicted-margin cannot be combined with --crop-margin or "
+                         "--crop-tokens. They are three different crop rules and running two at "
+                         "once would label the result with whichever flag the reader noticed.")
+    if a.pose_split_check and (a.crop_margin > 0 or a.crop_tokens or a.crop_predicted_margin > 0):
+        raise SystemExit("STOP: --pose-split-check is the UNCROPPED control for pose splitting. "
+                         "With a crop on it would compare two things at once and prove nothing.")
     if a.crop_tokens and a.crop_margin > 0:
         raise SystemExit("STOP: --crop-tokens and --crop-margin both set. They are two different "
                          "crop rules -- a precomputed label-free mask and a ground-truth "
@@ -1131,6 +1159,7 @@ def main():
                 _pf_future.result()          # this unit's bytes; started one iteration ago
             if n < len(units):
                 _pf_future = _pf_pool.submit(_warm, units[n][2])
+        _perpose = []
         # THE JOIN NEEDS THE UNCROPPED COORDINATES. BC.resolve_seed_dir matches ci_coordinate
         # against the pose cifs by coordinate IDENTITY, so handing it a cropped array would break
         # the one join in this file that is not a (pdb, seed, sample) guess -- and silently, since
@@ -1187,9 +1216,45 @@ def main():
                                                                   torch)[:6]
                 _n_cropped += 1
                 _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
+        elif a.crop_predicted_margin > 0 or a.pose_split_check:
+            # ONE SLICE PER POSE. The crop is defined by THIS pose's predicted coordinates, so
+            # the unit has to be sliced once per pose rather than once per unit. Under
+            # --pose-split-check nothing is cropped and this is purely the split, which is the
+            # control that makes the cropped numbers readable.
+            _zc = np.load(tp)
+            _px_full = np.asarray(_zc["ci_coordinate"])
+            _perpose = []
+            if a.crop_predicted_margin > 0:
+                _lp = os.path.join(_labels_root, pdb, f"free_{sd_}.npz")
+                if not os.path.exists(_lp):
+                    raise SystemExit(f"STOP: --crop-predicted-margin needs {_lp} for the unit's "
+                                     f"slicing arrays. The CROP is label-free -- it reads only "
+                                     f"ci_coordinate -- but re-indexing the sliced unit is not.")
+                _lab = np.load(_lp, allow_pickle=True)
+                _pm = np.isfinite(_px_full).all(axis=-1)
+            for _pi in range(_px_full.shape[0]):
+                _kt = None
+                if a.crop_predicted_margin > 0:
+                    _kt, _ka = BC.crop_tokens_from_coords(
+                        _zc, _lab, _px_full, _pm, a.crop_contact, a.crop_predicted_margin,
+                        poses=[_pi])
+                if _kt is None:
+                    # NO CONTACT AT ALL, or no crop asked for: score the whole structure. Counted
+                    # and printed, never silent -- 1 pose of 7,950 on valfull is a fully
+                    # dissociated decoy, and if that number ever grows the metric is quietly
+                    # becoming an uncropped one.
+                    _u6 = RC.load_unit(tp, dev)[:6]
+                    if a.crop_predicted_margin > 0:
+                        _n_nocrop += 1
+                else:
+                    _u6 = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev, torch)[:6]
+                    _n_cropped += 1
+                    _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
+                _perpose.append((_pi, _u6))
+            feat = _perpose[0][1][0]
         else:
             feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
-        if a.frame_direction:
+        if a.frame_direction and not _perpose:
             # DERIVED FROM THE TRUNK, not read from a label npz. An earlier version read
             # lf_frame_atom_index and lf_pae_rep_atom_mask from the labels beside the trunk and
             # hard-stopped when they were absent -- which made --frame-direction unscorable on
@@ -1200,10 +1265,27 @@ def main():
             # structures with zero mismatches.
             _fai, _pae = pose_direction.derive_frames(feat)
             pose_direction.set_unit(_fai, feat["has_frame"], _pae, pdb=pdb)
-        summ = ((lambda *_a: RC.pair_iptm_only(*_a, want_pae=a.dump_pae, want_mean=a.pool_mean))
-                if a.pair_iptm_only else RC.confidence)(
-            model, configs, feat, s_in, s_tr, z, x, nc)
-        summ = summ if isinstance(summ, (list, tuple)) else [summ]
+        _CONF = ((lambda *_a: RC.pair_iptm_only(*_a, want_pae=a.dump_pae, want_mean=a.pool_mean))
+                 if a.pair_iptm_only else RC.confidence)
+        if _perpose:
+            summ = []
+            for _pi, (_f, _si, _st, _z, _x, _nc) in _perpose:
+                if a.frame_direction:
+                    # PER POSE, because each pose carries its own crop and therefore its own token
+                    # numbering. Setting this once per unit would point pose 3's frames at pose
+                    # 0's residues.
+                    _fai, _pd = pose_direction.derive_frames(_f)
+                    pose_direction.set_unit(_fai, _f["has_frame"], _pd, pdb=pdb)
+                _s = _CONF(model, configs, _f, _si, _st, _z, _x[_pi:_pi + 1], _nc)
+                _s = _s if isinstance(_s, (list, tuple)) else [_s]
+                if len(_s) != 1:
+                    raise SystemExit(f"STOP: scoring one pose returned {len(_s)} summaries. The "
+                                     f"pose dimension is not what drives the output, so slicing "
+                                     f"it would silently mis-pair scores with poses.")
+                summ.append(_s[0])
+        else:
+            summ = _CONF(model, configs, feat, s_in, s_tr, z, x, nc)
+            summ = summ if isinstance(summ, (list, tuple)) else [summ]
         # join 2: pose -> sample, by coordinate identity. The pose DIRECTORY is itself resolved by
         # the trunk, because a refold leaves two finished directories for one seed and neither
         # filesystem order nor poses/index.tsv says which run wrote this trunk.
@@ -1330,8 +1412,10 @@ def main():
     # THE CROP IS REPORTED, NEVER ASSUMED. A --crop-margin that silently cropped nothing would
     # produce an "uncropped" number under a cropped label, which is the whole failure this run is
     # about.
-    if a.crop_margin > 0 or a.crop_tokens:
-        _cm = ("--crop-margin %g" % a.crop_margin) if a.crop_margin > 0 else "--crop-tokens"
+    if a.crop_margin > 0 or a.crop_tokens or a.crop_predicted_margin > 0:
+        _cm = ("--crop-margin %g" % a.crop_margin) if a.crop_margin > 0 else (
+            "--crop-tokens" if a.crop_tokens
+            else "--crop-predicted-margin %g" % a.crop_predicted_margin)
         _kf = (_tok_kept / _tok_full) if _tok_full else float("nan")
         print(f"\ncrop: {_n_cropped} unit(s) cropped, {_n_nocrop} undefinable and scored whole; "
               f"kept {_tok_kept}/{_tok_full} token(s) ({100*_kf:.1f}%)")

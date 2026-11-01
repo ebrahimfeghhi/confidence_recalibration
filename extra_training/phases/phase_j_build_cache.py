@@ -542,19 +542,37 @@ def interface_crop_tokens(z, lab, contact=5.0, margin=15.0, all_poses=True):
     label rebuild that does permute. assert_pose_invariant_crop() is the gate that would catch it.
     """
     import numpy as np
+    lc = np.asarray(lab["label_coordinate"])
+    lm = np.asarray(lab["label_coordinate_mask"])
+    return crop_tokens_from_coords(z, lab, lc, lm, contact, margin,
+                                   poses=None if all_poses else [0])
+
+
+def crop_tokens_from_coords(z, lab, coords, cmask_all, contact=5.0, margin=15.0, poses=None):
+    """interface_crop_tokens' rule over ANY (n_pose, n_atom, 3) coordinate array.
+
+    THE ONE IMPLEMENTATION. interface_crop_tokens passes the LABEL coordinates; the evaluator's
+    --crop-predicted-margin passes ci_coordinate, what the fold predicted, for a single pose. The
+    two differ ONLY in which coordinates define the interface, which is exactly the comparison
+    section 9c is for -- so they must not be two copies of the rule that can drift apart.
+
+    `poses` selects which rows of `coords` to union over; None means all of them. Passing one
+    index gives that pose's own crop.
+    """
+    import numpy as np
     from scipy.spatial import cKDTree
     asym = np.asarray(z["ci_feat_asym_id"]).reshape(-1)
     a2t = np.asarray(z["ci_feat_atom_to_token_idx"]).reshape(-1)
     rep = np.asarray(lab["lf_pae_rep_atom_mask"]).reshape(-1).astype(bool)
-    lc = np.asarray(lab["label_coordinate"])
-    lm = np.asarray(lab["label_coordinate_mask"])
+    lc = np.asarray(coords)
+    lm = np.asarray(cmask_all)
     n_tok = asym.shape[0]
-    n_pose = lc.shape[0] if all_poses else 1
     in_range = (a2t >= 0) & (a2t < n_tok)
+    idx = range(lc.shape[0]) if poses is None else list(poses)
 
     keep_tok = np.zeros(n_tok, dtype=bool)
     any_pose = False
-    for pi in range(n_pose):
+    for pi in idx:
         cmask = lm[pi].astype(bool) & in_range
         if cmask.sum() < 4:
             continue
