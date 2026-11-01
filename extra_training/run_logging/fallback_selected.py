@@ -47,7 +47,12 @@ for d in dirs:
     for pool, col in (("MEAN", "iptm_mean"), ("MAX", "iptm")):
         won = []
         for iface, ps in by.items():
-            best = max(ps, key=lambda r: float(r[col]))
+            # THE SAME TIE-BREAK AS aggregate's _pick (phase_k_eval.py:406):
+            # max by (score, -seed, -sample), i.e. lowest seed then lowest sample on a tie.
+            # Breaking ties by input order instead made this reporter claim a fallback pose had
+            # won when aggregate had in fact selected a tied, lower-seed non-fallback -- a
+            # diagnostic that disagrees with the selector it is describing is worse than none.
+            best = max(ps, key=lambda r: (float(r[col]), -int(r["seed"]), -int(r["sample"])))
             # the sidecar is per STRUCTURE; an interface id carries the pdb as its prefix
             key = (iface.split("_")[0], best["seed"], best["sample"])
             if key in fb:
