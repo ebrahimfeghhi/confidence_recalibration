@@ -17,15 +17,60 @@ under test.
 import math
 
 
+def parse_lr_steps(spec):
+    """"20:1e-3,40:1e-4" -> [(20.0, 1e-3), (40.0, 1e-4)], sorted by epoch.
+
+    Raises ValueError rather than guessing, because a mis-parsed schedule is invisible: the run
+    trains at the wrong lr for twenty epochs and nothing in the log says so.
+    """
+    out = []
+    for part in str(spec).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if ":" not in part:
+            raise ValueError(f"--lr-steps entry {part!r} is not EPOCH:LR")
+        e, v = part.split(":", 1)
+        ep, val = float(e), float(v)
+        if ep < 0:
+            raise ValueError(f"--lr-steps epoch {ep} is negative")
+        if val <= 0:
+            raise ValueError(f"--lr-steps lr {val} is not positive")
+        out.append((ep, val))
+    out.sort(key=lambda t: t[0])
+    for (e0, _), (e1, _) in zip(out, out[1:]):
+        if e0 == e1:
+            raise ValueError(f"--lr-steps names epoch {e0} twice")
+    return out
+
+
 def lr_at_step(step, lr, lr_final, warmup_steps, steps_per_epoch, epochs,
-               decay_start_epoch=0.0, decay_end_epoch=0.0, shape="cosine"):
+               decay_start_epoch=0.0, decay_end_epoch=0.0, shape="cosine", lr_steps=()):
     """The lr this optimiser step runs at. `step` is 0-based and resume restores it.
 
     Defaults reproduce the historical schedule exactly: warm up over warmup_steps, then either
     hold lr flat (lr_final <= 0) or cosine from the end of warmup to the last expected step.
+
+    lr_steps, when given, is a STAIRCASE and takes precedence over every decay flag: the lr is
+    `lr` until the first milestone epoch, then each milestone's value until the next. It is a
+    different object from cosine/exponential, which interpolate continuously -- a staircase holds
+    a value and then drops, which is what "drop to 1e-3 at epoch 20" asks for and what neither
+    shape can express. Warmup still applies at the very start, so the first steps ramp rather than
+    beginning at full lr.
     """
     horizon = float(steps_per_epoch) * max(1.0, float(epochs))
     cur = lr * min(1.0, (step + 1) / max(1, warmup_steps))
+    if lr_steps:
+        # STAIRCASE. spe comes from the same horizon the other shapes use, so a schedule pinned in
+        # a test is pinned against the trainer's own step geometry and not an idealised one.
+        spe = horizon / max(1e-9, float(epochs))
+        ep_now = step / max(1e-9, spe)
+        val = lr
+        for ep_at, v in lr_steps:
+            if ep_now >= ep_at:
+                val = v
+        # warmup only ever LOWERS the first steps; it cannot raise a later milestone back up.
+        return min(val, cur) if step < warmup_steps else val
     if lr_final <= 0.0 or horizon <= warmup_steps or step < warmup_steps:
         return cur
     spe = horizon / max(1e-9, float(epochs))

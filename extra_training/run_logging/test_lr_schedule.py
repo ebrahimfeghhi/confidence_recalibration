@@ -140,6 +140,41 @@ def main():
     check("the bug WOULD have left lr far above 1e-4 at epoch 50", bad > 5e-4,
           f"{bad:.3e} = {bad / 1e-4:.0f}x the intended floor")
 
+    # ---- THE STAIRCASE, as launch_unioncrop_dropout_l2.sh names it ----------------------
+    # That script asks for 1e-2 through epoch 19, 1e-3 from 20, 1e-4 from 40, held to 60. The
+    # decay shapes interpolate CONTINUOUSLY and cannot express a hold-then-drop, which is why
+    # --lr-steps exists; these pins are the reason to believe the flag does what the script says.
+    STEPS = LRS.parse_lr_steps("20:1e-3,40:1e-4")
+    check("the staircase parses to two milestones", STEPS == [(20.0, 1e-3), (40.0, 1e-4)],
+          f"{STEPS}")
+    for ep, want in ((1, 1e-2), (10, 1e-2), (19, 1e-2), (20, 1e-3), (30, 1e-3), (39, 1e-3),
+                     (40, 1e-4), (50, 1e-4), (59, 1e-4)):
+        got = LRS.lr_at_step(int(ep * spe_cs), lr=0.01, lr_final=1e-4, warmup_steps=20,
+                             steps_per_epoch=spe_cs, epochs=60, lr_steps=STEPS)
+        check(f"staircase lr at epoch {ep} is {want:.0e}", abs(got - want) < 1e-12,
+              f"got {got:.4e}")
+    # IT MUST BEAT lr_final AND THE WINDOW, or a stale --lr-final would quietly win.
+    got = LRS.lr_at_step(int(25 * spe_cs), lr=0.01, lr_final=1e-4, warmup_steps=20,
+                         steps_per_epoch=spe_cs, epochs=60, decay_start_epoch=20,
+                         decay_end_epoch=50, shape="cosine", lr_steps=STEPS)
+    check("the staircase overrides lr_final and the decay window", abs(got - 1e-3) < 1e-12,
+          f"got {got:.4e} with a cosine window also configured")
+    # AND AN EMPTY SPEC MUST CHANGE NOTHING, or every existing arm moved.
+    a_ = LRS.lr_at_step(int(30 * spe_cs), lr=0.01, lr_final=1e-4, warmup_steps=20,
+                        steps_per_epoch=spe_cs, epochs=60, decay_start_epoch=20,
+                        decay_end_epoch=50, shape="cosine")
+    b_ = LRS.lr_at_step(int(30 * spe_cs), lr=0.01, lr_final=1e-4, warmup_steps=20,
+                        steps_per_epoch=spe_cs, epochs=60, decay_start_epoch=20,
+                        decay_end_epoch=50, shape="cosine", lr_steps=())
+    check("an empty --lr-steps is bit-identical to before the flag existed", a_ == b_,
+          f"{a_:.6e} vs {b_:.6e}")
+    for bad_spec in ("20", "20:0", "-1:1e-3", "20:1e-3,20:1e-4"):
+        try:
+            LRS.parse_lr_steps(bad_spec)
+            check(f"refuses malformed spec {bad_spec!r}", False, "it did not refuse")
+        except ValueError:
+            check(f"refuses malformed spec {bad_spec!r}", True)
+
     print(f"\n  {len(FAIL)} failure(s)" + (f": {FAIL}" if FAIL else ""))
     return 1 if FAIL else 0
 

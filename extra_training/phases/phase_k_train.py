@@ -162,6 +162,13 @@ def main():
                          "steps, i.e. confined and retracing. That is an optimiser oscillating at "
                          "the limit its step size can resolve, and neither run ever decayed: lr "
                          "was constant 0.01 from step 20 to the end because no decay existed.")
+    ap.add_argument("--lr-steps", default="",
+                    help="A STAIRCASE schedule, EPOCH:LR,EPOCH:LR -- e.g. "
+                         "20:1e-3,40:1e-4 holds --lr until epoch 20, then 1e-3 until epoch "
+                         "40, then 1e-4. TAKES PRECEDENCE over --lr-final and the decay "
+                         "window/shape, which interpolate continuously and so cannot "
+                         "express a hold-then-drop. Warmup still applies to the first "
+                         "steps. Empty (default) leaves every existing arm bit-identical.")
     ap.add_argument("--grad-probe", action="store_true",
                     help="MEASURE, DON'T GUESS. Run EXACTLY ONE accumulation window -- the unit "
                          "count is derived as accum_local/nsample, not asked for, because a probe "
@@ -931,6 +938,17 @@ def main():
                          "loss.py:1772 does to it.\n"
                          "REQUIRES --pae-only, and is NOT inherited by the --loss-only val child, "
                          "which builds its own model in its own process.")
+    ap.add_argument("--pair-dropout", type=float, default=-1.0,
+                    help="ROW-WISE DROPOUT RATE ON THE PAIR REPRESENTATION in the confidence "
+                         "head's pairformer blocks. ConfidenceHead builds its stack with "
+                         "dropout=0.0, overriding Protenix's own 0.25 default for pair "
+                         "stacks, so this arm has trained 19.8M parameters with NO dropout "
+                         "and no masking of any kind. The plumbing is live -- all four "
+                         "pair-rep sites in PairformerBlock call dropout_add_rowwise(z, "
+                         "update, self.p_drop, self.training) and the head trains in train "
+                         "mode -- only the rate is zero. Negative (default) touches nothing. "
+                         "It drops whole ROWS of z, structured noise over token pairs rather "
+                         "than per-element noise, which is the AF3 design.")
     ap.add_argument("--alpha-confidence", type=float, default=1.0,
                     help="weight on the four confidence losses. Protenix ships 1e-4 because in full "
                          "AF3-style training these terms sit beside the diffusion and distogram "
@@ -1070,6 +1088,23 @@ def main():
                          "491 structures, 0 with no definable crop) for a MEASURED 3.35x on the "
                          "head and ~1.99x on a whole step, landing near Protenix's own "
                          "train_crop_size of 256. Requires --minimal-items.")
+    ap.add_argument("--crop-tokens", default="",
+                    help="TRAIN on a PRECOMPUTED token mask per structure instead of the "
+                         "--crop-margin interface crop. The npz comes from "
+                         "run_logging/build_union_crop_masks.py and holds <pdb> -> "
+                         "bool[n_token]: the UNION over every one of the structure's 50 "
+                         "candidate poses of that pose's own predicted interface, "
+                         "optionally with the ground-truth contact tokens forced in "
+                         "(--force-gt). WHY A UNION AND NOT A PER-POSE CROP: the relative "
+                         "loss grades the GAPS between a structure's poses, so if one pose "
+                         "kept its whole interface and another kept half, the score "
+                         "difference would measure the crop and not the poses. One shared "
+                         "mask gives every pose the same tokens, the same n and the same "
+                         "ipTM d0. It also keeps every seed of a structure at an identical "
+                         "token count, which is what makes per-rank work equal BY "
+                         "CONSTRUCTION in build_epoch_cross_seed -- unequal per-rank unit "
+                         "counts do not degrade, they deadlock the first all-reduce. "
+                         "Mutually exclusive with --crop-margin.")
     ap.add_argument("--crop-contact", type=float, default=5.0,
                     help="a token is an interface token when any of its heavy atoms lies within "
                          "this many angstroms of a heavy atom on a DIFFERENT CHAIN, by ground-truth "
@@ -1095,6 +1130,17 @@ def main():
             "STOP: --crop-margin needs --minimal-items. The dataset item's label_dict is built at "
             "full size, so cropping only the prediction would score poses against the wrong "
             "residues. Pass --minimal-items with its --alignment-preflight marker.")
+    if a.crop_tokens and a.crop_margin > 0:
+        raise SystemExit("STOP: --crop-tokens and --crop-margin are two crop rules at once. Which "
+                         "one applied would depend on branch order, and the run would name itself "
+                         "after whichever flag the reader noticed.")
+    if a.crop_tokens and not os.path.exists(a.crop_tokens):
+        raise SystemExit(f"STOP: --crop-tokens {a.crop_tokens} does not exist. Build it with "
+                         f"run_logging/build_union_crop_masks.py.")
+    if a.crop_tokens and not a.minimal_items:
+        raise SystemExit("STOP: --crop-tokens needs --minimal-items, for the same reason "
+                         "--crop-margin does: the full dataset item is built uncropped and "
+                         "check_alignment would compare it against cropped features.")
     if a.crop_margin < 0:
         raise SystemExit("STOP: --crop-margin cannot be negative.")
     # A THRESHOLD WITH NOTHING TO TURN OFF IS A NO-OP THAT READS LIKE A SETTING. With
@@ -1105,6 +1151,15 @@ def main():
             "STOP: --ckpt-token-threshold needs --blocks-per-ckpt > 0. With checkpointing already "
             "off for every unit the threshold selects between off and off, which changes nothing "
             "and hides that it changed nothing.")
+    # PARSED AT STARTUP, NOT AT THE FIRST STEP. A malformed --lr-steps would otherwise surface
+    # minutes in, on three ranks, after the model is built.
+    try:
+        _LR_STEPS = tuple(_LRS.parse_lr_steps(a.lr_steps)) if a.lr_steps else ()
+    except ValueError as _e:
+        raise SystemExit(f"STOP: {_e}")
+    if _LR_STEPS and a.lr_final > 0:
+        print(f"  NOTE: --lr-steps overrides --lr-final {a.lr_final:g} and the decay window; "
+              f"the staircase is what runs.")
     if a.ckpt_token_threshold < 0:
         raise SystemExit("STOP: --ckpt-token-threshold cannot be negative.")
     if a.lean_readouts and not a.pae_only:
@@ -1197,7 +1252,7 @@ def main():
         if a.warmup_steps:
             raise SystemExit("STOP: --loss-only with --warmup-steps is meaningless -- there is no "
                              "optimiser to warm up, and the logged lr would imply one ran.")
-    if a.crop_log and a.crop_margin == 0:
+    if a.crop_log and a.crop_margin == 0 and not a.crop_tokens:
         raise SystemExit("STOP: --crop-log was given but --crop-margin is 0, so nothing is cropped.")
 
     # PIN THE COMMIT NOW, before any work, so every bundle this process writes records the code it
@@ -1405,6 +1460,31 @@ def main():
     # self.pairformer_stack, whose _prep_blocks is also wrapped and raises _NoPose when the
     # one-hot cache is unset, so the run would die at pose 0 instead. Installing FIRST makes the
     # mirror the base of the chain, which is what it is a mirror of. Found in review.
+    if a.pair_dropout >= 0.0:
+        _blocks = list(getattr(model.confidence_head.pairformer_stack, "blocks", []))
+        if not _blocks:
+            raise SystemExit("STOP: --pair-dropout: the confidence head's pairformer_stack has "
+                             "no .blocks, so there is nothing to set the rate on.")
+        _was = sorted({float(getattr(b, "p_drop", -1)) for b in _blocks})
+        for _b in _blocks:
+            # p_drop IS THE ONE THAT MATTERS: all four pair-rep sites in PairformerBlock pass
+            # self.p_drop to dropout_add_rowwise. dropout_row is the unused non-fused path; it is
+            # set too so the two cannot disagree if a refactor ever switches paths.
+            _b.p_drop = float(a.pair_dropout)
+            _dr = getattr(_b, "dropout_row", None)
+            if _dr is not None:
+                for _obj in (_dr, getattr(_dr, "dropout", None)):
+                    for _attr in ("p", "r"):
+                        if _obj is not None and hasattr(_obj, _attr):
+                            setattr(_obj, _attr, float(a.pair_dropout))
+        _now = sorted({float(b.p_drop) for b in _blocks})
+        if _now != [float(a.pair_dropout)]:
+            raise SystemExit(f"STOP: --pair-dropout did not take: p_drop is {_now} after "
+                             f"assignment, not [{a.pair_dropout}].")
+        print(f"PAIR DROPOUT: row-wise rate on z set to {a.pair_dropout:g} on {len(_blocks)} "
+              f"pairformer block(s), was {_was}. "
+              f"confidence_head.training={model.confidence_head.training} "
+              f"-- dropout is a NO-OP unless that is True")
     if a.lean_readouts:
         import lean_readouts
         _lr_sha = lean_readouts.install(model, pae_only=a.pae_only)
@@ -2756,10 +2836,19 @@ def main():
                  "lr_decay_start_epoch": a.lr_decay_start_epoch,
                  "lr_decay_end_epoch": a.lr_decay_end_epoch,
                  "lr_decay_shape": a.lr_decay_shape,
+                 # THE STAIRCASE IS A SCHEDULE CHANGE like lr_final and the decay window, so a
+                 # resume that silently changed it would splice two schedules into one curve.
+                 "lr_steps": a.lr_steps,
+                 # DROPOUT IS PART OF THE OBJECTIVE, not of the optimiser: flipping it on a
+                 # resume changes the gradient's distribution at every step.
+                 "pair_dropout": a.pair_dropout,
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
                  "crop_margin": a.crop_margin, "crop_contact": a.crop_contact,
+                 # A CROP RULE CHANGE IS AN OBJECTIVE CHANGE: the loss averages over a different
+                 # set of tokens and pairs, so resuming across it would blend two objectives.
+                 "crop_tokens": os.path.basename(a.crop_tokens),
                  # THE CROP DEFINITION ITSELF, not just its radii. a16911de changed the DEFAULT
                  # from the union over all nsample poses to pose 0 alone, so a resume across that
                  # change blends two crop definitions into one curve. f1268fe5 added the field to
@@ -2828,7 +2917,8 @@ def main():
                      # A bundle written before these flags existed ran the full-run schedule, which
                      # is exactly what the 0 defaults mean, and "cosine" is what it computed.
                      "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
-                     "lr_decay_shape": "cosine",
+                     "lr_decay_shape": "cosine", "lr_steps": "",
+                     "pair_dropout": -1.0, "crop_tokens": "",
                      # ABSENCE IS EVIDENCE: a bundle written before --pae-row-frac existed ran the
                      # unweighted term, which is exactly what frac 0 means. The mass and floor
                      # defaults are inert at frac 0 but are migrated so a resume that only turns
@@ -3161,7 +3251,7 @@ def main():
     # the other two accumulated rows forever and wrote none, so the csv described a third of the
     # run while reading like the whole of it. Review round 6 caught that.
     crop_p = ""
-    if a.crop_margin > 0:
+    if a.crop_margin > 0 or a.crop_tokens:
         _base = a.crop_log or os.path.join(a.out, "crop_sizes.csv")
         _stem, _ext = os.path.splitext(_base)
         crop_p = f"{_stem}_rank{rank}{_ext or '.csv'}"
@@ -3199,6 +3289,48 @@ def main():
     # [units run UNCHECKPOINTED, units run CHECKPOINTED] under --ckpt-token-threshold. Reported
     # per epoch because a threshold that silently matches nothing -- or everything -- looks
     # exactly like a threshold that works until the timings fail to move.
+    # THE PRECOMPUTED CROP MASKS. __n and __meta are BOOKKEEPING, not structures: the evaluator's
+    # loader filters only __n and so counts __meta as a structure, which is why it prints one more
+    # than it has. Filter both.
+    _CROPTOK = {}
+    if a.crop_tokens:
+        _ctz = np.load(a.crop_tokens)
+        _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
+                    if not (k.endswith("__n") or k == "__meta")}
+        _ctn = {k[:-3]: np.asarray(_ctz[k]) for k in _ctz.files if k.endswith("__n")}
+        _kf = [float(v[1]) / float(v[2]) for v in _ctn.values()] or [float("nan")]
+        _forced = [int(v[5]) for v in _ctn.values() if len(v) > 5]
+        if is_main:
+            print(f"CROP: precomputed token masks from {a.crop_tokens} -- {len(_CROPTOK)} "
+                  f"structure(s), median kept fraction {float(np.median(_kf)):.4f}, built from "
+                  f"{int(np.median([v[0] for v in _ctn.values()]))} pose(s) each (median)"
+                  + (f", ground-truth contacts forced in (median {int(np.median(_forced))} "
+                     f"token(s) added, max {max(_forced)})" if _forced else
+                     " -- NO --force-gt, so interface coverage is NOT guaranteed"))
+
+    def _crop_masks(pdb_, zc_):
+        """(keep_tok, keep_atom) from whichever crop rule is configured. One dispatch, two callers.
+
+        A MISSING MASK IS FATAL, never a silent fall-through to the full structure: a run where
+        some units were cropped and some were not would still write a complete trajectory and
+        name itself after the crop.
+        """
+        kt_ = _CROPTOK.get(pdb_)
+        if kt_ is None:
+            raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb_}. The file names "
+                             f"{len(_CROPTOK)} structure(s); this manifest needs {pdb_} too. "
+                             f"Rebuild the mask over this pool.")
+        a2t_ = np.asarray(zc_["ci_feat_atom_to_token_idx"]).reshape(-1)
+        ntok_ = int(np.asarray(zc_["ci_feat_asym_id"]).reshape(-1).shape[0])
+        if kt_.shape[0] != ntok_:
+            raise SystemExit(f"STOP: {pdb_}'s mask has {kt_.shape[0]} token(s) but its cached "
+                             f"trunk has {ntok_}. The mask was built against a different cache "
+                             f"and slicing with it would scramble the structure.")
+        inr_ = (a2t_ >= 0) & (a2t_ < ntok_)
+        ka_ = np.zeros(a2t_.shape[0], dtype=bool)
+        ka_[inr_] = kt_[a2t_[inr_]]
+        return kt_, ka_
+
     _ckpt_hist = [0, 0]
     # THE EPOCH'S PEAK, KEPT BY HAND, because --mem-log resets the CUDA high-water mark before
     # every pose to make the per-pose number mean the pose. Without this the epoch line would
@@ -3398,8 +3530,9 @@ def main():
         zc = np.load(trunk_p)
         _tick("cpucrop_trunk", _t)
         _t = time.perf_counter()
-        kt, ka = BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin,
-                                          all_poses=a.crop_all_poses)
+        kt, ka = (_crop_masks(pdb, zc) if a.crop_tokens
+                  else BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin,
+                                                all_poses=a.crop_all_poses))
         _tick("cpucrop_tokens", _t)
         if kt is None:
             return ("nocrop", None, None)
@@ -3756,7 +3889,7 @@ def main():
         # chains with usable coordinates, or no cross-chain contact), and this trains on the whole
         # structure then, counted, rather than guessing at a window.
         crop_slice = None
-        if a.crop_margin > 0:
+        if a.crop_margin > 0 or a.crop_tokens:
             # THE PREFETCHED SLICE, IF THE WORKER GOT THERE FIRST. A hit skips straight to the
             # device move; a miss falls through to the inline path below, so a worker that is
             # behind, failed, or disabled costs correctness nothing.
@@ -3801,8 +3934,10 @@ def main():
                 # argues for caching the crop indices and nothing else.
                 _t0 = time.perf_counter()
                 _zc = np.load(trunk_p)
-                _kt, _ka = BC.interface_crop_tokens(_zc, lab, a.crop_contact, a.crop_margin,
-                                                    all_poses=a.crop_all_poses)
+                _kt, _ka = (_crop_masks(pdb, _zc) if a.crop_tokens
+                            else BC.interface_crop_tokens(_zc, lab, a.crop_contact,
+                                                          a.crop_margin,
+                                                          all_poses=a.crop_all_poses))
                 _tick("trunk_read_plus_crop_tokens", _t0)
                 if _kt is None:
                     crop_stats["undefined"] += 1
@@ -5934,6 +6069,8 @@ def main():
                                   "lr_decay_start_epoch": a.lr_decay_start_epoch,
                                   "lr_decay_end_epoch": a.lr_decay_end_epoch,
                                   "lr_decay_shape": a.lr_decay_shape,
+                                  "lr_steps": a.lr_steps,
+                                  "pair_dropout": a.pair_dropout,
                                   "warmup_steps": a.warmup_steps, "epochs": a.epochs,
                                   "manifest_skip": a.manifest_skip,
                                   "manifest_digest": _manifest_digest,
@@ -5989,6 +6126,7 @@ def main():
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
+                                  "crop_tokens": os.path.basename(a.crop_tokens),
                                   "crop_contact": a.crop_contact,
                  # THE CROP DEFINITION, for the same reason as the two above: a16911de changed
                  # the DEFAULT, so resuming a pre-change bundle under post-change code blends two
@@ -6111,7 +6249,8 @@ def main():
                     cur_lr = _LRS.lr_at_step(
                         step, lr, a.lr_final, a.warmup_steps,
                         _lr_horizon[0] / max(1.0, float(a.epochs)), a.epochs,
-                        a.lr_decay_start_epoch, a.lr_decay_end_epoch, a.lr_decay_shape)
+                        a.lr_decay_start_epoch, a.lr_decay_end_epoch, a.lr_decay_shape,
+                        _LR_STEPS)
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
                     n_in_accum += 1
@@ -6655,7 +6794,7 @@ def main():
     # every counter at zero and printed nothing at all -- an arm would have reported no retained
     # fraction and no fallback count, which is exactly the bookkeeping it exists to provide.
     # Review round 6 caught it.
-    if a.crop_margin > 0:
+    if a.crop_margin > 0 or a.crop_tokens:
         if crop_p and crop_rows:
             _flush(crop_p, crop_cols, crop_rows)
             crop_rows.clear()

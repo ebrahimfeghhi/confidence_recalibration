@@ -58,8 +58,24 @@ ap.add_argument("--require-poses", type=int, default=0,
                      "b30 eval scores those same 30 seeds -- but that is a coincidence of how "
                      "the labels were built, not a contract, and a label rebuild that added "
                      "seeds would silently widen every crop. Pass 150 for a b30 pool.")
+ap.add_argument("--force-gt", action="store_true",
+                help="UNION THE GROUND-TRUTH CONTACT TOKENS IN, for each scored chain pair, on "
+                     "top of the pose union. Makes interface coverage 1.0 BY CONSTRUCTION rather "
+                     "than 1.0 at the median: measured on TRAIN at margin 2.5 the pose union "
+                     "alone gives coverage p10 0.9500, so the bottom decile of structures loses "
+                     "5%+ of the very contacts the loss scores -- and because the DockQ label is "
+                     "a GLOBAL number computed on the full structure, it cannot be cropped to "
+                     "match a partially-kept interface. The head would be asked to score an "
+                     "interface that is not in its input. Costs almost nothing: median 0 tokens "
+                     "added, worst 6 over the structures measured. REQUIRES --roles and a pool "
+                     "with chain1/chain2. This makes the mask NOT label-free, which is fine for a "
+                     "TRAINING crop with uncropped inference and wrong for a deployment claim.")
+ap.add_argument("--roles", default="", help="chain_roles.csv; required by --force-gt")
 ap.add_argument("--verify-rule", action="store_true", default=True)
 a = ap.parse_args()
+if a.force_gt and not a.roles:
+    raise SystemExit("STOP: --force-gt needs --roles to map the pool's reference chains onto the "
+                     "model chain indices the cached features use.")
 
 
 def crop_from_coords(z, coords, cmask_all, rep, contact, margin):
@@ -111,6 +127,55 @@ pdbs = []
 for r in csv.DictReader(open(a.pool)):
     if r["pdb"] not in pdbs:
         pdbs.append(r["pdb"])
+
+def gt_contact_tokens(z, lab, pairs, contact):
+    """Bare ground-truth contact tokens for the SCORED chain pairs, from label coordinates.
+
+    No margin: this set exists only to guarantee the loss's own tokens survive the crop. Returns
+    None when no scored pair resolves, so the caller skips the structure rather than writing a
+    mask that silently guarantees nothing.
+    """
+    asym = np.asarray(z["ci_feat_asym_id"]).reshape(-1)
+    a2t = np.asarray(z["ci_feat_atom_to_token_idx"]).reshape(-1)
+    n_tok = asym.shape[0]
+    lc = np.asarray(lab["label_coordinate"])[0]
+    lm = np.asarray(lab["label_coordinate_mask"])[0].astype(bool)
+    ok = lm & (a2t >= 0) & (a2t < n_tok)
+    ch = asym[a2t]
+    ti = np.zeros(n_tok, dtype=bool)
+    any_pair = False
+    for (x, y) in sorted(pairs):
+        m1, m2 = ok & (ch == x), ok & (ch == y)
+        if not m1.any() or not m2.any():
+            continue
+        any_pair = True
+        i1, i2 = np.where(m1)[0], np.where(m2)[0]
+        for q, h in enumerate(cKDTree(lc[m2]).query_ball_point(lc[m1], contact)):
+            if h:
+                ti[a2t[i1[q]]] = True
+                for j in h:
+                    ti[a2t[i2[j]]] = True
+    return ti if (any_pair and ti.any()) else None
+
+
+# THE SCORED PAIRS, as chain INDICES into asym_id. Only needed by --force-gt.
+SCORED = {}
+if a.force_gt:
+    _roles = {}
+    for _r in csv.DictReader(open(a.roles)):
+        _roles.setdefault(_r["pdb"], {})[_r["ref_chain"]] = _r["model_chain"]
+    for _r in csv.DictReader(open(a.pool)):
+        _m1 = _roles.get(_r["pdb"], {}).get(_r.get("chain1", ""))
+        _m2 = _roles.get(_r["pdb"], {}).get(_r.get("chain2", ""))
+        if _m1 and _m2:
+            SCORED.setdefault(_r["pdb"], set()).add((min(ord(_m1), ord(_m2)) - ord("A"),
+                                                     max(ord(_m1), ord(_m2)) - ord("A")))
+    if not SCORED:
+        raise SystemExit(f"STOP: --force-gt resolved 0 scored pair(s) from {a.pool} via "
+                         f"{a.roles}. The pool needs chain1/chain2 columns and the roles csv "
+                         f"needs matching pdb/ref_chain rows.")
+    print(f"  --force-gt: {sum(len(v) for v in SCORED.values())} scored pair(s) over "
+          f"{len(SCORED)} structure(s)")
 
 out, verified, vfail, skipped = {}, 0, [], []
 n_nolabel = 0
@@ -177,9 +242,24 @@ for pdb in pdbs:
         skipped.append((pdb, "no usable pose"))
         continue
     units_used[pdb] = used_units
+    n_forced = 0
+    if a.force_gt:
+        # THE GT CONTACT SET, BARE -- no margin on it. Its only job is to guarantee that every
+        # token the loss scores survives; the margin's job is context, and the pose union already
+        # provides that. Taken from the LABEL coordinates of pose 0, scored pairs only.
+        gt_i = gt_contact_tokens(z, lab, SCORED.get(pdb, set()), a.contact)
+        if gt_i is None:
+            skipped.append((pdb, "--force-gt: no scored pair resolvable"))
+            continue
+        n_forced = int((gt_i & ~uni).sum())
+        uni = uni | gt_i
+        cov_after = float((gt_i & uni).sum() / max(int(gt_i.sum()), 1))
+        if cov_after < 1.0:
+            raise SystemExit(f"STOP: {pdb} still has coverage {cov_after:.4f} after forcing, "
+                             f"which is arithmetically impossible -- the union was not applied.")
     out[pdb] = uni
-    out[pdb + "__n"] = np.array([npose, int(uni.sum()), int(uni.size), nseen, nocontact],
-                                dtype=np.int64)
+    out[pdb + "__n"] = np.array([npose, int(uni.sum()), int(uni.size), nseen, nocontact,
+                                 n_forced], dtype=np.int64)
 
 # DERIVED, NOT HARDCODED. Raised in review: 150 was this pool's budget x nsample written out by
 # hand, which would be silently wrong on any other pool.
