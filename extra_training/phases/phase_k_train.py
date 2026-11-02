@@ -804,22 +804,16 @@ def main():
                     help="`structure` shuffles the ORDER OF STRUCTURES and the units within each, "
                          "which is as much as can be shuffled while building each structure's "
                          "dataset item once. `none` is deterministic for debugging.")
-    ap.add_argument("--epoch-order", default="shuffle", choices=["shuffle", "manifest"],
-                    help="HOW THE EPOCH'S STRUCTURES ARE ORDERED, independently of --shuffle. "
-                         "`shuffle` (default) is the training order and changes nothing: both "
-                         "epoch builders sort the structures and then shuffle them with a "
-                         "per-epoch rng, and shuffle each structure's seeds and each step's units "
-                         "too.\n"
-                         "`manifest` walks the structures in the order --manifest-selection lists "
-                         "them, with no shuffle anywhere, and prints the realised order plus any "
-                         "structure a short final step dropped. It exists for MEASUREMENT: "
-                         "run_logging/bench_ckpt_by_size.py --probe needs ascending token order "
-                         "to find the largest structure that survives without activation "
-                         "checkpointing, and --shuffle none does NOT give it that -- the shuffle "
-                         "in the builders is unconditional and runs after it. Found in review.\n"
-                         "DO NOT TRAIN WITH IT. A fixed order correlates the gradient with "
-                         "whatever the manifest is sorted by, and the probe's manifest is sorted "
-                         "by size.")
+    ap.add_argument("--epoch-order", default="shuffle",
+                    choices=["shuffle", "manifest", "tokens"],
+                    help="HOW THE EPOCH'S STRUCTURES ARE ORDERED, independently of "
+                         "--shuffle. `shuffle` (default) is the training order, unchanged. "
+                         "`tokens` walks them ASCENDING BY TOKEN COUNT, which is what a "
+                         "memory probe needs: it reaches the boundary having already "
+                         "measured every size below it, so one run ending in an OOM still "
+                         "yields the whole curve. `manifest` keeps the order the unit list "
+                         "is already in -- which is SORTED BY PDB, not the selection csv's "
+                         "row order. It was added believing otherwise; prefer `tokens`.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--seeds", default="500000-500009",
                     help="the seed range the manifest expects per structure, inclusive.")
@@ -2543,7 +2537,14 @@ def main():
     lo_s, hi_s = (int(x) for x in a.seeds.split("-"))
     skip = {x.strip().lower() for x in a.manifest_skip.split(",") if x.strip()}
     with open(a.manifest_selection) as fh:
-        sel_pdbs = [r["pdb"].strip().lower() for r in csv.DictReader(fh)]
+        _sel_rows = list(csv.DictReader(fh))
+    sel_pdbs = [r["pdb"].strip().lower() for r in _sel_rows]
+    # THE TOKEN COUNT, KEPT THIS TIME. It was parsed and discarded, which left --epoch-order no
+    # way to sort by size -- so "manifest" order silently meant whatever order `flat` happened to
+    # be in, which is sorted by pdb. Absent or non-numeric `tokens` is simply missing here and
+    # sorts first, named by the builder rather than guessed at.
+    _sel_tokens = {r["pdb"].strip().lower(): int(r["tokens"])
+                   for r in _sel_rows if str(r.get("tokens", "")).strip().isdigit()}
     if a.manifest_nshards and a.manifest_nshards > 1:
         if not (0 <= a.manifest_shard < a.manifest_nshards):
             raise SystemExit(f"STOP: --manifest-shard {a.manifest_shard} is not in "
@@ -4322,20 +4323,25 @@ def main():
             # NO GRAPH UNDER --loss-only. Skipping only the backward would still build the
             # autograd graph for every pose and free it unused -- correct, but it pays the
             # activation memory of training for a measurement that needs none.
+            # RESET BEFORE EVERY MEASURED POSE. max_memory_allocated is a HIGH-WATER MARK and the
+            # only reset was once per epoch, so every pose after the first large one reported that
+            # large one's number: the peak-versus-tokens curve was monotone in WALK ORDER, not a
+            # function of the pose at all. The epoch's own peak is kept by hand below so the epoch
+            # line still reports the epoch. Only under --mem-log, so the live run is untouched.
+            #
+            # OUTSIDE THE PASS BRANCH, NOT INSIDE THE else. It used to sit in the else, so poses
+            # taken under no_grad -- every pass A pose, and all of them under --loss-only -- were
+            # never reset while the MEM line below printed for them anyway. A whole step of pass A
+            # lines then carried one stale number, identical on all of them, and a reader taking
+            # max(peak) over the log was mixing a no-grad forward with a pose that backwards.
+            _pass = "A" if (a.loss_only or score_only) else "B"
+            if a.mem_log and torch.cuda.is_available():
+                _mem_ep[0] = max(_mem_ep[0], torch.cuda.max_memory_allocated(dev))
+                torch.cuda.reset_peak_memory_stats(dev)
             if a.loss_only or score_only:
                 with torch.no_grad():
                     m = _one_pose(i)
             else:
-                if a.mem_log and torch.cuda.is_available():
-                    # RESET BEFORE EACH MEASURED POSE. max_memory_allocated is a HIGH-WATER MARK
-                    # and the only reset was once per epoch, so every pose after the first large
-                    # one reported that large one's number: the peak-versus-tokens curve was
-                    # monotone in WALK ORDER, not a function of the pose at all, and a threshold
-                    # read off it would have been read off the wrong structure. The epoch's own
-                    # peak is kept by hand below so the epoch line still reports the epoch.
-                    # Found in review. Only under --mem-log, so the live run is untouched.
-                    _mem_ep[0] = max(_mem_ep[0], torch.cuda.max_memory_allocated(dev))
-                    torch.cuda.reset_peak_memory_stats(dev)
                 m = _one_pose(i)
             # PASS A'S POSES GET THEIR OWN BUCKET. Ticking them into pose_total would double-count
             # every pose and make the epoch accounting -- which is checked against the wall clock
@@ -4347,7 +4353,10 @@ def main():
                 # AT A CONSISTENT BOUNDARY: after backward, and after the pose's tensors are gone.
                 # allocated = live tensors. reserved = what the allocator holds, which is what
                 # nvidia-smi shows -- which is why a high nvidia-smi number proves nothing by itself.
-                print(f"MEM {pdb}/{arm_seed} pose {i} tokens {n_tok}: "
+                # THE PASS IS PART OF THE MEASUREMENT. A pass A pose runs under no_grad and
+                # stores no activations, so its peak is not comparable to a pass B pose's and is
+                # not what any checkpointing threshold is decided from.
+                print(f"MEM {pdb}/{arm_seed} pose {i} pass {_pass} tokens {n_tok}: "
                       f"allocated {torch.cuda.memory_allocated(dev) / 2**30:.2f} GB  "
                       f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f}  "
                       f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f}", flush=True)
@@ -5661,12 +5670,16 @@ def main():
         for _p, _lp, _c in flat:
             by.setdefault(_p, []).append((_lp, _c))
         rng_e = random.Random(a.seed + ep)
-        _manifest_order = (a.epoch_order == "manifest")
-        # MANIFEST ORDER MEANS `by`'S OWN INSERTION ORDER, which is the order `flat` was built in,
-        # which is the order --manifest-selection lists the structures. dicts preserve insertion
-        # order, so this needs no token counts here -- the caller sorts the CSV.
-        order = list(by) if _manifest_order else sorted(by)
-        if not _manifest_order:
+        # ASCENDING BY TOKENS when asked. The pdb tie-break keeps it deterministic across ranks
+        # and epochs. A structure the manifest gave no numeric `tokens` for sorts first and is
+        # named below rather than silently placed.
+        _manifest_order = (a.epoch_order in ("manifest", "tokens"))
+        if a.epoch_order == "tokens":
+            order = sorted(by, key=lambda _q: (_sel_tokens.get(_q, 0), _q))
+        elif _manifest_order:
+            order = list(by)
+        else:
+            order = sorted(by)
             rng_e.shuffle(order)
         # A GROUP IS `world` SEEDS OF ONE STRUCTURE -- the unit of equal work.
         groups = []
@@ -5732,9 +5745,16 @@ def main():
         for _p, _lp, _c in flat:
             by.setdefault(_p, []).append((_lp, _c))
         rng_e = random.Random(a.seed + ep)
-        _manifest_order = (a.epoch_order == "manifest")
-        order = list(by) if _manifest_order else sorted(by)
-        if not _manifest_order:
+        # ASCENDING BY TOKENS when asked. The pdb tie-break keeps it deterministic across ranks
+        # and epochs. A structure the manifest gave no numeric `tokens` for sorts first and is
+        # named below rather than silently placed.
+        _manifest_order = (a.epoch_order in ("manifest", "tokens"))
+        if a.epoch_order == "tokens":
+            order = sorted(by, key=lambda _q: (_sel_tokens.get(_q, 0), _q))
+        elif _manifest_order:
+            order = list(by)
+        else:
+            order = sorted(by)
             rng_e.shuffle(order)
         S = max(1, int(a.rank_structs_per_step))
         steps, _dropped = [], []

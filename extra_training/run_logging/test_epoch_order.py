@@ -33,11 +33,19 @@ def check(name, ok, detail=""):
         FAIL.append(name)
 
 
-def chunk_steps(order, by, S, manifest_order, seed=0):
-    """build_epoch_cross_seed's structure ordering and chunking, reimplemented."""
+def chunk_steps(order, by, S, manifest_order, seed=0, mode=None, tok=None):
+    """build_epoch_cross_seed's structure ordering and chunking, reimplemented.
+
+    mode="tokens" is the probe's order: ascending by token count, pdb as tie-break. The old
+    manifest_order flag is kept so the existing cases still read the same.
+    """
     rng = random.Random(seed)
-    o = list(order) if manifest_order else sorted(order)
-    if not manifest_order:
+    if mode == "tokens":
+        o = sorted(order, key=lambda q: (tok.get(q, 0), q))
+    elif manifest_order:
+        o = list(order)
+    else:
+        o = sorted(order)
         rng.shuffle(o)
     steps, dropped = [], []
     for i in range(0, len(o), S):
@@ -87,21 +95,66 @@ check("the DEFAULT order still shuffles (so the flag changed nothing by default)
 src = open(TRAIN).read()
 check("the flag exists with both choices",
       '"--epoch-order"' in src and '"shuffle", "manifest"' in src)
-need = [
-    '_manifest_order = (a.epoch_order == "manifest")',
-    'order = list(by) if _manifest_order else sorted(by)',
-    'if not _manifest_order:\n            rng_e.shuffle(order)',
-    'if not _manifest_order:\n                    rng_e.shuffle(u)',
-]
-for frag in need:
-    check(f"trainer still contains: {frag.splitlines()[0][:52]}", frag in src)
+# PIN THE WHOLE BRANCH, not fragments of it. The three-way if/elif/else IS the guard: there
+# is no longer a shuffle merely preceded by a condition, so a regex hunting for an
+# "unguarded" shuffle cannot tell one from the other any more. Pinning the exact block can.
+BRANCH = '''
+        _manifest_order = (a.epoch_order in ("manifest", "tokens"))
+        if a.epoch_order == "tokens":
+            order = sorted(by, key=lambda _q: (_sel_tokens.get(_q, 0), _q))
+        elif _manifest_order:
+            order = list(by)
+        else:
+            order = sorted(by)
+            rng_e.shuffle(order)'''.strip(chr(10))
+check("both builders carry the exact 3-way order branch", src.count(BRANCH) == 2,
+      f"{src.count(BRANCH)} site(s)")
+check("the within-structure seed shuffle is still guarded",
+      'if not _manifest_order:\n                    rng_e.shuffle(u)' in src)
+check("the structure shuffle appears ONLY in that else branch",
+      src.count("rng_e.shuffle(order)") == 2,
+      f"{src.count('rng_e.shuffle(order)')} occurrence(s)")
 # BOTH builders, not one. build_epoch and build_epoch_cross_seed each had the shuffle.
 _sites = src.count('_manifest_order = (a.epoch_order')
 check("both builders read a.epoch_order", _sites == 2, f"{_sites} site(s)")
-check("no unguarded shuffle of the structure order is left",
-      not re.search(r"^\s*order = sorted\(by\)\n\s*rng_e\.shuffle\(order\)", src, re.M))
+# (the old unguarded-shuffle regex is gone: it matched the else branch's own two lines,
+#  which are correctly guarded, so it failed on the very shape it required.)
 check("the dropped-chunk report exists",
       "DROPPED as a short" in src and "--rank-structs-per-step" in src)
+
+# ---- 3. the tokens mode, which is what the probe actually needs ------------------------
+# THE REAL BUG THIS COVERS: `by` is built from `flat`, which is sorted by pdb, so "manifest"
+# order is a pdb sort and NOT the csv's row order. A probe that trusted it walked
+# 535, 631, 578, 404 and OOMed on the 5th structure alphabetically (1272 tokens) having
+# measured nothing above 631. Names here are deliberately ANTI-correlated with size.
+ANTI = {"a_big": 1473, "b_mid": 700, "c_small": 128, "d_huge": 1543, "e_tiny": 100, "f_mid": 600}
+aby = {k: ["seedA", "seedB"] for k in ANTI}
+tw = [p for st in chunk_steps(list(ANTI), aby, S=3, manifest_order=True,
+                              mode="tokens", tok=ANTI)[0] for p, _ in st]
+seq = [ANTI[p] for p in tw]
+check("tokens mode walks ASCENDING by token count",
+      all(b >= a for a, b in zip(seq, seq[1:])), f"{seq}")
+check("tokens mode is NOT the pdb sort (the bug it fixes)",
+      tw != [p for p in sorted(ANTI) for _ in range(2)][:len(tw)],
+      f"pdb order would be {sorted(ANTI)}")
+# a structure with no numeric tokens sorts first rather than crashing
+NOTOK = dict(ANTI); NOTOK.pop("e_tiny")
+tw2 = [p for st in chunk_steps(list(NOTOK) + ["z_unknown"],
+                               {**aby, "z_unknown": ["seedA", "seedB"]},
+                               S=3, manifest_order=True, mode="tokens", tok=NOTOK)[0]
+       for p, _ in st]
+check("a structure with no numeric `tokens` sorts first, not crashes",
+      tw2[0] == "z_unknown", f"{tw2[:3]}")
+
+# ---- 4. the trainer still contains it --------------------------------------------------
+check("the flag offers tokens", '"shuffle", "manifest", "tokens"' in src)
+check("both builders sort by tokens",
+      src.count('order = sorted(by, key=lambda _q: (_sel_tokens.get(_q, 0), _q))') == 2,
+      f"{src.count('order = sorted(by, key=lambda _q: (_sel_tokens.get(_q, 0), _q))')} site(s)")
+check("the manifest's token column is captured, not discarded",
+      '_sel_tokens = {r["pdb"].strip().lower(): int(r["tokens"])' in src)
+check("the help no longer claims manifest order is the csv's row order",
+      "SORTED BY PDB, not the selection csv" in src)
 
 print()
 if FAIL:

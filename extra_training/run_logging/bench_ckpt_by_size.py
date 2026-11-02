@@ -45,7 +45,13 @@ import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY_BIN = "/home/ebrahim/Protenix/.venv/bin/python"
-MEM = re.compile(r"MEM (?P<pdb>\S+)/(?P<seed>\S+) pose (?P<pose>\d+) tokens (?P<tok>-?\d+): "
+# `pass` IS REQUIRED, NOT OPTIONAL. A pass A pose runs under no_grad and stores no activations;
+# pooling its peak with a pass B pose's understates the one number the threshold is read off. An
+# older trainer emitted no pass field, and this regex deliberately fails to match those lines
+# rather than silently treating them as pass B -- a log with no match reports "no MEM lines
+# parsed", which is true and loud, instead of a wrong peak.
+MEM = re.compile(r"MEM (?P<pdb>\S+)/(?P<seed>\S+) pose (?P<pose>\d+) pass (?P<pass_>[AB]) "
+                 r"tokens (?P<tok>-?\d+): "
                  r"allocated (?P<alloc>[\d.]+) GB\s+peak (?P<peak>[\d.]+)\s+"
                  r"reserved (?P<res>[\d.]+)")
 EPOCH = re.compile(r"\[rank 0\] epoch \d+ took (?P<min>[\d.]+) min")
@@ -93,13 +99,24 @@ ap.add_argument("--start-tokens", type=int, default=700,
                 help="probe mode: skip structures below this, so the walk starts near the "
                      "boundary instead of spending 20 minutes on units that obviously fit. The "
                      "manifest holds 136 structures at 700+ tokens and 6 at 1400+.")
-ap.add_argument("--only", choices=("fat_ckpt_on", "lean_ckpt_on", "lean_ckpt_off"),
+ap.add_argument("--only", choices=("fat_ckpt_on", "lean_ckpt_on", "lean_ckpt_off",
+                                  "fat_ckpt_off"),
                 help="run ONE arm of the three-arm comparison and stop, instead of all three in "
                      "sequence. This is how the three arms are spread over three cards: launch "
                      "three invocations, each with its own --only and its own --cards, then run "
                      "a fourth with neither --only nor --cards changed -- run() reuses any "
                      "non-empty log it finds, so the fourth does no GPU work and only reports. "
                      "MASTER_PORT is offset per arm so concurrent invocations cannot collide.")
+ap.add_argument("--set", action="append", default=[], metavar="FLAG=VALUE",
+                help="override any flag in the arm's argv, repeatable. THE REASON THIS EXISTS: "
+                     "the alignment-preflight marker is bound to a manifest digest and the "
+                     "trainer refuses a mismatch, with no override -- by design, so a debug "
+                     "population cannot authorise training. --limit-units and a reordered "
+                     "manifest both change that digest, so the only way to shrink the work is to "
+                     "shrink the POPULATION and re-run the preflight over it, then point the arm "
+                     "at both: --set manifest-selection=<csv> --set alignment-preflight=<marker> "
+                     "--set seeds=<range> --set limit-units=0. Applied after every other "
+                     "override, so it wins.")
 ap.add_argument("--dry-run", action="store_true")
 a = ap.parse_args()
 
@@ -176,7 +193,7 @@ def override(v, flag, value):
 # ONE PORT PER ARM. Each arm is WORLD_SIZE 1 and so forms no collective, but MASTER_PORT is
 # still bound, and three concurrent --only invocations sharing one port would race on it. The
 # offset is derived from the tag rather than passed in, so the caller cannot forget it.
-_PORT_ORDER = ("fat_ckpt_on", "lean_ckpt_on", "lean_ckpt_off", "probe")
+_PORT_ORDER = ("fat_ckpt_on", "lean_ckpt_on", "lean_ckpt_off", "fat_ckpt_off", "probe")
 
 
 def _port_offset(tag):
@@ -193,9 +210,15 @@ def run(tag, bpc, lean, extra=(), allow_oom=False):
     """
     work = os.path.join(a.out, tag)
     log = os.path.join(OUT, tag + ".log")
+    # REUSE ONLY A LOG THAT ACTUALLY MEASURED SOMETHING. "Non-empty" is not the test: a run that
+    # hard-stopped on a guard writes a long log with no MEM line in it, and reusing that is how a
+    # crashed arm turns into a number in the report. The alignment-preflight stop found this.
     if os.path.exists(log) and os.path.getsize(log) > 0:
-        print(f"  {tag}: log exists, reusing")
-        return log
+        if any(MEM.search(_l) for _l in open(log, errors="replace")):
+            print(f"  {tag}: log exists with MEM lines, reusing")
+            return log
+        print(f"  {tag}: log exists but holds NO MEM line, so it measured nothing -- re-running. "
+              f"Last line: {(open(log, errors='replace').read().strip().splitlines() or [''])[-1][:120]}")
     v = arm_argv()
     for flag, val in (("--resume", a.bundle), ("--blocks-per-ckpt", str(bpc)),
                       ("--limit-units", str(a.units)), ("--epochs", str(BUNDLE_EP + 1)),
@@ -215,6 +238,12 @@ def run(tag, bpc, lean, extra=(), allow_oom=False):
         v.append("--lean-readouts")
     for _f, _val in extra:
         v = override(v, _f, _val)
+    # LAST, so --set beats the arm's line and every override above.
+    for _kv in a.set:
+        if "=" not in _kv:
+            sys.exit(f"STOP: --set {_kv!r} is not FLAG=VALUE.")
+        _f, _val = _kv.split("=", 1)
+        v = override(v, "--" + _f.lstrip("-"), _val)
     if "--mem-log" not in v:
         v.append("--mem-log")
     v = override(v, "--resume-note",
@@ -289,11 +318,23 @@ def run(tag, bpc, lean, extra=(), allow_oom=False):
     return log
 
 
-def parse(log):
+def parse(log, want_pass="B"):
+    """MEM rows for ONE pass, plus the epoch buckets.
+
+    want_pass="B" by default and that is the only value anything here asks for: the threshold is
+    a statement about a pose that stores activations and backwards through them. Pass A poses run
+    under no_grad, so their peak is roughly the resident model and inputs no matter how large the
+    structure is, and pooling the two is how a 1162-token structure came to report the same peak
+    as a 263-token one.
+    """
     rows, buckets, took = [], {}, None
+    n_other = 0
     for line in open(log, errors="replace"):
         m = MEM.search(line)
         if m:
+            if m["pass_"] != want_pass:
+                n_other += 1
+                continue
             rows.append((int(m["tok"]), float(m["peak"]), float(m["alloc"]), float(m["res"]),
                          m["pdb"], m["seed"], int(m["pose"])))
         e = EPOCH.search(line)
@@ -301,6 +342,8 @@ def parse(log):
             took = float(e["min"])
             for b in BUCKET.finditer(line):
                 buckets[b["k"]] = (float(b["m"]), int(b["n"]))
+    print(f"    {os.path.basename(log)}: {len(rows)} pass-{want_pass} pose(s), "
+          f"{n_other} other-pass pose(s) ignored")
     return rows, buckets, took
 
 
@@ -453,9 +496,14 @@ if a.probe:
 #   lean_ckpt_off  the configuration a small unit would actually run in. Its peak-vs-tokens curve
 #                  is what the threshold is read off.
 #
-# fat_ckpt_off is deliberately NOT run: nothing would be done with it. The question is how large
-# a unit can skip recompute in the configuration we would ship, not in one we would not.
-ARMS = (("fat_ckpt_on", 1, False), ("lean_ckpt_on", 1, True), ("lean_ckpt_off", 0, True))
+#   fat_ckpt_off   checkpointing off WITHOUT the strip. Added later: it is the control that
+#                  isolates what the strip is worth TO THE THRESHOLD. lean_ckpt_off alone gives a
+#                  boundary; the difference between the two boundaries is the number that decides
+#                  whether --lean-readouts is what buys the threshold or whether turning
+#                  checkpointing off would have bought it anyway. It is only reached with --only,
+#                  so the default three-arm comparison is unchanged.
+ARMS = (("fat_ckpt_on", 1, False), ("lean_ckpt_on", 1, True), ("lean_ckpt_off", 0, True),
+        ("fat_ckpt_off", 0, False))
 if a.only:
     # ONE ARM, THEN STOP. The comparison needs all three logs, so it is not attempted here; the
     # reporting invocation that follows finds this log already written and reuses it.
@@ -466,7 +514,9 @@ if a.only:
         print(f"  --only was given, so the three-arm comparison was NOT run. Re-run without "
               f"--only once all three logs exist to get it.")
     sys.exit(0)
-logs = {tag: run(tag, bpc, lean) for tag, bpc, lean in ARMS}
+# THE REPORT IS STILL THE THREE-ARM ONE. fat_ckpt_off is an --only arm; including it here would
+# make the default comparison spend a fourth run nothing below reads.
+logs = {tag: run(tag, bpc, lean) for tag, bpc, lean in ARMS if tag != "fat_ckpt_off"}
 if a.dry_run:
     print("\n  DRY RUN -- nothing executed")
     sys.exit(0)
