@@ -92,8 +92,26 @@ check("the three bookkeeping gates all include crop_tokens",
       src.count("if a.crop_margin > 0 or a.crop_tokens:") == 3,
       f"{src.count('if a.crop_margin > 0 or a.crop_tokens:')} gate(s)")
 check("it is a guard field on both sides",
-      src.count('"crop_tokens": os.path.basename(a.crop_tokens),') == 2,
-      f"{src.count(chr(34) + 'crop_tokens' + chr(34) + ': os.path.basename(a.crop_tokens),')}")
+      src.count('"crop_tokens": _CROP_TOK_DIGEST,') == 2,
+      f"{src.count(chr(34) + 'crop_tokens' + chr(34) + ': _CROP_TOK_DIGEST,')} site(s)")
+# THE GUARD MUST COMPARE CONTENTS, NOT THE FILENAME. It recorded basename() first, so rebuilding
+# the mask with a different margin or forced-pair rule under the same name resumed as "unchanged"
+# while the entire training input distribution had moved. Found in review.
+check("the guard does NOT compare the filename",
+      'os.path.basename(a.crop_tokens)' not in src)
+check("the digest is over the per-structure MASKS and the provenance blob",
+      "_ctd.update(np.packbits(np.asarray(_z0[_k0]).astype(bool)).tobytes())" in src
+      and '_ctd.update(np.asarray(_z0["__meta"]).tobytes())' in src)
+check("the digest is computed at STARTUP, before the guard dict is built",
+      src.index("_CROP_TOK_DIGEST = _ctd.hexdigest()")
+      < src.index('"crop_tokens": _CROP_TOK_DIGEST,'))
+check("the banner reports the digest so a run says which mask it used",
+      'content digest {_CROP_TOK_DIGEST}' in src)
+# THE BUG THIS ALMOST SHIPPED: the guard lines were rewritten to _CROP_TOK_DIGEST while the patch
+# that DEFINES it had failed its own assertion, so the trainer referenced an undefined name and
+# would have NameError'd at startup. Assert the definition exists and precedes both uses.
+check("_CROP_TOK_DIGEST is actually DEFINED, not just referenced",
+      '_CROP_TOK_DIGEST = ""' in src and "_CROP_TOK_DIGEST = _ctd.hexdigest()" in src)
 check("pre-flag bundles get a migration default",
       '"crop_tokens": ""' in src)
 
@@ -107,6 +125,17 @@ check("the builder records how many tokens forcing added",
       "n_forced" in bsrc and "nocontact,\n                                 n_forced]" in bsrc)
 check("coverage after forcing is asserted, not assumed",
       "arithmetically impossible" in bsrc)
+# FINDING 2: the forced set must cover the pair the TRAINER supervises, which it resolves per
+# pose through OST, not the static pool mapping -- they disagree on 52 of 368 structures.
+check("--ost-pairs exists and needs --force-gt and --fold",
+      '"--ost-pairs"' in bsrc and "only affects the forced ground-truth set" in bsrc
+      and "needs --fold to find each pose" in bsrc)
+check("the forced set unions BOTH mappings, not just the static one",
+      "_pairs_use |= _op" in bsrc)
+check("a structure whose OST cannot be read is NAMED, not silently left on static pairs",
+      "ost_unresolved.append(pdb)" in bsrc and "coverage is" in bsrc)
+check("the builder reports how many structures the static mapping would have got wrong",
+      "does NOT name" in bsrc)
 
 print()
 if FAIL:

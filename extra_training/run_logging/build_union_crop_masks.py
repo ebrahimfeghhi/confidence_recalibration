@@ -71,11 +71,30 @@ ap.add_argument("--force-gt", action="store_true",
                      "with chain1/chain2. This makes the mask NOT label-free, which is fine for a "
                      "TRAINING crop with uncropped inference and wrong for a deployment claim.")
 ap.add_argument("--roles", default="", help="chain_roles.csv; required by --force-gt")
+ap.add_argument("--ost-pairs", action="store_true",
+                help="--force-gt ONLY: also resolve each pose's scored chain pair the way the "
+                     "TRAINER does -- per pose, through OST -- and force those pairs' contacts in "
+                     "too. WHY IT IS NOT OPTIONAL IN PRACTICE: phase_k_train._pose_pairs resolves "
+                     "the pair per pose because chain_roles.csv assigns one reference chain per "
+                     "structure and that is unanswerable when two reference chains are chemically "
+                     "identical. Its own docstring records that the static and pose-resolved "
+                     "mappings disagree on 1,095 of 18,400 (structure, seed, pose) checks across "
+                     "52 of 368 structures, and that 7stf resolves to a DIFFERENT CHAIN rather "
+                     "than a reordering. So a forced set built from the static pairs alone "
+                     "guarantees coverage of a pair the trainer may not be supervising, which is "
+                     "the hole --force-gt exists to close. Forcing the UNION of both mappings "
+                     "covers whichever one the trainer picks. Needs --fold.")
+ap.add_argument("--fold", default="", help="fold root, for the OST unit dirs; needs --ost-pairs")
 ap.add_argument("--verify-rule", action="store_true", default=True)
 a = ap.parse_args()
 if a.force_gt and not a.roles:
     raise SystemExit("STOP: --force-gt needs --roles to map the pool's reference chains onto the "
                      "model chain indices the cached features use.")
+if a.ost_pairs and not a.force_gt:
+    raise SystemExit("STOP: --ost-pairs only affects the forced ground-truth set, so it does "
+                     "nothing without --force-gt.")
+if a.ost_pairs and not a.fold:
+    raise SystemExit("STOP: --ost-pairs needs --fold to find each pose's OST unit directory.")
 
 
 def crop_from_coords(z, coords, cmask_all, rep, contact, margin):
@@ -158,6 +177,32 @@ def gt_contact_tokens(z, lab, pairs, contact):
     return ti if (any_pair and ti.any()) else None
 
 
+def ost_pairs_for(pdb, labels_root, fold, refs, seeds_wanted, nsample):
+    """Every (ax, ay) the TRAINER could supervise for this structure, resolved per pose via OST.
+
+    Returns (pairs, n_checked, n_new_vs_static) or (None, 0, 0) when OST cannot be read for any
+    pose -- the caller then falls back to the static pairs and SAYS SO, because silently covering
+    only the static mapping is the defect this exists to remove.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "phases"))
+    import phase_k_eval as _PKE
+    import phase_j_build_cache as _BCl
+    got_pairs, n_ok = set(), 0
+    for sd in seeds_wanted:
+        try:
+            ud = _BCl.seed_dir(fold, pdb, int(sd))
+        except Exception:                                            # noqa: BLE001
+            continue
+        for k in range(nsample):
+            pr, _why = _PKE.ost_chain_pairs(ud, pdb, int(k), refs)
+            if pr is None:
+                continue
+            n_ok += 1
+            for _iface, ax, ay in pr:
+                got_pairs.add((min(ax, ay), max(ax, ay)))
+    return (got_pairs or None), n_ok, 0
+
+
 # THE SCORED PAIRS, as chain INDICES into asym_id. Only needed by --force-gt.
 SCORED = {}
 if a.force_gt:
@@ -170,6 +215,12 @@ if a.force_gt:
         if _m1 and _m2:
             SCORED.setdefault(_r["pdb"], set()).add((min(ord(_m1), ord(_m2)) - ord("A"),
                                                      max(ord(_m1), ord(_m2)) - ord("A")))
+    REFS = {}
+    if a.ost_pairs:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                        "phases"))
+        import phase_k_eval as _PKE0
+        REFS = _PKE0.pool_ref_pairs(a.pool)
     if not SCORED:
         raise SystemExit(f"STOP: --force-gt resolved 0 scored pair(s) from {a.pool} via "
                          f"{a.roles}. The pool needs chain1/chain2 columns and the roles csv "
@@ -178,6 +229,9 @@ if a.force_gt:
           f"{len(SCORED)} structure(s)")
 
 out, verified, vfail, skipped = {}, 0, [], []
+ost_extra, ost_unresolved = {}, []
+_seeds_for_ost = (range(a.seed_base, a.seed_base + a.budget)
+                  if (a.ost_pairs and a.seed_base is not None and a.budget) else [])
 n_nolabel = 0
 units_used = {}
 for pdb in pdbs:
@@ -247,7 +301,22 @@ for pdb in pdbs:
         # THE GT CONTACT SET, BARE -- no margin on it. Its only job is to guarantee that every
         # token the loss scores survives; the margin's job is context, and the pose union already
         # provides that. Taken from the LABEL coordinates of pose 0, scored pairs only.
-        gt_i = gt_contact_tokens(z, lab, SCORED.get(pdb, set()), a.contact)
+        _pairs_use = set(SCORED.get(pdb, set()))
+        _ost_note = "static"
+        if a.ost_pairs:
+            _op, _nok, _ = ost_pairs_for(pdb, a.labels, a.fold, REFS.get(pdb) or [],
+                                         _seeds_for_ost, a.nsample)
+            if _op is None:
+                # NAMED, NOT SWALLOWED. A structure whose OST cannot be read falls back to the
+                # static pairs, and that is exactly the case the audit must re-examine.
+                ost_unresolved.append(pdb)
+            else:
+                _new = _op - _pairs_use
+                _pairs_use |= _op
+                if _new:
+                    ost_extra[pdb] = sorted(_new)
+                _ost_note = f"static+ost({_nok} pose(s))"
+        gt_i = gt_contact_tokens(z, lab, _pairs_use, a.contact)
         if gt_i is None:
             skipped.append((pdb, "--force-gt: no scored pair resolvable"))
             continue
@@ -317,5 +386,14 @@ _sn = sum(int(out[k][3]) for k in out if k.endswith("__n"))
 print(f"  candidate poses examined {_sn}; of those {_nc} had NO cross-chain contact under "
       f"{a.contact} A and contributed nothing (fully dissociated decoys)")
 print(f"  units without a label npz (expected, not scored): {n_nolabel}")
+if a.ost_pairs:
+    print(f"  --ost-pairs: {len(ost_extra)} structure(s) had an OST-resolved pair the static "
+          f"pool mapping does NOT name, so their forced set would have protected the wrong "
+          f"chain pair without this flag"
+          + (f": {sorted(ost_extra)[:6]}" if ost_extra else ""))
+    if ost_unresolved:
+        print(f"  --ost-pairs: {len(ost_unresolved)} structure(s) had NO readable OST mapping "
+              f"and fell back to the static pairs: {ost_unresolved[:6]}. Their coverage is "
+              f"NOT guaranteed; the audit must re-examine them.")
 if skipped:
     print(f"  SKIPPED {len(skipped)}: {skipped[:5]}")

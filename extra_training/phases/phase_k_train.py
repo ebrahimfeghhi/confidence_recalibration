@@ -1137,6 +1137,24 @@ def main():
     if a.crop_tokens and not os.path.exists(a.crop_tokens):
         raise SystemExit(f"STOP: --crop-tokens {a.crop_tokens} does not exist. Build it with "
                          f"run_logging/build_union_crop_masks.py.")
+    # THE MASK'S CONTENTS, DIGESTED AT STARTUP -- here and not beside the loader because the
+    # resume guard dict is built before the loader runs. The guard recorded
+    # basename(a.crop_tokens) first, so rebuilding the mask with a different margin, contact
+    # cutoff or forced-pair rule under the SAME NAME resumed as "unchanged": the whole training
+    # input distribution could move while the record said it had not. This hashes the
+    # per-structure masks themselves in sorted order, plus the builder's provenance blob.
+    # Found in review.
+    _CROP_TOK_DIGEST = ""
+    if a.crop_tokens:
+        _ctd = hashlib.sha256()
+        _z0 = np.load(a.crop_tokens)
+        for _k0 in sorted(k for k in _z0.files if not (k.endswith("__n") or k == "__meta")):
+            _ctd.update(_k0.encode())
+            _ctd.update(np.packbits(np.asarray(_z0[_k0]).astype(bool)).tobytes())
+        if "__meta" in _z0.files:
+            _ctd.update(np.asarray(_z0["__meta"]).tobytes())
+        _CROP_TOK_DIGEST = _ctd.hexdigest()[:16]
+        del _z0
     if a.crop_tokens and not a.minimal_items:
         raise SystemExit("STOP: --crop-tokens needs --minimal-items, for the same reason "
                          "--crop-margin does: the full dataset item is built uncropped and "
@@ -2848,7 +2866,7 @@ def main():
                  "crop_margin": a.crop_margin, "crop_contact": a.crop_contact,
                  # A CROP RULE CHANGE IS AN OBJECTIVE CHANGE: the loss averages over a different
                  # set of tokens and pairs, so resuming across it would blend two objectives.
-                 "crop_tokens": os.path.basename(a.crop_tokens),
+                 "crop_tokens": _CROP_TOK_DIGEST,
                  # THE CROP DEFINITION ITSELF, not just its radii. a16911de changed the DEFAULT
                  # from the union over all nsample poses to pose 0 alone, so a resume across that
                  # change blends two crop definitions into one curve. f1268fe5 added the field to
@@ -3297,6 +3315,9 @@ def main():
         _ctz = np.load(a.crop_tokens)
         _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
                     if not (k.endswith("__n") or k == "__meta")}
+        # the content digest is computed at STARTUP (see _CROP_TOK_DIGEST), because the resume
+        # guard dict is built before this loader runs. Reported here so a run's log says which
+        # mask it actually trained on.
         _ctn = {k[:-3]: np.asarray(_ctz[k]) for k in _ctz.files if k.endswith("__n")}
         _kf = [float(v[1]) / float(v[2]) for v in _ctn.values()] or [float("nan")]
         _forced = [int(v[5]) for v in _ctn.values() if len(v) > 5]
@@ -3304,6 +3325,7 @@ def main():
             print(f"CROP: precomputed token masks from {a.crop_tokens} -- {len(_CROPTOK)} "
                   f"structure(s), median kept fraction {float(np.median(_kf)):.4f}, built from "
                   f"{int(np.median([v[0] for v in _ctn.values()]))} pose(s) each (median)"
+                  + f", content digest {_CROP_TOK_DIGEST}"
                   + (f", ground-truth contacts forced in (median {int(np.median(_forced))} "
                      f"token(s) added, max {max(_forced)})" if _forced else
                      " -- NO --force-gt, so interface coverage is NOT guaranteed"))
@@ -6126,7 +6148,7 @@ def main():
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
-                                  "crop_tokens": os.path.basename(a.crop_tokens),
+                                  "crop_tokens": _CROP_TOK_DIGEST,
                                   "crop_contact": a.crop_contact,
                  # THE CROP DEFINITION, for the same reason as the two above: a16911de changed
                  # the DEFAULT, so resuming a pre-change bundle under post-change code blends two
