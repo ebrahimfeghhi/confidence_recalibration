@@ -883,3 +883,112 @@ distance between its predicted crop and the true one.
 Interface cropping, per-pose or unioned, cannot be made label-free. Both routes have now been
 measured on the same checkpoint and neither recovers any part of section 9b. The gain was never
 portable.
+
+---
+
+## 15. EPOCH 27 IN-SAMPLE: the arm IS learning to select, on its own training complexes
+
+`run_logging/insample_eval.py` on `fnegj8/resume_ep27.pt`, 738 winnable training interfaces,
+budget 10 (= all 50 training poses), UNCROPPED, cards 4,5,7. Section 12 recorded that in-sample
+selection had never been measured for this arm, because `--train-eval-*` takes one pool and this
+arm's is valfull.
+
+| head | mean DockQ | frac acc | headroom to oracle |
+|---|---|---|---|
+| shipped | 0.5474 | 0.7060 | -- |
+| ours ep19 | 0.5624 | 0.7276 | 0.1391 |
+| **ours ep27** | **0.5795** | **0.7602** | **0.1220** |
+| oracle | 0.7015 | 0.9363 | -- |
+
+**ours ep27 minus shipped: +0.0321 mean DockQ, +0.0542 frac acceptable** -- roughly double the
+epoch-19 gain, so the eight epochs at lr 1e-3 moved it. MAX-pooled is lower (0.5717 / 0.7439),
+consistent with the arm training and selecting by MEAN.
+
+ONE PASS, NOT FOUR: the arm is uncropped, so the rows' `stored_iptm` is already the matched
+shipped baseline from the same full-structure pipeline.
+
+### WHAT IT SETTLES AND WHAT IT DOES NOT
+
+It settles that the objective CAN improve selected DockQ: section 8's "the loss cannot move the
+selected pose" was never the problem. What remains is transfer -- over the same window held-out
+selection sat at or just below shipped (0.5756 at epoch 27 against 0.5834) and held-out
+within-interface Spearman has not trended since epoch 3 (peak 0.2426 at epoch 10, 0.2159 at 27)
+while held-out ranking loss fell monotonically 2.9640 -> 2.8216.
+
+AND MORE IN-SAMPLE GAIN IS NOT OBVIOUSLY THE ANSWER. The cropped arm is the natural experiment:
+at epoch 30 on cropped inputs it reached +0.0733 / +0.1314 in-sample, 2.3x this, with frac
+acceptable 0.8523 against a 0.9363 oracle -- and its DEPLOYABLE held-out selection gain was
++0.0058 (t=+1.25, section 13). In-sample went much further and held-out selection still did not
+follow.
+
+---
+
+## 16. THE UNION CROP: 59.8% of tokens, interface coverage 1.0 by construction
+
+Built by `run_logging/build_union_crop_masks.py --margin 5.0 --force-gt`, one token mask per
+structure: the UNION over all 50 of a structure's poses of each pose's own PREDICTED interface,
+with the bare ground-truth contact tokens forced in. Motivation is SPEED -- the uncropped arm runs
+143-155 min/epoch against the cropped arm's 28-30 -- and explicitly NOT regularization.
+
+**TRAIN, 368 structures, all 50 poses per union, rule verified against `interface_crop_tokens` on
+368 of 368:**
+
+| | |
+|---|---|
+| tokens kept | median 368 of 619 (**59.8%**), p10 0.3852, max 0.9103 |
+| poses per union | median 50, min 50 |
+| poses with no cross-chain contact | 0 of 18,400 |
+
+**VALFULL-30, 53 structures** (for the cropped reading if ever wanted; `--force-gt` makes it
+label-dependent, so it is a diagnostic and NOT a deployment number): kept fraction median
+**0.7490**, p10 0.4806, 150 poses per union, 1 of 7,950 poses dissociated. The union is
+relatively larger on valfull than on train, as section 13's margin sweep already found.
+
+### WHAT --force-gt COSTS, over all 368 structures
+
+| | |
+|---|---|
+| tokens added | median **0**, mean 0.22, p90 0, max 22 |
+| structures needing 0 extra | 341 of 368 (**92.7%**) |
+| structures needing >0 | 27 (7.3%) |
+| added as a share of the crop | median 0.000%, max 9.09% |
+
+**It is free, and the 7.3% is why it is not optional.** Without it, 27 structures would have
+trained an interface against a label for context the crop had removed -- silently, with the loss
+curve descending normally.
+
+### WHY PARTIAL COVERAGE IS FATAL HERE AND NOT IN PROTENIX
+
+Protenix's losses are LOCAL -- PAE, pLDDT, PDE and distogram are per-token or per-token-pair, so
+the label is cropped alongside the input and the two stay matched. Our target is a GLOBAL DockQ
+scalar per interface, computed once on the full structure, which cannot be sliced to follow a
+crop. A crop keeping interface A and cutting B still trains B against B's full-structure label:
+an unreachable target producing consistent, non-averaging gradient noise. **81% of these
+structures have 2+ scored interfaces** (247 two, 32 three, 18 four, 1 six), so it is the common
+case.
+
+That is also why a RANDOM ANCHOR was rejected despite being the better regularizer -- it would
+vary per epoch and resist memorisation, but it reopens exactly this hole. Pair dropout does that
+job instead.
+
+### THE MARGIN, measured on TRAIN
+
+| margin | tokens | recall of the GT crop's context | interface coverage p10 |
+|---|---|---|---|
+| 2.5 | 41.4% | 0.5875 | 0.9500 |
+| **5.0** | **59.7%** | **0.8069** | **1.0000** |
+| 10 | 82.1% | 0.9985 | 1.0000 |
+
+5.0 is the choice: the coverage guarantee holds even WITHOUT forcing, and 81% of the previous
+arm's context is retained. **Below ~5 the margin is a NO-OP on the union** -- margins 0, 1 and 2.5
+all gave an identical 44.6% on a 12-structure sample, because pose diversity has already swept up
+that shell. So 2.5 buys no context over 0 and only loses coverage.
+
+### AND THE CONFIDENCE HEAD HAS NEVER HAD DROPOUT
+
+`ConfidenceHead` builds its 4-block pairformer with `dropout=0.0`, overriding Protenix's own 0.25
+default for pair stacks. All four pair-rep sites call
+`dropout_add_rowwise(z, update, self.p_drop, self.training)` and the head trains in train mode, so
+the plumbing is live and only the rate is zero: **every arm in this project has trained 19.8M
+parameters with no dropout and no masking of any kind.** Dropout is also skipped entirely on the
+`inplace_safe=True` branch, which does a bare `z +=`.
