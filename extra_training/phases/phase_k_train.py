@@ -892,6 +892,35 @@ def main():
                          "is gradient-exact; test_perblock_ckpt_equiv.py already gates "
                          "blocks_per_ckpt=1 against off at 0.000e+00 on every parameter, which is "
                          "exactly the equivalence this relies on.")
+    ap.add_argument("--lean-readouts", action="store_true",
+                    help="STOP COMPUTING THE THREE READOUTS --pae-only ALREADY THROWS AWAY. "
+                         "--pae-only stubs plddt_loss, pde_loss and resolved_loss and skips the "
+                         "all-atom lddt, so none of the three is trained -- but the HEAD still "
+                         "builds pde_pred, plddt_pred and resolved_pred on every pose, and this "
+                         "trainer puts all four into `pred`. Because nothing in the loss reads "
+                         "them, backward never traverses those branches, and a branch backward "
+                         "does not walk is not freed by backward either: their activations live "
+                         "until _one_pose returns, through the window where the peak is set.\n"
+                         "WHAT IT FREES, from the live checkpoint's shapes (c_z 256, c_s 384, "
+                         "b_plddt 50), all fp32: the pde chain is N_tok^2 * 2304 B and the "
+                         "plddt/resolved chain is N_atom * 84 KB, dominated by the "
+                         "plddt_weight[atom_to_tokatom_idx] gather at 76.8 KB PER ATOM. That is "
+                         "~1.3 GB at a median 617-token unit and ~6.5 GB at the 1543-token worst "
+                         "case, against the 1.8 GB of headroom section 11 measured. ARITHMETIC, "
+                         "not a measurement -- run_logging/bench_ckpt_by_size.py measures it.\n"
+                         "WHY IT PAIRS WITH --ckpt-token-threshold: the threshold is limited by "
+                         "headroom, so freeing headroom raises the threshold, and the two "
+                         "compound.\n"
+                         "IT CHANGES NO MATHEMATICS ON THE PAE PATH. phases/lean_readouts.py "
+                         "mirrors ConfidenceHead.memory_efficient_forward with the pae lines "
+                         "verbatim and is PINNED to that function's sha256, so a Protenix upgrade "
+                         "hard-stops instead of silently running a stale copy. "
+                         "run_logging/test_lean_readouts.py checks the pae logits are "
+                         "BIT-identical, that the dropped work is not merely unused but never "
+                         "called, and that the plddt placeholder still survives the indexing "
+                         "loss.py:1772 does to it.\n"
+                         "REQUIRES --pae-only, and is NOT inherited by the --loss-only val child, "
+                         "which builds its own model in its own process.")
     ap.add_argument("--alpha-confidence", type=float, default=1.0,
                     help="weight on the four confidence losses. Protenix ships 1e-4 because in full "
                          "AF3-style training these terms sit beside the diffusion and distogram "
@@ -1068,6 +1097,15 @@ def main():
             "and hides that it changed nothing.")
     if a.ckpt_token_threshold < 0:
         raise SystemExit("STOP: --ckpt-token-threshold cannot be negative.")
+    if a.lean_readouts and not a.pae_only:
+        # AT PARSE TIME, NOT AT THE INSTALL SITE. lean_readouts.install() refuses this too, but it
+        # runs after the model is built -- minutes in, and on three ranks at once. The flag pair is
+        # knowable from the argv alone, so it is checked from the argv alone.
+        raise SystemExit(
+            "STOP: --lean-readouts needs --pae-only. The three readouts it stops computing are "
+            "the ones --pae-only stubs the loss terms for; without it, pLDDT, PDE and resolved "
+            "ARE trained, and replacing them with placeholder zeros would train three terms "
+            "against constant logits while reporting their losses as if they were real.")
     if a.val_loss_every:
         # CHECKED AT LAUNCH, NOT AT THE FIRST EPOCH BOUNDARY. On the full training set that
         # boundary is 37 minutes in, and a monitor that fails there is a monitor nobody has for
@@ -1359,6 +1397,14 @@ def main():
         raise SystemExit("STOP: --pose-perblock-tied/-share/-copy without --pose-perblock does "
                          "nothing. They select how A shares its weights, not whether A is "
                          "installed.")
+    # INSTALLED AFTER THE POSE PATHWAYS, because both of those wrap or add modules on the head
+    # and this reads the module tree to check the dims its placeholders are built from. It does
+    # not touch the pairformer stack or blocks_per_ckpt, so order against those is immaterial.
+    if a.lean_readouts:
+        import lean_readouts
+        _lr_sha = lean_readouts.install(model, pae_only=a.pae_only)
+        print(f"LEAN READOUTS: pde, pLDDT and resolved are NOT COMPUTED. "
+              f"memory_efficient_forward pinned at {_lr_sha[:16]}")
     loss_fn = ProtenixLoss(configs)
     if a.drop_pde:
         # A STUB IN PLACE OF THE MODULE, because a zero weight would still run it.
