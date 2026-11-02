@@ -1,0 +1,22 @@
+[
+ {
+  "from_bundle": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/jb5veo/resume_ep19.pt",
+  "bundle_commit": "60681802350eba469133358184ebc0288be9ea77",
+  "bundle_written": "2026-11-01T12:54:33-0800",
+  "bundle_epoch": 19,
+  "bundle_step": 2318,
+  "accepted_at": "2026-11-01T13:40:34-08:00",
+  "via": "--resume-override",
+  "note": "LR DROPPED 0.01 -> 1e-3 AT THE EPOCH-19 BOUNDARY, deliberate. Through 19 epochs the paired held-out within-interface Spearman gain became significant (+0.0363, t=+2.18 at epoch 18) while selected DockQ stayed at zero (+0.0004, t=+0.10 at epoch 19) and the median rank of the best pose DEGRADED from 66.5/150 to 74.5/150, crossing from ahead of shipped (68.8) to behind it. Everything else is held, so the lr is the only change and the curve after epoch 19 is read as a separate segment.",
+  "fields": {
+   "lr": {
+    "bundle": 0.01,
+    "this_run": 0.001
+   }
+  },
+  "named": [
+   "lr"
+  ],
+  "unnamed": []
+ }
+]
