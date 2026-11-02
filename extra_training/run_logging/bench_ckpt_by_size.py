@@ -73,6 +73,26 @@ ap.add_argument("--out", default="training/runs/ckpt_bench")
 ap.add_argument("--master-port", type=int, default=29671,
                 help="must not collide with the live arm's MASTER_PORT (29540 at the time of "
                      "writing; read it from /proc/<rank0>/environ before changing this)")
+ap.add_argument("--probe", action="store_true",
+                help="PROBE MODE instead of the three-arm comparison. Walks the manifest's "
+                     "structures in ASCENDING token order, lean readouts on and checkpointing "
+                     "OFF, and runs until it OOMs. The last pose that completed is then the "
+                     "largest structure that survives uncheckpointed -- measured against the "
+                     "real failure, an OOM, rather than against a peak-versus-budget proxy. One "
+                     "process rather than one per probe: walking UP and letting it die costs a "
+                     "single model load, where walking DOWN and restarting after each OOM costs "
+                     "one per step.")
+ap.add_argument("--probe-seeds", type=int, default=2,
+                help="probe mode: seeds per structure. The arm uses 10, which would spend ~36 "
+                     "min walking the 700-900 token region before reaching any boundary. 2 is "
+                     "the MINIMUM that keeps the run intact: --rank-cross-seed forms its pairs "
+                     "ACROSS seeds, so a single seed leaves it with no pair to rank and changes "
+                     "the loss being measured. Peak memory is per-pose, so fewer seeds costs "
+                     "nothing in what the probe can see.")
+ap.add_argument("--start-tokens", type=int, default=700,
+                help="probe mode: skip structures below this, so the walk starts near the "
+                     "boundary instead of spending 20 minutes on units that obviously fit. The "
+                     "manifest holds 136 structures at 700+ tokens and 6 at 1400+.")
 ap.add_argument("--dry-run", action="store_true")
 a = ap.parse_args()
 
@@ -91,6 +111,31 @@ OUT = os.path.join(ROOT, a.out)
 
 
 ARGV = os.path.join(ROOT, "training/runs/ckpt_bench/arm_argv.txt")
+
+
+def bundle_epoch(path):
+    """Epochs already completed in the bundle being resumed.
+
+    WHY THIS IS NEEDED AT ALL. The epoch loop is `for ep in range(from_epoch, n_epochs)` with
+    from_epoch taken from the bundle and n_epochs = ceil(--epochs). Passing --epochs 1 against a
+    bundle at epoch 21 makes that range EMPTY: the run would exit having trained nothing, write
+    no MEM line and no epoch-boundary timing line, and this benchmark would report "no MEM lines
+    parsed" without ever saying why. So --epochs is set to the bundle's epoch + 1, which is one
+    epoch of continuation. Found in review.
+    """
+    import torch
+    b = torch.load(os.path.join(ROOT, path) if not os.path.isabs(path) else path,
+                   map_location="cpu", weights_only=False)
+    if not isinstance(b, dict) or "epoch" not in b:
+        sys.exit(f"STOP: {path} carries no `epoch`, so the number of epochs to ask for cannot be "
+                 f"derived from it. Keys: {sorted(b)[:12] if isinstance(b, dict) else type(b)}")
+    return int(b["epoch"])
+
+
+# READ EVEN ON A DRY RUN, so the printed command line is the one that would actually be sent and
+# so an unreadable or wrong-shaped bundle is caught before any card is occupied.
+BUNDLE_EP = bundle_epoch(a.bundle)
+print(f"  bundle {a.bundle}: {BUNDLE_EP} epoch(s) done -> asking for --epochs {BUNDLE_EP + 1}")
 
 
 def arm_argv():
@@ -121,7 +166,7 @@ def override(v, flag, value):
     return v + [flag, value]
 
 
-def run(tag, bpc, lean):
+def run(tag, bpc, lean, extra=()):
     """One short run with --mem-log, the arm's argv otherwise.
 
     Three arms are compared, differing only in these two settings: see the ARMS table below.
@@ -133,7 +178,7 @@ def run(tag, bpc, lean):
         return log
     v = arm_argv()
     for flag, val in (("--resume", a.bundle), ("--blocks-per-ckpt", str(bpc)),
-                      ("--limit-units", str(a.units)), ("--epochs", "1"),
+                      ("--limit-units", str(a.units)), ("--epochs", str(BUNDLE_EP + 1)),
                       ("--save-every", "0"), ("--out", work),
                       # NOT THE ARM'S EVAL. --train-eval-every would spend cards scoring 92
                       # held-out interfaces in the middle of a timing measurement.
@@ -148,17 +193,51 @@ def run(tag, bpc, lean):
         v.remove("--lean-readouts")
     if lean:
         v.append("--lean-readouts")
+    for _f, _val in extra:
+        v = override(v, _f, _val)
     if "--mem-log" not in v:
         v.append("--mem-log")
     v = override(v, "--resume-note",
-                 f"BENCHMARK ONLY (bench_ckpt_by_size.py), blocks_per_ckpt={bpc}. Writes no "
-                 f"bundle the arm will resume from and takes no scheduled step.")
-    if "--resume-override" not in v:
-        v += ["--resume-override", "lr"]
-    print(f"\n  === {tag} (blocks_per_ckpt={bpc}, lean_readouts={lean}) ===")
-    print(f"    {len(v)} argv token(s) from the arm, --blocks-per-ckpt {bpc}, "
-          f"--limit-units {a.units}")
+                 f"BENCHMARK ONLY (bench_ckpt_by_size.py), blocks_per_ckpt={bpc}, "
+                 f"lean_readouts={lean}. This is a MEASUREMENT, not a continuation of the arm: "
+                 f"it runs one epoch at WORLD_SIZE 1 instead of 3, over a truncated or "
+                 f"size-ordered unit list, writes into {os.path.basename(a.out)}/ and never into "
+                 f"the arm's run directory, and its optimiser trajectory is discarded -- no "
+                 f"bundle it writes is ever resumed from and no scheduled step depends on it. "
+                 f"The numbers taken from it are per-pose peak memory and CUDA-event device "
+                 f"time, both of which are properties of one pose on one rank and so do not "
+                 f"depend on the trajectory being scientifically valid.")
+    # BLANKET DRIFT, DELIBERATELY, AND THIS IS THE ONE PLACE IT IS RIGHT.
+    #
+    # The guard compares world, seed, accum, nsample, manifest_digest and crop_size
+    # (phase_k_train.py:2694) and refuses any that differ and are not named. This benchmark
+    # changes world (3 -> 1) in every mode and, in probe mode, the manifest and the seed range
+    # too -- so the exact field set depends on the mode, and a hardcoded --resume-override list
+    # would either miss a field (a hard stop mid-benchmark) or name one that does not differ
+    # (also a hard stop: a stale override is an error by design, phase_k_train.py:2910).
+    # --resume-allow-drift plus the note above records the same thing without a list that goes
+    # stale every time this script changes a flag.
+    while "--resume-override" in v:
+        _i = v.index("--resume-override")
+        del v[_i:_i + 2]
+    if "--resume-allow-drift" not in v:
+        v.append("--resume-allow-drift")
+    print(f"\n  === {tag} ===")
+    # READ BACK FROM THE ARGV, not from a.units. extra= can override --limit-units after the
+    # loop above has set it, and a print that reports the intent rather than the command is how
+    # you end up certain you measured something you did not.
+    print(f"    {len(v)} argv token(s) from the arm, " + "  ".join(
+        f"{_f} {v[v.index(_f) + 1]}" for _f in
+        ("--blocks-per-ckpt", "--limit-units", "--seeds", "--shuffle") if _f in v)
+        + f"  lean_readouts={lean}")
     if a.dry_run:
+        for _f in ("--lean-readouts", "--resume-allow-drift", "--mem-log", "--train-eval-every",
+                   "--resume", "--epochs", "--out", "--resume-override"):
+            if _f in v:
+                _nx = v[v.index(_f) + 1] if v.index(_f) + 1 < len(v) else ""
+                print(f"      {_f} {'' if _nx.startswith('--') else _nx}")
+            else:
+                print(f"      {_f} ABSENT")
         return None
     os.makedirs(OUT, exist_ok=True)
     # THE DEVICES AND THE RANK LAYOUT ARE SET HERE, NOT INHERITED. The arm's three ranks get
@@ -193,6 +272,85 @@ def parse(log):
                 buckets[b["k"]] = (float(b["m"]), int(b["n"]))
     return rows, buckets, took
 
+
+if a.probe:
+    # A SIZE-ORDERED MANIFEST, built from the arm's own manifest so the structures, the clusters
+    # and every other column are the run's. Only the ORDER and the subset change.
+    src = None
+    _v = arm_argv()
+    if "--manifest-selection" in _v:
+        src = _v[_v.index("--manifest-selection") + 1]
+    if not src or not os.path.exists(os.path.join(ROOT, src)):
+        sys.exit(f"STOP: probe mode needs the arm's --manifest-selection to exist; got {src!r}.")
+    with open(os.path.join(ROOT, src)) as fh:
+        rd = csv.DictReader(fh)
+        hdr, rows = rd.fieldnames, list(rd)
+    if "tokens" not in (hdr or []):
+        sys.exit(f"STOP: {src} has no `tokens` column, so it cannot be ordered by size. "
+                 f"Columns: {hdr}")
+    keep = sorted((r for r in rows if int(r["tokens"]) >= a.start_tokens),
+                  key=lambda r: int(r["tokens"]))
+    if not keep:
+        sys.exit(f"STOP: no structure in {src} has >= {a.start_tokens} tokens. The largest is "
+                 f"{max(int(r['tokens']) for r in rows)}.")
+    os.makedirs(OUT, exist_ok=True)
+    man = os.path.join(OUT, f"manifest_ascending_{a.start_tokens}.csv")
+    with open(man, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=hdr)
+        w.writeheader()
+        w.writerows(keep)
+    print(f"  probe manifest: {len(keep)} structure(s), "
+          f"{int(keep[0]['tokens'])} -> {int(keep[-1]['tokens'])} tokens -> "
+          f"{os.path.relpath(man, ROOT)}")
+
+    # --shuffle none KEEPS THE ORDER. With `structure` the trainer shuffles the structure order,
+    # which would destroy the ascending walk the whole probe depends on.
+    if a.probe_seeds < 2:
+        sys.exit("STOP: --probe-seeds below 2 leaves --rank-cross-seed with no cross-seed pair, "
+                 "so the probe would measure a different loss than the arm runs.")
+    _v0 = arm_argv()
+    _base = _v0[_v0.index("--seeds") + 1].split("-")[0] if "--seeds" in _v0 else "500000"
+    extra = (("--manifest-selection", os.path.relpath(man, ROOT)),
+             ("--shuffle", "none"),
+             ("--seeds", f"{_base}-{int(_base) + a.probe_seeds - 1}"),
+             ("--limit-units", str(len(keep) * a.probe_seeds + 1)))
+    tag = f"probe_from{a.start_tokens}"
+    log = run(tag, 0, True, extra=extra)
+    if a.dry_run:
+        print("\n  DRY RUN -- nothing executed")
+        sys.exit(0)
+
+    rows_, buckets_, took_ = parse(log)
+    txt = open(log, errors="replace").read()
+    oom = ("CUDA out of memory" in txt or "OutOfMemoryError" in txt)
+    if not rows_:
+        sys.exit(f"STOP: no MEM lines parsed from {os.path.relpath(log, ROOT)}. Either --mem-log "
+                 f"did not fire or it died before the first pose.")
+    by_tok = {}
+    for tok, peak, *_ in rows_:
+        by_tok[tok] = max(by_tok.get(tok, 0.0), peak)
+    seen = sorted(by_tok)
+    print(f"\n  {'tokens':>8}{'peak GB':>10}")
+    for tok in seen:
+        print(f"  {tok:>8}{by_tok[tok]:>10.2f}")
+    biggest = seen[-1]
+    print(f"\n  largest structure that COMPLETED a pose uncheckpointed: {biggest} tokens "
+          f"at {by_tok[biggest]:.2f} GB")
+    if oom:
+        print(f"  and it OOMed after that, which is the boundary this was looking for.")
+    else:
+        print(f"  NO OOM: the walk finished without one, so {biggest} tokens is the largest "
+              f"the manifest HAS at or above --start-tokens, not the largest that fits. "
+              f"The boundary is above the data -- checkpointing may be unnecessary outright.")
+    # ONE BUCKET BELOW THE SURVIVOR, NOT AT IT. This process had a clean allocator; the live run
+    # reaches that unit after thousands of steps of fragmentation, and the peak at the boundary is
+    # not reproducible to the megabyte.
+    edges = [0, 400, 500, 600, 700, 800, 1000, 1250, 1600]
+    below = [e for e in edges if e < biggest]
+    print(f"\n  RECOMMENDED --ckpt-token-threshold {below[-1] if below else 0}  "
+          f"(one bucket below the largest survivor, for allocator fragmentation the probe's "
+          f"fresh process does not have)")
+    sys.exit(0)
 
 # THE THREE ARMS.
 #

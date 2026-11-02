@@ -1385,6 +1385,21 @@ def main():
     # new projection is picked up automatically -- but only if it exists by then. Installed after
     # .train() and the blocks_per_ckpt assignment so neither is applied to a module that is about
     # to be wrapped.
+    # INSTALLED BEFORE BOTH POSE PATHWAYS, AND THAT ORDER IS LOAD-BEARING.
+    #
+    # pose_direction.py:234 and pose_perblock.py:232 each capture
+    # `orig_mef = head.memory_efficient_forward` and REPLACE the attribute with a wrapper that
+    # calls what it captured. They are a chain, not independent patches. Installing the lean
+    # mirror afterwards would overwrite the outermost wrapper and silently drop the orientation
+    # and per-block injections -- except it would not even be silent: the mirror still calls
+    # self.pairformer_stack, whose _prep_blocks is also wrapped and raises _NoPose when the
+    # one-hot cache is unset, so the run would die at pose 0 instead. Installing FIRST makes the
+    # mirror the base of the chain, which is what it is a mirror of. Found in review.
+    if a.lean_readouts:
+        import lean_readouts
+        _lr_sha = lean_readouts.install(model, pae_only=a.pae_only)
+        print(f"LEAN READOUTS: pde, pLDDT and resolved are NOT COMPUTED. "
+              f"memory_efficient_forward pinned at {_lr_sha[:16]}")
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
@@ -1397,14 +1412,6 @@ def main():
         raise SystemExit("STOP: --pose-perblock-tied/-share/-copy without --pose-perblock does "
                          "nothing. They select how A shares its weights, not whether A is "
                          "installed.")
-    # INSTALLED AFTER THE POSE PATHWAYS, because both of those wrap or add modules on the head
-    # and this reads the module tree to check the dims its placeholders are built from. It does
-    # not touch the pairformer stack or blocks_per_ckpt, so order against those is immaterial.
-    if a.lean_readouts:
-        import lean_readouts
-        _lr_sha = lean_readouts.install(model, pae_only=a.pae_only)
-        print(f"LEAN READOUTS: pde, pLDDT and resolved are NOT COMPUTED. "
-              f"memory_efficient_forward pinned at {_lr_sha[:16]}")
     loss_fn = ProtenixLoss(configs)
     if a.drop_pde:
         # A STUB IN PLACE OF THE MODULE, because a zero weight would still run it.
@@ -3176,6 +3183,12 @@ def main():
     # per epoch because a threshold that silently matches nothing -- or everything -- looks
     # exactly like a threshold that works until the timings fail to move.
     _ckpt_hist = [0, 0]
+    # THE EPOCH'S PEAK, KEPT BY HAND, because --mem-log resets the CUDA high-water mark before
+    # every pose to make the per-pose number mean the pose. Without this the epoch line would
+    # report the LAST pose's peak and call it the epoch's. Zeroed at each epoch boundary beside
+    # reset_peak_memory_stats. Unused when --mem-log is off: the CUDA counter is then already the
+    # epoch's, because nothing reset it mid-epoch.
+    _mem_ep = [0]
 
     def _tick(key, t0):
         _T[key] += time.perf_counter() - t0
@@ -4297,12 +4310,24 @@ def main():
                 with torch.no_grad():
                     m = _one_pose(i)
             else:
+                if a.mem_log and torch.cuda.is_available():
+                    # RESET BEFORE EACH MEASURED POSE. max_memory_allocated is a HIGH-WATER MARK
+                    # and the only reset was once per epoch, so every pose after the first large
+                    # one reported that large one's number: the peak-versus-tokens curve was
+                    # monotone in WALK ORDER, not a function of the pose at all, and a threshold
+                    # read off it would have been read off the wrong structure. The epoch's own
+                    # peak is kept by hand below so the epoch line still reports the epoch.
+                    # Found in review. Only under --mem-log, so the live run is untouched.
+                    _mem_ep[0] = max(_mem_ep[0], torch.cuda.max_memory_allocated(dev))
+                    torch.cuda.reset_peak_memory_stats(dev)
                 m = _one_pose(i)
             # PASS A'S POSES GET THEIR OWN BUCKET. Ticking them into pose_total would double-count
             # every pose and make the epoch accounting -- which is checked against the wall clock
             # and reported as a residual -- silently wrong.
             _tick("pose_a_total" if score_only else "pose_total", _t_pose)
             if a.mem_log:
+                if torch.cuda.is_available():
+                    _mem_ep[0] = max(_mem_ep[0], torch.cuda.max_memory_allocated(dev))
                 # AT A CONSISTENT BOUNDARY: after backward, and after the pose's tensors are gone.
                 # allocated = live tensors. reserved = what the allocator holds, which is what
                 # nvidia-smi shows -- which is why a high nvidia-smi number proves nothing by itself.
@@ -5967,6 +5992,7 @@ def main():
             # 8,100 per rank per epoch.
             if torch.cuda.is_available():
                 torch.cuda.reset_peak_memory_stats()
+            _mem_ep[0] = 0
             ep_start_step = step
             ep_t0 = time.time()
             ep_loss["sum"], ep_loss["n"] = 0.0, 0
@@ -6335,8 +6361,11 @@ def main():
                       f"the rest is between them", flush=True)
             if torch.cuda.is_available():
                 _gb = 1 << 30
+                # UNDER --mem-log THE CUDA COUNTER IS NOT THE EPOCH'S, see _mem_ep.
+                _ep_peak = max(_mem_ep[0], torch.cuda.max_memory_allocated()) if a.mem_log \
+                    else torch.cuda.max_memory_allocated()
                 print(f"  [rank {rank}] epoch {ep + 1} memory: peak allocated "
-                      f"{torch.cuda.max_memory_allocated()/_gb:.2f} GB, peak reserved "
+                      f"{_ep_peak/_gb:.2f} GB, peak reserved "
                       f"{torch.cuda.max_memory_reserved()/_gb:.2f} GB, "
                       f"blocks_per_ckpt={model.confidence_head.pairformer_stack.blocks_per_ckpt}"
                       + (f", ckpt_threshold={a.ckpt_token_threshold} tok -> "

@@ -169,6 +169,26 @@ def install(model, require_pae_only=True, pae_only=False):
             raise SystemExit(f"STOP: --lean-readouts: the head has no {attr}, which the mirror "
                              f"needs. The pin matched but the module tree did not.")
 
+    # IT MUST BE THE BASE OF THE CHAIN, NOT THE TOP OF IT.
+    #
+    # pose_direction.py:234 and pose_perblock.py:232 each capture
+    # `orig_mef = head.memory_efficient_forward` and replace the attribute with a wrapper that
+    # calls what it captured, so the three patches form a chain whose order is its meaning.
+    # Installing this one last overwrites the outermost wrapper and drops their injections. That
+    # does not fail quietly -- the mirror still calls self.pairformer_stack, whose _prep_blocks is
+    # also wrapped and raises _NoPose with the one-hot cache unset -- but "dies at pose 0" is not
+    # a check, it is a symptom, and it only fires when --pose-perblock happens to be on. This
+    # refuses the ordering outright. Found in review.
+    for _marker, _mod in (("_pose_direction_installed", "--frame-direction / pose_direction"),
+                          ("_pose_perblock_installed", "--pose-perblock / pose_perblock")):
+        if getattr(head, _marker, False):
+            raise SystemExit(
+                f"STOP: --lean-readouts must be installed BEFORE {_mod}, which has already "
+                f"wrapped memory_efficient_forward ({_marker} is set). Installing the lean "
+                f"mirror now would replace that wrapper and silently drop its injection from "
+                f"every pose. Move the lean_readouts.install() call above it in "
+                f"phase_k_train.py.")
+
     head.memory_efficient_forward = types.MethodType(_lean_memory_efficient_forward, head)
     # ASSERT IT ACTUALLY TOOK. A flag that prints a line and changes nothing is the failure mode
     # --blocks-per-ckpt had for its whole life (phase_k_train.py:1333).
