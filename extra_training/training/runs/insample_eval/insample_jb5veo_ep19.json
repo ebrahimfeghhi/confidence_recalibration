@@ -1,0 +1,15 @@
+{
+ "n_interfaces": 738,
+ "budget": 10,
+ "mean_dockq": 0.5624,
+ "frac_acc": 0.7276,
+ "oracle_mean_dockq": 0.7015,
+ "oracle_frac_acc": 0.9363,
+ "ckpt": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/insample_eval/jb5veo_ep19_head.pt",
+ "select_by": "mean",
+ "headroom": 0.1391,
+ "mean_dockq_select_max": 0.5597,
+ "frac_acc_select_max": 0.7236,
+ "baseline_mean_dockq": 0.5474,
+ "baseline_frac_acc": 0.706
+}
