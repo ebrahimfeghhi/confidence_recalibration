@@ -93,6 +93,13 @@ ap.add_argument("--start-tokens", type=int, default=700,
                 help="probe mode: skip structures below this, so the walk starts near the "
                      "boundary instead of spending 20 minutes on units that obviously fit. The "
                      "manifest holds 136 structures at 700+ tokens and 6 at 1400+.")
+ap.add_argument("--only", choices=("fat_ckpt_on", "lean_ckpt_on", "lean_ckpt_off"),
+                help="run ONE arm of the three-arm comparison and stop, instead of all three in "
+                     "sequence. This is how the three arms are spread over three cards: launch "
+                     "three invocations, each with its own --only and its own --cards, then run "
+                     "a fourth with neither --only nor --cards changed -- run() reuses any "
+                     "non-empty log it finds, so the fourth does no GPU work and only reports. "
+                     "MASTER_PORT is offset per arm so concurrent invocations cannot collide.")
 ap.add_argument("--dry-run", action="store_true")
 a = ap.parse_args()
 
@@ -164,6 +171,19 @@ def override(v, flag, value):
         v[i + 1] = value
         return v
     return v + [flag, value]
+
+
+# ONE PORT PER ARM. Each arm is WORLD_SIZE 1 and so forms no collective, but MASTER_PORT is
+# still bound, and three concurrent --only invocations sharing one port would race on it. The
+# offset is derived from the tag rather than passed in, so the caller cannot forget it.
+_PORT_ORDER = ("fat_ckpt_on", "lean_ckpt_on", "lean_ckpt_off", "probe")
+
+
+def _port_offset(tag):
+    # the probe tag carries its start token count ("probe_from700"), so match the prefix.
+    if tag.startswith("probe"):
+        return _PORT_ORDER.index("probe")
+    return _PORT_ORDER.index(tag) if tag in _PORT_ORDER else 0
 
 
 def run(tag, bpc, lean, extra=(), allow_oom=False):
@@ -248,7 +268,7 @@ def run(tag, bpc, lean, extra=(), allow_oom=False):
     env = {**os.environ, "LAYERNORM_TYPE": "openfold",
            "CUDA_VISIBLE_DEVICES": a.cards,
            "RANK": "0", "LOCAL_RANK": "0", "WORLD_SIZE": str(len(a.cards.split(","))),
-           "MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(a.master_port)}
+           "MASTER_ADDR": "127.0.0.1", "MASTER_PORT": str(a.master_port + _port_offset(tag))}
     print(f"    CUDA_VISIBLE_DEVICES={env['CUDA_VISIBLE_DEVICES']} "
           f"WORLD_SIZE={env['WORLD_SIZE']} RANK=0")
     with open(log, "w") as fh:
@@ -436,6 +456,16 @@ if a.probe:
 # fat_ckpt_off is deliberately NOT run: nothing would be done with it. The question is how large
 # a unit can skip recompute in the configuration we would ship, not in one we would not.
 ARMS = (("fat_ckpt_on", 1, False), ("lean_ckpt_on", 1, True), ("lean_ckpt_off", 0, True))
+if a.only:
+    # ONE ARM, THEN STOP. The comparison needs all three logs, so it is not attempted here; the
+    # reporting invocation that follows finds this log already written and reuses it.
+    _tag, _bpc, _lean = next(x for x in ARMS if x[0] == a.only)
+    run(_tag, _bpc, _lean)
+    if not a.dry_run:
+        print(f"\n  {_tag} done -> {os.path.relpath(os.path.join(OUT, _tag + '.log'), ROOT)}")
+        print(f"  --only was given, so the three-arm comparison was NOT run. Re-run without "
+              f"--only once all three logs exist to get it.")
+    sys.exit(0)
 logs = {tag: run(tag, bpc, lean) for tag, bpc, lean in ARMS}
 if a.dry_run:
     print("\n  DRY RUN -- nothing executed")
