@@ -166,7 +166,7 @@ def override(v, flag, value):
     return v + [flag, value]
 
 
-def run(tag, bpc, lean, extra=()):
+def run(tag, bpc, lean, extra=(), allow_oom=False):
     """One short run with --mem-log, the arm's argv otherwise.
 
     Three arms are compared, differing only in these two settings: see the ARMS table below.
@@ -254,7 +254,18 @@ def run(tag, bpc, lean, extra=()):
     with open(log, "w") as fh:
         r = subprocess.run(v, cwd=ROOT, stdout=fh, stderr=subprocess.STDOUT, env=env)
     if r.returncode != 0:
-        sys.exit(f"STOP: {tag} exited {r.returncode}; see {os.path.relpath(log, ROOT)}")
+        # AN OOM IS THE PROBE'S ANSWER, NOT ITS FAILURE -- but ONLY an OOM. Any other nonzero
+        # exit stays fatal: a Traceback, a guard hard-stop or a killed rank would otherwise be
+        # read as "that is where memory ran out" and set a threshold from an unrelated crash.
+        txt = open(log, errors="replace").read()
+        oom = ("CUDA out of memory" in txt or "OutOfMemoryError" in txt
+               or "CUDA error: out of memory" in txt)
+        if not (allow_oom and oom):
+            _why = "an OOM, which this mode expects" if oom else "NOT an OOM"
+            sys.exit(f"STOP: {tag} exited {r.returncode} and it was {_why}; "
+                     f"see {os.path.relpath(log, ROOT)}\n"
+                     f"  last lines:\n    " + "\n    ".join(txt.strip().splitlines()[-6:]))
+        print(f"    exited {r.returncode} on a CUDA OOM, which is the boundary being measured")
     return log
 
 
@@ -293,6 +304,27 @@ if a.probe:
     if not keep:
         sys.exit(f"STOP: no structure in {src} has >= {a.start_tokens} tokens. The largest is "
                  f"{max(int(r['tokens']) for r in rows)}.")
+    # TRIMMED FROM THE FRONT, SO THE LARGEST SURVIVE.
+    #
+    # build_epoch_cross_seed chunks the structures into steps of --rank-structs-per-step and
+    # DROPS a short final chunk rather than padding it (phase_k_train.py: "A SHORT FINAL STEP IS
+    # DROPPED"). On an ascending manifest that chunk is the LARGEST structures -- exactly the ones
+    # a memory probe exists to reach -- so 136 structures at S=3 would silently never run the
+    # biggest one. Removing the SMALLEST few instead makes the count a multiple of S and keeps
+    # every large structure. Found in review.
+    _S = 1
+    if "--rank-structs-per-step" in _v:
+        _S = max(1, int(_v[_v.index("--rank-structs-per-step") + 1]))
+    _rem = len(keep) % _S
+    if _rem:
+        print(f"  trimming the {_rem} SMALLEST structure(s) "
+              f"({[int(r['tokens']) for r in keep[:_rem]]} tokens) so {len(keep)} becomes "
+              f"{len(keep) - _rem}, a multiple of --rank-structs-per-step {_S}: a short final "
+              f"chunk is dropped by the epoch builder, and on an ascending manifest that would "
+              f"be the LARGEST structures.")
+        keep = keep[_rem:]
+    if not keep:
+        sys.exit(f"STOP: trimming to a multiple of {_S} left nothing. Lower --start-tokens.")
     os.makedirs(OUT, exist_ok=True)
     man = os.path.join(OUT, f"manifest_ascending_{a.start_tokens}.csv")
     with open(man, "w", newline="") as fh:
@@ -311,11 +343,13 @@ if a.probe:
     _v0 = arm_argv()
     _base = _v0[_v0.index("--seeds") + 1].split("-")[0] if "--seeds" in _v0 else "500000"
     extra = (("--manifest-selection", os.path.relpath(man, ROOT)),
-             ("--shuffle", "none"),
+             # --shuffle none IS NOT ENOUGH, which is the whole reason --epoch-order exists: the
+             # shuffle inside build_epoch_cross_seed is unconditional and runs after it.
+             ("--shuffle", "none"), ("--epoch-order", "manifest"),
              ("--seeds", f"{_base}-{int(_base) + a.probe_seeds - 1}"),
              ("--limit-units", str(len(keep) * a.probe_seeds + 1)))
     tag = f"probe_from{a.start_tokens}"
-    log = run(tag, 0, True, extra=extra)
+    log = run(tag, 0, True, extra=extra, allow_oom=True)
     if a.dry_run:
         print("\n  DRY RUN -- nothing executed")
         sys.exit(0)
@@ -326,6 +360,44 @@ if a.probe:
     if not rows_:
         sys.exit(f"STOP: no MEM lines parsed from {os.path.relpath(log, ROOT)}. Either --mem-log "
                  f"did not fire or it died before the first pose.")
+
+    # ---- THE REALISED ORDER, FROM THE TRAINER'S OWN OUTPUT -------------------------------
+    #
+    # NOT from the CSV. The CSV order was already correct when the builder's unconditional
+    # shuffle was destroying it, so checking the CSV proves nothing. Under --epoch-order manifest
+    # the chunks are consecutive and the units inside a chunk are appended per structure with no
+    # shuffle, so the token sequence the trainer actually walked must be NON-DECREASING. If it is
+    # not, the ordering did not take and no threshold may be read off this run.
+    toks = [r[0] for r in rows_]
+    bad = [(i, toks[i - 1], toks[i]) for i in range(1, len(toks)) if toks[i] < toks[i - 1]]
+    if bad:
+        sys.exit(
+            f"STOP: the trainer did NOT walk the structures in ascending token order -- "
+            f"{len(bad)} descent(s) in {len(toks)} pose(s), first at pose {bad[0][0]}: "
+            f"{bad[0][1]} -> {bad[0][2]} tokens.\n"
+            f"  --epoch-order manifest did not take, so the OOM below is not the boundary: it is "
+            f"wherever the walk happened to reach a large structure. Do NOT set a threshold from "
+            f"this run. Check that phase_k_train.py's builders honour a.epoch_order.")
+    print(f"  ORDER VERIFIED from the trainer's own MEM lines: {len(toks)} pose(s), "
+          f"{toks[0]} -> {toks[-1]} tokens, non-decreasing throughout")
+
+    # ---- COVERAGE: which structures actually ran ----------------------------------------
+    want = [(r["pdb"], int(r["tokens"])) for r in keep]
+    got = {r[4] for r in rows_}
+    missing = [(pdb, tk) for pdb, tk in want if pdb not in got]
+    print(f"  coverage: {len(want) - len(missing)}/{len(want)} structure(s) produced a pose")
+    if missing:
+        # EXPECTED when the walk OOMs: everything above the boundary never ran. Printed as the
+        # boundary's other side rather than as an error, and the SMALLEST missing structure is
+        # the first one that did not complete.
+        _sm = min(tk for _, tk in missing)
+        print(f"  {len(missing)} structure(s) never produced a pose, the smallest at {_sm} "
+              f"tokens" + ("  (expected: the walk OOMed below them)" if oom else
+                           "  -- NOT expected without an OOM, so something else ended the walk"))
+        if not oom:
+            sys.exit("STOP: structures were skipped and the run did NOT OOM, so the walk ended "
+                     "for a reason this script has not identified. No threshold from this run.")
+
     by_tok = {}
     for tok, peak, *_ in rows_:
         by_tok[tok] = max(by_tok.get(tok, 0.0), peak)

@@ -804,6 +804,22 @@ def main():
                     help="`structure` shuffles the ORDER OF STRUCTURES and the units within each, "
                          "which is as much as can be shuffled while building each structure's "
                          "dataset item once. `none` is deterministic for debugging.")
+    ap.add_argument("--epoch-order", default="shuffle", choices=["shuffle", "manifest"],
+                    help="HOW THE EPOCH'S STRUCTURES ARE ORDERED, independently of --shuffle. "
+                         "`shuffle` (default) is the training order and changes nothing: both "
+                         "epoch builders sort the structures and then shuffle them with a "
+                         "per-epoch rng, and shuffle each structure's seeds and each step's units "
+                         "too.\n"
+                         "`manifest` walks the structures in the order --manifest-selection lists "
+                         "them, with no shuffle anywhere, and prints the realised order plus any "
+                         "structure a short final step dropped. It exists for MEASUREMENT: "
+                         "run_logging/bench_ckpt_by_size.py --probe needs ascending token order "
+                         "to find the largest structure that survives without activation "
+                         "checkpointing, and --shuffle none does NOT give it that -- the shuffle "
+                         "in the builders is unconditional and runs after it. Found in review.\n"
+                         "DO NOT TRAIN WITH IT. A fixed order correlates the gradient with "
+                         "whatever the manifest is sorted by, and the probe's manifest is sorted "
+                         "by size.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--seeds", default="500000-500009",
                     help="the seed range the manifest expects per structure, inclusive.")
@@ -5645,16 +5661,23 @@ def main():
         for _p, _lp, _c in flat:
             by.setdefault(_p, []).append((_lp, _c))
         rng_e = random.Random(a.seed + ep)
-        order = sorted(by)
-        rng_e.shuffle(order)
+        _manifest_order = (a.epoch_order == "manifest")
+        # MANIFEST ORDER MEANS `by`'S OWN INSERTION ORDER, which is the order `flat` was built in,
+        # which is the order --manifest-selection lists the structures. dicts preserve insertion
+        # order, so this needs no token counts here -- the caller sorts the CSV.
+        order = list(by) if _manifest_order else sorted(by)
+        if not _manifest_order:
+            rng_e.shuffle(order)
         # A GROUP IS `world` SEEDS OF ONE STRUCTURE -- the unit of equal work.
         groups = []
         for _p in order:
             u = by[_p][:]
-            rng_e.shuffle(u)
+            if not _manifest_order:
+                rng_e.shuffle(u)
             for g in range(len(u) // world):
                 groups.append([(_p, _lp, _c) for _lp, _c in u[g * world:(g + 1) * world]])
-        rng_e.shuffle(groups)
+        if not _manifest_order:
+            rng_e.shuffle(groups)
         # THE REMAINDER IS KEPT, as a short final step. Truncating to a whole number of steps
         # drops units, and for TRAINING that is invisible -- 1,464 groups over K=6 divides
         # exactly -- but --loss-only runs world=1 over 300 units at K=17 and 300//17*17 is 289,
@@ -5709,13 +5732,16 @@ def main():
         for _p, _lp, _c in flat:
             by.setdefault(_p, []).append((_lp, _c))
         rng_e = random.Random(a.seed + ep)
-        order = sorted(by)
-        rng_e.shuffle(order)
+        _manifest_order = (a.epoch_order == "manifest")
+        order = list(by) if _manifest_order else sorted(by)
+        if not _manifest_order:
+            rng_e.shuffle(order)
         S = max(1, int(a.rank_structs_per_step))
-        steps = []
+        steps, _dropped = [], []
         for i in range(0, len(order), S):
             chunk = order[i:i + S]
             if len(chunk) < S:
+                _dropped = list(chunk)
                 # A SHORT FINAL STEP IS DROPPED, not padded. Padding would repeat poses inside one
                 # gradient, and a step holding fewer structures than S is still correct -- but the
                 # unit count would differ from every other step and the quota bookkeeping that
@@ -5724,14 +5750,28 @@ def main():
             units = []
             for _p in chunk:
                 u = by[_p][:]
-                rng_e.shuffle(u)
+                if not _manifest_order:
+                    rng_e.shuffle(u)
                 units += [(_p, _lp, _c) for _lp, _c in u]
-            rng_e.shuffle(units)
+            if not _manifest_order:
+                rng_e.shuffle(units)
             steps.append(units)
         if not steps:
             raise SystemExit(
                 f"STOP: --rank-cross-seed with --rank-structs-per-step {S} needs at least {S} "
                 f"structure(s); the manifest resolved {len(order)}.")
+        if _manifest_order and is_main:
+            # SAY WHAT WILL ACTUALLY RUN, AND WHAT WILL NOT. A short final step is dropped rather
+            # than padded (see above), and in a size-sorted manifest the dropped chunk is the
+            # LARGEST structures -- precisely the ones a memory probe exists to reach. A probe
+            # that silently never ran them would recommend a threshold from the wrong structure.
+            print(f"  EPOCH ORDER manifest: {len(order)} structure(s), "
+                  f"{len(steps)} step(s) of S={S}; first {order[:3]} last {order[-3:]}")
+            if _dropped:
+                print(f"  EPOCH ORDER manifest: {len(_dropped)} structure(s) DROPPED as a short "
+                      f"final step: {_dropped}. Make the structure count a multiple of "
+                      f"--rank-structs-per-step ({S}) by trimming the FRONT of the manifest, or "
+                      f"these are never run.", flush=True)
         n_units = len(steps[0])
         base, rem = divmod(n_units, world)
         mine, quotas = [], []
