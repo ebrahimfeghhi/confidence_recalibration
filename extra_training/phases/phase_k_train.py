@@ -1129,6 +1129,36 @@ def main():
                          "CONSTRUCTION in build_epoch_cross_seed -- unequal per-rank unit "
                          "counts do not degrade, they deadlock the first all-reduce. "
                          "Mutually exclusive with --crop-margin.")
+    ap.add_argument("--token-keep-union", type=float, default=-1.0,
+                    help="STOCHASTIC TOKEN DROPOUT, biased toward the interface. Instead of "
+                         "training on the union mask as a fixed crop, draw a fresh token "
+                         "subset every epoch: keep each token INSIDE the union with this "
+                         "probability and each token outside it with --token-keep-other. "
+                         "Requires --crop-tokens, which supplies the union.\n"
+                         "WHY. The fixed crop is memorisable and the model NEVER sees distal "
+                         "context, which is why o2qczq scored 0.6305 cropped and 0.5387 "
+                         "uncropped in-sample. A varying subset cannot be memorised, and "
+                         "periphery tokens appearing some of the time means uncropped "
+                         "inference is no longer a regime the head has never seen. It also "
+                         "shrinks the tensors: a token dropped is its ROW AND COLUMN gone "
+                         "from z, not masked to zero, so 0.5 of tokens is 0.25 of the pair "
+                         "work.\n"
+                         "ONE DRAW PER STRUCTURE PER EPOCH, not per pose: the relative loss "
+                         "grades the GAPS between a structure's 50 poses, so poses on "
+                         "different token sets would have their score differences measure "
+                         "the draw. Per-epoch is exactly per-step here, because "
+                         "build_epoch_cross_seed puts every seed of a structure in ONE step "
+                         "-- and per-epoch is also what the prefetch worker can compute, "
+                         "since it crops units before the step is known.\n"
+                         "THE COST BEING ACCEPTED: ipTM pools over the scored pair's token "
+                         "pairs and normalises by a d0 set from their count, so a varying "
+                         "subset varies the achievable score while the label stays at its "
+                         "full-structure value. d0 enters as 1/(1+(d/d0)^2) and so does not "
+                         "cancel under the per-interface mean-centring. Negative (default) "
+                         "leaves the crop fixed and every existing arm unchanged.")
+    ap.add_argument("--token-keep-other", type=float, default=-1.0,
+                    help="keep probability for tokens OUTSIDE the union; see "
+                         "--token-keep-union. Lower than it, or the union is not a prior.")
     ap.add_argument("--crop-contact", type=float, default=5.0,
                     help="a token is an interface token when any of its heavy atoms lies within "
                          "this many angstroms of a heavy atom on a DIFFERENT CHAIN, by ground-truth "
@@ -1214,6 +1244,25 @@ def main():
     if a.eval_pool_crop_tokens and not os.path.exists(a.eval_pool_crop_tokens):
         raise SystemExit(f"STOP: --eval-pool-crop-tokens {a.eval_pool_crop_tokens} does not "
                          f"exist. Build it with run_logging/build_union_crop_masks.py.")
+    _TOK_DROP = (a.token_keep_union >= 0.0) or (a.token_keep_other >= 0.0)
+    if _TOK_DROP:
+        if not (a.token_keep_union >= 0.0 and a.token_keep_other >= 0.0):
+            raise SystemExit("STOP: --token-keep-union and --token-keep-other must BOTH be given; "
+                             "one alone leaves the other at its -1 sentinel and the draw "
+                             "undefined.")
+        for _nm, _v in (("--token-keep-union", a.token_keep_union),
+                        ("--token-keep-other", a.token_keep_other)):
+            if not (0.0 < _v <= 1.0):
+                raise SystemExit(f"STOP: {_nm}={_v} must be in (0, 1]. Zero would delete a whole "
+                                 f"population outright, which is a crop and not a dropout.")
+        if not a.crop_tokens:
+            raise SystemExit("STOP: --token-keep-union needs --crop-tokens, which supplies the "
+                             "union the probabilities are conditioned on. Without it there is no "
+                             "'inside' to bias toward.")
+        if a.token_keep_other > a.token_keep_union:
+            raise SystemExit(f"STOP: --token-keep-other {a.token_keep_other} exceeds "
+                             f"--token-keep-union {a.token_keep_union}, so the periphery would "
+                             f"survive MORE often than the interface. That is not the experiment.")
     if a.crop_tokens and a.crop_margin > 0:
         raise SystemExit("STOP: --crop-tokens and --crop-margin are two crop rules at once. Which "
                          "one applied would depend on branch order, and the run would name itself "
@@ -3436,11 +3485,45 @@ def main():
             raise SystemExit(f"STOP: {pdb_}'s mask has {kt_.shape[0]} token(s) but its cached "
                              f"trunk has {ntok_}. The mask was built against a different cache "
                              f"and slicing with it would scramble the structure.")
+        if _TOK_DROP:
+            # ONE DRAW PER (STRUCTURE, EPOCH), seeded so it is reproducible and so every rank and
+            # the prefetch worker agree without communicating. Per-epoch IS per-step here:
+            # build_epoch_cross_seed puts every seed of a structure in a single step.
+            # hashlib, NOT hash(). Python salts str hashing per process (PYTHONHASHSEED), so
+            # hash() would give each RANK a different draw for the same structure -- and under
+            # --rank-cross-seed the ranks hold different SEEDS OF THE SAME STRUCTURE inside one
+            # step, so they must agree exactly or those poses are scored on different token sets
+            # and the relative loss grades the disagreement. It also has to survive a resume.
+            _sd_bytes = f"{int(a.seed)}|{int(_crop_epoch[0])}|{pdb_}".encode()
+            _rs = np.random.default_rng(
+                int.from_bytes(hashlib.sha256(_sd_bytes).digest()[:8], "big"))
+            _p = np.where(kt_, float(a.token_keep_union), float(a.token_keep_other))
+            _keep = _rs.random(kt_.shape[0]) < _p
+            # TWO CHAINS MUST SURVIVE, or ipTM is undefined for every scored pair and the loss
+            # would be computed over an empty pool. At 0.70/0.20 over hundreds of tokens this is
+            # astronomically unlikely, which is exactly why it is asserted rather than assumed.
+            _asym = np.asarray(zc_["ci_feat_asym_id"]).reshape(-1)
+            if np.unique(_asym[_keep]).size < 2 or int(_keep.sum()) < 16:
+                raise SystemExit(
+                    f"STOP: the token draw for {pdb_} at epoch {_crop_epoch[0]} left "
+                    f"{int(_keep.sum())} token(s) across "
+                    f"{np.unique(_asym[_keep]).size} chain(s). ipTM needs two chains and a "
+                    f"non-trivial pool. Raise --token-keep-union/--token-keep-other.")
+            _tok_drop_stat["kept"] += float(_keep.sum())
+            _tok_drop_stat["tot"] += float(_keep.shape[0])
+            _tok_drop_stat["n"] += 1
+            kt_ = _keep
         inr_ = (a2t_ >= 0) & (a2t_ < ntok_)
         ka_ = np.zeros(a2t_.shape[0], dtype=bool)
         ka_[inr_] = kt_[a2t_[inr_]]
         return kt_, ka_
 
+    # THE EPOCH THE TOKEN DRAW IS SEEDED FROM. Set once at each epoch boundary BEFORE the
+    # prefetch workers start, then read-only for the epoch -- which is what makes it safe for
+    # those threads to read without a lock. It has to be a closure cell rather than a parameter
+    # because _cpu_crop runs in the worker, which crops units before the step is known.
+    _crop_epoch = [0]
+    _tok_drop_stat = {"kept": 0.0, "tot": 0.0, "n": 0}
     _ckpt_hist = [0, 0]
     # THE EPOCH'S PEAK, KEPT BY HAND, because --mem-log resets the CUDA high-water mark before
     # every pose to make the per-pose number mean the pose. Without this the epoch line would
@@ -6313,6 +6396,15 @@ def main():
                 frac = a.epochs - (n_epochs - 1)
                 ep_units = ep_units[:max(1, int(len(ep_units) * frac))]
             print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
+            # BEFORE _pf_start, NOT AFTER. The token draw is seeded from this cell and the
+            # prefetch workers crop units in their own threads from the moment they start, so
+            # setting it afterwards left those units drawn against the PREVIOUS epoch's value
+            # while the inline path used the current one -- different token sets for poses of the
+            # same structure, which is exactly the invariant the draw exists to hold. Caught by
+            # test_token_dropout.py, which pins this ordering.
+            _crop_epoch[0] = ep
+            _tok_drop_stat["kept"] = _tok_drop_stat["tot"] = 0.0
+            _tok_drop_stat["n"] = 0
             # STARTED PER EPOCH, over THIS epoch's shuffled order, so the worker walks the units
             # in the order the main loop will consume them.
             _pf_start(ep_units)
@@ -6601,6 +6693,16 @@ def main():
             # THE DRIFT IS THE EXPERIMENT under --l2-sp, so it is reported, not inferred. The
             # full head reached ||dW||^2 = 67,052 unconstrained over 30 epochs; this says where
             # the penalised run actually sits.
+            # THE REALISED DRAW, reported rather than assumed. The configured probabilities say
+            # what was asked for; this says what the epoch actually trained on, which is the
+            # number to compare against the fixed crop's 0.598.
+            if _TOK_DROP and _tok_drop_stat["n"]:
+                _tk = _tok_drop_stat["kept"] / max(_tok_drop_stat["tot"], 1.0)
+                print(f"  [rank {rank}] epoch {ep + 1} token draw: kept {_tk:.4f} of tokens over "
+                      f"{_tok_drop_stat['n']} unit(s) "
+                      f"(union p={a.token_keep_union:g}, other p={a.token_keep_other:g}; the "
+                      f"fixed crop was 0.598), so ~{_tk * _tk / 0.598 ** 2:.2f}x the fixed "
+                      f"crop's pair work", flush=True)
             if a.l2_sp and _l2sp_drift["n"]:
                 # AS A SHARE OF THE OBJECTIVE, not just in absolute terms. A coefficient that
                 # LOOKS weak is not weak if the squared displacement is large: at the 67,052 the
