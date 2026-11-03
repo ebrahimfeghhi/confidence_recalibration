@@ -992,3 +992,42 @@ default for pair stacks. All four pair-rep sites call
 the plumbing is live and only the rate is zero: **every arm in this project has trained 19.8M
 parameters with no dropout and no masking of any kind.** Dropout is also skipped entirely on the
 `inplace_safe=True` branch, which does a bare `z +=`.
+
+---
+
+## 17. L2-SP AT 1e-4 AND 1e-5 IS OFF, NOT WEAK. The gradient is 0.08% of the task's
+
+Measured on `egw5wq` (biased token dropout) at epoch 6, over 804 optimiser steps:
+
+| | |
+|---|---|
+| actual `grad_norm` | median **1.080**, p10 0.475, p90 2.421 |
+| `\|\|W-W0\|\|` | 43.2 (`\|\|W-W0\|\|^2` = 1862.7) |
+
+The L2-SP gradient is `2*lambda*(W-W0)`, so:
+
+| lambda | ‖L2 grad‖ | share of the median task gradient |
+|---|---|---|
+| **1e-5** (this arm) | 8.63e-04 | **0.08%** |
+| 1e-4 | 8.63e-03 | 0.80% |
+| 1e-3 (`tv6hue`) | 8.63e-02 | 7.99% |
+
+**0.08% is not weak regularisation, it is noise** -- the task gradient varies more than that
+between adjacent steps. And the drift confirms it: `||W-W0||^2` grows freely, 1428 -> 1633 -> 1654
+-> 1863 across epochs 2-6, with nothing pulling it back.
+
+### THE TRAP THIS CLOSES
+
+The per-epoch line reports the penalty as a share of the LOSS VALUE (0.5-0.6% here), and that
+number is misleading: the loss value does not act on the weights, the gradient does. Choosing
+1e-5 over 1e-4 on the strength of "0.5% of the objective" was choosing between two settings that
+are both effectively off, and the loss-share made them look like meaningful points on a scale.
+
+**So the usable range starts around 1e-3**, which is where `tv6hue` sat (7.99% of the gradient)
+and finished at -0.0084 +- 0.0054 held-out selection. 1e-3 on a cropped, token-augmented arm is
+NOT that experiment, since `tv6hue` was uncropped with no augmentation -- but anything at or below
+1e-4 should be read as "no L2", not "a little L2".
+
+A consequence worth stating for `egw5wq`: with pair dropout off and L2 inert, that arm's only
+regulariser is the token-dropout augmentation. That makes it a cleaner test of the augmentation
+than intended, and it means its run note's "L2-SP 1e-5" is decoration.
