@@ -1,0 +1,208 @@
+#!/usr/bin/env python
+"""Training side of one run, 2 x 3: what the optimiser sees, and what it buys ON ITS OWN DATA.
+
+    python -I run_logging/plot_train_insample.py <rid> [out.png]
+
+ROW 1 IS THE OPTIMISER'S VIEW, per epoch out of trajectory.csv and run.log: mean PAE loss, mean
+gradient norm, and the fraction of tokens the dropout draw kept. None of the three is a result --
+they say whether the run is descending and how hard the augmentation is hitting it. Row 1 falling
+is the null expectation for any amount of data, which is exactly why it is drawn next to row 2
+rather than on its own.
+
+ROW 2 IS THE IN-SAMPLE UNCROPPED EVAL, on the run's OWN training interfaces -- the same three
+readouts, computed by the same code path, as the held-out plot's top row (plot_val_2x3.py). It is
+the overfitting measurement: in-sample is the ceiling a given head and loss can reach when
+generalisation is not asked for, so
+
+    in-sample above shipped, held-out flat   ->  it fits, it does not transfer  (the usual arm)
+    in-sample AT or BELOW shipped            ->  it does not even fit; more regularisation is the
+                                                 wrong lever and the capacity or the augmentation
+                                                 is the thing to change
+
+The second case is not hypothetical -- egw5wq reads 0.5451 in-sample against shipped 0.5474 at
+epoch 20, after the train loss has fallen 7%. A plot of row 1 alone is consistent with that run
+working.
+
+MEAN-POOLED ONLY. The MAX readout nothing optimises is in the held-out plot; repeating its row here
+would double the panel count to say the same thing about a pool that is not the target.
+
+THE POOL IS NAMED, NOT GLOBBED. A run with --extra-eval writes several pools per epoch under the
+same epoch number, and an unqualified read drew egw5wq's in-sample numbers as held-out on
+2026-11-03. This asks eval_dirs for `insample` and plots nothing rather than something wrong.
+"""
+import csv, glob, os, re, statistics as st, sys
+from collections import defaultdict
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import eval_dirs                                                             # noqa: E402
+import plot_three                                                            # noqa: E402
+import select_tied                                                           # noqa: E402
+
+RID = sys.argv[1] if len(sys.argv) > 1 else "egw5wq"
+OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/train_insample_{RID}.png"
+POOL = os.environ.get("INSAMPLE_POOL_TAG", "insample")
+ACC = 0.23
+RUNS = os.path.join("training", "runs")
+RIDS = list(plot_three.run_chain(RID))
+
+# ---------------------------------------------------------------- row 1: trajectory.csv
+# Column names, not indices: `epoch` has moved column twice as fields were added, and an index
+# that silently reads `step_taken` instead plots a flat line of 1.0 that looks like a converged run.
+loss, grad, lr = defaultdict(list), defaultdict(list), {}
+for rid in RIDS:
+    p = os.path.join(RUNS, rid, "trajectory.csv")
+    if not os.path.exists(p):
+        continue
+    for r in csv.DictReader(open(p)):
+        try:
+            ep = int(r["epoch"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        for key, bucket in (("loss", loss), ("grad_norm", grad)):
+            try:
+                v = float(r[key])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if v == v and v > 0:            # drop the nan rows a skipped step writes
+                bucket[ep].append(v)
+        try:
+            lr[ep] = float(r["lr"])
+        except (KeyError, ValueError, TypeError):
+            pass
+
+# The last epoch in the file is PARTIAL while the run is live -- its mean is over a prefix of the
+# shuffle and is not comparable with a full epoch. Drop it unless it has a full epoch's rows.
+full = max((len(v) for v in loss.values()), default=0)
+t_eps = sorted(e for e in loss if len(loss[e]) >= 0.98 * full)
+t_loss = [st.mean(loss[e]) for e in t_eps]
+t_grad = [st.mean(grad[e]) if grad.get(e) else float("nan") for e in t_eps]
+
+# LR steps, for the verticals -- read off the schedule the run actually ran, not the flag.
+steps = [e for e in t_eps[1:] if lr.get(e, 0) < lr.get(e - 1, 0)]
+
+# kept-token fraction: one line per rank per epoch, so average them
+KEPT = re.compile(r"epoch (\d+) token draw: kept ([0-9.]+) of tokens")
+kept = defaultdict(list)
+for rid in RIDS:
+    p = os.path.join(RUNS, rid, "run.log")
+    if os.path.exists(p):
+        for m in KEPT.finditer(open(p, errors="replace").read()):
+            kept[int(m.group(1))].append(float(m.group(2)))
+k_eps = sorted(e for e in kept if e in set(t_eps))
+k_val = [st.mean(kept[e]) for e in k_eps]
+
+# ---------------------------------------------------------------- row 2: in-sample eval
+def spearman(xs, ys):
+    def rank(v):
+        order = sorted(range(len(v)), key=lambda i: v[i])
+        out, i = [0.0] * len(v), 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+                j += 1
+            r = (i + j) / 2.0 + 1.0
+            for k in range(i, j + 1):
+                out[order[k]] = r
+            i = j + 1
+        return out
+    rx, ry = rank(xs), rank(ys)
+    mx, my = sum(rx) / len(rx), sum(ry) / len(ry)
+    num = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    den = (sum((a - mx) ** 2 for a in rx) * sum((b - my) ** 2 for b in ry)) ** 0.5
+    return num / den if den else float("nan")
+
+# idx 0 = MAX-pooled, 1 = MEAN-pooled, 2 = shipped, 3 = true DockQ -- same order as plot_val_2x3
+e_eps, ins, ship = [], defaultdict(list), defaultdict(list)
+n_iface = 0
+for ep, d in sorted(eval_dirs.chain_shard_dirs(RIDS, RUNS, tag=POOL).items()):
+    by = defaultdict(list)
+    for f in glob.glob(os.path.join(d, "rows_b*_s*.csv")):
+        for r in csv.DictReader(open(f)):
+            vm, vs = r.get("iptm_mean"), r.get("stored_iptm")
+            if not vm or not vs or not r.get("dockq"):
+                continue
+            by[r["iface"]].append((float(r["iptm"]), float(vm), float(vs), float(r["dockq"])))
+    if not by:
+        continue
+    e_eps.append(ep)
+    n_iface = max(n_iface, len(by))
+    dq, fa, rh, sdq, sfa, srh = [], [], [], [], [], []
+    for v in by.values():
+        a, b = select_tied.expected_pick(v, 1, 3, ACC);  dq.append(a);  fa.append(b)
+        a, b = select_tied.expected_pick(v, 2, 3, ACC); sdq.append(a); sfa.append(b)
+        truth = [p[3] for p in v]
+        rh.append(spearman([p[1] for p in v], truth))
+        srh.append(spearman([p[2] for p in v], truth))
+    ins["dq"].append(sum(dq) / len(dq));   ship["dq"].append(sum(sdq) / len(sdq))
+    ins["fa"].append(sum(fa) / len(fa));   ship["fa"].append(sum(sfa) / len(sfa))
+    ins["rho"].append(st.median(rh));      ship["rho"].append(st.median(srh))
+
+# ---------------------------------------------------------------- draw
+fig, axes = plt.subplots(2, 3, figsize=(16.5, 9.0))
+
+def finish(ax, title, xs):
+    ax.set_title(title, fontsize=12.5, weight="bold", pad=8)
+    ax.set_xlabel("epoch", fontsize=11)
+    ax.grid(alpha=.25)
+    ax.tick_params(labelsize=10)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+    for e in steps:
+        ax.axvline(e, ls=":", color="#b03a3a", lw=1.4, zorder=1)
+    if xs:
+        ax.set_xlim(min(xs) - 0.5, max(xs) + 0.5)
+
+TOP = [(t_loss, "train mean loss (= PAE)", "#1f77b4", t_eps),
+       (t_grad, "mean gradient norm", "#e67e22", t_eps),
+       (k_val, "fraction of tokens kept by the draw", "#7f8c8d", k_eps)]
+for ci, (y, lab, col, xs) in enumerate(TOP):
+    ax = axes[0][ci]
+    if y:
+        ax.plot(xs, y, "o-", color=col, lw=2.2, ms=4.5, zorder=4)
+    else:
+        ax.text(.5, .5, "no data", ha="center", va="center", transform=ax.transAxes,
+                fontsize=12, color="#888")
+    finish(ax, lab, xs)
+if steps:
+    axes[0][0].annotate("dotted = LR drop (" + ", ".join(f"ep {e}" for e in steps) + ")",
+                        xy=(.02, .06), xycoords="axes fraction", fontsize=9.5, color="#b03a3a")
+if k_val:
+    axes[0][2].set_ylim(0, 1)
+
+BOT = [("dq", "mean selected DockQ", "#1b6ca8"),
+       ("fa", f"frac acceptable (>= {ACC})", "#2e8b57"),
+       ("rho", "median Spearman vs DockQ", "#8e44ad")]
+for ci, (key, lab, col) in enumerate(BOT):
+    ax = axes[1][ci]
+    if e_eps:
+        y, s = ins[key], ship[key]
+        ax.plot(e_eps, y, "o-", color=col, lw=2.5, ms=7.5, zorder=4, label="ours")
+        ax.axhline(s[-1], ls="--", color="#555", lw=1.8, zorder=3, label=f"shipped {s[-1]:.4f}")
+        ax.set_xticks(e_eps)
+        lo = min(min(y), s[-1]); hi = max(max(y), s[-1]); pad = max((hi - lo) * .45, 2e-4)
+        ax.set_ylim(lo - pad, hi + pad)
+        ax.legend(fontsize=10, framealpha=.95)
+    else:
+        ax.text(.5, .5, f"no `{POOL}` eval shards", ha="center", va="center",
+                transform=ax.transAxes, fontsize=12, color="#888")
+    finish(ax, f"IN-SAMPLE  --  {lab}", e_eps)
+
+fig.suptitle(f"{'+'.join(RIDS)}  --  training signal (row 1) and in-sample uncropped eval on "
+             f"{n_iface} TRAINING interfaces (row 2)", fontsize=13.5, weight="bold")
+fig.tight_layout(rect=(0, 0, 1, 0.955))
+os.makedirs(os.path.dirname(os.path.abspath(OUT)), exist_ok=True)
+fig.savefig(OUT, dpi=135)
+print(f"  {len(t_eps)} train epoch(s), {len(e_eps)} in-sample eval epoch(s) -> {OUT}")
+print(f"  {'ep':>4} {'train loss':>12} {'grad':>8} {'kept':>7}")
+for e, a, b in zip(t_eps, t_loss, t_grad):
+    print(f"  {e:>4} {a:>12.4f} {b:>8.3f} {st.mean(kept[e]) if kept.get(e) else float('nan'):>7.4f}")
+if e_eps:
+    print(f"  {'ep':>4} {'IS dq':>10} {'IS fa':>10} {'IS rho':>10}")
+    for i, e in enumerate(e_eps):
+        print(f"  {e:>4} {ins['dq'][i]:>10.4f} {ins['fa'][i]:>10.4f} {ins['rho'][i]:>10.4f}")
+    print(f"  {'ship':>4} {ship['dq'][-1]:>10.4f} {ship['fa'][-1]:>10.4f} {ship['rho'][-1]:>10.4f}")

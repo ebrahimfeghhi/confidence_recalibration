@@ -62,24 +62,46 @@ def metric_jsons(run_dir):
     return out
 
 
-def shard_dirs(run_dir):
-    """{epoch: path} for the during-training shard work directories, both conventions."""
-    out, legacy = {}, {}
+def shard_dirs(run_dir, tag=None):
+    """{epoch: path} for the during-training shard work directories, both conventions.
+
+    tag SELECTS A POOL, and AMBIGUITY IS AN ERROR. This used to key on the epoch alone, which was
+    safe only while a run had exactly one eval pool. --extra-eval ended that: egw5wq writes
+    valfull_eval_shards_ep10 AND insample_eval_shards_ep10, and keying on the epoch meant
+    whichever the glob returned last silently won -- plot_val_2x3 drew the IN-SAMPLE numbers as
+    held-out at epoch 10, with the shipped reference quietly changing from 0.5834 to 0.5477.
+    Rather than pick one by rule, an unqualified call now RAISES when several pools wrote the same
+    epoch, so a reader must name the pool it means. Found by reading a plot that looked wrong.
+    """
+    byep = {}
     for p in glob.glob(os.path.join(run_dir, "*_eval_shards_ep*")):
         m = _SD.match(os.path.basename(p))
         if not m or not os.path.isdir(p):
             continue
-        (legacy if m.group("tag") == "train" else out)[int(m.group("ep"))] = p
-    for e, p in legacy.items():
-        out.setdefault(e, p)
+        byep.setdefault(int(m.group("ep")), {})[m.group("tag")] = p
+    out = {}
+    for e, bytag in byep.items():
+        if tag is not None:
+            if tag in bytag:
+                out[e] = bytag[tag]
+            continue
+        if len(bytag) == 1:
+            out[e] = next(iter(bytag.values()))
+        elif "train" in bytag and len(bytag) == 2:
+            out[e] = next(v for k, v in bytag.items() if k != "train")
+        else:
+            raise ValueError(
+                f"{run_dir} epoch {e} has shard dirs for {sorted(bytag)}; pass tag= to say which "
+                f"pool you mean. Reading them interchangeably is how in-sample numbers got drawn "
+                f"as held-out.")
     return out
 
 
-def chain_shard_dirs(rids, runs_root):
+def chain_shard_dirs(rids, runs_root, tag=None):
     """{epoch: path} across a resume chain, oldest first, later runs winning a repeated epoch."""
     out = {}
     for r in rids:
-        out.update(shard_dirs(os.path.join(runs_root, r)))
+        out.update(shard_dirs(os.path.join(runs_root, r), tag=tag))
     return out
 
 
