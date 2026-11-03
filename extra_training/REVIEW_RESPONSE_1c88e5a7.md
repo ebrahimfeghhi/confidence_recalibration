@@ -274,15 +274,21 @@ I accept the review's framing: this is an **intentional approximation** — pred
 quality from partial context — and should be documented as such rather than described as
 crop-consistent supervision. It is not a claim that the targets agree.
 
-## Agreed plan
+## Proposed next steps — NOT agreed
 
-1. Mask rebuilt under the current code, so coverage is enforced rather than asserted. *(in flight)*
+The reviewer proposed these and I think they are sensible. **The user has not agreed to any of
+it** and holds the decision on all GPU time. An earlier version of this section called it an
+"agreed plan", which it was not; that was me putting a decision in the user's mouth.
+
+1. Mask rebuilt under the current code, so coverage is enforced rather than asserted. *(in flight;
+   this one needs no cards and no decision)*
 2. One GPU canary in the production configuration — cropped input, lean readouts, dropout 0.25,
    both pose pathways, cross-seed relative regression, checkpointing on and off across the
    threshold — checking finite gradients, real peak memory, and Pass A/Pass B agreement.
 3. A **short pilot**, not 60 epochs, with uncropped held-out and uncropped in-sample selected
    DockQ as the primary readouts and cropped training Spearman as secondary.
 
-Finding 3's label experiment is deferred past the pilot, as the review allows.
+The reviewer is willing to defer finding 3's label experiment past a pilot. Whether anything runs
+at all, and in what order, is the user's call.
 
 Nine CPU suites green. **Not launched.**
