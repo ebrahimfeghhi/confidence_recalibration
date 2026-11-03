@@ -1122,3 +1122,113 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 26/60: 1220 unit(s)  epoch 26/60: 1220 unit(s)  epoch 26/60: 1220 unit(s)
 
 
+  epoch 26 took 24.4 min for 1220 unit(s), 122 optimiser step(s), 0.24 s/pose
+  [rank 1] epoch 26 took 24.4 min -- apply_step_total 0.3m/122  cpucrop_label 0.0m/1220  cpucrop_slice 16.8m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 5.3m/2440  cropped_tokens mean 269  gpu_backward 7.4m/6100  gpu_forward 6.7m/12200  grad_collective_plus_wait 0.2m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 2.0m/122  pose_a_total 3.5m/6100  pose_total 10.0m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 3.2m/122  rank_pass_a 7.7m/122  trunk_read_plus_crop_tokens 0.0m/1277  unit_setup 5.4m/2440
+  [rank 1] epoch 26 prefetch (4 worker(s)): 1163/1220 hit (95.3%), 0.0 min waiting on the worker, 57 evicted-then-wanted, 0 asked after the workers finished
+  [rank 1] epoch 26 token draw: kept 0.4131 of tokens over 2497 unit(s) (union p=0.7, other p=0.2; the fixed crop was 0.598), so ~0.48x the fixed crop's pair work; 10 chain(s) topped up to the 4-token floor, 22 token(s) added
+  [rank 1] epoch 26 l2-sp: ||W-W0||^2 = 2854.3, penalty = 0.0285 = 1.0% of the epoch's mean loss 2.9261 (unconstrained full head reached 67,052 by epoch 30, which at lambda 1e-05 would be 0.67)
+  [rank 1] epoch 26 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2676 over 735 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 1] epoch 26 SCORE SPREAD: median std(predicted) 0.0221 against std(true iTM) 0.0695, median ratio 0.398   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 1] epoch 26 rank-loss (rel, cross-seed pairs): +0.00967 over 735 interface-group(s) in 122 step(s), 36750 pair(s)
+  [rank 1] epoch 26 accounted 24.6m of 24.4m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 1] epoch 26 unit_setup 5.4m, of which 22.2m is already in named leaves -> -16.9m of the residual is INSIDE units, the rest is between them
+  [rank 1] epoch 26 memory: peak allocated 58.55 GB, peak reserved 59.03 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2440 unit(s) UNCHECKPOINTED, 0 checkpointed
+  epoch 26 took 24.4 min for 1220 unit(s), 122 optimiser step(s), 0.24 s/pose
+  [rank 0] epoch 26 took 24.4 min -- apply_step_total 0.3m/122  cpucrop_label 0.0m/1220  cpucrop_slice 16.4m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 5.8m/2440  cropped_tokens mean 274  gpu_backward 7.8m/6100  gpu_forward 7.1m/12200  grad_collective_plus_wait 0.2m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 1.2m/122  pose_a_total 3.6m/6100  pose_total 10.5m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 2.9m/122  rank_pass_a 8.0m/122  trunk_read_plus_crop_tokens 0.0m/1335  unit_setup 5.8m/2440
+  [rank 0] epoch 26 prefetch (4 worker(s)): 1105/1220 hit (90.6%), 0.0 min waiting on the worker, 115 evicted-then-wanted, 0 asked after the workers finished
+  [rank 0] epoch 26 token draw: kept 0.4151 of tokens over 2555 unit(s) (union p=0.7, other p=0.2; the fixed crop was 0.598), so ~0.48x the fixed crop's pair work; 13 chain(s) topped up to the 4-token floor, 27 token(s) added
+  [rank 0] epoch 26 l2-sp: ||W-W0||^2 = 2854.3, penalty = 0.0285 = 1.0% of the epoch's mean loss 2.9261 (unconstrained full head reached 67,052 by epoch 30, which at lambda 1e-05 would be 0.67)
+  [rank 0] epoch 26 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2676 over 735 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 0] epoch 26 SCORE SPREAD: median std(predicted) 0.0221 against std(true iTM) 0.0695, median ratio 0.398   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 0] epoch 26 rank-loss (rel, cross-seed pairs): +0.00967 over 735 interface-group(s) in 122 step(s), 36750 pair(s)
+  [rank 0] epoch 26 accounted 24.6m of 24.4m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 0] epoch 26 unit_setup 5.8m, of which 22.3m is already in named leaves -> -16.4m of the residual is INSIDE units, the rest is between them
+  [rank 0] epoch 26 memory: peak allocated 58.55 GB, peak reserved 59.58 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2440 unit(s) UNCHECKPOINTED, 0 checkpointed
+  epoch 26 took 24.4 min for 1220 unit(s), 122 optimiser step(s), 0.24 s/pose
+  [rank 2] epoch 26 took 24.4 min -- apply_step_total 0.3m/122  cpucrop_label 0.0m/1220  cpucrop_slice 19.4m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 7.1m/2440  cropped_tokens mean 266  gpu_backward 7.0m/6100  gpu_forward 6.6m/12200  grad_collective_plus_wait 0.2m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 2.6m/122  pose_a_total 3.3m/6100  pose_total 9.7m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 1.3m/122  rank_pass_a 9.6m/122  trunk_read_plus_crop_tokens 0.0m/1220  unit_setup 7.1m/2440
+  [rank 2] epoch 26 prefetch (4 worker(s)): 1220/1220 hit (100.0%), 0.0 min waiting on the worker
+  [rank 2] epoch 26 token draw: kept 0.4137 of tokens over 2440 unit(s) (union p=0.7, other p=0.2; the fixed crop was 0.598), so ~0.48x the fixed crop's pair work; 18 chain(s) topped up to the 4-token floor, 34 token(s) added
+  [rank 2] epoch 26 l2-sp: ||W-W0||^2 = 2854.3, penalty = 0.0285 = 1.0% of the epoch's mean loss 2.9261 (unconstrained full head reached 67,052 by epoch 30, which at lambda 1e-05 would be 0.67)
+  [rank 2] epoch 26 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2676 over 735 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 2] epoch 26 SCORE SPREAD: median std(predicted) 0.0221 against std(true iTM) 0.0695, median ratio 0.398   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 2] epoch 26 rank-loss (rel, cross-seed pairs): +0.00967 over 735 interface-group(s) in 122 step(s), 36750 pair(s)
+  [rank 2] epoch 26 accounted 24.6m of 24.4m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 2] epoch 26 unit_setup 7.1m, of which 26.5m is already in named leaves -> -19.4m of the residual is INSIDE units, the rest is between them
+  [rank 2] epoch 26 memory: peak allocated 58.55 GB, peak reserved 59.27 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2440 unit(s) UNCHECKPOINTED, 0 checkpointed
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/egw5wq/resume_ep26.pt (227 MiB: head + AdamW moments + step)
+  epoch 27/60: 1220 unit(s)  epoch 27/60: 1220 unit(s)  epoch 27/60: 1220 unit(s)
+
+
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/egw5wq/head_step3250.pt
+  epoch 27 took 23.9 min for 1220 unit(s), 122 optimiser step(s), 0.23 s/pose
+  [rank 1] epoch 27 took 23.9 min -- apply_step_total 0.3m/122  cpucrop_label 0.0m/1220  cpucrop_slice 9.3m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 5.8m/2440  cropped_tokens mean 266  gpu_backward 7.2m/6100  gpu_forward 6.6m/12200  grad_collective_plus_wait 0.2m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 1.5m/122  pose_a_total 3.4m/6100  pose_total 9.8m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 3.1m/122  rank_pass_a 6.5m/122  trunk_read_plus_crop_tokens 0.0m/1805  unit_setup 5.8m/2440
+  [rank 1] epoch 27 prefetch (4 worker(s)): 635/1220 hit (52.0%), 0.0 min waiting on the worker, 585 evicted-then-wanted, 0 asked after the workers finished
+  [rank 1] epoch 27 token draw: kept 0.4093 of tokens over 3025 unit(s) (union p=0.7, other p=0.2; the fixed crop was 0.598), so ~0.47x the fixed crop's pair work; 6 chain(s) topped up to the 4-token floor, 6 token(s) added
+  [rank 1] epoch 27 l2-sp: ||W-W0||^2 = 2843.8, penalty = 0.0284 = 1.0% of the epoch's mean loss 2.9249 (unconstrained full head reached 67,052 by epoch 30, which at lambda 1e-05 would be 0.67)
+  [rank 1] epoch 27 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2540 over 734 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 1] epoch 27 SCORE SPREAD: median std(predicted) 0.0211 against std(true iTM) 0.0687, median ratio 0.398   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 1] epoch 27 rank-loss (rel, cross-seed pairs): +0.00982 over 734 interface-group(s) in 122 step(s), 36700 pair(s)
+  [rank 1] epoch 27 accounted 24.0m of 23.9m, residual -0.1m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 1] epoch 27 unit_setup 5.8m, of which 15.2m is already in named leaves -> -9.4m of the residual is INSIDE units, the rest is between them
+  [rank 1] epoch 27 memory: peak allocated 57.81 GB, peak reserved 58.28 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2440 unit(s) UNCHECKPOINTED, 0 checkpointed
+  epoch 27 took 23.9 min for 1220 unit(s), 122 optimiser step(s), 0.23 s/pose
+  [rank 0] epoch 27 took 23.9 min -- apply_step_total 0.3m/122  cpucrop_label 0.0m/1220  cpucrop_slice 9.3m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 4.7m/2440  cropped_tokens mean 268  gpu_backward 7.4m/6100  gpu_forward 6.8m/12200  grad_collective_plus_wait 0.2m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 2.3m/122  pose_a_total 3.5m/6100  pose_total 10.0m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 3.0m/122  rank_pass_a 6.6m/122  trunk_read_plus_crop_tokens 0.0m/1435  unit_setup 4.7m/2440
+  [rank 0] epoch 27 prefetch (4 worker(s)): 1005/1220 hit (82.4%), 0.0 min waiting on the worker, 215 evicted-then-wanted, 0 asked after the workers finished
+  [rank 0] epoch 27 token draw: kept 0.4144 of tokens over 2655 unit(s) (union p=0.7, other p=0.2; the fixed crop was 0.598), so ~0.48x the fixed crop's pair work; 10 chain(s) topped up to the 4-token floor, 10 token(s) added
+  [rank 0] epoch 27 l2-sp: ||W-W0||^2 = 2843.8, penalty = 0.0284 = 1.0% of the epoch's mean loss 2.9249 (unconstrained full head reached 67,052 by epoch 30, which at lambda 1e-05 would be 0.67)
+  [rank 0] epoch 27 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2540 over 734 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 0] epoch 27 SCORE SPREAD: median std(predicted) 0.0211 against std(true iTM) 0.0687, median ratio 0.398   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 0] epoch 27 rank-loss (rel, cross-seed pairs): +0.00982 over 734 interface-group(s) in 122 step(s), 36700 pair(s)
+  [rank 0] epoch 27 accounted 24.0m of 23.9m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 0] epoch 27 unit_setup 4.7m, of which 14.1m is already in named leaves -> -9.4m of the residual is INSIDE units, the rest is between them
+  [rank 0] epoch 27 memory: peak allocated 57.81 GB, peak reserved 58.28 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2440 unit(s) UNCHECKPOINTED, 0 checkpointed
+  epoch 27 took 23.9 min for 1220 unit(s), 122 optimiser step(s), 0.23 s/pose
+  [rank 2] epoch 27 took 23.9 min -- apply_step_total 0.3m/122  cpucrop_label 0.0m/1220  cpucrop_slice 15.5m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 6.6m/2440  cropped_tokens mean 270  gpu_backward 7.4m/6100  gpu_forward 6.8m/12200  grad_collective_plus_wait 0.2m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 2.9m/122  pose_a_total 3.5m/6100  pose_total 10.1m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 0.5m/122  rank_pass_a 9.1m/122  trunk_read_plus_crop_tokens 0.0m/1220  unit_setup 6.6m/2440
+  [rank 2] epoch 27 prefetch (4 worker(s)): 1220/1220 hit (100.0%), 0.0 min waiting on the worker
+  [rank 2] epoch 27 token draw: kept 0.4116 of tokens over 2440 unit(s) (union p=0.7, other p=0.2; the fixed crop was 0.598), so ~0.47x the fixed crop's pair work; 6 chain(s) topped up to the 4-token floor, 6 token(s) added
+  [rank 2] epoch 27 l2-sp: ||W-W0||^2 = 2843.8, penalty = 0.0284 = 1.0% of the epoch's mean loss 2.9249 (unconstrained full head reached 67,052 by epoch 30, which at lambda 1e-05 would be 0.67)
+  [rank 2] epoch 27 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2540 over 734 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 2] epoch 27 SCORE SPREAD: median std(predicted) 0.0211 against std(true iTM) 0.0687, median ratio 0.398   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 2] epoch 27 rank-loss (rel, cross-seed pairs): +0.00982 over 734 interface-group(s) in 122 step(s), 36700 pair(s)
+  [rank 2] epoch 27 accounted 24.0m of 23.9m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 2] epoch 27 unit_setup 6.6m, of which 22.2m is already in named leaves -> -15.6m of the residual is INSIDE units, the rest is between them
+  [rank 2] epoch 27 memory: peak allocated 57.81 GB, peak reserved 58.30 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2440 unit(s) UNCHECKPOINTED, 0 checkpointed
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/egw5wq/resume_ep27.pt (227 MiB: head + AdamW moments + step)
+  epoch 28/60: 1220 unit(s)
+  epoch 28/60: 1220 unit(s)
+  epoch 28/60: 1220 unit(s)
+W1103 06:09:33.404000 2813836 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 2813906 closing signal SIGTERM
+W1103 06:09:33.406000 2813836 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 2813907 closing signal SIGTERM
+E1103 06:09:33.820000 2813836 torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: -15) local_rank: 0 (pid: 2813905) of binary: /home/ebrahim/confidence_recalibration/extra_training/shell_scripts/numa_rank_wrap.sh
+Traceback (most recent call last):
+  File "/home/ebrahim/Protenix/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/ebrahim/confidence_recalibration/extra_training/shell_scripts/numa_rank_wrap.sh FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-11-03_06:09:33
+  host      : alderaan
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 2813905)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 2813905
+============================================================

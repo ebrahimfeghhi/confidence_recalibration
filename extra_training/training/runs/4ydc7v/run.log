@@ -1,0 +1,164 @@
+W1103 06:54:08.716000 141686 torch/distributed/run.py:766] 
+W1103 06:54:08.716000 141686 torch/distributed/run.py:766] *****************************************
+W1103 06:54:08.716000 141686 torch/distributed/run.py:766] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W1103 06:54:08.716000 141686 torch/distributed/run.py:766] *****************************************
+[rank 0] NUMA: cores and memory bound to socket 0 (map 0:0,1:0,2:1)
+[rank 1] NUMA: cores and memory bound to socket 0 (map 0:0,1:0,2:1)
+[rank 2] NUMA: cores and memory bound to socket 1 (map 0:0,1:0,2:1)
+replay gate: PASS (training/ft3_pilot_replay.log)
+replay gate: PASS (training/ft3_pilot_replay.log)
+replay gate: PASS (training/ft3_pilot_replay.log)
+[rank 0/3] cuda:0 backend=gloo timeout=240 min
+  accum: 85 requested -> K=6 structure(s)/step x 3 rank(s) x 5 pose(s) = 90 poses per step (30/rank)
+[rank 1/3] cuda:1 backend=gloo timeout=240 min
+  accum: 85 requested -> K=6 structure(s)/step x 3 rank(s) x 5 pose(s) = 90 poses per step (30/rank)
+[rank 2/3] cuda:2 backend=gloo timeout=240 min
+  accum: 85 requested -> K=6 structure(s)/step x 3 rank(s) x 5 pose(s) = 90 poses per step (30/rank)
+train scheduler 16.0
+inference scheduler 16.0
+train scheduler 16.0
+inference scheduler 16.0
+train scheduler 16.0
+inference scheduler 16.0
+Diffusion Module has 16.0
+Diffusion Module has 16.0
+Diffusion Module has 16.0
+pair stack: 4 block(s), blocks_per_ckpt=1, chunking off
+confidence_head.training = True (trunk stays eval; train_confidence_only=True)
+LEAN READOUTS: pde, pLDDT and resolved are NOT COMPUTED. memory_efficient_forward pinned at 22df48da4e0ebd20
+pose direction: frame_dir_proj LinearNoBias(3 -> 256) installed on confidence_head, 768 parameter(s), zero-init verified exactly zero
+pose per-block ORIENTATION: 3 copy/copies of frame_dir_proj LinearNoBias(3 -> 256), 2,304 new parameter(s), each copied from frame_dir_proj's weights -- which pose_direction zero-inits and verifies exactly zero, so STEP 0 IS UNCHANGED by these. Orientation now enters at ALL 4 depths; without them it enters ONCE, before the stack, while the distance terms enter at every depth. A --train-only must match `frame_dir` to reach them.
+pose per-block: 3 block(s) injected, each with its OWN COPY of block 0's injection -- linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) per depth, 33,024 NEW parameter(s). UNTIED: the copies are free to diverge. STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's step 0 (verified against block 0's weights, exactly), NOT to the shipped head -- so capacity is the only variable against a share arm. The copies are named pose_perblock_linear_no_bias_d* and a --train-only that does not match them would create them and never train them.
+  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); measured 3.4 ms and up to 1.66 GB per pose
+  dropped plddt_loss (PLDDTLoss); stub answers ['bins_from_lddt', 'forward_given_atom_lddt']
+  dropped pde_loss (PDELoss); stub answers ['calculate_label']
+  dropped resolved_loss (ExperimentallyResolvedLoss); stub answers []
+PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. Every gradient now goes to the one output ipTM reads.
+PAE term MASKED to scored chain pairs: 368 structure(s), 738 interface(s), from training/full_train/pool_winnable.csv
+RELATIVE iTM REGRESSION on chain_pair ipTM pooled by MEAN: L = (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2 per interface over all its seeds, alpha 75. Labels training/fold/itm_labels (368 structure(s), 36900 row(s), column g_mean, digest 042fc685dd07). The coefficients sum to EXACTLY zero, so this term cannot move an interface's level and its accumulated gradient cancels by construction -- alpha must come from --grad-probe norms, not from loss values.
+RANKING LOSS on chain_pair_iptm: form rel, alpha 75, weight_by_gap=True, 10268 labelled (pdb, seed, interface) group(s) from training/fold/results.csv
+  PAIR FAMILY: CROSS-SEED pairs only (different seeds) -- the deployed objective
+  CROSS-SEED GROUPS: 3 structure(s) x all seeds per step; a pose's coefficient uses every other pose of its interface, so pass A scores the whole step before the first backward
+loss weights: plddt 1 [DROPPED]  pde 1 [DROPPED]  pae 1  resolved 1 [DROPPED]
+train-eval pool: 53 structure(s), all present, none skipped
+trainable: 258 tensor(s), 19.8M of 464.5M parameters (4.3%), under ['confidence_head']
+manifest: 368 selected structure(s) minus ['8vba', '9b9j', '9bbn', '9dc3', '9dzf', '9e7x', '9mx1', '9q5m', '9q5v', '9q7b'] x seeds 500000-500009 = 3680 intended unit(s), from training/full_train/structures_winnable.csv
+  manifest digest b0fcf69e52646bfd over 3680 unit(s)
+  PAE mask: all 368 training structure(s) are named by training/full_train/pool_winnable.csv
+  alignment preflight: PASS over 368 structure(s), digest b0fcf69e52646bfd
+  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label only (9 features + coordinate/coordinate_mask)
+  resolved 3680 unit(s) over 368 structure(s) from 1 fold root(s), shuffle=structure, seed=0
+fingerprint context: code=a084c21e38e369e0 loss=2fc84683b58e5aa0
+fingerprint cache: 3680 entry(ies) reused from training/fold, 0 invalidated by a changed input, code_fp or schema
+  steps/epoch 122 from the epoch builder, NOT 205 from len(flat)//world: 3680 unit(s) over 368 structure(s), of which this rank walks 1226 (floor(seeds/3) whole group(s) per structure; the remainder sits out and is reseeded each epoch). The lr schedule uses the former.
+
+training: lr 0.01, warmup 20, accum 85, ~7320 optimiser step(s) for 60.0 epoch(s) (204 full + 1 partial per epoch); no step cap, the epoch loop decides
+  lr schedule: flat after warmup (no decay)
+trajectory -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/4ydc7v/trajectory.csv
+pair stack: 4 block(s), blocks_per_ckpt=1, chunking off
+confidence_head.training = True (trunk stays eval; train_confidence_only=True)
+LEAN READOUTS: pde, pLDDT and resolved are NOT COMPUTED. memory_efficient_forward pinned at 22df48da4e0ebd20
+pair stack: 4 block(s), blocks_per_ckpt=1, chunking off
+confidence_head.training = True (trunk stays eval; train_confidence_only=True)
+LEAN READOUTS: pde, pLDDT and resolved are NOT COMPUTED. memory_efficient_forward pinned at 22df48da4e0ebd20
+pose direction: frame_dir_proj LinearNoBias(3 -> 256) installed on confidence_head, 768 parameter(s), zero-init verified exactly zero
+pose direction: frame_dir_proj LinearNoBias(3 -> 256) installed on confidence_head, 768 parameter(s), zero-init verified exactly zero
+pose per-block ORIENTATION: 3 copy/copies of frame_dir_proj LinearNoBias(3 -> 256), 2,304 new parameter(s), each copied from frame_dir_proj's weights -- which pose_direction zero-inits and verifies exactly zero, so STEP 0 IS UNCHANGED by these. Orientation now enters at ALL 4 depths; without them it enters ONCE, before the stack, while the distance terms enter at every depth. A --train-only must match `frame_dir` to reach them.
+pose per-block: 3 block(s) injected, each with its OWN COPY of block 0's injection -- linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) per depth, 33,024 NEW parameter(s). UNTIED: the copies are free to diverge. STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's step 0 (verified against block 0's weights, exactly), NOT to the shipped head -- so capacity is the only variable against a share arm. The copies are named pose_perblock_linear_no_bias_d* and a --train-only that does not match them would create them and never train them.
+  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); measured 3.4 ms and up to 1.66 GB per pose
+  dropped plddt_loss (PLDDTLoss); stub answers ['bins_from_lddt', 'forward_given_atom_lddt']
+  dropped pde_loss (PDELoss); stub answers ['calculate_label']
+  dropped resolved_loss (ExperimentallyResolvedLoss); stub answers []
+PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. Every gradient now goes to the one output ipTM reads.
+PAE term MASKED to scored chain pairs: 368 structure(s), 738 interface(s), from training/full_train/pool_winnable.csv
+pose per-block ORIENTATION: 3 copy/copies of frame_dir_proj LinearNoBias(3 -> 256), 2,304 new parameter(s), each copied from frame_dir_proj's weights -- which pose_direction zero-inits and verifies exactly zero, so STEP 0 IS UNCHANGED by these. Orientation now enters at ALL 4 depths; without them it enters ONCE, before the stack, while the distance terms enter at every depth. A --train-only must match `frame_dir` to reach them.
+pose per-block: 3 block(s) injected, each with its OWN COPY of block 0's injection -- linear_no_bias_d (256, 39) + linear_no_bias_d_wo_onehot (256, 1) per depth, 33,024 NEW parameter(s). UNTIED: the copies are free to diverge. STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's step 0 (verified against block 0's weights, exactly), NOT to the shipped head -- so capacity is the only variable against a share arm. The copies are named pose_perblock_linear_no_bias_d* and a --train-only that does not match them would create them and never train them.
+  pae-only: all-atom lddt SKIPPED (feeds only the stubbed pLDDT term); measured 3.4 ms and up to 1.66 GB per pose
+  dropped plddt_loss (PLDDTLoss); stub answers ['bins_from_lddt', 'forward_given_atom_lddt']
+  dropped pde_loss (PDELoss); stub answers ['calculate_label']
+  dropped resolved_loss (ExperimentallyResolvedLoss); stub answers []
+PAE-ONLY: pLDDT, PDE and resolved DROPPED -- not computed, not trained. Every gradient now goes to the one output ipTM reads.
+PAE term MASKED to scored chain pairs: 368 structure(s), 738 interface(s), from training/full_train/pool_winnable.csv
+RELATIVE iTM REGRESSION on chain_pair ipTM pooled by MEAN: L = (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2 per interface over all its seeds, alpha 75. Labels training/fold/itm_labels (368 structure(s), 36900 row(s), column g_mean, digest 042fc685dd07). The coefficients sum to EXACTLY zero, so this term cannot move an interface's level and its accumulated gradient cancels by construction -- alpha must come from --grad-probe norms, not from loss values.
+RANKING LOSS on chain_pair_iptm: form rel, alpha 75, weight_by_gap=True, 10268 labelled (pdb, seed, interface) group(s) from training/fold/results.csv
+  PAIR FAMILY: CROSS-SEED pairs only (different seeds) -- the deployed objective
+  CROSS-SEED GROUPS: 3 structure(s) x all seeds per step; a pose's coefficient uses every other pose of its interface, so pass A scores the whole step before the first backward
+loss weights: plddt 1 [DROPPED]  pde 1 [DROPPED]  pae 1  resolved 1 [DROPPED]
+train-eval pool: 53 structure(s), all present, none skipped
+RELATIVE iTM REGRESSION on chain_pair ipTM pooled by MEAN: L = (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2 per interface over all its seeds, alpha 75. Labels training/fold/itm_labels (368 structure(s), 36900 row(s), column g_mean, digest 042fc685dd07). The coefficients sum to EXACTLY zero, so this term cannot move an interface's level and its accumulated gradient cancels by construction -- alpha must come from --grad-probe norms, not from loss values.
+RANKING LOSS on chain_pair_iptm: form rel, alpha 75, weight_by_gap=True, 10268 labelled (pdb, seed, interface) group(s) from training/fold/results.csv
+  PAIR FAMILY: CROSS-SEED pairs only (different seeds) -- the deployed objective
+  CROSS-SEED GROUPS: 3 structure(s) x all seeds per step; a pose's coefficient uses every other pose of its interface, so pass A scores the whole step before the first backward
+loss weights: plddt 1 [DROPPED]  pde 1 [DROPPED]  pae 1  resolved 1 [DROPPED]
+train-eval pool: 53 structure(s), all present, none skipped
+trainable: 258 tensor(s), 19.8M of 464.5M parameters (4.3%), under ['confidence_head']
+trainable: 258 tensor(s), 19.8M of 464.5M parameters (4.3%), under ['confidence_head']
+  ranking label coverage: all 7380 (pdb, seed, interface) group(s) hold 5 finite DockQ value(s)
+manifest: 368 selected structure(s) minus ['8vba', '9b9j', '9bbn', '9dc3', '9dzf', '9e7x', '9mx1', '9q5m', '9q5v', '9q7b'] x seeds 500000-500009 = 3680 intended unit(s), from training/full_train/structures_winnable.csv
+manifest: 368 selected structure(s) minus ['8vba', '9b9j', '9bbn', '9dc3', '9dzf', '9e7x', '9mx1', '9q5m', '9q5v', '9q7b'] x seeds 500000-500009 = 3680 intended unit(s), from training/full_train/structures_winnable.csv
+  manifest digest b0fcf69e52646bfd over 3680 unit(s)
+  PAE mask: all 368 training structure(s) are named by training/full_train/pool_winnable.csv
+  alignment preflight: PASS over 368 structure(s), digest b0fcf69e52646bfd
+  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label only (9 features + coordinate/coordinate_mask)
+  resolved 3680 unit(s) over 368 structure(s) from 1 fold root(s), shuffle=structure, seed=0
+fingerprint context: code=a084c21e38e369e0 loss=2fc84683b58e5aa0
+  manifest digest b0fcf69e52646bfd over 3680 unit(s)
+  PAE mask: all 368 training structure(s) are named by training/full_train/pool_winnable.csv
+  alignment preflight: PASS over 368 structure(s), digest b0fcf69e52646bfd
+  MINIMAL ITEMS: the dataset item is not built; the loss reads the cached label only (9 features + coordinate/coordinate_mask)
+  resolved 3680 unit(s) over 368 structure(s) from 1 fold root(s), shuffle=structure, seed=0
+fingerprint context: code=a084c21e38e369e0 loss=2fc84683b58e5aa0
+CROP: precomputed token masks from training/full_train/union_crop_m0_gt_ost.npz -- 368 structure(s), median kept fraction 0.4148, built from 50 pose(s) each (median), content digest c7709365ae3cdb69, ground-truth contacts forced in (median 0 token(s) added, max 24)
+fingerprint cache: 3680 entry(ies) reused from training/fold, 0 invalidated by a changed input, code_fp or schema
+fingerprint cache: 3680 entry(ies) reused from training/fold, 0 invalidated by a changed input, code_fp or schema
+  steps/epoch 122 from the epoch builder, NOT 205 from len(flat)//world: 3680 unit(s) over 368 structure(s), of which this rank walks 1226 (floor(seeds/3) whole group(s) per structure; the remainder sits out and is reseeded each epoch). The lr schedule uses the former.
+
+training: lr 0.01, warmup 20, accum 85, ~7320 optimiser step(s) for 60.0 epoch(s) (204 full + 1 partial per epoch); no step cap, the epoch loop decides
+  lr schedule: flat after warmup (no decay)
+trajectory -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/4ydc7v/trajectory.csv
+  steps/epoch 122 from the epoch builder, NOT 205 from len(flat)//world: 3680 unit(s) over 368 structure(s), of which this rank walks 1226 (floor(seeds/3) whole group(s) per structure; the remainder sits out and is reseeded each epoch). The lr schedule uses the former.
+
+training: lr 0.01, warmup 20, accum 85, ~7320 optimiser step(s) for 60.0 epoch(s) (204 full + 1 partial per epoch); no step cap, the epoch loop decides
+  lr schedule: flat after warmup (no decay)
+trajectory -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/4ydc7v/trajectory.csv
+  epoch 1/60: 1220 unit(s)  epoch 1/60: 1220 unit(s)
+  epoch 1/60: 1220 unit(s)
+
+  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=a084c21e38e369e0. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.
+  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=a084c21e38e369e0. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.
+  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by code=0aa00b21de84f2d5, this run is code=a084c21e38e369e0. Every data field matches -- cif, bio, idx, trunk, loss, schema -- so the labels are correct but not reproducible from this checkout.
+W1103 07:20:32.432000 141686 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 141772 closing signal SIGTERM
+W1103 07:20:32.434000 141686 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 141773 closing signal SIGTERM
+E1103 07:20:32.962000 141686 torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: -15) local_rank: 0 (pid: 141771) of binary: /home/ebrahim/confidence_recalibration/extra_training/shell_scripts/numa_rank_wrap.sh
+Traceback (most recent call last):
+  File "/home/ebrahim/Protenix/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ebrahim/Protenix/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/home/ebrahim/confidence_recalibration/extra_training/shell_scripts/numa_rank_wrap.sh FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-11-03_07:20:32
+  host      : alderaan
+  rank      : 0 (local_rank: 0)
+  exitcode  : -15 (pid: 141771)
+  error_file: <N/A>
+  traceback : Signal 15 (SIGTERM) received by PID 141771
+============================================================

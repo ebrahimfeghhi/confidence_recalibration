@@ -3373,12 +3373,22 @@ def main():
                 if os.path.exists(_parent_anchor):
                     if is_main:
                         import shutil as _sh
-                        _sh.copyfile(_parent_anchor, _anchor_p)
+                        # COPY VIA .tmp AND os.replace, NOT STRAIGHT TO _anchor_p. The non-main
+                        # ranks wait on os.path.exists, which goes true the instant the file is
+                        # CREATED -- so a direct copyfile lets them torch.load 79 MB of anchor
+                        # while it is still being written. Measured 2026-11-03: egw5wq's resume
+                        # died at launch with "PytorchStreamReader failed reading zip archive:
+                        # failed finding central directory" on ranks 1 and 2, then rank 0 died on
+                        # the gloo peer. os.replace is atomic within a filesystem, so existence
+                        # now implies completeness and the existing wait loop becomes correct.
+                        _tmp_anchor = _anchor_p + ".tmp"
+                        _sh.copyfile(_parent_anchor, _tmp_anchor)
+                        os.replace(_tmp_anchor, _anchor_p)
                         print(f"  --l2-sp: anchor INHERITED from {_parent_anchor} -> {_anchor_p}",
                               flush=True)
                     else:
                         # The non-main ranks wait for rank 0 to place it rather than racing to
-                        # copy it themselves.
+                        # copy it themselves. Safe because rank 0 publishes atomically, above.
                         for _ in range(600):
                             if os.path.exists(_anchor_p):
                                 break

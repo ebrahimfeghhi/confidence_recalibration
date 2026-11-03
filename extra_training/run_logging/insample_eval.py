@@ -12,6 +12,7 @@ EVERY ARCHITECTURE SETTING COMES FROM THE CHECKPOINT'S GUARD, never from this fi
 
 Usage:
   python -I run_logging/insample_eval.py --bundle training/runs/jb5veo/resume_ep19.pt --dry-run
+  python -I run_logging/insample_eval.py --bundle training/runs/egw5wq/resume_ep27.pt --pool-name valfull
 """
 import argparse
 import glob
@@ -24,12 +25,31 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = "/home/ebrahim/Protenix/.venv/bin/python"
 
-# the in-sample pool cropped_eval.py uses, so the numbers land beside section 9's
-FOLD = "training/fold"
-POOL = "training/full_train/pool_winnable.csv"
-SEED_BASE = 500000
-BUDGET = 10                      # 10 seeds x 5 samples = all 50 training poses
-JOIN = "training/full_train/join_cache_winnable.json"
+# THE TWO UNCROPPED POOLS, as the trainer's own passes define them -- so an off-cadence reading
+# lands on the SAME number the run would have written at a multiple of 5 or 10. Each entry is
+# exactly what --eval-pool / --extra-eval pass, including the budget, because a budget change is a
+# different quantity and not a sampling choice: `insample` is the in-sample pool cropped_eval.py
+# uses, so its numbers land beside section 9's.
+#
+# WHY THIS SCRIPT AND NOT eval_fawgtu_bundles.py, which also scores a run's bundles: its train
+# stage reads pool_insample.csv rather than the 738-interface pool_winnable.csv, and NEITHER of
+# its stages passes --pool-mean, so both readings are a different pool and a different pooling
+# from the ones every metric_*_ep<N>.json in this project carries. Checked 2026-11-03 before
+# using it for egw5wq epoch 27.
+#
+# The join cache is a BASE path; phase_k_eval_sharded appends _shard<N>.
+POOLS = {
+    "insample": {"fold": "training/fold",
+                 "pool": "training/full_train/pool_winnable.csv",
+                 "seed_base": 500000,
+                 "budget": 10,          # 10 seeds x 5 samples = all 50 training poses
+                 "join": "training/full_train/join_cache_winnable.json"},
+    "valfull":  {"fold": "validation/fold",
+                 "pool": "training/valfull/pool.csv",
+                 "seed_base": 400000,
+                 "budget": 30,
+                 "join": "training/valfull/join_cache.json"},
+}
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--bundle", required=True,
@@ -37,7 +57,13 @@ ap.add_argument("--bundle", required=True,
 ap.add_argument("--cards", default="4,5,7")
 ap.add_argument("--out", default="training/runs/insample_eval")
 ap.add_argument("--dry-run", action="store_true")
+ap.add_argument("--pool-name", default="insample", choices=sorted(POOLS),
+                help="which uncropped pool to score; see POOLS")
 a = ap.parse_args()
+
+_P = POOLS[a.pool_name]
+FOLD, POOL = _P["fold"], _P["pool"]
+SEED_BASE, BUDGET, JOIN = _P["seed_base"], _P["budget"], _P["join"]
 
 for p in (POOL, os.path.join(FOLD, "results.csv"), os.path.join(FOLD, "chain_roles.csv")):
     if not os.path.exists(os.path.join(ROOT, p)):
@@ -89,7 +115,7 @@ if not os.path.exists(HEAD) and not a.dry_run:
     os.replace(HEAD + ".tmp", HEAD)
     print(f"  head {os.path.basename(cand[0])} -> {os.path.basename(HEAD)}")
 
-name = f"insample_{rid}_ep{EP}"
+name = f"{a.pool_name}_{rid}_ep{EP}"
 extra = ["--fold", FOLD, "--results", os.path.join(FOLD, "results.csv"),
          "--pool", POOL, "--roles", os.path.join(FOLD, "chain_roles.csv"),
          "--seed-base", str(SEED_BASE), "--labels", os.path.join(FOLD, "labels"),
