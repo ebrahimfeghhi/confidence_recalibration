@@ -174,6 +174,12 @@ check("the checker refuses a mask with no __meta at all",
       "has no __meta" in csrc)
 # THE THIRD INSTANCE of a key filter missing a sidecar key: __n, then __meta, now __pairs. The
 # checker reported 736 structures for a 368-structure mask and refused a correct build.
+# TWO PROVENANCE FIXES raised in review of ab467c62.
+check("the digest hashes __pairs as INTEGERS, not booleans",
+      'if _k0.endswith("__pairs"):' in src
+      and 'np.asarray(_z0[_k0], dtype=np.int64).tobytes()' in src)
+check("a margin of 0.0 is actually CHECKED, not skipped as falsy",
+      "if a.margin >= 0 and" in csrc and 'default=-1.0' in csrc)
 check("the checker's structure filter excludes __n, __pairs AND __meta",
       'k.endswith("__pairs")' in csrc and 'k == "__meta"' in csrc
       and 'k.endswith("__n")' in csrc)

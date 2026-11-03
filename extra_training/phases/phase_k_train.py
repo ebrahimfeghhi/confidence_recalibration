@@ -1281,9 +1281,16 @@ def main():
     if a.crop_tokens:
         _ctd = hashlib.sha256()
         _z0 = np.load(a.crop_tokens)
+        # __pairs HOLDS CHAIN INDICES, NOT A MASK. Hashing it through .astype(bool) collapsed
+        # every nonzero index to True, so pair (3,1) and pair (2,1) contributed the same bytes and
+        # two masks differing only in which chains are supervised would have shared a digest.
+        # Hash the integer bytes for those and the packed bits for the masks. Raised in review.
         for _k0 in sorted(k for k in _z0.files if not (k.endswith("__n") or k == "__meta")):
             _ctd.update(_k0.encode())
-            _ctd.update(np.packbits(np.asarray(_z0[_k0]).astype(bool)).tobytes())
+            if _k0.endswith("__pairs"):
+                _ctd.update(np.asarray(_z0[_k0], dtype=np.int64).tobytes())
+            else:
+                _ctd.update(np.packbits(np.asarray(_z0[_k0]).astype(bool)).tobytes())
         if "__meta" in _z0.files:
             _ctd.update(np.asarray(_z0["__meta"]).tobytes())
         _CROP_TOK_DIGEST = _ctd.hexdigest()[:16]

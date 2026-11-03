@@ -41,8 +41,10 @@ ap.add_argument("--require-force-gt", action="store_true")
 ap.add_argument("--require-ost-pairs", action="store_true")
 ap.add_argument("--structures", type=int, default=0)
 ap.add_argument("--poses", type=int, default=0)
-ap.add_argument("--margin", type=float, default=0.0)
-ap.add_argument("--contact", type=float, default=0.0)
+ap.add_argument("--margin", type=float, default=-1.0,
+                help="required margin. Default -1 means unchecked; 0.0 is a REAL value and is checked, which it was not when the default was 0.0 and the test was `if a.margin`. Raised in review.")
+ap.add_argument("--contact", type=float, default=-1.0,
+                help="required contact cutoff; -1 means unchecked.")
 a = ap.parse_args()
 
 try:
@@ -91,9 +93,9 @@ if a.poses:
     want = meta.get("ost_poses_per_structure")
     if a.require_ost_pairs and want and want != a.poses:
         bad.append(f"__meta says OST examined {want} pose(s) per structure, not {a.poses}")
-if a.margin and abs(float(meta.get("margin", -1)) - a.margin) > 1e-9:
+if a.margin >= 0 and abs(float(meta.get("margin", -99)) - a.margin) > 1e-9:
     bad.append(f"margin is {meta.get('margin')} A, not the required {a.margin} A")
-if a.contact and abs(float(meta.get("contact", -1)) - a.contact) > 1e-9:
+if a.contact >= 0 and abs(float(meta.get("contact", -99)) - a.contact) > 1e-9:
     bad.append(f"contact is {meta.get('contact')} A, not the required {a.contact} A")
 
 if bad:
