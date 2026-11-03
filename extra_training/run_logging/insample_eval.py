@@ -115,6 +115,24 @@ if not os.path.exists(HEAD) and not a.dry_run:
     os.replace(HEAD + ".tmp", HEAD)
     print(f"  head {os.path.basename(cand[0])} -> {os.path.basename(HEAD)}")
 
+# WRITE WHERE THE PLOTS LOOK. An off-cadence pass used to land in --out
+# (training/runs/insample_eval/<pool>_<rid>_ep<N>/), and every plot in this project finds its eval
+# rows with eval_dirs, which globs training/runs/<rid>/<tag>_eval_shards_ep<N>. So egw5wq's
+# epoch-27 valfull and in-sample passes were computed, reported and then INVISIBLE to the figures
+# -- the plots simply skipped epoch 27 and nothing said why. Writing the canonical paths makes an
+# off-cadence pass indistinguishable from one the trainer wrote on its own cadence.
+#
+# IT REFUSES TO CLOBBER rather than merging into an existing directory: a half-populated shard dir
+# from a different checkpoint would be averaged in silently, and the result would be a number for
+# no particular head.
+RUN_DIR = os.path.join(ROOT, "training", "runs", rid)
+SHARD_DIR = os.path.join(RUN_DIR, f"{a.pool_name}_eval_shards_ep{EP}")
+METRIC = os.path.join(RUN_DIR, f"metric_{a.pool_name}_ep{EP}.json")
+if os.path.isdir(SHARD_DIR) and glob.glob(os.path.join(SHARD_DIR, "rows_b*_s*.csv")):
+    sys.exit(f"STOP: {SHARD_DIR} already holds shard rows. The trainer's own pass at this epoch "
+             f"has already written them, or a previous run of this script did. Remove it "
+             f"deliberately if you mean to recompute.")
+
 name = f"{a.pool_name}_{rid}_ep{EP}"
 extra = ["--fold", FOLD, "--results", os.path.join(FOLD, "results.csv"),
          "--pool", POOL, "--roles", os.path.join(FOLD, "chain_roles.csv"),
@@ -122,17 +140,18 @@ extra = ["--fold", FOLD, "--results", os.path.join(FOLD, "results.csv"),
          "--join-cache", JOIN, "--pair-iptm-only", "--prefetch"] + POOL_FLAGS + POSE_FLAGS
 cmd = [PY, "-I", os.path.join(ROOT, "phases", "phase_k_eval_sharded.py"),
        "--ckpt", HEAD, "--cards", a.cards, "--budget", str(BUDGET),
-       "--work", os.path.join(OUT, name), "--out", os.path.join(OUT, name + ".json"),
+       "--work", SHARD_DIR, "--out", METRIC,
        "--extra", " ".join(extra)]
 
 print(f"\n  1 pass: {name}")
+print(f"  shards -> {SHARD_DIR}\n  metric -> {METRIC}")
 print("    " + " ".join(cmd[:8]) + " ...")
 if a.dry_run:
     print("\n  DRY RUN -- nothing executed")
     print("  extra: " + " ".join(extra))
     sys.exit(0)
 
-outj = os.path.join(OUT, name + ".json")
+outj = METRIC
 if os.path.exists(outj):
     print(f"\n  {name}: exists, skipping")
 else:

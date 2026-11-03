@@ -53,31 +53,49 @@ RIDS = list(plot_three.run_chain(RID))
 # ---------------------------------------------------------------- row 1: trajectory.csv
 # Column names, not indices: `epoch` has moved column twice as fields were added, and an index
 # that silently reads `step_taken` instead plots a flat line of 1.0 that looks like a converged run.
-loss, grad, lr = defaultdict(list), defaultdict(list), {}
+# PER (rid, epoch), NOT POOLED ACROSS THE CHAIN. A resume continues the parent's epoch
+# NUMBERING, so an epoch interrupted mid-flight appears TWICE: egw5wq was stopped 840 poses into
+# epoch 28 and 57zxgz redid all 6100 of it. Pooling gave epoch 28 6940 rows, which then set the
+# "full epoch" bar at 0.98 * 6940 = 6801 and disqualified every ordinary 6100-row epoch -- the
+# plot came back with ONE point and looked like a run with no history. For each epoch the chain
+# member with the MOST rows is the one that actually ran it to completion, so that one wins and
+# the abandoned prefix is dropped rather than averaged into it.
+_by = defaultdict(dict)                     # ep -> rid -> {"loss": [...], "grad": [...], "lr": v}
 for rid in RIDS:
-    p = os.path.join(RUNS, rid, "trajectory.csv")
-    if not os.path.exists(p):
+    pth = os.path.join(RUNS, rid, "trajectory.csv")
+    if not os.path.exists(pth):
         continue
-    for r in csv.DictReader(open(p)):
+    for r in csv.DictReader(open(pth)):
         try:
             ep = int(r["epoch"])
         except (KeyError, ValueError, TypeError):
             continue
-        for key, bucket in (("loss", loss), ("grad_norm", grad)):
+        slot = _by[ep].setdefault(rid, {"loss": [], "grad": [], "lr": None})
+        for key, dest in (("loss", "loss"), ("grad_norm", "grad")):
             try:
                 v = float(r[key])
             except (KeyError, ValueError, TypeError):
                 continue
             if v == v and v > 0:            # drop the nan rows a skipped step writes
-                bucket[ep].append(v)
+                slot[dest].append(v)
         try:
-            lr[ep] = float(r["lr"])
+            slot["lr"] = float(r["lr"])
         except (KeyError, ValueError, TypeError):
             pass
 
-# The last epoch in the file is PARTIAL while the run is live -- its mean is over a prefix of the
-# shuffle and is not comparable with a full epoch. Drop it unless it has a full epoch's rows.
-full = max((len(v) for v in loss.values()), default=0)
+loss, grad, lr = {}, {}, {}
+for ep, per_rid in _by.items():
+    rid = max(per_rid, key=lambda k: len(per_rid[k]["loss"]))
+    loss[ep] = per_rid[rid]["loss"]
+    grad[ep] = per_rid[rid]["grad"]
+    if per_rid[rid]["lr"] is not None:
+        lr[ep] = per_rid[rid]["lr"]
+
+# The last epoch is PARTIAL while the run is live -- its mean is over a prefix of the shuffle and
+# is not comparable with a full epoch. The bar is the MODE of the per-epoch counts, not the max:
+# one long epoch must not disqualify the rest, which is the same failure in a different dress.
+_counts = [len(v) for v in loss.values() if v]
+full = st.mode(_counts) if _counts else 0
 t_eps = sorted(e for e in loss if len(loss[e]) >= 0.98 * full)
 t_loss = [st.mean(loss[e]) for e in t_eps]
 t_grad = [st.mean(grad[e]) if grad.get(e) else float("nan") for e in t_eps]

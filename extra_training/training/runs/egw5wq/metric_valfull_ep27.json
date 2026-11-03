@@ -1,0 +1,15 @@
+{
+ "n_interfaces": 92,
+ "budget": 30,
+ "mean_dockq": 0.5866,
+ "frac_acc": 0.75,
+ "oracle_mean_dockq": 0.6926,
+ "oracle_frac_acc": 0.8587,
+ "ckpt": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/insample_eval/egw5wq_ep27_head.pt",
+ "select_by": "mean",
+ "headroom": 0.106,
+ "mean_dockq_select_max": 0.5831,
+ "frac_acc_select_max": 0.7391,
+ "baseline_mean_dockq": 0.5831,
+ "baseline_frac_acc": 0.7391
+}
