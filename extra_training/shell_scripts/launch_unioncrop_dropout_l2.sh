@@ -60,10 +60,19 @@
 # not memorise this complex's pair pattern". run_logging/test_pair_dropout.py asserts it is live
 # (two train-mode forwards differ, eval-mode forwards match) rather than merely configured.
 #
-# L2-SP 1e-4, DELIBERATELY WEAK. tv6hue is the same 19.8M copy-pose config plus L2-SP 1e-3 and it
-# finished at -0.0084 +- 0.0054 held-out selection; jer222 ran 1e-2. So this is a tested lever
-# that has not moved this, and 1e-4 is an order below the one that did not work -- it is here to
-# anchor the pretrained weights lightly, not to carry the arm. The pose-injection tensors are
+# L2-SP 1e-5, DELIBERATELY VERY WEAK. tv6hue is the same 19.8M copy-pose config plus L2-SP 1e-3
+# and it finished at -0.0084 +- 0.0054 held-out selection; jer222 ran 1e-2. So this is a tested
+# lever that has not moved this, and 1e-5 is TWO orders below the one that did not work -- it is
+# here to anchor the pretrained weights lightly, not to carry the arm.
+#
+# AND THE COEFFICIENT ALONE DOES NOT ESTABLISH "WEAK", which is why it was lowered from 1e-4. The
+# penalty is lambda * ||W-W0||^2, so it depends on how far the weights actually travel. At the
+# 67,052 the unconstrained full head reached by epoch 30, lambda 1e-4 would be a penalty of 6.7
+# against a loss near 2.9 -- 231% of the objective. At 1e-5 the same displacement costs 0.67, or
+# ~23%. The epoch line now prints the penalty as a share of that epoch's own mean loss, so this is
+# checkable from the log rather than assumed. Raised in review.
+#
+# The pose-injection tensors are
 # EXCLUDED from the anchor: frame_dir_proj is zero-init and the nine pose_perblock_* tensors are
 # new, so anchoring them would price movement away from a value that is not a pretrained prior.
 #
@@ -125,7 +134,7 @@ echo "eight gates and the mask provenance check pass; launching"
 
 LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --cards 4,5,7 --numa-map 0:0,1:0,2:1 \
-  --note "UNION-CROP + PAIR DROPOUT 0.25 + L2-SP 1e-4, fresh 60-epoch arm from the pretrained head. THE CROP IS FOR SPEED (uncropped runs 143-155 min/epoch; ~60% of tokens at margin 5 should land inside 40-50, and pair compute is quadratic so 60% of tokens is ~36% of the pair stack). DROPOUT AND L2-SP ARE FOR OVERFITTING: in-sample selection at epoch 27 is +0.0321 mean DockQ / +0.0542 frac acceptable over shipped and still climbing, while held-out selection has sat at or below shipped for 27 epochs and held-out within-interface Spearman has not trended since epoch 3. THE CROP is the union over all 50 of a structure's poses of each pose's own PREDICTED interface at a 5 A margin, with the bare ground-truth contact tokens forced in so interface coverage is 1.0 by construction rather than 1.0 at the median (the pose union alone gives p10 0.9500, and because the DockQ label is a GLOBAL number computed on the full structure it cannot be cropped to match a partially-kept interface -- the head would be scoring an interface absent from its input). A single random anchor would regularize better but breaks exactly that: 81% of these structures have 2+ scored interfaces. ONE SHARED MASK PER STRUCTURE because the relative loss grades the gaps between poses, and because build_epoch_cross_seed needs identical token counts across a structure's seeds or the first all-reduce deadlocks. PAIR DROPOUT 0.25 is Protenix's own default for pair stacks, which ConfidenceHead overrides to 0.0 -- so this project has trained 19.8M parameters with no dropout and no masking at all; it is row-wise on z. L2-SP 1e-4 is deliberately an order below tv6hue's 1e-3, which finished at -0.0084 +- 0.0054, with the zero-init frame_dir_proj and the nine new pose_perblock_* tensors excluded from the anchor. LR IS A STAIRCASE: 1e-2 through 19, 1e-3 from 20, 1e-4 from 40. VALIDATION IS UNCROPPED, as deployment is. THE FAILURE TO WATCH is in-sample cropped climbing while in-sample UNCROPPED stalls, which is what o2qczq did (0.6305 cropped vs 0.5387 uncropped) and is the signature of learning to rank crops rather than poses." \
+  --note "UNION-CROP + PAIR DROPOUT 0.25 + L2-SP 1e-5, fresh 60-epoch arm from the pretrained head. THE CROP IS FOR SPEED (uncropped runs 143-155 min/epoch; ~60% of tokens at margin 5 should land inside 40-50, and pair compute is quadratic so 60% of tokens is ~36% of the pair stack). DROPOUT AND L2-SP ARE FOR OVERFITTING: in-sample selection at epoch 27 is +0.0321 mean DockQ / +0.0542 frac acceptable over shipped and still climbing, while held-out selection has sat at or below shipped for 27 epochs and held-out within-interface Spearman has not trended since epoch 3. THE CROP is the union over all 50 of a structure's poses of each pose's own PREDICTED interface at a 5 A margin, with the bare ground-truth contact tokens forced in so interface coverage is 1.0 by construction rather than 1.0 at the median (the pose union alone gives p10 0.9500, and because the DockQ label is a GLOBAL number computed on the full structure it cannot be cropped to match a partially-kept interface -- the head would be scoring an interface absent from its input). A single random anchor would regularize better but breaks exactly that: 81% of these structures have 2+ scored interfaces. ONE SHARED MASK PER STRUCTURE because the relative loss grades the gaps between poses, and because build_epoch_cross_seed needs identical token counts across a structure's seeds or the first all-reduce deadlocks. PAIR DROPOUT 0.25 is Protenix's own default for pair stacks, which ConfidenceHead overrides to 0.0 -- so this project has trained 19.8M parameters with no dropout and no masking at all; it is row-wise on z. L2-SP 1e-5 is deliberately TWO orders below tv6hue's 1e-3, which finished at -0.0084 +- 0.0054, with the zero-init frame_dir_proj and the nine new pose_perblock_* tensors excluded from the anchor. LR IS A STAIRCASE: 1e-2 through 19, 1e-3 from 20, 1e-4 from 40. VALIDATION IS UNCROPPED, as deployment is. THE FAILURE TO WATCH is in-sample cropped climbing while in-sample UNCROPPED stalls, which is what o2qczq did (0.6305 cropped vs 0.5387 uncropped) and is the signature of learning to rank crops rather than poses." \
   -- --rank-loss --rank-form rel --rank-cross-seed --alpha-rank 75 \
   --rank-pool mean --rel-labels training/fold/itm_labels \
   --rank-structs-per-step 3 \
@@ -138,7 +147,7 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --epochs 60 --lr 0.01 --warmup-steps 20 --seed 0 --accum 85 --nsample 5 \
   --lr-steps '20:1e-3,40:1e-4' \
   --pair-dropout 0.25 \
-  --l2-sp 1e-4 --l2-sp-exclude 'frame_dir_proj,pose_perblock_' \
+  --l2-sp 1e-5 --l2-sp-exclude 'frame_dir_proj,pose_perblock_' \
   --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0 --crop-size 3400 \
   --save-every 250 \
   --pae-scored-pairs training/full_train/pool_winnable.csv --pae-only --lean-readouts \

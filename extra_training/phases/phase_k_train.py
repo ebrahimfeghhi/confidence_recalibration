@@ -6491,9 +6491,21 @@ def main():
             # full head reached ||dW||^2 = 67,052 unconstrained over 30 epochs; this says where
             # the penalised run actually sits.
             if a.l2_sp and _l2sp_drift["n"]:
+                # AS A SHARE OF THE OBJECTIVE, not just in absolute terms. A coefficient that
+                # LOOKS weak is not weak if the squared displacement is large: at the 67,052 the
+                # unconstrained head reached, lambda 1e-4 is a penalty of 6.7 against a loss near
+                # 2.9 -- more than twice the objective. So "is 1e-4 weak here" is only answerable
+                # against the epoch's own loss, and this prints the ratio rather than leaving a
+                # reader to do it. Raised in review.
+                _l2p = a.l2_sp * _l2sp_drift["sq"]
+                _l2_ref = (ep_loss["sum"] / ep_loss["n"]) if ep_loss["n"] else float("nan")
+                _l2_share = (_l2p / _l2_ref) if (_l2_ref == _l2_ref and _l2_ref > 0) else \
+                    float("nan")
                 print(f"  [rank {rank}] epoch {ep + 1} l2-sp: ||W-W0||^2 = "
-                      f"{_l2sp_drift['sq']:.1f}, penalty = {a.l2_sp * _l2sp_drift['sq']:.4f} "
-                      f"(unconstrained full head reached 67,052 by epoch 30)", flush=True)
+                      f"{_l2sp_drift['sq']:.1f}, penalty = {_l2p:.4f} "
+                      f"= {100.0 * _l2_share:.1f}% of the epoch's mean loss {_l2_ref:.4f} "
+                      f"(unconstrained full head reached 67,052 by epoch 30, which at "
+                      f"lambda {a.l2_sp:g} would be {a.l2_sp * 67052.0:.2f})", flush=True)
             # THE RANKING LOSS IS THE EXPERIMENT under --rank-loss. ZERO is the reference, not
             # ln2: this loss is a normalised covariance between score gaps and DockQ gaps, so
             # equal scores give exactly 0 and so does an ordering uncorrelated with DockQ.

@@ -292,3 +292,72 @@ The reviewer is willing to defer finding 3's label experiment past a pilot. Whet
 at all, and in what order, is the user's call.
 
 Nine CPU suites green. **Not launched.**
+
+
+---
+
+# Round 3: response to the review of c686a6bf
+
+**This round named no new code bugs**, and said so: "I don't see another major code-level blocker
+in the latest changes." Two items were actionable; both are done. No runs were authorised and none
+were started.
+
+## The mask rebuild — PASSES
+
+Rebuilt under the coverage-enforcing code and validated by the launcher's own gate:
+
+```
+mask OK: 368 structure(s), margin 5.0 A, contact 5.0 A, force_gt=True, ost_pairs=True,
+built 2026-11-03T00:15:12Z by c686a6bf; 37 structure(s) needed an OST-resolved pair the
+static mapping does not name
+```
+
+The build did not refuse, which is the substantive part: **every one of 368 structures had all 50
+poses resolve through OST**, so the exact-coverage invariant holds on real data rather than in
+principle. Kept fraction median 0.5980, 50 poses per union on every structure, rule verified
+against `interface_crop_tokens` on 368 of 368.
+
+The reviewer cannot verify this from GitHub because the npz is gitignored, so the gate output above
+and `check_crop_mask.py` are the auditable artefacts.
+
+## The L2-SP penalty — the report now answers the question asked
+
+The review's point was that "λ = 1e-4" does not establish weak regularization when the squared
+displacement is large. It was already reported per epoch as `||W-W0||^2` and
+`penalty = λ·||W-W0||^2`, but in absolute terms only, which does not answer it:
+
+| ‖ΔW‖² | penalty at λ=1e-4 | share of a 2.9 loss | penalty at λ=1e-5 | share |
+|---|---|---|---|---|
+| 100 | 0.010 | 0.3% | 0.001 | 0.03% |
+| 1,000 | 0.100 | 3.4% | 0.010 | 0.3% |
+| 10,000 | 1.000 | 34.5% | 0.100 | 3.4% |
+| 67,052 *(what the unconstrained head reached)* | 6.705 | **231%** | 0.671 | 23% |
+
+So at the displacement the unconstrained full head actually reached, 1e-4 would be more than twice
+the objective — the review is right that the coefficient alone settles nothing. The epoch line now
+prints the penalty **as a percentage of that epoch's own mean loss**, plus what 67,052 would cost
+at the configured λ, so the question is answered in the log instead of by a reader doing
+arithmetic.
+
+**AND THE ARM IS NOW λ = 1e-5, NOT 1e-4.** The user lowered it on seeing the table above: two
+orders below tv6hue's 1e-3 rather than one, and ~23% of the objective at the worst displacement on
+record instead of 231%. The intent was always "anchor lightly, do not carry the arm", and 1e-4 did
+not reliably deliver that.
+
+## The dropout-across-poses variance — recorded, not changed
+
+The review raised it and classified it correctly as a property rather than a bug: the RNG restore
+aligns Pass A with Pass B *per pose*, which is what gradient correctness needs, but each pose still
+draws its own mask, so the relative-regression loss compares poses evaluated under different
+realisations of the head.
+
+Nothing is changed for that. Recording the suggested alternative here so it is not lost: **if
+training proves unstable, share one dropout mask across a structure's poses within a step.** That
+would make the 50 poses differ only in their coordinates, which is closer to what the loss means to
+compare. It is a real experiment, not a fix, and it is not in this arm.
+
+## State
+
+Mask passes. Nine CPU suites green. The launcher's eight test gates and the mask provenance check
+all pass. **No runs authorised, none started, and the user holds every decision about GPU time** —
+including the canary and pilot the reviewer recommends.
