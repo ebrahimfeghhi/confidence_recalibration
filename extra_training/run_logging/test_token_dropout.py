@@ -111,11 +111,28 @@ check("the epoch cell is set at the boundary, before the prefetch workers start"
 # establish that pair (3,1) of a four-chain complex is still scoreable, and 81% of this pool has
 # 2+ scored pairs. The check is per OST-resolved pair and does NOT require any ground-truth
 # contact to survive -- contacts vanishing is the augmentation being tested.
-check("the guard is PER SCORED PAIR, not two-chains-somewhere",
-      "for _x, _y in _prs:" in src and "for scored pair" in src
+# THE FLOOR IS REPAIRED, NOT FATAL. The first version raised SystemExit and killed vxwvzr 2,240
+# poses into epoch 1 on 9iut (chain 2 drew 3 against a floor of 4). Measured over 300 epochs that
+# structure fails 20 times and 7vtj/9vx3 fail 80 -- 27% -- so the run was guaranteed to die, not
+# unlucky: 98 scored-chain instances in this pool expect under 12 survivors and some scored chains
+# hold 6 tokens in total. A local constraint must not escalate to a global failure.
+check("the floor TOPS UP rather than raising",
+      "REPAIRED, NOT REFUSED" in src and "_keep[_add] = True" in src
+      and "the token draw for {pdb_} at epoch {_crop_epoch[0]} left chain" not in src)
+check("the floor is min(4, chain size), so a 2-token chain is not impossible",
+      "_floor = min(_MIN_CH, _idx_c.shape[0])" in src)
+check("the top-up draws from THAT CHAIN's missing tokens, not anywhere",
+      "_missing = _idx_c[~_keep[_idx_c]]" in src)
+check("it uses the same generator in a deterministic order, so ranks still agree",
+      "_rs.permutation(_missing)" in src
+      and "for _x, _y in sorted({(int(_p0), int(_p1))" in src)
+check("the top-up count is reported per epoch",
+      "chain(s) topped up to the " in src)
+check("the floor is PER SCORED PAIR, not two-chains-somewhere",
+      "for _x, _y in sorted({(int(_p0), int(_p1)) for _p0, _p1 in _prs})" in src
       and "np.unique(_asym[_keep]).size < 2" not in src)
-check("it demands a minimum on EACH side of the pair",
-      "_nx < _MIN_CH or _ny < _MIN_CH" in src)
+check("it is applied to EACH side of the pair",
+      "for _c in (_x, _y):" in src)
 check("it does NOT require a ground-truth contact to survive",
       "the augmentation being tested is precisely" in src)
 check("a mask without stored pairs is REFUSED, not checked more weakly",

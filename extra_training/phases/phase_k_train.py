@@ -3534,17 +3534,30 @@ def main():
                     f"does not carry (no {pdb_}__pairs entry). It was built before the builder "
                     f"wrote them; rebuild with run_logging/build_union_crop_masks.py so the "
                     f"per-pair scoreability check has something to check.")
+            # REPAIRED, NOT REFUSED. The first version raised SystemExit here and killed the
+            # run 2,240 poses into vxwvzr's first epoch, on 9iut: chain 2 drew 3 survivors against
+            # a floor of 4. That was not bad luck. 98 scored-chain instances in this pool have an
+            # EXPECTED survivor count under 12 and some scored chains hold only 6 tokens in
+            # total -- short peptide antigens -- so a 0.70 draw dips under the floor routinely.
+            #
+            # Escalating a whole run over one small chain is the wrong response to a constraint
+            # that is local: the floor exists so each supervised pair has a non-degenerate ipTM
+            # pool, and that is restored by adding back a few of THAT CHAIN's tokens. Dropping
+            # context is the augmentation; a 6-token chain has no context to drop. The top-up uses
+            # the same generator in a deterministic order, so every rank still agrees exactly.
             _MIN_CH = 4
-            for _x, _y in _prs:
-                _nx = int((_asym[_keep] == _x).sum())
-                _ny = int((_asym[_keep] == _y).sum())
-                if _nx < _MIN_CH or _ny < _MIN_CH:
-                    raise SystemExit(
-                        f"STOP: the token draw for {pdb_} at epoch {_crop_epoch[0]} left chain "
-                        f"{_x} with {_nx} token(s) and chain {_y} with {_ny}, for scored pair "
-                        f"({_x}, {_y}). ipTM needs at least {_MIN_CH} a side or that interface is "
-                        f"scored on an empty pool while its label stays in the loss. Raise "
-                        f"--token-keep-union/--token-keep-other.")
+            for _x, _y in sorted({(int(_p0), int(_p1)) for _p0, _p1 in _prs}):
+                for _c in (_x, _y):
+                    _idx_c = np.nonzero(_asym == _c)[0]
+                    _floor = min(_MIN_CH, _idx_c.shape[0])
+                    _have = int(_keep[_idx_c].sum())
+                    if _have >= _floor:
+                        continue
+                    _missing = _idx_c[~_keep[_idx_c]]
+                    _add = _rs.permutation(_missing)[:_floor - _have]
+                    _keep[_add] = True
+                    _tok_drop_stat["topped"] += 1
+                    _tok_drop_stat["topped_tok"] += int(_add.shape[0])
             if int(_keep.sum()) < 16:
                 raise SystemExit(
                     f"STOP: the token draw for {pdb_} at epoch {_crop_epoch[0]} left only "
@@ -3563,7 +3576,7 @@ def main():
     # those threads to read without a lock. It has to be a closure cell rather than a parameter
     # because _cpu_crop runs in the worker, which crops units before the step is known.
     _crop_epoch = [0]
-    _tok_drop_stat = {"kept": 0.0, "tot": 0.0, "n": 0}
+    _tok_drop_stat = {"kept": 0.0, "tot": 0.0, "n": 0, "topped": 0, "topped_tok": 0}
     _ckpt_hist = [0, 0]
     # THE EPOCH'S PEAK, KEPT BY HAND, because --mem-log resets the CUDA high-water mark before
     # every pose to make the per-pose number mean the pose. Without this the epoch line would
@@ -6446,7 +6459,8 @@ def main():
             # test_token_dropout.py, which pins this ordering.
             _crop_epoch[0] = ep
             _tok_drop_stat["kept"] = _tok_drop_stat["tot"] = 0.0
-            _tok_drop_stat["n"] = 0
+            _tok_drop_stat["n"] = _tok_drop_stat["topped"] = 0
+            _tok_drop_stat["topped_tok"] = 0
             # STARTED PER EPOCH, over THIS epoch's shuffled order, so the worker walks the units
             # in the order the main loop will consume them.
             _pf_start(ep_units)
@@ -6744,7 +6758,8 @@ def main():
                       f"{_tok_drop_stat['n']} unit(s) "
                       f"(union p={a.token_keep_union:g}, other p={a.token_keep_other:g}; the "
                       f"fixed crop was 0.598), so ~{_tk * _tk / 0.598 ** 2:.2f}x the fixed "
-                      f"crop's pair work", flush=True)
+                      f"crop's pair work; {_tok_drop_stat['topped']} chain(s) topped up to the "
+                      f"4-token floor, {_tok_drop_stat['topped_tok']} token(s) added", flush=True)
             if a.l2_sp and _l2sp_drift["n"]:
                 # AS A SHARE OF THE OBJECTIVE, not just in absolute terms. A coefficient that
                 # LOOKS weak is not weak if the squared displacement is large: at the 67,052 the
