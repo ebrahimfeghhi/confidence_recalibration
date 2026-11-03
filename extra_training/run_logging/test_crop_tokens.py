@@ -174,6 +174,16 @@ check("the checker refuses a mask with no __meta at all",
       "has no __meta" in csrc)
 check("the checker treats a missing force_gt/ost_pairs flag as a refusal",
       'not meta.get("force_gt")' in csrc and 'not meta.get("ost_pairs")' in csrc)
+# THE POSE COUNT MUST BE THE EXAMINED ONE. __n[0] is the count that CONTRIBUTED a contact-defined
+# crop and dips to 149 on valfull's one dissociated decoy; __n[3] is the count examined and is
+# 150 everywhere. Checking __n[0] forced the launcher to waive the constraint on valfull, which
+# was a weaker guarantee than it appeared. Raised in review.
+check("the checker validates EXAMINED poses (__n[3]), not contributing (__n[0])",
+      "int(v[3]) != a.poses" in csrc and "int(v[0]) != a.poses" not in csrc)
+check("a dissociated decoy is reported, not refused -- unless it is most of them",
+      "0.05 * _tot" in csrc and "too many to be dissociated decoys" in csrc)
+check("the launcher now REQUIRES 53 structures and 150 poses on valfull",
+      "--structures 53 --poses 150" in lsrc)
 
 print()
 if FAIL:

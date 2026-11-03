@@ -14,7 +14,14 @@ WHAT IT ASSERTS, from __meta and the per-structure __n entries:
                         per pose through OST and which disagree with the static pool mapping on 52
                         of 368 structures
   --structures N        the mask names exactly N structures, so a truncated build cannot pass
-  --poses N             every structure's union was built from exactly N examined poses
+  --poses N             every structure EXAMINED exactly N poses. Checked against __n[3], the
+                        count of poses LOOKED AT, not __n[0], the count that contributed a
+                        contact-defined crop. The two differ when a pose is fully dissociated and
+                        has no cross-chain contact within the cutoff: valfull has exactly one such
+                        pose, so __n[0] reads 149 there while __n[3] reads 150. Checking __n[0]
+                        would reject that mask for a legitimately dissociated decoy, which is why
+                        the launcher used to skip the pose check on valfull entirely -- a weaker
+                        guarantee than it looked. Raised in review.
   --margin / --contact  the geometry matches what the arm's note claims
 
 Exit 0 and print a one-line summary, or exit 1 naming what failed.
@@ -64,10 +71,18 @@ if a.structures and len(keys) != a.structures:
     bad.append(f"names {len(keys)} structure(s), not the required {a.structures} -- a truncated "
                f"or differently-pooled build")
 if a.poses:
-    shortfall = {k: int(v[0]) for k, v in nn.items() if int(v[0]) != a.poses}
+    # __n = [contributing, kept_tok, n_tok, EXAMINED, no_contact, forced]
+    shortfall = {k: int(v[3]) for k, v in nn.items() if int(v[3]) != a.poses}
     if shortfall:
-        bad.append(f"{len(shortfall)} structure(s) were built from a pose count other than "
-                   f"{a.poses}, e.g. {dict(list(shortfall.items())[:4])}")
+        bad.append(f"{len(shortfall)} structure(s) EXAMINED a pose count other than {a.poses}, "
+                   f"e.g. {dict(list(shortfall.items())[:4])} -- an incomplete build")
+    # REPORTED, NOT REFUSED: a pose examined with no cross-chain contact contributes nothing by
+    # definition and is not a defect. It becomes one if it is most of them, so it is visible.
+    _noc = sum(int(v[4]) for v in nn.values())
+    _tot = sum(int(v[3]) for v in nn.values())
+    if _tot and _noc > 0.05 * _tot:
+        bad.append(f"{_noc} of {_tot} examined poses had NO cross-chain contact "
+                   f"({100.0 * _noc / _tot:.1f}%) -- too many to be dissociated decoys")
     want = meta.get("ost_poses_per_structure")
     if a.require_ost_pairs and want and want != a.poses:
         bad.append(f"__meta says OST examined {want} pose(s) per structure, not {a.poses}")
@@ -84,9 +99,12 @@ if bad:
     sys.exit(1)
 
 _extra = meta.get("ost_extra_structures") or []
+_noc = sum(int(v[4]) for v in nn.values()) if nn else 0
+_tot = sum(int(v[3]) for v in nn.values()) if nn else 0
 print(f"  mask OK: {len(keys)} structure(s), margin {meta.get('margin')} A, contact "
       f"{meta.get('contact')} A, force_gt={meta.get('force_gt')}, "
       f"ost_pairs={meta.get('ost_pairs')}, built {meta.get('built_utc')} by "
       f"{meta.get('builder_git')}"
       + (f"; {len(_extra)} structure(s) needed an OST-resolved pair the static mapping does not "
-         f"name" if meta.get("ost_pairs") else ""))
+         f"name" if meta.get("ost_pairs") else "")
+      + (f"; {_noc} of {_tot} examined poses had no cross-chain contact" if _noc else ""))

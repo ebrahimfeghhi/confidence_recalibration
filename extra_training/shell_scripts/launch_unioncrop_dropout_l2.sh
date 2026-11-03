@@ -155,11 +155,15 @@ VAL_BUILD="$PY_BIN -I run_logging/build_union_crop_masks.py \
 if [ ! -f "$VAL_MASK" ]; then
   echo "REFUSING: $VAL_MASK is missing. Build it with:"; echo "  $VAL_BUILD"; exit 1
 fi
-# 53 structures and 150 poses on valfull (budget 30 x nsample 5), against the training pool's
-# 368 and 50. --poses is NOT checked here because the valfull build reports min 149 on one
-# structure; --structures is the invariant that matters for the pool being complete.
+# 53 structures and 150 EXAMINED poses on valfull (budget 30 x nsample 5), against the training
+# pool's 368 and 50. The pose count used to be skipped here, because the builder's __n[0] reads
+# 149 on one structure -- but that is the count of poses that CONTRIBUTED a contact-defined crop,
+# and the one shortfall is a fully dissociated decoy with no cross-chain contact, which is not a
+# defect. check_crop_mask.py now validates __n[3], the count EXAMINED, so the constraint can be
+# required here instead of waived. Raised in review.
 $PY_BIN -I run_logging/check_crop_mask.py "$VAL_MASK" \
-  --require-force-gt --require-ost-pairs --margin 5.0 --contact 5.0 \
+  --require-force-gt --require-ost-pairs --structures 53 --poses 150 \
+  --margin 5.0 --contact 5.0 \
   || { echo "REFUSING: $VAL_MASK does not establish the required configuration. Rebuild with:"; \
        echo "  $VAL_BUILD"; exit 1; }
 
