@@ -1,5 +1,5 @@
 #!/bin/bash
-# RESUME egw5wq AT EPOCH 28, TO RUN TO EPOCH 40 AND THEN HAND THE CARDS TO THE 90/35 ARM.
+# RESUME egw5wq AT EPOCH 28 AND RUN THE FULL 60-EPOCH HORIZON, checking at epoch 40.
 #
 # EVERY ARG BELOW IS COPIED FROM launch_tokendrop_dropout_l2.sh UNCHANGED except --resume and
 # --note, so the resume guard should report NO drift. If it reports drift, STOP and read what
@@ -21,15 +21,24 @@
 # same stretch. So the head is fitting after all, just late -- and the open question is no longer
 # "can it fit" but "does held-out follow once it does".
 #
-# EPOCH 40 IS THE STOPPING POINT BECAUSE IT IS WHERE THE SCHEDULE CHANGES: --lr-steps
-# '20:1e-3,40:1e-4' drops the rate again at 40, so epochs 28-40 are the whole of the 1e-3 phase.
-# Reading the arm at that boundary measures one LR regime rather than part of two.
+# IT RUNS TO 60, NOT 40. The file name says ep28_to40 because that was the plan when it was
+# written, and it is kept so the launch log and this script agree; the user redirected it to the
+# full 60-epoch horizon minutes after launch, with epoch 40 kept as a CHECK rather than a stop.
+# The run's own --note below still describes the epoch-40 handover -- that text is baked into
+# training/runs/57zxgz/args.json and cannot be corrected after the fact, so it is called out here
+# instead. --epochs 60 was always the flag; nothing had to change to extend it.
 #
-# COST: 13 epochs at ~24 min is ~5.2 h, plus eval at 30/35/40 valfull (~7 min each) and 30/40
-# in-sample (~34 min each) = ~89 min. So ~6.7 h from launch.
+# EPOCH 40 IS STILL THE INTERESTING BOUNDARY, which is why the check is there: --lr-steps
+# '20:1e-3,40:1e-4' drops the rate again at 40, so epochs 28-40 are the whole of the 1e-3 phase
+# and 41-60 the whole of the 1e-4 phase. Both evals already fall on 40 under the 5/10 cadence, so
+# the check needs no extra pass.
 #
-# AT EPOCH 40 THE CARDS GO TO shell_scripts/launch_tokendrop_90_35.sh, which is already written
-# and gated: 0.90/0.35 retention, L2-SP removed entirely, the same uncropped 5/10 eval cadence.
+# COST TO 60: 33 epochs at ~24 min is ~13.2 h, plus valfull at 30/35/40/45/50/55/60 (~7 min each)
+# and in-sample at 30/40/50/60 (~34 min each) = ~3.1 h of eval. So ~16.3 h from launch.
+#
+# shell_scripts/launch_tokendrop_90_35.sh stays written and gated but is NO LONGER QUEUED behind
+# this arm: 0.90/0.35 retention, L2-SP removed entirely, same uncropped 5/10 cadence, available
+# whenever the cards come free.
 #
 # ------------------------------------------------------------------------------------------------
 # The original arm's rationale follows unchanged; it still describes this arm.
