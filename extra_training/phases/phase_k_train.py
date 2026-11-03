@@ -521,6 +521,30 @@ def main():
     ap.add_argument("--eval-pool-every", "--train-eval-every", dest="train_eval_every", type=int, default=2,
                     help="epochs between training-set evaluations. Ignored without "
                          "--train-eval-pool.")
+    ap.add_argument("--eval-pool-crop-tokens", default="",
+                    help="run the PRIMARY in-training eval on a precomputed crop mask "
+                         "instead of full structures. The mask is the same kind of npz "
+                         "--crop-tokens takes, built for the EVAL pool. The pass is then "
+                         "tagged <pool>_cropped rather than <pool>, because a cropped "
+                         "reading written under the uncropped name is how five files called "
+                         "metric_train came to hold the only held-out numbers a run "
+                         "produced -- run_logging/plot_val_2x3.py reads <pool> and must keep "
+                         "getting the deployment-shaped number.")
+    ap.add_argument("--extra-eval", action="append", default=[], metavar="SPEC",
+                    help="AN ADDITIONAL eval pass at its own cadence, repeatable. The "
+                         "trainer historically had exactly ONE: --eval-pool and "
+                         "--train-eval-pool are argparse aliases for a single dest, so "
+                         "\"cropped validation every 2 epochs AND uncropped validation and "
+                         "in-sample every 6\" was not expressible and section 12 recorded "
+                         "in-sample as simply unmeasured for the uncropped arm.\n"
+                         "SPEC is comma-separated key=value with keys: name (required, "
+                         "names metric_<name>_ep<N>.json and <name>_eval_shards_ep<N>), "
+                         "pool (required), fold, seed_base, budget, every (required), "
+                         "crop_tokens. Example:\n"
+                         "  --extra-eval 'name=valfull,pool=training/valfull/pool.csv,"
+                         "fold=validation/fold,seed_base=400000,budget=30,every=6'\n"
+                         "Each pass costs a full sharded evaluation, so every=1 on three "
+                         "specs triples that cost; the cadence is the knob.")
     ap.add_argument("--eval-pool-fold", "--train-eval-fold", dest="train_eval_fold", default="",
                     help="score --train-eval-pool against THIS fold instead of --fold. The point "
                          "is to watch a held-out signal every few epochs without paying for the "
@@ -1130,6 +1154,66 @@ def main():
             "STOP: --crop-margin needs --minimal-items. The dataset item's label_dict is built at "
             "full size, so cropping only the prediction would score poses against the wrong "
             "residues. Pass --minimal-items with its --alignment-preflight marker.")
+    # EXTRA EVAL PASSES, parsed and validated HERE so a typo costs a second rather than surfacing
+    # at the first epoch boundary hours in, on three ranks, after a full epoch of training.
+    import re as _re_ee          # module scope has no `re`; the l2-sp block imports it locally too
+    _EXTRA_EVAL = []
+    _ee_names = set()
+    for _spec in a.extra_eval:
+        _d = {}
+        for _kv in str(_spec).split(","):
+            _kv = _kv.strip()
+            if not _kv:
+                continue
+            if "=" not in _kv:
+                raise SystemExit(f"STOP: --extra-eval {_spec!r}: {_kv!r} is not key=value.")
+            _k, _v = _kv.split("=", 1)
+            _d[_k.strip()] = _v.strip()
+        _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every",
+                                     "crop_tokens"})
+        if _unknown:
+            raise SystemExit(f"STOP: --extra-eval {_spec!r} has unknown key(s) {_unknown}. "
+                             f"Known: name, pool, fold, seed_base, budget, every, crop_tokens.")
+        for _req in ("name", "pool", "every"):
+            if not _d.get(_req):
+                raise SystemExit(f"STOP: --extra-eval {_spec!r} is missing {_req}=.")
+        _nm = _d["name"]
+        if not _re_ee.fullmatch(r"[A-Za-z0-9_.-]+", _nm):
+            raise SystemExit(f"STOP: --extra-eval name {_nm!r} must be filesystem-safe "
+                             f"([A-Za-z0-9_.-]+); it names metric_<name>_ep<N>.json.")
+        if _nm in _ee_names:
+            raise SystemExit(f"STOP: --extra-eval name {_nm!r} is used twice, so the two passes "
+                             f"would overwrite each other's metric file.")
+        _ee_names.add(_nm)
+        if not os.path.exists(_d["pool"]):
+            raise SystemExit(f"STOP: --extra-eval {_nm}: pool {_d['pool']} does not exist.")
+        _ef = _d.get("fold") or a.fold
+        for _need in (_ef, os.path.join(_ef, "results.csv"),
+                      os.path.join(_ef, "chain_roles.csv")):
+            if not os.path.exists(_need):
+                raise SystemExit(f"STOP: --extra-eval {_nm}: {_need} does not exist. A pool is "
+                                 f"scored against its OWN fold's results and roles.")
+        if _d.get("crop_tokens") and not os.path.exists(_d["crop_tokens"]):
+            raise SystemExit(f"STOP: --extra-eval {_nm}: crop_tokens {_d['crop_tokens']} does "
+                             f"not exist.")
+        try:
+            _ev = int(_d["every"])
+            _bg = int(_d.get("budget") or 0)
+            _sb = int(_d["seed_base"]) if _d.get("seed_base") else -1
+        except ValueError as _e:
+            raise SystemExit(f"STOP: --extra-eval {_nm}: every/budget/seed_base must be "
+                             f"integers ({_e}).")
+        if _ev <= 0:
+            raise SystemExit(f"STOP: --extra-eval {_nm}: every={_ev} must be positive.")
+        _EXTRA_EVAL.append(dict(name=_nm, pool=_d["pool"], fold=_ef, seed_base=_sb,
+                                budget=_bg, every=_ev,
+                                crop_tokens=_d.get("crop_tokens", "")))
+    if a.eval_pool_crop_tokens and not a.train_eval_pool:
+        raise SystemExit("STOP: --eval-pool-crop-tokens without --eval-pool: there is no primary "
+                         "eval pass to crop.")
+    if a.eval_pool_crop_tokens and not os.path.exists(a.eval_pool_crop_tokens):
+        raise SystemExit(f"STOP: --eval-pool-crop-tokens {a.eval_pool_crop_tokens} does not "
+                         f"exist. Build it with run_logging/build_union_crop_masks.py.")
     if a.crop_tokens and a.crop_margin > 0:
         raise SystemExit("STOP: --crop-tokens and --crop-margin are two crop rules at once. Which "
                          "one applied would depend on branch order, and the run would name itself "
@@ -1172,7 +1256,11 @@ def main():
     # PARSED AT STARTUP, NOT AT THE FIRST STEP. A malformed --lr-steps would otherwise surface
     # minutes in, on three ranks, after the model is built.
     try:
-        _LR_STEPS = tuple(_LRS.parse_lr_steps(a.lr_steps)) if a.lr_steps else ()
+        # IMPORTED HERE, not relied on from later. `import lr_schedule as _LRS` happens ~850 lines
+        # below, so using _LRS during startup validation raised UnboundLocalError on every rank
+        # before pose 0. Caught by launching and reading epoch 1, which is what epoch 1 is for.
+        import lr_schedule as _LRS0
+        _LR_STEPS = tuple(_LRS0.parse_lr_steps(a.lr_steps)) if a.lr_steps else ()
     except ValueError as _e:
         raise SystemExit(f"STOP: {_e}")
     if _LR_STEPS and a.lr_final > 0:
@@ -5643,7 +5731,16 @@ def main():
         _record_val_loss(epoch, step, bundle, mean, len(vals))
         return mean
 
-    def eval_checkpoint(step, epoch, train_pool=""):
+    def eval_checkpoint(step, epoch, train_pool="", crop_tokens="", tag="", fold="",
+                        seed_base=-1, budget=0):
+        """One sharded evaluation. tag names its outputs; crop_tokens crops its INPUTS.
+
+        tag EXISTS BECAUSE TWO PASSES CAN SHARE A POOL. A cropped and an uncropped reading of
+        valfull are different numbers, and writing both under metric_valfull_ep<N>.json would
+        silently overwrite one with the other -- the same class of mistake as the five
+        metric_train files that held the only held-out numbers a run produced. The caller names
+        each pass and the name reaches the metric file and the shard directory.
+        """
         """Save the head, score it, log it. Returns the metric dict.
 
         With `train_pool`, scores that pool of TRAINING interfaces using the run's own --fold and
@@ -5678,6 +5775,13 @@ def main():
         # line and test_eval_dir_names.py asserts the two cannot drift apart.
         _ptag = (os.path.basename(os.path.dirname(os.path.abspath(train_pool)).rstrip("/"))
                  or "pool") if train_pool else ""
+        # AN EXPLICIT TAG WINS over the pool's directory name, and a cropped primary pass is
+        # renamed so it cannot be read as the uncropped one. plot_val_2x3.py reads <pool>, and it
+        # must keep getting the deployment-shaped number.
+        if tag:
+            _ptag = tag
+        elif _ptag and crop_tokens:
+            _ptag = f"{_ptag}_cropped"
         mj = os.path.join(a.out, (f"metric_{_ptag}_ep%d.json" if train_pool else "metric_ep%d.json")
                           % epoch)
         extra = []
@@ -5687,9 +5791,10 @@ def main():
             # fold, not from the one being trained on: a results.csv from the wrong fold would
             # look up DockQ for interfaces it does not contain and the coverage check would fail,
             # and a wrong --seed-base would ask for seeds the fold never wrote.
-            _tef = a.train_eval_fold or a.fold
-            _seed_base = (a.train_eval_seed_base if a.train_eval_seed_base >= 0
-                          else _train_eval_seed_base)
+            _tef = fold or a.train_eval_fold or a.fold
+            _seed_base = (seed_base if seed_base >= 0
+                          else (a.train_eval_seed_base if a.train_eval_seed_base >= 0
+                                else _train_eval_seed_base))
             extra = ["--fold", _tef,
                      "--results", os.path.join(_tef, "results.csv"),
                      "--pool", train_pool,
@@ -5739,6 +5844,11 @@ def main():
         # mean_dockq / mean_dockq_select_max in its json.
         if a.rank_pool == "mean" and a.rank_loss:
             extra = extra + ["--pool-mean", "--select-by", "mean"]
+        # THE CROP, FORWARDED. phase_k_eval's --crop-tokens takes the same npz --crop-tokens does
+        # here, so a cropped reading of a pool is the evaluator's own code path and not a
+        # reimplementation. Absent, the pass is uncropped, which is what every pass has been.
+        if crop_tokens:
+            extra = extra + ["--crop-tokens", os.path.abspath(crop_tokens)]
         # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
         # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
         # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one
@@ -5746,7 +5856,8 @@ def main():
         cards = a.eval_cards or os.environ.get("CUDA_VISIBLE_DEVICES", "")
         shard_work = os.path.join(a.out, (f"{_ptag}_eval_shards_ep%d" if train_pool
                                            else "eval_shards_ep%d") % epoch)
-        budget = _train_eval_budget if train_pool else a.eval_budget
+        budget = (budget if budget else
+                  (_train_eval_budget if train_pool else a.eval_budget))
         if len([c for c in cards.split(",") if c.strip()]) > 1:
             cmd = [sys.executable, "-I",
                    os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -6683,7 +6794,26 @@ def main():
                     dist.barrier()
                 if is_main:
                     _flush(traj_p, traj_cols, rows); rows.clear()
-                    eval_checkpoint(step, ep + 1, train_pool=a.train_eval_pool)
+                    eval_checkpoint(step, ep + 1, train_pool=a.train_eval_pool,
+                                    crop_tokens=a.eval_pool_crop_tokens)
+                if world > 1:
+                    dist.barrier()
+            # EVERY EXTRA PASS, each on its own cadence. SAME BARRIER DISCIPLINE: one evaluator
+            # sharded over every card while the other ranks park, so these must not interleave.
+            for _ee in _EXTRA_EVAL:
+                if not ((ep + 1) % _ee["every"] == 0 and step > ep_start_step):
+                    continue
+                if world > 1:
+                    dist.barrier()
+                if is_main:
+                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    print(f"  extra eval '{_ee['name']}': pool {_ee['pool']}, budget "
+                          f"{_ee['budget'] or 'default'}, every {_ee['every']} epoch(s), "
+                          f"{'CROPPED' if _ee['crop_tokens'] else 'uncropped'}", flush=True)
+                    eval_checkpoint(step, ep + 1, train_pool=_ee["pool"],
+                                    crop_tokens=_ee["crop_tokens"], tag=_ee["name"],
+                                    fold=_ee["fold"], seed_base=_ee["seed_base"],
+                                    budget=_ee["budget"])
                 if world > 1:
                     dist.barrier()
         # NOTHING MAY BE LEFT HERE. Every epoch flushes its own remainder above, before evaluating,

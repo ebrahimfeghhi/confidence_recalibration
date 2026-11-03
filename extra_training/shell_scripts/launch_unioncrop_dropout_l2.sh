@@ -91,6 +91,27 @@
 # while still protecting the few large ones. 855 was measured 2026-11-02: uncheckpointed peak
 # 73.51 GB at 855 tokens, so the epoch peak falls below the 80.22 GB an epoch is known to survive.
 #
+# THREE EVAL PASSES, which the trainer could not do until this arm. --eval-pool and
+# --train-eval-pool are argparse ALIASES for a single dest, as are --eval-pool-every and
+# --train-eval-every, so there was exactly ONE in-training eval, on one pool, always uncropped --
+# which is why section 12 recorded in-sample selection as simply unmeasured for the uncropped arm.
+# --eval-pool-crop-tokens and the repeatable --extra-eval were added for this:
+#
+#   every 2 epochs   valfull, CROPPED on the matching union mask  -> metric_valfull_cropped_ep<N>
+#   every 6 epochs   valfull, UNCROPPED                           -> metric_valfull_ep<N>
+#   every 6 epochs   the 738 winnable TRAINING interfaces,
+#                    UNCROPPED, budget 10 = all 50 poses          -> metric_insample_ep<N>
+#
+# THE CROPPED PASS IS TAGGED SEPARATELY ON PURPOSE. plot_val_2x3.py reads <pool>, and a cropped
+# reading written under the uncropped name is the same mistake as the five metric_train files that
+# held the only held-out numbers a run produced. So the cropped pass gets its own tag and the
+# uncropped one keeps `valfull`.
+#
+# THE EVERY-6 PAIR IS THE DIAGNOSTIC THAT DECIDES THIS ARM: uncropped in-sample against uncropped
+# held-out. o2qczq scored 0.6305 cropped and 0.5387 uncropped in-sample, which is what learning to
+# rank crops looks like. Three passes cost three sharded evaluations, so the cadence is the knob --
+# every 1 on all three would triple it.
+#
 # VALIDATION IS UNCROPPED, which is how deployment works and is already the default -- the
 # evaluator's --crop-margin is 0 and section 13 confirms t4jtjr's valfull pass was the uncropped
 # reference. A matching eval mask exists at training/valfull/union_crop_m5_gt.npz if we ever want
@@ -125,12 +146,29 @@ $PY_BIN -I run_logging/check_crop_mask.py "$MASK" \
   || { echo "REFUSING: $MASK does not establish the required configuration. Rebuild with:"; \
        echo "  $BUILD_CMD"; exit 1; }
 
+VAL_MASK=training/valfull/union_crop_m5_gt_ost.npz
+VAL_BUILD="$PY_BIN -I run_logging/build_union_crop_masks.py \
+  --pool training/valfull/pool.csv --roles validation/fold/chain_roles.csv \
+  --trunks validation/fold/trunks --labels validation/fold/labels --fold validation/fold \
+  --out $VAL_MASK --contact 5.0 --margin 5.0 --force-gt --ost-pairs \
+  --seed-base 400000 --budget 30 --nsample 5"
+if [ ! -f "$VAL_MASK" ]; then
+  echo "REFUSING: $VAL_MASK is missing. Build it with:"; echo "  $VAL_BUILD"; exit 1
+fi
+# 53 structures and 150 poses on valfull (budget 30 x nsample 5), against the training pool's
+# 368 and 50. --poses is NOT checked here because the valfull build reports min 149 on one
+# structure; --structures is the invariant that matters for the pool being complete.
+$PY_BIN -I run_logging/check_crop_mask.py "$VAL_MASK" \
+  --require-force-gt --require-ost-pairs --margin 5.0 --contact 5.0 \
+  || { echo "REFUSING: $VAL_MASK does not establish the required configuration. Rebuild with:"; \
+       echo "  $VAL_BUILD"; exit 1; }
+
 for g in test_lr_schedule test_guard_fields test_pair_dropout test_crop_tokens \
          test_two_pass_dropout test_ckpt_threshold test_lean_readouts \
-         test_lean_readouts_arch; do
+         test_lean_readouts_arch test_extra_eval; do
   $PY_BIN -I run_logging/$g.py >/dev/null 2>&1 || { echo "REFUSING: $g failed"; exit 1; }
 done
-echo "eight gates and the mask provenance check pass; launching"
+echo "nine gates and both mask provenance checks pass; launching"
 
 LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --cards 4,5,7 --numa-map 0:0,1:0,2:1 \
@@ -154,7 +192,10 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --shuffle structure --seeds 500000-500009 \
   --eval-pool training/valfull/pool.csv \
   --eval-pool-fold validation/fold --eval-pool-seed-base 400000 \
-  --eval-pool-budget 30 --eval-pool-every 1 \
+  --eval-pool-budget 30 --eval-pool-every 2 \
+  --eval-pool-crop-tokens "$VAL_MASK" \
+  --extra-eval "name=valfull,pool=training/valfull/pool.csv,fold=validation/fold,seed_base=400000,budget=30,every=6" \
+  --extra-eval "name=insample,pool=training/full_train/pool_winnable.csv,fold=training/fold,seed_base=500000,budget=10,every=6" \
   --prefetch-units 2 --prefetch-workers 4 \
   --blocks-per-ckpt 1 --ckpt-token-threshold 855 \
   --dist-backend gloo --dist-timeout-min 240 \
