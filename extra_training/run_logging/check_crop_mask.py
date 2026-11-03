@@ -56,7 +56,12 @@ if "__meta" not in z.files:
              f"It predates the provenance block; rebuild it.")
 meta = json.loads(str(np.asarray(z["__meta"]).reshape(-1)[0]))
 
-keys = [k for k in z.files if not (k.endswith("__n") or k == "__meta")]
+# __n, __pairs AND __meta are bookkeeping, not structures. This filtered only __n and __meta
+# and so counted every <pdb>__pairs entry as a structure, reporting 736 for a 368-structure mask
+# -- the THIRD instance today of a key filter missing a new sidecar key (phase_k_eval still
+# miscounts __meta the same way). The gate caught it before the run did.
+keys = [k for k in z.files
+        if not (k.endswith("__n") or k.endswith("__pairs") or k == "__meta")]
 nn = {k[:-3]: np.asarray(z[k]) for k in z.files if k.endswith("__n")}
 
 if a.require_force_gt and not meta.get("force_gt"):

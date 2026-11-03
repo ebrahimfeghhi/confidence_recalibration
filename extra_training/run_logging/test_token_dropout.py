@@ -107,8 +107,30 @@ check("the draw is keyed on (seed, EPOCH, structure), not the step",
 check("the epoch cell is set at the boundary, before the prefetch workers start",
       "_crop_epoch[0] = ep" in src
       and src.index("_crop_epoch[0] = ep") < src.index("_pf_start(ep_units)"))
-check("two surviving chains are ASSERTED, since ipTM needs them",
-      "np.unique(_asym[_keep]).size < 2" in src and "ipTM needs two chains" in src)
+# PER-PAIR SCOREABILITY, raised in review of c518bc3d. "Two chains survived somewhere" does not
+# establish that pair (3,1) of a four-chain complex is still scoreable, and 81% of this pool has
+# 2+ scored pairs. The check is per OST-resolved pair and does NOT require any ground-truth
+# contact to survive -- contacts vanishing is the augmentation being tested.
+check("the guard is PER SCORED PAIR, not two-chains-somewhere",
+      "for _x, _y in _prs:" in src and "for scored pair" in src
+      and "np.unique(_asym[_keep]).size < 2" not in src)
+check("it demands a minimum on EACH side of the pair",
+      "_nx < _MIN_CH or _ny < _MIN_CH" in src)
+check("it does NOT require a ground-truth contact to survive",
+      "the augmentation being tested is precisely" in src)
+check("a mask without stored pairs is REFUSED, not checked more weakly",
+      "does not carry (no {pdb_}__pairs entry)" in src)
+check("the builder stores the scored pairs as asym indices",
+      'out[pdb + "__pairs"]' in open(os.path.join(ROOT, "run_logging",
+                                                  "build_union_crop_masks.py")).read())
+check("the loader does not count __pairs as a structure",
+      'k.endswith("__pairs")' in src)
+check("both probabilities are resume-guard fields",
+      src.count('"token_keep_union": a.token_keep_union,') == 2
+      and src.count('"token_keep_other": a.token_keep_other,') == 2,
+      "changing the augmentation distribution must be detected on resume")
+check("pre-flag bundles get migration defaults for them",
+      '"token_keep_union": -1.0, "token_keep_other": -1.0,' in src)
 check("both probabilities are required together", "must BOTH be given" in src)
 check("zero is refused: that is a crop, not a dropout", "Zero would delete a whole" in src)
 check("the periphery may not outrank the interface", "That is not the experiment." in src)

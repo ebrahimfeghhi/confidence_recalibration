@@ -349,6 +349,15 @@ for pdb in pdbs:
     out[pdb] = uni
     out[pdb + "__n"] = np.array([npose, int(uni.sum()), int(uni.size), nseen, nocontact,
                                  n_forced], dtype=np.int64)
+    # THE SCORED CHAIN PAIRS, as asym indices, so a CONSUMER can check that both chains of every
+    # supervised pair survive whatever it does to the mask. --token-keep-* needs exactly this:
+    # "two chains survived somewhere in the structure" does not establish that pair (3,1) is
+    # still scoreable in a four-chain complex, and 81% of this pool has more than one scored
+    # pair. Written as the UNION of the static and OST-resolved mappings, matching the forced
+    # set. Raised in review.
+    _pr = sorted(_pairs_use) if a.force_gt else sorted(SCORED.get(pdb, set()))
+    out[pdb + "__pairs"] = (np.array(_pr, dtype=np.int64) if _pr
+                            else np.zeros((0, 2), dtype=np.int64))
 
 # DERIVED, NOT HARDCODED. Raised in review: 150 was this pool's budget x nsample written out by
 # hand, which would be silently wrong on any other pool.
@@ -361,7 +370,8 @@ if short:
                      f"scored candidates is not the crop this experiment specifies. (Poses that "
                      f"were examined but had no cross-chain contact are fine and counted "
                      f"separately -- they contribute nothing by definition.)")
-n_src = len([k for k in out if not k.endswith("__n")])
+n_src = len([k for k in out if not (k.endswith("__n") or k.endswith("__pairs"))
+             and k != "__meta"])
 if vfail:
     raise SystemExit(f"STOP: the crop rule does NOT reproduce interface_crop_tokens on "
                      f"{len(vfail)} structure(s), e.g. {vfail[:4]}. Every mask this would write "
@@ -395,8 +405,8 @@ _meta = dict(margin=a.margin, contact=a.contact, pool=a.pool, trunks=a.trunks, l
 out["__meta"] = np.array([json.dumps(_meta, sort_keys=True)])
 os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
 np.savez_compressed(a.out, **out)
-n_s = len([k for k in out if not k.endswith("__n") and k != "__meta"])
-_keys = [k for k in out if not k.endswith("__n") and k != "__meta"]
+n_s = len([k for k in out if not (k.endswith("__n") or k.endswith("__pairs")) and k != "__meta"])
+_keys = [k for k in out if not (k.endswith("__n") or k.endswith("__pairs")) and k != "__meta"]
 fr = [out[k + "__n"][1] / out[k + "__n"][2] for k in _keys]
 np_ = [out[k + "__n"][0] for k in _keys]
 print(f"{n_s} structure(s) -> {a.out}")

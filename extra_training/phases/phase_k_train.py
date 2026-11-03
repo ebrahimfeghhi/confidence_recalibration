@@ -2997,6 +2997,11 @@ def main():
                  # DROPOUT IS PART OF THE OBJECTIVE, not of the optimiser: flipping it on a
                  # resume changes the gradient's distribution at every step.
                  "pair_dropout": a.pair_dropout,
+                 # THE AUGMENTATION DISTRIBUTION. Changing either probability changes what the
+                 # head sees at every step, so a resume that silently changed them would splice
+                 # two augmentations into one curve. Raised in review.
+                 "token_keep_union": a.token_keep_union,
+                 "token_keep_other": a.token_keep_other,
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
@@ -3074,6 +3079,7 @@ def main():
                      "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
                      "lr_decay_shape": "cosine", "lr_steps": "",
                      "pair_dropout": -1.0, "crop_tokens": "",
+                     "token_keep_union": -1.0, "token_keep_other": -1.0,
                      # ABSENCE IS EVIDENCE: a bundle written before --pae-row-frac existed ran the
                      # unweighted term, which is exactly what frac 0 means. The mass and floor
                      # defaults are inert at frac 0 but are migrated so a resume that only turns
@@ -3451,7 +3457,14 @@ def main():
     if a.crop_tokens:
         _ctz = np.load(a.crop_tokens)
         _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
-                    if not (k.endswith("__n") or k == "__meta")}
+                    if not (k.endswith("__n") or k.endswith("__pairs") or k == "__meta")}
+        # THE SCORED PAIRS PER STRUCTURE, as asym indices. Needed by --token-keep-*: a draw must
+        # leave BOTH chains of EVERY supervised pair scoreable, and "two chains survived
+        # somewhere" does not establish that for a four-chain complex -- 81% of this pool has more
+        # than one scored pair. Absent on a mask built before the builder wrote them, which the
+        # draw refuses rather than silently checking a weaker condition. Raised in review.
+        _CROPPAIRS = {k[:-7]: np.asarray(_ctz[k]).reshape(-1, 2)
+                      for k in _ctz.files if k.endswith("__pairs")}
         # the content digest is computed at STARTUP (see _CROP_TOK_DIGEST), because the resume
         # guard dict is built before this loader runs. Reported here so a run's log says which
         # mask it actually trained on.
@@ -3499,16 +3512,36 @@ def main():
                 int.from_bytes(hashlib.sha256(_sd_bytes).digest()[:8], "big"))
             _p = np.where(kt_, float(a.token_keep_union), float(a.token_keep_other))
             _keep = _rs.random(kt_.shape[0]) < _p
-            # TWO CHAINS MUST SURVIVE, or ipTM is undefined for every scored pair and the loss
-            # would be computed over an empty pool. At 0.70/0.20 over hundreds of tokens this is
-            # astronomically unlikely, which is exactly why it is asserted rather than assumed.
+            # EVERY SUPERVISED PAIR MUST STAY SCOREABLE -- per pair, not "two chains somewhere".
+            # ipTM for pair (x, y) pools over token pairs spanning x and y, so if either chain
+            # loses its tokens that interface is scored on an EMPTY pool while its label stays in
+            # the loss. A four-chain complex can keep two chains and still leave pair (3,1)
+            # unscoreable, and 81% of this pool has 2+ scored pairs. This is NOT a requirement
+            # that any ground-truth CONTACT survives -- the augmentation being tested is precisely
+            # that contacts may vanish. Raised in review.
             _asym = np.asarray(zc_["ci_feat_asym_id"]).reshape(-1)
-            if np.unique(_asym[_keep]).size < 2 or int(_keep.sum()) < 16:
+            _prs = _CROPPAIRS.get(pdb_)
+            if _prs is None:
                 raise SystemExit(
-                    f"STOP: the token draw for {pdb_} at epoch {_crop_epoch[0]} left "
-                    f"{int(_keep.sum())} token(s) across "
-                    f"{np.unique(_asym[_keep]).size} chain(s). ipTM needs two chains and a "
-                    f"non-trivial pool. Raise --token-keep-union/--token-keep-other.")
+                    f"STOP: --token-keep-* needs the scored pairs for {pdb_}, which this mask "
+                    f"does not carry (no {pdb_}__pairs entry). It was built before the builder "
+                    f"wrote them; rebuild with run_logging/build_union_crop_masks.py so the "
+                    f"per-pair scoreability check has something to check.")
+            _MIN_CH = 4
+            for _x, _y in _prs:
+                _nx = int((_asym[_keep] == _x).sum())
+                _ny = int((_asym[_keep] == _y).sum())
+                if _nx < _MIN_CH or _ny < _MIN_CH:
+                    raise SystemExit(
+                        f"STOP: the token draw for {pdb_} at epoch {_crop_epoch[0]} left chain "
+                        f"{_x} with {_nx} token(s) and chain {_y} with {_ny}, for scored pair "
+                        f"({_x}, {_y}). ipTM needs at least {_MIN_CH} a side or that interface is "
+                        f"scored on an empty pool while its label stays in the loss. Raise "
+                        f"--token-keep-union/--token-keep-other.")
+            if int(_keep.sum()) < 16:
+                raise SystemExit(
+                    f"STOP: the token draw for {pdb_} at epoch {_crop_epoch[0]} left only "
+                    f"{int(_keep.sum())} token(s) in total. Raise the keep probabilities.")
             _tok_drop_stat["kept"] += float(_keep.sum())
             _tok_drop_stat["tot"] += float(_keep.shape[0])
             _tok_drop_stat["n"] += 1
@@ -6287,6 +6320,8 @@ def main():
                                   "lr_decay_shape": a.lr_decay_shape,
                                   "lr_steps": a.lr_steps,
                                   "pair_dropout": a.pair_dropout,
+                                  "token_keep_union": a.token_keep_union,
+                                  "token_keep_other": a.token_keep_other,
                                   "warmup_steps": a.warmup_steps, "epochs": a.epochs,
                                   "manifest_skip": a.manifest_skip,
                                   "manifest_digest": _manifest_digest,

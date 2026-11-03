@@ -172,6 +172,11 @@ check("--lean-readouts is actually in the launcher's argv",
 csrc = open(os.path.join(ROOT, "run_logging", "check_crop_mask.py")).read()
 check("the checker refuses a mask with no __meta at all",
       "has no __meta" in csrc)
+# THE THIRD INSTANCE of a key filter missing a sidecar key: __n, then __meta, now __pairs. The
+# checker reported 736 structures for a 368-structure mask and refused a correct build.
+check("the checker's structure filter excludes __n, __pairs AND __meta",
+      'k.endswith("__pairs")' in csrc and 'k == "__meta"' in csrc
+      and 'k.endswith("__n")' in csrc)
 check("the checker treats a missing force_gt/ost_pairs flag as a refusal",
       'not meta.get("force_gt")' in csrc and 'not meta.get("ost_pairs")' in csrc)
 # THE POSE COUNT MUST BE THE EXAMINED ONE. __n[0] is the count that CONTRIBUTED a contact-defined

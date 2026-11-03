@@ -152,11 +152,11 @@ set -u
 PY_BIN=/home/ebrahim/Protenix/.venv/bin/python
 cd "$(dirname "$0")/.."
 
-MASK=training/full_train/union_crop_m5_gt_ost.npz
+MASK=training/full_train/union_crop_m0_gt_ost.npz
 BUILD_CMD="$PY_BIN -I run_logging/build_union_crop_masks.py \
   --pool training/full_train/pool_winnable.csv --roles training/fold/chain_roles.csv \
   --trunks training/fold/trunks --labels training/fold/labels --fold training/fold \
-  --out $MASK --contact 5.0 --margin 5.0 --force-gt --ost-pairs \
+  --out $MASK --contact 5.0 --margin 0.0 --force-gt --ost-pairs \
   --seed-base 500000 --budget 10 --nsample 5"
 if [ ! -f "$MASK" ]; then
   echo "REFUSING: $MASK is missing. Build it with:"; echo "  $BUILD_CMD"; exit 1
@@ -168,7 +168,7 @@ fi
 # review of e0ee07b5.
 $PY_BIN -I run_logging/check_crop_mask.py "$MASK" \
   --require-force-gt --require-ost-pairs --structures 368 --poses 50 \
-  --margin 5.0 --contact 5.0 \
+  --margin 0.0 --contact 5.0 \
   || { echo "REFUSING: $MASK does not establish the required configuration. Rebuild with:"; \
        echo "  $BUILD_CMD"; exit 1; }
 
@@ -194,7 +194,6 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --manifest-skip '9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3' \
   --epochs 60 --lr 0.01 --warmup-steps 20 --seed 0 --accum 85 --nsample 5 \
   --lr-steps '20:1e-3,40:1e-4' \
-  --pair-dropout 0.25 \
   --l2-sp 1e-5 --l2-sp-exclude 'frame_dir_proj,pose_perblock_' \
   --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0 --crop-size 3400 \
   --save-every 250 \
