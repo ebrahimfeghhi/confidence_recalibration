@@ -16,3 +16,8 @@ prefetch: one background reader warming the next trunk
   ...600/1227 units
   ...800/1227 units
   ...1000/1227 units
+  ...1200/1227 units
+join cache: 1227 hit(s), 0 newly derived (100% reused)
+
+join 1: OST's per-pose chain mapping used on 6135 pose(s), unresolvable on 0
+shard 0: 12260 row(s) -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/57zxgz/insample_eval_shards_ep30/rows_b10_head_ep30_step3660_s0.csv

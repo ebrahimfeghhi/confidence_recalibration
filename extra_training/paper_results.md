@@ -1031,3 +1031,127 @@ NOT that experiment, since `tv6hue` was uncropped with no augmentation -- but an
 A consequence worth stating for `egw5wq`: with pair dropout off and L2 inert, that arm's only
 regulariser is the token-dropout augmentation. That makes it a cleaner test of the augmentation
 than intended, and it means its run note's "L2-SP 1e-5" is decoration.
+
+---
+
+## 18. BIASED TOKEN DROPOUT AT 0.70/0.20 CONVERGED SHORT. 40 epochs, +0.0037 held-out, never cleared the bar
+
+The `egw5wq` -> `57zxgz` chain, 40 epochs, `--token-keep-union 0.70 --token-keep-other 0.20`,
+`--rank-form rel` alpha 75, L2-SP 1e-5, uncropped eval throughout: valfull every 5 epochs, the 738
+winnable training interfaces every 10. Stopped 2026-11-03 5:13 PM EST at epoch 40 in favour of the
+0.90/0.35 arm. `resume_ep40.pt` is on disk.
+
+### HELD-OUT, 92 valfull interfaces, uncropped, budget 30
+
+| epoch | mean DockQ | minus shipped | frac acc |
+|---|---|---|---|
+| 5 | 0.5840 | +0.0009 | 0.7500 |
+| 10 | 0.5882 | +0.0051 | 0.7500 |
+| 15 | 0.5843 | +0.0012 | 0.7500 |
+| 20 | 0.5849 | +0.0018 | 0.7500 |
+| 25 | 0.5845 | +0.0014 | 0.7500 |
+| 27 | 0.5866 | +0.0035 | 0.7500 |
+| 30 | 0.5859 | +0.0028 | 0.7500 |
+| 35 | 0.5871 | +0.0040 | 0.7500 |
+| 40 | 0.5868 | +0.0037 | 0.7500 |
+
+shipped 0.5831, oracle 0.6926, oracle frac acc 0.8587.
+
+**The whole 40-epoch series lives in a 0.0031-wide band, +0.0009 to +0.0040, against a paired s.e.
+of 0.0044.** Nothing in it is distinguishable from nothing. The significance bar is +0.009 and the
+best epoch reached 0.44x of it.
+
+**AND `frac_acc` IS EXACTLY 0.7500 AT ALL NINE EVALS** -- 69 of 92 interfaces acceptable, never 68,
+never 70, across 40 epochs. The head reorders poses inside interfaces without ever moving one
+across the 0.23 DockQ threshold. (Earlier in-session this was stated as ten evals; there are nine.)
+
+### IN-SAMPLE, 738 winnable training interfaces, uncropped, budget 10
+
+| epoch | mean DockQ | minus shipped | frac acc |
+|---|---|---|---|
+| 10 | 0.5421 | -0.0053 | 0.6992 |
+| 20 | 0.5451 | -0.0023 | 0.6992 |
+| 27 | 0.5527 | +0.0053 | 0.7127 |
+| 30 | 0.5558 | **+0.0084** | 0.7195 |
+| 40 | 0.5545 | +0.0071 | 0.7249 |
+
+shipped 0.5474, oracle 0.7015.
+
+In-sample was BELOW shipped through epoch 20, crossed above between 20 and 27, peaked at epoch 30
+and came back down by 40. `frac_acc` rose monotonically 0.6992 -> 0.7249 even while mean DockQ
+turned over, so the head kept moving poses across the threshold in-sample while the magnitude
+stopped paying.
+
+### THE DIAGNOSIS: CONVERGED SHORT, NOT UNDERFIT AND NOT OVERFIT
+
+Both pools went flat together between epoch 30 and 40 -- in-sample +0.0084 -> +0.0071, held-out
++0.0028 -> +0.0037. That is the specific combination that rules out both standard stories:
+overfitting requires in-sample to keep rising while held-out stalls, and underfitting requires
+in-sample to still be climbing. Neither held.
+
+What did NOT stop is the weights. `||W-W0||^2` rose monotonically every single epoch of the
+resume, 2848.8 (ep28) -> 3220.4 (ep40), +13.0%, and the mean gradient norm rose 68% off its
+epoch-22 floor:
+
+| epoch | grad mean | median | p90 | max |
+|---|---|---|---|---|
+| 5 | 1.029 | 0.871 | 1.796 | 2.989 |
+| 20 | 0.913 | 0.807 | 1.690 | 2.757 |
+| 22 | **0.783** | 0.705 | 1.374 | 2.672 |
+| 27 | 0.855 | 0.761 | 1.508 | 2.688 |
+| 30 | 0.959 | 0.815 | 1.831 | 2.764 |
+| 35 | 1.061 | 0.913 | 1.707 | 4.766 |
+| 39 | 1.318 | 0.927 | 2.361 | 8.495 |
+| 40 | 1.243 | 0.958 | 2.418 | 4.851 |
+
+122 step rows per epoch. **The rise is a TAIL effect, not a stiffening**: median +36% (0.705 ->
+0.958) against max +218% (2.672 -> 8.495), and the top decile's share of total gradient went 22.7%
+-> 33.9% between epoch 22 and 39. Ruled out as causes: L2-SP, whose gradient `2*lambda*||W-W0||`
+is 2*1e-5*56.7 = 0.0011, under 0.1% of the median (section 17); gradient clipping, `--clip-norm`
+25.0, never engaged; and the resume itself, since the rise starts at epoch 22, six epochs earlier.
+The untested candidate is the rel coefficients `c_i = 2((s_i - mean_s) - (g_i - mean_g))` growing
+toward their `-2(g_i - mean_g)` floor as within-interface score spread shrank, times alpha 75.
+`--grad-probe` would attribute it; it was never run.
+
+So the head was still travelling while neither eval metric moved. A flat valley, not a capacity
+wall.
+
+### TRAIN PAE, and why the regularisation bought nothing
+
+Mean `pae_loss` over all 6100 pose rows per epoch (the run's own log reports a batch-weighted mean
+differing by ~0.008):
+
+| epoch | 1 | 5 | 10 | 20 | 27 | 30 | 35 | 40 |
+|---|---|---|---|---|---|---|---|---|
+| PAE | 3.1275 | 3.0055 | 2.9858 | 2.9649 | 2.9045 | 2.8982 | 2.8953 | 2.9166 |
+
+**-6.7% over 40 epochs**, and a floor effect: p10 -16%, p90 -5%. Against this the ground-truth
+cropped arm `o2qczq` descended -16.9% over 32 epochs with the whole distribution shifting (p90
+-16%, median -14%), reached +0.0733 in-sample, and still transferred only **+0.0058** held-out
+(t=+1.25, section 13).
+
+**That is the result worth keeping.** Two arms at opposite ends of the fit axis -- one that barely
+fits and one that fits hard -- land in the same place held-out, +0.0037 and +0.0058, both inside
+the noise. The token-dropout augmentation worked exactly as designed as a regulariser and bought
+nothing, because held-out was never limited by overfitting in the first place.
+
+### WHAT THIS CLOSES, AND THE ONE THING IT DOESN'T
+
+It closes the fit axis as a lever for this objective: more fitting and less fitting have now both
+been tried and neither moves held-out selection. Section 15's open question -- whether more
+in-sample gain would transfer -- gets a second negative answer here, from the low-fit direction.
+
+It does NOT close the epoch-35 paired breakdown, which remains the one place the numbers point
+somewhere. Over 92 interfaces: 24 identical pose picked (26%), 33 better by a mean +0.0345, 35
+worse by a mean -0.0227, net +0.0037 on 0.0210 of gross movement per interface. **Roughly 6x more
+motion than net gain, and the losses outnumber the wins.** Halving the 35 losses at the same win
+rate gives about +0.013, which clears the +0.009 bar. The lever is loss asymmetry, not fit.
+
+### HONEST LIMITS
+
+No held-out PAE exists for this arm -- `val_loss_every` is 0 -- so the direct train-vs-held-out
+overfit read is unavailable, and the "converged short" diagnosis rests on the two selection pools
+rather than on a loss curve. n=92 held-out is small; the 0.0044 paired s.e. is the real constraint
+and nothing here escapes it. The gradient-tail mechanism is a hypothesis with a named test that
+was not run. And the arm was stopped at 40 of a planned 60, so "converged" means flat over the
+30-40 window, not proven flat to 60.
