@@ -132,10 +132,48 @@ check("--ost-pairs exists and needs --force-gt and --fold",
       and "needs --fold to find each pose" in bsrc)
 check("the forced set unions BOTH mappings, not just the static one",
       "_pairs_use |= _op" in bsrc)
-check("a structure whose OST cannot be read is NAMED, not silently left on static pairs",
-      "ost_unresolved.append(pdb)" in bsrc and "coverage is" in bsrc)
+# THE FALLBACK IS GONE, not merely reported. "Named but accepted" still shipped a mask whose
+# guarantee did not hold for the named structures, which is what the review refused.
+check("there is NO static-pair fallback left to accept",
+      "ost_unresolved" not in bsrc and "no fallback any more" in bsrc)
 check("the builder reports how many structures the static mapping would have got wrong",
       "does NOT name" in bsrc)
+# EXACT OST COVERAGE, raised in review of e0ee07b5: 49 of 50 poses resolved is NOT covered,
+# because the unexamined pose can reference a pair absent from the forced set.
+check("ANY unresolved pose is fatal, not tolerated",
+      "could not resolve every expected pose" in bsrc
+      and "_fails or _nok != _want_poses" in bsrc)
+check("each failure carries its (seed, sample, why)",
+      'failures.append((int(sd), int(k), why' in bsrc
+      and 'f"seed_dir: {type(_e).__name__}"' in bsrc)
+check("a seed whose unit dir fails counts ALL its poses as failures, not zero",
+      "for k in range(nsample)]" in bsrc)
+check("--ost-pairs requires a real seed range, so it cannot examine zero poses",
+      "needs --seed-base and --budget" in bsrc)
+check("the mask metadata records force_gt and ost_pairs",
+      "force_gt=bool(a.force_gt), ost_pairs=bool(a.ost_pairs)," in bsrc)
+
+# THE LAUNCH GATE. A content digest proves the mask did not change; it cannot prove the mask was
+# right to begin with, so the launcher reads the mask's own metadata.
+lsrc = open(os.path.join(ROOT, "shell_scripts", "launch_unioncrop_dropout_l2.sh")).read()
+check("the launcher points at the OST mask, not the static-only one",
+      "union_crop_m5_gt_ost.npz" in lsrc and "MASK=training/full_train/union_crop_m5_gt.npz"
+      not in lsrc)
+check("the launcher verifies the mask's provenance, not just its existence",
+      "check_crop_mask.py" in lsrc and "--require-force-gt" in lsrc
+      and "--require-ost-pairs" in lsrc)
+check("the launcher demands the expected structure and pose counts",
+      "--structures 368" in lsrc and "--poses 50" in lsrc)
+check("the documented build command includes --ost-pairs and --fold",
+      "--force-gt --ost-pairs" in lsrc and "--fold training/fold" in lsrc)
+check("--lean-readouts is actually in the launcher's argv",
+      "--pae-only --lean-readouts" in lsrc)
+
+csrc = open(os.path.join(ROOT, "run_logging", "check_crop_mask.py")).read()
+check("the checker refuses a mask with no __meta at all",
+      "has no __meta" in csrc)
+check("the checker treats a missing force_gt/ost_pairs flag as a refusal",
+      'not meta.get("force_gt")' in csrc and 'not meta.get("ost_pairs")' in csrc)
 
 print()
 if FAIL:

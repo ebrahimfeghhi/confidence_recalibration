@@ -71,6 +71,11 @@
 # The decay shapes interpolate continuously and cannot express a hold-then-drop; --lr-steps does.
 # run_logging/test_lr_schedule.py pins it.
 #
+# --lean-readouts IS ON. pde, pLDDT and resolved are not COMPUTED, only stubbed by --pae-only
+# today, and test_lean_readouts.py proves the pae logits are bit-identical with it installed. It
+# buys 2.7 GB at the 855-token boundary (73.51 GB against 76.18) for no change in mathematics, so
+# there is no reason to leave it off. Recommended in review.
+#
 # CHECKPOINTING BY SIZE. --blocks-per-ckpt 1 with --ckpt-token-threshold 855 means any unit at or
 # under 855 tokens trains UNCHECKPOINTED. The threshold compares the POST-CROP token count, and at
 # ~60% of a 619-token median that is nearly every unit, so this is effectively "no recompute"
@@ -91,18 +96,32 @@ set -u
 PY_BIN=/home/ebrahim/Protenix/.venv/bin/python
 cd "$(dirname "$0")/.."
 
-MASK=training/full_train/union_crop_m5_gt.npz
-[ -f "$MASK" ] || { echo "REFUSING: $MASK is missing. Build it with:"; \
-  echo "  $PY_BIN -I run_logging/build_union_crop_masks.py --pool training/full_train/pool_winnable.csv \\"; \
-  echo "    --roles training/fold/chain_roles.csv --trunks training/fold/trunks \\"; \
-  echo "    --labels training/fold/labels --out $MASK --contact 5.0 --margin 5.0 --force-gt \\"; \
-  echo "    --seed-base 500000 --budget 10 --nsample 5"; exit 1; }
+MASK=training/full_train/union_crop_m5_gt_ost.npz
+BUILD_CMD="$PY_BIN -I run_logging/build_union_crop_masks.py \
+  --pool training/full_train/pool_winnable.csv --roles training/fold/chain_roles.csv \
+  --trunks training/fold/trunks --labels training/fold/labels --fold training/fold \
+  --out $MASK --contact 5.0 --margin 5.0 --force-gt --ost-pairs \
+  --seed-base 500000 --budget 10 --nsample 5"
+if [ ! -f "$MASK" ]; then
+  echo "REFUSING: $MASK is missing. Build it with:"; echo "  $BUILD_CMD"; exit 1
+fi
+# THE FILE EXISTING IS NOT THE GUARANTEE. phase_k_train's content digest proves the mask has not
+# CHANGED across a resume; it says nothing about whether this mask was correct to begin with. A
+# static-only mask (no --ost-pairs) hashes just as stably as the right one while covering a chain
+# pair the trainer may not be supervising. So the mask's own metadata is checked here. Raised in
+# review of e0ee07b5.
+$PY_BIN -I run_logging/check_crop_mask.py "$MASK" \
+  --require-force-gt --require-ost-pairs --structures 368 --poses 50 \
+  --margin 5.0 --contact 5.0 \
+  || { echo "REFUSING: $MASK does not establish the required configuration. Rebuild with:"; \
+       echo "  $BUILD_CMD"; exit 1; }
 
 for g in test_lr_schedule test_guard_fields test_pair_dropout test_crop_tokens \
-         test_ckpt_threshold test_lean_readouts; do
+         test_two_pass_dropout test_ckpt_threshold test_lean_readouts \
+         test_lean_readouts_arch; do
   $PY_BIN -I run_logging/$g.py >/dev/null 2>&1 || { echo "REFUSING: $g failed"; exit 1; }
 done
-echo "six gates pass; launching the union-crop + dropout + L2-SP arm"
+echo "eight gates and the mask provenance check pass; launching"
 
 LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --cards 4,5,7 --numa-map 0:0,1:0,2:1 \
@@ -122,7 +141,7 @@ LAYERNORM_TYPE=openfold $PY_BIN -I run_logging/launch.py \
   --l2-sp 1e-4 --l2-sp-exclude 'frame_dir_proj,pose_perblock_' \
   --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0 --crop-size 3400 \
   --save-every 250 \
-  --pae-scored-pairs training/full_train/pool_winnable.csv --pae-only \
+  --pae-scored-pairs training/full_train/pool_winnable.csv --pae-only --lean-readouts \
   --shuffle structure --seeds 500000-500009 \
   --eval-pool training/valfull/pool.csv \
   --eval-pool-fold validation/fold --eval-pool-seed-base 400000 \

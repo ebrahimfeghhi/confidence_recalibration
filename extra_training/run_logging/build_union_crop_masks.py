@@ -95,6 +95,11 @@ if a.ost_pairs and not a.force_gt:
                      "nothing without --force-gt.")
 if a.ost_pairs and not a.fold:
     raise SystemExit("STOP: --ost-pairs needs --fold to find each pose's OST unit directory.")
+if a.ost_pairs and (a.seed_base is None or not a.budget):
+    # AN EMPTY SEED RANGE WOULD EXAMINE ZERO POSES and, before the exact-coverage check, would
+    # have fallen silently back to the static pairs while the metadata said ost_pairs=true.
+    raise SystemExit("STOP: --ost-pairs needs --seed-base and --budget, so the set of poses whose "
+                     "mapping must be examined is defined rather than empty.")
 
 
 def crop_from_coords(z, coords, cmask_all, rep, contact, margin):
@@ -180,27 +185,33 @@ def gt_contact_tokens(z, lab, pairs, contact):
 def ost_pairs_for(pdb, labels_root, fold, refs, seeds_wanted, nsample):
     """Every (ax, ay) the TRAINER could supervise for this structure, resolved per pose via OST.
 
-    Returns (pairs, n_checked, n_new_vs_static) or (None, 0, 0) when OST cannot be read for any
-    pose -- the caller then falls back to the static pairs and SAYS SO, because silently covering
-    only the static mapping is the defect this exists to remove.
+    Returns (pairs, n_resolved, failures). EVERY expected (seed, sample) must resolve: a structure
+    with 49 of 50 poses resolved is NOT covered, because the one unexamined pose can reference a
+    chain pair absent from the forced set, and that is precisely the hole this closes. The caller
+    refuses on any failure rather than accepting a partial guarantee. Raised in review.
     """
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "phases"))
     import phase_k_eval as _PKE
     import phase_j_build_cache as _BCl
-    got_pairs, n_ok = set(), 0
+    got_pairs, n_ok, failures = set(), 0, []
     for sd in seeds_wanted:
         try:
             ud = _BCl.seed_dir(fold, pdb, int(sd))
-        except Exception:                                            # noqa: BLE001
+        except Exception as _e:                                      # noqa: BLE001
+            # EVERY expected pose counts as a failure, named. A seed whose unit dir cannot be
+            # resolved is not "fewer poses", it is nsample unexamined poses.
+            failures += [(int(sd), int(k), f"seed_dir: {type(_e).__name__}")
+                         for k in range(nsample)]
             continue
         for k in range(nsample):
-            pr, _why = _PKE.ost_chain_pairs(ud, pdb, int(k), refs)
+            pr, why = _PKE.ost_chain_pairs(ud, pdb, int(k), refs)
             if pr is None:
+                failures.append((int(sd), int(k), why or "ost_chain_pairs returned None"))
                 continue
             n_ok += 1
             for _iface, ax, ay in pr:
                 got_pairs.add((min(ax, ay), max(ax, ay)))
-    return (got_pairs or None), n_ok, 0
+    return got_pairs, n_ok, failures
 
 
 # THE SCORED PAIRS, as chain INDICES into asym_id. Only needed by --force-gt.
@@ -229,7 +240,7 @@ if a.force_gt:
           f"{len(SCORED)} structure(s)")
 
 out, verified, vfail, skipped = {}, 0, [], []
-ost_extra, ost_unresolved = {}, []
+ost_extra = {}
 _seeds_for_ost = (range(a.seed_base, a.seed_base + a.budget)
                   if (a.ost_pairs and a.seed_base is not None and a.budget) else [])
 n_nolabel = 0
@@ -304,18 +315,27 @@ for pdb in pdbs:
         _pairs_use = set(SCORED.get(pdb, set()))
         _ost_note = "static"
         if a.ost_pairs:
-            _op, _nok, _ = ost_pairs_for(pdb, a.labels, a.fold, REFS.get(pdb) or [],
-                                         _seeds_for_ost, a.nsample)
-            if _op is None:
-                # NAMED, NOT SWALLOWED. A structure whose OST cannot be read falls back to the
-                # static pairs, and that is exactly the case the audit must re-examine.
-                ost_unresolved.append(pdb)
-            else:
-                _new = _op - _pairs_use
-                _pairs_use |= _op
-                if _new:
-                    ost_extra[pdb] = sorted(_new)
-                _ost_note = f"static+ost({_nok} pose(s))"
+            _op, _nok, _fails = ost_pairs_for(pdb, a.labels, a.fold, REFS.get(pdb) or [],
+                                              _seeds_for_ost, a.nsample)
+            _want_poses = len(_seeds_for_ost) * a.nsample
+            # EXACT COVERAGE OR REFUSE. "At least one mapping exists" is not the invariant; the
+            # invariant is that EVERY supervised pose's mapping was examined. A partial resolution
+            # silently reintroduces the hole --ost-pairs exists to close. Raised in review.
+            if _fails or _nok != _want_poses:
+                raise SystemExit(
+                    f"STOP: --ost-pairs could not resolve every expected pose for {pdb}: "
+                    f"{_nok} of {_want_poses} resolved, {len(_fails)} failure(s).\n"
+                    f"  first failures (seed, sample, why): {_fails[:4]}\n"
+                    f"  A structure with one unexamined pose is NOT covered -- that pose can "
+                    f"reference a chain pair absent from the forced set, which is the hole this "
+                    f"flag closes. Fix the OST artefacts for this structure, or drop it from the "
+                    f"pool deliberately; do not build a mask that claims a guarantee it has not "
+                    f"established.")
+            _new = _op - _pairs_use
+            _pairs_use |= _op
+            if _new:
+                ost_extra[pdb] = sorted(_new)
+            _ost_note = f"static+ost({_nok} pose(s))"
         gt_i = gt_contact_tokens(z, lab, _pairs_use, a.contact)
         if gt_i is None:
             skipped.append((pdb, "--force-gt: no scored pair resolvable"))
@@ -358,8 +378,14 @@ try:
                           timeout=10).stdout.strip() or "unknown"
 except Exception:
     _rev = "unknown"
+# force_gt AND ost_pairs ARE RECORDED, because a content hash proves the file has not changed
+# and says nothing about whether it was correct to begin with. The launcher reads these and
+# refuses a mask that does not establish the configuration the arm requires. Raised in review.
 _meta = dict(margin=a.margin, contact=a.contact, pool=a.pool, trunks=a.trunks, labels=a.labels,
              seeds=a.seeds, seed_base=a.seed_base, budget=a.budget,
+             force_gt=bool(a.force_gt), ost_pairs=bool(a.ost_pairs),
+             ost_poses_per_structure=(len(_seeds_for_ost) * a.nsample) if a.ost_pairs else 0,
+             ost_extra_structures=sorted(ost_extra) if a.ost_pairs else [],
              nsample=a.nsample, require_poses=_req, n_structures=n_src,
              unit_digest=hashlib.sha256(
                  "|".join(f"{k}:{','.join(units_used[k])}" for k in sorted(units_used))
@@ -391,9 +417,8 @@ if a.ost_pairs:
           f"pool mapping does NOT name, so their forced set would have protected the wrong "
           f"chain pair without this flag"
           + (f": {sorted(ost_extra)[:6]}" if ost_extra else ""))
-    if ost_unresolved:
-        print(f"  --ost-pairs: {len(ost_unresolved)} structure(s) had NO readable OST mapping "
-              f"and fell back to the static pairs: {ost_unresolved[:6]}. Their coverage is "
-              f"NOT guaranteed; the audit must re-examine them.")
+    # NO FALLBACK REPORT, because there is no fallback any more: a structure with even one
+    # unresolved pose refuses the whole build. "Named but accepted" was the weaker guarantee the
+    # review rejected.
 if skipped:
     print(f"  SKIPPED {len(skipped)}: {skipped[:5]}")

@@ -152,11 +152,14 @@ not.
 
 **Two things that bound the concern, neither of which makes it go away.**
 
-*The mean-centring absorbs the level, not the ordering.* The loss is
-`[(s_i − mean_s) − (g_i − mean_g)]²` with one shared mask per structure, so `d0` and every other
-per-interface constant cancel exactly. Only a change in the **ordering or the gaps** between a
-structure's poses can hurt. That is the narrower question, and it is the one the review's proposed
-Spearman measurement would answer.
+*The mean-centring absorbs additive offsets — and NOT d0.* **I had this wrong and the second
+review corrected it.** I wrote that one shared mask makes `d0` "cancel exactly". It does not. iTM's
+per-pair contribution is `1 / (1 + (d/d0)²)`, so `d0` enters **nonlinearly**: changing it reweights
+how different distance errors count, which can move the relative gaps and the ordering between
+poses even though every pose is scored under the identical formula. A shared mask guarantees the
+poses are *comparable to each other*; it does not make the cropped and full-structure targets
+order-equivalent. What mean-centring removes is a per-interface additive offset, which is a
+strictly weaker statement than the one I made.
 
 *This mismatch is the status quo of the best result in the project.* `o2qczq` trained with the same
 full-structure `--rel-labels` at **53.3%** of tokens — more aggressive than this crop — for 31
@@ -203,3 +206,83 @@ Nine CPU suites green: `test_lean_readouts`, `test_lean_readouts_arch`, `test_ck
 `test_guard_fields`, `test_lr_schedule`.
 
 **Not launched.**
+
+---
+
+# Round 2: response to the review of e0ee07b5
+
+Both blockers fixed, the `--lean-readouts` omission fixed, and one piece of my own mathematics
+retracted. Still not launched.
+
+## Blocker 1 — the launcher could still use the old mask. FIXED.
+
+The review is right: the response said "the arm should not launch on the static-only mask" and the
+launcher only checked `[ -f "$MASK" ]`. A content digest proves the file has not *changed*; it
+cannot prove the file was *correct*. A static-only mask hashes just as stably as the right one.
+
+* `build_union_crop_masks.py` now records `force_gt`, `ost_pairs`,
+  `ost_poses_per_structure` and the list of `ost_extra_structures` in `__meta`.
+* New `run_logging/check_crop_mask.py` reads that metadata and refuses a mask that does not
+  establish the required configuration — missing `__meta`, absent `force_gt` or `ost_pairs`, the
+  wrong structure count, any structure built from the wrong pose count, or the wrong
+  margin/contact.
+* The launcher points at `union_crop_m5_gt_ost.npz`, runs that check as a gate, and its documented
+  build command now carries `--force-gt --ost-pairs --fold`.
+
+Verified by refusing the two masks that exist: both the static-only one and the first `--ost-pairs`
+build (which predates the metadata) are rejected, each naming exactly what it fails.
+
+## Blocker 2 — partial OST resolution was accepted. FIXED.
+
+Right again, and the invariant is stated better in the review than it was in my code: not "at
+least one mapping exists" but "every supervised pose's mapping was examined". A structure with 49
+of 50 poses resolved was being accepted, and the unexamined pose can reference a pair absent from
+the forced set.
+
+* `ost_pairs_for()` returns a `failures` list of `(seed, sample, why)` instead of silently
+  `continue`-ing, and a seed whose unit dir cannot be resolved counts **all** `nsample` of its
+  poses as failures rather than zero.
+* The caller refuses the whole build unless `n_resolved == len(seeds) * nsample` with no failures,
+  naming the first offenders and their reasons.
+* **The fallback is gone, not merely reported.** "Named but accepted" still shipped a mask whose
+  guarantee did not hold for the named structures.
+* `--ost-pairs` now requires `--seed-base` and `--budget`, so an empty seed range cannot examine
+  zero poses while the metadata claims otherwise.
+
+## `--lean-readouts` — FIXED
+
+It is now in the launcher's argv, with a header note giving the reason: 2.7 GB at the 855-token
+boundary for bit-identical PAE logits.
+
+## WHAT FINDING 2 ACTUALLY COST, now measured
+
+The first `--ost-pairs` build reported it:
+
+> **37 structure(s) had an OST-resolved pair the static pool mapping does NOT name**
+
+So on **37 of 368 structures (10%)** the forced set would have protected the wrong chain pair.
+Finding 2 was not hypothetical.
+
+## The d0 argument — I was wrong, and the correction stands
+
+See the retraction inline in finding 3 above. `d0` enters iTM as `1 / (1 + (d/d0)²)`, so it is not
+an additive offset and mean-centring does not cancel it. A shared mask makes the poses comparable
+to one another; it does not make the cropped and full-structure targets order-equivalent. My
+"cancel exactly" was too strong.
+
+I accept the review's framing: this is an **intentional approximation** — predict full-structure
+quality from partial context — and should be documented as such rather than described as
+crop-consistent supervision. It is not a claim that the targets agree.
+
+## Agreed plan
+
+1. Mask rebuilt under the current code, so coverage is enforced rather than asserted. *(in flight)*
+2. One GPU canary in the production configuration — cropped input, lean readouts, dropout 0.25,
+   both pose pathways, cross-seed relative regression, checkpointing on and off across the
+   threshold — checking finite gradients, real peak memory, and Pass A/Pass B agreement.
+3. A **short pilot**, not 60 epochs, with uncropped held-out and uncropped in-sample selected
+   DockQ as the primary readouts and cropped training Spearman as secondary.
+
+Finding 3's label experiment is deferred past the pilot, as the review allows.
+
+Nine CPU suites green. **Not launched.**
