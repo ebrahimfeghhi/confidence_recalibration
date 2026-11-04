@@ -1266,3 +1266,39 @@ been wrong. No `--crop-tokens` eval had ever run, which is why it survived.
 Training keeps peripheral tokens 35% of the time (`--token-keep-other 0.35`); a pure union-crop
 eval keeps **none** of them. So the eval is not the training distribution either. The two cropped
 readings bracket it: pure union is 0% periphery, uncropped is 100%, training sits at 35%.
+
+### THE TWO POOLS DISAGREE ABOUT WHICH MARGIN MATCHES TRAINING
+
+Corrects a claim made in session, that the +5 A condition is further from the training
+distribution than margin 0. That is true on held out and **false on train**, and the reason is
+worth keeping.
+
+The arm trains on **0.581-0.587 of tokens** (`run.log`'s own token-draw line across epochs
+20-24). Token dropout keeps 90% of the union AND **35% of the periphery**, and that periphery
+contribution is what lifts the margin-0 union's 0.414 up to 0.583.
+
+| mask | structures | poses per union | kept, median | vs training's ~0.583 |
+|------|-----------|-----------------|--------------|----------------------|
+| train, m0 posefree | 368 | 50 | 0.4142 | 0.169 BELOW |
+| train, m0 gt_ost (the training mask) | 368 | 50 | 0.4148 | 0.168 below |
+| train, m5 posefree | 368 | 50 | **0.5969** | **0.013 above** |
+| held out, m0 posefree | 53 | 150 | 0.5714 | 0.012 below |
+| held out, m5 posefree | 53 | 150 | 0.7436 | 0.161 above |
+
+**So on the in-sample pool, margin 5 reconstitutes almost exactly the amount of peripheral
+context the dropout was already feeding the head** -- 0.597 against 0.583 -- while margin 0 is
+0.17 short of it. On held out the ordering flips: margin 0 is the near match at 0.571 and margin
+5 overshoots.
+
+The flip is not a rule difference. Both pools use the identical crop rule; the held-out union
+spans **150 poses against train's 50** (budget 30 x nsample 5 against 10 x 5), so the union is
+simply wider there at every margin. Any comparison that reads "matched to training" off one pool
+and applies it to the other will get the sign wrong.
+
+WHAT THAT DOES TO THE READ. The in-sample cell under margin 5 is now the nearest thing to an
+on-distribution cropped read that exists for this arm, which makes it the more informative
+in-sample condition, not the less. The held-out cell has no training distribution to match -- the
+head never saw those structures -- so there both margins are legitimate inference-time choices and
+the monotone sequence in tokens kept (0.571 -> 0.744 -> 1.000 uncropped) is the thing to read: a
+metric that moves monotonically with crop size is showing a crop-size effect, and the middle point
+is what separates that from a context effect.
