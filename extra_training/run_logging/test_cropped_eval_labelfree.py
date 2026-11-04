@@ -267,6 +267,58 @@ if have_pf:
     check("and that is not cosmetic: the old filter would have counted 107 of 53",
           real == 53 and old_count == 107, f"{old_count} -> {real}")
 
+# ------------------------------------------------------------------ 8. the reconstruction check
+# THE GUARD MUST ACTUALLY FIRE. Everything the report prints is rebuilt by re-selecting poses, so
+# a mistake in the report would produce a confident table nobody could tell from a real one. The
+# check reproduces the evaluator's own saved mean; here it is handed a perturbed summary and must
+# refuse the whole table rather than print it. Raised in review.
+import shutil
+SRC = os.path.join(ROOT, "training", "runs", "cropped_eval")
+if os.path.exists(os.path.join(SRC, "valfull_ours_ep30.json")):
+    with tempfile.TemporaryDirectory(dir=os.path.join(ROOT, "training", "runs")) as td:
+        for n in ("valfull_ours_ep30", "valfull_shipped"):
+            shutil.copyfile(os.path.join(SRC, n + ".json"), os.path.join(td, n + ".json"))
+            os.symlink(os.path.join(SRC, n), os.path.join(td, n))
+        rel = os.path.relpath(td, ROOT)
+
+        def _report(where):
+            r = subprocess.run([PY_BIN, "-I", REPORT, "--out", where, "--rid", "t4jtjr",
+                                "--epoch", "30", "--legacy-unfingerprinted"],
+                               cwd=ROOT, capture_output=True, text=True)
+            return r.returncode, r.stdout + r.stderr
+
+        rc, out = _report(rel)
+        check("the untouched copy still reproduces the saved means",
+              rc == 0 and "rows reproduce the evaluator" in out)
+
+        # a mean that disagrees by more than one rounding step must stop the report
+        jp = os.path.join(td, "valfull_ours_ep30.json")
+        d = json.load(open(jp))
+        true_mean = d["mean_dockq"]
+        d["mean_dockq"] = round(true_mean + 0.01, 4)
+        json.dump(d, open(jp, "w"))
+        rc, out = _report(rel)
+        check("A PERTURBED SUMMARY MEAN IS FATAL, not a warning",
+              rc != 0 and "does not reproduce the pass it is describing" in out,
+              f"mean_dockq {true_mean} -> {d['mean_dockq']}")
+        check("and the refusal says not to read the table",
+              "Do not read the table" in out)
+
+        # a rounding-sized disagreement must NOT stop it, or the check would be unusable
+        d["mean_dockq"] = true_mean
+        json.dump(d, open(jp, "w"))
+        rc, out = _report(rel)
+        check("a rounding-sized difference is tolerated", rc == 0)
+
+        # and a summary claiming the wrong interface count must stop it
+        d["n_interfaces"] = 91
+        json.dump(d, open(jp, "w"))
+        rc, out = _report(rel)
+        check("an interface count that disagrees with the rows is fatal",
+              rc != 0 and ("rows carry" in out or "expected" in out))
+else:
+    print("  note  the ground-truth-cropped arm's passes are absent; reconstruction cases skipped")
+
 print()
 if FAIL:
     print(f"{len(FAIL)} FAILED: " + "; ".join(FAIL))

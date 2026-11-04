@@ -126,6 +126,45 @@ def _rows(tag, who, stem):
     return out
 
 
+def _verify(tag, who, sel, summary):
+    """Reconstruction must reproduce the evaluator's OWN saved means. Raised in review.
+
+    Everything this report prints -- every delta, every paired s.e., every better/worse split --
+    is built by re-selecting poses here rather than by reading the evaluator's numbers. That makes
+    a paired error bar possible, and it also means a mistake in THIS file (a tie broken the other
+    way, a column read as the wrong one, an interface dropped for a blank dockq) would produce a
+    confident table nobody could distinguish from a real one. So the pool mean is recomputed from
+    the same selections and checked against the json the evaluator wrote.
+
+    The json rounds to 4 dp, so the tolerance is one rounding step plus slack, and a mismatch is
+    FATAL rather than a warning: a report that cannot reproduce the evaluator's own mean has no
+    standing to report anything else.
+    """
+    TOL = 1.5e-4
+    # WHICH RECONSTRUCTION MAPS TO WHICH FIELD DEPENDS ON --select-by. mean_dockq is the metric
+    # under the pass's own select_by; mean_dockq_select_max is always the max-selected one.
+    by_rule = {"mean": [t[0] for t in sel.values() if t[0] is not None],
+               "max": [t[1] for t in sel.values()]}
+    want = [("mean_dockq", by_rule.get(summary.get("select_by") or "max")),
+            ("mean_dockq_select_max", by_rule["max"])]
+    for field, vals in want:
+        if field not in summary or not vals:
+            continue
+        got = st.mean(vals)
+        ref = float(summary[field])
+        if abs(got - ref) > TOL:
+            sys.exit(f"STOP: {tag} {who}: this report reconstructs {field}={got:.6f} from "
+                     f"{len(vals)} interface(s), but the evaluator saved {ref:.4f} "
+                     f"(off by {got - ref:+.6f}, tolerance {TOL:g}). The per-interface selection "
+                     f"in cropped_eval_report.py does not reproduce the pass it is describing, so "
+                     f"every delta and error bar below it is unreliable. Do not read the table.")
+    # AND THE INTERFACE COUNT, which a mask covering the wrong pool would change silently.
+    if summary.get("n_interfaces") and len(sel) != int(summary["n_interfaces"]):
+        sys.exit(f"STOP: {tag} {who}: rows carry {len(sel)} interface(s), the summary says "
+                 f"{summary['n_interfaces']}.")
+    return True
+
+
 def _paired(ours, theirs):
     """Mean paired difference, its s.e., and the 95% bar, over the interfaces BOTH cover."""
     keys = sorted(set(ours) & set(theirs))
@@ -157,7 +196,13 @@ for tag, n_expect in POOLS:
 
     print(f"\n  === {tag}, {n_expect} interfaces, cropped ===")
     ro, rs = _rows(tag, "ours", o_stem), _rows(tag, "shipped", s_stem)
+    if ro:
+        _verify(tag, "ours", ro, co)
+    if rs:
+        _verify(tag, "shipped", rs, cs)
     if ro and rs:
+        print(f"    rows reproduce the evaluator's saved means for both heads "
+              f"({len(ro)} and {len(rs)} interfaces)")
         pri = _paired({k: v[0] for k, v in ro.items() if v[0] is not None},
                       {k: v[1] for k, v in rs.items()})
         dia = _paired({k: v[0] for k, v in ro.items() if v[0] is not None},
