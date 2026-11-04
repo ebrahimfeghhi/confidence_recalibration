@@ -452,3 +452,48 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 10/60: 1220 unit(s)
   epoch 10/60: 1220 unit(s)
   epoch 10/60: 1220 unit(s)
+  epoch 10 took 45.0 min for 1220 unit(s), 122 optimiser step(s), 0.44 s/pose
+  epoch 10 took 45.0 min for 1220 unit(s), 122 optimiser step(s), 0.44 s/pose
+  [rank 2] epoch 10 took 45.0 min -- apply_step_total 0.4m/122  cpucrop_label 0.0m/1220  cpucrop_slice 21.3m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 10.0m/2440  cropped_tokens mean 376  gpu_backward 15.3m/6100  gpu_forward 12.7m/12200  grad_collective_plus_wait 0.3m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 6.5m/122  pose_a_total 6.5m/6100  pose_total 19.5m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 2.0m/122  rank_pass_a 14.1m/122  trunk_read_plus_crop_tokens 0.0m/1233  unit_setup 10.1m/2440
+  [rank 2] epoch 10 prefetch (4 worker(s)): 1207/1220 hit (98.9%), 0.0 min waiting on the worker, 13 evicted-then-wanted, 0 asked after the workers finished
+  [rank 2] epoch 10 token draw: kept 0.5803 of tokens over 2453 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.94x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 1] epoch 10 took 45.0 min -- apply_step_total 0.4m/122  cpucrop_label 0.0m/1220  cpucrop_slice 16.2m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 7.0m/2440  cropped_tokens mean 378  gpu_backward 16.1m/6100  gpu_forward 13.0m/12200  grad_collective_plus_wait 0.3m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 5.8m/122  pose_a_total 6.7m/6100  pose_total 20.4m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 4.7m/122  rank_pass_a 11.4m/122  trunk_read_plus_crop_tokens 0.0m/1220  unit_setup 7.0m/2440
+  [rank 1] epoch 10 prefetch (4 worker(s)): 1220/1220 hit (100.0%), 0.0 min waiting on the worker
+  [rank 1] epoch 10 token draw: kept 0.5788 of tokens over 2440 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.94x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 2] epoch 10 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2431 over 735 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 1] epoch 10 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2431 over 735 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 2] epoch 10 SCORE SPREAD: median std(predicted) 0.0197 against std(true iTM) 0.0695, median ratio 0.364   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 2] epoch 10 rank-loss (rel, cross-seed pairs): +0.01116 over 735 interface-group(s) in 122 step(s), 36750 pair(s)
+  [rank 2] epoch 10 accounted 45.3m of 45.0m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 1] epoch 10 SCORE SPREAD: median std(predicted) 0.0197 against std(true iTM) 0.0695, median ratio 0.364   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 2] epoch 10 unit_setup 10.1m, of which 31.4m is already in named leaves -> -21.4m of the residual is INSIDE units, the rest is between them
+  [rank 1] epoch 10 rank-loss (rel, cross-seed pairs): +0.01116 over 735 interface-group(s) in 122 step(s), 36750 pair(s)
+  [rank 1] epoch 10 accounted 45.3m of 45.0m, residual -0.3m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 1] epoch 10 unit_setup 7.0m, of which 23.3m is already in named leaves -> -16.2m of the residual is INSIDE units, the rest is between them
+  [rank 2] epoch 10 memory: peak allocated 72.95 GB, peak reserved 73.56 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2418 unit(s) UNCHECKPOINTED, 22 checkpointed
+  [rank 1] epoch 10 memory: peak allocated 72.95 GB, peak reserved 73.53 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2402 unit(s) UNCHECKPOINTED, 38 checkpointed
+  epoch 10 took 45.0 min for 1220 unit(s), 122 optimiser step(s), 0.44 s/pose
+  [rank 0] epoch 10 took 45.0 min -- apply_step_total 0.4m/122  cpucrop_label 0.0m/1220  cpucrop_slice 14.8m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 9.5m/2440  cropped_tokens mean 381  gpu_backward 16.6m/6100  gpu_forward 13.4m/12200  grad_collective_plus_wait 0.2m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 3.1m/122  pose_a_total 6.9m/6100  pose_total 21.0m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 4.1m/122  rank_pass_a 12.0m/122  trunk_read_plus_crop_tokens 0.0m/1595  unit_setup 9.5m/2440
+  [rank 0] epoch 10 prefetch (4 worker(s)): 845/1220 hit (69.3%), 0.0 min waiting on the worker, 375 evicted-then-wanted, 0 asked after the workers finished
+  [rank 0] epoch 10 token draw: kept 0.5850 of tokens over 2815 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.96x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 0] epoch 10 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2431 over 735 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 0] epoch 10 SCORE SPREAD: median std(predicted) 0.0197 against std(true iTM) 0.0695, median ratio 0.364   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 0] epoch 10 rank-loss (rel, cross-seed pairs): +0.01116 over 735 interface-group(s) in 122 step(s), 36750 pair(s)
+  [rank 0] epoch 10 accounted 45.2m of 45.0m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 0] epoch 10 unit_setup 9.5m, of which 24.4m is already in named leaves -> -14.8m of the residual is INSIDE units, the rest is between them
+  [rank 0] epoch 10 memory: peak allocated 72.95 GB, peak reserved 73.51 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2400 unit(s) UNCHECKPOINTED, 40 checkpointed
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/y8pyuq/resume_ep10.pt (227 MiB: head + AdamW moments + step)
+  evaluating epoch 10 (valfull) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:6051: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/y8pyuq/metric_valfull_ep10.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 10 TRAIN: mean_dockq 0.5873  frac_acc 0.7500  oracle 0.6926 / 0.8587  headroom 0.1053  (92 interfaces)
+  extra eval 'insample': pool training/full_train/pool_winnable.csv, budget 10, every 10 epoch(s), uncropped
+  evaluating epoch 10 (full_train) sharded over GPU(s) 4,5,7
+/home/ebrahim/confidence_recalibration/extra_training/phases/phase_k_train.py:6051: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/ebrahim/confidence_recalibration/extra_training/training/runs/y8pyuq/metric_insample_ep10.json' mode='r' encoding='UTF-8'>
+  m = json.load(open(mj))
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+  epoch 10 TRAIN: mean_dockq 0.5396  frac_acc 0.6965  oracle 0.7015 / 0.9363  headroom 0.1619  (738 interfaces)
+  epoch 11/60: 1220 unit(s)  epoch 11/60: 1220 unit(s)  epoch 11/60: 1220 unit(s)
+
+
