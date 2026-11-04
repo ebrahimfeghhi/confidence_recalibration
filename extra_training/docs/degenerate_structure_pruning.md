@@ -237,36 +237,6 @@ rather than 131 because many of those clusters already hold two retained structu
 The 49 are post-cutoff-only clusters whose sole usable structure is already folded and degenerate.
 They survive as cluster coverage only through that one-seed structure.
 
-## Ledger
-
-| | GiB |
-|---|---|
-| free now | 536.2 |
-| + trim 220 degenerate training structures to 1 seed | +565.5 |
-| + trim 26 degenerate validation structures to 1 seed | +330.2 |
-| + trim 27 validation structures to 30 seeds | +258.7 |
-| **available** | **1,690.6** |
-| − wave 1 fold | −619.6 |
-| **spare after wave 1** | **1,071.0** |
-
-Nothing is deleted anywhere in wave 1. Every cut is a seed trim, so every cluster that has any
-folded structure keeps coverage: 194 of 493 in training (plus the 364 new folds) and 40 of 40 in
-validation.
-
-## Known risks, accepted
-
-1. **The 44% degeneracy rate will apply to the new folds too.** It was measured on this pipeline
-   on this data: 220 of 500. If it holds, roughly 160 of the 364 new structures come back
-   degenerate, so "end with >= 2" of 95 is optimistic and perhaps 130 of the 299 pre-only clusters
-   will be stranded on a degenerate single structure. Wave 2 exists to absorb this.
-2. **The pre-cutoff rate is unmeasured.** All 44% comes from post-cutoff structures. Pre-cutoff
-   complexes are inside Protenix's training set, so their poses may be systematically better and
-   degenerate in the SATURATED direction instead, at an unknown rate. 299 of the 364 wave-1 folds
-   are pre-cutoff, so wave 1 is the first measurement of it.
-3. **Wave-to-wave latency is unmeasured.** Knowing which new structures are degenerate requires
-   the fold AND the label build, the coordinate-based sample-index match, and the rescore. Only
-   the fold stage has a measured rate (1.0 min/unit/worker); the rest does not.
-
 ## Step 4 — grow validation, post-cutoff only
 
 Validation structures must be **post-cutoff**; the clusters they come from may be mixed.
@@ -315,3 +285,18 @@ compete for cards; the stage has no measured rate.
 | **spare after wave 1** | **937.4** |
 
 Fold total: 3,640 + 3,000 = **6,640 units, roughly 37 h on 3 cards.**
+
+
+## Known risks, accepted
+
+1. **The 44% degeneracy rate will apply to the new folds too.** It was measured on this pipeline
+   on this data: 220 of 500. If it holds, roughly 160 of the 364 new structures come back
+   degenerate, so "end with >= 2" of 95 is optimistic and perhaps 130 of the 299 pre-only clusters
+   will be stranded on a degenerate single structure. Wave 2 exists to absorb this.
+2. **The pre-cutoff rate is unmeasured.** All 44% comes from post-cutoff structures. Pre-cutoff
+   complexes are inside Protenix's training set, so their poses may be systematically better and
+   degenerate in the SATURATED direction instead, at an unknown rate. 299 of the 364 wave-1 folds
+   are pre-cutoff, so wave 1 is the first measurement of it.
+3. **Wave-to-wave latency is unmeasured.** Knowing which new structures are degenerate requires
+   the fold AND the label build, the coordinate-based sample-index match, and the rescore. Only
+   the fold stage has a measured rate (1.0 min/unit/worker); the rest does not.
