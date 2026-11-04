@@ -1,9 +1,24 @@
 #!/usr/bin/env python
 """Watch the Wave 1 fold queue, process finished pilot structures, write a pilot report.
 
-IT NEVER TOUCHES A GPU AND IT NEVER TOUCHES THE QUEUE. It polls for finished structures, runs the
-CPU stages on them, and writes a report. If it falls behind the folding queue that is fine and
-expected -- the report arrives late, the queue does not wait.
+IT IS ONLY A MONITOR. It never touches a GPU, never signals any process, never inspects or pauses
+the fold queue, and nothing it finds can stop Wave 1. Wave 1 runs to completion regardless.
+
+TWO REPORTS, because the useful metrics arrive at different times.
+
+  INTERIM, as soon as --min-structures pilot structures are complete: everything measurable
+  WITHOUT DockQ -- how many finished, cluster and antigen and antibody diversity, the pre- versus
+  post-cutoff split, disk per structure and per seed, and fold throughput. This is the early
+  signal, and producing it costs nothing but a few npz header reads.
+
+  FULL, only after the WHOLE queue has drained: adds DockQ distribution, within-interface spread,
+  acceptable-pose frequency and degeneracy rates.
+
+WHY THE DOCKQ STAGES WAIT. They need phase_i_check.py rescore, which has no --only -- it iterates
+every pdb and seed in the pool. Run it mid-fold and it scores units from structures still being
+written, off partially written poses. That is a race with the queue, so it waits until there is
+nothing to race with. The alternative, scoping the scorer, would mean modifying a scoring path
+that every existing number depends on; not worth it to get DockQ a few hours earlier.
 
 A STRUCTURE IS "DONE" ONLY ON AN EXPLICIT MARKER, never on file existence. A trunk npz appears the
 moment the writer opens it, so presence proves a fold STARTED. This requires all --seeds units to
@@ -100,10 +115,23 @@ def run_stage(name, cmd, log_dir, timeout, env=None):
     return rc
 
 
+def queue_drained(queue, a):
+    """True when every structure in the WHOLE queue is complete, not just the pilot.
+
+    This is the gate on the DockQ stages. phase_i_check.py rescore has no --only: it iterates
+    every pdb and seed in the pool, so running it while the fold is still writing would score
+    units from in-flight structures off partially written poses. That is a race with the queue,
+    and the instruction is that this process is ONLY a monitor -- so the DockQ stages wait until
+    there is nothing left to race with.
+    """
+    for x in queue:
+        if not finished(x["pdb"], a.fold_root, list(range(500000, 500000 + x["seeds"])), a.settle):
+            return False
+    return True
+
+
 def process_structure(pdb, a):
-    """THE DOWNSTREAM CHAIN, actually invoked. Raised in review: this file detected completed
-    structures and then read results.csv, without ever running the stages that WRITE results.csv
-    -- so the report could never materialise.
+    """THE DOWNSTREAM CHAIN. Only ever called AFTER queue_drained() -- see the note there.
 
     Two stages, in order, because the second reads what the first produces:
 
@@ -261,9 +289,9 @@ ap.add_argument("--nsample", type=int, default=5)
 ap.add_argument("--stage-logs", default="training/full_train/wave1_pilot_logs")
 ap.add_argument("--stage-timeout", type=int, default=7200)
 ap.add_argument("--skip-stages", action="store_true",
-                help="detect and report only, for when another process owns the downstream "
-                     "stages. The report then waits on that process rather than producing DockQ "
-                     "itself.")
+                help="never run the DockQ stages at all, not even after the queue drains. The "
+                     "report then carries only the no-DockQ metrics and waits for whoever owns "
+                     "those stages.")
 a = ap.parse_args()
 
 deprioritise(a.nice)
@@ -291,23 +319,40 @@ while True:
         if finished(p, a.fold_root, seeds_of[p], a.settle):
             newly.append(p)
     if newly:
-        print(f"[{time.strftime('%H:%M:%S')}] newly complete: {len(newly)}; running downstream "
-              f"stages at most {a.jobs} at a time")
-        # AT MOST --jobs AT A TIME, and sequentially within a batch, so the folding queue keeps
-        # the machine. Falling behind the fold is expected and fine; the report arrives late.
-        for i in range(0, len(newly), a.jobs):
-            for pdb in newly[i:i + a.jobs]:
+        # OBSERVE ONLY. Completions are recorded; nothing downstream runs yet. The DockQ stages
+        # are deferred until the whole queue has drained, because the scorer cannot be scoped to
+        # one structure and would otherwise race the fold.
+        state["done"] += newly
+        json.dump(state, open(SP, "w"), indent=1)
+        print(f"[{time.strftime('%H:%M:%S')}] newly complete: {len(newly)} "
+              f"-> {len(state['done'])}/{len(pilot)} pilot structures (observed, not processed)")
+    done = set(state["done"])
+
+    # INTERIM REPORT -- everything measurable WITHOUT DockQ, written as soon as enough pilot
+    # structures are complete. This is what makes the pilot useful early without touching the
+    # queue: diversity, composition, disk per structure and per seed, and fold throughput.
+    if len(done) >= a.min_structures and not state.get("interim_written"):
+        out = report(queue, done, {}, os.path.join(ROOT, a.report.replace(".md", "_interim.md")),
+                     qcomp, {"elapsed_hours": round((time.time() - t0) / 3600, 2),
+                             "structures_per_hour": round(len(done) / max(1e-9, (time.time() - t0) / 3600), 2)},
+                     state["failed"])
+        state["interim_written"] = True
+        json.dump(state, open(SP, "w"), indent=1)
+        print(f"  WROTE INTERIM {out} -- no DockQ in it; the scorer waits for the queue")
+
+    # THE DOCKQ STAGES, only once there is nothing left to race with.
+    if len(done) >= a.min_structures and not a.skip_stages and queue_drained(queue, a):
+        print(f"[{time.strftime('%H:%M:%S')}] queue drained -- running DockQ stages now")
+        for i in range(0, len(sorted(done)), a.jobs):
+            for pdb in sorted(done)[i:i + a.jobs]:
+                if pdb in state.get("processed", []):
+                    continue
                 ok, note = process_structure(pdb, a)
-                if ok:
-                    state["done"].append(pdb)
-                else:
+                state.setdefault("processed", []).append(pdb)
+                if not ok:
                     state["failed"].append((pdb, note))
                     print(f"    {pdb}: FAILED -- {note}")
             json.dump(state, open(SP, "w"), indent=1)
-        print(f"    processed -> {len(state['done'])}/{len(pilot)} done, "
-              f"{len(state['failed'])} failed")
-    done = set(state["done"])
-    if len(done) >= a.min_structures:
         by_if = dockq_rows(os.path.join(ROOT, a.results), done)
         covered = {i.split("_")[0] for i in by_if}
         missing = done - covered
