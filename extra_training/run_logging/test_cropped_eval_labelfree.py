@@ -153,18 +153,23 @@ check("the guard digest is reproduced with phase_k_train's own algorithm",
 
 # ------------------------------------------------------------------ 5. the report
 rep = subprocess.run([PY_BIN, "-I", REPORT, "--out", "training/runs/cropped_eval",
-                      "--rid", "t4jtjr", "--epoch", "30"],
+                      "--rid", "t4jtjr", "--epoch", "30", "--legacy-unfingerprinted"],
                      cwd=ROOT, capture_output=True, text=True)
 check("the report reads the ground-truth-cropped arm's pre-fingerprint passes",
-      rep.returncode == 0 and "+0.0163" in rep.stdout,
+      rep.returncode == 0 and "+0.0226" in rep.stdout,
       rep.stdout.strip().split("\n")[-1][:90] if rep.stdout else rep.stderr[:90])
-check("the report prints the cropped-minus-uncropped gap, which is the result",
-      "the crop is worth" in rep.stdout)
+check("the report prints the cropped-minus-uncropped gap",
+      "cropped PRIMARY minus uncropped" in rep.stdout)
+# THE CORRECTION THIS REVIEW FORCED. With the bar computed rather than carried over from the
+# uncropped comparison, the ground-truth-cropped arm's held-out cropped gain does NOT clear it.
+check("and does NOT announce the ground-truth-cropped arm's held-out gain as significant",
+      "n=92" in rep.stdout and rep.stdout.count("inside the noise") >= 2,
+      "+0.0226 on a +0.0245 bar")
 rep3 = subprocess.run([PY_BIN, "-I", REPORT, "--out", "training/runs/cropped_eval",
-                       "--rid", "t4jtjr", "--epoch", "3"],
+                       "--rid", "t4jtjr", "--epoch", "3", "--legacy-unfingerprinted"],
                       cwd=ROOT, capture_output=True, text=True)
 check("epoch 3 does NOT match epoch 30's passes",
-      "no cropped pass on disk" in rep3.stdout, rep3.stdout.strip()[-80:])
+      "no pass on disk" in rep3.stdout, rep3.stdout.strip()[-80:])
 
 # ------------------------------------------------------------------ 6. the script
 sh = open(SCRIPT).read()
@@ -176,6 +181,91 @@ check("the script never launches or stops a trainer",
       not any(t in sh for t in ("stop_run.sh", "nohup", "launch_")))
 check("the script defaults to the label-free variant",
       "VARIANT=${3:-posefree}" in sh)
+
+# ------------------------------------------------------------------ 7. the review fixes
+# (a) THE FINGERPRINT MUST FOLLOW MASK CONTENTS, NOT THE FILENAME. Same path, one bit flipped:
+# before the fix both runs produced the same id, so the evaluator reused result files computed on
+# the OLD tokens. Raised in review.
+if have_pf:
+    import shutil
+    with tempfile.TemporaryDirectory(dir=os.path.join(ROOT, "training", "valfull")) as td:
+        same = os.path.join(td, "m.npz")
+        shutil.copyfile(os.path.join(ROOT, VF_PF), same)
+        rel = os.path.relpath(same, ROOT)
+        rc1, o1 = run_eval("--insample-crop-tokens", IS_PF, "--valfull-crop-tokens", rel)
+        id1 = re.search(r"^CROP_ID=(\w+)$", o1, re.M)
+        z = np.load(same, allow_pickle=True)
+        d = {k: z[k] for k in z.files}
+        tgt = sorted(k for k in d if not k.endswith(("__n", "__pairs")) and k != "__meta")[0]
+        d[tgt] = np.asarray(d[tgt]).copy()
+        d[tgt][0] = not bool(d[tgt][0])
+        np.savez(same, **d)
+        rc2, o2 = run_eval("--insample-crop-tokens", IS_PF, "--valfull-crop-tokens", rel)
+        id2 = re.search(r"^CROP_ID=(\w+)$", o2, re.M)
+        check("A MASK REBUILT UNDER THE SAME FILENAME GETS A NEW FINGERPRINT",
+              rc1 == 0 and rc2 == 0 and id1 and id2 and id1.group(1) != id2.group(1),
+              f"{id1.group(1) if id1 else '?'} -> {id2.group(1) if id2 else '?'}")
+
+# (b) THE REPORT MUST BE BOUND TO ONE CROP. It used to glob and take the newest by mtime, so
+# running posefree, then gt_ost, then the posefree report printed gt_ost numbers.
+rc = subprocess.run([PY_BIN, "-I", REPORT, "--out", "training/runs/cropped_eval",
+                     "--rid", "t4jtjr", "--epoch", "30"], cwd=ROOT, capture_output=True, text=True)
+check("the report refuses to run without a crop id",
+      rc.returncode != 0 and "exactly one of" in (rc.stdout + rc.stderr))
+rc = subprocess.run([PY_BIN, "-I", REPORT, "--out", "training/runs/cropped_eval", "--rid",
+                     "t4jtjr", "--epoch", "30", "--crop-id", "deadbeef",
+                     "--legacy-unfingerprinted"], cwd=ROOT, capture_output=True, text=True)
+check("and refuses both at once, which would be two answers to which files to read",
+      rc.returncode != 0 and "exactly one of" in (rc.stdout + rc.stderr))
+rc = subprocess.run([PY_BIN, "-I", REPORT, "--out", "training/runs/cropped_eval", "--rid",
+                     "t4jtjr", "--epoch", "30", "--crop-id", "deadbeef"],
+                    cwd=ROOT, capture_output=True, text=True)
+check("a crop id with no passes on disk reports MISSING, never another variant's files",
+      rc.returncode == 0 and "no pass on disk for this crop" in rc.stdout
+      and "0.0163" not in rc.stdout and "0.0226" not in rc.stdout)
+
+# (c) TWO BASELINES, REPORTED SEPARATELY. The cropped delta used ours-mean against shipped-MEAN
+# while the uncropped delta used the shipped head's RECORDED ipTM, so the gap between them moved
+# the crop AND the shipped readout at once.
+rc = subprocess.run([PY_BIN, "-I", REPORT, "--out", "training/runs/cropped_eval", "--rid",
+                     "t4jtjr", "--epoch", "30", "--legacy-unfingerprinted"],
+                    cwd=ROOT, capture_output=True, text=True)
+check("the report separates the shipped MAX primary from the shipped MEAN diagnostic",
+      "PRIMARY    ours mean-sel vs shipped MAX-sel" in rc.stdout
+      and "DIAGNOSTIC ours mean-sel vs shipped mean-sel" in rc.stdout)
+check("and labels the cropped-minus-uncropped gap as indicative, not an estimate",
+      "indicative" in rc.stdout and "recomputed vs stored" in rc.stdout)
+
+# (d) ERROR BARS COMPUTED PER COMPARISON, NOT HARDCODED. The old file carried a 0.0044 s.e. and a
+# +0.009 bar from an uncropped comparison on a different head. Cropping nearly triples the
+# per-interface spread, so those numbers turned an inside-the-noise delta into "3.7 s.e.".
+rsrc = open(REPORT).read()
+_code = rsrc.split('"""', 2)[2] if rsrc.count('"""') >= 2 else rsrc
+check("no hardcoded s.e. or significance bar survives in the report's CODE",
+      "0.0044" not in _code and "0.009" not in _code
+      and not re.search(r"^(SE|BAR)\s*(,|=)", _code, re.M),
+      "the docstring still cites them while explaining their removal, which is intended")
+check("the paired s.e. is computed from the per-interface differences",
+      "st.stdev(d) / math.sqrt(len(d))" in rsrc and '"bar": 1.96 * se' in rsrc)
+check("the report prints its own s.e. and n for every delta",
+      "paired s.e." in rc.stdout and "n=92" in rc.stdout and "n=738" in rc.stdout)
+check("the computed cropped bar is far wider than the uncropped 0.009 it replaced",
+      re.search(r"n=92\s+--", rc.stdout) and "bar +0.02" in rc.stdout,
+      "cropped held-out bar is +0.02x, not +0.009")
+check("selection ties break exactly as phase_k_eval._pick does",
+      "-t[3], -t[4]" in rsrc and "_pick" in rsrc)
+
+# (e) THE MASK LOADER COUNTED __pairs AND __meta AS STRUCTURES
+esrc = open(os.path.join(ROOT, "phases", "phase_k_eval.py")).read()
+check("phase_k_eval's mask loader excludes __pairs and __meta, not just __n",
+      'k.endswith("__n") or k.endswith("__pairs") or k == "__meta"' in esrc)
+if have_pf:
+    z = np.load(os.path.join(ROOT, VF_PF), allow_pickle=True)
+    real = len([k for k in z.files
+                if not (k.endswith("__n") or k.endswith("__pairs") or k == "__meta")])
+    old_count = len([k for k in z.files if not k.endswith("__n")])
+    check("and that is not cosmetic: the old filter would have counted 107 of 53",
+          real == 53 and old_count == 107, f"{old_count} -> {real}")
 
 print()
 if FAIL:

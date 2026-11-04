@@ -286,12 +286,21 @@ if not os.path.exists(HEAD) and not a.dry_run:
 
 # THE CROP GOES IN THE FILENAME. Every pass is skipped when its .json already exists, and the
 # shipped pass carries no epoch, so a second crop variant run into the same --out would reuse the
-# FIRST variant's shipped numbers and silently compare two different crops. The fingerprint is
-# over the exact flags each pool is scored under, so changing a mask, a margin or all-poses forces
-# a fresh pass while a re-run of the same settings still reuses the cache.
-CROP_ID = hashlib.sha1(
-    repr(sorted((t, tuple(v)) for t, v in CROP_FOR.items())).encode()
-).hexdigest()[:8]
+# FIRST variant's shipped numbers and silently compare two different crops.
+#
+# THE FINGERPRINT HASHES MASK CONTENTS, NOT FILENAMES. Hashing the flags alone meant a mask
+# rebuilt under the SAME filename -- at a different margin, contact or forcing rule -- produced
+# the same fingerprint, so the evaluator reused result files computed on the OLD tokens. That is
+# the identical failure phase_k_train's crop digest exists to prevent on the training side, and it
+# is why the guard stores a digest rather than a path. Raised in review. The per-structure digests
+# go in beside the flags, so changing a margin, all-poses, or one bit of one structure's mask all
+# force a fresh pass, while a re-run of genuinely identical settings still reuses the cache.
+_CROP_PARTS = []
+for _t, _v in sorted(CROP_FOR.items()):
+    _CROP_PARTS.append((_t, tuple(_v)))
+    if _v[:1] == ["--crop-tokens"]:
+        _CROP_PARTS.append((_t + ":digest", _crop_tok_digest(_v[1])))
+CROP_ID = hashlib.sha1(repr(_CROP_PARTS).encode()).hexdigest()[:8]
 
 jobs = []
 for tag, fold, pool, sb, budget, jc in POOLS:
@@ -314,6 +323,10 @@ for tag, fold, pool, sb, budget, jc in POOLS:
         jobs.append((name, cmd))
 
 print(f"  crop fingerprint: {CROP_ID}")
+# MACHINE-READABLE, for the shell script to hand to the report. The report refuses to pick a file
+# by modification time, so it needs this exact value; parsing it out of the human line would break
+# the first time the wording changed.
+print(f"CROP_ID={CROP_ID}")
 print(f"\n  {len(jobs)} pass(es):")
 for name, _c in jobs:
     print(f"    {name}")
