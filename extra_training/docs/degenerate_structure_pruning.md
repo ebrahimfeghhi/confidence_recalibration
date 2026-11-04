@@ -165,7 +165,11 @@ antigen space. Group A is where the breadth actually comes from.
 
 ---
 
-# WAVE 1 — the agreed plan
+# WAVE 1 — SUPERSEDED, see "WAVE 1 — REVISED" below
+
+> Kept for the reasoning. Three decisions changed on 2026-11-04: validation keeps ALL 53
+> structures at 30 seeds (not 26 trimmed to 1), the 30 retained seeds are CHOSEN rather than the
+> first 30, and variable-seed trainer support is explicitly not a prerequisite for folding.
 
 Two waves. Wave 1 is specified below; its outcome sizes wave 2, which is deliberately left
 unplanned because the degeneracy rate on pre-cutoff structures is not yet known.
@@ -300,3 +304,151 @@ Fold total: 3,640 + 3,000 = **6,640 units, roughly 37 h on 3 cards.**
 3. **Wave-to-wave latency is unmeasured.** Knowing which new structures are degenerate requires
    the fold AND the label build, the coordinate-based sample-index match, and the rescore. Only
    the fold stage has a measured rate (1.0 min/unit/worker); the rest does not.
+
+
+---
+
+# WAVE 1 — REVISED
+
+The goal is **independent training-complex diversity**, not more regularisation on the existing
+set. In-sample selection has improved repeatedly without transfer; cluster coverage is the lever
+now. Folding is the critical path and nothing secondary may delay it.
+
+## Step 1 — the validation seed selection
+
+`run_logging/select_val_seeds.py`, algorithm `anchored-coverage-v1`, manifest digest
+`adbcc352fb069b63`, written to `training/valfull/seed_manifest.json`.
+
+**This is deliberate outcome-dependent construction of a DEVELOPMENT set.** It reads DockQ to
+decide which seeds survive. It is not a simulation of 30 random seeds and no aggregate from it is
+comparable to the old first-30 numbers. The final test set stays independent at all 100 seeds.
+
+The algorithm, in order:
+
+1. **Anchor on the oracle.** For every interface, force in the seed carrying its best pose. Makes
+   oracle retention exact rather than incidental.
+2. **Anchor on the threshold.** For every interface holding poses on both sides of DockQ 0.23,
+   force in the seed carrying its best pose BELOW 0.23. Without this a spanning interface can be
+   reduced to all-acceptable, deleting the decision the dev set exists to test.
+3. **Fill the rest by capped, weighted bin coverage.** Bin edges `[0, .05, .15, .23, .35, .50,
+   .70, 1.01]` with 0.23 ON a boundary; weights `[1, 1.5, 3, 3, 1.5, 1, 1]`, highest either side
+   of the threshold. Each bin has a quota proportional to its share of the full 100-seed
+   distribution, and a bin at quota earns nothing more — which is what stops the objective
+   collapsing into variance maximisation.
+4. **Joint across interfaces**, mean of the per-interface coverage score, so a 3-interface
+   structure gets one compromise subset rather than the best subset for its first interface.
+5. **Deterministic.** No RNG. Ties break on the lowest seed number, so a degenerate structure
+   whose candidates are identical falls through to seeds 400000-400029.
+
+### Method comparison, measured on all 53 structures / 92 interfaces
+
+| method | bin coverage | histogram L1 | oracle lost | sd kept | >=1 acceptable | spans 0.23 | sd < 0.05 |
+|---|---|---|---|---|---|---|---|
+| first 30 (status quo) | 0.896 | 0.0267 | 0.0245 | 0.1010 | 79/80 | 47/50 | 47 |
+| rank-stratified | 0.951 | 0.0165 | 0.0124 | 0.1087 | 79/80 | 49/50 | 42 |
+| max-variance | 0.949 | **0.1045** | 0.0005 | 0.1396 | 80/80 | 50/50 | 35 |
+| coverage greedy | 0.966 | 0.0117 | 0.0218 | 0.1050 | 80/80 | 50/50 | 43 |
+| **anchored coverage** | **0.973** | **0.0117** | **0.0000** | 0.1070 | **80/80** | **50/50** | 43 |
+
+Max-variance is the cautionary row: near-perfect oracle retention and a histogram nine times
+further from the true distribution than anchored coverage, because it keeps the extremes and
+discards the middle. Anchored coverage is better than the status quo on every column.
+
+### The selected pool, as a new reference point
+
+| | |
+|---|---|
+| shipped ipTM selection, mean DockQ | **0.5884** |
+| shipped frac_acc | **0.7391** (68 of 92) |
+| oracle mean DockQ | **0.7171** |
+| oracle frac_acc | **0.8696** (80 of 92) |
+| headroom | **0.1287** |
+| within-interface DockQ sd | median 0.0545, mean 0.1070 |
+| interfaces with sd < 0.05 | 43 of 92 |
+
+**Not comparable to shipped 0.5831 / 0.7391 on the first-30 pool.** Different pose set, chosen
+with labels. 50 of the 53 structures get a non-contiguous subset.
+
+## Step 2 — validation keeps all 53 structures at 30 selected seeds
+
+No validation structure is reduced to one seed, including the 26 degenerate ones. This holds all
+40 existing clusters and keeps the cases where the generator produces no acceptable pose, which
+are themselves a thing the head should not be rewarded for mis-ranking. Costs **96.7 GiB** more
+than the superseded plan; frees **492.2 GiB**, retaining 210.9 GiB over 1,590 units.
+
+## Step 3 — training trims, unchanged
+
+The 220 degenerate training structures go from 10 seeds to 1. Frees **565.5 GiB**. Their five
+remaining poses still carry PAE supervision AND may carry within-seed relative supervision, so
+their ranking signal is NOT assumed to be zero.
+
+## Step 4 — the fold queue
+
+`run_logging/build_wave1_queue.py` -> `training/full_train/wave1_queue.json`.
+
+**356 training structures, 3,560 units.** Per-cluster targets as before (1 pre-only, 2 mixed
+preferring post-cutoff, 2 post-only), with candidates ranked by novelty first: a new antigen
+cluster scores 4, a new antibody cluster 2, no shared chain sequence 1, then post-cutoff
+preference, then smallest tokens. Where two are taken, the pair maximising mutual difference wins.
+Every row carries `category`, `cutoff`, `tokens`, `ab_cluster`, `ag_cluster`, `ab_ag_cluster`.
+
+356 rather than 364 because the novelty ranking dedups candidates that differ only by instance.
+
+**The first 50 are the pilot, round-robined across (category, cutoff, token quartile) and
+antigen-unique-first** — explicitly NOT the 50 smallest:
+
+| | pilot (50) | full queue (356) |
+|---|---|---|
+| category/cutoff | mixed-post 2, mixed-pre 20, post-only-post 9, pre-only-pre 19 | 2 / 43 / 12 / 299 |
+| token quartiles | 10 / 10 / 14 / 16 | 93 / 86 / 89 / 88 |
+| distinct antigen clusters | **50 of 50** | 347 |
+| distinct antibody clusters | **50 of 50** | 353 |
+| tokens | 134 / 484 / 950 | 134 / 475 / 2289 |
+
+Every pilot structure is a distinct antigen family and a distinct antibody family. After the pilot
+the remainder runs smallest-first, since representativeness has already been bought.
+
+**Validation folds:** the 30 post-cutoff structures at 100 seeds (peak 445.2 GiB), then the same
+`anchored-coverage-v1` selection down to 30.
+
+## Revised ledger
+
+| | GiB |
+|---|---|
+| free now | 536.2 |
+| + trim 220 degenerate training structures to 1 seed | +565.5 |
+| + trim all 53 validation structures to 30 selected seeds | +492.2 |
+| **available** | **1,593.9** |
+| − training fold, 356 structures x 10 seeds | −619.6 |
+| − validation fold, 30 structures x 100 seeds | −445.2 |
+| **spare at peak** | **529.1** |
+| + trim the new validation structures to 30 seeds | +311.6 |
+| **spare after wave 1** | **840.7** |
+
+Fold total **6,560 units, roughly 36 h on 3 cards.** Peak use is 2,543 GiB of the 3,072 GiB quota.
+
+## Blockers before the queue can start
+
+1. **319 selected validation units have no label.** Labels exist only for seeds 400000-400029 and
+   the selection reaches outside that range on 50 of 53 structures. These must be built before any
+   validation seed is trimmed, or the selection cannot be scored. CPU-only.
+2. **The evaluator cannot read a non-contiguous seed set.** `phase_k_eval.py` enumerates
+   `range(seed_base, seed_base + budget)` at lines 376 and 1008, asserts at line 1016 that every
+   structure covers exactly `budget` seeds, and `build_union_crop_masks.py` does the same. A
+   `--seed-manifest` path is needed in both before the selected pool can be evaluated. Does not
+   block folding.
+3. **Variable-seed training support.** `phase_k_train.py` assumes a uniform seed range and fixed
+   optimiser-step quotas under `--rank-cross-seed`. Needed before training on the expanded set,
+   explicitly NOT before folding.
+
+## Data-retention safety
+
+Nothing is deleted until its replacement is verified present:
+
+- snapshot the current manifests and a full per-file disk inventory first;
+- validation seeds 30-99 stay until the 319 missing labels exist AND the manifest digest is
+  frozen (`adbcc352fb069b63`);
+- every removal is staged: move to a quarantine path, verify the retained manifest still resolves
+  through the downstream tools, then delete;
+- the original manifest and an exact list of every removed file are kept;
+- no deletion of a sole copy of anything needed to regenerate the validation selection.
