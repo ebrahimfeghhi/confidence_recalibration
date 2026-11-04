@@ -168,7 +168,14 @@ for pdb in want:
             d = idx.get(q)
             if not d:
                 continue
-            if not nonempty(os.path.join(MR, d, "hmmsearch.a3m")):
+            # EXISTENCE, NOT NON-EMPTINESS. An EMPTY hmmsearch.a3m is the correct outcome for a
+            # pre-cutoff structure: phase_h drops every hit released within 60 days of the query's
+            # own deposition, and the database covers depositions to 2022-09-28, so a structure
+            # from 2015 legitimately ends with zero admissible templates. 18 of the Wave 1 chains
+            # are in that state and all 18 have the file. Requiring non-empty here failed 17
+            # structures for doing exactly what the date filter is for. The alignments are a
+            # different matter and are still required non-empty above.
+            if not os.path.exists(os.path.join(MR, d, "hmmsearch.a3m")):
                 nt.append(q[:8])
         if nt:
             fail["templates"].append((pdb, f"{len(nt)} chain(s) without hmmsearch.a3m"))
