@@ -113,10 +113,23 @@ fi
 say "=== $RID epoch $EP, $SUF crop, cards $CARDS ==="
 DRY_FLAG=""
 [ "${DRY:-0}" = "1" ] && DRY_FLAG="--dry-run"
+mkdir -p "$OUT"
+LOG=$OUT/eval_${SUF}.log
+# THE FINGERPRINT IS READ BACK AND HANDED TO THE REPORT, which refuses to choose a file by
+# modification time. Without this the report could print one variant's numbers under the other's
+# heading, which is exactly what it did before review. pipefail so a failing eval is not masked
+# by tee succeeding.
+set -o pipefail
 # shellcheck disable=SC2086
 $PY -I run_logging/cropped_eval.py --bundle "$BUNDLE" \
   --insample-crop-tokens "$IS_MASK" --valfull-crop-tokens "$VF_MASK" \
-  --cards "$CARDS" --out "$OUT" $DRY_FLAG || { echo "STOP: cropped_eval failed."; exit 1; }
+  --cards "$CARDS" --out "$OUT" $DRY_FLAG 2>&1 | tee "$LOG" \
+  || { echo "STOP: cropped_eval failed."; exit 1; }
+set +o pipefail
+CROP_ID=$(grep -oE '^CROP_ID=[0-9a-f]{8}$' "$LOG" | head -1 | cut -d= -f2)
+[ -n "$CROP_ID" ] || { echo "STOP: no crop fingerprint in $LOG, so the report cannot be bound to "\
+  "this crop. Refusing to report rather than reading whichever file is newest."; exit 1; }
+say "crop fingerprint $CROP_ID"
 [ "${DRY:-0}" = "1" ] && exit 0
 
 # THE TABLE. Cropped ours-vs-shipped beside the UNCROPPED pair from the run's own metric files,
@@ -126,4 +139,5 @@ $PY -I run_logging/cropped_eval.py --bundle "$BUNDLE" \
 # poses, which is exactly what the ground-truth-cropped arm did at 0.6305 cropped / 0.5387
 # uncropped.
 say "=== results ==="
-$PY -I run_logging/cropped_eval_report.py --out "$OUT" --rid "$RID" --epoch "$EP" --variant "$SUF"
+$PY -I run_logging/cropped_eval_report.py --out "$OUT" --rid "$RID" --epoch "$EP" \
+  --crop-id "$CROP_ID" --variant "$SUF crop"
