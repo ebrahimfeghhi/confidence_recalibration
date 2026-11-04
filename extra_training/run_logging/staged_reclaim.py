@@ -19,7 +19,11 @@ SO QUARANTINE IS FOR REVERSIBILITY, NOT FOR SPACE, and this tool keeps the two a
   stage 3  QUARANTINE  rename targets under --quarantine. Reversible, reclaims NOTHING. The
                        journal is written after EVERY move, so a crash leaves a journal that knows
                        exactly what moved and the restore path still works. Refuses to start while
-                       any live process holds a file under the target tree.
+                       any live process holds a file under the target tree. On re-run it
+                       RECONCILES first -- a file already sitting in quarantine but not yet
+                       journalled is adopted only if its size AND first-MiB digest match the
+                       inventory. Ends by asserting COMPLETENESS: every inventoried file in
+                       quarantine, zero errors, or the stage fails and verify/unlink refuse.
   stage 4  VERIFY      run the caller's verification command. It must exit 0. This is where
                        "the retained manifest still resolves" is proven, with the data still
                        recoverable by rename.
@@ -265,6 +269,38 @@ elif a.stage == "quarantine":
         sys.exit("STOP: a live process holds a file under the target tree. Moving it would break "
                  "that process mid-read. Stop it first, then re-run.")
     q = os.path.join(ROOT, a.quarantine)
+
+    # RECONCILE FIRST. Raised in review: there is a crash window between shutil.move() returning
+    # and the journal recording it, so a restart can find a file sitting in quarantine that the
+    # journal still believes is at its source. Adopting it requires PROOF it is the same file, so
+    # the inventoried size and the first-MiB digest must both match -- otherwise it is a different
+    # file that happens to share a path and must not be silently claimed.
+    adopted = mismatched = 0
+    for rec in J["files"]:
+        if rec.get("quarantined"):
+            continue
+        src = os.path.join(ROOT, rec["rel"])
+        dst = os.path.join(q, rec["rel"])
+        if os.path.isfile(src) or not os.path.isfile(dst):
+            continue
+        if os.path.getsize(dst) != rec["bytes"] or head_digest(dst) != rec["head_sha256_1MiB"]:
+            rec["quarantine_error"] = "found in quarantine but size/digest differ from inventory"
+            mismatched += 1
+            continue
+        rec["quarantined"] = True
+        rec["quarantine_path"] = os.path.relpath(dst, ROOT)
+        rec["adopted_by_reconcile"] = True
+        # A STALE ERROR MUST NOT OUTLIVE THE CONDITION. Found by test: a file that errored on one
+        # run, was then restored and successfully moved on the next, still carried the old
+        # "source vanished" string -- so completeness failed with 3 of 3 moved. An error is a
+        # statement about the CURRENT state and is cleared the moment the file is correctly placed.
+        rec.pop("quarantine_error", None)
+        adopted += 1
+    if adopted or mismatched:
+        save(fsync=True)
+        print(f"  reconciled: adopted {adopted} already-moved file(s), "
+              f"{mismatched} with a size/digest mismatch")
+
     moved = 0
     # PERSIST AFTER EVERY MOVE. Raised in review: saving only after the loop meant a crash partway
     # through thousands of renames left a journal that did not know which files had moved, so the
@@ -277,26 +313,55 @@ elif a.stage == "quarantine":
         if rec.get("quarantined"):
             continue
         if not os.path.isfile(src):
-            rec["quarantine_error"] = "source vanished"
+            # NOT A SILENT SKIP. Raised in review: recording an error and carrying on let the
+            # stage finish "successfully" with a partial move set, and the downstream verifiers
+            # only check that the RETAINED files survive -- so a partial deletion could proceed.
+            # This is now an error that the completeness check below refuses to pass.
+            rec["quarantine_error"] = "source vanished and not found in quarantine"
             save()
             continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.move(src, dst)
         rec["quarantined"] = True
         rec["quarantine_path"] = os.path.relpath(dst, ROOT)
+        rec.pop("quarantine_error", None)          # see the note in the reconcile pass
         moved += 1
         if moved % a.journal_every == 0:
             save(fsync=True)
         else:
             save()
-    J["stages"]["quarantine"] = {"at": time.time(), "moved": moved,
+    # COMPLETENESS IS AN INVARIANT, not a summary. Every inventoried file must now be in
+    # quarantine and none may carry an error. Anything else means a PARTIAL move set, and a
+    # partial move set must never reach verify or unlink.
+    n = len(J["files"])
+    inq = sum(1 for r in J["files"] if r.get("quarantined"))
+    errs = [(r["rel"], r["quarantine_error"]) for r in J["files"] if r.get("quarantine_error")]
+    complete = (inq == n) and not errs
+    J["stages"]["quarantine"] = {"at": time.time(), "moved": moved, "adopted": adopted,
+                                 "in_quarantine": inq, "inventoried": n,
+                                 "errors": len(errs), "complete": complete,
                                  "quota_kib_after": quota_kib()}
     save(fsync=True)
-    print(f"quarantined {moved} file(s) under {a.quarantine}")
+    print(f"quarantined {moved} file(s) under {a.quarantine} ({adopted} adopted on reconcile)")
+    print(f"  in quarantine {inq} of {n} inventoried, {len(errs)} error(s)")
     print(f"  quota now: {J['stages']['quarantine']['quota_kib_after']} KiB")
     print("  EXPECTED TO BE UNCHANGED -- a same-filesystem rename reclaims no quota.")
+    if not complete:
+        for rel, why in errs[:8]:
+            print(f"    {rel}: {why}")
+        if len(errs) > 8:
+            print(f"    ... and {len(errs)-8} more")
+        sys.exit(f"STOP: quarantine is INCOMPLETE -- {inq} of {n} moved, {len(errs)} error(s). "
+                 f"Verify and unlink will refuse. Investigate, then re-run this stage; already "
+                 f"moved files are adopted by the reconcile pass.")
+    print("  COMPLETE: every inventoried file is in quarantine with no errors.")
 
 elif a.stage == "verify":
+    _q = J["stages"].get("quarantine") or {}
+    if not _q.get("complete"):
+        sys.exit(f"STOP: quarantine is not complete ({_q.get('in_quarantine')} of "
+                 f"{_q.get('inventoried')} moved, {_q.get('errors')} error(s)). Verifying a "
+                 f"partial move set would authorise a partial deletion.")
     if not a.verify_cmd:
         sys.exit("STOP: --verify-cmd is required; the point of this stage is an external check")
     print(f"running: {a.verify_cmd}")
@@ -309,9 +374,20 @@ elif a.stage == "verify":
 elif a.stage == "unlink":
     if not a.i_have_verified:
         sys.exit("STOP: --i-have-verified is required. This is the irreversible stage.")
+    _q = J["stages"].get("quarantine") or {}
+    if not _q.get("complete"):
+        sys.exit(f"STOP: quarantine is not complete ({_q.get('in_quarantine')} of "
+                 f"{_q.get('inventoried')} moved, {_q.get('errors')} error(s)). Refusing a "
+                 f"partial deletion.")
     v = J["stages"].get("verify")
     if not v or v.get("returncode") != 0:
         sys.exit("STOP: no passing verify stage in the journal. Run --stage verify first.")
+    # AND the set must still be fully accounted for at unlink time, not merely when quarantine ran
+    _n = len(J["files"])
+    _inq = sum(1 for r in J["files"] if r.get("quarantined"))
+    if _inq != _n:
+        sys.exit(f"STOP: {_inq} of {_n} files are marked quarantined now; the journal changed "
+                 f"since the quarantine stage. Re-run quarantine to reconcile.")
     before = quota_kib()
     if before is None:
         sys.exit("STOP: quota -v could not be read, so the reclaimed space cannot be verified. "
