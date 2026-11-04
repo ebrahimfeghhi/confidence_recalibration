@@ -11,12 +11,19 @@ SO QUARANTINE IS FOR REVERSIBILITY, NOT FOR SPACE, and this tool keeps the two a
 
   stage 1  INVENTORY   record every target file with size, mtime and sha256 of the first 1 MiB,
                        plus the quota reading before anything moves. Written to the journal.
-  stage 2  QUARANTINE  rename targets under --quarantine. Reversible, reclaims NOTHING. The
-                       journal records the old and new path for every file.
-  stage 3  VERIFY      run the caller's verification command. It must exit 0. This is where
+                       A new inventory INVALIDATES any prior validate/quarantine/verify state.
+  stage 2  VALIDATE    derive the expected deletion set INDEPENDENTLY -- from the seed manifest,
+                       or from the trim list -- and require it to equal the target list exactly.
+                       Refuses missing, extra, duplicate and out-of-tree paths by name. Quarantine
+                       will not run without a passing validate.
+  stage 3  QUARANTINE  rename targets under --quarantine. Reversible, reclaims NOTHING. The
+                       journal is written after EVERY move, so a crash leaves a journal that knows
+                       exactly what moved and the restore path still works. Refuses to start while
+                       any live process holds a file under the target tree.
+  stage 4  VERIFY      run the caller's verification command. It must exit 0. This is where
                        "the retained manifest still resolves" is proven, with the data still
                        recoverable by rename.
-  stage 4  UNLINK      delete the quarantined files. THIS is the step that moves the quota, and
+  stage 5  UNLINK      delete the quarantined files. THIS is the step that moves the quota, and
                        the tool reads the quota before and after and refuses to report success
                        unless the delta is within --tolerance of the inventoried bytes.
 
@@ -30,13 +37,20 @@ Usage:
   ... --stage verify --verify-cmd "python -I run_logging/verify_val_manifest.py"
   ... --stage unlink --i-have-verified
 """
-import argparse, hashlib, json, os, shutil, subprocess, sys, time
+import argparse, collections, hashlib, json, os, re, shutil, subprocess, sys, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def quota_kib():
-    """The user's charged blocks, from quota(1). None if quotas are not enabled."""
+    """The user's charged blocks, from quota(1). None if unreadable.
+
+    Verified against this box's real output, which is three lines with the device row as
+    `/dev/nvme1n1p1 2663921024 0 3221225472 ...`. Raised in review: a parser that silently returns
+    None must never let the irreversible stage proceed, because the shortfall check is the only
+    thing standing between a failed unlink and a false "space is available" report. --stage unlink
+    now REFUSES to start without a baseline reading.
+    """
     try:
         out = subprocess.run(["quota", "-v"], capture_output=True, text=True, timeout=30).stdout
     except (OSError, subprocess.SubprocessError):
@@ -58,11 +72,64 @@ def head_digest(p, n=1 << 20):
     return h.hexdigest()[:16]
 
 
+def readers_clear(a):
+    """No live process may hold a file under the tree being moved.
+
+    Raised in review. Quarantine is a rename, which does not disturb an already-open descriptor --
+    but the NEXT open by that process fails, and a trainer part-way through an epoch will either
+    die or write a partial checkpoint. The user has accepted losing the current arm, but it must
+    be STOPPED first rather than broken mid-write.
+
+    This reads /proc/<pid>/fd directly. It never pattern-matches a command line and never signals
+    anything; it reports and lets the caller decide.
+    """
+    roots = sorted({os.path.join(ROOT, os.path.dirname(r["rel"])) for r in J["files"]})
+    prefixes = sorted({os.path.join(ROOT, r["rel"]).rsplit("/", 2)[0] for r in J["files"]})
+    holders = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        fdd = f"/proc/{pid}/fd"
+        try:
+            fds = os.listdir(fdd)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                tgt = os.readlink(os.path.join(fdd, fd))
+            except OSError:
+                continue
+            if any(tgt.startswith(pre) for pre in prefixes):
+                holders.setdefault(pid, tgt)
+                break
+    if holders:
+        print("  LIVE READERS under the target tree:")
+        for pid, tgt in sorted(holders.items()):
+            try:
+                cl = open(f"/proc/{pid}/cmdline").read().replace("\0", " ")[:90]
+            except OSError:
+                cl = "?"
+            print(f"    pid {pid}: {tgt[:70]}")
+            print(f"              {cl}")
+        return False
+    print(f"  no live process holds anything under {len(prefixes)} target prefix(es)")
+    return True
+
+
 ap = argparse.ArgumentParser()
 ap.add_argument("--targets", required=True, help="one path per line, relative to extra_training")
 ap.add_argument("--journal", required=True)
 ap.add_argument("--stage", required=True,
-                choices=["inventory", "quarantine", "verify", "unlink", "restore"])
+                choices=["inventory", "validate", "quarantine", "verify", "unlink", "restore"])
+ap.add_argument("--expect", default="",
+                help="REQUIRED by --stage validate. 'val-manifest:<path>' derives the expected "
+                     "deletion set as the complement of each structure's selected seeds; "
+                     "'train-trim:<pdb list>' derives it as every unit but the lowest-numbered "
+                     "one of each listed structure. The derived set must EXACTLY equal the target "
+                     "list -- no missing, no extra, no duplicates, nothing outside the expected "
+                     "trunk directories.")
+ap.add_argument("--trunks", default="", help="the trunk root the targets must live under")
+ap.add_argument("--journal-every", type=int, default=50, help="fsync the journal every N moves")
 ap.add_argument("--quarantine", default="training/.reclaim_quarantine")
 ap.add_argument("--verify-cmd", default="")
 ap.add_argument("--tolerance", type=float, default=0.05, help="allowed quota-delta shortfall")
@@ -73,11 +140,14 @@ JP = os.path.join(ROOT, a.journal)
 J = json.load(open(JP)) if os.path.exists(JP) else {"stages": {}, "files": []}
 
 
-def save():
+def save(fsync=False):
     os.makedirs(os.path.dirname(JP), exist_ok=True)
     tmp = JP + ".tmp"
     with open(tmp, "w") as f:
         json.dump(J, f, indent=1)
+        if fsync:
+            f.flush()
+            os.fsync(f.fileno())
     os.replace(tmp, JP)
 
 
@@ -94,6 +164,12 @@ if a.stage == "inventory":
                       "head_sha256_1MiB": head_digest(p)})
         total += sz
     J["files"] = files
+    # A NEW INVENTORY INVALIDATES ANY PRIOR VERIFICATION. Raised in review: otherwise a journal
+    # carrying a passing verify from an earlier, different target set would authorise an unlink of
+    # the new one.
+    J["stages"].pop("verify", None)
+    J["stages"].pop("quarantine", None)
+    J["stages"].pop("validate", None)
     J["stages"]["inventory"] = {"at": time.time(), "n": len(files), "bytes": total,
                                 "quota_kib_before": quota_kib()}
     save()
@@ -101,27 +177,121 @@ if a.stage == "inventory":
     print(f"  quota before: {J['stages']['inventory']['quota_kib_before']} KiB")
     print("  NOTE: nothing has moved. Quarantine does not reclaim quota; only unlink does.")
 
+elif a.stage == "validate":
+    # THE MOST IMPORTANT GATE. Raised in review: every other check proves the RETAINED data
+    # survives. None of them proves the deletion list contains only what was meant. A list with
+    # one stray path deletes something nobody inspected, and the verifiers would still pass.
+    #
+    # So the expected set is DERIVED INDEPENDENTLY here, from the manifest or the drop list, and
+    # must be EXACTLY equal to the target list. Not a subset, not a superset. Missing, extra,
+    # duplicate, and out-of-tree paths are each refused by name rather than skipped.
+    if not J.get("files"):
+        sys.exit("STOP: run --stage inventory first")
+    if not a.expect:
+        sys.exit("STOP: --expect is required. 'val-manifest:<path>' or 'train-trim:<pdb list>'.")
+    kind, _, arg = a.expect.partition(":")
+    if not arg:
+        sys.exit(f"STOP: --expect {a.expect!r} has no argument after the colon")
+    trunks = a.trunks or ("validation/fold/trunks" if kind == "val-manifest"
+                          else "training/fold/trunks")
+    TR = os.path.join(ROOT, trunks)
+    expected = set()
+    if kind == "val-manifest":
+        man = json.load(open(os.path.join(ROOT, arg)))
+        for pdb, rec in man["structures"].items():
+            keep = set(rec["seeds"])
+            d = os.path.join(TR, pdb)
+            if not os.path.isdir(d):
+                sys.exit(f"STOP: manifest names {pdb} but {trunks}/{pdb} does not exist")
+            for f in os.listdir(d):
+                m = re.search(r"_(\d+)\.npz$", f)
+                if m and int(m.group(1)) not in keep:
+                    expected.add(os.path.relpath(os.path.join(d, f), ROOT))
+        detail = (f"complement of the {man['k']} selected seeds for "
+                  f"{len(man['structures'])} structure(s), manifest digest {man.get('digest')}")
+    elif kind == "train-trim":
+        pdbs = [l.strip() for l in open(arg) if l.strip()]
+        for pdb in pdbs:
+            d = os.path.join(TR, pdb)
+            if not os.path.isdir(d):
+                continue
+            us = sorted((int(re.search(r"_(\d+)\.npz$", f).group(1)), f)
+                        for f in os.listdir(d) if re.search(r"_(\d+)\.npz$", f))
+            for _sd, f in us[1:]:                     # keep the LOWEST seed, drop the rest
+                expected.add(os.path.relpath(os.path.join(d, f), ROOT))
+        detail = f"every unit but the lowest-numbered one, for {len(pdbs)} listed structure(s)"
+    else:
+        sys.exit(f"STOP: --expect kind {kind!r} is not val-manifest or train-trim")
+
+    targets = [r["rel"] for r in J["files"]]
+    tset = set(targets)
+    dupes = collections.Counter(targets)
+    dupes = {k: v for k, v in dupes.items() if v > 1}
+    outside = sorted(t for t in tset if not os.path.abspath(os.path.join(ROOT, t)).startswith(TR + os.sep))
+    extra = sorted(tset - expected)
+    missing = sorted(expected - tset)
+    print(f"validate: {len(targets)} target(s) against an independently derived set of "
+          f"{len(expected)}")
+    print(f"  derivation: {detail}")
+    print(f"  tree: {trunks}")
+    bad = False
+    for nm, lst in (("DUPLICATE in the target list", sorted(dupes)),
+                    ("OUTSIDE the expected trunk tree", outside),
+                    ("EXTRA -- in the list, not expected", extra),
+                    ("MISSING -- expected, not in the list", missing)):
+        if lst:
+            bad = True
+            print(f"  FAIL  {nm}: {len(lst)}")
+            for x in lst[:6]:
+                print(f"          {x}")
+            if len(lst) > 6:
+                print(f"          ... and {len(lst)-6} more")
+        else:
+            print(f"  PASS  no {nm.split(' --')[0].split(' in')[0].lower()} entries")
+    J["stages"]["validate"] = {"at": time.time(), "ok": not bad, "expect": a.expect,
+                               "n_targets": len(targets), "n_expected": len(expected),
+                               "trunks": trunks}
+    save(fsync=True)
+    print(f"\n{'VALIDATE PASSED -- exact match' if not bad else 'VALIDATE FAILED'}")
+    sys.exit(0 if not bad else 1)
+
 elif a.stage == "quarantine":
     if not J.get("files"):
         sys.exit("STOP: run --stage inventory first")
+    if not J["stages"].get("validate", {}).get("ok"):
+        sys.exit("STOP: no passing --stage validate in the journal. The target list must be "
+                 "proven to contain only the intended files before anything is moved.")
+    if not readers_clear(a):
+        sys.exit("STOP: a live process holds a file under the target tree. Moving it would break "
+                 "that process mid-read. Stop it first, then re-run.")
     q = os.path.join(ROOT, a.quarantine)
     moved = 0
-    for rec in J["files"]:
+    # PERSIST AFTER EVERY MOVE. Raised in review: saving only after the loop meant a crash partway
+    # through thousands of renames left a journal that did not know which files had moved, so the
+    # restore path -- the entire point of quarantining -- could not run. Journal writes are
+    # atomic via os.replace, and fsync'd every --journal-every moves so a power loss cannot lose
+    # more than that many records.
+    for i, rec in enumerate(J["files"]):
         src = os.path.join(ROOT, rec["rel"])
         dst = os.path.join(q, rec["rel"])
         if rec.get("quarantined"):
             continue
         if not os.path.isfile(src):
             rec["quarantine_error"] = "source vanished"
+            save()
             continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.move(src, dst)
         rec["quarantined"] = True
         rec["quarantine_path"] = os.path.relpath(dst, ROOT)
         moved += 1
+        if moved % a.journal_every == 0:
+            save(fsync=True)
+        else:
+            save()
     J["stages"]["quarantine"] = {"at": time.time(), "moved": moved,
                                  "quota_kib_after": quota_kib()}
-    save()
+    save(fsync=True)
     print(f"quarantined {moved} file(s) under {a.quarantine}")
     print(f"  quota now: {J['stages']['quarantine']['quota_kib_after']} KiB")
     print("  EXPECTED TO BE UNCHANGED -- a same-filesystem rename reclaims no quota.")
@@ -143,6 +313,10 @@ elif a.stage == "unlink":
     if not v or v.get("returncode") != 0:
         sys.exit("STOP: no passing verify stage in the journal. Run --stage verify first.")
     before = quota_kib()
+    if before is None:
+        sys.exit("STOP: quota -v could not be read, so the reclaimed space cannot be verified. "
+                 "Refusing the irreversible stage rather than deleting first and discovering "
+                 "afterwards that the check is unavailable.")
     freed = 0
     for rec in J["files"]:
         if not rec.get("quarantined"):

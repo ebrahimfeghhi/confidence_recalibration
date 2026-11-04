@@ -13,6 +13,11 @@
 # space; conflating the two would budget the fold against space that is not there.
 #
 # WHAT IS DELETED
+# FIVE STAGES PER RECLAIM: inventory, VALIDATE (an independently derived allowlist that must match
+# the target list exactly), quarantine, verify, unlink. Quarantine refuses without a passing
+# validate and without a clear readers check; unlink refuses without a passing verify and without
+# a readable quota baseline.
+#
 #   A. training  1,979 trunk units -- the 220 structures whose EVERY interface is degenerate
 #                (DockQ sd < 0.05 OR no acceptable pose) go from 10 seeds to 1. Not to zero: 64
 #                clusters hold only ONE usable post-cutoff structure in the whole PDB, we folded
@@ -50,11 +55,41 @@ say "label build done"; tail -3 training/runs/val_labels_100.log
 
 say "quota before: $(q)"
 
+# THE TRAINER MUST BE STOPPED FIRST. Raised in review. Quarantine is a rename, which leaves an
+# already-open descriptor working -- but the NEXT open fails, so a trainer part-way through an
+# epoch either dies or writes a partial checkpoint. The current arm is being abandoned
+# deliberately, but it has to be STOPPED, not broken mid-write. staged_reclaim refuses the
+# quarantine stage while any live process holds a file under the target tree; this checks up front
+# so the chain fails before doing work rather than after.
+say "GATE 0 -- no live reader under training/fold/trunks or validation/fold/trunks"
+$PY -I -c "
+import os,sys
+ROOT=os.getcwd()
+pre=[os.path.join(ROOT,'training/fold/trunks'),os.path.join(ROOT,'validation/fold/trunks')]
+hold={}
+for pid in os.listdir('/proc'):
+    if not pid.isdigit(): continue
+    try: fds=os.listdir('/proc/%s/fd'%pid)
+    except OSError: continue
+    for fd in fds:
+        try: t=os.readlink('/proc/%s/fd/%s'%(pid,fd))
+        except OSError: continue
+        if any(t.startswith(x) for x in pre): hold[pid]=t; break
+if hold:
+    for pid,t in sorted(hold.items()):
+        try: cl=open('/proc/%s/cmdline'%pid).read().replace(chr(0),' ')[:80]
+        except OSError: cl='?'
+        print('  pid %s holds %s'%(pid,t[:60])); print('            %s'%cl)
+    sys.exit('STOP: stop the trainer before quarantining its trunks.')
+print('  clear')
+" || exit 1
+
 say "GATE 1/2 -- validation manifest"
 $PY -I run_logging/verify_val_manifest.py --manifest training/valfull/seed_manifest.json || { say "VALIDATION GATE FAILED -- deleting nothing"; exit 1; }
 
 say "RECLAIM A -- training, 1979 units, 220 structures to 1 seed each"
 $PY -I run_logging/staged_reclaim.py --targets $S/delete_train_220.txt --journal training/runs/reclaim_train.json --stage inventory || exit 1
+$PY -I run_logging/staged_reclaim.py --targets $S/delete_train_220.txt --journal training/runs/reclaim_train.json --stage validate --expect train-trim:$S/drop_train.txt || { say "TRAIN ALLOWLIST FAILED -- deleting nothing"; exit 1; }
 $PY -I run_logging/staged_reclaim.py --targets $S/delete_train_220.txt --journal training/runs/reclaim_train.json --stage quarantine || exit 1
 $PY -I run_logging/staged_reclaim.py --targets $S/delete_train_220.txt --journal training/runs/reclaim_train.json --stage verify \
   --verify-cmd "$PY -I run_logging/verify_train_trim.py --trimmed $S/drop_train.txt" || { say "TRAIN VERIFY FAILED -- restoring"; $PY -I run_logging/staged_reclaim.py --targets $S/delete_train_220.txt --journal training/runs/reclaim_train.json --stage restore; exit 1; }
@@ -63,6 +98,7 @@ say "quota after training trim: $(q)"
 
 say "RECLAIM B -- validation, 3709 units, 100 -> 30 selected seeds"
 $PY -I run_logging/staged_reclaim.py --targets $S/delete_targets.txt --journal training/runs/reclaim_val.json --stage inventory || exit 1
+$PY -I run_logging/staged_reclaim.py --targets $S/delete_targets.txt --journal training/runs/reclaim_val.json --stage validate --expect val-manifest:training/valfull/seed_manifest.json || { say "VAL ALLOWLIST FAILED -- deleting nothing"; exit 1; }
 $PY -I run_logging/staged_reclaim.py --targets $S/delete_targets.txt --journal training/runs/reclaim_val.json --stage quarantine || exit 1
 $PY -I run_logging/staged_reclaim.py --targets $S/delete_targets.txt --journal training/runs/reclaim_val.json --stage verify \
   --verify-cmd "$PY -I run_logging/verify_val_manifest.py --manifest training/valfull/seed_manifest.json" || { say "VAL VERIFY FAILED -- restoring"; $PY -I run_logging/staged_reclaim.py --targets $S/delete_targets.txt --journal training/runs/reclaim_val.json --stage restore; exit 1; }
