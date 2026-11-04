@@ -41,6 +41,8 @@ IS_GT = "training/full_train/union_crop_m0_gt_ost.npz"
 VF_GT = "training/valfull/union_crop_m0_gt_ost.npz"
 IS_PF = "training/full_train/union_crop_m0_posefree.npz"
 VF_PF = "training/valfull/union_crop_m0_posefree.npz"
+IS_PF5 = "training/full_train/union_crop_m5_posefree.npz"
+VF_PF5 = "training/valfull/union_crop_m5_posefree.npz"
 FAIL = []
 
 
@@ -318,6 +320,62 @@ if os.path.exists(os.path.join(SRC, "valfull_ours_ep30.json")):
               rc != 0 and ("rows carry" in out or "expected" in out))
 else:
     print("  note  the ground-truth-cropped arm's passes are absent; reconstruction cases skipped")
+
+# ------------------------------------------------------------------ 9. the margin-5 condition
+# THREE EVAL CONDITIONS: uncropped (the primary, run every 5 epochs outside this tooling), union
+# only at margin 0, and union + 5 A. The margin is applied PER POSE in that pose's own frame and
+# the masks are then OR-ed -- union_i(expand_i(contacts_i)) -- because "expand the union by 5 A"
+# has no well-defined answer across 50 poses with 50 different coordinate sets.
+have5 = all(os.path.exists(os.path.join(ROOT, m)) for m in (IS_PF5, VF_PF5))
+if not have5:
+    print("  note  the margin-5 masks are not built yet; their cases are skipped")
+else:
+    for m in (IS_PF5, VF_PF5):
+        d = meta(m)
+        check(f"{os.path.basename(m)} records margin 5 and no ground truth",
+              float(d["margin"]) == 5.0 and float(d["contact"]) == 5.0
+              and not d.get("force_gt") and not d.get("ost_pairs"),
+              f"margin={d['margin']} contact={d['contact']} force_gt={d.get('force_gt')}")
+    # THE MARGIN MUST ACTUALLY WIDEN THE CROP, per structure, or the condition tests nothing. A
+    # margin-5 mask is a strict SUPERSET of the margin-0 one: same contacts, plus their
+    # neighbourhood. If any structure lost a token the two were not built from the same rule.
+    for lo, hi, pool in ((IS_PF, IS_PF5, "train"), (VF_PF, VF_PF5, "held out")):
+        z0 = np.load(os.path.join(ROOT, lo), allow_pickle=True)
+        z5 = np.load(os.path.join(ROOT, hi), allow_pickle=True)
+        ks = [k for k in z0.files
+              if not (k.endswith("__n") or k.endswith("__pairs") or k == "__meta")]
+        m0 = [np.asarray(z0[k]).astype(bool) for k in ks]
+        m5 = [np.asarray(z5[k]).astype(bool) for k in ks]
+        lost = sum(int((a_ & ~b_).sum()) for a_, b_ in zip(m0, m5))
+        f0 = sum(float(a_.mean()) for a_ in m0) / len(m0)
+        f5 = sum(float(b_.mean()) for b_ in m5) / len(m5)
+        check(f"margin 5 is a strict superset of margin 0 on every {pool} structure",
+              lost == 0, f"{lost} token(s) lost")
+        check(f"and it widens the {pool} crop rather than leaving it unchanged",
+              f5 > f0 + 0.01, f"mean kept {f0:.4f} -> {f5:.4f}")
+    rc5, out5 = run_eval("--insample-crop-tokens", IS_PF5, "--valfull-crop-tokens", VF_PF5)
+    id5 = re.search(r"^CROP_ID=(\w+)$", out5, re.M)
+    check("the margin-5 condition resolves and reads as an off-training crop",
+          rc5 == 0 and "OFF-TRAINING CROP" in out5 and "margin 0.0, contact 5.0" in out5
+          and "margin 5.0" in out5)
+    if have_pf:
+        rc0, out0 = run_eval("--insample-crop-tokens", IS_PF, "--valfull-crop-tokens", VF_PF)
+        id0 = re.search(r"^CROP_ID=(\w+)$", out0, re.M)
+        check("MARGIN 0 AND MARGIN 5 GET DIFFERENT FINGERPRINTS, so neither reuses the other",
+              id0 and id5 and id0.group(1) != id5.group(1),
+              f"{id0.group(1) if id0 else '?'} vs {id5.group(1) if id5 else '?'}")
+
+sh = open(SCRIPT).read()
+check("the script offers all four variants and refuses anything else",
+      all(v in sh for v in ("posefree)", "posefree_m5)", "gt_ost)", "gt_ost_m5)"))
+      and "STOP: variant must be" in sh)
+check("the margin is part of the variant, so filename and contents cannot disagree",
+      "union_crop_m${MTAG}_${SUF}.npz" in sh and 'MARGIN=5.0 ; MTAG=5' in sh)
+check("the script asserts the mask's RECORDED margin matches the one asked for",
+      "WANT_MARGIN" in sh and "The filename and the contents disagree" in sh)
+check("the script says the uncropped pass is the primary result, not these",
+      "UNCROPPED pass is the deployable result" in sh
+      or "primary one is not in this script" in sh)
 
 print()
 if FAIL:
