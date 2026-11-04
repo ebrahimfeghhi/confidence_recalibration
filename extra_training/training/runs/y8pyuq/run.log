@@ -744,3 +744,37 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 18/60: 1220 unit(s)
   epoch 18/60: 1220 unit(s)  epoch 18/60: 1220 unit(s)
 
+  epoch 18 took 45.5 min for 1220 unit(s), 122 optimiser step(s), 0.45 s/pose
+  [rank 1] epoch 18 took 45.5 min -- apply_step_total 0.4m/122  cpucrop_label 0.0m/1220  cpucrop_slice 13.0m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 6.1m/2440  cropped_tokens mean 380  gpu_backward 16.3m/6100  gpu_forward 13.2m/12200  grad_collective_plus_wait 0.3m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 6.7m/122  pose_a_total 6.8m/6100  pose_total 20.7m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 4.8m/122  rank_pass_a 10.6m/122  trunk_read_plus_crop_tokens 0.0m/1225  unit_setup 6.1m/2440
+  [rank 1] epoch 18 prefetch (4 worker(s)): 1215/1220 hit (99.6%), 0.0 min waiting on the worker, 5 evicted-then-wanted, 0 asked after the workers finished
+  [rank 1] epoch 18 token draw: kept 0.5843 of tokens over 2445 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.95x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 1] epoch 18 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2715 over 734 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 1] epoch 18 SCORE SPREAD: median std(predicted) 0.0207 against std(true iTM) 0.0687, median ratio 0.393   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 1] epoch 18 rank-loss (rel, cross-seed pairs): +0.01022 over 734 interface-group(s) in 122 step(s), 36700 pair(s)
+  [rank 1] epoch 18 accounted 45.8m of 45.5m, residual -0.3m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 1] epoch 18 unit_setup 6.1m, of which 19.2m is already in named leaves -> -13.0m of the residual is INSIDE units, the rest is between them
+  [rank 1] epoch 18 memory: peak allocated 71.79 GB, peak reserved 73.66 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2402 unit(s) UNCHECKPOINTED, 38 checkpointed
+  epoch 18 took 45.5 min for 1220 unit(s), 122 optimiser step(s), 0.45 s/pose
+  [rank 0] epoch 18 took 45.5 min -- apply_step_total 0.4m/122  cpucrop_label 0.0m/1220  cpucrop_slice 12.7m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 6.5m/2440  cropped_tokens mean 374  gpu_backward 15.7m/6100  gpu_forward 12.8m/12200  grad_collective_plus_wait 0.3m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 7.1m/122  pose_a_total 6.6m/6100  pose_total 20.0m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 4.9m/122  rank_pass_a 10.5m/122  trunk_read_plus_crop_tokens 0.0m/1283  unit_setup 6.5m/2440
+  [rank 0] epoch 18 prefetch (4 worker(s)): 1157/1220 hit (94.8%), 0.0 min waiting on the worker, 63 evicted-then-wanted, 0 asked after the workers finished
+  [rank 0] epoch 18 token draw: kept 0.5812 of tokens over 2503 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.94x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 0] epoch 18 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2715 over 734 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 0] epoch 18 SCORE SPREAD: median std(predicted) 0.0207 against std(true iTM) 0.0687, median ratio 0.393   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 0] epoch 18 rank-loss (rel, cross-seed pairs): +0.01022 over 734 interface-group(s) in 122 step(s), 36700 pair(s)
+  [rank 0] epoch 18 accounted 45.8m of 45.5m, residual -0.3m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 0] epoch 18 unit_setup 6.5m, of which 19.2m is already in named leaves -> -12.7m of the residual is INSIDE units, the rest is between them
+  [rank 0] epoch 18 memory: peak allocated 71.79 GB, peak reserved 72.62 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2406 unit(s) UNCHECKPOINTED, 34 checkpointed
+  epoch 18 took 45.5 min for 1220 unit(s), 122 optimiser step(s), 0.45 s/pose
+  [rank 2] epoch 18 took 45.5 min -- apply_step_total 0.4m/122  cpucrop_label 0.0m/1220  cpucrop_slice 19.2m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 13.6m/2440  cropped_tokens mean 381  gpu_backward 16.2m/6100  gpu_forward 13.3m/12200  grad_collective_plus_wait 0.2m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 3.0m/122  pose_a_total 6.8m/6100  pose_total 20.6m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 1.1m/122  rank_pass_a 14.3m/122  trunk_read_plus_crop_tokens 0.0m/1778  unit_setup 13.6m/2440
+  [rank 2] epoch 18 prefetch (4 worker(s)): 662/1220 hit (54.3%), 0.0 min waiting on the worker, 558 evicted-then-wanted, 0 asked after the workers finished
+  [rank 2] epoch 18 token draw: kept 0.5844 of tokens over 2998 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.96x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 2] epoch 18 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2715 over 734 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 2] epoch 18 SCORE SPREAD: median std(predicted) 0.0207 against std(true iTM) 0.0687, median ratio 0.393   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 2] epoch 18 rank-loss (rel, cross-seed pairs): +0.01022 over 734 interface-group(s) in 122 step(s), 36700 pair(s)
+  [rank 2] epoch 18 accounted 45.7m of 45.5m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 2] epoch 18 unit_setup 13.6m, of which 32.9m is already in named leaves -> -19.3m of the residual is INSIDE units, the rest is between them
+  [rank 2] epoch 18 memory: peak allocated 71.79 GB, peak reserved 72.43 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2412 unit(s) UNCHECKPOINTED, 28 checkpointed
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/y8pyuq/resume_ep18.pt (227 MiB: head + AdamW moments + step)
+  epoch 19/60: 1220 unit(s)
+  epoch 19/60: 1220 unit(s)  epoch 19/60: 1220 unit(s)
+
