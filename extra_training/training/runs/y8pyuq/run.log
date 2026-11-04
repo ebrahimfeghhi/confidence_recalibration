@@ -532,3 +532,37 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 12/60: 1220 unit(s)
   epoch 12/60: 1220 unit(s)  epoch 12/60: 1220 unit(s)
 
+  epoch 12 took 44.1 min for 1220 unit(s), 122 optimiser step(s), 0.43 s/pose
+  [rank 1] epoch 12 took 44.1 min -- apply_step_total 0.5m/122  cpucrop_label 0.0m/1220  cpucrop_slice 14.7m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 6.5m/2440  cropped_tokens mean 378  gpu_backward 16.1m/6100  gpu_forward 13.1m/12200  grad_collective_plus_wait 0.3m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 3.8m/122  pose_a_total 6.7m/6100  pose_total 20.5m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 6.0m/122  rank_pass_a 10.9m/122  trunk_read_plus_crop_tokens 0.0m/1220  unit_setup 6.5m/2440
+  [rank 1] epoch 12 prefetch (4 worker(s)): 1220/1220 hit (100.0%), 0.0 min waiting on the worker
+  [rank 1] epoch 12 token draw: kept 0.5863 of tokens over 2440 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.96x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 1] epoch 12 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2508 over 734 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 1] epoch 12 SCORE SPREAD: median std(predicted) 0.0207 against std(true iTM) 0.0687, median ratio 0.397   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 1] epoch 12 rank-loss (rel, cross-seed pairs): +0.01115 over 734 interface-group(s) in 122 step(s), 36700 pair(s)
+  [rank 1] epoch 12 accounted 44.3m of 44.1m, residual -0.3m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 1] epoch 12 unit_setup 6.5m, of which 21.3m is already in named leaves -> -14.8m of the residual is INSIDE units, the rest is between them
+  [rank 1] epoch 12 memory: peak allocated 71.63 GB, peak reserved 72.17 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2402 unit(s) UNCHECKPOINTED, 38 checkpointed
+  epoch 12 took 44.1 min for 1220 unit(s), 122 optimiser step(s), 0.43 s/pose
+  [rank 0] epoch 12 took 44.1 min -- apply_step_total 0.5m/122  cpucrop_label 0.0m/1220  cpucrop_slice 14.5m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 6.9m/2440  cropped_tokens mean 377  gpu_backward 16.2m/6100  gpu_forward 13.1m/12200  grad_collective_plus_wait 0.4m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 3.8m/122  pose_a_total 6.7m/6100  pose_total 20.5m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 5.6m/122  rank_pass_a 11.4m/122  trunk_read_plus_crop_tokens 0.0m/1220  unit_setup 6.9m/2440
+  [rank 0] epoch 12 prefetch (4 worker(s)): 1220/1220 hit (100.0%), 0.0 min waiting on the worker
+  [rank 0] epoch 12 token draw: kept 0.5783 of tokens over 2440 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.94x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 0] epoch 12 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2508 over 734 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 0] epoch 12 SCORE SPREAD: median std(predicted) 0.0207 against std(true iTM) 0.0687, median ratio 0.397   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 0] epoch 12 rank-loss (rel, cross-seed pairs): +0.01115 over 734 interface-group(s) in 122 step(s), 36700 pair(s)
+  [rank 0] epoch 12 accounted 44.4m of 44.1m, residual -0.3m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 0] epoch 12 unit_setup 6.9m, of which 21.5m is already in named leaves -> -14.6m of the residual is INSIDE units, the rest is between them
+  [rank 0] epoch 12 memory: peak allocated 71.63 GB, peak reserved 72.17 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2404 unit(s) UNCHECKPOINTED, 36 checkpointed
+  epoch 12 took 44.1 min for 1220 unit(s), 122 optimiser step(s), 0.43 s/pose
+  [rank 2] epoch 12 took 44.1 min -- apply_step_total 0.5m/122  cpucrop_label 0.0m/1220  cpucrop_slice 24.2m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 11.7m/2440  cropped_tokens mean 380  gpu_backward 15.9m/6100  gpu_forward 13.1m/12200  grad_collective_plus_wait 0.3m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 4.0m/122  pose_a_total 6.7m/6100  pose_total 20.2m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 0.9m/122  rank_pass_a 16.1m/122  trunk_read_plus_crop_tokens 0.0m/1227  unit_setup 11.7m/2440
+  [rank 2] epoch 12 prefetch (4 worker(s)): 1213/1220 hit (99.4%), 0.0 min waiting on the worker, 7 evicted-then-wanted, 0 asked after the workers finished
+  [rank 2] epoch 12 token draw: kept 0.5837 of tokens over 2447 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.95x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 2] epoch 12 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.2508 over 734 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 2] epoch 12 SCORE SPREAD: median std(predicted) 0.0207 against std(true iTM) 0.0687, median ratio 0.397   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 2] epoch 12 rank-loss (rel, cross-seed pairs): +0.01115 over 734 interface-group(s) in 122 step(s), 36700 pair(s)
+  [rank 2] epoch 12 accounted 44.3m of 44.1m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 2] epoch 12 unit_setup 11.7m, of which 36.0m is already in named leaves -> -24.2m of the residual is INSIDE units, the rest is between them
+  [rank 2] epoch 12 memory: peak allocated 71.63 GB, peak reserved 72.17 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2414 unit(s) UNCHECKPOINTED, 26 checkpointed
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/y8pyuq/resume_ep12.pt (227 MiB: head + AdamW moments + step)
+  epoch 13/60: 1220 unit(s)  epoch 13/60: 1220 unit(s)
+
+  epoch 13/60: 1220 unit(s)
