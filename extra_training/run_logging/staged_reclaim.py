@@ -134,6 +134,10 @@ ap.add_argument("--expect", default="",
                      "trunk directories.")
 ap.add_argument("--trunks", default="", help="the trunk root the targets must live under")
 ap.add_argument("--journal-every", type=int, default=50, help="fsync the journal every N moves")
+ap.add_argument("--results-csv", default="training/fold/results.csv",
+                help="train-trim only: the DockQ source used to pick which seed to retain")
+ap.add_argument("--nsample", type=int, default=5,
+                help="poses per seed; a retained seed must carry at least this many DockQ rows")
 ap.add_argument("--quarantine", default="training/.reclaim_quarantine")
 ap.add_argument("--verify-cmd", default="")
 ap.add_argument("--tolerance", type=float, default=0.05, help="allowed quota-delta shortfall")
@@ -214,16 +218,43 @@ elif a.stage == "validate":
         detail = (f"complement of the {man['k']} selected seeds for "
                   f"{len(man['structures'])} structure(s), manifest digest {man.get('digest')}")
     elif kind == "train-trim":
+        # KEEP THE LOWEST SEED THAT HAS DockQ, not merely the lowest. Found by the verify gate on
+        # the first real run: 9dzj has trunk units for seeds 500000-500009 but results.csv carries
+        # rows only for 500002-500009, so retaining 500000 would have kept a unit whose poses
+        # cannot be joined to any label -- the one thing the retained seed exists to do. The gate
+        # caught it, restored all 1,980 files, and refused to unlink.
+        import csv as _csv
+        have = collections.defaultdict(collections.Counter)
+        rp = os.path.join(ROOT, a.results_csv)
+        with open(rp) as fh:
+            for r in _csv.DictReader(fh):
+                i = (r.get("iface") or "").strip()
+                if not i:
+                    continue
+                try:
+                    have[i.split("_")[0]][int(r["seed"])] += 1
+                except (ValueError, TypeError, KeyError):
+                    continue
         pdbs = [l.strip() for l in open(arg) if l.strip()]
+        n_shift = 0
         for pdb in pdbs:
             d = os.path.join(TR, pdb)
             if not os.path.isdir(d):
                 continue
             us = sorted((int(re.search(r"_(\d+)\.npz$", f).group(1)), f)
                         for f in os.listdir(d) if re.search(r"_(\d+)\.npz$", f))
-            for _sd, f in us[1:]:                     # keep the LOWEST seed, drop the rest
-                expected.add(os.path.relpath(os.path.join(d, f), ROOT))
-        detail = f"every unit but the lowest-numbered one, for {len(pdbs)} listed structure(s)"
+            keep = next((sd for sd, _f in us if have[pdb][sd] >= a.nsample), None)
+            if keep is None:
+                sys.exit(f"STOP: {pdb} has no seed with >= {a.nsample} DockQ rows, so no usable "
+                         f"unit can be retained. Remove it from the trim list or investigate.")
+            if keep != us[0][0]:
+                n_shift += 1
+            for sd, f in us:
+                if sd != keep:
+                    expected.add(os.path.relpath(os.path.join(d, f), ROOT))
+        detail = (f"every unit but the lowest seed WITH >= {a.nsample} DockQ rows, for "
+                  f"{len(pdbs)} listed structure(s); {n_shift} structure(s) kept a seed other "
+                  f"than their lowest because the lowest had no DockQ")
     else:
         sys.exit(f"STOP: --expect kind {kind!r} is not val-manifest or train-trim")
 
