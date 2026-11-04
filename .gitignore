@@ -224,3 +224,8 @@ extra_training/run_logging/reports/
 
 # figure scripts are imported by the comparison checks; their bytecode is not an artefact
 figures/__pycache__/
+
+# Per-unit crop diagnostics: 511k lines / 18 MB across 61 files, written by every rank
+# every epoch. Never read for a result -- the token-draw summary in run.log carries the
+# kept fraction, and trajectory.csv carries the losses. Untracked 2026-11-03.
+extra_training/training/runs/*/crop_sizes_rank*.csv
