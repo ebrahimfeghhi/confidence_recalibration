@@ -44,6 +44,12 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--bundle", required=True, help="a resume_ep<N>.pt whose guard supplies every setting")
 ap.add_argument("--cards", default="4,5,7")
 ap.add_argument("--out", default="training/runs/cropped_eval")
+ap.add_argument("--pools", default="valfull,insample",
+                help="which pools to score and IN WHICH ORDER. The passes are independent, so "
+                     "order changes nothing about the numbers -- but in-sample is ~33 min a pass "
+                     "against held out's ~7, so held-out-first means the headline comparison is "
+                     "readable about 70 minutes sooner on a four-pass run. Pass 'valfull' alone "
+                     "to skip the in-sample cells entirely.")
 ap.add_argument("--insample-crop-tokens", default="",
                 help="score the IN-SAMPLE pool on this mask instead of the one the guard's digest "
                      "names. THE ONLY REASON THIS EXISTS: the training masks in this project are "
@@ -186,6 +192,8 @@ if EXPLICIT:
     # evaluator's own fallback would quietly score full structures instead -- a silent uncropped
     # pass wearing a cropped label.
     for tag, fold, pool, sb, budget, jc in POOLS:
+        if tag not in MASKS:
+            continue
         m = METAS[tag]
         if m.get("pool") != pool or int(m.get("seed_base")) != sb or int(m.get("budget")) != budget:
             sys.exit(f"STOP: the {tag} mask was built for pool={m.get('pool')} "
@@ -302,8 +310,16 @@ for _t, _v in sorted(CROP_FOR.items()):
         _CROP_PARTS.append((_t + ":digest", _crop_tok_digest(_v[1])))
 CROP_ID = hashlib.sha1(repr(_CROP_PARTS).encode()).hexdigest()[:8]
 
+_WANT = [t.strip() for t in a.pools.split(",") if t.strip()]
+_known = {t for t, *_ in POOLS}
+_bad = [t for t in _WANT if t not in _known]
+if _bad:
+    sys.exit(f"STOP: --pools names {_bad}, which is not among {sorted(_known)}.")
+# REORDERED, NOT FILTERED IN PLACE, so --pools valfull,insample runs held out first.
+POOLS_RUN = [next(r for r in POOLS if r[0] == t) for t in _WANT]
+
 jobs = []
-for tag, fold, pool, sb, budget, jc in POOLS:
+for tag, fold, pool, sb, budget, jc in POOLS_RUN:
     for who in ("ours", "shipped"):
         name = (f"{tag}_{who}_ep{EP}_{CROP_ID}" if who == "ours"
                 else f"{tag}_shipped_{CROP_ID}")

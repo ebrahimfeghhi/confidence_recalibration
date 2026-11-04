@@ -16,6 +16,8 @@ RESOURCE ISOLATION, because the folding queue owns the machine:
   - at most --jobs concurrent downstream workers, default 2 of the 3 ranks' worth of CPU
   - a poll interval of --interval seconds, default 300, so the watcher is nearly free
   - it reads npz headers rather than whole arrays where it can, to stay off the disk
+  - every downstream child is launched under `ionice -c 3 nice -n 19`, because the parent's
+    scheduling class is not inherited through every exec path
 
 WHAT THE REPORT SEPARATES. The pilot deliberately over-represents post-cutoff structures -- 11 of
 the first 50 against 14 of the full 356 -- so a single pooled degeneracy rate from it would
@@ -74,6 +76,66 @@ def finished(pdb, fold_root, seeds, settle):
     if not os.path.isdir(d):
         return False
     return all(unit_ok(os.path.join(d, f"free_{s}.npz"), settle) for s in seeds)
+
+
+def run_stage(name, cmd, log_dir, timeout, env=None):
+    """One downstream stage for one structure, at idle priority, output journalled."""
+    os.makedirs(log_dir, exist_ok=True)
+    lp = os.path.join(log_dir, f"{name}.log")
+    # ionice/nice the CHILD too -- the parent's class is not inherited through every exec path
+    wrapped = ["ionice", "-c", "3", "nice", "-n", "19"] + cmd
+    with open(lp, "a") as lf:
+        lf.write(f"\n=== {time.strftime('%F %T')} {' '.join(cmd)}\n")
+        lf.flush()
+        try:
+            rc = subprocess.run(wrapped, stdout=lf, stderr=subprocess.STDOUT,
+                                cwd=ROOT, timeout=timeout,
+                                env={**os.environ, **(env or {})}).returncode
+        except subprocess.TimeoutExpired:
+            lf.write(f"TIMEOUT after {timeout}s\n")
+            return 124
+        except OSError as e:
+            lf.write(f"OSError {e}\n")
+            return 125
+    return rc
+
+
+def process_structure(pdb, a):
+    """THE DOWNSTREAM CHAIN, actually invoked. Raised in review: this file detected completed
+    structures and then read results.csv, without ever running the stages that WRITE results.csv
+    -- so the report could never materialise.
+
+    Two stages, in order, because the second reads what the first produces:
+
+      1. DOCKQ.  phase_i_check.py rescore scores whatever is missing with the dataset's own
+                 scorer. Nothing else may score it: a recovery that changed the scorer would make
+                 the new rows incomparable to the 500 structures already in results.csv.
+      2. LABELS AND POSE INDEX.  phase_j_build_cache.py --only <pdb> pairs every cached pose with
+                 its label and establishes the SAMPLE INDEX by coordinates. The index is not
+                 optional bookkeeping: poses in ci_coordinate are not in _sample_<k> order, so
+                 without it a pose cannot be joined to its own DockQ.
+
+    Both are skipped when --skip-stages is set, which is the mode to use if another process owns
+    them. Returns (ok, note).
+    """
+    log_dir = os.path.join(ROOT, a.stage_logs, pdb)
+    if a.skip_stages:
+        return True, "stages skipped by flag"
+    rc = run_stage("dockq", [
+        a.python, "-I", os.path.join(ROOT, "phases", "phase_i_check.py"), "rescore",
+        "--e", os.path.join(ROOT, a.fold_root), "--jobs", os.path.join(ROOT, a.jobs_dir),
+        "--refs", os.path.join(ROOT, a.refs), "--scorer", a.scorer, "--py", a.python,
+        "--code", a.code, "--seed0", str(a.seed0), "--nsample", str(a.nsample),
+    ], log_dir, a.stage_timeout)
+    if rc:
+        return False, f"dockq rescore exit {rc}"
+    rc = run_stage("cache", [
+        a.python, "-I", os.path.join(ROOT, "phases", "phase_j_build_cache.py"),
+        "--fold", os.path.join(ROOT, a.fold_root), "--only", pdb,
+    ], log_dir, a.stage_timeout)
+    if rc:
+        return False, f"build_cache exit {rc}"
+    return True, "ok"
 
 
 def dockq_rows(results, pdbs):
@@ -189,6 +251,19 @@ ap.add_argument("--nice", type=int, default=19)
 ap.add_argument("--fail-frac", type=float, default=0.25)
 ap.add_argument("--max-hours", type=float, default=72.0)
 ap.add_argument("--once", action="store_true", help="one pass, then exit")
+ap.add_argument("--jobs-dir", default="training/jobs")
+ap.add_argument("--refs", default="training/fold/refs")
+ap.add_argument("--scorer", default="/home/ebrahim/Protenix/scorer.py")
+ap.add_argument("--python", default="/home/ebrahim/Protenix/.venv/bin/python")
+ap.add_argument("--code", default="/home/ebrahim/Protenix")
+ap.add_argument("--seed0", type=int, default=500000)
+ap.add_argument("--nsample", type=int, default=5)
+ap.add_argument("--stage-logs", default="training/full_train/wave1_pilot_logs")
+ap.add_argument("--stage-timeout", type=int, default=7200)
+ap.add_argument("--skip-stages", action="store_true",
+                help="detect and report only, for when another process owns the downstream "
+                     "stages. The report then waits on that process rather than producing DockQ "
+                     "itself.")
 a = ap.parse_args()
 
 deprioritise(a.nice)
@@ -216,10 +291,21 @@ while True:
         if finished(p, a.fold_root, seeds_of[p], a.settle):
             newly.append(p)
     if newly:
-        state["done"] += newly
-        print(f"[{time.strftime('%H:%M:%S')}] newly complete: {len(newly)} "
-              f"-> {len(state['done'])}/{len(pilot)}")
-        json.dump(state, open(SP, "w"), indent=1)
+        print(f"[{time.strftime('%H:%M:%S')}] newly complete: {len(newly)}; running downstream "
+              f"stages at most {a.jobs} at a time")
+        # AT MOST --jobs AT A TIME, and sequentially within a batch, so the folding queue keeps
+        # the machine. Falling behind the fold is expected and fine; the report arrives late.
+        for i in range(0, len(newly), a.jobs):
+            for pdb in newly[i:i + a.jobs]:
+                ok, note = process_structure(pdb, a)
+                if ok:
+                    state["done"].append(pdb)
+                else:
+                    state["failed"].append((pdb, note))
+                    print(f"    {pdb}: FAILED -- {note}")
+            json.dump(state, open(SP, "w"), indent=1)
+        print(f"    processed -> {len(state['done'])}/{len(pilot)} done, "
+              f"{len(state['failed'])} failed")
     done = set(state["done"])
     if len(done) >= a.min_structures:
         by_if = dockq_rows(os.path.join(ROOT, a.results), done)

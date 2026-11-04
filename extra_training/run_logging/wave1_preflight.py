@@ -53,8 +53,16 @@ ap.add_argument("--max-tokens", type=int, default=2560)
 ap.add_argument("--show", type=int, default=8, help="example failures to print per check")
 a = ap.parse_args()
 
+# THE INSTANCE MATTERS. A pdb has one row per antibody/antigen chain pairing and they do not all
+# pass the gates -- 7pa7 has 10 instances, 4 with a protein antigen and the 6 cheapest ion-only.
+# An earlier version of this file re-derived "the row" as the cheapest instance of the pdb and
+# reported 21 false chain-mapping failures and 16 false MSA failures against a queue that had
+# chosen eligible instances. So the queue's own instance is used when it records one.
+WANT_INST = {}
 if a.queue:
-    want = [x["pdb"] for x in json.load(open(os.path.join(ROOT, a.queue)))["queue"]]
+    q = json.load(open(os.path.join(ROOT, a.queue)))["queue"]
+    want = [x["pdb"] for x in q]
+    WANT_INST = {x["pdb"]: x.get("instance") for x in q if x.get("instance")}
 elif a.pdb_list:
     want = open(a.pdb_list).read().split()
 else:
@@ -81,7 +89,7 @@ def nonempty(path):
         return False
 
 
-FOLD = ["job_json", "msa_files", "token_budget", "chain_mapping"]
+FOLD = ["job_json", "msa_files", "templates", "token_budget", "chain_mapping"]
 LABEL = ["mmcif", "bioassembly"]
 fail = collections.defaultdict(list)
 for pdb in want:
@@ -90,7 +98,35 @@ for pdb in want:
         for c in FOLD + LABEL:
             fail[c].append((pdb, "not in abag_split"))
         continue
-    r = min(rs, key=job_tokens)
+    inst = WANT_INST.get(pdb)
+    if inst:
+        r = next((x for x in rs if x["INSTANCE"] == inst), None)
+        if r is None:
+            fail["chain_mapping"].append((pdb, f"queued instance {inst} not in abag_split"))
+            continue
+    else:
+        # NO INSTANCE RECORDED: match build_wave1_jobs.py exactly -- cheapest instance that is
+        # eligible AND fully covered by MSAs. Eligible-only diverged from the builder on 8weo,
+        # whose cheapest eligible instance has a chain absent from the MSA index while another
+        # instance is complete, so the preflight failed a structure whose json had built fine.
+        # Two tools disagreeing about "the row for this pdb" is the recurring bug here.
+        elig = [x for x in rs if eligible(x)[0]]
+
+        def _covered(x):
+            qs = chain_seqs(x)
+            if not qs:
+                return False
+            for q in qs:
+                d = idx.get(q)
+                if not d:
+                    return False
+                for n in ("pairing.a3m", "non_pairing.a3m"):
+                    if not nonempty(os.path.join(MR, d, n)):
+                        return False
+            return True
+
+        full = [x for x in elig if _covered(x)]
+        r = min(full or elig or rs, key=job_tokens)
 
     jp = jobs.get(pdb)
     if not jp or not nonempty(jp):
@@ -120,6 +156,22 @@ for pdb in want:
                     bad.append(f"{n}-missing-or-empty")
         if bad:
             fail["msa_files"].append((pdb, ",".join(sorted(set(bad)))))
+
+    # TEMPLATES ARE A FOLD-STAGE REQUIREMENT ON THIS CODE PATH. Protenix only auto-searches from
+    # runner/batch_inference.py; our folds go through runner/inference.py via folder.py, which
+    # never calls it. And all 1,535 chains of the existing 501 training jsons carry a real
+    # hmmsearch.a3m, so folding without one makes a structure a different kind of input from the
+    # set it is meant to extend -- which would confound the diversity measurement this is for.
+    if ss:
+        nt = []
+        for q in ss:
+            d = idx.get(q)
+            if not d:
+                continue
+            if not nonempty(os.path.join(MR, d, "hmmsearch.a3m")):
+                nt.append(q[:8])
+        if nt:
+            fail["templates"].append((pdb, f"{len(nt)} chain(s) without hmmsearch.a3m"))
 
     t = job_tokens(r)
     if t > a.max_tokens:

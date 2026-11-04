@@ -165,16 +165,59 @@ def _verify(tag, who, sel, summary):
     return True
 
 
+def _exact_discordant(b, c):
+    """Two-sided exact p on the DISCORDANT pairs only -- McNemar's exact / a paired sign test.
+
+    WHY NOT A NORMAL s.e. FOR frac_acceptable. The indicator differences are 0 for almost every
+    interface: on the ground-truth-cropped arm's held-out cell, 4 gained acceptability, 0 lost, 88
+    unchanged. A normal approximation on that gives delta +0.0435 against a bar of +0.0419 and
+    announces a significant result; the exact test on 4 discordant pairs gives p = 0.125. The
+    approximation is not usable at these counts, and this is the same class of error as carrying
+    an uncropped error bar onto a cropped comparison -- a bar that does not belong to the quantity
+    it is being applied to.
+
+    THE FLOOR THIS IMPLIES, worth knowing before reading any frac_acc number on 92 interfaces:
+    with zero losses it takes 6 gains to reach p < 0.05. Five gains is p = 0.0625. So a frac_acc
+    move smaller than about +0.065 (6/92) cannot be significant no matter how it is framed.
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    k = min(b, c)
+    return min(1.0, 2 * sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n)
+
+
 def _paired(ours, theirs):
-    """Mean paired difference, its s.e., and the 95% bar, over the interfaces BOTH cover."""
+    """Paired differences in mean DockQ AND in frac_acceptable, each with its own s.e.
+
+    TWO METRICS, TWO ERROR BARS, and they are not interchangeable. mean DockQ is a continuous
+    paired difference, so its s.e. is sd(d)/sqrt(n). frac_acceptable is the fraction of interfaces
+    at or above DockQ 0.23, so its paired difference is over per-interface INDICATORS: an interface
+    contributes +1 when ours is acceptable and shipped is not, -1 the other way, and 0 when they
+    agree -- which is most of them. Using the DockQ spread as the bar for frac_acc, or vice versa,
+    would be the same class of error as carrying the uncropped bar onto a cropped comparison.
+
+    The discordant counts are reported too, because a frac_acc delta of +0.0109 means ONE interface
+    of 92 changed category, and that is worth seeing rather than inferring from the third decimal.
+    """
     keys = sorted(set(ours) & set(theirs))
-    d = [ours[k] - theirs[k] for k in keys]
-    if len(d) < 2:
+    if len(keys) < 2:
         return None
+    d = [ours[k] - theirs[k] for k in keys]
     se = st.stdev(d) / math.sqrt(len(d))
+    # frac_acceptable, paired over indicators
+    ai = [(1 if ours[k] >= ACCEPTABLE else 0) - (1 if theirs[k] >= ACCEPTABLE else 0)
+          for k in keys]
+    a_se = st.stdev(ai) / math.sqrt(len(ai)) if len(set(ai)) > 1 else 0.0
     return {"n": len(d), "delta": st.mean(d), "se": se, "bar": 1.96 * se,
             "n_better": sum(1 for x in d if x > 1e-9), "n_worse": sum(1 for x in d if x < -1e-9),
-            "n_same": sum(1 for x in d if abs(x) <= 1e-9)}
+            "n_same": sum(1 for x in d if abs(x) <= 1e-9),
+            "fa_ours": sum(1 for k in keys if ours[k] >= ACCEPTABLE) / len(keys),
+            "fa_theirs": sum(1 for k in keys if theirs[k] >= ACCEPTABLE) / len(keys),
+            "fa_delta": st.mean(ai), "fa_se": a_se, "fa_bar": 1.96 * a_se,
+            "fa_gained": sum(1 for x in ai if x > 0), "fa_lost": sum(1 for x in ai if x < 0),
+            "fa_p": _exact_discordant(sum(1 for x in ai if x > 0),
+                                      sum(1 for x in ai if x < 0))}
 
 
 head = f"\n  {a.rid} epoch {a.epoch}"
@@ -213,16 +256,28 @@ for tag, n_expect in POOLS:
                 print(f"  {name}: not computable")
                 continue
             verdict = "CLEARS its bar" if r["delta"] >= r["bar"] else "inside the noise"
+            # THE VERDICT IS THE EXACT TEST, not the normal bar. The bar is still printed for
+            # reference, and where the two disagree the exact one is the answer.
+            fa_verdict = ("significant, exact p=%.4f" % r["fa_p"] if r["fa_p"] < 0.05
+                          else "NOT significant, exact p=%.4f" % r["fa_p"])
             print(f"  {name}")
-            print(f"    delta {r['delta']:+.4f}  paired s.e. {r['se']:.4f}  bar +{r['bar']:.4f}  "
-                  f"n={r['n']}  -- {verdict}")
-            print(f"    {r['n_better']} better, {r['n_worse']} worse, {r['n_same']} identical pick")
+            print(f"    mean DockQ  {r['delta']:+.4f}  paired s.e. {r['se']:.4f}  "
+                  f"bar +{r['bar']:.4f}  n={r['n']}  -- {verdict}")
+            print(f"      {r['n_better']} better, {r['n_worse']} worse, "
+                  f"{r['n_same']} identical pick")
+            print(f"    frac_acc    {r['fa_ours']:.4f} vs {r['fa_theirs']:.4f} = "
+                  f"{r['fa_delta']:+.4f}  (normal bar +{r['fa_bar']:.4f}, not used)  "
+                  f"-- {fa_verdict}")
+            print(f"      {r['fa_gained']} interface(s) gained acceptability, "
+                  f"{r['fa_lost']} lost it, {r['n'] - r['fa_gained'] - r['fa_lost']} unchanged")
     else:
         print("  (per-pose rows missing, so no paired error bar; summary means only)")
-    print(f"    pool means: ours mean-sel {co['mean_dockq']:.4f}  ours max-sel "
-          f"{co.get('mean_dockq_select_max', float('nan')):.4f}  |  shipped mean-sel "
-          f"{cs['mean_dockq']:.4f}  shipped max-sel "
-          f"{cs.get('mean_dockq_select_max', float('nan')):.4f}")
+    print(f"    pool means: ours mean-sel {co['mean_dockq']:.4f} (fa {co['frac_acc']:.4f})  "
+          f"ours max-sel {co.get('mean_dockq_select_max', float('nan')):.4f} "
+          f"(fa {co.get('frac_acc_select_max', float('nan')):.4f})")
+    print(f"                shipped mean-sel {cs['mean_dockq']:.4f} (fa {cs['frac_acc']:.4f})  "
+          f"shipped max-sel {cs.get('mean_dockq_select_max', float('nan')):.4f} "
+          f"(fa {cs.get('frac_acc_select_max', float('nan')):.4f})")
 
     # THE UNCROPPED PAIR, from the run's own metric file. Its baseline_mean_dockq is the shipped
     # head's RECORDED ipTM selected over the same interfaces -- a stored number, not a recomputed
@@ -233,7 +288,9 @@ for tag, n_expect in POOLS:
         un = json.load(open(up))
         ud = un["mean_dockq"] - un["baseline_mean_dockq"]
         print(f"  UNCROPPED  ours {un['mean_dockq']:.4f} vs shipped-as-recorded "
-              f"{un['baseline_mean_dockq']:.4f} = {ud:+.4f}")
+              f"{un['baseline_mean_dockq']:.4f} = {ud:+.4f}   |   frac_acc "
+              f"{un['frac_acc']:.4f} vs {un['baseline_frac_acc']:.4f} = "
+              f"{un['frac_acc'] - un['baseline_frac_acc']:+.4f}")
         if ro and rs and pri:
             print(f"  cropped PRIMARY minus uncropped: {pri['delta'] - ud:+.4f}  "
                   f"(indicative -- the two shipped baselines are recomputed vs stored)")

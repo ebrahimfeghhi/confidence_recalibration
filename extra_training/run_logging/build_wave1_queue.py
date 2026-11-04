@@ -81,8 +81,15 @@ for r in csv.DictReader(open(os.path.join(ROOT, "SAbDab2_data/zenodo_splits/spli
     if usable(r):
         U[cl][k] += 1
         if p not in tfold:
+            # THE INSTANCE IS RECORDED, not just the pdb. A pdb carries several instances -- one
+            # per antibody/antigen chain pairing -- and they do NOT all pass the gates: 7pa7 has
+            # 10, of which 4 have a protein antigen and the 6 smallest are ion- or ligand-only.
+            # Downstream anything that re-derives "the row for this pdb" by taking the cheapest
+            # instance picks an ineligible one and reports a false failure. Raised by the
+            # preflight doing exactly that.
             AV[cl].append({"p": p, "t": job_tokens(r), "k": k, "ab": str(r.get("ab_cluster")),
-                           "ag": ag_key(r.get("agclusters")), "seq": set(chain_seqs(r))})
+                           "ag": ag_key(r.get("agclusters")), "seq": set(chain_seqs(r)),
+                           "instance": r["INSTANCE"]})
     if p in RETAIN:
         RETCL[cl].add(p)
 
@@ -126,9 +133,9 @@ for cl, d in sorted(U.items()):
                     best = (sc, tot, [x, y])
         take = best[2]
     for x in take:
-        picked.append({"pdb": x["p"], "seeds": 10, "category": L, "cutoff": x["k"],
-                       "tokens": x["t"], "ab_cluster": x["ab"], "ag_cluster": x["ag"],
-                       "ab_ag_cluster": cl})
+        picked.append({"pdb": x["p"], "instance": x["instance"], "seeds": 10, "category": L,
+                       "cutoff": x["k"], "tokens": x["t"], "ab_cluster": x["ab"],
+                       "ag_cluster": x["ag"], "ab_ag_cluster": cl})
         occ_ag.add(x["ag"]); occ_ab.add(x["ab"]); occ_seq |= x["seq"]
 
 # ---- DIVERSIFIED PILOT: round-robin over (category, cutoff, token quartile), antigen-unique first
