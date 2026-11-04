@@ -927,3 +927,38 @@ ResourceWarning: Enable tracemalloc to get the object allocation traceback
   epoch 23/60: 1220 unit(s)  epoch 23/60: 1220 unit(s)
 
   epoch 23/60: 1220 unit(s)
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/y8pyuq/head_step2750.pt
+  epoch 23 took 44.5 min for 1220 unit(s), 122 optimiser step(s), 0.44 s/pose
+  [rank 2] epoch 23 took 44.5 min -- apply_step_total 0.4m/122  cpucrop_label 0.0m/1220  cpucrop_slice 23.3m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 12.0m/2440  cropped_tokens mean 383  gpu_backward 16.2m/6100  gpu_forward 13.2m/12200  grad_collective_plus_wait 0.3m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 4.0m/122  pose_a_total 6.8m/6100  pose_total 20.5m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 0.7m/122  rank_pass_a 15.8m/122  trunk_read_plus_crop_tokens 0.0m/1275  unit_setup 12.0m/2440
+  [rank 2] epoch 23 prefetch (4 worker(s)): 1165/1220 hit (95.5%), 0.0 min waiting on the worker, 55 evicted-then-wanted, 0 asked after the workers finished
+  [rank 2] epoch 23 token draw: kept 0.5864 of tokens over 2495 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.96x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 2] epoch 23 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.3282 over 735 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  epoch 23 took 44.5 min for 1220 unit(s), 122 optimiser step(s), 0.44 s/pose
+  [rank 2] epoch 23 SCORE SPREAD: median std(predicted) 0.0239 against std(true iTM) 0.0687, median ratio 0.464   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 2] epoch 23 rank-loss (rel, cross-seed pairs): +0.00800 over 735 interface-group(s) in 122 step(s), 36750 pair(s)
+  [rank 2] epoch 23 accounted 44.8m of 44.5m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)  [rank 0] epoch 23 took 44.5 min -- apply_step_total 0.4m/122  cpucrop_label 0.0m/1220  cpucrop_slice 12.5m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 6.6m/2440  cropped_tokens mean 381  gpu_backward 16.0m/6100  gpu_forward 13.1m/12200  grad_collective_plus_wait 0.3m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 4.8m/122  pose_a_total 6.7m/6100  pose_total 20.3m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 5.6m/122  rank_pass_a 10.9m/122  trunk_read_plus_crop_tokens 0.0m/1249  unit_setup 6.6m/2440
+
+  [rank 0] epoch 23 prefetch (4 worker(s)): 1191/1220 hit (97.6%), 0.0 min waiting on the worker, 29 evicted-then-wanted, 0 asked after the workers finished
+  [rank 2] epoch 23 unit_setup 12.0m, of which 35.4m is already in named leaves -> -23.4m of the residual is INSIDE units, the rest is between them
+  [rank 0] epoch 23 token draw: kept 0.5806 of tokens over 2469 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.94x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  epoch 23 took 44.5 min for 1220 unit(s), 122 optimiser step(s), 0.44 s/pose
+  [rank 0] epoch 23 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.3282 over 735 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]
+  [rank 1] epoch 23 took 44.5 min -- apply_step_total 0.4m/122  cpucrop_label 0.0m/1220  cpucrop_slice 12.8m/1220  cpucrop_tokens 0.0m/1220  cpucrop_trunk 0.0m/1220  crop_slice 6.5m/2440  cropped_tokens mean 380  gpu_backward 16.4m/6100  gpu_forward 13.2m/12200  grad_collective_plus_wait 0.3m/122  label_open 0.0m/2440  loss_feature_prep 0.0m/2440  loss_stats_collective_plus_wait 4.4m/122  pose_a_total 6.8m/6100  pose_total 20.8m/6100  prefetch_issue 0.0m/1219  prefetch_wait 0.0m/1220  rank_gather 5.6m/122  rank_pass_a 11.0m/122  trunk_read_plus_crop_tokens 0.0m/1220  unit_setup 6.5m/2440
+  [rank 1] epoch 23 prefetch (4 worker(s)): 1220/1220 hit (100.0%), 0.0 min waiting on the worker
+  [rank 1] epoch 23 token draw: kept 0.5857 of tokens over 2440 unit(s) (union p=0.9, other p=0.35; the fixed crop was 0.598), so ~0.96x the fixed crop's pair work; 0 chain(s) topped up to the 4-token floor, 0 token(s) added
+  [rank 2] epoch 23 memory: peak allocated 69.17 GB, peak reserved 69.79 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2410 unit(s) UNCHECKPOINTED, 30 checkpointed
+  [rank 0] epoch 23 SCORE SPREAD: median std(predicted) 0.0239 against std(true iTM) 0.0687, median ratio 0.464   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 0] epoch 23 rank-loss (rel, cross-seed pairs): +0.00800 over 735 interface-group(s) in 122 step(s), 36750 pair(s)
+  [rank 1] epoch 23 WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ): median +0.3282 over 735 interface-group(s)   [the head was +0.3170 at d32kqp ep66; the TRUE iTM reaches +0.6900 -- this is the arm's prediction]  [rank 0] epoch 23 accounted 44.8m of 44.5m, residual -0.3m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+
+  [rank 0] epoch 23 unit_setup 6.6m, of which 19.1m is already in named leaves -> -12.5m of the residual is INSIDE units, the rest is between them
+  [rank 1] epoch 23 SCORE SPREAD: median std(predicted) 0.0239 against std(true iTM) 0.0687, median ratio 0.464   [<1 collapsing, >1 exaggerating, ~1 right magnitude]
+  [rank 0] epoch 23 memory: peak allocated 69.17 GB, peak reserved 69.71 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2412 unit(s) UNCHECKPOINTED, 28 checkpointed
+  [rank 1] epoch 23 rank-loss (rel, cross-seed pairs): +0.00800 over 735 interface-group(s) in 122 step(s), 36750 pair(s)
+  [rank 1] epoch 23 accounted 44.8m of 44.5m, residual -0.2m (exclusive buckets only; gpu_* overlap pose_total, unit_setup overlaps the per-unit leaves)
+  [rank 1] epoch 23 unit_setup 6.5m, of which 19.4m is already in named leaves -> -12.9m of the residual is INSIDE units, the rest is between them
+  [rank 1] epoch 23 memory: peak allocated 69.17 GB, peak reserved 69.72 GB, blocks_per_ckpt=None, ckpt_threshold=855 tok -> 2398 unit(s) UNCHECKPOINTED, 42 checkpointed
+  saved /home/ebrahim/confidence_recalibration/extra_training/training/runs/y8pyuq/resume_ep23.pt (227 MiB: head + AdamW moments + step)
+  epoch 24/60: 1220 unit(s)  epoch 24/60: 1220 unit(s)  epoch 24/60: 1220 unit(s)
+
+
