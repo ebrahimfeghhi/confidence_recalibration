@@ -452,3 +452,84 @@ Nothing is deleted until its replacement is verified present:
   through the downstream tools, then delete;
 - the original manifest and an exact list of every removed file are kept;
 - no deletion of a sole copy of anything needed to regenerate the validation selection.
+
+---
+
+# Review response — execution gates
+
+Five requirements from review, plus two blockers the preflight requirement uncovered.
+
+## Fixed
+
+**1. The subthreshold anchor was per seed, not per pose.** It filtered to seeds whose *best* pose
+was below 0.23 — entirely unacceptable seeds — which skips the seed holding the best individual
+subthreshold pose whenever that seed also holds an acceptable one, and a seed routinely holds
+both. Now `max` over poses with `d < ACC`, and the seed carrying that pose. Algorithm is
+`anchored-coverage-v2`. **The manifest must be regenerated and its digest re-recorded**; the
+current `adbcc352fb069b63` was produced by v1.
+
+**2. The queue builder checked for an MSA directory, not the files.** `os.path.isdir` passes on a
+directory holding no alignment, or a zero-byte one from an interrupted search. Now requires
+`pairing.a3m` and `non_pairing.a3m` to exist and be non-empty for every chain.
+
+## New blockers, found by building the preflight
+
+**3. No job json exists for any of the 386 wave-1 structures.** `training/jobs` holds 502 and
+`validation/jobs` 54, none of them ours. The fold pipeline consumes a job json
+(`name` + `sequences` with MSA paths), so **this blocks folding outright**. It is buildable from
+`abag_split.csv` and `seq_to_pdb_index.json` with no external data.
+
+**4. mmCIFs are missing for most of them** — 37 of 356 training and 0 of 30 validation are in
+`/home/ebrahim/mmcif`. `training/prep/job_bioassembly` and `job_cifs` cover 0 of 356. These feed
+the LABEL stage, not the fold, so they do not block the queue — but they block DockQ, and
+therefore the pilot report and any degeneracy classification. ~349 downloads plus bioassembly
+builds, CPU and network only.
+
+## Tooling added, none of it run yet
+
+| tool | what it gates |
+|---|---|
+| `run_logging/wave1_preflight.py` | exact per-structure input check, fold-stage and label-stage reported separately; exits non-zero only on fold-stage failures |
+| `run_logging/verify_val_manifest.py` | six-check gate between the manifest and any trim: digest, seed count, trunk present, **label present**, results.csv pose coverage, and that the recorded per-interface statistics still reproduce |
+| `run_logging/staged_reclaim.py` | inventory → quarantine → verify → unlink, journalled |
+| `run_logging/wave1_pilot_monitor.py` | asynchronous pilot, never touches a GPU or the queue |
+
+## Quarantine does not reclaim quota
+
+Review was right and it changes the sequencing. `/home` is one ext4 volume with `usrquota`, so
+quota is charged per uid across the whole device — a quarantine directory on it is a rename and
+the quota number does not move. Any budget that counts "space freed by quarantining" is counting
+space that is not there.
+
+`staged_reclaim.py` keeps the two apart: quarantine is for **reversibility**, unlink is for
+**space**. It reads `quota -v` before and after the unlink and **refuses to report success unless
+the delta matches the inventoried bytes** within tolerance. A shortfall usually means an open
+descriptor on a deleted inode, where the blocks return only when the holder exits — so it says so
+rather than reporting space it cannot see.
+
+## Pilot monitor isolation and honesty
+
+Completion is an **explicit marker**: every unit must exist, be unmodified for `--settle` seconds,
+and open as a valid npz carrying the keys the downstream stages read. Presence alone proves only
+that a fold *started*, and a fold killed halfway leaves a truncated unit that passes an existence
+test.
+
+Isolation: `nice 19`, `ionice` class 3 (idle), at most 2 concurrent workers, a 300 s poll.
+
+Every rate is reported **by cutoff and by cluster category**, with the pilot's composition printed
+beside the queue's, because the pilot over-represents post-cutoff structures by design — 11 of the
+first 50 against 14 of the full 356 — so a pooled pilot rate would mis-estimate the queue. Only a
+catastrophic failure escalates: nonfinite or all-zero coordinates, a label disagreeing with its
+trunk on token count, a chain mapping resolving to no scored pair, or more than 25% of processed
+structures failing.
+
+## Revised sequence
+
+1. regenerate the manifest under v2 and record the new digest
+2. build job jsons for all 386 — **the only thing blocking the fold**
+3. run `wave1_preflight.py` on both queues; fold-stage must be clean
+4. start the queue, start the pilot monitor
+5. in parallel: download ~349 mmCIFs, build bioassemblies, build the 319 missing validation labels
+6. `verify_val_manifest.py` must pass before any validation seed is trimmed
+7. `staged_reclaim.py` through all four stages, with the quota delta confirmed before the freed
+   space is counted against the fold budget

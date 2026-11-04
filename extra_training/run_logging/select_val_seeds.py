@@ -49,7 +49,7 @@ ACC = 0.23
 # pick costs an acceptable answer.
 EDGES = [0.0, 0.05, 0.15, 0.23, 0.35, 0.50, 0.70, 1.01]
 WEIGHTS = [1.0, 1.5, 3.0, 3.0, 1.5, 1.0, 1.0]   # per bin, highest either side of 0.23
-ALGO_VERSION = "anchored-coverage-v1"
+ALGO_VERSION = "anchored-coverage-v2"
 
 
 def bin_of(d):
@@ -151,17 +151,24 @@ def anchored(per_if, k):
     carry 1 to 3 -- and makes oracle retention exact by construction rather than incidental.
 
     A second anchor goes in for every interface that has any pose on each side of 0.23: the seed
-    holding its best pose BELOW the threshold. Without it a threshold-spanning interface can be
-    reduced to all-acceptable, which removes precisely the decision the dev set exists to test.
+    holding the best individual POSE below the threshold. Without it a threshold-spanning
+    interface can be reduced to all-acceptable, which removes precisely the decision the dev set
+    exists to test. If that seed is the oracle seed -- a seed often holds poses on both sides --
+    the dedup absorbs it and no extra slot is spent, which is correct: the pool still spans.
     """
     anchors = []
     for ifc, byseed in sorted(per_if.items()):
         best = max(((max(ds), s) for s, ds in byseed.items() if ds), default=None)
         if best:
             anchors.append(best[1])
-        below = [(max(ds), s) for s, ds in byseed.items() if ds and max(ds) < ACC]
-        if below and best and best[0] >= ACC:
-            anchors.append(max(below)[1])
+        # THE SUBTHRESHOLD ANCHOR IS PER POSE, NOT PER SEED. Raised in review. The first version
+        # filtered to seeds whose BEST pose was below 0.23, i.e. seeds that are entirely
+        # unacceptable -- which skips the seed holding the best individual subthreshold pose
+        # whenever that seed also holds an acceptable one, and a seed routinely holds both.
+        # The quantity wanted is max over POSES with d < ACC, and the seed carrying it.
+        sub = [(d, s) for s, ds in byseed.items() for d in ds if d < ACC]
+        if sub and best and best[0] >= ACC:
+            anchors.append(max(sub)[1])
     seeds = sorted({s for b in per_if.values() for s in b})
     chosen = []
     for s in anchors:                       # dedup, keep first occurrence, deterministic order

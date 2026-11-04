@@ -44,12 +44,30 @@ drop = set(open(a.drop_list).read().split())
 RETAIN = tfold - drop
 
 
+def msa_ok(seq):
+    """THE FILES, not the directory. Raised in review: os.path.isdir passes on a directory that
+    exists but holds no alignment, or holds a zero-byte one left by an interrupted search, and the
+    failure would only surface partway through 36 GPU-hours of folding."""
+    if seq not in idx:
+        return False
+    d = os.path.join(MR, idx[seq])
+    if not os.path.isdir(d):
+        return False
+    for n in ("pairing.a3m", "non_pairing.a3m"):
+        try:
+            if os.path.getsize(os.path.join(d, n)) <= 0:
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def usable(r):
     ok, _ = eligible(r)
     if not ok or job_tokens(r) > 2560:
         return False
     ss = chain_seqs(r)
-    return bool(ss) and all(s in idx and os.path.isdir(os.path.join(MR, idx[s])) for s in ss)
+    return bool(ss) and all(msa_ok(s) for s in ss)
 
 
 U = collections.defaultdict(lambda: {"pre": 0, "post": 0})
