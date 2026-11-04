@@ -105,4 +105,4 @@ $PY -I run_logging/staged_reclaim.py --targets $S/delete_targets.txt --journal t
 $PY -I run_logging/staged_reclaim.py --targets $S/delete_targets.txt --journal training/runs/reclaim_val.json --stage unlink --i-have-verified || exit 1
 say "quota after validation trim: $(q)"
 
-say "BOTH RECLAIMS DONE. j2mnoz is still running and the fold has NOT been launched."
+say "BOTH RECLAIMS DONE. The fold has NOT been launched by this script."

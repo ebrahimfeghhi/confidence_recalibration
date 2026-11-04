@@ -563,6 +563,18 @@ def parse_args():
                                         "templated units, never written to here")
     ap.add_argument("--pool", default=None,
                     help="csv whose interfaces define what every fold is scored on")
+    ap.add_argument("--fold-only", action="store_true",
+                    help="FOLD AND DUMP, SCORE NOTHING. For structures that have no interface "
+                         "registry yet: the pool's chain1/chain2 are REFERENCE chain ids (10or "
+                         "scores B-S and F-S, not its positional A-D), so building one needs the "
+                         "deposited structure, and the mmCIFs for a fresh batch arrive later than "
+                         "the alignments. Without this flag such a unit is skipped at the `not "
+                         "want` guard and never folds at all, which blocks the fold on data only "
+                         "the SCORER needs. With it the unit folds, its trunk and poses are "
+                         "written, and NO row is appended to the csv -- so nothing enters "
+                         "results.csv that a later real scoring pass would have to reconcile or "
+                         "that could be mistaken for a measured DockQ. Score later, once the pool "
+                         "exists, via the ordinary rescore path.")
     ap.add_argument("--claim-dir", default=None,
                     help="atomic mkdir claims so workers share one queue")
     ap.add_argument("--dtype", choices=("bf16", "fp32", "fp16"), default="bf16")
@@ -919,7 +931,7 @@ def run_unit(ctx, unit):
     kind, pdb, target, tag, seed, poses = unit
     A = ctx.A
     want = sorted(ctx.ifaces.get(pdb, ()))
-    if not want:
+    if not want and not A.fold_only:
         print(f"  {pdb}: no interfaces to score, skipping", flush=True)
         return "skipped"
     donor, chains = provenance(A, target, tag, poses)
@@ -928,7 +940,9 @@ def run_unit(ctx, unit):
     # required pair instead of the full chain set will not match and would refold
     if A.skip_by_template and unit_already_folded(ctx.units_done, pdb, seed, donor, chain_set):
         return "skipped"
-    if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
+    # all([]) IS TRUE, so an empty `want` would read as "already fully scored" and skip. Under
+    # --fold-only the completion test is the TRUNK, not the score rows.
+    if want and all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
         return "skipped"
     claim = f"{A.claim_dir}/{pdb}_{target}_{tag}_{seed}".replace("*", "all") if A.claim_dir else None
     if claim:
@@ -963,7 +977,7 @@ def run_unit(ctx, unit):
     # guard, so a complete set of poses sat on disk unscorable.
     if A.claim_dir:
         ctx.rows_done, ctx.units_done = open_csv(A.csv)
-    if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
+    if want and all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
         release()
         return "skipped"                  # another worker finished it while we queued
     rd = saved_run_dir(A.out, pdb, seed, tag=tag, donor=donor)
@@ -1098,6 +1112,18 @@ def finish_unit(ctx, kind, pdb, target, tag, seed, rdir, name, want, poses, dt, 
     returns, so no other worker can take a unit that is folded but not yet scored. Any exception is a
     FAILED line and a released claim, never a silent loss.
     """
+    # FOLD-ONLY: the trunk and poses are already written by the time we get here, so there is
+    # nothing left to do but keep the claim and report. Deliberately writes NO csv row -- a row
+    # with no scored interface would sit in results.csv looking like a measured DockQ of nothing,
+    # and the later real scoring pass would have to reconcile it. The claim is KEPT so the unit is
+    # not refolded; scoring happens later through the ordinary rescore path once the pool exists.
+    if ctx.A.fold_only:
+        print(f"  {kind} {pdb} {target} {tag} seed {seed}: folded in {dt:.0f}s "
+              f"(fold-only, not scored)", flush=True)
+        shutil.rmtree(f"{rdir}/{name}", ignore_errors=True)
+        if not ctx.A.keep_cifs:
+            shutil.rmtree(f"{rdir}/predictions", ignore_errors=True)
+        return "ran"
     try:
         got, err = score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses)
         # scoring reads the driver's own layout, so normalise only after it has run
