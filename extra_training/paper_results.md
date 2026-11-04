@@ -1155,3 +1155,63 @@ rather than on a loss curve. n=92 held-out is small; the 0.0044 paired s.e. is t
 and nothing here escapes it. The gradient-tail mechanism is a hypothesis with a named test that
 was not run. And the arm was stopped at 40 of a planned 60, so "converged" means flat over the
 30-40 window, not proven flat to 60.
+
+## 19. A NON-GT CROP FOR BOTH TRAIN AND VAL METRICS: the tooling, and what sections 13/14 do NOT close
+
+**The ask:** read the in-sample and held-out metrics on a crop that uses no ground truth, i.e. the
+union over all of a structure's candidate poses of each pose's own PREDICTED interface.
+
+### Why sections 13 and 14 do not already answer it
+
+Both scored `t4jtjr/head_ep30_step3660.pt` -- a head **trained on ground-truth crops** -- on a
+label-free crop. That is a train/eval MISMATCH, so it measures transfer off the training
+distribution, not whether label-free cropping works for a head trained under it. The biased
+token-dropout arms train on the m0 union mask, which is the label-free crop (see below), so
+scoring them on it is MATCHED. That combination has not been run.
+
+### The arms' own training crop is already 99.8% label-free
+
+Measured per structure between `union_crop_m0_gt_ost.npz` (what the arms train on) and
+`union_crop_m0_posefree.npz` (the same build without `--force-gt --ost-pairs`):
+
+| pool | kept, gt_ost | kept, posefree | tokens GT forcing ADDS |
+|------|--------------|----------------|------------------------|
+| train, 368 structures, 50-pose union | median 0.4148, p10 0.2353 | median 0.4142, p10 0.2301 | median 0, mean 0.8, max 24 |
+| held out, 53 structures, 150-pose union | median 0.5734, p10 0.2931 | median 0.5714, p10 0.2913 | median 0, mean 0.9, max 12 |
+
+So the two masks are the same crop. This is the opposite of section 9b's `--crop-margin 5`, which
+is cut entirely from the true structure. **The arms' crop is wide** -- a median 41.5% of tokens on
+train, carrying periphery as well as interface -- and it is not a label crop in any meaningful
+sense.
+
+### The tooling
+
+- `run_logging/build_union_crop_masks.py` (unchanged) built four m0 masks: `gt_ost` and `posefree`
+  x {`training/full_train/`, `training/valfull/`}. `--verify-rule` re-runs the identical code on
+  the LABEL coordinates and asserts it reproduces the trainer's `interface_crop_tokens` bit for
+  bit, on all 368 and all 53 structures.
+- `run_logging/cropped_eval.py` previously hard-exited on `crop_margin <= 0`, which is every
+  token-mask arm. It now resolves three cases: a token arm on its own mask, a margin arm on its
+  own margin, and either arm on an explicitly named crop it did NOT train under. The guard's
+  `crop_tokens` is a DIGEST, not a path -- the path comes from the run's `args.json` and is then
+  verified against the digest, so a mask rebuilt under the same filename is refused.
+- `run_logging/cropped_eval_report.py` prints the four cropped cells beside the UNCROPPED pair
+  from the run's own metric files, because the cropped number alone is not a result: cropping
+  raises every score, the shipped head's included.
+- `shell_scripts/cropped_eval_labelfree.sh <rid> <ep> [posefree|gt_ost]` builds what is missing,
+  re-verifies both masks every run, asserts `force_gt=false` for the posefree variant rather than
+  waiving it, and launches and stops nothing.
+- `run_logging/test_cropped_eval_labelfree.py`, 26 checks, all passing.
+
+**One bug fixed in passing:** passes are skipped when their `.json` exists and the shipped pass
+carried no epoch or crop in its name, so a second crop variant run into the same output directory
+silently reused the first variant's shipped baseline and compared two different crops. Every pass
+name now carries an 8-char fingerprint of its crop flags; the two variants hash to `de5302ec` and
+`0958de3a`.
+
+### How to read the result when it lands
+
+The comparison is the DIVERGENCE, not the cropped number. In-sample climbing on cropped inputs
+while uncropped stalls is the failure the arm's own launcher names: learning to rank CROPS rather
+than poses. The ground-truth-cropped arm did exactly that at 0.6305 cropped against 0.5387
+uncropped. Cropped and uncropped agreeing means the crop was a convenience, not the mechanism.
