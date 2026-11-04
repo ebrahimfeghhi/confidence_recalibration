@@ -162,6 +162,13 @@ def main():
                          "steps, i.e. confined and retracing. That is an optimiser oscillating at "
                          "the limit its step size can resolve, and neither run ever decayed: lr "
                          "was constant 0.01 from step 20 to the end because no decay existed.")
+    ap.add_argument("--lr-steps", default="",
+                    help="A STAIRCASE schedule, EPOCH:LR,EPOCH:LR -- e.g. "
+                         "20:1e-3,40:1e-4 holds --lr until epoch 20, then 1e-3 until epoch "
+                         "40, then 1e-4. TAKES PRECEDENCE over --lr-final and the decay "
+                         "window/shape, which interpolate continuously and so cannot "
+                         "express a hold-then-drop. Warmup still applies to the first "
+                         "steps. Empty (default) leaves every existing arm bit-identical.")
     ap.add_argument("--grad-probe", action="store_true",
                     help="MEASURE, DON'T GUESS. Run EXACTLY ONE accumulation window -- the unit "
                          "count is derived as accum_local/nsample, not asked for, because a probe "
@@ -514,6 +521,30 @@ def main():
     ap.add_argument("--eval-pool-every", "--train-eval-every", dest="train_eval_every", type=int, default=2,
                     help="epochs between training-set evaluations. Ignored without "
                          "--train-eval-pool.")
+    ap.add_argument("--eval-pool-crop-tokens", default="",
+                    help="run the PRIMARY in-training eval on a precomputed crop mask "
+                         "instead of full structures. The mask is the same kind of npz "
+                         "--crop-tokens takes, built for the EVAL pool. The pass is then "
+                         "tagged <pool>_cropped rather than <pool>, because a cropped "
+                         "reading written under the uncropped name is how five files called "
+                         "metric_train came to hold the only held-out numbers a run "
+                         "produced -- run_logging/plot_val_2x3.py reads <pool> and must keep "
+                         "getting the deployment-shaped number.")
+    ap.add_argument("--extra-eval", action="append", default=[], metavar="SPEC",
+                    help="AN ADDITIONAL eval pass at its own cadence, repeatable. The "
+                         "trainer historically had exactly ONE: --eval-pool and "
+                         "--train-eval-pool are argparse aliases for a single dest, so "
+                         "\"cropped validation every 2 epochs AND uncropped validation and "
+                         "in-sample every 6\" was not expressible and section 12 recorded "
+                         "in-sample as simply unmeasured for the uncropped arm.\n"
+                         "SPEC is comma-separated key=value with keys: name (required, "
+                         "names metric_<name>_ep<N>.json and <name>_eval_shards_ep<N>), "
+                         "pool (required), fold, seed_base, budget, every (required), "
+                         "crop_tokens. Example:\n"
+                         "  --extra-eval 'name=valfull,pool=training/valfull/pool.csv,"
+                         "fold=validation/fold,seed_base=400000,budget=30,every=6'\n"
+                         "Each pass costs a full sharded evaluation, so every=1 on three "
+                         "specs triples that cost; the cadence is the knob.")
     ap.add_argument("--eval-pool-fold", "--train-eval-fold", dest="train_eval_fold", default="",
                     help="score --train-eval-pool against THIS fold instead of --fold. The point "
                          "is to watch a held-out signal every few epochs without paying for the "
@@ -804,6 +835,16 @@ def main():
                     help="`structure` shuffles the ORDER OF STRUCTURES and the units within each, "
                          "which is as much as can be shuffled while building each structure's "
                          "dataset item once. `none` is deterministic for debugging.")
+    ap.add_argument("--epoch-order", default="shuffle",
+                    choices=["shuffle", "manifest", "tokens"],
+                    help="HOW THE EPOCH'S STRUCTURES ARE ORDERED, independently of "
+                         "--shuffle. `shuffle` (default) is the training order, unchanged. "
+                         "`tokens` walks them ASCENDING BY TOKEN COUNT, which is what a "
+                         "memory probe needs: it reaches the boundary having already "
+                         "measured every size below it, so one run ending in an OOM still "
+                         "yields the whole curve. `manifest` keeps the order the unit list "
+                         "is already in -- which is SORTED BY PDB, not the selection csv's "
+                         "row order. It was added believing otherwise; prefer `tokens`.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--seeds", default="500000-500009",
                     help="the seed range the manifest expects per structure, inclusive.")
@@ -866,6 +907,72 @@ def main():
                          "block (most saved, about 30%% more compute). Protenix supports it "
                          "natively on PairformerStack and it engages only when gradients are "
                          "enabled, so the evaluator is unaffected. 0 disables it.")
+    ap.add_argument("--ckpt-token-threshold", type=int, default=0,
+                    help="SIZE-CONDITIONAL ACTIVATION CHECKPOINTING. Units at or below this many "
+                         "tokens run with checkpointing OFF; larger units keep "
+                         "--blocks-per-ckpt. 0 (default) disables the rule, so every unit uses "
+                         "--blocks-per-ckpt and nothing changes.\n"
+                         "WHY IT IS SAFE TO VARY PER UNIT. The peak is a PER-POSE property, not a "
+                         "per-step one: _one_pose is a function, its frame is destroyed on "
+                         "return, and every large tensor is freed before the next pose allocates "
+                         "(the pose-lifetime fix). So a small unit running without checkpointing "
+                         "cannot add to the peak that a large unit sets -- it only has to stay "
+                         "UNDER it. The run's peak is 87.71 GB allocated on cards of 95.6 GB with "
+                         "the largest unit at 1543 tokens, and that is the number a threshold "
+                         "must not raise.\n"
+                         "WHY IT PAYS. blocks_per_ckpt=1 recomputes every one of the head's four "
+                         "pairformer blocks in backward, about 30%% more compute, and it is "
+                         "applied to the 400-token units because the 1543-token ones need it. "
+                         "gpu_backward is 70.3 min of a 143.9 min epoch.\n"
+                         "SET IT FROM run_logging/bench_ckpt_by_size.py, NOT BY GUESSING. The "
+                         "benchmark measures peak memory and CUDA-event time per unit at each "
+                         "setting and reports the largest token count whose unchecked peak stays "
+                         "under the checkpointed peak, with a margin. A threshold chosen by "
+                         "arithmetic would be an OOM 40 minutes into an epoch.\n"
+                         "IT CHANGES NO MATHEMATICS. Checkpointing trades compute for memory and "
+                         "is gradient-exact; test_perblock_ckpt_equiv.py already gates "
+                         "blocks_per_ckpt=1 against off at 0.000e+00 on every parameter, which is "
+                         "exactly the equivalence this relies on.")
+    ap.add_argument("--lean-readouts", action="store_true",
+                    help="STOP COMPUTING THE THREE READOUTS --pae-only ALREADY THROWS AWAY. "
+                         "--pae-only stubs plddt_loss, pde_loss and resolved_loss and skips the "
+                         "all-atom lddt, so none of the three is trained -- but the HEAD still "
+                         "builds pde_pred, plddt_pred and resolved_pred on every pose, and this "
+                         "trainer puts all four into `pred`. Because nothing in the loss reads "
+                         "them, backward never traverses those branches, and a branch backward "
+                         "does not walk is not freed by backward either: their activations live "
+                         "until _one_pose returns, through the window where the peak is set.\n"
+                         "WHAT IT FREES, from the live checkpoint's shapes (c_z 256, c_s 384, "
+                         "b_plddt 50), all fp32: the pde chain is N_tok^2 * 2304 B and the "
+                         "plddt/resolved chain is N_atom * 84 KB, dominated by the "
+                         "plddt_weight[atom_to_tokatom_idx] gather at 76.8 KB PER ATOM. That is "
+                         "~1.3 GB at a median 617-token unit and ~6.5 GB at the 1543-token worst "
+                         "case, against the 1.8 GB of headroom section 11 measured. ARITHMETIC, "
+                         "not a measurement -- run_logging/bench_ckpt_by_size.py measures it.\n"
+                         "WHY IT PAIRS WITH --ckpt-token-threshold: the threshold is limited by "
+                         "headroom, so freeing headroom raises the threshold, and the two "
+                         "compound.\n"
+                         "IT CHANGES NO MATHEMATICS ON THE PAE PATH. phases/lean_readouts.py "
+                         "mirrors ConfidenceHead.memory_efficient_forward with the pae lines "
+                         "verbatim and is PINNED to that function's sha256, so a Protenix upgrade "
+                         "hard-stops instead of silently running a stale copy. "
+                         "run_logging/test_lean_readouts.py checks the pae logits are "
+                         "BIT-identical, that the dropped work is not merely unused but never "
+                         "called, and that the plddt placeholder still survives the indexing "
+                         "loss.py:1772 does to it.\n"
+                         "REQUIRES --pae-only, and is NOT inherited by the --loss-only val child, "
+                         "which builds its own model in its own process.")
+    ap.add_argument("--pair-dropout", type=float, default=-1.0,
+                    help="ROW-WISE DROPOUT RATE ON THE PAIR REPRESENTATION in the confidence "
+                         "head's pairformer blocks. ConfidenceHead builds its stack with "
+                         "dropout=0.0, overriding Protenix's own 0.25 default for pair "
+                         "stacks, so this arm has trained 19.8M parameters with NO dropout "
+                         "and no masking of any kind. The plumbing is live -- all four "
+                         "pair-rep sites in PairformerBlock call dropout_add_rowwise(z, "
+                         "update, self.p_drop, self.training) and the head trains in train "
+                         "mode -- only the rate is zero. Negative (default) touches nothing. "
+                         "It drops whole ROWS of z, structured noise over token pairs rather "
+                         "than per-element noise, which is the AF3 design.")
     ap.add_argument("--alpha-confidence", type=float, default=1.0,
                     help="weight on the four confidence losses. Protenix ships 1e-4 because in full "
                          "AF3-style training these terms sit beside the diffusion and distogram "
@@ -1005,6 +1112,53 @@ def main():
                          "491 structures, 0 with no definable crop) for a MEASURED 3.35x on the "
                          "head and ~1.99x on a whole step, landing near Protenix's own "
                          "train_crop_size of 256. Requires --minimal-items.")
+    ap.add_argument("--crop-tokens", default="",
+                    help="TRAIN on a PRECOMPUTED token mask per structure instead of the "
+                         "--crop-margin interface crop. The npz comes from "
+                         "run_logging/build_union_crop_masks.py and holds <pdb> -> "
+                         "bool[n_token]: the UNION over every one of the structure's 50 "
+                         "candidate poses of that pose's own predicted interface, "
+                         "optionally with the ground-truth contact tokens forced in "
+                         "(--force-gt). WHY A UNION AND NOT A PER-POSE CROP: the relative "
+                         "loss grades the GAPS between a structure's poses, so if one pose "
+                         "kept its whole interface and another kept half, the score "
+                         "difference would measure the crop and not the poses. One shared "
+                         "mask gives every pose the same tokens, the same n and the same "
+                         "ipTM d0. It also keeps every seed of a structure at an identical "
+                         "token count, which is what makes per-rank work equal BY "
+                         "CONSTRUCTION in build_epoch_cross_seed -- unequal per-rank unit "
+                         "counts do not degrade, they deadlock the first all-reduce. "
+                         "Mutually exclusive with --crop-margin.")
+    ap.add_argument("--token-keep-union", type=float, default=-1.0,
+                    help="STOCHASTIC TOKEN DROPOUT, biased toward the interface. Instead of "
+                         "training on the union mask as a fixed crop, draw a fresh token "
+                         "subset every epoch: keep each token INSIDE the union with this "
+                         "probability and each token outside it with --token-keep-other. "
+                         "Requires --crop-tokens, which supplies the union.\n"
+                         "WHY. The fixed crop is memorisable and the model NEVER sees distal "
+                         "context, which is why o2qczq scored 0.6305 cropped and 0.5387 "
+                         "uncropped in-sample. A varying subset cannot be memorised, and "
+                         "periphery tokens appearing some of the time means uncropped "
+                         "inference is no longer a regime the head has never seen. It also "
+                         "shrinks the tensors: a token dropped is its ROW AND COLUMN gone "
+                         "from z, not masked to zero, so 0.5 of tokens is 0.25 of the pair "
+                         "work.\n"
+                         "ONE DRAW PER STRUCTURE PER EPOCH, not per pose: the relative loss "
+                         "grades the GAPS between a structure's 50 poses, so poses on "
+                         "different token sets would have their score differences measure "
+                         "the draw. Per-epoch is exactly per-step here, because "
+                         "build_epoch_cross_seed puts every seed of a structure in ONE step "
+                         "-- and per-epoch is also what the prefetch worker can compute, "
+                         "since it crops units before the step is known.\n"
+                         "THE COST BEING ACCEPTED: ipTM pools over the scored pair's token "
+                         "pairs and normalises by a d0 set from their count, so a varying "
+                         "subset varies the achievable score while the label stays at its "
+                         "full-structure value. d0 enters as 1/(1+(d/d0)^2) and so does not "
+                         "cancel under the per-interface mean-centring. Negative (default) "
+                         "leaves the crop fixed and every existing arm unchanged.")
+    ap.add_argument("--token-keep-other", type=float, default=-1.0,
+                    help="keep probability for tokens OUTSIDE the union; see "
+                         "--token-keep-union. Lower than it, or the union is not a prior.")
     ap.add_argument("--crop-contact", type=float, default=5.0,
                     help="a token is an interface token when any of its heavy atoms lies within "
                          "this many angstroms of a heavy atom on a DIFFERENT CHAIN, by ground-truth "
@@ -1030,8 +1184,155 @@ def main():
             "STOP: --crop-margin needs --minimal-items. The dataset item's label_dict is built at "
             "full size, so cropping only the prediction would score poses against the wrong "
             "residues. Pass --minimal-items with its --alignment-preflight marker.")
+    # EXTRA EVAL PASSES, parsed and validated HERE so a typo costs a second rather than surfacing
+    # at the first epoch boundary hours in, on three ranks, after a full epoch of training.
+    import re as _re_ee          # module scope has no `re`; the l2-sp block imports it locally too
+    _EXTRA_EVAL = []
+    _ee_names = set()
+    for _spec in a.extra_eval:
+        _d = {}
+        for _kv in str(_spec).split(","):
+            _kv = _kv.strip()
+            if not _kv:
+                continue
+            if "=" not in _kv:
+                raise SystemExit(f"STOP: --extra-eval {_spec!r}: {_kv!r} is not key=value.")
+            _k, _v = _kv.split("=", 1)
+            _d[_k.strip()] = _v.strip()
+        _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every",
+                                     "crop_tokens"})
+        if _unknown:
+            raise SystemExit(f"STOP: --extra-eval {_spec!r} has unknown key(s) {_unknown}. "
+                             f"Known: name, pool, fold, seed_base, budget, every, crop_tokens.")
+        for _req in ("name", "pool", "every"):
+            if not _d.get(_req):
+                raise SystemExit(f"STOP: --extra-eval {_spec!r} is missing {_req}=.")
+        _nm = _d["name"]
+        if not _re_ee.fullmatch(r"[A-Za-z0-9_.-]+", _nm):
+            raise SystemExit(f"STOP: --extra-eval name {_nm!r} must be filesystem-safe "
+                             f"([A-Za-z0-9_.-]+); it names metric_<name>_ep<N>.json.")
+        if _nm in _ee_names:
+            raise SystemExit(f"STOP: --extra-eval name {_nm!r} is used twice, so the two passes "
+                             f"would overwrite each other's metric file.")
+        _ee_names.add(_nm)
+        if not os.path.exists(_d["pool"]):
+            raise SystemExit(f"STOP: --extra-eval {_nm}: pool {_d['pool']} does not exist.")
+        _ef = _d.get("fold") or a.fold
+        for _need in (_ef, os.path.join(_ef, "results.csv"),
+                      os.path.join(_ef, "chain_roles.csv")):
+            if not os.path.exists(_need):
+                raise SystemExit(f"STOP: --extra-eval {_nm}: {_need} does not exist. A pool is "
+                                 f"scored against its OWN fold's results and roles.")
+        if _d.get("crop_tokens") and not os.path.exists(_d["crop_tokens"]):
+            raise SystemExit(f"STOP: --extra-eval {_nm}: crop_tokens {_d['crop_tokens']} does "
+                             f"not exist.")
+        try:
+            _ev = int(_d["every"])
+            _bg = int(_d.get("budget") or 0)
+            _sb = int(_d["seed_base"]) if _d.get("seed_base") else -1
+        except ValueError as _e:
+            raise SystemExit(f"STOP: --extra-eval {_nm}: every/budget/seed_base must be "
+                             f"integers ({_e}).")
+        if _ev <= 0:
+            raise SystemExit(f"STOP: --extra-eval {_nm}: every={_ev} must be positive.")
+        _EXTRA_EVAL.append(dict(name=_nm, pool=_d["pool"], fold=_ef, seed_base=_sb,
+                                budget=_bg, every=_ev,
+                                crop_tokens=_d.get("crop_tokens", "")))
+    if a.eval_pool_crop_tokens and not a.train_eval_pool:
+        raise SystemExit("STOP: --eval-pool-crop-tokens without --eval-pool: there is no primary "
+                         "eval pass to crop.")
+    if a.eval_pool_crop_tokens and not os.path.exists(a.eval_pool_crop_tokens):
+        raise SystemExit(f"STOP: --eval-pool-crop-tokens {a.eval_pool_crop_tokens} does not "
+                         f"exist. Build it with run_logging/build_union_crop_masks.py.")
+    _TOK_DROP = (a.token_keep_union >= 0.0) or (a.token_keep_other >= 0.0)
+    if _TOK_DROP:
+        if not (a.token_keep_union >= 0.0 and a.token_keep_other >= 0.0):
+            raise SystemExit("STOP: --token-keep-union and --token-keep-other must BOTH be given; "
+                             "one alone leaves the other at its -1 sentinel and the draw "
+                             "undefined.")
+        for _nm, _v in (("--token-keep-union", a.token_keep_union),
+                        ("--token-keep-other", a.token_keep_other)):
+            if not (0.0 < _v <= 1.0):
+                raise SystemExit(f"STOP: {_nm}={_v} must be in (0, 1]. Zero would delete a whole "
+                                 f"population outright, which is a crop and not a dropout.")
+        if not a.crop_tokens:
+            raise SystemExit("STOP: --token-keep-union needs --crop-tokens, which supplies the "
+                             "union the probabilities are conditioned on. Without it there is no "
+                             "'inside' to bias toward.")
+        if a.token_keep_other > a.token_keep_union:
+            raise SystemExit(f"STOP: --token-keep-other {a.token_keep_other} exceeds "
+                             f"--token-keep-union {a.token_keep_union}, so the periphery would "
+                             f"survive MORE often than the interface. That is not the experiment.")
+    if a.crop_tokens and a.crop_margin > 0:
+        raise SystemExit("STOP: --crop-tokens and --crop-margin are two crop rules at once. Which "
+                         "one applied would depend on branch order, and the run would name itself "
+                         "after whichever flag the reader noticed.")
+    if a.crop_tokens and not os.path.exists(a.crop_tokens):
+        raise SystemExit(f"STOP: --crop-tokens {a.crop_tokens} does not exist. Build it with "
+                         f"run_logging/build_union_crop_masks.py.")
+    # THE MASK'S CONTENTS, DIGESTED AT STARTUP -- here and not beside the loader because the
+    # resume guard dict is built before the loader runs. The guard recorded
+    # basename(a.crop_tokens) first, so rebuilding the mask with a different margin, contact
+    # cutoff or forced-pair rule under the SAME NAME resumed as "unchanged": the whole training
+    # input distribution could move while the record said it had not. This hashes the
+    # per-structure masks themselves in sorted order, plus the builder's provenance blob.
+    # Found in review.
+    _CROP_TOK_DIGEST = ""
+    if a.crop_tokens:
+        _ctd = hashlib.sha256()
+        _z0 = np.load(a.crop_tokens)
+        # __pairs HOLDS CHAIN INDICES, NOT A MASK. Hashing it through .astype(bool) collapsed
+        # every nonzero index to True, so pair (3,1) and pair (2,1) contributed the same bytes and
+        # two masks differing only in which chains are supervised would have shared a digest.
+        # Hash the integer bytes for those and the packed bits for the masks. Raised in review.
+        for _k0 in sorted(k for k in _z0.files if not (k.endswith("__n") or k == "__meta")):
+            _ctd.update(_k0.encode())
+            if _k0.endswith("__pairs"):
+                _ctd.update(np.asarray(_z0[_k0], dtype=np.int64).tobytes())
+            else:
+                _ctd.update(np.packbits(np.asarray(_z0[_k0]).astype(bool)).tobytes())
+        if "__meta" in _z0.files:
+            _ctd.update(np.asarray(_z0["__meta"]).tobytes())
+        _CROP_TOK_DIGEST = _ctd.hexdigest()[:16]
+        del _z0
+    if a.crop_tokens and not a.minimal_items:
+        raise SystemExit("STOP: --crop-tokens needs --minimal-items, for the same reason "
+                         "--crop-margin does: the full dataset item is built uncropped and "
+                         "check_alignment would compare it against cropped features.")
     if a.crop_margin < 0:
         raise SystemExit("STOP: --crop-margin cannot be negative.")
+    # A THRESHOLD WITH NOTHING TO TURN OFF IS A NO-OP THAT READS LIKE A SETTING. With
+    # --blocks-per-ckpt 0 every unit is already uncheckpointed, so the rule would select between
+    # "off" and "off" and the run would look configured when it is not.
+    if a.ckpt_token_threshold > 0 and not a.blocks_per_ckpt:
+        raise SystemExit(
+            "STOP: --ckpt-token-threshold needs --blocks-per-ckpt > 0. With checkpointing already "
+            "off for every unit the threshold selects between off and off, which changes nothing "
+            "and hides that it changed nothing.")
+    # PARSED AT STARTUP, NOT AT THE FIRST STEP. A malformed --lr-steps would otherwise surface
+    # minutes in, on three ranks, after the model is built.
+    try:
+        # IMPORTED HERE, not relied on from later. `import lr_schedule as _LRS` happens ~850 lines
+        # below, so using _LRS during startup validation raised UnboundLocalError on every rank
+        # before pose 0. Caught by launching and reading epoch 1, which is what epoch 1 is for.
+        import lr_schedule as _LRS0
+        _LR_STEPS = tuple(_LRS0.parse_lr_steps(a.lr_steps)) if a.lr_steps else ()
+    except ValueError as _e:
+        raise SystemExit(f"STOP: {_e}")
+    if _LR_STEPS and a.lr_final > 0:
+        print(f"  NOTE: --lr-steps overrides --lr-final {a.lr_final:g} and the decay window; "
+              f"the staircase is what runs.")
+    if a.ckpt_token_threshold < 0:
+        raise SystemExit("STOP: --ckpt-token-threshold cannot be negative.")
+    if a.lean_readouts and not a.pae_only:
+        # AT PARSE TIME, NOT AT THE INSTALL SITE. lean_readouts.install() refuses this too, but it
+        # runs after the model is built -- minutes in, and on three ranks at once. The flag pair is
+        # knowable from the argv alone, so it is checked from the argv alone.
+        raise SystemExit(
+            "STOP: --lean-readouts needs --pae-only. The three readouts it stops computing are "
+            "the ones --pae-only stubs the loss terms for; without it, pLDDT, PDE and resolved "
+            "ARE trained, and replacing them with placeholder zeros would train three terms "
+            "against constant logits while reporting their losses as if they were real.")
     if a.val_loss_every:
         # CHECKED AT LAUNCH, NOT AT THE FIRST EPOCH BOUNDARY. On the full training set that
         # boundary is 37 minutes in, and a monitor that fails there is a monitor nobody has for
@@ -1113,7 +1414,7 @@ def main():
         if a.warmup_steps:
             raise SystemExit("STOP: --loss-only with --warmup-steps is meaningless -- there is no "
                              "optimiser to warm up, and the logged lr would imply one ran.")
-    if a.crop_log and a.crop_margin == 0:
+    if a.crop_log and a.crop_margin == 0 and not a.crop_tokens:
         raise SystemExit("STOP: --crop-log was given but --crop-margin is 0, so nothing is cropped.")
 
     # PIN THE COMMIT NOW, before any work, so every bundle this process writes records the code it
@@ -1311,6 +1612,46 @@ def main():
     # new projection is picked up automatically -- but only if it exists by then. Installed after
     # .train() and the blocks_per_ckpt assignment so neither is applied to a module that is about
     # to be wrapped.
+    # INSTALLED BEFORE BOTH POSE PATHWAYS, AND THAT ORDER IS LOAD-BEARING.
+    #
+    # pose_direction.py:234 and pose_perblock.py:232 each capture
+    # `orig_mef = head.memory_efficient_forward` and REPLACE the attribute with a wrapper that
+    # calls what it captured. They are a chain, not independent patches. Installing the lean
+    # mirror afterwards would overwrite the outermost wrapper and silently drop the orientation
+    # and per-block injections -- except it would not even be silent: the mirror still calls
+    # self.pairformer_stack, whose _prep_blocks is also wrapped and raises _NoPose when the
+    # one-hot cache is unset, so the run would die at pose 0 instead. Installing FIRST makes the
+    # mirror the base of the chain, which is what it is a mirror of. Found in review.
+    if a.pair_dropout >= 0.0:
+        _blocks = list(getattr(model.confidence_head.pairformer_stack, "blocks", []))
+        if not _blocks:
+            raise SystemExit("STOP: --pair-dropout: the confidence head's pairformer_stack has "
+                             "no .blocks, so there is nothing to set the rate on.")
+        _was = sorted({float(getattr(b, "p_drop", -1)) for b in _blocks})
+        for _b in _blocks:
+            # p_drop IS THE ONE THAT MATTERS: all four pair-rep sites in PairformerBlock pass
+            # self.p_drop to dropout_add_rowwise. dropout_row is the unused non-fused path; it is
+            # set too so the two cannot disagree if a refactor ever switches paths.
+            _b.p_drop = float(a.pair_dropout)
+            _dr = getattr(_b, "dropout_row", None)
+            if _dr is not None:
+                for _obj in (_dr, getattr(_dr, "dropout", None)):
+                    for _attr in ("p", "r"):
+                        if _obj is not None and hasattr(_obj, _attr):
+                            setattr(_obj, _attr, float(a.pair_dropout))
+        _now = sorted({float(b.p_drop) for b in _blocks})
+        if _now != [float(a.pair_dropout)]:
+            raise SystemExit(f"STOP: --pair-dropout did not take: p_drop is {_now} after "
+                             f"assignment, not [{a.pair_dropout}].")
+        print(f"PAIR DROPOUT: row-wise rate on z set to {a.pair_dropout:g} on {len(_blocks)} "
+              f"pairformer block(s), was {_was}. "
+              f"confidence_head.training={model.confidence_head.training} "
+              f"-- dropout is a NO-OP unless that is True")
+    if a.lean_readouts:
+        import lean_readouts
+        _lr_sha = lean_readouts.install(model, pae_only=a.pae_only)
+        print(f"LEAN READOUTS: pde, pLDDT and resolved are NOT COMPUTED. "
+              f"memory_efficient_forward pinned at {_lr_sha[:16]}")
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
@@ -2438,7 +2779,14 @@ def main():
     lo_s, hi_s = (int(x) for x in a.seeds.split("-"))
     skip = {x.strip().lower() for x in a.manifest_skip.split(",") if x.strip()}
     with open(a.manifest_selection) as fh:
-        sel_pdbs = [r["pdb"].strip().lower() for r in csv.DictReader(fh)]
+        _sel_rows = list(csv.DictReader(fh))
+    sel_pdbs = [r["pdb"].strip().lower() for r in _sel_rows]
+    # THE TOKEN COUNT, KEPT THIS TIME. It was parsed and discarded, which left --epoch-order no
+    # way to sort by size -- so "manifest" order silently meant whatever order `flat` happened to
+    # be in, which is sorted by pdb. Absent or non-numeric `tokens` is simply missing here and
+    # sorts first, named by the builder rather than guessed at.
+    _sel_tokens = {r["pdb"].strip().lower(): int(r["tokens"])
+                   for r in _sel_rows if str(r.get("tokens", "")).strip().isdigit()}
     if a.manifest_nshards and a.manifest_nshards > 1:
         if not (0 <= a.manifest_shard < a.manifest_nshards):
             raise SystemExit(f"STOP: --manifest-shard {a.manifest_shard} is not in "
@@ -2650,10 +2998,24 @@ def main():
                  "lr_decay_start_epoch": a.lr_decay_start_epoch,
                  "lr_decay_end_epoch": a.lr_decay_end_epoch,
                  "lr_decay_shape": a.lr_decay_shape,
+                 # THE STAIRCASE IS A SCHEDULE CHANGE like lr_final and the decay window, so a
+                 # resume that silently changed it would splice two schedules into one curve.
+                 "lr_steps": a.lr_steps,
+                 # DROPOUT IS PART OF THE OBJECTIVE, not of the optimiser: flipping it on a
+                 # resume changes the gradient's distribution at every step.
+                 "pair_dropout": a.pair_dropout,
+                 # THE AUGMENTATION DISTRIBUTION. Changing either probability changes what the
+                 # head sees at every step, so a resume that silently changed them would splice
+                 # two augmentations into one curve. Raised in review.
+                 "token_keep_union": a.token_keep_union,
+                 "token_keep_other": a.token_keep_other,
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
                  "crop_margin": a.crop_margin, "crop_contact": a.crop_contact,
+                 # A CROP RULE CHANGE IS AN OBJECTIVE CHANGE: the loss averages over a different
+                 # set of tokens and pairs, so resuming across it would blend two objectives.
+                 "crop_tokens": _CROP_TOK_DIGEST,
                  # THE CROP DEFINITION ITSELF, not just its radii. a16911de changed the DEFAULT
                  # from the union over all nsample poses to pose 0 alone, so a resume across that
                  # change blends two crop definitions into one curve. f1268fe5 added the field to
@@ -2722,7 +3084,9 @@ def main():
                      # A bundle written before these flags existed ran the full-run schedule, which
                      # is exactly what the 0 defaults mean, and "cosine" is what it computed.
                      "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
-                     "lr_decay_shape": "cosine",
+                     "lr_decay_shape": "cosine", "lr_steps": "",
+                     "pair_dropout": -1.0, "crop_tokens": "",
+                     "token_keep_union": -1.0, "token_keep_other": -1.0,
                      # ABSENCE IS EVIDENCE: a bundle written before --pae-row-frac existed ran the
                      # unweighted term, which is exactly what frac 0 means. The mass and floor
                      # defaults are inert at frac 0 but are migrated so a resume that only turns
@@ -3009,12 +3373,22 @@ def main():
                 if os.path.exists(_parent_anchor):
                     if is_main:
                         import shutil as _sh
-                        _sh.copyfile(_parent_anchor, _anchor_p)
+                        # COPY VIA .tmp AND os.replace, NOT STRAIGHT TO _anchor_p. The non-main
+                        # ranks wait on os.path.exists, which goes true the instant the file is
+                        # CREATED -- so a direct copyfile lets them torch.load 79 MB of anchor
+                        # while it is still being written. Measured 2026-11-03: egw5wq's resume
+                        # died at launch with "PytorchStreamReader failed reading zip archive:
+                        # failed finding central directory" on ranks 1 and 2, then rank 0 died on
+                        # the gloo peer. os.replace is atomic within a filesystem, so existence
+                        # now implies completeness and the existing wait loop becomes correct.
+                        _tmp_anchor = _anchor_p + ".tmp"
+                        _sh.copyfile(_parent_anchor, _tmp_anchor)
+                        os.replace(_tmp_anchor, _anchor_p)
                         print(f"  --l2-sp: anchor INHERITED from {_parent_anchor} -> {_anchor_p}",
                               flush=True)
                     else:
                         # The non-main ranks wait for rank 0 to place it rather than racing to
-                        # copy it themselves.
+                        # copy it themselves. Safe because rank 0 publishes atomically, above.
                         for _ in range(600):
                             if os.path.exists(_anchor_p):
                                 break
@@ -3055,7 +3429,7 @@ def main():
     # the other two accumulated rows forever and wrote none, so the csv described a third of the
     # run while reading like the whole of it. Review round 6 caught that.
     crop_p = ""
-    if a.crop_margin > 0:
+    if a.crop_margin > 0 or a.crop_tokens:
         _base = a.crop_log or os.path.join(a.out, "crop_sizes.csv")
         _stem, _ext = os.path.splitext(_base)
         crop_p = f"{_stem}_rank{rank}{_ext or '.csv'}"
@@ -3090,6 +3464,136 @@ def main():
     # and is not representative of the 499 that follow.
     _T = collections.defaultdict(float)
     _TN = collections.defaultdict(int)
+    # [units run UNCHECKPOINTED, units run CHECKPOINTED] under --ckpt-token-threshold. Reported
+    # per epoch because a threshold that silently matches nothing -- or everything -- looks
+    # exactly like a threshold that works until the timings fail to move.
+    # THE PRECOMPUTED CROP MASKS. __n and __meta are BOOKKEEPING, not structures: the evaluator's
+    # loader filters only __n and so counts __meta as a structure, which is why it prints one more
+    # than it has. Filter both.
+    _CROPTOK = {}
+    if a.crop_tokens:
+        _ctz = np.load(a.crop_tokens)
+        _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
+                    if not (k.endswith("__n") or k.endswith("__pairs") or k == "__meta")}
+        # THE SCORED PAIRS PER STRUCTURE, as asym indices. Needed by --token-keep-*: a draw must
+        # leave BOTH chains of EVERY supervised pair scoreable, and "two chains survived
+        # somewhere" does not establish that for a four-chain complex -- 81% of this pool has more
+        # than one scored pair. Absent on a mask built before the builder wrote them, which the
+        # draw refuses rather than silently checking a weaker condition. Raised in review.
+        _CROPPAIRS = {k[:-7]: np.asarray(_ctz[k]).reshape(-1, 2)
+                      for k in _ctz.files if k.endswith("__pairs")}
+        # the content digest is computed at STARTUP (see _CROP_TOK_DIGEST), because the resume
+        # guard dict is built before this loader runs. Reported here so a run's log says which
+        # mask it actually trained on.
+        _ctn = {k[:-3]: np.asarray(_ctz[k]) for k in _ctz.files if k.endswith("__n")}
+        _kf = [float(v[1]) / float(v[2]) for v in _ctn.values()] or [float("nan")]
+        _forced = [int(v[5]) for v in _ctn.values() if len(v) > 5]
+        if is_main:
+            print(f"CROP: precomputed token masks from {a.crop_tokens} -- {len(_CROPTOK)} "
+                  f"structure(s), median kept fraction {float(np.median(_kf)):.4f}, built from "
+                  f"{int(np.median([v[0] for v in _ctn.values()]))} pose(s) each (median)"
+                  + f", content digest {_CROP_TOK_DIGEST}"
+                  + (f", ground-truth contacts forced in (median {int(np.median(_forced))} "
+                     f"token(s) added, max {max(_forced)})" if _forced else
+                     " -- NO --force-gt, so interface coverage is NOT guaranteed"))
+
+    def _crop_masks(pdb_, zc_):
+        """(keep_tok, keep_atom) from whichever crop rule is configured. One dispatch, two callers.
+
+        A MISSING MASK IS FATAL, never a silent fall-through to the full structure: a run where
+        some units were cropped and some were not would still write a complete trajectory and
+        name itself after the crop.
+        """
+        kt_ = _CROPTOK.get(pdb_)
+        if kt_ is None:
+            raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb_}. The file names "
+                             f"{len(_CROPTOK)} structure(s); this manifest needs {pdb_} too. "
+                             f"Rebuild the mask over this pool.")
+        a2t_ = np.asarray(zc_["ci_feat_atom_to_token_idx"]).reshape(-1)
+        ntok_ = int(np.asarray(zc_["ci_feat_asym_id"]).reshape(-1).shape[0])
+        if kt_.shape[0] != ntok_:
+            raise SystemExit(f"STOP: {pdb_}'s mask has {kt_.shape[0]} token(s) but its cached "
+                             f"trunk has {ntok_}. The mask was built against a different cache "
+                             f"and slicing with it would scramble the structure.")
+        if _TOK_DROP:
+            # ONE DRAW PER (STRUCTURE, EPOCH), seeded so it is reproducible and so every rank and
+            # the prefetch worker agree without communicating. Per-epoch IS per-step here:
+            # build_epoch_cross_seed puts every seed of a structure in a single step.
+            # hashlib, NOT hash(). Python salts str hashing per process (PYTHONHASHSEED), so
+            # hash() would give each RANK a different draw for the same structure -- and under
+            # --rank-cross-seed the ranks hold different SEEDS OF THE SAME STRUCTURE inside one
+            # step, so they must agree exactly or those poses are scored on different token sets
+            # and the relative loss grades the disagreement. It also has to survive a resume.
+            _sd_bytes = f"{int(a.seed)}|{int(_crop_epoch[0])}|{pdb_}".encode()
+            _rs = np.random.default_rng(
+                int.from_bytes(hashlib.sha256(_sd_bytes).digest()[:8], "big"))
+            _p = np.where(kt_, float(a.token_keep_union), float(a.token_keep_other))
+            _keep = _rs.random(kt_.shape[0]) < _p
+            # EVERY SUPERVISED PAIR MUST STAY SCOREABLE -- per pair, not "two chains somewhere".
+            # ipTM for pair (x, y) pools over token pairs spanning x and y, so if either chain
+            # loses its tokens that interface is scored on an EMPTY pool while its label stays in
+            # the loss. A four-chain complex can keep two chains and still leave pair (3,1)
+            # unscoreable, and 81% of this pool has 2+ scored pairs. This is NOT a requirement
+            # that any ground-truth CONTACT survives -- the augmentation being tested is precisely
+            # that contacts may vanish. Raised in review.
+            _asym = np.asarray(zc_["ci_feat_asym_id"]).reshape(-1)
+            _prs = _CROPPAIRS.get(pdb_)
+            if _prs is None:
+                raise SystemExit(
+                    f"STOP: --token-keep-* needs the scored pairs for {pdb_}, which this mask "
+                    f"does not carry (no {pdb_}__pairs entry). It was built before the builder "
+                    f"wrote them; rebuild with run_logging/build_union_crop_masks.py so the "
+                    f"per-pair scoreability check has something to check.")
+            # REPAIRED, NOT REFUSED. The first version raised SystemExit here and killed the
+            # run 2,240 poses into vxwvzr's first epoch, on 9iut: chain 2 drew 3 survivors against
+            # a floor of 4. That was not bad luck. 98 scored-chain instances in this pool have an
+            # EXPECTED survivor count under 12 and some scored chains hold only 6 tokens in
+            # total -- short peptide antigens -- so a 0.70 draw dips under the floor routinely.
+            #
+            # Escalating a whole run over one small chain is the wrong response to a constraint
+            # that is local: the floor exists so each supervised pair has a non-degenerate ipTM
+            # pool, and that is restored by adding back a few of THAT CHAIN's tokens. Dropping
+            # context is the augmentation; a 6-token chain has no context to drop. The top-up uses
+            # the same generator in a deterministic order, so every rank still agrees exactly.
+            _MIN_CH = 4
+            for _x, _y in sorted({(int(_p0), int(_p1)) for _p0, _p1 in _prs}):
+                for _c in (_x, _y):
+                    _idx_c = np.nonzero(_asym == _c)[0]
+                    _floor = min(_MIN_CH, _idx_c.shape[0])
+                    _have = int(_keep[_idx_c].sum())
+                    if _have >= _floor:
+                        continue
+                    _missing = _idx_c[~_keep[_idx_c]]
+                    _add = _rs.permutation(_missing)[:_floor - _have]
+                    _keep[_add] = True
+                    _tok_drop_stat["topped"] += 1
+                    _tok_drop_stat["topped_tok"] += int(_add.shape[0])
+            if int(_keep.sum()) < 16:
+                raise SystemExit(
+                    f"STOP: the token draw for {pdb_} at epoch {_crop_epoch[0]} left only "
+                    f"{int(_keep.sum())} token(s) in total. Raise the keep probabilities.")
+            _tok_drop_stat["kept"] += float(_keep.sum())
+            _tok_drop_stat["tot"] += float(_keep.shape[0])
+            _tok_drop_stat["n"] += 1
+            kt_ = _keep
+        inr_ = (a2t_ >= 0) & (a2t_ < ntok_)
+        ka_ = np.zeros(a2t_.shape[0], dtype=bool)
+        ka_[inr_] = kt_[a2t_[inr_]]
+        return kt_, ka_
+
+    # THE EPOCH THE TOKEN DRAW IS SEEDED FROM. Set once at each epoch boundary BEFORE the
+    # prefetch workers start, then read-only for the epoch -- which is what makes it safe for
+    # those threads to read without a lock. It has to be a closure cell rather than a parameter
+    # because _cpu_crop runs in the worker, which crops units before the step is known.
+    _crop_epoch = [0]
+    _tok_drop_stat = {"kept": 0.0, "tot": 0.0, "n": 0, "topped": 0, "topped_tok": 0}
+    _ckpt_hist = [0, 0]
+    # THE EPOCH'S PEAK, KEPT BY HAND, because --mem-log resets the CUDA high-water mark before
+    # every pose to make the per-pose number mean the pose. Without this the epoch line would
+    # report the LAST pose's peak and call it the epoch's. Zeroed at each epoch boundary beside
+    # reset_peak_memory_stats. Unused when --mem-log is off: the CUDA counter is then already the
+    # epoch's, because nothing reset it mid-epoch.
+    _mem_ep = [0]
 
     def _tick(key, t0):
         _T[key] += time.perf_counter() - t0
@@ -3282,8 +3786,9 @@ def main():
         zc = np.load(trunk_p)
         _tick("cpucrop_trunk", _t)
         _t = time.perf_counter()
-        kt, ka = BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin,
-                                          all_poses=a.crop_all_poses)
+        kt, ka = (_crop_masks(pdb, zc) if a.crop_tokens
+                  else BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin,
+                                                all_poses=a.crop_all_poses))
         _tick("cpucrop_tokens", _t)
         if kt is None:
             return ("nocrop", None, None)
@@ -3557,6 +4062,17 @@ def main():
                          f"provenance is refused rather than resolved arbitrarily.")
 
     def run_unit(pdb, lab_p, trunk_p, score_only=False):
+        # WHERE THE RESIDUAL IS, SPLIT ONCE. Epoch 17 left 14.9 min of 143.9 unaccounted -- the
+        # second-largest single item in the table and the only one nobody can act on, because
+        # "residual" does not say whether it is inside a unit or between units. unit_setup closes
+        # the first half of that question: it covers everything from entering a unit to the moment
+        # its first pose starts, which is the trunk read, the fingerprint, the dataset item and
+        # the loss-feature prep that the existing per-step buckets step over. Whatever is left
+        # after this is OUTSIDE the units, and that is a different fix.
+        #
+        # NOT A _gpu_span. This region launches no kernels of its own; a CUDA event here would
+        # time the queue drain of the previous unit's poses and attribute it to setup.
+        _t_unit_setup = time.perf_counter()
         """Forward + loss for every pose of one unit. Yields (pose_index, loss_tensor, metrics).
 
         score_only=True makes this PASS A: a no_grad forward per pose that yields
@@ -3629,7 +4145,7 @@ def main():
         # chains with usable coordinates, or no cross-chain contact), and this trains on the whole
         # structure then, counted, rather than guessing at a window.
         crop_slice = None
-        if a.crop_margin > 0:
+        if a.crop_margin > 0 or a.crop_tokens:
             # THE PREFETCHED SLICE, IF THE WORKER GOT THERE FIRST. A hit skips straight to the
             # device move; a miss falls through to the inline path below, so a worker that is
             # behind, failed, or disabled costs correctness nothing.
@@ -3674,8 +4190,10 @@ def main():
                 # argues for caching the crop indices and nothing else.
                 _t0 = time.perf_counter()
                 _zc = np.load(trunk_p)
-                _kt, _ka = BC.interface_crop_tokens(_zc, lab, a.crop_contact, a.crop_margin,
-                                                    all_poses=a.crop_all_poses)
+                _kt, _ka = (_crop_masks(pdb, _zc) if a.crop_tokens
+                            else BC.interface_crop_tokens(_zc, lab, a.crop_contact,
+                                                          a.crop_margin,
+                                                          all_poses=a.crop_all_poses))
                 _tick("trunk_read_plus_crop_tokens", _t0)
                 if _kt is None:
                     crop_stats["undefined"] += 1
@@ -3727,6 +4245,15 @@ def main():
         # FROM THE HEAD'S FEATURES, which carry asym_id on both paths. feat_cache does not, on the
         # minimal path: the loss never reads it, so it is not in the nine.
         n_tok = int(feat_head["asym_id"].shape[-1]) if "asym_id" in feat_head else -1
+        # SIZE-CONDITIONAL CHECKPOINTING, decided here because this is the first point in the unit
+        # where the token count is known and no pose has run yet. Assigned on EVERY unit rather
+        # than only when it changes, so the stack can never carry a previous unit's setting into
+        # this one -- a silent carry-over would be an OOM on the next large unit.
+        if a.ckpt_token_threshold > 0:
+            _bpc = (None if 0 <= n_tok <= a.ckpt_token_threshold
+                    else (a.blocks_per_ckpt or None))
+            model.confidence_head.pairformer_stack.blocks_per_ckpt = _bpc
+            _ckpt_hist[0 if _bpc is None else 1] += 1
         # ONCE PER UNIT, BEFORE ANY POSE RUNS. From feat_cache, not feat_head: the trunk cache
         # carries has_frame but neither frame_atom_index nor pae_rep_atom_mask, and all three are
         # in LOSS_FEATS. Under cropping feat_cache IS crop_feat_loss, so these are the cropped
@@ -3759,6 +4286,8 @@ def main():
         # crop_feat_loss is always set and both the per-unit and per-pose minimal_loss_inputs
         # branches are dead code for this workload.
         _tick("loss_feature_prep", _t_fc)
+
+        _tick("unit_setup", _t_unit_setup)
 
         def _one_pose(i):
             x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
@@ -4185,6 +4714,21 @@ def main():
             # NO GRAPH UNDER --loss-only. Skipping only the backward would still build the
             # autograd graph for every pose and free it unused -- correct, but it pays the
             # activation memory of training for a measurement that needs none.
+            # RESET BEFORE EVERY MEASURED POSE. max_memory_allocated is a HIGH-WATER MARK and the
+            # only reset was once per epoch, so every pose after the first large one reported that
+            # large one's number: the peak-versus-tokens curve was monotone in WALK ORDER, not a
+            # function of the pose at all. The epoch's own peak is kept by hand below so the epoch
+            # line still reports the epoch. Only under --mem-log, so the live run is untouched.
+            #
+            # OUTSIDE THE PASS BRANCH, NOT INSIDE THE else. It used to sit in the else, so poses
+            # taken under no_grad -- every pass A pose, and all of them under --loss-only -- were
+            # never reset while the MEM line below printed for them anyway. A whole step of pass A
+            # lines then carried one stale number, identical on all of them, and a reader taking
+            # max(peak) over the log was mixing a no-grad forward with a pose that backwards.
+            _pass = "A" if (a.loss_only or score_only) else "B"
+            if a.mem_log and torch.cuda.is_available():
+                _mem_ep[0] = max(_mem_ep[0], torch.cuda.max_memory_allocated(dev))
+                torch.cuda.reset_peak_memory_stats(dev)
             if a.loss_only or score_only:
                 with torch.no_grad():
                     m = _one_pose(i)
@@ -4195,10 +4739,15 @@ def main():
             # and reported as a residual -- silently wrong.
             _tick("pose_a_total" if score_only else "pose_total", _t_pose)
             if a.mem_log:
+                if torch.cuda.is_available():
+                    _mem_ep[0] = max(_mem_ep[0], torch.cuda.max_memory_allocated(dev))
                 # AT A CONSISTENT BOUNDARY: after backward, and after the pose's tensors are gone.
                 # allocated = live tensors. reserved = what the allocator holds, which is what
                 # nvidia-smi shows -- which is why a high nvidia-smi number proves nothing by itself.
-                print(f"MEM {pdb}/{arm_seed} pose {i} tokens {n_tok}: "
+                # THE PASS IS PART OF THE MEASUREMENT. A pass A pose runs under no_grad and
+                # stores no activations, so its peak is not comparable to a pass B pose's and is
+                # not what any checkpointing threshold is decided from.
+                print(f"MEM {pdb}/{arm_seed} pose {i} pass {_pass} tokens {n_tok}: "
                       f"allocated {torch.cuda.memory_allocated(dev) / 2**30:.2f} GB  "
                       f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f}  "
                       f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f}", flush=True)
@@ -5328,7 +5877,16 @@ def main():
         _record_val_loss(epoch, step, bundle, mean, len(vals))
         return mean
 
-    def eval_checkpoint(step, epoch, train_pool=""):
+    def eval_checkpoint(step, epoch, train_pool="", crop_tokens="", tag="", fold="",
+                        seed_base=-1, budget=0):
+        """One sharded evaluation. tag names its outputs; crop_tokens crops its INPUTS.
+
+        tag EXISTS BECAUSE TWO PASSES CAN SHARE A POOL. A cropped and an uncropped reading of
+        valfull are different numbers, and writing both under metric_valfull_ep<N>.json would
+        silently overwrite one with the other -- the same class of mistake as the five
+        metric_train files that held the only held-out numbers a run produced. The caller names
+        each pass and the name reaches the metric file and the shard directory.
+        """
         """Save the head, score it, log it. Returns the metric dict.
 
         With `train_pool`, scores that pool of TRAINING interfaces using the run's own --fold and
@@ -5363,6 +5921,13 @@ def main():
         # line and test_eval_dir_names.py asserts the two cannot drift apart.
         _ptag = (os.path.basename(os.path.dirname(os.path.abspath(train_pool)).rstrip("/"))
                  or "pool") if train_pool else ""
+        # AN EXPLICIT TAG WINS over the pool's directory name, and a cropped primary pass is
+        # renamed so it cannot be read as the uncropped one. plot_val_2x3.py reads <pool>, and it
+        # must keep getting the deployment-shaped number.
+        if tag:
+            _ptag = tag
+        elif _ptag and crop_tokens:
+            _ptag = f"{_ptag}_cropped"
         mj = os.path.join(a.out, (f"metric_{_ptag}_ep%d.json" if train_pool else "metric_ep%d.json")
                           % epoch)
         extra = []
@@ -5372,9 +5937,10 @@ def main():
             # fold, not from the one being trained on: a results.csv from the wrong fold would
             # look up DockQ for interfaces it does not contain and the coverage check would fail,
             # and a wrong --seed-base would ask for seeds the fold never wrote.
-            _tef = a.train_eval_fold or a.fold
-            _seed_base = (a.train_eval_seed_base if a.train_eval_seed_base >= 0
-                          else _train_eval_seed_base)
+            _tef = fold or a.train_eval_fold or a.fold
+            _seed_base = (seed_base if seed_base >= 0
+                          else (a.train_eval_seed_base if a.train_eval_seed_base >= 0
+                                else _train_eval_seed_base))
             extra = ["--fold", _tef,
                      "--results", os.path.join(_tef, "results.csv"),
                      "--pool", train_pool,
@@ -5424,6 +5990,11 @@ def main():
         # mean_dockq / mean_dockq_select_max in its json.
         if a.rank_pool == "mean" and a.rank_loss:
             extra = extra + ["--pool-mean", "--select-by", "mean"]
+        # THE CROP, FORWARDED. phase_k_eval's --crop-tokens takes the same npz --crop-tokens does
+        # here, so a cropped reading of a pool is the evaluator's own code path and not a
+        # reimplementation. Absent, the pass is uncropped, which is what every pass has been.
+        if crop_tokens:
+            extra = extra + ["--crop-tokens", os.path.abspath(crop_tokens)]
         # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
         # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
         # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one
@@ -5431,7 +6002,8 @@ def main():
         cards = a.eval_cards or os.environ.get("CUDA_VISIBLE_DEVICES", "")
         shard_work = os.path.join(a.out, (f"{_ptag}_eval_shards_ep%d" if train_pool
                                            else "eval_shards_ep%d") % epoch)
-        budget = _train_eval_budget if train_pool else a.eval_budget
+        budget = (budget if budget else
+                  (_train_eval_budget if train_pool else a.eval_budget))
         if len([c for c in cards.split(",") if c.strip()]) > 1:
             cmd = [sys.executable, "-I",
                    os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -5512,16 +6084,27 @@ def main():
         for _p, _lp, _c in flat:
             by.setdefault(_p, []).append((_lp, _c))
         rng_e = random.Random(a.seed + ep)
-        order = sorted(by)
-        rng_e.shuffle(order)
+        # ASCENDING BY TOKENS when asked. The pdb tie-break keeps it deterministic across ranks
+        # and epochs. A structure the manifest gave no numeric `tokens` for sorts first and is
+        # named below rather than silently placed.
+        _manifest_order = (a.epoch_order in ("manifest", "tokens"))
+        if a.epoch_order == "tokens":
+            order = sorted(by, key=lambda _q: (_sel_tokens.get(_q, 0), _q))
+        elif _manifest_order:
+            order = list(by)
+        else:
+            order = sorted(by)
+            rng_e.shuffle(order)
         # A GROUP IS `world` SEEDS OF ONE STRUCTURE -- the unit of equal work.
         groups = []
         for _p in order:
             u = by[_p][:]
-            rng_e.shuffle(u)
+            if not _manifest_order:
+                rng_e.shuffle(u)
             for g in range(len(u) // world):
                 groups.append([(_p, _lp, _c) for _lp, _c in u[g * world:(g + 1) * world]])
-        rng_e.shuffle(groups)
+        if not _manifest_order:
+            rng_e.shuffle(groups)
         # THE REMAINDER IS KEPT, as a short final step. Truncating to a whole number of steps
         # drops units, and for TRAINING that is invisible -- 1,464 groups over K=6 divides
         # exactly -- but --loss-only runs world=1 over 300 units at K=17 and 300//17*17 is 289,
@@ -5576,13 +6159,23 @@ def main():
         for _p, _lp, _c in flat:
             by.setdefault(_p, []).append((_lp, _c))
         rng_e = random.Random(a.seed + ep)
-        order = sorted(by)
-        rng_e.shuffle(order)
+        # ASCENDING BY TOKENS when asked. The pdb tie-break keeps it deterministic across ranks
+        # and epochs. A structure the manifest gave no numeric `tokens` for sorts first and is
+        # named below rather than silently placed.
+        _manifest_order = (a.epoch_order in ("manifest", "tokens"))
+        if a.epoch_order == "tokens":
+            order = sorted(by, key=lambda _q: (_sel_tokens.get(_q, 0), _q))
+        elif _manifest_order:
+            order = list(by)
+        else:
+            order = sorted(by)
+            rng_e.shuffle(order)
         S = max(1, int(a.rank_structs_per_step))
-        steps = []
+        steps, _dropped = [], []
         for i in range(0, len(order), S):
             chunk = order[i:i + S]
             if len(chunk) < S:
+                _dropped = list(chunk)
                 # A SHORT FINAL STEP IS DROPPED, not padded. Padding would repeat poses inside one
                 # gradient, and a step holding fewer structures than S is still correct -- but the
                 # unit count would differ from every other step and the quota bookkeeping that
@@ -5591,14 +6184,28 @@ def main():
             units = []
             for _p in chunk:
                 u = by[_p][:]
-                rng_e.shuffle(u)
+                if not _manifest_order:
+                    rng_e.shuffle(u)
                 units += [(_p, _lp, _c) for _lp, _c in u]
-            rng_e.shuffle(units)
+            if not _manifest_order:
+                rng_e.shuffle(units)
             steps.append(units)
         if not steps:
             raise SystemExit(
                 f"STOP: --rank-cross-seed with --rank-structs-per-step {S} needs at least {S} "
                 f"structure(s); the manifest resolved {len(order)}.")
+        if _manifest_order and is_main:
+            # SAY WHAT WILL ACTUALLY RUN, AND WHAT WILL NOT. A short final step is dropped rather
+            # than padded (see above), and in a size-sorted manifest the dropped chunk is the
+            # LARGEST structures -- precisely the ones a memory probe exists to reach. A probe
+            # that silently never ran them would recommend a threshold from the wrong structure.
+            print(f"  EPOCH ORDER manifest: {len(order)} structure(s), "
+                  f"{len(steps)} step(s) of S={S}; first {order[:3]} last {order[-3:]}")
+            if _dropped:
+                print(f"  EPOCH ORDER manifest: {len(_dropped)} structure(s) DROPPED as a short "
+                      f"final step: {_dropped}. Make the structure count a multiple of "
+                      f"--rank-structs-per-step ({S}) by trimming the FRONT of the manifest, or "
+                      f"these are never run.", flush=True)
         n_units = len(steps[0])
         base, rem = divmod(n_units, world)
         mine, quotas = [], []
@@ -5741,6 +6348,10 @@ def main():
                                   "lr_decay_start_epoch": a.lr_decay_start_epoch,
                                   "lr_decay_end_epoch": a.lr_decay_end_epoch,
                                   "lr_decay_shape": a.lr_decay_shape,
+                                  "lr_steps": a.lr_steps,
+                                  "pair_dropout": a.pair_dropout,
+                                  "token_keep_union": a.token_keep_union,
+                                  "token_keep_other": a.token_keep_other,
                                   "warmup_steps": a.warmup_steps, "epochs": a.epochs,
                                   "manifest_skip": a.manifest_skip,
                                   "manifest_digest": _manifest_digest,
@@ -5796,6 +6407,7 @@ def main():
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
+                                  "crop_tokens": _CROP_TOK_DIGEST,
                                   "crop_contact": a.crop_contact,
                  # THE CROP DEFINITION, for the same reason as the two above: a16911de changed
                  # the DEFAULT, so resuming a pre-change bundle under post-change code blends two
@@ -5849,6 +6461,16 @@ def main():
                 frac = a.epochs - (n_epochs - 1)
                 ep_units = ep_units[:max(1, int(len(ep_units) * frac))]
             print(f"  epoch {ep + 1}/{n_epochs}: {len(ep_units)} unit(s)")
+            # BEFORE _pf_start, NOT AFTER. The token draw is seeded from this cell and the
+            # prefetch workers crop units in their own threads from the moment they start, so
+            # setting it afterwards left those units drawn against the PREVIOUS epoch's value
+            # while the inline path used the current one -- different token sets for poses of the
+            # same structure, which is exactly the invariant the draw exists to hold. Caught by
+            # test_token_dropout.py, which pins this ordering.
+            _crop_epoch[0] = ep
+            _tok_drop_stat["kept"] = _tok_drop_stat["tot"] = 0.0
+            _tok_drop_stat["n"] = _tok_drop_stat["topped"] = 0
+            _tok_drop_stat["topped_tok"] = 0
             # STARTED PER EPOCH, over THIS epoch's shuffled order, so the worker walks the units
             # in the order the main loop will consume them.
             _pf_start(ep_units)
@@ -5859,6 +6481,7 @@ def main():
             # 8,100 per rank per epoch.
             if torch.cuda.is_available():
                 torch.cuda.reset_peak_memory_stats()
+            _mem_ep[0] = 0
             ep_start_step = step
             ep_t0 = time.time()
             ep_loss["sum"], ep_loss["n"] = 0.0, 0
@@ -5917,7 +6540,8 @@ def main():
                     cur_lr = _LRS.lr_at_step(
                         step, lr, a.lr_final, a.warmup_steps,
                         _lr_horizon[0] / max(1.0, float(a.epochs)), a.epochs,
-                        a.lr_decay_start_epoch, a.lr_decay_end_epoch, a.lr_decay_shape)
+                        a.lr_decay_start_epoch, a.lr_decay_end_epoch, a.lr_decay_shape,
+                        _LR_STEPS)
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
                     n_in_accum += 1
@@ -6135,10 +6759,33 @@ def main():
             # THE DRIFT IS THE EXPERIMENT under --l2-sp, so it is reported, not inferred. The
             # full head reached ||dW||^2 = 67,052 unconstrained over 30 epochs; this says where
             # the penalised run actually sits.
+            # THE REALISED DRAW, reported rather than assumed. The configured probabilities say
+            # what was asked for; this says what the epoch actually trained on, which is the
+            # number to compare against the fixed crop's 0.598.
+            if _TOK_DROP and _tok_drop_stat["n"]:
+                _tk = _tok_drop_stat["kept"] / max(_tok_drop_stat["tot"], 1.0)
+                print(f"  [rank {rank}] epoch {ep + 1} token draw: kept {_tk:.4f} of tokens over "
+                      f"{_tok_drop_stat['n']} unit(s) "
+                      f"(union p={a.token_keep_union:g}, other p={a.token_keep_other:g}; the "
+                      f"fixed crop was 0.598), so ~{_tk * _tk / 0.598 ** 2:.2f}x the fixed "
+                      f"crop's pair work; {_tok_drop_stat['topped']} chain(s) topped up to the "
+                      f"4-token floor, {_tok_drop_stat['topped_tok']} token(s) added", flush=True)
             if a.l2_sp and _l2sp_drift["n"]:
+                # AS A SHARE OF THE OBJECTIVE, not just in absolute terms. A coefficient that
+                # LOOKS weak is not weak if the squared displacement is large: at the 67,052 the
+                # unconstrained head reached, lambda 1e-4 is a penalty of 6.7 against a loss near
+                # 2.9 -- more than twice the objective. So "is 1e-4 weak here" is only answerable
+                # against the epoch's own loss, and this prints the ratio rather than leaving a
+                # reader to do it. Raised in review.
+                _l2p = a.l2_sp * _l2sp_drift["sq"]
+                _l2_ref = (ep_loss["sum"] / ep_loss["n"]) if ep_loss["n"] else float("nan")
+                _l2_share = (_l2p / _l2_ref) if (_l2_ref == _l2_ref and _l2_ref > 0) else \
+                    float("nan")
                 print(f"  [rank {rank}] epoch {ep + 1} l2-sp: ||W-W0||^2 = "
-                      f"{_l2sp_drift['sq']:.1f}, penalty = {a.l2_sp * _l2sp_drift['sq']:.4f} "
-                      f"(unconstrained full head reached 67,052 by epoch 30)", flush=True)
+                      f"{_l2sp_drift['sq']:.1f}, penalty = {_l2p:.4f} "
+                      f"= {100.0 * _l2_share:.1f}% of the epoch's mean loss {_l2_ref:.4f} "
+                      f"(unconstrained full head reached 67,052 by epoch 30, which at "
+                      f"lambda {a.l2_sp:g} would be {a.l2_sp * 67052.0:.2f})", flush=True)
             # THE RANKING LOSS IS THE EXPERIMENT under --rank-loss. ZERO is the reference, not
             # ln2: this loss is a normalised covariance between score gaps and DockQ gaps, so
             # equal scores give exactly 0 and so does an ordering uncorrelated with DockQ.
@@ -6206,14 +6853,39 @@ def main():
                 _rank_seen["units"] = 0
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
                   f"residual {(_ep_s - _acc)/60:.1f}m "
-                  f"(exclusive buckets only; gpu_* overlap pose_total)", flush=True)
+                  f"(exclusive buckets only; gpu_* overlap pose_total, "
+                  f"unit_setup overlaps the per-unit leaves)", flush=True)
+            # THE RESIDUAL, SPLIT. unit_setup is a SUPERSET of label_open, fingerprint_hash,
+            # trunk_read_plus_crop_tokens, crop_slice and loss_feature_prep, so it is deliberately
+            # NOT in _EXCL -- including it would double-count the same minutes, which is the trap
+            # the comment beside rank_pass_a describes. What it buys is the part of the residual
+            # it EXPLAINS: setup time not already claimed by those leaves is inside-unit work, and
+            # whatever is left after that is between-unit work, which is a different fix.
+            _us = dict((k, v) for k, v, c in _parts if c)
+            if _us.get("unit_setup"):
+                _leaves = sum(_us.get(k, 0.0) for k in
+                              ("label_open", "fingerprint_hash", "trunk_read_plus_crop_tokens",
+                               "crop_slice", "cpucrop_label", "cpucrop_slice", "cpucrop_tokens",
+                               "cpucrop_trunk", "loss_feature_prep", "prefetch_issue",
+                               "prefetch_wait"))
+                print(f"  [rank {rank}] epoch {ep + 1} unit_setup {_us['unit_setup']/60:.1f}m, "
+                      f"of which {_leaves/60:.1f}m is already in named leaves -> "
+                      f"{(_us['unit_setup'] - _leaves)/60:.1f}m of the residual is INSIDE units, "
+                      f"the rest is between them", flush=True)
             if torch.cuda.is_available():
                 _gb = 1 << 30
+                # UNDER --mem-log THE CUDA COUNTER IS NOT THE EPOCH'S, see _mem_ep.
+                _ep_peak = max(_mem_ep[0], torch.cuda.max_memory_allocated()) if a.mem_log \
+                    else torch.cuda.max_memory_allocated()
                 print(f"  [rank {rank}] epoch {ep + 1} memory: peak allocated "
-                      f"{torch.cuda.max_memory_allocated()/_gb:.2f} GB, peak reserved "
+                      f"{_ep_peak/_gb:.2f} GB, peak reserved "
                       f"{torch.cuda.max_memory_reserved()/_gb:.2f} GB, "
-                      f"blocks_per_ckpt={model.confidence_head.pairformer_stack.blocks_per_ckpt}",
+                      f"blocks_per_ckpt={model.confidence_head.pairformer_stack.blocks_per_ckpt}"
+                      + (f", ckpt_threshold={a.ckpt_token_threshold} tok -> "
+                         f"{_ckpt_hist[0]} unit(s) UNCHECKPOINTED, {_ckpt_hist[1]} checkpointed"
+                         if a.ckpt_token_threshold > 0 else ""),
                       flush=True)
+            _ckpt_hist[0] = _ckpt_hist[1] = 0
             # EVERY RANK SAVES ITS OWN, at the boundary rather than at exit: x3k2m4 died after
             # epoch 1 and would have discarded all 4,880 hashes it had just computed.
             _fp_cache_save()
@@ -6291,7 +6963,26 @@ def main():
                     dist.barrier()
                 if is_main:
                     _flush(traj_p, traj_cols, rows); rows.clear()
-                    eval_checkpoint(step, ep + 1, train_pool=a.train_eval_pool)
+                    eval_checkpoint(step, ep + 1, train_pool=a.train_eval_pool,
+                                    crop_tokens=a.eval_pool_crop_tokens)
+                if world > 1:
+                    dist.barrier()
+            # EVERY EXTRA PASS, each on its own cadence. SAME BARRIER DISCIPLINE: one evaluator
+            # sharded over every card while the other ranks park, so these must not interleave.
+            for _ee in _EXTRA_EVAL:
+                if not ((ep + 1) % _ee["every"] == 0 and step > ep_start_step):
+                    continue
+                if world > 1:
+                    dist.barrier()
+                if is_main:
+                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    print(f"  extra eval '{_ee['name']}': pool {_ee['pool']}, budget "
+                          f"{_ee['budget'] or 'default'}, every {_ee['every']} epoch(s), "
+                          f"{'CROPPED' if _ee['crop_tokens'] else 'uncropped'}", flush=True)
+                    eval_checkpoint(step, ep + 1, train_pool=_ee["pool"],
+                                    crop_tokens=_ee["crop_tokens"], tag=_ee["name"],
+                                    fold=_ee["fold"], seed_base=_ee["seed_base"],
+                                    budget=_ee["budget"])
                 if world > 1:
                     dist.barrier()
         # NOTHING MAY BE LEFT HERE. Every epoch flushes its own remainder above, before evaluating,
@@ -6436,7 +7127,7 @@ def main():
     # every counter at zero and printed nothing at all -- an arm would have reported no retained
     # fraction and no fallback count, which is exactly the bookkeeping it exists to provide.
     # Review round 6 caught it.
-    if a.crop_margin > 0:
+    if a.crop_margin > 0 or a.crop_tokens:
         if crop_p and crop_rows:
             _flush(crop_p, crop_cols, crop_rows)
             crop_rows.clear()
