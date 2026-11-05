@@ -240,3 +240,84 @@ What this run also settles: the explicit sequence resolver for a multi-subchain 
 correct and worth keeping for the *pool* side wherever an instance CIF exists, since it reproduced
 the committed pool for 12 of 13 with the 13th failing closed. It is the reference swap that is
 dead, not the resolver.
+
+---
+
+# RESOLVED: the 17 were never missing, only never unpacked
+
+2026-11-04 ~10:21 PM EST. All 30 new validation structures are now fully prepared.
+
+## Why those 17 specifically
+
+Nothing about them. The question "why do those 17 lack the information" has a dull answer that
+three earlier hypotheses got wrong:
+
+- **Not the split.** The corpus holds 3,905 train and 998 test instances; the missing ones are
+  8,743 train and 2,164 test. Both sides are mixed.
+- **Not the release date.** Present and absent instances are spread across 2021-2026 in similar
+  proportions.
+- **Not a different instance of the same entry.** The corpus has *zero* instances for all 17
+  entries, so it is missing the entry, not our chosen copy. 5,743 of 8,796 entries have none.
+- **Not MSA coverage.** All 17 have MSAs; those were generated for the Wave 1 validation set.
+
+`SAbDab2_data/training_cifs` is simply a **partial extraction**: 4,903 of 15,810 instance cifs,
+covering 3,053 of 8,796 PDB entries. It happens to cover 603 of 603 structures the project had
+already folded, and the Wave 1 *training* selection landed entirely inside it (356 of 356), so the
+gap never surfaced until the validation selection reached outside it. No step checked for corpus
+membership, and MSAs were extended to the new validation structures while the instance cifs were
+not.
+
+**The archive with all 15,810 was on disk the whole time**:
+`SAbDab2_data/zenodo_splits/splits_v0.2.0.tar.gz`, 889 MB, 15,810 cif members, including all 30
+of ours. Extracting the 17 was a local operation, not a download.
+
+## What was done
+
+Every step is in `shell_scripts/val30_cpu_chain.sh`, which now runs end to end from the archive —
+the first pass had the extraction, the queue json and the pool merge done by hand, which is not
+reproducible and left the script failing on inputs it could not build for itself.
+
+1. `run_logging/extract_instance_cifs.py` — extract missing instance cifs from the release
+   archive. Each one's chain set must equal the chains the splits row names, or nothing is
+   installed; an existing corpus file is never overwritten. 17 extracted, **17 of 17 verified**.
+2. Per-job cifs regenerated for all 30, now with the instance cifs present, so the copy choice is
+   anchored by `pick_instance_copies` rather than resting on names alone. The job-cif log no longer
+   emits any instance-cif note at all.
+3. Bioassemblies rebuilt: 83 of 83.
+4. Pool: **49 rows over 30 of 30 structures**, 79 chain roles, 1 relabelled. Regression check: the
+   13 previously pooled are **unchanged, 13 of 13**.
+5. `run_logging/stage_val_refs.py` — stage the DockQ reference per structure, taking the
+   *relabelled* copy where `relabel_unique` wrote one (`8z7j`), which is the staleness class
+   `phase_g` records costing 8evg all four of its interfaces. Every pool chain must appear as a
+   `label_asym_id` in the reference actually staged: **30 of 30 verified**.
+6. Pool merged into `validation/fold/pool.csv` (141 rows over 83 structures), with the launcher's
+   own gate applied in the chain: **0 unpooled, 0 without a reference**.
+
+| | before | now |
+|---|---|---|
+| instance cif | 13/30 | **30/30** |
+| pool rows | 13/30 | **30/30** |
+| ground-truth ref | 0/30 | **30/30** |
+| queue | 1,300 units / 13 | **3,000 units / 30** |
+
+The old 53-structure benchmark is untouched: 1,590 trunk units, 53 structures, its 58 references
+still in place.
+
+## What this changes about the step 1 result
+
+Nothing about the measurement — entry-as-reference is still rejected, and for the reasons measured:
+multi-copy entries lose interfaces 57% of the time and DockQ shifts up to 0.121 because the
+instance cifs are trimmed. It is simply no longer needed. The re-selection fallback is also
+unnecessary: the validation set keeps all 30 originally chosen structures, with one reference
+convention across the whole benchmark.
+
+The sequence resolver is kept in `compare_entry_as_reference.py` as the measurement that rejected
+the swap, and `build_instance_cifs.py` remains the record of the earlier rejected reconstruction.
+Neither is in the live path.
+
+## Remaining before validation folds
+
+1. **Rescore the 240 recovered training units** — folded, unscored, poses on disk. CPU only.
+2. **Fold validation behind the training drain**, via `arm_val13_after_train.sh`, which gates on
+   worker pids gone, no tmux session, `cards_busy` 0, and `training_queue_drained.py` passing.
+   3,000 units over 30 structures, ~8 h on three cards at the measured 28 s/unit.

@@ -2,153 +2,123 @@
  "queue": [
   {
    "pdb": "8h63",
-   "instance": "pdb_00008h63_B_+",
-   "tokens": 581
+   "instance": "pdb_00008h63_B_+"
   },
   {
    "pdb": "8oxx",
-   "instance": "pdb_00008oxx_B_C",
-   "tokens": 899
+   "instance": "pdb_00008oxx_B_C"
   },
   {
    "pdb": "8q7o",
-   "instance": "pdb_00008q7o_A_+",
-   "tokens": 244
+   "instance": "pdb_00008q7o_A_+"
   },
   {
    "pdb": "8rwb",
-   "instance": "pdb_00008rwb_H_L",
-   "tokens": 601
+   "instance": "pdb_00008rwb_H_L"
   },
   {
    "pdb": "8tuz",
-   "instance": "pdb_00008tuz_H_L",
-   "tokens": 684
+   "instance": "pdb_00008tuz_H_L"
   },
   {
    "pdb": "8v52",
-   "instance": "pdb_00008v52_D_C",
-   "tokens": 548
+   "instance": "pdb_00008v52_D_C"
   },
   {
    "pdb": "8weo",
-   "instance": "pdb_00008weo_C_+",
-   "tokens": 312
+   "instance": "pdb_00008weo_C_+"
   },
   {
    "pdb": "8ya0",
-   "instance": "pdb_00008ya0_V_+",
-   "tokens": 174
+   "instance": "pdb_00008ya0_V_+"
   },
   {
    "pdb": "9dbo",
-   "instance": "pdb_00009dbo_H_L",
-   "tokens": 529
+   "instance": "pdb_00009dbo_H_L"
   },
   {
    "pdb": "9dl0",
-   "instance": "pdb_00009dl0_A_Y",
-   "tokens": 528
+   "instance": "pdb_00009dl0_A_Y"
   },
   {
    "pdb": "9ena",
-   "instance": "pdb_00009ena_B_+",
-   "tokens": 627
+   "instance": "pdb_00009ena_B_+"
   },
   {
    "pdb": "9fww",
-   "instance": "pdb_00009fww_B_+",
-   "tokens": 235
+   "instance": "pdb_00009fww_B_+"
   },
   {
    "pdb": "9ho4",
-   "instance": "pdb_00009ho4_C_+",
-   "tokens": 242
+   "instance": "pdb_00009ho4_C_+"
   },
   {
    "pdb": "9hvi",
-   "instance": "pdb_00009hvi_Q_+",
-   "tokens": 818
+   "instance": "pdb_00009hvi_Q_+"
   },
   {
    "pdb": "9hvk",
-   "instance": "pdb_00009hvk_M_+",
-   "tokens": 817
+   "instance": "pdb_00009hvk_M_+"
   },
   {
    "pdb": "9jbq",
-   "instance": "pdb_00009jbq_A_B",
-   "tokens": 555
+   "instance": "pdb_00009jbq_A_B"
   },
   {
    "pdb": "9vca",
-   "instance": "pdb_00009vca_H_L",
-   "tokens": 433
+   "instance": "pdb_00009vca_H_L"
   },
   {
    "pdb": "9ghi",
-   "instance": "pdb_00009ghi_H_L",
-   "tokens": 640
+   "instance": "pdb_00009ghi_H_L"
   },
   {
    "pdb": "9ghj",
-   "instance": "pdb_00009ghj_H_L",
-   "tokens": 628
+   "instance": "pdb_00009ghj_H_L"
   },
   {
    "pdb": "9qqn",
-   "instance": "pdb_00009qqn_D_C",
-   "tokens": 891
+   "instance": "pdb_00009qqn_D_C"
   },
   {
    "pdb": "8t03",
-   "instance": "pdb_00008t03_E_F",
-   "tokens": 448
+   "instance": "pdb_00008t03_E_F"
   },
   {
    "pdb": "8t07",
-   "instance": "pdb_00008t07_E_F",
-   "tokens": 448
+   "instance": "pdb_00008t07_E_F"
   },
   {
    "pdb": "8yyz",
-   "instance": "pdb_00008yyz_H_L",
-   "tokens": 596
+   "instance": "pdb_00008yyz_H_L"
   },
   {
    "pdb": "8z39",
-   "instance": "pdb_00008z39_H_L",
-   "tokens": 596
+   "instance": "pdb_00008z39_H_L"
   },
   {
    "pdb": "7shz",
-   "instance": "pdb_00007shz_K_L",
-   "tokens": 481
+   "instance": "pdb_00007shz_K_L"
   },
   {
    "pdb": "7yi6",
-   "instance": "pdb_00007yi6_F_E",
-   "tokens": 432
+   "instance": "pdb_00007yi6_F_E"
   },
   {
    "pdb": "8z7j",
-   "instance": "pdb_00008z7j_S1_S2",
-   "tokens": 574
+   "instance": "pdb_00008z7j_S1_S2"
   },
   {
    "pdb": "9mz7",
-   "instance": "pdb_00009mz7_B_A",
-   "tokens": 466
+   "instance": "pdb_00009mz7_B_A"
   },
   {
    "pdb": "9fvc",
-   "instance": "pdb_00009fvc_H_+",
-   "tokens": 426
+   "instance": "pdb_00009fvc_H_+"
   },
   {
    "pdb": "8pij",
-   "instance": "pdb_00008pij_B_+",
-   "tokens": 288
+   "instance": "pdb_00008pij_B_+"
   }
  ]
 }
