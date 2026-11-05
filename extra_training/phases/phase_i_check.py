@@ -27,6 +27,8 @@ import sys
 
 # the repo root, from this file, so renaming the checkout needs no edit here
 _REPO = str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run_logging"))
+import pose_sets                                                           # noqa: E402
 
 
 def read_pool(path):
@@ -376,12 +378,63 @@ def rescore(a):
     """score only the (interface, sample) rows that are missing, with the dataset's own scorer"""
     pool = read_pool(os.path.join(a.e, "pool.csv"))
     res = os.path.join(a.e, "results.csv")
+
+    # DO NOT RUN WHILE ANOTHER WRITER APPENDS TO THIS CSV. Rescoring re-reads immediately before
+    # appending, which narrows the window but cannot close it: a fold worker can still append the
+    # same sample between that read and this write, and the duplicate double-weights the pose in
+    # every average over its seed. Raised in review, and the right answer is sequencing rather than
+    # locking the live folding driver. Once the fold workers exit, this can run alongside a
+    # VALIDATION fold safely, because that writes a different results.csv.
+    live = subprocess.run(["tmux", "ls"], capture_output=True, text=True).stdout
+    writers = [ln.split(":")[0] for ln in live.splitlines()
+               if ln.startswith(("w1fold", "w1val", "w2_"))]
+    mine = "validation" if "validation" in os.path.abspath(a.e) else "training"
+    clash = [w for w in writers if (w.startswith("w1val") == (mine == "validation"))]
+    if clash and not a.allow_concurrent_writers:
+        raise SystemExit(f"STOP: {clash} are folding into the same results.csv as --e {a.e}. "
+                         f"Rescoring now can duplicate a sample that lands between this call's "
+                         f"read and its append. Wait for them to exit, or pass "
+                         f"--allow-concurrent-writers if you accept that risk.")
+
+    # THE WORKLIST COMES FROM THE QUEUE WHEN ONE IS GIVEN. expected_units enumerates every job json
+    # in --jobs and expands --seeds per structure, which for training/jobs is 856 structures and
+    # 8,560 candidate units rather than the 3,560 actually queued -- so an intended recovery could
+    # reach into older incomplete work. Raised in review.
+    if a.worklist:
+        sys.path.insert(0, os.path.join(_REPO, "run_model"))
+        _argv, sys.argv = sys.argv, ["folder.py"]
+        import folder
+        sys.argv = _argv
+        units = [(u[1], str(u[4])) for u in folder.read_queue(a.worklist)]
+        seen, uniq = set(), []
+        for u in units:
+            if u not in seen:
+                seen.add(u); uniq.append(u)
+        units = uniq
+        print(f"worklist: {len(units)} unit(s) from {a.worklist}")
+    else:
+        _pdbs, units = expected_units(a.jobs, a.suffix, a.seeds, a.seed0)
+        print(f"worklist: {len(units)} unit(s) enumerated from {a.jobs} "
+              f"({a.seeds} seed(s) from {a.seed0}); pass --worklist to use the queue instead")
+
     have = read_results(res)
-    pdbs, units = expected_units(a.jobs, a.suffix, a.seeds, a.seed0)
-    added = skipped = 0
+    added = skipped = ambiguous = 0
     for pdb, seed in units:
-        d = run_dir_for(a.e, pdb, seed)
-        if d is None:
+        # THE RUN MUST HOLD A COMPLETE POSE SET, AND ONLY ONE RUN MAY. run_dir_for returns the first
+        # directory whose run.json names this unit without resolving several matches, and a run
+        # holding two of five poses cannot be recovered by scoring. Two complete runs are different
+        # folds and nothing here may choose between them.
+        st, d, detail = pose_sets.classify(os.path.join(a.e, "poses"), pdb, seed, a.nsample)
+        if st == "ambiguous":
+            print(f"  AMBIGUOUS {pdb} {seed}: {detail}; not rescored")
+            ambiguous += 1
+            continue
+        if st != "complete":
+            continue
+        if run_dir_for(a.e, pdb, seed) != d:
+            print(f"  SKIP {pdb} {seed}: the complete pose set is {os.path.basename(d)} but "
+                  f"run.json resolution disagrees; not rescored")
+            ambiguous += 1
             continue
         for ifc in sorted(pool.get(pdb, ())):
             got = have.get((ifc, seed), {})
@@ -447,13 +500,22 @@ def rescore(a):
                         fh.flush()
                 added += len(keep)
                 print(f"  {ifc} {seed}: added samples {[l.split(',')[5] for l in keep]}")
-    print(f"rescore added {added} row(s); left {skipped} existing row(s) untouched")
+    print(f"rescore added {added} row(s); left {skipped} existing row(s) untouched"
+          + (f"; {ambiguous} unit(s) not rescored for ambiguous or disagreeing saved runs"
+             if ambiguous else ""))
     return 0
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["verify", "rescore"])
+    ap.add_argument("--worklist", default="",
+                    help="a queue.tsv whose units define the rescore scope. Without it the scope "
+                         "is every job json in --jobs times --seeds, which reaches past the "
+                         "queue into older work.")
+    ap.add_argument("--allow-concurrent-writers", action="store_true",
+                    help="run even though a fold is writing the same results.csv. The re-read "
+                         "before appending narrows the duplicate window but does not close it.")
     ap.add_argument("--e", required=True, help="the val_fold directory")
     ap.add_argument("--jobs", required=True)
     ap.add_argument("--refs", required=True)

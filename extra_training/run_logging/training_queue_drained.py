@@ -34,6 +34,9 @@ _argv, sys.argv = sys.argv, ["folder.py"]          # folder.py parses argv only 
 import folder                                                              # noqa: E402
 sys.argv = _argv
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pose_sets                                                           # noqa: E402
+
 ap = argparse.ArgumentParser()
 ap.add_argument("--queue", default="training/fold/queue.tsv")
 ap.add_argument("--trunks", default="training/fold/trunks")
@@ -69,7 +72,7 @@ rows_done, _units_done = folder.open_csv(a.csv)
 # the two would either idle the cards or launch while training still has folding to do.
 #   gpu_blocking : no trunk, or folded-but-unscored with no poses to rescore from
 #   cpu_backlog  : folded, unscored, poses on disk -- rescoreable, does not need a card
-no_trunk, rescoreable, needs_refold, no_ifaces = [], [], [], []
+no_trunk, rescoreable, needs_refold, ambiguous, no_ifaces = [], [], [], [], []
 for pdb, arm, seed in units:
     want = sorted(ifaces.get(pdb, ()))
     if not want:
@@ -81,22 +84,39 @@ for pdb, arm, seed in units:
     if not short:
         continue
     got = [len(rows_done.get((i, str(seed), arm), set())) for i in short]
-    poses = glob.glob(f"{a.poses}/{pdb}/{seed}-*/predictions/*_sample_*.cif")
-    (rescoreable if poses else needs_refold).append((pdb, seed, short, got, len(want)))
+    # COMPLETENESS IS PER SAVED RUN AND PER SAMPLE INDEX, not "a cif exists". Raised in review: a
+    # unit with its trunk, two of five poses and incomplete scores was being called CPU-rescoreable,
+    # but CPU scoring cannot recover the three missing poses -- so the gate could hand the cards
+    # over while training still held units that need refolding. pose_sets.classify requires ONE
+    # run directory to carry every index 0..nsample-1 with its summary_confidence json (iptm is
+    # read from it), and reports ambiguity rather than picking a run.
+    st, run, detail = pose_sets.classify(a.poses, pdb, seed, a.nsample)
+    rec = (pdb, seed, short, got, len(want), st, detail)
+    if st == "complete":
+        rescoreable.append(rec)
+    elif st == "ambiguous":
+        ambiguous.append(rec)
+    else:
+        needs_refold.append(rec)
 
-gpu_blocking = len(no_trunk) + len(needs_refold) + len(no_ifaces)
+# ambiguity blocks too: two complete runs are different folds, and nothing here may
+# choose between them on its own.
+gpu_blocking = len(no_trunk) + len(needs_refold) + len(ambiguous) + len(no_ifaces)
 cpu_backlog = len(rescoreable)
 if not a.quiet:
     print(f"  queued {len(units)} unit(s), nsample {a.nsample}")
     print(f"    GPU work left -- no trunk:                 {len(no_trunk)}")
-    print(f"    GPU work left -- unscored, poses gone:     {len(needs_refold)}")
+    print(f"    GPU work left -- no complete pose set:     {len(needs_refold)}")
+    print(f"    GPU work left -- two complete runs:        {len(ambiguous)}")
     print(f"    GPU work left -- absent from the pool:     {len(no_ifaces)}")
     print(f"    CPU only      -- unscored, poses on disk:  {cpu_backlog}  (rescore, no refold)")
     for pdb, seed in no_trunk[:a.show]:
         print(f"       no trunk:   {pdb} seed {seed}")
-    for pdb, seed, short, got, nw in needs_refold[:a.show]:
-        print(f"       no poses:   {pdb} seed {seed}: {len(short)} of {nw} interface(s) unscored")
-    for pdb, seed, short, got, nw in rescoreable[:a.show]:
+    for pdb, seed, short, got, nw, st, detail in needs_refold[:a.show]:
+        print(f"       refold:     {pdb} seed {seed}: {st} -- {detail}")
+    for pdb, seed, short, got, nw, st, detail in ambiguous[:a.show]:
+        print(f"       ambiguous:  {pdb} seed {seed}: {detail}")
+    for pdb, seed, short, got, nw, st, detail in rescoreable[:a.show]:
         d = ", ".join(f"{i} {g}/{a.nsample}" for i, g in zip(short[:3], got[:3]))
         print(f"       rescore:    {pdb} seed {seed}: {d}")
     for pdb, seed in no_ifaces[:a.show]:
