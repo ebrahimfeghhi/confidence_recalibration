@@ -35,10 +35,15 @@ $PY -I - <<'EOF' || exit 1
 import csv, os, sys
 import gemmi
 E = "/home/ebrahim/confidence_recalibration/extra_training"
-q = set()
-for ln in open(E + "/validation/fold/queue.tsv"):
-    p = ln.rstrip("\n").split("\t")
-    if len(p) >= 5: q.add(p[1])
+# the queue is read with folder.read_queue so a compact seed range expands the same way the
+# worker expands it; a second parser here could preflight a different unit set than gets folded
+sys.path.insert(0, "/home/ebrahim/confidence_recalibration/run_model")
+_argv, sys.argv = sys.argv, ["folder.py"]
+import folder
+sys.argv = _argv
+units = folder.read_queue(E + "/validation/fold/queue.tsv")
+q = {u[1] for u in units}
+print(f"  queue expands to {len(units)} unit(s) over {len(q)} structure(s)")
 pool = {r["pdb"] for r in csv.DictReader(open(E + "/validation/fold/pool.csv"))}
 missing = sorted(q - pool)
 print(f"  queued {len(q)} structure(s), pooled {len(pool)}, missing {len(missing)}")

@@ -19,7 +19,7 @@ say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 PIDS="${TRAIN_PIDS:-}"
 [ -z "$PIDS" ] && { say "REFUSING to arm: set TRAIN_PIDS to the training worker pids."; exit 1; }
 say "armed. training worker pids: $PIDS"
-say "gate = (1) those pids gone  (2) no w1fold tmux session  (3) cards_busy 0  (4) queue drained by data"
+say "gate = (1) those pids gone  (2) no w1fold tmux session  (3) cards_busy 0  (4) no queued unit still needs a GPU"
 
 while :; do
   ALIVE=0
@@ -33,15 +33,20 @@ while :; do
     sleep 300; continue
   fi
 
-  if ! $PY -I run_logging/training_queue_drained.py; then
-    say "HOLDING: the workers are gone but the training queue is NOT drained (above)."
-    say "Folds are missing or unscored, so this is not the moment to launch. Staying armed."
-    say "Nothing will start until the training queue is complete -- rescore or refold first."
+  # --gpu-only ASKS THE RIGHT QUESTION: is training finished WITH THE CARDS? A unit that is
+  # folded and merely unscored, with its poses still on disk, needs ost on a CPU -- holding three
+  # idle GPUs for that is waste, and the rescore runs alongside the validation fold (different
+  # results.csv, so they do not contend). A unit whose poses are GONE still needs a refold, and
+  # that counts as GPU work and holds. Without --gpu-only the 867-unit rescore backlog would have
+  # blocked the validation launch outright.
+  if ! $PY -I run_logging/training_queue_drained.py --gpu-only; then
+    say "HOLDING: the workers are gone but units still need a GPU (above) -- folds missing, or"
+    say "unscored with no poses to rescore from. Not the moment to launch. Staying armed."
     sleep 600; continue
   fi
   break
 done
 
-say "gate passed: workers exited, cards free, training queue drained"
+say "gate passed: workers exited, cards free, no queued training unit needs a GPU"
 say "launching the 13-structure validation fold (1,300 units)"
 exec ./shell_scripts/launch_wave1_val_fold.sh
