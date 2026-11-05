@@ -143,6 +143,35 @@ def write_subset(src, keep, out, by_label):
     nm.make_mmcif_document().write_file(out)
 
 
+CANON = ["iface", "seed", "arm", "donor_pose", "tmpl_chains", "sample", "dockq", "iptm"]
+
+
+def canon_row(iface, seed, sample, dockq, iptm, arm="free", donor="-1", tmpl=""):
+    """One row in run_model/scorer.py's exact column order and number formatting.
+
+    THE FORMATTING IS PART OF THE CONTRACT, not cosmetic. scorer.py prints dockq as .4f and
+    pair_iptm as .4f (empty when absent), and every row already in training/fold/results.csv was
+    written that way. A recovered row that carried full float repr would be the one visibly
+    different row in the file and would not compare equal to a rescore of the same pose.
+    """
+    return {"iface": iface, "seed": str(seed), "arm": arm, "donor_pose": donor,
+            "tmpl_chains": tmpl, "sample": str(sample),
+            "dockq": f"{float(dockq):.4f}",
+            "iptm": "" if iptm is None else f"{float(iptm):.4f}"}
+
+
+def existing_keys(path):
+    """{(iface, seed, sample)} already in a results.csv, so a sweep cannot create a duplicate.
+
+    A duplicate is not a cosmetic problem here: every average over a seed would double-weight that
+    pose. The sweep is therefore idempotent -- re-running it adds nothing it has already added.
+    """
+    if not path or not os.path.exists(path):
+        return set()
+    with open(path) as fh:
+        return {(r["iface"], r["seed"], r["sample"]) for r in csv.DictReader(fh)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--targets", required=True,
@@ -151,6 +180,14 @@ def main():
     ap.add_argument("--refs", default=f"{ROOT}/training/refs")
     ap.add_argument("--roles", default=f"{ROOT}/training/fold/chain_roles.csv")
     ap.add_argument("--seed", default="500000")
+    ap.add_argument("--seed0", type=int, default=None,
+                    help="first seed of a range; with --seeds this sweeps instead of using --seed")
+    ap.add_argument("--seeds", type=int, default=1, help="how many consecutive seeds from --seed0")
+    ap.add_argument("--nsample", type=int, default=1, help="diffusion samples per pose dir")
+    ap.add_argument("--skip-existing", default="",
+                    help="a results.csv whose (iface,seed,sample) rows are already scored")
+    ap.add_argument("--rows-out", default="",
+                    help="candidate rows in scorer.py's canonical column order, ready to append")
     ap.add_argument("--min-ident", type=float, default=0.80)
     ap.add_argument("--out", default="")
     ap.add_argument("--scratch", default="/tmp/rescore_unmapped")
@@ -166,74 +203,113 @@ def main():
         want[pdb].append(ifc)
 
     import glob
-    rows = []
+    seeds = ([str(a.seed0 + i) for i in range(a.seeds)] if a.seed0 is not None else [str(a.seed)])
+    done = existing_keys(a.skip_existing)
+    print(f"sweep: {len(want)} structure(s), seeds {seeds[0]}..{seeds[-1]}, "
+          f"samples 0..{a.nsample - 1}; {len(done)} (iface,seed,sample) already scored")
+
+    rows, canon, refused, failed, skipped = [], [], [], [], 0
     for pdb, ifaces in sorted(want.items()):
         ref = os.path.join(a.refs, f"{pdb}.cif")
-        pd = sorted(glob.glob(f"{a.fold}/poses/{pdb}/{a.seed}-*"))
-        pd = [d for d in pd if os.path.exists(os.path.join(d, "run.json"))]
-        if not pd or not os.path.exists(ref):
-            print(f"  {pdb}: no pose dir or no reference -- skipped"); continue
-        mdl = sorted(glob.glob(f"{pd[0]}/predictions/*_sample_0.cif"))
-        if not mdl:
-            print(f"  {pdb}: no sample_0 cif -- skipped"); continue
-
-        rs = chain_seqs(ref, by_label=True)       # label ids: what OST calls the chain
-        ms = chain_seqs(mdl[0], by_label=False)
-        pairs, bad = build_map(rs, ms, a.min_ident)
-        print(f"=== {pdb} seed {a.seed}")
-        print(f"  reference chains (label): " +
-              ", ".join(f"{k}={len(v)}" for k, v in sorted(rs.items())))
-        print(f"  model chains:             " +
-              ", ".join(f"{k}={len(v)}" for k, v in sorted(ms.items())))
-        for rc, mc, ident in pairs:
-            ro = roles[pdb].get(rc, ("?", "?"))
-            flag = "" if ro[1] in ("?", mc) else f"   <-- chain_roles says model {ro[1]}"
-            print(f"    map {rc} -> {mc}  ident {ident:.2f}  role {ro[0]}{flag}")
-        for b in bad:
-            print(f"    REFUSED {b}")
-        if bad:
-            print(f"  {pdb}: map incomplete, NOT rescored (a forced wrong map would mis-attribute)")
-            continue
-
-        cm = {rc: mc for rc, mc, _ in pairs}
-        conf = glob.glob(f"{pd[0]}/predictions/*summary_confidence_sample_0.json")
+        if not os.path.exists(ref):
+            print(f"  {pdb}: no reference -- skipped"); continue
+        # THE ISOLATED REFERENCE IS THE SAME FOR EVERY POSE, so it is written once per interface
+        # rather than once per pose. 850 poses would otherwise re-derive the same 17 files.
+        refsub = {}
         for ifc in ifaces:
             c1, c2 = ifc.split("_", 1)[1][0], ifc.split("_", 1)[1][1]
-            if c1 not in cm or c2 not in cm:
-                print(f"    {ifc}: one of its target chains is not in the validated map"); continue
-            # ISOLATE THE PAIR. One chain per chemical group, so the grouping cannot collapse H onto
-            # L and the mapping comes out right. DockQ is defined over exactly these two chains.
-            rsub = f"{a.scratch}/{pdb}_{ifc}_ref.cif"
-            msub = f"{a.scratch}/{pdb}_{ifc}_mdl.cif"
-            write_subset(ref, {c1, c2}, rsub, by_label=True)
-            write_subset(mdl[0], {cm[c1], cm[c2]}, msub, by_label=False)
-            out = f"{a.scratch}/{pdb}_{ifc}.json"
-            if not ost_dockq.invoke(msub, rsub, out):
-                print(f"    {ifc}: OST failed on the isolated pair"); continue
-            res = ost_dockq.parse(out, conf_json=conf[0] if conf else None)
-            v = ost_dockq.interface(res, c1, c2)
-            if not v or v.get("dockq") is None:
-                print(f"    {ifc}: STILL MISSING"); continue
-            # CHECK THE PHYSICAL PAIR, not just that a number came back
-            got = tuple(v.get("model_chains") or ())
-            exp = tuple(roles[pdb].get(c, ("?", "?"))[1] for c in (c1, c2))
-            r1 = roles[pdb].get(c1, ("?",))[0]; r2 = roles[pdb].get(c2, ("?",))[0]
-            good = set(got) == set(exp)
-            print(f"    {ifc}: dockq={v['dockq']} pair_iptm={v.get('pair_iptm')} "
-                  f"roles {r1}-{r2}  model chains {got} expected {exp} "
-                  f"{'OK' if good else 'MISMATCH -- rejected'}")
-            if good:
-                rows.append(dict(pdb=pdb, iface=ifc, seed=a.seed, roles=f"{r1}-{r2}",
-                                 dockq=v["dockq"], pair_iptm=v.get("pair_iptm"),
-                                 chain_map=" ".join(cm)))
+            p = f"{a.scratch}/{pdb}_{ifc}_ref.cif"
+            write_subset(ref, {c1, c2}, p, by_label=True)
+            refsub[ifc] = p
+
+        for seed in seeds:
+            pd = sorted(glob.glob(f"{a.fold}/poses/{pdb}/{seed}-*"))
+            pd = [d for d in pd if os.path.exists(os.path.join(d, "run.json"))]
+            if not pd:
+                print(f"  {pdb} seed {seed}: no pose dir -- skipped")
+                failed.append((pdb, seed, "*", "no pose dir"))
+                continue
+            for k in range(a.nsample):
+                mdl = sorted(glob.glob(f"{pd[0]}/predictions/*_sample_{k}.cif"))
+                if not mdl:
+                    failed.append((pdb, seed, str(k), "no sample cif"))
+                    continue
+                todo = [i for i in ifaces if (i, seed, str(k)) not in done]
+                if not todo:
+                    skipped += len(ifaces); continue
+
+                # THE MAP IS REBUILT PER POSE, not once per structure. Model chain naming is job
+                # order and is stable in practice, but a map carried across poses would be an
+                # assumption, and the whole bug this recovers from was an assumption about chain
+                # names. Re-deriving it costs a sequence read against a multi-second OST call.
+                rs = chain_seqs(ref, by_label=True)   # label ids: what OST calls the chain
+                ms = chain_seqs(mdl[0], by_label=False)
+                pairs, bad = build_map(rs, ms, a.min_ident)
+                if bad:
+                    for b in bad:
+                        refused.append((pdb, seed, str(k), b))
+                    continue
+                cm = {rc: mc for rc, mc, _ in pairs}
+                conf = glob.glob(f"{pd[0]}/predictions/*summary_confidence_sample_{k}.json")
+
+                for ifc in todo:
+                    c1, c2 = ifc.split("_", 1)[1][0], ifc.split("_", 1)[1][1]
+                    if c1 not in cm or c2 not in cm:
+                        failed.append((pdb, seed, str(k), f"{ifc}: chain outside the validated map"))
+                        continue
+                    # ISOLATE THE PAIR. One chain per chemical group, so the grouping cannot
+                    # collapse H onto L; DockQ is computed over exactly the two chains it is
+                    # defined over.
+                    msub = f"{a.scratch}/{pdb}_{ifc}_{seed}_{k}_mdl.cif"
+                    write_subset(mdl[0], {cm[c1], cm[c2]}, msub, by_label=False)
+                    out = f"{a.scratch}/{pdb}_{ifc}_{seed}_{k}.json"
+                    if not ost_dockq.invoke(msub, refsub[ifc], out):
+                        failed.append((pdb, seed, str(k), f"{ifc}: OST failed on the isolated pair"))
+                        continue
+                    res = ost_dockq.parse(out, conf_json=conf[0] if conf else None)
+                    v = ost_dockq.interface(res, c1, c2)
+                    if not v or v.get("dockq") is None:
+                        failed.append((pdb, seed, str(k), f"{ifc}: still missing"))
+                        continue
+                    # CHECK THE PHYSICAL PAIR, not merely that a number came back
+                    got = tuple(v.get("model_chains") or ())
+                    exp = tuple(roles[pdb].get(c, ("?", "?"))[1] for c in (c1, c2))
+                    r1 = roles[pdb].get(c1, ("?",))[0]; r2 = roles[pdb].get(c2, ("?",))[0]
+                    if set(got) != set(exp):
+                        failed.append((pdb, seed, str(k),
+                                       f"{ifc}: model chains {got} but roles expect {exp}"))
+                        continue
+                    rows.append(dict(pdb=pdb, iface=ifc, seed=seed, sample=str(k),
+                                     roles=f"{r1}-{r2}", dockq=v["dockq"],
+                                     pair_iptm=v.get("pair_iptm"), chain_map=" ".join(cm)))
+                    canon.append(canon_row(ifc, seed, k, v["dockq"], v.get("pair_iptm")))
+                    os.remove(msub)
+            print(f"  {pdb} seed {seed}: {len(rows)} row(s) so far", flush=True)
+
+    print(f"\nrecovered {len(rows)} row(s); {skipped} already present; "
+          f"{len(refused)} refused map(s); {len(failed)} failure(s)")
+    for lbl, items in (("REFUSED", refused), ("FAILED", failed)):
+        for pdb, seed, k, why in items[:40]:
+            print(f"  {lbl} {pdb} seed {seed} sample {k}: {why}")
+        if len(items) > 40:
+            print(f"  ... and {len(items) - 40} more {lbl.lower()}")
+
     if a.out and rows:
         with open(a.out, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=list(rows[0]))
             w.writeheader()
             for r in rows:
                 w.writerow(r)
-        print(f"\nwrote {a.out} ({len(rows)} recovered interface(s))")
+        print(f"wrote {a.out} ({len(rows)} recovered pose-interface(s))")
+    if a.rows_out and canon:
+        with open(a.rows_out, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=CANON)
+            w.writeheader()
+            for r in canon:
+                w.writerow(r)
+        print(f"wrote {a.rows_out} ({len(canon)} row(s), canonical column order)")
+    return 1 if (failed or refused) else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
