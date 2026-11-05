@@ -307,6 +307,26 @@ def classify_missing(rundir, scorer, k, iface=None, invalidate=False):
     return "", f"sample {k}: scored, {len(res)} interface(s) found, none is this chain pair"
 
 
+def ref_touching(refs, iface):
+    """out: True / False / None -- does this interface's chain pair contact in the REFERENCE?
+
+    WHY VERIFY MEASURES THIS. classify_missing() can say that the scorer ran, mapped both of the
+    interface's reference chains, and still reported no DockQ for the pair. It called that a
+    non-contact, which is the right guess but was never more than a guess. The guess happened to
+    hold for all 550 interface-samples that carried the label -- measured in 2e49f389, 0 contacts
+    against 4-414 for their scored siblings -- and a guess that happens to hold is exactly the kind
+    that stops holding without anyone noticing. So the claim is now checked per interface, and a
+    pair that DOES touch but has no score is reported as a gap instead of a result.
+    """
+    sys.path.insert(0, os.path.join(_REPO, "extra_training", "run_logging"))
+    import contacts as _contacts
+    chains = iface.split("_")[-1]
+    if len(chains) != 2:
+        return None
+    return _contacts.touching(os.path.join(refs, f"{iface.split('_')[0]}.cif"),
+                              chains[0], chains[1])
+
+
 def queue_units(a):
     """out: [(pdb, seed, arm)] -- the units this invocation is responsible for
 
@@ -382,6 +402,8 @@ def verify(a):
 
     unfolded, no_rows, bad_scores, bad_cache = [], [], [], []
     no_pose, no_contact, short_poses, unmapped = [], [], [], []
+    touching_but_missing, uncheckable = [], []
+    verified_absent = set()      # (iface) measured to have no contact in the reference
     # WHAT IS INCOMPLETE PER STRUCTURE, not just in total. 230 outstanding units spread over two
     # structures and 230 spread over ninety are different problems, and the total cannot tell them
     # apart. Raised in review together with keeping the buckets separate.
@@ -418,10 +440,23 @@ def verify(a):
                     # them as either one overstates how complete the dataset is.
                     unmapped.append((ifc, seed, why))
                 else:
-                    no_contact.append((ifc, seed, why))
+                    # MEASURED, NOT ASSUMED. The scorer's silence about this pair is consistent
+                    # with the chains not touching, and also with a mapping that put the pose on
+                    # the wrong chains -- those need different answers, so the reference decides.
+                    t = ref_touching(a.refs, ifc)
+                    if t is False:
+                        verified_absent.add(ifc)
+                        no_contact.append((ifc, seed, why))
+                    elif t is True:
+                        touching_but_missing.append((ifc, seed, why))
+                    else:
+                        uncheckable.append((ifc, seed, why))
                 if bucket:
-                    by_pdb.setdefault(ifc.split("_")[0], {}).setdefault(bucket, 0)
-                    by_pdb[ifc.split("_")[0]][bucket] += 1
+                    lbl = bucket
+                    if bucket == "no_contact" or bucket == "":
+                        lbl = "no_contact"
+                    by_pdb.setdefault(ifc.split("_")[0], {}).setdefault(lbl, 0)
+                    by_pdb[ifc.split("_")[0]][lbl] += 1
             for k, (dq, ip) in got.items():
                 if not finite(dq) or not finite(ip):
                     bad_scores.append((ifc, seed, k, dq, ip))
@@ -442,12 +477,26 @@ def verify(a):
     print(f"  rows with a non-finite score       : {len(bad_scores)}")
     print(f"  unusable or absent trunk caches    : {len(bad_cache)}")
     print(f"  scored but the interface was never mapped (rescore cannot fix): {len(unmapped)}")
+    print(f"  NO SCORE THOUGH THE REFERENCE CHAINS TOUCH : {len(touching_but_missing)}")
+    print(f"  no score and the contact could not be checked: {len(uncheckable)}")
     # REPORTED, NOT FAILED. A pose in which the two chains do not contact has no DockQ to report;
     # scorer.py treats that as a real condition and so does this. It is printed because a large
     # number of them is informative about the target, not about the pipeline.
-    print(f"  (scored, no contact at that interface, which is a result not a fault: {len(no_contact)})")
+    print(f"  (no contact at that interface IN THE REFERENCE, measured, so there is no DockQ to "
+          f"report: {len(no_contact)} sample(s) over {len(verified_absent)} interface(s))")
+    # THE DENOMINATOR CANNOT INCLUDE WHAT CANNOT EXIST. pool.csv pairs every antibody chain with
+    # every antigen chain and never checks contact, so it names interfaces that are two chains
+    # sitting apart in the structure. Counting those as expected scores made the dataset look
+    # permanently incomplete at 95.7% when the reachable total was 97.3%, and no amount of
+    # rescoring could ever close the difference.
+    expected = sum(len(pool.get(p, ())) for p, _sd in units) * a.nsample
+    print(f"  expected interface-samples: {expected} named by pool.csv, "
+          f"{expected - len(no_contact)} of them scoreable "
+          f"({len(no_contact)} have no contact in the reference)")
     for lbl, items in (("unfolded", unfolded), ("short poses", short_poses), ("no pose", no_pose),
                        ("unscored", no_rows), ("unmapped", unmapped),
+                       ("TOUCHING BUT UNSCORED", touching_but_missing),
+                       ("contact uncheckable", uncheckable),
                        ("non-finite", bad_scores), ("cache", bad_cache)):
         for x in items[:3]:
             print(f"     {lbl}: {x}")
@@ -464,10 +513,14 @@ def verify(a):
     # DockQ, and a run that calls itself COMPLETE with eight hundred of them would be the overclaim
     # this verifier exists to prevent -- even though no rescore can recover them.
     rc = 1 if (unfolded or short_poses or no_pose or no_rows or bad_scores or bad_cache
-               or unmapped) else 0
+               or unmapped or touching_but_missing or uncheckable) else 0
     if rc == 0:
         print("COMPLETE: every expected unit folded, every pose scored at every interface, "
               "every cache replayable")
+    elif touching_but_missing:
+        print(f"INCOMPLETE: {len(touching_but_missing)} interface-sample(s) have no score although "
+              f"the two reference chains measurably touch. That is a scoring failure wearing a "
+              f"non-contact's clothes -- the case this check exists to catch.")
     elif not (unfolded or short_poses or no_pose or no_rows or bad_scores or bad_cache):
         print(f"INCOMPLETE: nothing left to fold or rescore; {len(unmapped)} interface-sample(s) "
               f"have no score because the scorer mapped no model chain to one of their reference "
