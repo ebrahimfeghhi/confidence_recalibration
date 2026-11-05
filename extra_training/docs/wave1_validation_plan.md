@@ -154,3 +154,89 @@ step 6 needs the GPUs.
   auto-launched. Both were measured on `9dvr`, 869 tokens against a 474-token queue median.
 - `9dvr` has now produced three bad extrapolations (disk, runtime, and this). It is not a
   representative unit and should not be used as one.
+
+---
+
+# Step 1 result: entry-as-reference is REJECTED
+
+Run 2026-11-04 ~10:05 PM EST. CPU only, 318 OST calls over all 53 old benchmark structures,
+3 poses each, fresh json per reference. Nothing was written into the benchmark; the new refs were
+not staged and validation was not launched.
+
+Script: `run_logging/compare_entry_as_reference.py`.
+Per-comparison rows: `validation/full_val/entry_as_reference_report.csv`.
+
+## What passed
+
+The two things review was most worried about came back clean:
+
+```
+ref->model chain mapping differs:        0 of 176
+ipTM read from a different model pair:   0 of 176
+```
+
+Where the entry scores an interface at all, it maps it to the same model chains and ipTM is read
+from the same pair. The reference *naming* is not the problem.
+
+## What failed
+
+**1. Multi-copy structures lose interfaces outright.**
+
+```
+multi-copy structures:  13 lose interfaces, 10 clean   (57% fail)
+single-copy structures:  1 lose interfaces, 24 clean   ( 4% fail)
+```
+
+67 interface-pose rows scored against the staged instance CIF and produced *nothing* against the
+entry — 61 of those 67 on multi-copy structures. The entry holds several copies of the complex, so
+OST's automatic mapper lays the model over whichever copy fits best, and the interface we asked
+for by label is simply absent from the result. `ost_dockq.interface()` has the `<X>-2` fallback for
+FoldBench-style copy naming, but a deposited entry's copies carry ordinary distinct labels, so
+there is nothing to fall back on. This is exactly the failure mode review predicted from extra
+chains, and it shows up as a missing interface rather than a wrong number — which is worse, because
+no row is written and the structure quietly contributes less data.
+
+**This is the class that matters most for the 17: six of them are multi-copy** — `8q7o`, `8v52`,
+`8weo`, `9dl0`, `9hvi`, `9hvk` — the same six flagged earlier.
+
+**2. DockQ shifts even where everything maps correctly.**
+
+Restricted to single-copy structures that lost no interface (n=123):
+
+```
+|dDockQ|: max 0.099  median 0.0030  over 0.01: 44 of 123
+```
+
+Signed, over all 176 scored both ways: mean −0.0062, median 0.0000, sd 0.0245, max |Δ| 0.121
+(`8tbq` L-ag0: 0.810 staged against 0.689 entry). 53 of 176 agree exactly; the rest do not.
+
+The cause is residue content, not naming. The corpus instance CIFs are trimmed — measured earlier
+on the same structures, `9ghi`'s H chain is 120 residues against 257 in the entry, and antigens are
+trimmed too. DockQ is defined over the reference's interface residues, so an untrimmed reference
+scores a different interface. A median of 0.003 is small, but a benchmark mixing two reference
+conventions would compare structures scored against trimmed references with structures scored
+against untrimmed ones, and the paired error bar on this benchmark is ~0.005 uncropped. A
+systematic reference difference of that size across 17 of 83 structures is not acceptable.
+
+**3. Five structures cannot use the entry at all**, and fail closed as designed:
+`29tj`, `7tzh`, `8v8f`, `9cn2`, `9nr6`. SAbDab names chains the deposited entry does not carry —
+`9nr6`'s instance is `pdb_00009nr6_F1_F2` and the entry has no `F1`/`F2` — so the resolver returns
+nothing rather than a wrong label. 30 rows excluded on that basis, which is the correct behaviour
+and confirms the fail-closed rule works on real data.
+
+## Conclusion and revised plan
+
+Entry-as-reference is rejected on evidence, the same way the reconstruction was. The resolver idea
+was sound for *naming* — 0 of 176 mapping differences proves that — but the reference file itself
+cannot be swapped, because the instance CIF's trimming is part of what the stored DockQ means, and
+because multi-copy entries lose interfaces 57% of the time.
+
+**Revised step 2: re-select the 17** from the 1,962 candidates that have an instance CIF, MSAs,
+eligibility, and fit the 2,560-token budget. That keeps the validation set at 30 new structures,
+keeps one reference convention across the whole benchmark, and costs one CPU re-run of jobs →
+per-job CIFs → bioassemblies → pool for 17 structures. The alternative is carrying 13.
+
+What this run also settles: the explicit sequence resolver for a multi-subchain auth chain is
+correct and worth keeping for the *pool* side wherever an instance CIF exists, since it reproduced
+the committed pool for 12 of 13 with the 13th failing closed. It is the reference swap that is
+dead, not the resolver.

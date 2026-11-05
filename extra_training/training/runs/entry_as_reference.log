@@ -1,0 +1,39 @@
+53 structure(s); 159 pose(s) to score against 2 references each = 318 OST call(s)
+scratch: /tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad/entry_ref_full  (nothing is written into the benchmark)
+structures holding repeated copies of a role's sequence: 26 -> ['22gi', '7q4q', '7shy', '7si0', '7su0', '7tzh', '7zmk', '7zra', '8df1', '8omz', '8t04', '8t05', '8t06', '8tbq', '8v8f', '8xqj', '8y31', '8z74', '9eg6', '9fvb', '9fve', '9ima', '9lme', '9mfg', '9nr6', '9q1l']
+
+  25/159 pose(s)
+  50/159 pose(s)
+  75/159 pose(s)
+  100/159 pose(s)
+  125/159 pose(s)
+  150/159 pose(s)
+
+=== RESULT ===
+  entry-side label unresolved (excluded by the fail-closed rule): 30 row(s) over 5 structure(s) -> ['29tj', '7tzh', '8v8f', '9cn2', '9nr6']
+  interface-pose comparisons: 246  over 48 structure(s)
+    scored both ways:        176
+    staged only:             67
+    entry only:              0
+    neither:                 3
+  |dDockQ|: max 0.1210  median 0.0030  over tol 0.01: 61 of 176
+  ref->model chain mapping differs: 0 of 176
+  ipTM read from a different model pair: 0 of 176
+     7qu1 400000 7qu1_sample_0.cif H-ag0 copies=1: staged 0.312 [A,C -> A,C] ipTM 0.49604055285453796 | entry 0.287 [A,C -> A,C] ipTM 0.49604055285453796
+     7qu1 400000 7qu1_sample_0.cif L-ag0 copies=1: staged 0.065 [B,C -> B,C] ipTM 0.4976176917552948 | entry 0.113 [B,C -> B,C] ipTM 0.4976176917552948
+     7qu1 400000 7qu1_sample_2.cif H-ag0 copies=1: staged 0.315 [A,C -> A,C] ipTM 0.4952237010002136 | entry 0.289 [A,C -> A,C] ipTM 0.4952237010002136
+     7qu1 400000 7qu1_sample_2.cif L-ag0 copies=1: staged 0.068 [B,C -> B,C] ipTM 0.49641209840774536 | entry 0.116 [B,C -> B,C] ipTM 0.49641209840774536
+     7qu1 400000 7qu1_sample_1.cif H-ag0 copies=1: staged 0.278 [A,C -> A,C] ipTM 0.4941255450248718 | entry 0.251 [A,C -> A,C] ipTM 0.4941255450248718
+     7qu1 400000 7qu1_sample_1.cif L-ag0 copies=1: staged 0.06 [B,C -> B,C] ipTM 0.49575963616371155 | entry 0.104 [B,C -> B,C] ipTM 0.49575963616371155
+     7qu2 400000 7qu2_sample_1.cif H-ag0 copies=1: staged 0.017 [A,C -> A,C] ipTM 0.2099173665046692 | entry 0.03 [A,C -> A,C] ipTM 0.2099173665046692
+     7qu2 400000 7qu2_sample_1.cif L-ag0 copies=1: staged 0.108 [B,C -> B,C] ipTM 0.21010129153728485 | entry 0.082 [B,C -> B,C] ipTM 0.21010129153728485
+     7qu2 400000 7qu2_sample_2.cif H-ag0 copies=1: staged 0.174 [A,C -> A,C] ipTM 0.20928020775318146 | entry 0.271 [A,C -> A,C] ipTM 0.20928020775318146
+     7qu2 400000 7qu2_sample_2.cif L-ag0 copies=1: staged 0.141 [B,C -> B,C] ipTM 0.2104848176240921 | entry 0.24 [B,C -> B,C] ipTM 0.2104848176240921
+     7qu2 400000 7qu2_sample_0.cif H-ag0 copies=1: staged 0.016 [A,C -> A,C] ipTM 0.21148525178432465 | entry 0.035 [A,C -> A,C] ipTM 0.21148525178432465
+     7qu2 400000 7qu2_sample_0.cif L-ag0 copies=1: staged 0.111 [B,C -> B,C] ipTM 0.21364133059978485 | entry 0.087 [B,C -> B,C] ipTM 0.21364133059978485
+     7r58 400000 7r58_sample_0.cif H-ag0 copies=1: staged 0.092 [B,A -> C,A] ipTM 0.18346230685710907 | entry 0.081 [B,A -> C,A] ipTM 0.18346230685710907
+     7r58 400000 7r58_sample_0.cif L-ag0 copies=1: staged 0.03 [C,A -> C,B] ipTM 0.17226073145866394 | entry 0.014 [C,A -> C,B] ipTM 0.17226073145866394
+     7r58 400000 7r58_sample_2.cif H-ag0 copies=1: staged 0.092 [B,A -> C,A] ipTM 0.17785723507404327 | entry 0.081 [B,A -> C,A] ipTM 0.17785723507404327
+
+  VERDICT: FAIL -- differences above; report before changing anything
+  per-comparison rows -> validation/full_val/entry_as_reference_report.csv
