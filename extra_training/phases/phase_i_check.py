@@ -241,6 +241,23 @@ def classify_missing(rundir, scorer, k, iface=None, invalidate=False):
         why_parse = f"{type(e).__name__}"
     else:
         why_parse = "empty"
+
+    # A SUCCESSFUL RUN THAT MAPPED NO INTERFACE IS NOT AN UNUSABLE CACHE. parse() returns {} both
+    # for a truncated file and for a complete OST result whose dockq_interfaces is [] --
+    # ost_dockq.usable() accepts the latter as a real outcome, and this did not. Raised in review,
+    # and it had a concrete cost: with invalidate=True this moved a VALID json aside and sent the
+    # unit back through OST, which on the same input, options and version returns exactly the same
+    # empty result. 200 training units are in that state; re-running the same automatic mapping is
+    # not a repair. usable() is not called directly here because it renames a file that does not
+    # parse, and classify_missing must stay read-only unless invalidate says otherwise.
+    try:
+        raw = json.load(open(sj))
+    except (OSError, ValueError):
+        raw = None
+    complete_run = isinstance(raw, dict) and isinstance(raw.get("dockq_interfaces"), list)
+    if not res and complete_run and not raw["dockq_interfaces"]:
+        return "unmapped", (f"sample {k}: {scorer} ran and mapped no interface at all "
+                            f"(dockq_interfaces []), so re-running it changes nothing")
     if not res:
         # INVALIDATED, or the retry is futile: run() would reuse this file and never re-invoke OST.
         if invalidate:
@@ -272,6 +289,21 @@ def classify_missing(rundir, scorer, k, iface=None, invalidate=False):
                                         f"DockQ is null -- a scoring failure, not a no-contact ({sj})")
                 return "unscored", (f"sample {k}: the {scorer} cache reports this interface "
                                     f"(dockq {v['dockq']:.4f}) but results.csv has no row")
+    # ABSENT IS TWO DIFFERENT OUTCOMES, AND ONLY ONE OF THEM IS A NO-CONTACT. OST's
+    # dockq_interfaces holds the reference interfaces it COULD MAP, so a pair missing from it means
+    # either that the reference's own chains do not touch -- nothing will ever produce a row -- or
+    # that one of them was never mapped to a model chain, which is a limitation of the mapping and
+    # not a statement about the pose. chain_mapping distinguishes them, and the earlier text called
+    # both "none is this chain pair". Raised in review.
+    cm = raw.get("chain_mapping") if isinstance(raw, dict) else None
+    if iface and isinstance(cm, dict):
+        chains = iface.split("_")[-1]
+        if len(chains) == 2:
+            unmapped = [c for c in chains if c not in cm]
+            if unmapped:
+                return "unmapped", (f"sample {k}: {scorer} left reference chain {unmapped} "
+                                    f"unmapped, so this interface was never a candidate "
+                                    f"({len(res)} other interface(s) scored)")
     return "", f"sample {k}: scored, {len(res)} interface(s) found, none is this chain pair"
 
 
@@ -444,7 +476,7 @@ def rescore(a):
 
     have = read_results(res)
     added = skipped = ambiguous = 0
-    timed_out, failed, no_contact, still_missing = [], [], [], []
+    timed_out, failed, no_contact, still_missing, unmapped = [], [], [], [], []
     for pdb, seed, arm in units:
         # THE RUN MUST HOLD A COMPLETE POSE SET, AND ONLY ONE RUN MAY. run_dir_for returns the first
         # directory whose run.json names this unit without resolving several matches, and a run
@@ -551,6 +583,13 @@ def rescore(a):
                 bucket, why = classify_missing(d, a.scorer, str(k), iface=ifc)
                 if bucket == "":
                     no_contact.append((ifc, seed, k))
+                elif bucket == "unmapped":
+                    # NOT A FAILED RECOVERY. OST ran, and this interface was never a candidate
+                    # because one of its reference chains was not mapped to a model chain. Running
+                    # the same scorer again on the same pose cannot change that, so counting it as
+                    # incomplete recovery would make every future rescore report failure for work
+                    # it was never able to do. It is reported on its own line instead.
+                    unmapped.append((ifc, seed, k, why[:90]))
                 else:
                     still_missing.append((ifc, seed, k, bucket, why[:80]))
 
@@ -559,6 +598,12 @@ def rescore(a):
     print(f"  scorer timed out:                                {len(timed_out)}")
     print(f"  scorer exited nonzero:                           {len(failed)}")
     print(f"  pose has no contact at that interface (expected, not a failure): {len(no_contact)}")
+    print(f"  reference chain never mapped by {a.scorer} -- NOT recoverable by rescoring: "
+          f"{len(unmapped)}")
+    for ifc, seed, k, why in unmapped[:6]:
+        print(f"     {ifc} {seed} sample {k}: {why}")
+    if len(unmapped) > 6:
+        print(f"     ... and {len(unmapped) - 6} more")
     print(f"  still missing and NOT explained by no-contact:    {len(still_missing)}")
     for ifc, seed, k, bucket, why in still_missing[:10]:
         print(f"     STILL MISSING {ifc} {seed} sample {k}: {bucket} -- {why}")

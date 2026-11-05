@@ -6,7 +6,7 @@ A snapshot that quietly picked a contested label would be treated downstream as 
 
 Run: python -I run_logging/test_dedupe_results.py
 """
-import json, os, shutil, subprocess, sys, tempfile
+import fcntl, json, os, shutil, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
@@ -194,6 +194,42 @@ try:
     kept3 = [ln for ln in open(out3).read().splitlines() if ln.startswith("8abc_AB")] if rc3 == 0 else []
     check("an unmapped chain in the ost json falls back too",
           rc3 == 0 and len(kept3) == 1 and kept3[0].endswith("0.5000"), f"rc={rc3} kept={kept3}")
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+
+print("--replace takes the rescore writer lock before it reads")
+root = tempfile.mkdtemp()
+try:
+    # one clean duplicate, so the snapshot itself is never the thing being tested here
+    M = [[1.0, 0.5226], [0.5226, 1.0]]
+    csvp = build(root,
+                 ["8abc_AB,500000,free,-1,,0,0.4660,0.5226",
+                  "8abc_AB,500000,free,-1,,0,0.4660,0.5231"],
+                 {("8abc", "500000", "aaa"): {0: M}})
+    out = os.path.join(root, "snap.csv")
+
+    def replace_run():
+        r = subprocess.run([PY, "-I", os.path.join(HERE, "dedupe_results.py"), "--csv", csvp,
+                            "--poses", os.path.join(root, "poses"), "--nsample", "1",
+                            "--pool", os.path.join(root, "pool.csv"),
+                            "--roles", os.path.join(root, "chain_roles.csv"),
+                            "--out", out, "--replace"], capture_output=True, text=True)
+        return r.returncode, r.stdout + r.stderr
+
+    before = open(csvp).read()
+    lk = open(csvp + ".rescore.lock", "a+")
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    rc, log = replace_run()
+    check("refuses while a rescore holds the lock", rc != 0 and "rescore holds" in log, log[-300:])
+    check("and the canonical csv is untouched", open(csvp).read() == before)
+    fcntl.flock(lk, fcntl.LOCK_UN)
+    lk.close()
+
+    # with the lock free it gets past that guard -- here it stops on the live fold sessions
+    # instead, which is the pre-existing check and proves the lock was not what blocked it
+    rc2, log2 = replace_run()
+    check("with the lock free it is no longer the lock that blocks",
+          "rescore holds" not in log2, log2[-300:])
 finally:
     shutil.rmtree(root, ignore_errors=True)
 

@@ -24,7 +24,7 @@ UNRESOLVED DUPLICATES ARE FATAL, not filtered. The exit status is nonzero and no
 written, because a snapshot that silently dropped or picked a contested label is worse than no
 snapshot: everything downstream would treat it as settled.
 """
-import argparse, collections, csv, glob, json, os, shutil, sys
+import argparse, collections, csv, fcntl, glob, json, os, shutil, sys
 
 sys.path.insert(0, "/home/ebrahim/confidence_recalibration/eval")
 import ost_dockq                                                           # noqa: E402
@@ -57,6 +57,26 @@ a.roles = a.roles or sorted(glob.glob(os.path.join(d0, "chain_roles*.csv")))
 if not a.roles:
     raise SystemExit(f"STOP: no chain_roles csv found beside {a.csv}; without the reference -> "
                      f"model chain mapping an interface's own pair ipTM cannot be identified")
+
+# --replace TAKES THE WRITER LOCK BEFORE IT READS, AND HOLDS IT THROUGH THE SWAP. Raised in
+# review, and it is a real gap: the tmux scan further down only sees FOLD sessions, while
+# phase_i_check's rescore is an ordinary process that announces itself by holding
+# <csv>.rescore.lock. Without taking that lock, a rescore could append recovered rows after this
+# snapshot was read and before os.replace -- which is atomic as a filesystem operation and does
+# nothing whatever to prevent losing those rows. Reporting does not take the lock, because reading
+# a csv a rescore is appending to costs nothing but a slightly stale report.
+_LOCKS = []
+if a.replace:
+    _lp = a.csv + ".rescore.lock"
+    _lk = open(_lp, "a+")
+    try:
+        fcntl.flock(_lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        _lk.seek(0)
+        raise SystemExit(f"STOP: a rescore holds {_lp} (pid {_lk.read().strip() or 'unknown'}). "
+                         f"It may append rows after this snapshot is read, and they would be lost "
+                         f"by the swap. Wait for it to finish, then re-run --replace.")
+    _LOCKS.append(_lk)
 
 rows = list(csv.DictReader(open(a.csv)))
 hdr = list(rows[0].keys()) if rows else []
@@ -255,6 +275,14 @@ if a.replace:
     if live:
         raise SystemExit(f"STOP: {live} are still writing. The snapshot is at {a.out}; "
                          f"re-run --replace once they have exited.")
+    # AND THE FILE MUST STILL BE THE ONE THAT WAS READ. The lock keeps a rescore out, but it is
+    # not proof on its own: a writer that predates the lock, or one that ignores it, would show up
+    # here as extra rows. Counting them is cheap and turns a silent loss into a refusal.
+    now = sum(1 for _ in csv.DictReader(open(a.csv)))
+    if now != len(rows):
+        raise SystemExit(f"STOP: {a.csv} held {len(rows)} data row(s) when this snapshot was built "
+                         f"and holds {now} now, so something appended to it meanwhile. The "
+                         f"snapshot is at {a.out} and would lose those rows; nothing replaced.")
     bak = a.csv + ".pre_dedupe"
     shutil.copy2(a.csv, bak)
     os.replace(a.out, a.csv)        # same filesystem, so this is atomic

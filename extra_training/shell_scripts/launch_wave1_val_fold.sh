@@ -44,6 +44,21 @@ if [ "$S" -gt 0 ]; then
   exit 1
 fi
 
+# A DURABLE RECORD OF HAVING STARTED, because the two checks above are both about the PRESENT.
+# Raised in review: if the workers come up and then die, the sessions vanish and the cards free, and
+# a stale arming process reaching this point later would see a clean box and launch a second attempt
+# over whatever the first one left behind. A long-lived lock is the wrong instrument -- it dies with
+# the process holding it. A file does not. So the first attempt records itself, and a second one
+# refuses until someone looks at what happened to the first and says so explicitly.
+ATT="$VG/.launch_attempt"
+if [ -e "$ATT" ] && [ "${ALLOW_RELAUNCH:-0}" != "1" ]; then
+  say "REFUSING: $ATT records a launch that already began:"
+  sed 's/^/      /' "$ATT"
+  say "If that attempt is genuinely dead and its state has been inspected, re-run with"
+  say "ALLOW_RELAUNCH=1. This refuses rather than quietly folding over a half-finished attempt."
+  exit 1
+fi
+
 B=$($PY -I run_logging/cards_busy.py | tail -1)
 if [ "${B:-1}" != "0" ]; then
   say "REFUSING: cards_busy reports '$B', not 0. Something is still on cards 4/5/7."
@@ -102,6 +117,13 @@ if bad:
     sys.exit(1)
 EOF
 
+{
+  echo "started   $(TZ=America/New_York date '+%Y-%m-%d %-I:%M:%S %p %Z')"
+  echo "launcher  pid $$"
+  echo "queue     $VG/queue.tsv"
+  echo "cards     4 5 7"
+} > "$ATT"
+
 say "launching 3 workers on cards 4, 5, 7 -- fold AND score, no --fold-only"
 for c in 4 5 7; do
   tmux new-session -d -s w1val_$c "cd /home/ebrahim/Protenix && CUDA_VISIBLE_DEVICES=$c \
@@ -111,6 +133,21 @@ for c in 4 5 7; do
     --ncycle 10 --nsample 5 --dtype bf16 --overlap-scoring >> $VG/w1val_c$c.log 2>&1"
 done
 sleep 60
-say "workers up: $(tmux ls 2>/dev/null | grep -c w1val)"
-for c in 4 5 7; do echo "  c$c: $(grep -cE 'interfaces in' $VG/w1val_c$c.log 2>/dev/null) unit(s) scored"; done
+# ANNOUNCING SUCCESS WAS UNCONDITIONAL. Raised in review: this printed the session count and then
+# "VALIDATION FOLD LAUNCHED" whatever that count was, so one worker surviving out of three read as
+# a clean launch. A card that is still occupied, an immediate python traceback and a missing queue
+# all look like this, and all three have happened on this box.
+UP=$(tmux ls 2>/dev/null | grep -c w1val || true)
+say "workers up: $UP/3"
+for c in 4 5 7; do
+  echo "  c$c: $(grep -cE 'interfaces in' $VG/w1val_c$c.log 2>/dev/null) unit(s) scored, last line:"
+  echo "       $(tail -1 $VG/w1val_c$c.log 2>/dev/null | cut -c1-120)"
+done
+if [ "$UP" -ne 3 ]; then
+  echo "failed    $(TZ=America/New_York date '+%Y-%m-%d %-I:%M:%S %p %Z'): only $UP/3 workers survived startup" >> "$ATT"
+  say "LAUNCH FAILED: $UP of 3 workers survived the first 60 s. The per-card logs above say why."
+  say "$ATT records the attempt, so nothing will relaunch over it without ALLOW_RELAUNCH=1."
+  exit 1
+fi
+echo "up        $(TZ=America/New_York date '+%Y-%m-%d %-I:%M:%S %p %Z'): 3/3 workers" >> "$ATT"
 say "VALIDATION FOLD LAUNCHED"
