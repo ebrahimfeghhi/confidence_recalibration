@@ -30,19 +30,50 @@ if [ "${B:-1}" != "0" ]; then
   exit 1
 fi
 
-say "pool gate: every queued structure must appear in $VG/pool.csv"
+say "preflight: pool rows, a staged reference, and the pool chains present in it"
 $PY -I - <<'EOF' || exit 1
-import csv, sys
+import csv, os, sys
+import gemmi
+E = "/home/ebrahim/confidence_recalibration/extra_training"
 q = set()
-for ln in open("/home/ebrahim/confidence_recalibration/extra_training/validation/fold/queue.tsv"):
+for ln in open(E + "/validation/fold/queue.tsv"):
     p = ln.rstrip("\n").split("\t")
     if len(p) >= 5: q.add(p[1])
-pool = {r["pdb"] for r in csv.DictReader(open("/home/ebrahim/confidence_recalibration/extra_training/validation/fold/pool.csv"))}
+pool = {r["pdb"] for r in csv.DictReader(open(E + "/validation/fold/pool.csv"))}
 missing = sorted(q - pool)
 print(f"  queued {len(q)} structure(s), pooled {len(pool)}, missing {len(missing)}")
 if missing:
     print(f"  REFUSING: not in the pool -> {missing[:20]}")
     print("  folder.py would report 'no interfaces to score' and skip every unit.")
+    sys.exit(1)
+
+# AND A REFERENCE PER STRUCTURE. paths.py routes the scorer to validation/refs/<pdb>.cif; without
+# one the fold runs and every interface fails to score, which costs the GPU time twice over. These
+# were absent for all 30 until the prep chain staged them.
+noref = sorted(p for p in q if not os.path.exists(f"{E}/validation/refs/{p}.cif"))
+print(f"  references present: {len(q) - len(noref)} of {len(q)}")
+if noref:
+    print(f"  REFUSING: no DockQ reference for {noref[:20]}")
+    sys.exit(1)
+
+# AND EVERY POOL CHAIN MUST EXIST IN THAT REFERENCE, which is the join the scorer makes.
+want = {}
+for r in csv.DictReader(open(E + "/validation/fold/pool.csv")):
+    if r["pdb"] in q:
+        want.setdefault(r["pdb"], set()).update((r["chain1"], r["chain2"]))
+bad = []
+for pdb, chains in sorted(want.items()):
+    st = gemmi.read_structure(f"{E}/validation/refs/{pdb}.cif")
+    st.setup_entities()
+    have = {sub.subchain_id() for ch in st[0] for sub in ch.subchains()
+            if len([x for x in sub]) >= 5}
+    miss = sorted(chains - have)
+    if miss:
+        bad.append((pdb, miss, sorted(have)))
+print(f"  pool chains found in the reference: {len(want) - len(bad)} of {len(want)}")
+for pdb, miss, have in bad[:10]:
+    print(f"  REFUSING: {pdb} pool names {miss}, reference has {have}")
+if bad:
     sys.exit(1)
 EOF
 

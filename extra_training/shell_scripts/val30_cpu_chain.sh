@@ -29,14 +29,14 @@ step(){ P=$!; watchdog $P & W=$!; wait $P; RC=$?; kill $W 2>/dev/null; return $R
 
 say "MemAvailable $(mem) GB, training fold workers $(folders)"
 
-say "STEP 1/6 -- instance cifs from the release archive (the corpus is a partial extraction)"
+say "STEP 1/7 -- instance cifs from the release archive (the corpus is a partial extraction)"
 nice -n 15 ionice -c 3 $PY -I run_logging/extract_instance_cifs.py \
   --selection validation/full_val/val30_structures.csv --apply \
   > training/runs/val30_instance_cifs.log 2>&1 &
 step || { say "STOPPING at step 1"; tail -5 training/runs/val30_instance_cifs.log; exit 1; }
 tail -3 training/runs/val30_instance_cifs.log
 
-say "STEP 2/6 -- per-job cifs for the 30 (antibody + polypeptide antigen only)"
+say "STEP 2/7 -- per-job cifs for the 30 (antibody + polypeptide antigen only)"
 nice -n 15 ionice -c 3 $PY -I phases/phase_j_job_cifs.py \
   --selection validation/full_val/val30_structures.csv \
   --sabdab-cifs SAbDab2_data/training_cifs \
@@ -48,7 +48,7 @@ nice -n 15 ionice -c 3 $PY -I phases/phase_j_job_cifs.py \
 step || { say "STOPPING at step 2"; tail -8 training/runs/val30_job_cifs.log; exit 1; }
 grep -E "^note|^WARNING|wrote .* job cif" training/runs/val30_job_cifs.log
 
-say "STEP 3/6 -- bioassemblies for all 83 FROM the per-job cifs"
+say "STEP 3/7 -- bioassemblies for all 83 FROM the per-job cifs"
 nice -n 15 ionice -c 3 $PY -I phases/phase_j_prepare_training_data.py \
   --selection validation/full_val/val83_structures.csv \
   --cif-dir validation/prep/job_cifs \
@@ -66,7 +66,7 @@ if miss:
     print(f"  MISSING {len(miss)}: {sorted(miss)[:20]}"); sys.exit(1)
 EOF
 
-say "STEP 4/6 -- pool rows and chain roles for the 30"
+say "STEP 4/7 -- pool rows and chain roles for the 30"
 # the builder takes a JSON queue, derived here so it cannot drift from the selection
 $PY -I - <<'EOF' || { say "STOPPING -- could not build the queue json"; exit 1; }
 import csv, json
@@ -103,12 +103,25 @@ if rm: print(f"  NO CHAIN ROLES ({len(rm)}): {rm[:20]}")
 sys.exit(1 if nm or rm else 0)
 EOF
 
-say "STEP 5/6 -- stage the DockQ reference for each structure"
+say "STEP 5/7 -- stage the DockQ reference for each structure"
 nice -n 15 $PY -I run_logging/stage_val_refs.py --apply > training/runs/val30_refs.log 2>&1 &
 step || { say "STOPPING at step 5 -- staging failed"; tail -8 training/runs/val30_refs.log; exit 1; }
 grep -E "reference|RELABELLED|staged|PROBLEM" training/runs/val30_refs.log
 
-say "STEP 6/6 -- merge the pool into validation/fold/pool.csv"
+say "STEP 6/7 -- write the fold queue folder.py actually consumes"
+# THE QUEUE WAS NEVER BUILT HERE. Raised in review: the chain wrote val30_queue.json for the pool
+# builder and left validation/fold/queue.tsv alone, while the final check only asked whether what
+# was already in queue.tsv had pool rows and references -- so the old 13-structure, 1,300-unit
+# queue passed, and the full queue had been restored by hand. The unit set is now stated and
+# verified: 30 structures x 100 seeds, no duplicates.
+nice -n 15 $PY -I run_logging/build_val_queue.py \
+  --selection validation/full_val/val30_structures.csv \
+  --out validation/fold/queue.tsv --seed0 400000 --nseed 100 --apply \
+  > training/runs/val30_queue.log 2>&1 &
+step || { say "STOPPING at step 6 -- queue build failed"; tail -8 training/runs/val30_queue.log; exit 1; }
+grep -E "verified|wrote|PROBLEM" training/runs/val30_queue.log
+
+say "STEP 7/7 -- merge the pool into validation/fold/pool.csv"
 $PY -I - <<'EOF' || { say "STOPPING at step 6 -- merge or verification failed"; exit 1; }
 import csv, os, sys, shutil
 VG = "validation/fold"
@@ -133,6 +146,12 @@ for ln in open(VG + "/queue.tsv"):
 pool = {r["pdb"] for r in rows}
 nop = sorted(q - pool)
 nor = sorted(p for p in q if not os.path.exists(f"validation/refs/{p}.cif"))
+nunits = sum(1 for ln in open(VG + "/queue.tsv") if ln.strip())
+sel = [r["pdb"] for r in csv.DictReader(open("validation/full_val/val30_structures.csv"))]
+want = len(sel) * 100
+print(f"  queue holds {nunits} unit(s) over {len(q)} structure(s); expected {want} over {len(sel)}")
+if nunits != want or set(q) != set(sel):
+    print(f"  QUEUE DOES NOT MATCH THE SELECTION"); sys.exit(1)
 print(f"  queued {len(q)} structure(s): {len(nop)} unpooled, {len(nor)} without a reference")
 if nop: print(f"  UNPOOLED: {nop[:20]}")
 if nor: print(f"  NO REFERENCE: {nor[:20]}")
