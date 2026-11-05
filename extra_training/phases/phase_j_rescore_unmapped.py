@@ -140,7 +140,15 @@ def write_subset(src, keep, out, by_label):
     nm.add_model(mod)
     nm.setup_entities()
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    nm.make_mmcif_document().write_file(out)
+    # WRITTEN THEN RENAMED, so no reader can ever see a half-written cif. Raised in review: the
+    # shared reference subset is rewritten per structure, and two concurrent invocations sharding a
+    # seed range over the same --scratch would truncate it while the other's OST process reads it.
+    # A failed read is loud, but a partially flushed yet PARSEABLE cif -- a chain short some
+    # residues -- yields a valid, silently low DockQ for a real interface. os.replace is atomic
+    # within a filesystem, so a reader sees either the whole old file or the whole new one.
+    tmp = f"{out}.{os.getpid()}.tmp"
+    nm.make_mmcif_document().write_file(tmp)
+    os.replace(tmp, out)
 
 
 CANON = ["iface", "seed", "arm", "donor_pose", "tmpl_chains", "sample", "dockq", "iptm"]
@@ -165,11 +173,55 @@ def existing_keys(path):
 
     A duplicate is not a cosmetic problem here: every average over a seed would double-weight that
     pose. The sweep is therefore idempotent -- re-running it adds nothing it has already added.
+
+    IT REFUSES A PATH IT CANNOT READ rather than returning an empty set. Raised in review: a typo
+    or a relative path run from the wrong cwd would have disabled the whole duplicate guard
+    silently, re-emitting every row and doubling them on append -- and the one signal, "0 already
+    scored", is also what a genuinely fresh sweep prints, so nothing distinguishes the two. The
+    guard that protects the data must not be the one that degrades quietly.
     """
-    if not path or not os.path.exists(path):
+    if not path:
         return set()
+    if not os.path.exists(path):
+        raise SystemExit(f"--skip-existing {path}: no such file. Refusing to sweep without the "
+                         f"duplicate guard; pass an existing results.csv or omit the flag.")
     with open(path) as fh:
         return {(r["iface"], r["seed"], r["sample"]) for r in csv.DictReader(fh)}
+
+
+def parse_targets(spec):
+    """{pdb: [iface]} from 'pdb:iface,...', refusing anything that could mis-attribute a row.
+
+    THE INTERFACE MUST BELONG TO THE pdb. Raised in review, and it is the worst failure this tool
+    could have: `--targets 9vb4:9vaw_AB` reads 9vb4's reference, poses, chain map and roles -- every
+    guard passes, because they all consult 9vb4 -- and files 9vb4's DockQ under the real interface
+    name 9vaw_AB. Nothing downstream could detect it, and the canonical row has no pdb column to
+    leave a trace in. --targets is assembled programmatically from a pdb list and an iface list, so
+    any zip or sort misalignment produces exactly this token shape.
+    """
+    want = collections.OrderedDict()
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok.count(":") != 1:
+            raise SystemExit(f"--targets {tok!r}: expected exactly one ':' as in 9vb4:9vb4_AD")
+        pdb, ifc = (s.strip() for s in tok.split(":"))
+        if not ifc.startswith(f"{pdb}_"):
+            raise SystemExit(f"--targets {tok!r}: interface {ifc} does not belong to {pdb}. "
+                             f"Scoring it would file {pdb}'s DockQ under another structure's name.")
+        chains = ifc.split("_", 1)[1]
+        if len(chains) != 2:
+            raise SystemExit(f"--targets {tok!r}: expected <pdb>_<C1><C2> with single-letter chains")
+        if chains != "".join(sorted(chains)):
+            # pool.csv writes sorted((c1, c2)), so <pdb>_DA names the same interface as <pdb>_AD
+            # while matching neither its existing rows nor the skip guard -- it would be scored
+            # again and appended under a second name for one physical interface.
+            raise SystemExit(f"--targets {tok!r}: chains must be in sorted order "
+                             f"({pdb}_{''.join(sorted(chains))}), as pool.csv writes them")
+        if ifc not in want.setdefault(pdb, []):
+            want[pdb].append(ifc)
+    return want
 
 
 def main():
@@ -197,28 +249,46 @@ def main():
     for r in csv.DictReader(open(a.roles)):
         roles[r["pdb"]][r["ref_chain"]] = (r["role"], r["model_chain"])
 
-    want = collections.defaultdict(list)
-    for tok in a.targets.split(","):
-        pdb, ifc = tok.split(":")
-        want[pdb].append(ifc)
+    want = parse_targets(a.targets)
 
     import glob
+    # --seeds WITHOUT --seed0 WAS A SILENT NO-OP. Raised in review: `--seed 500000 --seeds 10` swept
+    # exactly one seed and the summary looked like a clean, complete run, with nothing reporting the
+    # nine seeds never touched. The two spellings are now mutually exclusive and stated as such.
+    if a.seeds < 1:
+        raise SystemExit("--seeds must be at least 1")
+    if a.seeds > 1 and a.seed0 is None:
+        raise SystemExit("--seeds > 1 needs --seed0; --seed sets a single seed only")
     seeds = ([str(a.seed0 + i) for i in range(a.seeds)] if a.seed0 is not None else [str(a.seed)])
+    if a.nsample < 1:
+        raise SystemExit("--nsample must be at least 1")
     done = existing_keys(a.skip_existing)
     print(f"sweep: {len(want)} structure(s), seeds {seeds[0]}..{seeds[-1]}, "
           f"samples 0..{a.nsample - 1}; {len(done)} (iface,seed,sample) already scored")
 
-    rows, canon, refused, failed, skipped = [], [], [], [], 0
+    # failed  = something the caller must act on (OST failed, attribution wrong, reference absent)
+    # absent  = a pose that was never folded, which is information, not a fault
+    # refused = an ambiguous chain map, which is this tool working correctly
+    rows, canon, refused, failed, absent, warned = [], [], [], [], [], []
+    emitted, skipped = set(), 0
     for pdb, ifaces in sorted(want.items()):
         ref = os.path.join(a.refs, f"{pdb}.cif")
         if not os.path.exists(ref):
-            print(f"  {pdb}: no reference -- skipped"); continue
+            # RECORDED, NOT JUST PRINTED. Raised in review: this branch used to `continue` with no
+            # entry anywhere, so every pose of that structure vanished and the run still reported
+            # "0 failure(s)" and exited 0 -- work that should have been scored, gone with a clean
+            # bill of health.
+            failed.append((pdb, "*", "*", f"no reference at {ref}"))
+            continue
         # THE ISOLATED REFERENCE IS THE SAME FOR EVERY POSE, so it is written once per interface
         # rather than once per pose. 850 poses would otherwise re-derive the same 17 files.
         refsub = {}
         for ifc in ifaces:
             c1, c2 = ifc.split("_", 1)[1][0], ifc.split("_", 1)[1][1]
-            p = f"{a.scratch}/{pdb}_{ifc}_ref.cif"
+            # PID IN THE NAME, because this is the one scratch path with no pose in it. The model
+            # subset and the OST json both carry seed and sample, so they are unique per pose; the
+            # shared reference is not, and concurrent shards of one seed range would collide on it.
+            p = f"{a.scratch}/{pdb}_{ifc}_ref.{os.getpid()}.cif"
             write_subset(ref, {c1, c2}, p, by_label=True)
             refsub[ifc] = p
 
@@ -226,17 +296,28 @@ def main():
             pd = sorted(glob.glob(f"{a.fold}/poses/{pdb}/{seed}-*"))
             pd = [d for d in pd if os.path.exists(os.path.join(d, "run.json"))]
             if not pd:
-                print(f"  {pdb} seed {seed}: no pose dir -- skipped")
-                failed.append((pdb, seed, "*", "no pose dir"))
+                # A SEED THAT WAS NEVER FOLDED IS NOT A FAULT. Raised in review: counting it as a
+                # failure made `--seeds 100` against 10 folded seeds report 90 failures and exit
+                # non-zero on a sweep that did everything it could.
+                absent.append((pdb, seed, "*", "no pose dir"))
+                continue
+            if len(pd) > 1:
+                failed.append((pdb, seed, "*", f"{len(pd)} pose dirs for one seed: {pd} -- "
+                                               f"ambiguous, refusing to pick one"))
                 continue
             for k in range(a.nsample):
+                todo = [i for i in ifaces if (i, seed, str(k)) not in done
+                        and (i, seed, str(k)) not in emitted]
+                skipped += len(ifaces) - len(todo)
+                if not todo:
+                    # CHECKED BEFORE THE CIF. Raised in review: a missing sample cif was recorded as
+                    # a failure even when every interface of that pose was already in results.csv,
+                    # so re-running with too large an --nsample reported failures for completed work.
+                    continue
                 mdl = sorted(glob.glob(f"{pd[0]}/predictions/*_sample_{k}.cif"))
                 if not mdl:
-                    failed.append((pdb, seed, str(k), "no sample cif"))
+                    absent.append((pdb, seed, str(k), "no sample cif"))
                     continue
-                todo = [i for i in ifaces if (i, seed, str(k)) not in done]
-                if not todo:
-                    skipped += len(ifaces); continue
 
                 # THE MAP IS REBUILT PER POSE, not once per structure. Model chain naming is job
                 # order and is stable in practice, but a map carried across poses would be an
@@ -263,6 +344,14 @@ def main():
                     msub = f"{a.scratch}/{pdb}_{ifc}_{seed}_{k}_mdl.cif"
                     write_subset(mdl[0], {cm[c1], cm[c2]}, msub, by_label=False)
                     out = f"{a.scratch}/{pdb}_{ifc}_{seed}_{k}.json"
+                    # REMOVED FIRST. ost_dockq.invoke has no skip-if-exists and judges success by
+                    # `returncode == 0 and usable(out)`, and its own docstring records that OST can
+                    # exit 0 having written nothing -- in which case a PREVIOUS run's json at this
+                    # path would be accepted as this run's result. The path carries pdb, iface, seed
+                    # and sample but not --fold or --min-ident, so that stale result could even come
+                    # from a different fold directory.
+                    if os.path.exists(out):
+                        os.remove(out)
                     if not ost_dockq.invoke(msub, refsub[ifc], out):
                         failed.append((pdb, seed, str(k), f"{ifc}: OST failed on the isolated pair"))
                         continue
@@ -279,36 +368,57 @@ def main():
                         failed.append((pdb, seed, str(k),
                                        f"{ifc}: model chains {got} but roles expect {exp}"))
                         continue
+                    if not conf:
+                        # EVERY ONE OF THE 83,560 EXISTING ROWS HAS AN iptm. A blank one would be
+                        # the single such row in the file, so it is reported rather than left to be
+                        # noticed; the row is still emitted, because scorer.py emits it too.
+                        warned.append((pdb, seed, str(k), f"{ifc}: no confidence json, iptm blank"))
                     rows.append(dict(pdb=pdb, iface=ifc, seed=seed, sample=str(k),
                                      roles=f"{r1}-{r2}", dockq=v["dockq"],
                                      pair_iptm=v.get("pair_iptm"), chain_map=" ".join(cm)))
                     canon.append(canon_row(ifc, seed, k, v["dockq"], v.get("pair_iptm")))
+                    emitted.add((ifc, seed, str(k)))
                     os.remove(msub)
             print(f"  {pdb} seed {seed}: {len(rows)} row(s) so far", flush=True)
 
     print(f"\nrecovered {len(rows)} row(s); {skipped} already present; "
-          f"{len(refused)} refused map(s); {len(failed)} failure(s)")
-    for lbl, items in (("REFUSED", refused), ("FAILED", failed)):
+          f"{len(refused)} refused map(s); {len(failed)} failure(s); "
+          f"{len(absent)} never folded; {len(warned)} warning(s)")
+    for lbl, items in (("REFUSED", refused), ("FAILED", failed),
+                       ("NEVER FOLDED", absent), ("WARNING", warned)):
         for pdb, seed, k, why in items[:40]:
             print(f"  {lbl} {pdb} seed {seed} sample {k}: {why}")
         if len(items) > 40:
             print(f"  ... and {len(items) - 40} more {lbl.lower()}")
 
-    if a.out and rows:
+    if a.out:
         with open(a.out, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            w = csv.DictWriter(fh, fieldnames=["pdb", "iface", "seed", "sample", "roles",
+                                               "dockq", "pair_iptm", "chain_map"])
             w.writeheader()
             for r in rows:
                 w.writerow(r)
         print(f"wrote {a.out} ({len(rows)} recovered pose-interface(s))")
-    if a.rows_out and canon:
+    if a.rows_out:
+        # WRITTEN EVEN WHEN EMPTY, header and all. Raised in review: skipping the write left the
+        # PREVIOUS run's file in place, so a caller that sweeps and then appends --rows-out would
+        # append the earlier run's rows a second time once the sweep had nothing new to add.
         with open(a.rows_out, "w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=CANON)
             w.writeheader()
             for r in canon:
                 w.writerow(r)
         print(f"wrote {a.rows_out} ({len(canon)} row(s), canonical column order)")
-    return 1 if (failed or refused) else 0
+
+    # THE EXIT CODE KEYS ON WHAT THE CALLER MUST ACT ON. Raised in review: returning 1 for any
+    # refusal meant a wholly successful sweep failed, because refusing an ambiguous map is this
+    # tool working as designed (4 of 26 structures tried hold identical copies). A caller chaining
+    # `sweep && append` was handed good rows and told not to use them.
+    if failed:
+        return 1
+    if not canon and not skipped:
+        return 2          # nothing recovered and nothing already present: the sweep did no work
+    return 0
 
 
 if __name__ == "__main__":
