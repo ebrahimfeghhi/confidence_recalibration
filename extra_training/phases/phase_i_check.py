@@ -420,9 +420,31 @@ def rescore(a):
                 elif len(f) >= 8:
                     skipped += 1
             if keep:
+                # RE-READ IMMEDIATELY BEFORE APPENDING. `have` was read once, before the scorer
+                # ran; a fold worker scoring the same unit in the meantime would have added rows
+                # this call still believes are missing, and appending them again double-weights
+                # that seed in every average -- the harm the comment above guards against, by a
+                # different route. Rescoring therefore stays safe to run while a fold is live.
+                fresh = set()
+                try:
+                    with open(res) as fh:
+                        for r in csv.DictReader(fh):
+                            if r.get("iface") == ifc and r.get("seed") == seed:
+                                fresh.add(str(r.get("sample")))
+                except OSError:
+                    pass
+                raced = [l for l in keep if l.split(",")[5].strip() in fresh]
+                keep = [l for l in keep if l.split(",")[5].strip() not in fresh]
+                if raced:
+                    print(f"  {ifc} {seed}: {len(raced)} sample(s) landed from another writer "
+                          f"while scoring; not appended")
+                    skipped += len(raced)
+            if keep:
+                # one write() per line under O_APPEND, so a concurrent writer cannot split a line
                 with open(res, "a") as fh:
                     for line in keep:
                         fh.write(line + "\n")
+                        fh.flush()
                 added += len(keep)
                 print(f"  {ifc} {seed}: added samples {[l.split(',')[5] for l in keep]}")
     print(f"rescore added {added} row(s); left {skipped} existing row(s) untouched")

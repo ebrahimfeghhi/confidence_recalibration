@@ -1,5 +1,9 @@
 #!/bin/bash
-# Arm the 13-structure validation fold behind the training fold ACTUALLY being finished.
+# Arm the Wave 1 validation fold behind the training fold ACTUALLY being finished.
+#
+# The unit count is READ FROM THE QUEUE, not written here. It was hardcoded as "the
+# 13-structure fold (1,300 units)" from when the queue was trimmed to the 13 structures
+# that had an instance cif; all 30 are prepared now and the message would have been wrong.
 #
 # WHY THE GATE IS FOUR CHECKS AND NOT A LOG LINE. Two earlier versions of this were wrong.
 #   v1 waited on `tmux ls | grep -c w1fold` reaching 0. Stopping the workers by hand looked
@@ -48,5 +52,6 @@ while :; do
 done
 
 say "gate passed: workers exited, cards free, no queued training unit needs a GPU"
-say "launching the 13-structure validation fold (1,300 units)"
+N=$($PY -I -c "import sys; sys.path.insert(0,'/home/ebrahim/confidence_recalibration/run_model'); sys.argv=['f']; import folder; u=folder.read_queue('validation/fold/queue.tsv'); print('%d unit(s) over %d structure(s)' % (len(u), len({x[1] for x in u})))")
+say "launching the validation fold: $N"
 exec ./shell_scripts/launch_wave1_val_fold.sh
