@@ -117,17 +117,91 @@ def run(model, ref, out, extra=None, chain_map=None, timeout=TIMEOUT):
         return True
     if chain_map:                                  # caller already chose a map; nothing to fall back to
         return False
-    ids = _identity_chain_map(ref)
+    ids = _identity_chain_map(ref, model)
     return bool(ids) and invoke(model, ref, out, extra=extra, chain_map=ids, timeout=timeout)
 
 
-def _identity_chain_map(ref):
-    """['A:A','B:B',...] from the reference's chain names, for the -c retry."""
+def _chain_seqs(path, by_label):
+    """{chain: one-letter sequence}. by_label keys on label_asym_id, which is what OST calls a chain."""
+    import gemmi
+    st = gemmi.read_structure(str(path))
+    st.setup_entities()
+    out = {}
+    for ch in st[0]:
+        for res in ch:
+            t = gemmi.find_tabulated_residue(res.name)
+            c = (t.one_letter_code.upper() if t else "X")
+            if c in "ACDEFGHIKLMNPQRSTVWY":
+                key = res.subchain if by_label else ch.name
+                out[key] = out.get(key, "") + c
+    return {k: v for k, v in out.items() if v}
+
+
+def _contained(rs, ms):
+    """matched residues as a fraction of the SHORTER sequence, as ONE CONTIGUOUS RUN
+
+    NOT difflib's ratio, which divides by the combined length: these references are often the
+    variable domain alone -- 112 residues against a 217-residue model chain -- and the length gap
+    alone drags a perfect subsequence match down to ~0.68.
+
+    AND NOT THE SUM OF ALL MATCHING BLOCKS, which is what this measured first. Summing lets
+    scattered coincidental matches add up to a whole chain whenever that chain is short: 4zto's
+    10-residue peptide antigen GKAMYAPPIR scores 1.00 against a 216-residue LIGHT CHAIN by summed
+    blocks, tying with the real 15-residue peptide and making the map ambiguous. Against the
+    longest single run it is 0.20 for the light chain and 1.00 for the peptide. A short chain is
+    exactly where a wrong map is easiest to build and hardest to notice, so contiguity is the
+    conservative choice.
+
+    The margins this leaves are not close: on every case measured the right chain is 1.00 and the
+    runner-up 0.38 or below, except for genuine identical copies, which tie at 1.00 and are refused
+    because only geometry can separate them.
+    """
+    import difflib
+    sm = difflib.SequenceMatcher(None, rs, ms, autojunk=False)
+    longest = sm.find_longest_match(0, len(rs), 0, len(ms)).size
+    return longest / min(len(rs), len(ms))
+
+
+def _identity_chain_map(ref, model=None, min_ident=0.80):
+    """['<ref label>:<model chain>', ...] for the -c retry, matched BY SEQUENCE
+
+    WHY NOT AN IDENTITY MAP, WHICH IS WHAT THIS USED TO BUILD. It emitted '<name>:<name>' from
+    gemmi's chain names, and could only work where the reference and the model happen to use the
+    same letters. In this pipeline they never do: reference chains carry the deposited structure's
+    label_asym_id while model chains are named in job order. 4zto is label D, E, F against model A,
+    B, C -- and gemmi reports its AUTH names, so the retry actually sent OST "M:M I:I Q:Q" and OST
+    refused the whole call:
+
+        RuntimeError: Target chain "M" is not available in target processed for chain mapping
+        ({'D', 'F', 'E'})
+
+    That cost 4zto every one of its 100 interface-samples. Fixing only the namespace would have
+    sent "D:D E:E F:F" and failed just as completely, because the premise was wrong rather than the
+    spelling: the two files have no reason to agree on names, so the map has to be MEASURED.
+
+    So each reference chain is matched to the model chain containing its sequence, one-to-one.
+    Ambiguity is refused rather than guessed -- returning [] skips the retry, exactly as a failure
+    to build the old map did -- because a forced wrong map does not fail loudly, it reports one
+    interface's DockQ under another's name. Two identical copies in the model tie at 1.00 and are
+    refused here; resolving a tie needs geometry, which is OST's job and not this function's.
+    """
     try:
-        import gemmi
-        st = gemmi.read_structure(str(ref))
-        st.setup_entities()
-        return [f"{ch.name}:{ch.name}" for ch in st[0]]
+        if model is None:
+            return []
+        rs = _chain_seqs(ref, by_label=True)
+        ms = _chain_seqs(model, by_label=False)
+        if not rs or not ms:
+            return []
+        pairs, used = [], set()
+        for rc in sorted(rs):
+            ranked = sorted(((_contained(rs[rc], ms[mc]), mc) for mc in ms), reverse=True)
+            top, mc = ranked[0]
+            runner = ranked[1][0] if len(ranked) > 1 else 0.0
+            if top < min_ident or mc in used or (runner >= min_ident and top - runner < 0.05):
+                return []
+            used.add(mc)
+            pairs.append(f"{rc}:{mc}")
+        return pairs
     except Exception:
         return []
 

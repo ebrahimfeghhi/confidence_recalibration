@@ -68,12 +68,40 @@ def chain_seqs(path, by_label):
     return {k: v for k, v in out.items() if v}
 
 
+def contained(rs, ms):
+    """out: matched residues as a fraction of the SHORTER sequence
+
+    WHY NOT difflib's ratio. ratio divides by the COMBINED length, so a reference chain that is a
+    perfect subsequence of a longer model chain scores ~0.68 rather than ~1.0. These references are
+    frequently the variable domain alone -- 6lyn's reference chains are 112 and 118 residues against
+    model chains of 212 and 217 -- so the correct pairing was rejected by --min-ident on 7 of the 8
+    interfaces used to validate this script, while the one reference that happened to hold
+    full-length chains (6yxd) mapped at 1.00 and scored correctly.
+
+    Dividing by the shorter length asks the question that matters -- is this reference chain the
+    same molecule as that model chain, as far as the reference goes -- and separates the candidates
+    cleanly: on 6lyn, 6s3t, 6umg and 6gv1 every reference chain matches exactly one model chain at
+    1.00 with the runner-up at 0.38 or below.
+
+    IT IS THE LONGEST CONTIGUOUS RUN, not the sum of matching blocks. Summing lets scattered
+    coincidental matches add up to a whole chain whenever that chain is short, and 4zto's
+    10-residue peptide antigen GKAMYAPPIR duly scored 1.00 against a 216-residue light chain --
+    tying with the real peptide and making the map ambiguous, which is why this script refused
+    4zto. Against the longest single run the light chain is 0.20 and the peptide 1.00.
+
+    The one-to-one and ambiguity guards below are unchanged and still refuse anything that is not a
+    clear single winner.
+    """
+    sm = difflib.SequenceMatcher(None, rs, ms, autojunk=False)
+    return sm.find_longest_match(0, len(rs), 0, len(ms)).size / min(len(rs), len(ms))
+
+
 def build_map(ref_seqs, mdl_seqs, min_ident):
     """[(ref, mdl, ident)] one-to-one, or ([], reason) if anything is ambiguous."""
     scores = {}
     for rc, rs in ref_seqs.items():
         for mc, ms in mdl_seqs.items():
-            scores[(rc, mc)] = difflib.SequenceMatcher(None, rs, ms, autojunk=False).ratio()
+            scores[(rc, mc)] = contained(rs, ms)
     pairs, used, bad = [], set(), []
     for rc in sorted(ref_seqs):
         ranked = sorted(((scores[(rc, mc)], mc) for mc in mdl_seqs), reverse=True)
