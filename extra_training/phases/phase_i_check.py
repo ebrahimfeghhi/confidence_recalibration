@@ -423,6 +423,7 @@ def rescore(a):
 
     have = read_results(res)
     added = skipped = ambiguous = 0
+    timed_out, failed, no_contact, still_missing = [], [], [], []
     for pdb, seed, arm in units:
         # THE RUN MUST HOLD A COMPLETE POSE SET, AND ONLY ONE RUN MAY. run_dir_for returns the first
         # directory whose run.json names this unit without resolving several matches, and a run
@@ -463,9 +464,11 @@ def rescore(a):
                 out = subprocess.run(cmd, capture_output=True, text=True, timeout=a.timeout)
             except subprocess.TimeoutExpired:
                 print(f"  TIMEOUT {ifc} {seed}")
+                timed_out.append((ifc, seed))
                 continue
             if out.returncode != 0:
                 print(f"  FAILED {ifc} {seed}: {out.stderr.strip()[:160]}")
+                failed.append((ifc, seed, out.stderr.strip()[:120]))
                 continue
             # ONLY THE MISSING SAMPLES. scorer.py emits a row per pose, so appending all of them
             # would duplicate the ones already there and double-weight that seed in every average.
@@ -504,9 +507,53 @@ def rescore(a):
                         fh.flush()
                 added += len(keep)
                 print(f"  {ifc} {seed}: added samples {[l.split(',')[5] for l in keep]}")
-    print(f"rescore added {added} row(s); left {skipped} existing row(s) untouched"
-          + (f"; {ambiguous} unit(s) not rescored for ambiguous or disagreeing saved runs"
-             if ambiguous else ""))
+    # A POSE THAT LEGITIMATELY HAS NO CONTACT AT THIS INTERFACE IS NOT A FAILURE, and the two must
+    # not be conflated -- that distinction is what keeps "incomplete recovery" meaningful.
+    # classify_missing returns the bucket "" with "none is this chain pair" for a pose whose two
+    # chains do not touch: scorer.py skips it by design, so no row will ever exist and no number of
+    # rescores will change that. "unscored" is the recoverable bucket, and anything still in it
+    # after a successful scorer call did not recover.
+    #
+    # Only rows that are STILL MISSING are classified, so this does not re-walk the whole queue.
+    after = read_results(res)
+    for pdb, seed, arm in units:
+        for ifc in sorted(pool.get(pdb, ())):
+            got = after.get((ifc, seed), {})
+            miss = [k for k in range(a.nsample) if str(k) not in got]
+            if not miss:
+                continue
+            st, d, _dt = pose_sets.classify(os.path.join(a.e, "poses"), pdb, seed,
+                                            a.nsample, arm=arm)
+            if st != pose_sets.COMPLETE:
+                continue
+            for k in miss:
+                bucket, why = classify_missing(d, a.scorer, str(k), iface=ifc)
+                if bucket == "":
+                    no_contact.append((ifc, seed, k))
+                else:
+                    still_missing.append((ifc, seed, k, bucket, why[:80]))
+
+    print(f"rescore added {added} row(s); left {skipped} existing row(s) untouched")
+    print(f"  not rescored, ambiguous or disagreeing saved run: {ambiguous}")
+    print(f"  scorer timed out:                                {len(timed_out)}")
+    print(f"  scorer exited nonzero:                           {len(failed)}")
+    print(f"  pose has no contact at that interface (expected, not a failure): {len(no_contact)}")
+    print(f"  still missing and NOT explained by no-contact:    {len(still_missing)}")
+    for ifc, seed, k, bucket, why in still_missing[:10]:
+        print(f"     STILL MISSING {ifc} {seed} sample {k}: {bucket} -- {why}")
+    for ifc, seed in timed_out[:10]:
+        print(f"     TIMEOUT {ifc} {seed}")
+    for ifc, seed, err in failed[:10]:
+        print(f"     FAILED  {ifc} {seed}: {err}")
+
+    # EXIT NONZERO WHEN RECOVERY IS INCOMPLETE. Raised in review: returning 0 regardless meant a
+    # run with timeouts, scorer failures or skipped ambiguous units looked successful, and the
+    # launcher printed DONE over it. Non-contacting poses are excluded from that judgement because
+    # they are a property of the structure, not of this run.
+    bad = len(timed_out) + len(failed) + ambiguous + len(still_missing)
+    if bad:
+        print(f"INCOMPLETE: {bad} unit(s)/interface(s) did not recover; exiting nonzero")
+        return 1
     return 0
 
 

@@ -48,8 +48,29 @@ RC=$?
 AFTER=$(wc -l < training/fold/results.csv)
 say "rescore exit $RC; rows $BEFORE -> $AFTER (added $((AFTER-BEFORE)))"
 
+# EVERY STEP'S STATUS IS ACTED ON. Raised in review: this recorded $RC and then printed RESCORE
+# DONE regardless, and ignored the drain and duplicate checks that follow, so a run with timeouts,
+# scorer failures or unresolved units looked successful. Each step now sets FAIL, and the final
+# line says which ones failed rather than announcing completion.
+FAIL=""
+[ $RC -ne 0 ] && FAIL="$FAIL rescore(exit=$RC)"
+
 say "outstanding units after the rescore:"
-$PY -I run_logging/training_queue_drained.py --show 3
-say "duplicate check (reports only, never rewrites the live csv):"
+$PY -I run_logging/training_queue_drained.py --show 5
+DR=$?
+say "drain check exit $DR (0 = the queue is complete in every respect)"
+[ $DR -ne 0 ] && FAIL="$FAIL drain(exit=$DR)"
+
+say "duplicate check (reports only; it never rewrites the live csv):"
 $PY -I run_logging/dedupe_results.py --csv training/fold/results.csv
-say "RESCORE DONE"
+DD=$?
+say "duplicate check exit $DD (0 = every duplicate resolved against its own chain pair)"
+[ $DD -ne 0 ] && FAIL="$FAIL duplicates(exit=$DD)"
+
+if [ -n "$FAIL" ]; then
+  say "RESCORE INCOMPLETE --$FAIL"
+  say "The recovered rows that DID land are in results.csv and are safe; what is listed above did"
+  say "not recover and needs a decision. The canonical csv has not been replaced."
+  exit 1
+fi
+say "RESCORE COMPLETE: queue fully scored and every duplicate resolved"
