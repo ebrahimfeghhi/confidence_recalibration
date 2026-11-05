@@ -405,37 +405,41 @@ def rescore(a):
         _argv, sys.argv = sys.argv, ["folder.py"]
         import folder
         sys.argv = _argv
-        units = [(u[1], str(u[4])) for u in folder.read_queue(a.worklist)]
+        units = [(u[1], str(u[4]), u[3]) for u in folder.read_queue(a.worklist)]
         seen, uniq = set(), []
         for u in units:
             if u not in seen:
                 seen.add(u); uniq.append(u)
         units = uniq
         print(f"worklist: {len(units)} unit(s) from {a.worklist}")
+        if a.expect_units and len(units) != a.expect_units:
+            raise SystemExit(f"STOP: worklist holds {len(units)} unit(s), expected "
+                             f"{a.expect_units}. Refusing to rescore a scope I was not asked for.")
     else:
-        _pdbs, units = expected_units(a.jobs, a.suffix, a.seeds, a.seed0)
+        _pdbs, u2 = expected_units(a.jobs, a.suffix, a.seeds, a.seed0)
+        units = [(p, sd, "free") for p, sd in u2]
         print(f"worklist: {len(units)} unit(s) enumerated from {a.jobs} "
               f"({a.seeds} seed(s) from {a.seed0}); pass --worklist to use the queue instead")
 
     have = read_results(res)
     added = skipped = ambiguous = 0
-    for pdb, seed in units:
+    for pdb, seed, arm in units:
         # THE RUN MUST HOLD A COMPLETE POSE SET, AND ONLY ONE RUN MAY. run_dir_for returns the first
         # directory whose run.json names this unit without resolving several matches, and a run
         # holding two of five poses cannot be recovered by scoring. Two complete runs are different
         # folds and nothing here may choose between them.
-        st, d, detail = pose_sets.classify(os.path.join(a.e, "poses"), pdb, seed, a.nsample)
+        st, d, detail = pose_sets.classify(os.path.join(a.e, "poses"), pdb, seed,
+                                           a.nsample, arm=arm)
         if st == "ambiguous":
             print(f"  AMBIGUOUS {pdb} {seed}: {detail}; not rescored")
             ambiguous += 1
             continue
         if st != "complete":
             continue
-        if run_dir_for(a.e, pdb, seed) != d:
-            print(f"  SKIP {pdb} {seed}: the complete pose set is {os.path.basename(d)} but "
-                  f"run.json resolution disagrees; not rescored")
-            ambiguous += 1
-            continue
+        # NO SECOND OPINION FROM run_dir_for. It returns the FIRST directory whose run.json names
+        # the unit, whether or not its pose set is whole, so a complete run was being rejected
+        # merely because an older partial run sorted before it. pose_sets.classify already checked
+        # provenance -- pdb, seed and arm -- on the run it returned, so that is the run to score.
         for ifc in sorted(pool.get(pdb, ())):
             got = have.get((ifc, seed), {})
             # ONLY THE RECOVERABLE ONES. A pose that was scored and simply has no contact at this
@@ -513,6 +517,9 @@ def main():
                     help="a queue.tsv whose units define the rescore scope. Without it the scope "
                          "is every job json in --jobs times --seeds, which reaches past the "
                          "queue into older work.")
+    ap.add_argument("--expect-units", type=int, default=0,
+                    help="refuse unless the worklist expands to exactly this many units, so a "
+                         "recovery cannot silently widen its own scope")
     ap.add_argument("--allow-concurrent-writers", action="store_true",
                     help="run even though a fold is writing the same results.csv. The re-read "
                          "before appending narrows the duplicate window but does not close it.")

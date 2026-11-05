@@ -90,7 +90,9 @@ for pdb, arm, seed in units:
     # over while training still held units that need refolding. pose_sets.classify requires ONE
     # run directory to carry every index 0..nsample-1 with its summary_confidence json (iptm is
     # read from it), and reports ambiguity rather than picking a run.
-    st, run, detail = pose_sets.classify(a.poses, pdb, seed, a.nsample)
+    # arm IS passed: the same complex and seed can be folded free and templated, and their
+    # poses are not interchangeable, so provenance must match the arm this unit queued.
+    st, run, detail = pose_sets.classify(a.poses, pdb, seed, a.nsample, arm=arm)
     rec = (pdb, seed, short, got, len(want), st, detail)
     if st == "complete":
         rescoreable.append(rec)
