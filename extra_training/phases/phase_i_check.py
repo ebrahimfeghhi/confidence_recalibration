@@ -15,6 +15,7 @@ run.json files announces success over units that have no interface scores. And a
 evidence for the unit it names: globbing poses/<pdb>/<seed>-*/run.json without reading it let an
 unrelated run compensate for a missing expected one.
 """
+import fcntl
 import argparse
 import collections
 import csv
@@ -374,6 +375,9 @@ def verify(a):
     return rc
 
 
+_LOCKS = []   # open lock files, kept alive for the process lifetime
+
+
 def rescore(a):
     """score only the (interface, sample) rows that are missing, with the dataset's own scorer"""
     pool = read_pool(os.path.join(a.e, "pool.csv"))
@@ -395,6 +399,23 @@ def rescore(a):
                          f"Rescoring now can duplicate a sample that lands between this call's "
                          f"read and its append. Wait for them to exit, or pass "
                          f"--allow-concurrent-writers if you accept that risk.")
+
+    # A SECOND RESCORE IS A WRITER TOO, AND THE SCAN ABOVE CANNOT SEE ONE. It looks for tmux fold
+    # sessions; a rescore is a plain subprocess. Overnight TWO rescore watchers sat behind the same
+    # "wait for the fold workers to exit" loop, so both would have started appending to this csv at
+    # the same moment -- the exact duplicate-row hazard the sequencing above exists to prevent. An
+    # exclusive, non-blocking flock held for the whole run makes the second one refuse instead.
+    _lk = open(res + ".rescore.lock", "a+")
+    try:
+        fcntl.flock(_lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        _lk.seek(0)
+        who = _lk.read().strip() or "unknown"
+        raise SystemExit(f"STOP: another rescore already holds {res}.rescore.lock (pid {who}). "
+                         f"Two rescores appending to the same csv duplicate rows. Let that one "
+                         f"finish; this one has written nothing.")
+    _lk.seek(0); _lk.truncate(); _lk.write(f"{os.getpid()}\n"); _lk.flush()
+    _LOCKS.append(_lk)   # module-level, so the fd is not closed by gc and the lock outlives this frame
 
     # THE WORKLIST COMES FROM THE QUEUE WHEN ONE IS GIVEN. expected_units enumerates every job json
     # in --jobs and expands --seeds per structure, which for training/jobs is 856 structures and

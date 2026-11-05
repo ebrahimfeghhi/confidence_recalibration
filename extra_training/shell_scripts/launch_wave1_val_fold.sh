@@ -24,6 +24,26 @@ EG=/home/ebrahim/confidence_recalibration/extra_training
 VG=$EG/validation/fold
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 
+# ONE LAUNCH AT A TIME, AND NEVER A SECOND ONE. Three arming watchers were alive overnight -- two
+# stale ones from earlier rounds, one of them still on the old log-line gate -- so three separate
+# processes could reach this launcher. cards_busy below only refuses once a first launch has already
+# occupied the cards, which leaves a window of a few seconds, and nothing here looked for a w1val
+# session that was already running. Both are closed here: whichever arm fires first takes the lock
+# and starts the sessions, and every later one refuses -- on the lock if it is simultaneous, on the
+# session count if it arrives afterwards. This is the failure that put two folds on each card once
+# already and roughly doubled per-unit time.
+mkdir -p "$VG"
+exec 9>"$VG/.launch.lock"
+if ! flock -n 9; then
+  say "REFUSING: another launch of this fold holds $VG/.launch.lock. Not launching a second one."
+  exit 1
+fi
+S=$(tmux ls 2>/dev/null | grep -c w1val || true)
+if [ "$S" -gt 0 ]; then
+  say "REFUSING: $S w1val session(s) already exist -- the validation fold is already running."
+  exit 1
+fi
+
 B=$($PY -I run_logging/cards_busy.py | tail -1)
 if [ "${B:-1}" != "0" ]; then
   say "REFUSING: cards_busy reports '$B', not 0. Something is still on cards 4/5/7."
