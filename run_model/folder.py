@@ -1118,16 +1118,33 @@ def finish_unit(ctx, kind, pdb, target, tag, seed, rdir, name, want, poses, dt, 
     # and the later real scoring pass would have to reconcile it. The claim is KEPT so the unit is
     # not refolded; scoring happens later through the ordinary rescore path once the pool exists.
     if ctx.A.fold_only:
-        print(f"  {kind} {pdb} {target} {tag} seed {seed}: folded in {dt:.0f}s "
-              f"(fold-only, not scored)", flush=True)
+        # THE POSES MUST BE LIFTED OUT BEFORE THE JOB DIRECTORY GOES. Protenix writes them to
+        # <rdir>/<name>/seed_<seed>/predictions/<name>_sample_N.cif, so the rmtree of
+        # <rdir>/<name> below is what destroys them -- normalise_poses is what moves them to
+        # <rdir>/predictions, and on the scored path it runs after score_fold. The first attempt
+        # at this flag deleted <rdir>/predictions and the fix removed that line, which was not
+        # enough: the poses were never in <rdir>/predictions to begin with. 611 training units
+        # and 42 validation units were lost and had to be refolded.
+        #
+        # THE MOVE IS VERIFIED, AND THE JOB DIRECTORY IS KEPT IF IT FAILS. A silent short move
+        # would be the same bug one step later, so a unit that does not yield nsample poses
+        # fails loudly with its directory intact rather than being recorded as folded.
+        try:
+            moved = normalise_poses(rdir, name, pdb)
+        except Exception as e:
+            print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- could not lift poses out of "
+                  f"{rdir}/{name}: {e}", flush=True)
+            return "failed"
+        if moved < ctx.A.nsample:
+            print(f"  {pdb} {target} {tag} seed {seed}: FAILED -- lifted {moved} pose(s), "
+                  f"expected {ctx.A.nsample}; {rdir}/{name} kept for inspection", flush=True)
+            return "failed"
         shutil.rmtree(f"{rdir}/{name}", ignore_errors=True)
-        # THE POSE CIFS ARE KEPT, UNCONDITIONALLY. The line here used to honour keep_cifs and
-        # rmtree the predictions dir, copied from the scored path below where that runs only
-        # AFTER score_fold has read the poses. In fold-only mode nothing has read them yet and
-        # the entire premise of the flag is that scoring happens later, so deleting them makes
-        # the unit unscoreable: it cost 611 training units and 42 validation units, both of
-        # which had to be refolded. keep_cifs is deliberately not consulted -- there is no
-        # configuration in which a fold-only unit should lose its poses.
+        # <rdir>/predictions is NOT removed. keep_cifs is deliberately not consulted: the entire
+        # premise of the flag is that scoring happens later, so there is no configuration in
+        # which a fold-only unit should lose its poses.
+        print(f"  {kind} {pdb} {target} {tag} seed {seed}: folded in {dt:.0f}s "
+              f"({moved} pose(s) kept, not scored)", flush=True)
         return "ran"
     try:
         got, err = score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses)

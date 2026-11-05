@@ -39,5 +39,21 @@ nice -n 15 ionice -c 3 $PY -I phases/phase_j_prepare_training_data.py \
 P=$!; watchdog $P & W=$!; wait $P; RC=$?; kill $W 2>/dev/null
 say "step 2 exit $RC; bioassemblies: $(ls training/prep/job_bioassembly | wc -l) of 857"
 tail -8 training/runs/wave1_prep2.log
+[ $RC -ne 0 ] && { say "STOPPING at step 2 -- preparation exited $RC"; exit 1; }
+
+# EXIT 0 IS NOT COMPLETENESS. Raised in review: step 2 recorded its status and announced the chain
+# done either way, so a failed or partial preparation read as success. The count is checked against
+# the selection, because the thing downstream depends on is one bioassembly per selected structure
+# -- not the absence of an error.
+$PY -I - <<'EOF' || { say "STOPPING at step 2 -- bioassemblies incomplete"; exit 1; }
+import csv, os, sys
+sel = [r["pdb"] for r in csv.DictReader(open("training/full_train/all857_structures.csv"))]
+miss = [p for p in sel if not os.path.exists(f"training/prep/job_bioassembly/{p}.pkl.gz")]
+print(f"  completeness: {len(sel) - len(miss)} of {len(sel)} selected structure(s) have a bioassembly")
+if miss:
+    print(f"  MISSING {len(miss)}: {sorted(miss)[:20]}")
+    sys.exit(1)
+EOF
+
 say "MemAvailable $(mem) GB, fold workers $(folders)"
 say "CPU CHAIN DONE"

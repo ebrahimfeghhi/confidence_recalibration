@@ -1,0 +1,154 @@
+{
+ "queue": [
+  {
+   "pdb": "8h63",
+   "instance": "pdb_00008h63_B_+",
+   "tokens": 581
+  },
+  {
+   "pdb": "8oxx",
+   "instance": "pdb_00008oxx_B_C",
+   "tokens": 899
+  },
+  {
+   "pdb": "8q7o",
+   "instance": "pdb_00008q7o_A_+",
+   "tokens": 244
+  },
+  {
+   "pdb": "8rwb",
+   "instance": "pdb_00008rwb_H_L",
+   "tokens": 601
+  },
+  {
+   "pdb": "8tuz",
+   "instance": "pdb_00008tuz_H_L",
+   "tokens": 684
+  },
+  {
+   "pdb": "8v52",
+   "instance": "pdb_00008v52_D_C",
+   "tokens": 548
+  },
+  {
+   "pdb": "8weo",
+   "instance": "pdb_00008weo_C_+",
+   "tokens": 312
+  },
+  {
+   "pdb": "8ya0",
+   "instance": "pdb_00008ya0_V_+",
+   "tokens": 174
+  },
+  {
+   "pdb": "9dbo",
+   "instance": "pdb_00009dbo_H_L",
+   "tokens": 529
+  },
+  {
+   "pdb": "9dl0",
+   "instance": "pdb_00009dl0_A_Y",
+   "tokens": 528
+  },
+  {
+   "pdb": "9ena",
+   "instance": "pdb_00009ena_B_+",
+   "tokens": 627
+  },
+  {
+   "pdb": "9fww",
+   "instance": "pdb_00009fww_B_+",
+   "tokens": 235
+  },
+  {
+   "pdb": "9ho4",
+   "instance": "pdb_00009ho4_C_+",
+   "tokens": 242
+  },
+  {
+   "pdb": "9hvi",
+   "instance": "pdb_00009hvi_Q_+",
+   "tokens": 818
+  },
+  {
+   "pdb": "9hvk",
+   "instance": "pdb_00009hvk_M_+",
+   "tokens": 817
+  },
+  {
+   "pdb": "9jbq",
+   "instance": "pdb_00009jbq_A_B",
+   "tokens": 555
+  },
+  {
+   "pdb": "9vca",
+   "instance": "pdb_00009vca_H_L",
+   "tokens": 433
+  },
+  {
+   "pdb": "9ghi",
+   "instance": "pdb_00009ghi_H_L",
+   "tokens": 640
+  },
+  {
+   "pdb": "9ghj",
+   "instance": "pdb_00009ghj_H_L",
+   "tokens": 628
+  },
+  {
+   "pdb": "9qqn",
+   "instance": "pdb_00009qqn_D_C",
+   "tokens": 891
+  },
+  {
+   "pdb": "8t03",
+   "instance": "pdb_00008t03_E_F",
+   "tokens": 448
+  },
+  {
+   "pdb": "8t07",
+   "instance": "pdb_00008t07_E_F",
+   "tokens": 448
+  },
+  {
+   "pdb": "8yyz",
+   "instance": "pdb_00008yyz_H_L",
+   "tokens": 596
+  },
+  {
+   "pdb": "8z39",
+   "instance": "pdb_00008z39_H_L",
+   "tokens": 596
+  },
+  {
+   "pdb": "7shz",
+   "instance": "pdb_00007shz_K_L",
+   "tokens": 481
+  },
+  {
+   "pdb": "7yi6",
+   "instance": "pdb_00007yi6_F_E",
+   "tokens": 432
+  },
+  {
+   "pdb": "8z7j",
+   "instance": "pdb_00008z7j_S1_S2",
+   "tokens": 574
+  },
+  {
+   "pdb": "9mz7",
+   "instance": "pdb_00009mz7_B_A",
+   "tokens": 466
+  },
+  {
+   "pdb": "9fvc",
+   "instance": "pdb_00009fvc_H_+",
+   "tokens": 426
+  },
+  {
+   "pdb": "8pij",
+   "instance": "pdb_00008pij_B_+",
+   "tokens": 288
+  }
+ ]
+}

@@ -15,7 +15,13 @@ set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
 R=/home/ebrahim/confidence_recalibration
-VG=validation/fold
+# ABSOLUTE, BECAUSE THE WORKER RUNS FROM /home/ebrahim/Protenix. Every path below is passed to a
+# process whose cwd is the Protenix checkout, so a relative "validation/fold" would resolve there --
+# the queue would not be found, and the trunk dump, poses, csv, claims and log would be written
+# under Protenix. The pool preflight above runs in THIS shell, from extra_training, so it reads the
+# right pool.csv and would not catch the mistake.
+EG=/home/ebrahim/confidence_recalibration/extra_training
+VG=$EG/validation/fold
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 
 B=$($PY -I run_logging/cards_busy.py | tail -1)
@@ -28,10 +34,10 @@ say "pool gate: every queued structure must appear in $VG/pool.csv"
 $PY -I - <<'EOF' || exit 1
 import csv, sys
 q = set()
-for ln in open("validation/fold/queue.tsv"):
+for ln in open("/home/ebrahim/confidence_recalibration/extra_training/validation/fold/queue.tsv"):
     p = ln.rstrip("\n").split("\t")
     if len(p) >= 5: q.add(p[1])
-pool = {r["pdb"] for r in csv.DictReader(open("validation/fold/pool.csv"))}
+pool = {r["pdb"] for r in csv.DictReader(open("/home/ebrahim/confidence_recalibration/extra_training/validation/fold/pool.csv"))}
 missing = sorted(q - pool)
 print(f"  queued {len(q)} structure(s), pooled {len(pool)}, missing {len(missing)}")
 if missing:
