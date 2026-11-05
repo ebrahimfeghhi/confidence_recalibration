@@ -307,12 +307,48 @@ def classify_missing(rundir, scorer, k, iface=None, invalidate=False):
     return "", f"sample {k}: scored, {len(res)} interface(s) found, none is this chain pair"
 
 
+def queue_units(a):
+    """out: [(pdb, seed, arm)] -- the units this invocation is responsible for
+
+    WHY BOTH MODES NEED THE SAME READER. rescore honoured --worklist and verify did not: verify
+    enumerated every job json in --jobs instead, so on the training fold it expected 856 structures
+    times 10 seeds -- 8,560 units -- and failed on the first job that is not part of the queued
+    3,560 at all (8gpu, which has no interfaces in pool.csv because it was never queued). The scope
+    of a check and the scope of a recovery have to be the same thing, or the check answers a
+    question nobody asked.
+    """
+    if a.worklist:
+        sys.path.insert(0, os.path.join(_REPO, "run_model"))
+        _argv, sys.argv = sys.argv, ["folder.py"]
+        import folder
+        sys.argv = _argv
+        units = [(u[1], str(u[4]), u[3]) for u in folder.read_queue(a.worklist)]
+        seen, uniq = set(), []
+        for u in units:
+            if u not in seen:
+                seen.add(u); uniq.append(u)
+        units = uniq
+        print(f"worklist: {len(units)} unit(s) from {a.worklist}")
+        if a.expect_units and len(units) != a.expect_units:
+            raise SystemExit(f"STOP: worklist holds {len(units)} unit(s), expected "
+                             f"{a.expect_units}. Refusing to rescore a scope I was not asked for.")
+    else:
+        _pdbs, u2 = expected_units(a.jobs, a.suffix, a.seeds, a.seed0)
+        units = [(p, sd, "free") for p, sd in u2]
+        print(f"worklist: {len(units)} unit(s) enumerated from {a.jobs} "
+              f"({a.seeds} seed(s) from {a.seed0}); pass --worklist to use the queue instead")
+    return units
+
+
 def verify(a):
     pool = read_pool(os.path.join(a.e, "pool.csv"))
     have = read_results(os.path.join(a.e, "results.csv"))
-    pdbs, units = expected_units(a.jobs, a.suffix, a.seeds, a.seed0)
+    scope = queue_units(a)
+    units = [(p, sd) for p, sd, _arm in scope]
+    pdbs = sorted({p for p, _sd, _arm in scope})
     if not pdbs:
-        print(f"FAIL no job files matching *{a.suffix} in {a.jobs}")
+        print(f"FAIL no unit(s) in scope: no job files matching *{a.suffix} in {a.jobs}"
+              + (f" and nothing readable in {a.worklist}" if a.worklist else ""))
         return 1
     skips = read_skips(os.path.join(a.e, "skipped.csv"))
     if skips:
@@ -345,7 +381,11 @@ def verify(a):
         return 1
 
     unfolded, no_rows, bad_scores, bad_cache = [], [], [], []
-    no_pose, no_contact, short_poses = [], [], []
+    no_pose, no_contact, short_poses, unmapped = [], [], [], []
+    # WHAT IS INCOMPLETE PER STRUCTURE, not just in total. 230 outstanding units spread over two
+    # structures and 230 spread over ninety are different problems, and the total cannot tell them
+    # apart. Raised in review together with keeping the buckets separate.
+    by_pdb = {}
     for pdb, seed in units:
         d = run_dir_for(a.e, pdb, seed)
         if d is None:
@@ -369,8 +409,19 @@ def verify(a):
                     no_pose.append((ifc, seed, why))
                 elif bucket == "unscored":
                     no_rows.append((ifc, seed, why))
+                elif bucket == "unmapped":
+                    # THE THIRD CATEGORY, KEPT SEPARATE ON PURPOSE. The scorer ran and the pose is
+                    # fine; OST mapped no model chain to one of this interface's reference chains,
+                    # so the interface was never a candidate. Re-running the identical call cannot
+                    # produce a row, which is why rescore() does not retry these -- but they are
+                    # missing scores, not the "no contact in this pose" result below, and counting
+                    # them as either one overstates how complete the dataset is.
+                    unmapped.append((ifc, seed, why))
                 else:
                     no_contact.append((ifc, seed, why))
+                if bucket:
+                    by_pdb.setdefault(ifc.split("_")[0], {}).setdefault(bucket, 0)
+                    by_pdb[ifc.split("_")[0]][bucket] += 1
             for k, (dq, ip) in got.items():
                 if not finite(dq) or not finite(ip):
                     bad_scores.append((ifc, seed, k, dq, ip))
@@ -390,20 +441,39 @@ def verify(a):
     print(f"  poses never scored (rescore fixes) : {len(no_rows)}")
     print(f"  rows with a non-finite score       : {len(bad_scores)}")
     print(f"  unusable or absent trunk caches    : {len(bad_cache)}")
+    print(f"  scored but the interface was never mapped (rescore cannot fix): {len(unmapped)}")
     # REPORTED, NOT FAILED. A pose in which the two chains do not contact has no DockQ to report;
     # scorer.py treats that as a real condition and so does this. It is printed because a large
     # number of them is informative about the target, not about the pipeline.
     print(f"  (scored, no contact at that interface, which is a result not a fault: {len(no_contact)})")
     for lbl, items in (("unfolded", unfolded), ("short poses", short_poses), ("no pose", no_pose),
-                       ("unscored", no_rows), ("non-finite", bad_scores), ("cache", bad_cache)):
+                       ("unscored", no_rows), ("unmapped", unmapped),
+                       ("non-finite", bad_scores), ("cache", bad_cache)):
         for x in items[:3]:
             print(f"     {lbl}: {x}")
+    gaps = {p: v for p, v in by_pdb.items() if set(v) - {"no_contact"}}
+    if gaps:
+        print(f"  structures with a missing score: {len(gaps)} of {len(pdbs)}")
+        for pdb in sorted(gaps, key=lambda x: -sum(v for k, v in gaps[x].items()
+                                                   if k != "no_contact")):
+            print(f"     {pdb}: " + ", ".join(f"{k} {v}" for k, v in sorted(gaps[pdb].items())))
     # short_poses COUNTS TOWARDS THE VERDICT. A unit that wrote fewer poses than asked for is an
     # incomplete fold whether or not pool.csv happens to name an interface that the surviving poses
     # can be scored at.
-    rc = 1 if (unfolded or short_poses or no_pose or no_rows or bad_scores or bad_cache) else 0
-    print("COMPLETE: every expected unit folded, every pose scored at every interface, "
-          "every cache replayable" if rc == 0 else "INCOMPLETE")
+    # unmapped COUNTS TOWARDS THE VERDICT TOO, in its own words. Those interface-samples have no
+    # DockQ, and a run that calls itself COMPLETE with eight hundred of them would be the overclaim
+    # this verifier exists to prevent -- even though no rescore can recover them.
+    rc = 1 if (unfolded or short_poses or no_pose or no_rows or bad_scores or bad_cache
+               or unmapped) else 0
+    if rc == 0:
+        print("COMPLETE: every expected unit folded, every pose scored at every interface, "
+              "every cache replayable")
+    elif not (unfolded or short_poses or no_pose or no_rows or bad_scores or bad_cache):
+        print(f"INCOMPLETE: nothing left to fold or rescore; {len(unmapped)} interface-sample(s) "
+              f"have no score because the scorer mapped no model chain to one of their reference "
+              f"chains. Recovering them needs a different mapping, not a re-run.")
+    else:
+        print("INCOMPLETE")
     return rc
 
 
@@ -453,26 +523,7 @@ def rescore(a):
     # in --jobs and expands --seeds per structure, which for training/jobs is 856 structures and
     # 8,560 candidate units rather than the 3,560 actually queued -- so an intended recovery could
     # reach into older incomplete work. Raised in review.
-    if a.worklist:
-        sys.path.insert(0, os.path.join(_REPO, "run_model"))
-        _argv, sys.argv = sys.argv, ["folder.py"]
-        import folder
-        sys.argv = _argv
-        units = [(u[1], str(u[4]), u[3]) for u in folder.read_queue(a.worklist)]
-        seen, uniq = set(), []
-        for u in units:
-            if u not in seen:
-                seen.add(u); uniq.append(u)
-        units = uniq
-        print(f"worklist: {len(units)} unit(s) from {a.worklist}")
-        if a.expect_units and len(units) != a.expect_units:
-            raise SystemExit(f"STOP: worklist holds {len(units)} unit(s), expected "
-                             f"{a.expect_units}. Refusing to rescore a scope I was not asked for.")
-    else:
-        _pdbs, u2 = expected_units(a.jobs, a.suffix, a.seeds, a.seed0)
-        units = [(p, sd, "free") for p, sd in u2]
-        print(f"worklist: {len(units)} unit(s) enumerated from {a.jobs} "
-              f"({a.seeds} seed(s) from {a.seed0}); pass --worklist to use the queue instead")
+    units = queue_units(a)
 
     have = read_results(res)
     added = skipped = ambiguous = 0
