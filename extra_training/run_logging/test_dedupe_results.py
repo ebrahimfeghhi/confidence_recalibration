@@ -22,7 +22,7 @@ def check(label, cond, extra=""):
 
 
 def build(root, rows, runs, pool=(("8abc", "A", "B"),), roles=(("8abc", "A", "A"),
-                                                                ("8abc", "B", "B"))):
+                                                                ("8abc", "B", "B")), ost=None):
     """rows: csv lines. runs: {(pdb,seed,tag): {sample: [iptm row in the json]}}
 
     pool and roles are written too, because identity is now checked against the SPECIFIC
@@ -52,6 +52,12 @@ def build(root, rows, runs, pool=(("8abc", "A", "B"),), roles=(("8abc", "A", "A"
             json.dump({"chain_pair_iptm": ips if ips and isinstance(ips[0], list) else [ips]},
                       open(os.path.join(d, "predictions",
                                         f"{pdb}_summary_confidence_sample_{k}.json"), "w"))
+        # OST's own output, when the case supplies one: this is the mapping the scorer used when
+        # it wrote the row, and it is what identity is checked against.
+        for k, cm in (ost or {}).get((pdb, seed, tag), {}).items():
+            os.makedirs(os.path.join(d, "ost_json"), exist_ok=True)
+            json.dump({"chain_mapping": cm},
+                      open(os.path.join(d, "ost_json", f"{k}.json"), "w"))
     return csvp
 
 
@@ -144,6 +150,50 @@ try:
     csvp = build(root, ["8abc_AB,500000,free,-1,,0,0.4,0.5"], {})
     rc, out = run(root, csvp, out=csvp)
     check("exit nonzero when --out is the input", rc != 0 and "must not be the input" in out)
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+
+print()
+print("OST's own mapping decides, not the role table")
+root = tempfile.mkdtemp()
+try:
+    # roles say the interface is model (A,B) -> ipTM[0][1] = 0.5000.
+    # OST recorded that it mapped it to (B,C) -> ipTM[1][2] = 0.7777, and that is the value the
+    # row was written from. Under the role table the OTHER row would win, so this asserts the
+    # retained ost json actually changes which row is kept -- the real 7uij/8w2e case.
+    M = [[1.0, 0.5000, 0.1000],
+         [0.5000, 1.0, 0.7777],
+         [0.1000, 0.7777, 1.0]]
+    csvp = build(root,
+                 ["8abc_AB,500000,free,-1,,0,0.4660,0.5000",
+                  "8abc_AB,500000,free,-1,,0,0.4660,0.7777"],
+                 {("8abc", "500000", "aaa"): {0: M}},
+                 ost={("8abc", "500000", "aaa"): {0: {"A": "B", "B": "C"}}})
+    out = os.path.join(root, "snap.csv")
+    rc, log = run(root, csvp, out=out)
+    check("resolves cleanly", rc == 0, log)
+    kept = [ln for ln in open(out).read().splitlines() if ln.startswith("8abc_AB")]
+    check("keeps the row OST's mapping identifies", len(kept) == 1 and kept[0].endswith("0.7777"),
+          f"kept={kept}")
+    check("says which mapping identified it", "ost chain_mapping" in log, log)
+
+    # with the json gone it must fall back to the role table and keep the other row
+    os.remove(os.path.join(root, "poses", "8abc", "500000-aaa", "ost_json", "0.json"))
+    out2 = os.path.join(root, "snap2.csv")
+    rc2, log2 = run(root, csvp, out=out2)
+    kept2 = [ln for ln in open(out2).read().splitlines() if ln.startswith("8abc_AB")] if rc2 == 0 else []
+    check("falls back to chain_roles when no ost json is retained",
+          rc2 == 0 and len(kept2) == 1 and kept2[0].endswith("0.5000"), f"rc={rc2} kept={kept2}")
+
+    # an ost json that leaves one of the pair's chains unmapped is not usable either
+    os.makedirs(os.path.join(root, "poses", "8abc", "500000-aaa", "ost_json"), exist_ok=True)
+    json.dump({"chain_mapping": {"A": "B"}},
+              open(os.path.join(root, "poses", "8abc", "500000-aaa", "ost_json", "0.json"), "w"))
+    out3 = os.path.join(root, "snap3.csv")
+    rc3, log3 = run(root, csvp, out=out3)
+    kept3 = [ln for ln in open(out3).read().splitlines() if ln.startswith("8abc_AB")] if rc3 == 0 else []
+    check("an unmapped chain in the ost json falls back too",
+          rc3 == 0 and len(kept3) == 1 and kept3[0].endswith("0.5000"), f"rc={rc3} kept={kept3}")
 finally:
     shutil.rmtree(root, ignore_errors=True)
 

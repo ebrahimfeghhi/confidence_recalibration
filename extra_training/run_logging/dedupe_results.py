@@ -90,6 +90,29 @@ def load_roles(paths):
     return out
 
 
+WHICH = {}   # (run, sample, refs) -> (model pair, which mapping said so)
+
+
+def _ost_pair(run_dir, sample, refs):
+    """out: ([model chain, model chain], "ost chain_mapping") -- the pair OST used, or (None, why)
+
+    This is the mapping the scorer itself recorded when it produced the row, read from the json the
+    fold keeps beside the poses. A .invalid sibling marks a failed run and carries no mapping.
+    """
+    p = os.path.join(run_dir, "ost_json", f"{sample}.json")
+    try:
+        cm = json.load(open(p)).get("chain_mapping")
+    except (OSError, ValueError):
+        return None, f"no readable {os.path.basename(p)}"
+    if not isinstance(cm, dict):
+        return None, f"{os.path.basename(p)} has no chain_mapping"
+    mc = [cm.get(c) for c in refs]
+    if not all(mc):
+        absent = [c for c, m in zip(refs, mc) if not m]
+        return None, f"ost left reference chain {absent} unmapped in this pose"
+    return mc, "ost chain_mapping"
+
+
 def pair_iptm(run_dir, sample, pdb, refs, roles):
     """out: (value, "") -- the ipTM of THIS interface's chain pair in the retained pose, or (None, why)
 
@@ -99,21 +122,30 @@ def pair_iptm(run_dir, sample, pdb, refs, roles):
     BC at 0.4209 and AC at 0.6320. A flattened search "resolved" all ten duplicates here, two of
     them against the wrong pair.
 
-    AND WHY A MISMATCH IS STILL NOT PROOF OF A BAD ROW. ost_dockq.parse reads ipTM at
-    chain_pair_iptm[i][j] where i and j come from OST's OWN model_chains for that interface -- its
-    automatic chain mapper's answer, which can differ from the reference -> model mapping in the
-    role table. That OST output json is not retained next to the poses, so when the role table's
-    pair disagrees with every duplicate row, the cause cannot be distinguished from here: either a
-    row carries another interface's value, or OST mapped the model differently when it scored.
-    Both readings are reported as UNRESOLVED and neither row is chosen. That is why replacing the
-    canonical csv stays blocked while any duplicate is unresolved -- the evidence on disk is not
-    sufficient, and the honest output is a refusal rather than a snapshot.
+    THE ROLE TABLE IS THE FALLBACK, NOT THE AUTHORITY. ost_dockq.parse reads ipTM at
+    chain_pair_iptm[i][j] with i and j taken from OST's OWN mapping for that interface -- its
+    automatic chain mapper's answer, which can differ from the reference -> model mapping in
+    chain_roles. An earlier version of this file said that mapping was not retained and therefore
+    reported such a disagreement as undecidable. It IS retained: the fold writes OST's output to
+    <run>/ost_json/<sample>.json, chain_mapping included. Both duplicates that were unresolved
+    under the role table resolve under it, and they resolve to the OTHER row:
+
+        7uij_DF sample 3  roles -> (D,F)=0.1487   ost -> (B,C)=0.1481  (rows 0.1482 / 0.1481)
+        8w2e_BC sample 1  roles -> (B,C)=0.4209   ost -> (C,B)=0.6320  (rows 0.6273 / 0.6320)
+
+    So the mapping used to IDENTIFY a recorded row has to be the one the scorer used when it wrote
+    it. chain_roles is consulted only when that json is missing, and the reported reason says which
+    mapping was used so a disagreement is never silent.
     """
-    mc = [roles.get((pdb, c)) for c in refs]
-    if not all(mc):
-        missing = [c for c, m in zip(refs, mc) if not m]
-        return None, f"no model chain for reference {missing} in the role tables"
+    mc, src = _ost_pair(run_dir, sample, refs)
+    if mc is None:
+        mc = [roles.get((pdb, c)) for c in refs]
+        src = "chain_roles (no retained ost json for this sample)"
+        if not all(mc):
+            missing = [c for c, m in zip(refs, mc) if not m]
+            return None, f"no model chain for reference {missing} in the role tables"
     idx = [ost_dockq._chain_index(m) for m in mc]
+    WHICH[(run_dir, sample, tuple(refs))] = (tuple(mc), src)
     paths = glob.glob(os.path.join(run_dir, "predictions",
                                    f"*_summary_confidence_sample_{sample}.json"))
     if not paths:
@@ -177,7 +209,9 @@ for k, v in dups.items():
         except Exception:
             pass
         elsewhere = [r["iptm"] for r in v if float(r["iptm"]) in allv]
+        mcs, src = WHICH.get((run, sample, tuple(refs)), (refs, "?"))
         unresolved.append((k, f"{len(hits)} of {len(v)} row(s) match this interface's own pair "
+                              f"{list(refs)} -> {list(mcs)} per {src}, "
                               f"ipTM {round(want, 4)} in {os.path.basename(run)}; rows carry "
                               f"{[r['iptm'] for r in v]}"
                               + (f" -- {elsewhere} match a DIFFERENT chain pair in the same pose, "
@@ -187,6 +221,9 @@ for k, v in dups.items():
 print(f"{a.csv}: {len(rows)} row(s), {len(g)} distinct (iface, seed, arm, sample)")
 print(f"  duplicated keys:                      {len(dups)}")
 print(f"  resolved against the retained pose:   {len(resolved)}")
+_by_src = collections.Counter(src for _k, (_mc, src) in WHICH.items())
+for _src, _n in sorted(_by_src.items()):
+    print(f"        identified by {_src}: {_n}")
 print(f"  UNRESOLVED:                           {len(unresolved)}")
 for k, why in unresolved[:a.show]:
     print(f"     UNRESOLVED {k}:\n        {why}")
