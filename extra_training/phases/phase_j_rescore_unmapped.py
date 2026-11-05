@@ -41,7 +41,7 @@ AND THE RESULT IS CHECKED AGAINST THE INTENDED PHYSICAL PAIR. A recovered row is
 the model chains OST reports for it are the ones the roles say they should be, so a number can never
 be filed under an interface it does not belong to.
 """
-import argparse, collections, csv, json, os, sys, difflib
+import argparse, collections, csv, json, math, os, sys, difflib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -49,6 +49,8 @@ REPO = os.path.dirname(ROOT)
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "eval"))
 import ost_dockq                                                    # noqa: E402
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import pose_sets                                                    # noqa: E402
 
 AA = set("ACDEFGHIKLMNPQRSTVWY")
 
@@ -152,9 +154,26 @@ def write_subset(src, keep, out, by_label):
 
 
 CANON = ["iface", "seed", "arm", "donor_pose", "tmpl_chains", "sample", "dockq", "iptm"]
+ARM, DONOR, TMPL = "free", "-1", ""      # every queued training unit; checked against queue.tsv
 
 
-def canon_row(iface, seed, sample, dockq, iptm, arm="free", donor="-1", tmpl=""):
+def ok_number(x):
+    """True only for a value that run_model/folder.py's open_csv would accept as a score.
+
+    It does `float(r["dockq"]), float(r["iptm"])` inside a try and skips the row on ValueError or
+    on a non-finite result, so None, "", nan and inf all mean "this sample is still to do". A row
+    this tool emits with such a value would look present in the csv and be invisible to the
+    pipeline -- the worst of both states.
+    """
+    if x is None:
+        return False
+    try:
+        return math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return False
+
+
+def canon_row(iface, seed, sample, dockq, iptm, arm=ARM, donor=DONOR, tmpl=TMPL):
     """One row in run_model/scorer.py's exact column order and number formatting.
 
     THE FORMATTING IS PART OF THE CONTRACT, not cosmetic. scorer.py prints dockq as .4f and
@@ -240,6 +259,10 @@ def main():
                     help="a results.csv whose (iface,seed,sample) rows are already scored")
     ap.add_argument("--rows-out", default="",
                     help="candidate rows in scorer.py's canonical column order, ready to append")
+    ap.add_argument("--route", choices=("isolated", "full"), default="isolated",
+                    help="isolated = pair isolation (OST dropped the interface); "
+                         "full = score the whole complex, letting OST map and the repaired "
+                         "sequence retry act as its fallback (use when isolation itself fails)")
     ap.add_argument("--min-ident", type=float, default=0.80)
     ap.add_argument("--out", default="")
     ap.add_argument("--scratch", default="/tmp/rescore_unmapped")
@@ -263,7 +286,7 @@ def main():
     if a.nsample < 1:
         raise SystemExit("--nsample must be at least 1")
     done = existing_keys(a.skip_existing)
-    print(f"sweep: {len(want)} structure(s), seeds {seeds[0]}..{seeds[-1]}, "
+    print(f"sweep [{a.route}]: {len(want)} structure(s), seeds {seeds[0]}..{seeds[-1]}, "
           f"samples 0..{a.nsample - 1}; {len(done)} (iface,seed,sample) already scored")
 
     # failed  = something the caller must act on (OST failed, attribution wrong, reference absent)
@@ -283,7 +306,7 @@ def main():
         # THE ISOLATED REFERENCE IS THE SAME FOR EVERY POSE, so it is written once per interface
         # rather than once per pose. 850 poses would otherwise re-derive the same 17 files.
         refsub = {}
-        for ifc in ifaces:
+        for ifc in (ifaces if a.route == "isolated" else []):
             c1, c2 = ifc.split("_", 1)[1][0], ifc.split("_", 1)[1][1]
             # PID IN THE NAME, because this is the one scratch path with no pose in it. The model
             # subset and the OST json both carry seed and sample, so they are unique per pose; the
@@ -293,69 +316,101 @@ def main():
             refsub[ifc] = p
 
         for seed in seeds:
-            pd = sorted(glob.glob(f"{a.fold}/poses/{pdb}/{seed}-*"))
-            pd = [d for d in pd if os.path.exists(os.path.join(d, "run.json"))]
-            if not pd:
+            # PROVENANCE IS THE SHARED DEFINITION, NOT A GLOB. Raised in review: matching
+            # poses/<pdb>/<seed>-* and checking only that run.json EXISTS is a weaker notion of
+            # saved-pose identity than the drain gate and the rescorer already use, while this tool
+            # hardcodes arm="free" and donor_pose="-1" into every row it writes. A run belonging to
+            # a templated arm would be relabelled as an untemplated pose, silently. pose_sets reads
+            # run.json and requires it to NAME this pdb, seed and arm; it requires all nsample cifs
+            # with a parseable summary json carrying chain_pair_iptm, which is where iptm comes
+            # from; and it refuses rather than picks when two complete runs exist.
+            status, run_dir, detail = pose_sets.classify(f"{a.fold}/poses", pdb, seed,
+                                                         a.nsample, arm=ARM)
+            if status == pose_sets.NONE:
                 # A SEED THAT WAS NEVER FOLDED IS NOT A FAULT. Raised in review: counting it as a
                 # failure made `--seeds 100` against 10 folded seeds report 90 failures and exit
                 # non-zero on a sweep that did everything it could.
-                absent.append((pdb, seed, "*", "no pose dir"))
+                absent.append((pdb, seed, "*", f"never folded ({detail})"))
                 continue
-            if len(pd) > 1:
-                failed.append((pdb, seed, "*", f"{len(pd)} pose dirs for one seed: {pd} -- "
-                                               f"ambiguous, refusing to pick one"))
+            if status != pose_sets.COMPLETE:
+                failed.append((pdb, seed, "*", f"{status}: {detail}"))
                 continue
+            samples = pose_sets.run_samples(run_dir)
             for k in range(a.nsample):
                 todo = [i for i in ifaces if (i, seed, str(k)) not in done
                         and (i, seed, str(k)) not in emitted]
                 skipped += len(ifaces) - len(todo)
                 if not todo:
-                    # CHECKED BEFORE THE CIF. Raised in review: a missing sample cif was recorded as
-                    # a failure even when every interface of that pose was already in results.csv,
-                    # so re-running with too large an --nsample reported failures for completed work.
+                    # CHECKED BEFORE THE POSE. Raised in review: a missing sample cif was recorded
+                    # as a failure even when every interface of that pose was already in
+                    # results.csv, so re-running with too large an --nsample reported failures for
+                    # work that was complete.
                     continue
-                mdl = sorted(glob.glob(f"{pd[0]}/predictions/*_sample_{k}.cif"))
-                if not mdl:
-                    absent.append((pdb, seed, str(k), "no sample cif"))
+                # classify() already guaranteed every sample 0..nsample-1 has a cif and a usable
+                # summary json, so a miss here is a contradiction worth failing on, not skipping.
+                if k not in samples or not samples[k][2]:
+                    failed.append((pdb, seed, str(k), "pose passed classify but has no usable "
+                                                      "cif/summary -- contradiction"))
                     continue
+                mdl = [samples[k][0]]
+                conf = [samples[k][1]]
 
-                # THE MAP IS REBUILT PER POSE, not once per structure. Model chain naming is job
-                # order and is stable in practice, but a map carried across poses would be an
-                # assumption, and the whole bug this recovers from was an assumption about chain
-                # names. Re-deriving it costs a sequence read against a multi-second OST call.
-                rs = chain_seqs(ref, by_label=True)   # label ids: what OST calls the chain
-                ms = chain_seqs(mdl[0], by_label=False)
-                pairs, bad = build_map(rs, ms, a.min_ident)
-                if bad:
-                    for b in bad:
-                        refused.append((pdb, seed, str(k), b))
-                    continue
-                cm = {rc: mc for rc, mc, _ in pairs}
-                conf = glob.glob(f"{pd[0]}/predictions/*summary_confidence_sample_{k}.json")
+                cm = {}
+                if a.route == "isolated":
+                    # THE MAP IS REBUILT PER POSE, not once per structure. Model chain naming is
+                    # job order and is stable in practice, but a map carried across poses would be
+                    # an assumption, and the whole bug this recovers from was an assumption about
+                    # chain names. A sequence read costs nothing against a multi-second OST call.
+                    rs = chain_seqs(ref, by_label=True)   # label ids: what OST calls the chain
+                    ms = chain_seqs(mdl[0], by_label=False)
+                    pairs, bad = build_map(rs, ms, a.min_ident)
+                    if bad:
+                        for b in bad:
+                            refused.append((pdb, seed, str(k), b))
+                        continue
+                    cm = {rc: mc for rc, mc, _ in pairs}
+                else:
+                    # THE FULL-COMPLEX ROUTE IS THE PRODUCTION SCORER'S OWN CALL. run_model/
+                    # scorer.py does exactly `mod.score(cif, ref, out, conf_json=...)` and then
+                    # ost_dockq.interface(res, c1, c2); the only difference here is that the json
+                    # goes to scratch instead of into the pose directory, which keeps the cached
+                    # FAILURE records that document the original bug. OST's own chain mapping
+                    # decides, with the repaired sequence retry as its fallback -- this route
+                    # never forces a map, because forcing one has been measured to turn a DockQ
+                    # near 0.9 into one near 0.01 on identical-copy structures.
+                    out = f"{a.scratch}/{pdb}_full_{seed}_{k}.json"
+                    if os.path.exists(out):
+                        os.remove(out)
+                    res_full = ost_dockq.score(mdl[0], ref, out, conf_json=conf[0])
 
                 for ifc in todo:
                     c1, c2 = ifc.split("_", 1)[1][0], ifc.split("_", 1)[1][1]
-                    if c1 not in cm or c2 not in cm:
-                        failed.append((pdb, seed, str(k), f"{ifc}: chain outside the validated map"))
-                        continue
-                    # ISOLATE THE PAIR. One chain per chemical group, so the grouping cannot
-                    # collapse H onto L; DockQ is computed over exactly the two chains it is
-                    # defined over.
-                    msub = f"{a.scratch}/{pdb}_{ifc}_{seed}_{k}_mdl.cif"
-                    write_subset(mdl[0], {cm[c1], cm[c2]}, msub, by_label=False)
-                    out = f"{a.scratch}/{pdb}_{ifc}_{seed}_{k}.json"
-                    # REMOVED FIRST. ost_dockq.invoke has no skip-if-exists and judges success by
-                    # `returncode == 0 and usable(out)`, and its own docstring records that OST can
-                    # exit 0 having written nothing -- in which case a PREVIOUS run's json at this
-                    # path would be accepted as this run's result. The path carries pdb, iface, seed
-                    # and sample but not --fold or --min-ident, so that stale result could even come
-                    # from a different fold directory.
-                    if os.path.exists(out):
-                        os.remove(out)
-                    if not ost_dockq.invoke(msub, refsub[ifc], out):
-                        failed.append((pdb, seed, str(k), f"{ifc}: OST failed on the isolated pair"))
-                        continue
-                    res = ost_dockq.parse(out, conf_json=conf[0] if conf else None)
+                    if a.route == "isolated":
+                        if c1 not in cm or c2 not in cm:
+                            failed.append((pdb, seed, str(k),
+                                           f"{ifc}: chain outside the validated map"))
+                            continue
+                        # ISOLATE THE PAIR. One chain per chemical group, so the grouping cannot
+                        # collapse H onto L; DockQ is computed over exactly the two chains it is
+                        # defined over.
+                        msub = f"{a.scratch}/{pdb}_{ifc}_{seed}_{k}_mdl.cif"
+                        write_subset(mdl[0], {cm[c1], cm[c2]}, msub, by_label=False)
+                        out = f"{a.scratch}/{pdb}_{ifc}_{seed}_{k}.json"
+                        # REMOVED FIRST. ost_dockq.invoke has no skip-if-exists and judges success
+                        # by `returncode == 0 and usable(out)`, and its own docstring records that
+                        # OST can exit 0 having written nothing -- in which case a PREVIOUS run's
+                        # json at this path would be accepted as this run's result. The path
+                        # carries pdb, iface, seed and sample but not --fold, so a stale result
+                        # could even come from a different fold directory.
+                        if os.path.exists(out):
+                            os.remove(out)
+                        if not ost_dockq.invoke(msub, refsub[ifc], out):
+                            failed.append((pdb, seed, str(k),
+                                           f"{ifc}: OST failed on the isolated pair"))
+                            continue
+                        res = ost_dockq.parse(out, conf_json=conf[0])
+                    else:
+                        res = res_full
                     v = ost_dockq.interface(res, c1, c2)
                     if not v or v.get("dockq") is None:
                         failed.append((pdb, seed, str(k), f"{ifc}: still missing"))
@@ -368,17 +423,28 @@ def main():
                         failed.append((pdb, seed, str(k),
                                        f"{ifc}: model chains {got} but roles expect {exp}"))
                         continue
-                    if not conf:
-                        # EVERY ONE OF THE 83,560 EXISTING ROWS HAS AN iptm. A blank one would be
-                        # the single such row in the file, so it is reported rather than left to be
-                        # noticed; the row is still emitted, because scorer.py emits it too.
-                        warned.append((pdb, seed, str(k), f"{ifc}: no confidence json, iptm blank"))
+                    # A ROW WITHOUT A FINITE iptm IS NOT A SCORE, SO IT IS A FAILURE. Raised in
+                    # review, and confirmed in run_model/folder.py: open_csv does
+                    # `float(r["dockq"]), float(r["iptm"])` and skips the row when either does not
+                    # parse or is not finite. Emitting a blank iptm would therefore write a row the
+                    # rest of the pipeline counts as UNSCORED -- the gap would survive the recovery
+                    # while looking filled in the csv. Warning about it was not enough.
+                    if not ok_number(v.get("pair_iptm")):
+                        failed.append((pdb, seed, str(k),
+                                       f"{ifc}: pair_iptm {v.get('pair_iptm')!r} is not finite; "
+                                       f"folder.open_csv would treat this row as unscored"))
+                        continue
+                    if not ok_number(v.get("dockq")):
+                        failed.append((pdb, seed, str(k),
+                                       f"{ifc}: dockq {v.get('dockq')!r} is not finite"))
+                        continue
                     rows.append(dict(pdb=pdb, iface=ifc, seed=seed, sample=str(k),
                                      roles=f"{r1}-{r2}", dockq=v["dockq"],
                                      pair_iptm=v.get("pair_iptm"), chain_map=" ".join(cm)))
                     canon.append(canon_row(ifc, seed, k, v["dockq"], v.get("pair_iptm")))
                     emitted.add((ifc, seed, str(k)))
-                    os.remove(msub)
+                    if a.route == "isolated":
+                        os.remove(msub)
             print(f"  {pdb} seed {seed}: {len(rows)} row(s) so far", flush=True)
 
     print(f"\nrecovered {len(rows)} row(s); {skipped} already present; "

@@ -2,6 +2,15 @@
 
 **Branch:** `perf/ckpt-by-size` · **Written:** 2026-11-05 · **For:** independent review
 
+> **STATUS: the training fold is fully scored.** `training/fold/results.csv` holds 84,400 rows with
+> zero duplicate keys, and **33,000 of 33,000 scoreable interface-samples** in the queued scope —
+> 660 of 672 interfaces, the remaining 12 being pairs measured not to touch. The 850 recovered rows
+> were merged in one checked transaction at 6:15 PM EST; the 10 pre-existing duplicates were
+> resolved first. Backups sit beside the file as `.pre_dedupe` and `.pre_recovered_merge`.
+>
+> All four of codex's blocking items are closed, and so are three of the four defects. The one
+> remaining open question is not a scoring bug — see [section 8](#8-open-questions-worth-a-second-opinion).
+
 Scope is the wave-1 training fold, [`extra_training/training/fold`](https://github.com/ebrahimfeghhi/confidence_recalibration/tree/perf/ckpt-by-size/extra_training/training).
 356 structures x 10 seeds = 3,560 units, 672 pooled interfaces, 5 diffusion samples each =
 **33,600 expected interface-samples**.
@@ -147,9 +156,25 @@ OST all use, while gemmi's `ch.name` is the *auth* name. `3wfc_BC` reads 194 con
 1,906 by auth, because auth collapses copies. The tool reports both side by side so the
 discrepancy cannot hide.
 
-**Status: NOT FIXED.** The filter must be applied to the existing `pool.csv` after the fold workers
-exit, writing every removed pair with its measured distance to a record file. Re-running the builder
-from scratch is the wrong move — it would renumber the pool that 83,560 existing rows refer to.
+**Status: FIXED, by derivation rather than by filtering.** `pool.csv` is left exactly as it is —
+84,400 rows now name interfaces from it, and editing it would silently move the denominator of
+every completeness figure ever quoted against those rows. Instead
+[`run_logging/derive_scoreable_pool.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/run_logging/derive_scoreable_pool.py)
+writes two files beside it and never touches the original:
+
+```
+training/fold/pool.csv   1711 -> pool_scoreable.csv 1692 + pool_excluded.csv 19
+                                 (16 no_contact, 3 unrepresentable, 0 uncheckable)
+validation/fold/pool.csv  141 -> pool_scoreable.csv  141 + pool_excluded.csv  0
+```
+
+`pool_excluded.csv` carries each pair's measured nearest-atom distance and the cutoff that excluded
+it, so the judgement is auditable rather than implicit. The derivation fails closed: an interface
+whose contact cannot be measured goes into neither file and the tool exits 1.
+
+The same rule is applied to validation, where it currently excludes nothing — the builder is just as
+unfiltered there, and that pool survives only because none of its 30 structures has more than one
+antigen chain. That is luck, not design, and this derivation is the step that would catch it.
 
 ---
 
@@ -295,12 +320,21 @@ grep '^9mi6_AC,500000,' training/fold/results.csv | head -1
 
 **Where:** [`phases/phase_i_check.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/phases/phase_i_check.py)
 
-`verify` reports an interface as `unmapped` before it reaches the contact measurement, so an
-interface that is *both* unmapped and non-contacting is reported as real missing work. `6umg_FH` is
-12.67 A apart and was counted as a gap. That is why the deficit was quoted as 900 and is actually
-850. The contact check belongs in the unmapped branch too.
+`verify` reported an interface as `unmapped` before it reached the contact measurement, so an
+interface that was *both* unmapped and non-contacting counted as real missing work. `6umg_FH` is
+12.67 A apart and was counted as a gap. That is why the deficit was quoted as 900 when it was 850.
 
-**Status: NOT FIXED.**
+**Status: FIXED.** Contact is measured first, in the unmapped branch as well, and the per-structure
+breakdown follows the same rule — it would otherwise have kept printing `6umg: unmapped 100` after
+the totals had stopped saying so, and that line is what a reader uses to decide what still needs
+work. The verifier now derives the 850 itself instead of this document correcting it by hand:
+
+```
+  scored but the interface was never mapped : 750
+  poses never scored (rescore fixes)        : 100
+  6umg: no_contact 50, unmapped 50
+  expected interface-samples: 1300 named by pool.csv, 1250 of them scoreable
+```
 
 ---
 
@@ -358,12 +392,76 @@ over their seed. Unrelated to this recovery; outstanding on its own.
 
 ---
 
+## 6b. The external review, and the merge it gated
+
+An independent review approved the methodology and blocked the canonical merge until four
+integrity gates existed. Each of its claims about our code was checked against the code before
+being acted on, and all four were correct.
+
+| # | finding | verified how | fix |
+|---|---|---|---|
+| 1 | a recovered row with a missing ipTM would be written, and `folder.open_csv` treats such a row as **unscored** | read `open_csv`: it does `float(r["dockq"]), float(r["iptm"])` and skips on `ValueError` or non-finite | non-finite dockq or ipTM is now a recovery **failure**, not a warning. The 800 existing rows were checked explicitly: 0 would have been rejected, so this was latent |
+| 2 | pose provenance was a glob plus "run.json exists", weaker than the drain gate's, while the tool hardcodes `arm=free` into every row | `pose_sets.classify(poses_dir, pdb, seed, nsample, arm=None)` exists and is stricter | now uses `pose_sets.classify(..., arm="free")`: run.json must name this pdb, seed **and arm**; all 5 cifs need a parseable summary carrying `chain_pair_iptm`; two complete runs refuse rather than pick |
+| 3 | the contact audit exited 0 even when interfaces could not be checked | read the exit line: `sys.exit(1 if cells["apart_scored"] else 0)` | fails closed on `uncheckable` and on incomplete coverage. On the real pool: `AUDIT PASSED: all 1711 pool interfaces checked`, 0 uncheckable |
+| 4 | the verifier overcounted unmapped non-contacts | reproduced: 6umg_FH reported as a gap at 12.67 Å | fixed, see [section 5](#5-defect-d--my-own-checker-overstated-the-deficit-by-50-samples) |
+
+It also asked for the merge to be one transaction rather than an append.
+[`phases/phase_l_merge_recovered.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/phases/phase_l_merge_recovered.py)
+refuses unless the row and interface counts are exactly as passed in, no recovered key is already
+present, no key comes from two source files (the `4zto_EF` double-append case, which matters
+because the two routes agree to four decimals), every row has finite dockq and ipTM and the
+`free/-1/''` provenance, every interface is in the pool, and the canonical file holds no duplicate
+keys of its own. **Its refusals were tested, not its acceptances** — a deliberately dirty input was
+fed to each gate and each one fired.
+
+### The writer guard was wrong, and narrowing it was the fix
+
+`dedupe --replace` refused while any session named `w1fold`, `w1val` or `w2_` existed, whatever
+file was being replaced. That is a proxy for "a fold is writing this csv" and too coarse: the
+validation fold is launched with `--csv .../validation/fold/results.csv` and cannot touch the
+training one, so a live validation fold blocked every repair of the training csv for the hours it
+ran. It now asks which sessions could write *this* csv, derived from the csv's own fold root:
+
+```
+training/fold/results.csv     blocks on (w1fold, w2_)   -> not blocked by a live w1val
+validation/fold/results.csv   blocks on (w1val,)        -> still blocked, correctly
+an unrecognised path          blocks on all three       -> fails closed
+```
+
+The two load-bearing protections are untouched: the per-csv `.rescore.lock`, and the row-count
+identity check that refuses if anything appended while the snapshot was being built. A third layer
+that fires on the wrong file is not caution — it is the false alarm that gets all three bypassed.
+
+### What the merge did
+
+```
+rows before                                            83,561 (83,560 + header)
+dedupe   10 duplicates resolved against the pose on disk   -> 83,550
+merge    750 pair-isolated + 100 full-complex = 850        -> 84,400
+```
+
+Verified independently of the script's own report: 84,400 rows, **0 duplicate keys**, 33,000 of
+33,000 scoreable in-scope interface-samples, 660 of 672 interfaces with rows. Both swaps were
+`os.replace` within one filesystem, each leaving a backup beside the file.
+
+One failure worth recording, because it was mine: the first attempt pointed the snapshots at the
+session scratchpad, a different filesystem, so `os.replace` raised `EXDEV` **after** the dedupe had
+done all its work. Nothing was damaged — the failure is the swap itself — but the run was wasted.
+The script now defaults the snapshot directory to beside the csv and checks any override against
+the csv's device, so a caller cannot make the swap non-atomic.
+
+---
+
 ## 7. What is NOT verified
 
 Read this before trusting the rest.
 
-1. **No recovered row has been written to `training/fold/results.csv`.** Everything here is in
-   scratch files. The append is deliberately a separate step and has not been taken.
+1. **What IS verified, so it is not listed below:** the merge is done and the verifier's own
+   verdict on all 3,560 units is `COMPLETE: every expected unit folded, every pose scored at every
+   interface, every cache replayable`, with every bucket at zero — 0 unfolded, 0 unmapped, 0
+   touching-but-unscored, 0 non-finite, 0 uncheckable, and `33600 named by pool.csv, 33000 of them
+   scoreable`. 4zto's 100 rows came from the production scorer's own call under the provenance and
+   ipTM gates, not from the scratch diagnostic that first measured them.
 2. **`4zto_DF` cannot be pair-isolated at all.** All 50 poses fail inside OST with
    `IndexError: arrays used as indices must be of integer (or boolean) type` on a two-chain input
    where a 10-residue peptide faces a 113-residue domain. Its sibling `4zto_EF` isolates fine with
@@ -382,9 +480,10 @@ Read this before trusting the rest.
    matching, but it has not been audited on its own.
 6. **The 5.0 A contact cutoff** is calibrated against OST's behaviour on one structure and a ~2 A
    margin to the nearest unscored pair. It is not OST's internal criterion, which I did not read.
-7. **4zto's 100 rows have not been produced by the pipeline.** They were produced by a scratch
-   diagnostic. The right producer is `phase_i_check rescore`, which runs the real `scorer.py`; since
-   the fix is deployed and the poses are cached it should now succeed where it wrote FAILURE records.
+7. **The ipTM a recovered 4zto row carries differs from what pair isolation reports for the same
+   pose.** The full-complex route gives `4zto_EF` sample 0 an ipTM of 0.5637 and so does pair
+   isolation, because both read the same confidence json -- but the DockQ agreement across routes
+   (item 3) is the only cross-check either number has. Nothing independent confirms the ipTM.
 
 ---
 
@@ -394,12 +493,16 @@ Read this before trusting the rest.
   selects which ipTM to report using the **reference** structure, on `3rhw`, `8w2e`, `9eg6` and
   `7zra`. ipTM is supposed to be reference-free. This may be standard practice for choosing which
   predicted copy to report; I cannot claim that it is.
-- `9dc3` has multi-character chain names (`ABID`, `GAID`, `IDVA`) and
-  [`run_model/scorer.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/run_model/scorer.py)
-  rejects any chain pair that is not exactly two characters, so that structure is silently
-  unscoreable.
-- Should the 12 non-contacting pairs be deleted from `pool.csv` or kept with a `no_contact` flag?
-  Deleting loses the record that the builder ever proposed them.
+- **`9dc3`'s multi-character chain names are now excluded with a reason rather than silently
+  unscoreable** -- `pool_excluded.csv` lists all three of its interfaces as `unrepresentable`. It is
+  listed rather than repaired deliberately: an interface is written `<pdb>_<c1><c2>`, so `9dc3_ABID`
+  could be `A`+`BID` or `AB`+`ID`, and making it representable means changing every iface string in
+  every csv. It blocks nothing today -- 9dc3 is pooled but was never queued and has 0 rows, and no
+  queued interface in either fold has a multi-character chain. If a future fold needs it, take the
+  two reference chains from the pool instead of slicing the name.
+- ~~Should the non-contacting pairs be deleted from `pool.csv`?~~ **Resolved:** neither. The
+  original is immutable and `pool_scoreable.csv` / `pool_excluded.csv` are derived from it, so the
+  record that the builder proposed them survives with the distance that excluded each one.
 
 ---
 
@@ -413,6 +516,8 @@ Read this before trusting the rest.
 | [`00b21ec4`](https://github.com/ebrahimfeghhi/confidence_recalibration/commit/00b21ec4) | shared `contacts.py`; `verify` checks the claim instead of assuming it; audits every pool pair for the reverse error |
 | [`2eb1f2fd`](https://github.com/ebrahimfeghhi/confidence_recalibration/commit/2eb1f2fd) | the scorer's `-c` retry builds its map by sequence, not by assuming the names match |
 | [`4f6a0073`](https://github.com/ebrahimfeghhi/confidence_recalibration/commit/4f6a0073) | recover every pose of a dropped interface, not one; first version of this document |
+| [`d6746f06`](https://github.com/ebrahimfeghhi/confidence_recalibration/commit/d6746f06) | close the eight holes a self-review found in the sweep; the full step-by-step account |
+| this commit | the external review's four gates, the merge transaction, the derived scoreable pool, and the narrowed writer guard -- the training fold reaches 33,000 of 33,000 |
 
 ## 10. Files written or changed
 
@@ -423,4 +528,9 @@ Read this before trusting the rest.
 | [`run_logging/pool_contact_audit.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/run_logging/pool_contact_audit.py) | **new.** Crosses measured contact against rows present over all 1,711 pool interfaces; exits 1 if any non-contacting pair was ever scored |
 | [`phases/phase_j_rescore_unmapped.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/phases/phase_j_rescore_unmapped.py) | the recovery tool: pair isolation, sequence-matched map, role cross-check, full seed/sample sweep, canonical row output |
 | [`eval/ost_dockq.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/eval/ost_dockq.py) | the `-c` retry map, rebuilt by sequence. **Deployed live** |
-| [`phases/phase_i_check.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/phases/phase_i_check.py) | `verify` honours `--worklist`, buckets `unmapped` separately, and measures contact instead of assuming it |
+| [`phases/phase_i_check.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/phases/phase_i_check.py) | `verify` honours `--worklist`, buckets `unmapped` separately, and measures contact before calling anything a gap |
+| [`phases/phase_l_merge_recovered.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/phases/phase_l_merge_recovered.py) | **new.** Promotes recovered rows into a results.csv as one checked transaction, under the per-csv lock, with a backup |
+| [`run_logging/derive_scoreable_pool.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/run_logging/derive_scoreable_pool.py) | **new.** Derives `pool_scoreable.csv` and `pool_excluded.csv` from an immutable `pool.csv`; fails closed on anything it cannot measure |
+| [`run_logging/dedupe_results.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/run_logging/dedupe_results.py) | the writer guard now asks which sessions could write *this* csv, instead of refusing on any fold anywhere |
+| [`shell_scripts/consolidate_training_scores.sh`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/shell_scripts/consolidate_training_scores.sh) | **new.** dedupe -> merge -> verify -> audit in that order, every exit code acted on, snapshots forced onto the csv's own filesystem |
+| [`run_logging/pose_sets.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/run_logging/pose_sets.py) | unchanged, but now the recovery tool's definition of a usable saved pose too |

@@ -80,4 +80,21 @@ if a.out:
             for ifc, n_rows, mn in items:
                 w.writerow([ifc, lbl, n_rows, "" if mn is None else f"{mn:.3f}"])
     print(f"  wrote {a.out}")
-sys.exit(1 if cells["apart_scored"] else 0)
+# IT FAILS CLOSED. Raised in review: exiting only on apart_scored let the audit pass while some
+# interfaces were never checked at all -- a missing reference or an absent chain put them in
+# `uncheckable`, printed them, and still exited 0. "No scored interface is non-contacting" is only
+# worth something alongside "every scored interface was actually checkable", so the gate now
+# asserts both, plus that every pool row landed in exactly one cell.
+placed = sum(len(v) for v in cells.values())
+problems = []
+if cells["apart_scored"]:
+    problems.append(f"{len(cells['apart_scored'])} scored interface(s) have no reference contact")
+if cells["uncheckable"]:
+    problems.append(f"{len(cells['uncheckable'])} interface(s) could not be checked")
+if placed != len(pool):
+    problems.append(f"coverage: {placed} cells for {len(pool)} pool rows")
+if problems:
+    print("AUDIT FAILED: " + "; ".join(problems))
+    sys.exit(1)
+print(f"AUDIT PASSED: all {len(pool)} pool interfaces checked; no non-contacting pair is scored")
+sys.exit(0)

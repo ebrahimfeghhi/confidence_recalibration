@@ -438,7 +438,21 @@ def verify(a):
                     # produce a row, which is why rescore() does not retry these -- but they are
                     # missing scores, not the "no contact in this pose" result below, and counting
                     # them as either one overstates how complete the dataset is.
-                    unmapped.append((ifc, seed, why))
+                    #
+                    # EXCEPT WHEN THE CHAINS DO NOT TOUCH. Raised in review: this branch returned
+                    # before the reference was ever measured, so an interface that is BOTH unmapped
+                    # and non-contacting was reported as recoverable work. 6umg_FH is 12.67 A apart
+                    # and was counted as a gap, which is the whole reason the deficit was quoted as
+                    # 900 when it was 850. A pair with no contact has no DockQ to recover whatever
+                    # OST did with it, so contact decides first and the mapping question is moot.
+                    t = ref_touching(a.refs, ifc)
+                    if t is False:
+                        verified_absent.add(ifc)
+                        no_contact.append((ifc, seed, why))
+                    elif t is None:
+                        uncheckable.append((ifc, seed, why))
+                    else:
+                        unmapped.append((ifc, seed, why))
                 else:
                     # MEASURED, NOT ASSUMED. The scorer's silence about this pair is consistent
                     # with the chains not touching, and also with a mapping that put the pose on
@@ -454,6 +468,12 @@ def verify(a):
                 if bucket:
                     lbl = bucket
                     if bucket == "no_contact" or bucket == "":
+                        lbl = "no_contact"
+                    # THE PER-STRUCTURE BREAKDOWN FOLLOWS THE SAME RULE as the buckets above, or it
+                    # would keep calling 6umg's non-contacting pair "unmapped 100" after the
+                    # totals had stopped doing so -- and that line is what a reader uses to decide
+                    # which structures still need work.
+                    if lbl == "unmapped" and ifc in verified_absent:
                         lbl = "no_contact"
                     by_pdb.setdefault(ifc.split("_")[0], {}).setdefault(lbl, 0)
                     by_pdb[ifc.split("_")[0]][lbl] += 1

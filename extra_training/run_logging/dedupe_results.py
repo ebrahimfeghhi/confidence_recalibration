@@ -268,13 +268,44 @@ os.replace(tmp, a.out)
 print(f"wrote {a.out}: {len(keep)} row(s), {len(rows) - len(keep)} duplicate copy(ies) dropped")
 
 if a.replace:
+    # THE SESSION CHECK ASKS WHETHER A FOLD COULD WRITE *THIS* CSV, not whether any fold exists.
+    # It used to refuse on w1fold, w1val or w2_ whatever file was being replaced, which is a proxy
+    # for "a fold is writing this csv" and too coarse to be right: the validation fold is launched
+    # with --csv <...>/validation/fold/results.csv and cannot touch the training one, so a live
+    # w1val blocked every repair of training/fold/results.csv for the hours it ran. Session names
+    # are the only evidence available here -- reading another user's process cmdline is not
+    # allowed on this box -- and the prefixes are the convention this guard already relied on, so
+    # the fix is to match the prefix to the fold the csv belongs to and keep refusing on anything
+    # whose fold cannot be determined.
+    #
+    # The two load-bearing protections are unchanged and below: the per-csv <csv>.rescore.lock,
+    # and the row-count identity check that refuses if anything appended while the snapshot was
+    # being built. This check is a third layer, and a third layer that fires on the wrong file is
+    # not caution, it is a false alarm that invites someone to bypass all three.
+    WRITERS = {"training": ("w1fold", "w2_"), "validation": ("w1val",)}
+    parts = os.path.abspath(a.csv).split(os.sep)
+    fold = next((p for p in parts if p in WRITERS), None)
+    if fold is None:
+        prefixes = tuple(p for v in WRITERS.values() for p in v)
+        print(f"NOTE: {a.csv} is not under a known fold root, so every fold session counts as a "
+              f"possible writer of it.")
+    else:
+        prefixes = WRITERS[fold]
     live = [ln.split(":")[0] for ln in
             __import__("subprocess").run(["tmux", "ls"], capture_output=True,
                                          text=True).stdout.splitlines()
-            if ln.startswith(("w1fold", "w1val", "w2_"))]
+            if ln.startswith(prefixes)]
     if live:
-        raise SystemExit(f"STOP: {live} are still writing. The snapshot is at {a.out}; "
-                         f"re-run --replace once they have exited.")
+        raise SystemExit(f"STOP: {live} could still be writing {a.csv}. The snapshot is at "
+                         f"{a.out}; re-run --replace once they have exited.")
+    other = [ln.split(":")[0] for ln in
+             __import__("subprocess").run(["tmux", "ls"], capture_output=True,
+                                          text=True).stdout.splitlines()
+             if ln.startswith(tuple(p for v in WRITERS.values() for p in v))
+             and not ln.startswith(prefixes)]
+    if other:
+        print(f"NOTE: {other} are running but write a different fold's csv, so they do not block "
+              f"this replace. The lock and the row-count check below still apply.")
     # AND THE FILE MUST STILL BE THE ONE THAT WAS READ. The lock keeps a rescore out, but it is
     # not proof on its own: a writer that predates the lock, or one that ignores it, would show up
     # here as extra rows. Counting them is cheap and turns a silent loss into a refusal.
