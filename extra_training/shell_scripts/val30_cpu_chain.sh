@@ -71,5 +71,27 @@ nice -n 15 ionice -c 3 $PY -I run_logging/build_wave1_pool.py \
 P=$!; watchdog $P & W=$!; wait $P; RC=$?; kill $W 2>/dev/null
 say "step 3 exit $RC"
 tail -12 training/runs/val30_pool.log
+[ $RC -ne 0 ] && { say "STOPPING at step 3 -- pool builder exited $RC"; exit 1; }
+
+# STEP 3 FAILS CLOSED TOO. Raised in review: this printed CHAIN DONE without reading $RC or
+# checking that the pool it was supposed to write exists and covers the selection. An empty or
+# short pool is the silent failure that matters most -- folder.py builds its interface registry
+# from the pool, so a structure missing from it folds and then scores nothing.
+$PY -I - <<'EOF' || { say "STOPPING at step 3 -- pool incomplete"; exit 1; }
+import csv, os, sys
+sel = [r["pdb"] for r in csv.DictReader(open("validation/full_val/val30_structures.csv"))]
+for f in ("validation/full_val/pool_val30.csv", "validation/fold/chain_roles_val30.csv"):
+    if not os.path.exists(f):
+        print(f"  MISSING OUTPUT: {f}"); sys.exit(1)
+pool = {r["pdb"] for r in csv.DictReader(open("validation/full_val/pool_val30.csv"))}
+roles = {r["pdb"] for r in csv.DictReader(open("validation/fold/chain_roles_val30.csv"))}
+nmiss = sorted(set(sel) - pool)
+rmiss = sorted(set(sel) - roles)
+print(f"  pool covers {len(pool)} of {len(sel)} selected structure(s); roles cover {len(roles)}")
+if nmiss: print(f"  NOT IN THE POOL ({len(nmiss)}): {nmiss[:20]}")
+if rmiss: print(f"  NO CHAIN ROLES ({len(rmiss)}): {rmiss[:20]}")
+sys.exit(1 if nmiss or rmiss else 0)
+EOF
+
 say "MemAvailable $(mem) GB, training fold workers $(folders)"
 say "VAL30 CPU CHAIN DONE -- pool NOT yet merged into validation/fold/pool.csv"
