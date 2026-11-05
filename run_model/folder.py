@@ -1121,8 +1121,13 @@ def finish_unit(ctx, kind, pdb, target, tag, seed, rdir, name, want, poses, dt, 
         print(f"  {kind} {pdb} {target} {tag} seed {seed}: folded in {dt:.0f}s "
               f"(fold-only, not scored)", flush=True)
         shutil.rmtree(f"{rdir}/{name}", ignore_errors=True)
-        if not ctx.A.keep_cifs:
-            shutil.rmtree(f"{rdir}/predictions", ignore_errors=True)
+        # THE POSE CIFS ARE KEPT, UNCONDITIONALLY. The line here used to honour keep_cifs and
+        # rmtree the predictions dir, copied from the scored path below where that runs only
+        # AFTER score_fold has read the poses. In fold-only mode nothing has read them yet and
+        # the entire premise of the flag is that scoring happens later, so deleting them makes
+        # the unit unscoreable: it cost 611 training units and 42 validation units, both of
+        # which had to be refolded. keep_cifs is deliberately not consulted -- there is no
+        # configuration in which a fold-only unit should lose its poses.
         return "ran"
     try:
         got, err = score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses)
