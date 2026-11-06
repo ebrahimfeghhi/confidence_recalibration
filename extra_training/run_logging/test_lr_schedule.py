@@ -175,6 +175,52 @@ def main():
         except ValueError:
             check(f"refuses malformed spec {bad_spec!r}", True)
 
+    # ---- MIXED SEED DEPTH: the horizon must come from the packer, not from len(structs)//S ----
+    # THE THIRD RECURRENCE OF ONE BUG CLASS. steps_per_epoch exists because len(flat)//world
+    # mispredicted the step count (205 vs 184); structs_per_step was added because dividing poses
+    # by accum_local mispredicted it again (205 vs 184 in the cross-seed branch); and when a step
+    # became a constant number of UNITS rather than S whole structures, len(units_by_pdb)//S
+    # mispredicted it a third time -- 426 against 232 on the real population. So the arithmetic is
+    # pinned here against the packer for the population that actually trains.
+    import random as _rnd
+    MIX = {f"deep{i}": 15 for i in range(437)}
+    MIX.update({f"shallow{i}": 1 for i in range(416)})
+    _st, _dr, _U = LRS.pack_cross_seed_steps(MIX, list(MIX), 2)
+    check("mixed 437x15 + 416x1 at S=2 packs 232 step(s)", len(_st) == 232, f"got {len(_st)}")
+    check("every packed step holds exactly S x deepest = 30 unit(s)",
+          _U == 30 and all(sum(MIX[p] for p in c) == 30 for c in _st),
+          f"U={_U}, sizes {sorted({sum(MIX[p] for p in c) for c in _st})}")
+    check("only the arithmetic remainder is dropped (11 of 6,971 unit(s))",
+          sum(MIX[p] for p in _dr) == 11, f"dropped {sum(MIX[p] for p in _dr)}")
+    _spe = LRS.steps_per_epoch(MIX, 3, 5, 30, cross_seed=True,
+                               n_units=sum(MIX.values()), structs_per_step=2)
+    check("steps_per_epoch AGREES with the packer it now calls", _spe == len(_st),
+          f"steps_per_epoch {_spe} vs packer {len(_st)}")
+    check("the old formula len(units_by_pdb)//S would have claimed 426, a 1.84x horizon error",
+          len(MIX) // 2 == 426 and abs((len(MIX) // 2) / len(_st) - 1.84) < 0.04,
+          f"{len(MIX)//2} vs {len(_st)}")
+    # SHUFFLE INVARIANCE IS THE PROPERTY THE SCHEDULE NEEDS. Plain first-fit over a shuffled
+    # order gave 220..229 steps on this population, so no constant steps-per-epoch existed to
+    # calibrate a decay window against; the descending sort is stable, so the count depends only
+    # on the depth histogram while WHICH structures share a step still varies per epoch.
+    _counts, _co = set(), set()
+    for _e in range(25):
+        _o = list(MIX); _rnd.Random(_e).shuffle(_o)
+        _s2, _d2, _ = LRS.pack_cross_seed_steps(MIX, _o, 2)
+        _counts.add(len(_s2)); _co.add(tuple(sorted(_s2[0])))
+    check("the step count is identical under 25 different epoch shuffles",
+          _counts == {232}, f"got {sorted(_counts)}")
+    check("but WHICH structures share a step still varies per epoch",
+          len(_co) > 1, f"only {len(_co)} distinct first step(s) over 25 shuffles")
+    # UNIFORM POPULATIONS MUST NOT MOVE. The fix has to be a no-op where a step really was S
+    # whole structures of equal depth, which is every arm run so far.
+    for _n, _d, _S, _want in ((368, 10, 3, 122), (100, 10, 3, 33), (100, 10, 2, 50),
+                              (101, 10, 2, 50)):
+        _U2 = {f"s{i}": _d for i in range(_n)}
+        _s3, _, _ = LRS.pack_cross_seed_steps(_U2, list(_U2), _S)
+        check(f"uniform {_n}x{_d} at S={_S} still packs {_want} step(s) (= floor(n/S))",
+              len(_s3) == _want == _n // _S, f"got {len(_s3)}, floor {_n // _S}")
+
     print(f"\n  {len(FAIL)} failure(s)" + (f": {FAIL}" if FAIL else ""))
     return 1 if FAIL else 0
 

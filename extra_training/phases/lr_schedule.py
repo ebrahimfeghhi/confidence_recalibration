@@ -101,6 +101,53 @@ def units_per_rank(units_by_pdb, world, cross_seed=False, n_units=None):
     return sum(v // max(1, world) for v in units_by_pdb.values())
 
 
+def pack_cross_seed_steps(depth, order, structs_per_step):
+    """ONE packing, used by the epoch builder AND by the horizon. in: {pdb: n_units}, the epoch's
+    structure order, S.  out: (list of chunks of pdb, dropped pdbs, unit budget per step).
+
+    WHY THIS IS A FUNCTION AND NOT TWO. build_epoch_cross_seed packed units inline and this module
+    predicted the step count with len(units_by_pdb) // S. That was right while a step was S whole
+    structures; it stopped being right the moment a step became a constant number of UNITS, and the
+    two drifted silently -- 853 // 2 = 426 claimed against 232 actually built, a 1.84x horizon
+    error. A cosine decay configured for epochs 20..50 would have run 36.7..91.8, leaving lr eight
+    times its intended value at epoch 50. That is the THIRD recurrence of this bug class in this
+    file's history, which is why the prediction is now the implementation rather than a model of it.
+
+    FIRST-FIT DECREASING, so the step count is a function of the DEPTH HISTOGRAM ALONE and not of
+    the epoch's shuffle. Plain first-fit over a shuffled order gave 220..229 steps on the real
+    437x15 + 416x1 population depending on the seed, so there was no constant steps-per-epoch to
+    calibrate a schedule against even in principle. Sorting by descending depth is stable, so a
+    caller that shuffles first keeps randomness WITHIN each depth class -- which structures share a
+    step still varies per epoch -- while the count does not. It also wastes less: 11 units dropped
+    against 19-35 structures.
+    """
+    S = max(1, int(structs_per_step))
+    order = [p for p in order if depth.get(p)]
+    if not order:
+        return [], [], 0
+    U = S * max(depth[p] for p in order)
+    pend = sorted(order, key=lambda p: -depth[p])
+    steps, dropped = [], []
+    while pend:
+        room, chunk = U, []
+        i = 0
+        while i < len(pend) and room:
+            p = pend[i]
+            if depth[p] <= room:
+                chunk.append(p)
+                room -= depth[p]
+                pend.pop(i)
+            else:
+                i += 1
+        if room:
+            # A SHORT FINAL STEP IS DROPPED, not padded: every downstream site reads the step's
+            # unit count as a per-epoch constant.
+            dropped = list(chunk) + list(pend)
+            break
+        steps.append(chunk)
+    return steps, dropped, U
+
+
 def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False, n_units=None,
                     structs_per_step=0):
     """Optimiser steps in one epoch, DERIVED FROM THE EPOCH BUILDER'S OWN GROUPING.
@@ -124,7 +171,10 @@ def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False,
     ceiling: at 368 and S=3 the last 2 structures do not form a step.
     """
     if cross_seed and structs_per_step and structs_per_step > 0:
-        return max(1, len(units_by_pdb) // int(structs_per_step))
+        # THE PACKER ITSELF, not a formula that models it. See pack_cross_seed_steps.
+        _st, _dr, _U = pack_cross_seed_steps(dict(units_by_pdb), list(units_by_pdb),
+                                             structs_per_step)
+        return max(1, len(_st))
     per_rank = units_per_rank(units_by_pdb, world, cross_seed, n_units)
     # CEILING, NOT FLOOR PLUS ONE. The loop flushes a partial accumulation at the epoch
     # boundary, but only when one exists -- and at 368 structures the division is exact

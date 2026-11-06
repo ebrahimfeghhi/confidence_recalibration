@@ -2033,11 +2033,20 @@ def main():
     # THE SAME MODULE phase_k_eval USES, so the per-pose chain join is literally the evaluator's
     # and cannot drift from it.
     import phase_k_eval as _PKE
+    # THE SAME ROLES FILE THE PAE MASK USES. Defined here rather than reaching for _roles_p
+    # because that name is bound inside `if a.pae_scored_pairs:` and this must be safe either way.
+    _rel_roles_p = a.pae_scored_roles or os.path.join(a.fold, "chain_roles.csv")
     _rel_refs = (_PKE.pool_ref_pairs(a.pae_scored_pairs)
                  if (a.rank_form == "rel" and a.pae_scored_pairs) else {})
+    # _roles_p, NOT <fold>/chain_roles.csv. Raised in review and correct: --pae-scored-roles
+    # already steered the PAE mask and RKL.load_labels at line 1769, but these two calls still
+    # hardcoded the default file. chain_roles.csv names 501 structures and interface_chain_pairs
+    # SKIPS an interface whose roles it cannot find, so under --rank-form rel every wave-1
+    # structure would have had no _rel_ifaces while pass A built _pose_pairs from the full pool --
+    # surfacing as _exp != _got, or as silently incomplete rel diagnostics. chain_roles_all.csv
+    # covers 853 of 853; the point of the flag is that both readers use it.
     _rel_ifaces = {_p: [t[0] for t in _l] for _p, _l in
-                   ((_PKE.interface_chain_pairs(a.pae_scored_pairs, os.path.join(a.fold,
-                                                "chain_roles.csv"))[0]).items()
+                   ((_PKE.interface_chain_pairs(a.pae_scored_pairs, _rel_roles_p)[0]).items()
                     if (a.rank_form == "rel" and a.pae_scored_pairs) else {}.items())}
     # IFACE -> STATIC ASYM PAIR, for the DockQ lookup ONLY. _rank_lab is keyed by the asym pair
     # rank_loss.parse_iface derives from chain_roles, while rel keys everything by the interface
@@ -2047,7 +2056,7 @@ def main():
     _rel_dqkey = {}
     if a.rank_form == "rel" and a.pae_scored_pairs:
         for _p2, _l2 in _PKE.interface_chain_pairs(
-                a.pae_scored_pairs, os.path.join(a.fold, "chain_roles.csv"))[0].items():
+                a.pae_scored_pairs, _rel_roles_p)[0].items():
             for _ifc2, _x2, _y2 in _l2:
                 _rel_dqkey[_ifc2] = (min(_x2, _y2), max(_x2, _y2))
 
@@ -2168,6 +2177,9 @@ def main():
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import lr_schedule as _LRS
     _lr_horizon = [0]
+    # STEPS PER EPOCH THE HORIZON WAS CALIBRATED FROM, 0 when cross-seed packing is not in use.
+    # build_epoch_cross_seed compares its own packing against it every epoch.
+    _xs_spe = [0]
     _rank_tau = float(a.rank_tau) if a.rank_tau is not None else None
     _probe = {"rows": [], "units": 0, "poses": 0, "sum": {}, "finite": {}, "nonzero": {}}
     if a.grad_probe:
@@ -6241,29 +6253,18 @@ def main():
         # Structures are taken in `order` and any whose depth does not fit the remaining budget is
         # passed over for a later one that does -- 15 ones fill a 15-unit remainder exactly, which
         # is why the two populations pack with nothing left over.
+        # THE PACKING IS _LRS.pack_cross_seed_steps, WHICH IS ALSO WHAT SETS THE LR HORIZON.
+        # It used to be an inline loop here and a formula there, and they drifted: the horizon
+        # claimed len(order)//S = 426 steps while this built 232, a 1.84x error on the decay
+        # window. One implementation cannot disagree with itself. The sort inside it is by
+        # descending depth and STABLE, so shuffling `order` first keeps per-epoch randomness in
+        # which structures share a step while making the COUNT a function of the depth histogram
+        # alone -- plain first-fit over a shuffled order gave 220..229 steps on this population,
+        # so no constant steps-per-epoch existed to calibrate against.
         _depth = {_p: len(by[_p]) for _p in order}
-        _maxd = max(_depth.values())
-        U = S * _maxd
-        steps, _dropped = [], []
-        _pend = list(order)
-        while _pend:
-            room, chunk = U, []
-            _i = 0
-            while _i < len(_pend) and room:
-                _p = _pend[_i]
-                if _depth[_p] <= room:
-                    chunk.append(_p)
-                    room -= _depth[_p]
-                    _pend.pop(_i)
-                else:
-                    _i += 1
-            if room:
-                # A SHORT FINAL STEP IS DROPPED, not padded. Padding would repeat poses inside one
-                # gradient, and a step holding fewer units than the budget is still correct -- but
-                # the unit count would differ from every other step and the quota bookkeeping that
-                # keeps the ranks in lockstep is what matters more here than the last few units.
-                _dropped = list(chunk) + list(_pend)
-                break
+        _chunks, _dropped, U = _LRS.pack_cross_seed_steps(_depth, order, S)
+        steps = []
+        for chunk in _chunks:
             units = []
             for _p in chunk:
                 u = by[_p][:]
@@ -6273,6 +6274,16 @@ def main():
             if not _manifest_order:
                 rng_e.shuffle(units)
             steps.append(units)
+        # THE HORIZON AND THE BUILDER AGREE, ASSERTED EVERY EPOCH. The LR schedule was
+        # calibrated once at startup from _LRS.steps_per_epoch; if this epoch packs a different
+        # number of steps then lr_at_step is reading the wrong horizon and the arm is not running
+        # the schedule it reports. Cheap, and it is the check whose absence let 426-vs-232 ship.
+        if steps and _lr_horizon[0] and _xs_spe[0] and len(steps) != _xs_spe[0]:
+            raise SystemExit(
+                f"STOP: epoch {ep} packed {len(steps)} cross-seed step(s) but the lr horizon was "
+                f"built from {_xs_spe[0]} step(s)/epoch. The decay window would be wrong by "
+                f"{_xs_spe[0] / max(1, len(steps)):.3f}x. Both come from "
+                f"_LRS.pack_cross_seed_steps, so this means the population changed mid-run.")
         if steps and is_main and len({len(x) for x in steps}) != 1:
             # NOT REACHABLE BY CONSTRUCTION, asserted anyway: everything downstream treats the
             # step size as a constant, and a packing bug here is the one that deadlocks instead of
@@ -7191,6 +7202,9 @@ def main():
               f"reseeded each epoch). The lr schedule uses the former.")
     steps_cap = 0
     _lr_horizon[0] = _expect
+    # WHAT THE HORIZON WAS BUILT FROM, so build_epoch_cross_seed can refuse if it packs a
+    # different number of steps than the schedule was calibrated for.
+    _xs_spe[0] = _spe_ep if a.rank_cross_seed and a.rank_structs_per_step else 0
     _sched = ("flat after warmup (no decay)" if a.lr_final <= 0.0 else
               f"COSINE {a.lr:g} -> {a.lr_final:g} over steps {a.warmup_steps}..{_expect}")
     print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
