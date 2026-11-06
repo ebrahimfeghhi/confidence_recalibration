@@ -23,11 +23,11 @@ what made its epochs fast, and that has two consequences the usual tooling does 
      copying val_loss_checkpoint()'s own command so the number stays comparable to every other
      arm's val PAE (shipped 2.9756).
 
-BUDGETS DIFFER BETWEEN STAGES AND ARE NOT COMPARABLE ACROSS THEM. Stage 1 reports train AND
-valfull at budget 10, because the training fold has only 10 seeds and a paired comparison needs
-the same depth on both sides. Stage 2 reports valfull at budget 30, which is what every figure in
-paper_results.md uses. A budget-10 valfull number and a budget-30 valfull number are different
-measurements of the same population; do not put them in one column.
+BUDGETS DIFFER BETWEEN STAGES AND ARE NOT COMPARABLE ACROSS THEM. Stage 1 is the TRAIN POOL
+ONLY, at budget 10 -- forced, since the training fold holds only seeds 500000-500009. Stage 2 is
+VALFULL ONLY, at budget 30, which is what every figure in paper_results.md uses. Valfull is
+deliberately NOT also measured at budget 10: the user asked for it at 30 and nowhere else, and an
+extra budget-10 valfull column invites exactly the comparison that should not be made.
 
 Usage:
   python -I run_logging/eval_fawgtu_bundles.py --epochs 5,10,15,20,25,30,35,40
@@ -112,23 +112,65 @@ def head_for(ep):
     return os.path.join(RUN_D, f"head_ep{ep}.pt")
 
 
-def show(cmd, cwd=ROOT):
+def show(cmd, cwd=ROOT, cards=None):
+    """Run a stage. `cards` sets CUDA_VISIBLE_DEVICES for stages that do NOT shard themselves.
+
+    THE SHARDED STAGES MUST NOT GET IT. phase_k_eval_sharded assigns each shard its own card and
+    sets the variable per child; handing it a pre-set CUDA_VISIBLE_DEVICES would renumber the
+    devices under it. But a direct phase_k_train call inherits this process's environment, and
+    this orchestrator is normally started with CUDA_VISIBLE_DEVICES="" so the driver itself never
+    claims a card -- which would have left stage 3 with no GPU at all. Caught before it ran.
+    """
     print("      " + " ".join(cmd[:6]) + " ...", flush=True)
     if a.dry_run:
         print("      FULL: " + " ".join(cmd), flush=True)
         return 0
-    return subprocess.run(cmd, cwd=cwd,
-                          env={**os.environ, "LAYERNORM_TYPE": "openfold"}).returncode
+    env = {**os.environ, "LAYERNORM_TYPE": "openfold"}
+    if cards is not None:
+        env["CUDA_VISIBLE_DEVICES"] = cards
+    return subprocess.run(cmd, cwd=cwd, env=env).returncode
+
+
+TRAIN = {"fold": "training/fold",
+         "pool": "training/full_train/pool_insample.csv",
+         "join_cache": "training/full_train/join_cache.json",
+         "seed_base": 500000,
+         "budget": 10}
+"""BUDGET 10 IS FORCED, not chosen: the training fold was folded at seeds 500000-500009, so ten
+is all there is. The valfull side runs at 30 and the two numbers are therefore NOT comparable to
+each other -- they answer "how well does it pick on structures it trained on" and "how well does
+it pick on held-out structures", each against its own oracle."""
 
 
 def stage_train(ep, head):
-    """Train-pool selected DockQ and frac acceptable, with valfull at the SAME budget 10."""
-    out = os.path.join(RUN_D, f"trainmetrics_ep{ep}.json")
+    """Train-pool selected DockQ and frac acceptable. TRAIN POOL ONLY.
+
+    NOT train_eval_metrics.py, for two independent reasons. It takes only [--cards] [--thresh]
+    [--no-run] and positional rids -- no --ckpt, no --out, so it auto-discovers a checkpoint
+    instead of scoring the one asked for, and the first version of this script passed it flags it
+    does not have and failed with "unrecognized arguments". It also reports valfull at budget 10
+    alongside the train pool, which is a measurement the user explicitly does not want: valfull is
+    wanted at budget 30 and nowhere else.
+
+    So this calls the same sharded evaluator stage 2 does, pointed at the training fold.
+    """
+    work = os.path.join(RUN_D, f"traineval_ep{ep}_b{TRAIN['budget']}")
+    out = work + ".json"
     if os.path.exists(out):
         print(f"    train: {os.path.basename(out)} exists, skipping")
         return 0
-    return show([PY, "-I", os.path.join(ROOT, "run_logging", "train_eval_metrics.py"),
-                 a.run, "--ckpt", head, "--cards", a.cards, "--out", out] + POSE)
+    extra = ["--fold", TRAIN["fold"],
+             "--results", os.path.join(TRAIN["fold"], "results.csv"),
+             "--pool", TRAIN["pool"],
+             "--roles", os.path.join(TRAIN["fold"], "chain_roles.csv"),
+             "--seed-base", str(TRAIN["seed_base"])] + POSE + [
+             # CACHED BESIDE THE POOL, as train_eval_metrics did: the join is a function of the
+             # pool and the trunks, so the first arm pays for it and later ones are free.
+             "--join-cache", TRAIN["join_cache"],
+             "--pair-iptm-only", "--prefetch"]
+    return show([PY, "-I", os.path.join(ROOT, "phases", "phase_k_eval_sharded.py"),
+                 "--cards", a.cards, "--ckpt", head, "--budget", str(TRAIN["budget"]),
+                 "--work", work, "--out", out, "--extra", " ".join(extra)])
 
 
 def stage_val(ep, head):
@@ -157,7 +199,8 @@ def stage_valpae(ep):
     if os.path.exists(os.path.join(out, "trajectory.csv")):
         print(f"    valpae: {os.path.basename(out)}/trajectory.csv exists, skipping")
         return 0
-    cmd = [PY, "-I", os.path.join(ROOT, "phases", "phase_k_train.py"),
+    cards = [c.strip() for c in a.cards.split(",") if c.strip()]
+    base = [PY, "-I", os.path.join(ROOT, "phases", "phase_k_train.py"),
            "--loss-only", "--resume", bundle, "--resume-allow-drift",
            "--resume-note", (f"held-out PAE measurement of resume_ep{ep}.pt; --loss-only reads "
                              f"the weights and writes no checkpoint, so the bundle's schedule is "
@@ -183,12 +226,63 @@ def stage_valpae(ep):
            "--clip-norm", str(ARGS.get("clip_norm", 25.0)),
            "--blocks-per-ckpt", str(ARGS.get("blocks_per_ckpt", 0)),
            "--epochs", "1", "--save-every", "0", "--warmup-steps", "0",
-           "--shuffle", "structure", "--out", out] + POSE
+           "--shuffle", "structure"] + POSE
     if ARGS.get("pae_only"):
-        cmd.append("--pae-only")
+        base.append("--pae-only")
     if ARGS.get("crop_all_poses"):
-        cmd.append("--crop-all-poses")
-    return show(cmd)
+        base.append("--crop-all-poses")
+
+    # SHARDED ACROSS THE CARDS, one process per card, because --loss-only is single-process and
+    # 1,590 held-out units on one GPU is three times the wall clock for no reason. phase_k_train
+    # carries --manifest-shard/--manifest-nshards for exactly this, and the trainer's own val
+    # monitor shards the same way.
+    procs = []
+    for i, c in enumerate(cards):
+        sub = os.path.join(out, f"shard{i}")
+        os.makedirs(sub, exist_ok=True)
+        cmd = base + ["--manifest-shard", str(i), "--manifest-nshards", str(len(cards)),
+                      "--out", sub]
+        print(f"    shard {i} -> card {c}", flush=True)
+        if a.dry_run:
+            print("      FULL: " + " ".join(cmd), flush=True)
+            continue
+        procs.append(subprocess.Popen(
+            cmd, cwd=ROOT, env={**os.environ, "LAYERNORM_TYPE": "openfold",
+                                "CUDA_VISIBLE_DEVICES": c},
+            stdout=open(os.path.join(sub, "shard.log"), "w"), stderr=subprocess.STDOUT))
+    if a.dry_run:
+        return 0
+    rcs = [pr.wait() for pr in procs]
+    if any(rcs):
+        print(f"    shard return codes {rcs}", flush=True)
+        return max(rcs)
+
+    # POOLED POSE-WEIGHTED, not as a mean of shard means: the shards hold unequal pose counts, so
+    # averaging their averages would silently weight a small shard like a large one. This is the
+    # same formula the trainer uses on its own val trajectories.
+    import csv as _csv
+    tot, n = 0.0, 0
+    for i in range(len(cards)):
+        t = os.path.join(out, f"shard{i}", "trajectory.csv")
+        if not os.path.exists(t):
+            print(f"    shard {i} wrote no trajectory.csv -- NOT publishing a partial pool, "
+                  f"because a mean over a biased subset of the held-out set looks comparable "
+                  f"and is not", flush=True)
+            return 1
+        for r in _csv.DictReader(open(t)):
+            v = r.get("pae_loss")
+            if v not in (None, ""):
+                tot += float(v)
+                n += 1
+    if not n:
+        print("    pooled 0 poses", flush=True)
+        return 1
+    res = {"epoch": ep, "val_pae": tot / n, "n_poses": n, "shards": len(cards),
+           "bundle": os.path.basename(bundle)}
+    with open(os.path.join(out, "valpae.json"), "w") as fh:
+        json.dump(res, fh, indent=1)
+    print(f"    VAL PAE {res['val_pae']:.4f} over {n} pose(s)", flush=True)
+    return 0
 
 
 b = busy()

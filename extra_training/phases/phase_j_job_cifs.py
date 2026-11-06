@@ -1087,6 +1087,7 @@ def main():
         sel = sel[:a.limit]
     import gemmi
     ok, bad, unplaced_rows, no_instance = 0, [], [], []
+    no_instance_risky = []
     # NATIVE POSITIONS A ROLE'S QUERY OMITS, one row per role that has any. THIS IS THE REFOLD LIST:
     # a query missing an INTERNAL native stretch folded a molecule whose residues are covalently
     # adjacent when they are not, and no label-side repair can add those tokens back.
@@ -1113,7 +1114,24 @@ def main():
             while len(inst_st) > 1:
                 del inst_st[1]
         else:
-            no_instance.append((r["pdb"], r["instance"]))
+            # THE WARNING MUST SAY WHETHER THE COPY IS ACTUALLY AT RISK. A missing instance cif is
+            # only dangerous for a role that falls to SEQUENCE resolution: pick_contacting_copies
+            # never moves a role resolved by name ("ROLES RESOLVED BY NAME ARE NEVER MOVED --
+            # SAbDab2's own assignment is authoritative"), and 9djw failed precisely because
+            # SAbDab2 named chains AG and AE that the entry does not have, so both roles fell to
+            # sequence. The undifferentiated warning sent a reviewer down a reconstruction path
+            # for 17 structures whose roles all resolve by name, where the file changes nothing.
+            _seqs = chain_seqs(st)
+            _names = role_names(row, _seqs)
+            _risky = []
+            for _role, _q in role_sequences(row):
+                _c = _names.get(_role)
+                if _c is None or _c not in _seqs or not spans_for([(_role, _c)], row, _seqs):
+                    _risky.append(_role)
+            if _risky:
+                no_instance_risky.append((r["pdb"], r["instance"], _risky))
+            else:
+                no_instance.append((r["pdb"], r["instance"]))
         pairs, unresolved = job_chains(row, chain_seqs(st), st, inst_st=inst_st)
         if unresolved:
             bad.append((r["pdb"], r["instance"],
@@ -1253,8 +1271,15 @@ def main():
     nz = [r for r in unplaced_rows if r["unplaced"]]
     mz = [r for r in unplaced_rows if r.get("misplaced")]
     if no_instance:
-        print(f"WARNING no instance cif for {len(no_instance)} structure(s); their copy choice fell "
-              f"back to the contact heuristic: {[p for p, _i in no_instance[:8]]}")
+        print(f"note: no instance cif for {len(no_instance)} structure(s), but every role resolved "
+              f"by SAbDab2's own chain names, which the pickers treat as authoritative and never "
+              f"move -- the copy choice is unaffected: {[p for p, _i in no_instance[:8]]}")
+    if no_instance_risky:
+        print(f"WARNING no instance cif AND a role fell to sequence for "
+              f"{len(no_instance_risky)} structure(s); their copy choice rests on the contact "
+              f"heuristic, which took a crystal-packing contact on 9djw (DockQ 0.0080). "
+              f"These need the instance cif or exclusion: "
+              f"{[(p, rk) for p, _i, rk in no_instance_risky[:8]]}")
     print(f"wrote {ok} job cif(s) to {a.out_dir}")
     print(f"dropped residues not in the fold's sequence: {sum(r['unplaced'] for r in nz)} across "
           f"{len({r['pdb'] for r in nz})} structure(s) -> {a.unplaced}")

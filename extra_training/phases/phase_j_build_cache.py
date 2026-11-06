@@ -846,6 +846,12 @@ def main():
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--only", default="", help="comma-separated pdb ids")
+    ap.add_argument("--unit-seeds", default="",
+                    help="lo-hi inclusive: label only units whose SEED is in this range. Needed to "
+                         "backfill while a fold is still writing: --only takes a structure and then "
+                         "labels every trunk it has, including one the folder may be partway "
+                         "through writing. A torn npz is not reliably a load error, so the safe "
+                         "move is to not read the seed currently being folded at all.")
     ap.add_argument("--require-complete", action="store_true",
                     help="fail unless every unit of the MANIFEST has a label in one of "
                          "--label-dirs. Successful completion otherwise means only that the units "
@@ -929,6 +935,21 @@ def main():
         units = [u for u in units if os.path.basename(os.path.dirname(u)).lower() in keep]
         if not units:
             raise SystemExit(f"STOP: --only {a.only} matched no unit under {a.fold}/trunks")
+    if a.unit_seeds:
+        try:
+            _lo, _hi = (int(x) for x in a.unit_seeds.split("-"))
+        except ValueError:
+            raise SystemExit(f"STOP: --unit-seeds {a.unit_seeds!r} is not lo-hi")
+        _before = len(units)
+        def _sd(u):
+            try:
+                return int(os.path.basename(u)[:-4].split("_")[-1])
+            except ValueError:
+                return None
+        units = [u for u in units if _sd(u) is not None and _lo <= _sd(u) <= _hi]
+        print(f"--unit-seeds {_lo}-{_hi}: {len(units)} of {_before} discovered unit(s) kept")
+        if not units:
+            raise SystemExit(f"STOP: --unit-seeds {a.unit_seeds} matched no unit")
     units = units[a.offset::a.stride]
     if a.limit:
         units = units[:a.limit]

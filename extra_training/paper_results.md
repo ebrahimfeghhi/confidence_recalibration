@@ -1155,3 +1155,150 @@ rather than on a loss curve. n=92 held-out is small; the 0.0044 paired s.e. is t
 and nothing here escapes it. The gradient-tail mechanism is a hypothesis with a named test that
 was not run. And the arm was stopped at 40 of a planned 60, so "converged" means flat over the
 30-40 window, not proven flat to 60.
+
+## 19. A NON-GT CROP FOR BOTH TRAIN AND VAL METRICS: the tooling, and what sections 13/14 do NOT close
+
+**The ask:** read the in-sample and held-out metrics on a crop that uses no ground truth, i.e. the
+union over all of a structure's candidate poses of each pose's own PREDICTED interface.
+
+### Why sections 13 and 14 do not already answer it
+
+Both scored `t4jtjr/head_ep30_step3660.pt` -- a head **trained on ground-truth crops** -- on a
+label-free crop. That is a train/eval MISMATCH, so it measures transfer off the training
+distribution, not whether label-free cropping works for a head trained under it. The biased
+token-dropout arms train on the m0 union mask, which is the label-free crop (see below), so
+scoring them on it is MATCHED. That combination has not been run.
+
+### The arms' own training crop is already 99.8% label-free
+
+Measured per structure between `union_crop_m0_gt_ost.npz` (what the arms train on) and
+`union_crop_m0_posefree.npz` (the same build without `--force-gt --ost-pairs`):
+
+| pool | kept, gt_ost | kept, posefree | tokens GT forcing ADDS |
+|------|--------------|----------------|------------------------|
+| train, 368 structures, 50-pose union | median 0.4148, p10 0.2353 | median 0.4142, p10 0.2301 | median 0, mean 0.8, max 24 |
+| held out, 53 structures, 150-pose union | median 0.5734, p10 0.2931 | median 0.5714, p10 0.2913 | median 0, mean 0.9, max 12 |
+
+So the two masks are the same crop. This is the opposite of section 9b's `--crop-margin 5`, which
+is cut entirely from the true structure. **The arms' crop is wide** -- a median 41.5% of tokens on
+train, carrying periphery as well as interface -- and it is not a label crop in any meaningful
+sense.
+
+### The tooling
+
+- `run_logging/build_union_crop_masks.py` (unchanged) built four m0 masks: `gt_ost` and `posefree`
+  x {`training/full_train/`, `training/valfull/`}. `--verify-rule` re-runs the identical code on
+  the LABEL coordinates and asserts it reproduces the trainer's `interface_crop_tokens` bit for
+  bit, on all 368 and all 53 structures.
+- `run_logging/cropped_eval.py` previously hard-exited on `crop_margin <= 0`, which is every
+  token-mask arm. It now resolves three cases: a token arm on its own mask, a margin arm on its
+  own margin, and either arm on an explicitly named crop it did NOT train under. The guard's
+  `crop_tokens` is a DIGEST, not a path -- the path comes from the run's `args.json` and is then
+  verified against the digest, so a mask rebuilt under the same filename is refused.
+- `run_logging/cropped_eval_report.py` prints the four cropped cells beside the UNCROPPED pair
+  from the run's own metric files, because the cropped number alone is not a result: cropping
+  raises every score, the shipped head's included.
+- `shell_scripts/cropped_eval_labelfree.sh <rid> <ep> [posefree|gt_ost]` builds what is missing,
+  re-verifies both masks every run, asserts `force_gt=false` for the posefree variant rather than
+  waiving it, and launches and stops nothing.
+- `run_logging/test_cropped_eval_labelfree.py`, 26 checks, all passing.
+
+**One bug fixed in passing:** passes are skipped when their `.json` exists and the shipped pass
+carried no epoch or crop in its name, so a second crop variant run into the same output directory
+silently reused the first variant's shipped baseline and compared two different crops. Every pass
+name now carries an 8-char fingerprint of its crop flags; the two variants hash to `de5302ec` and
+`0958de3a`.
+
+### How to read the result when it lands
+
+The comparison is the DIVERGENCE, not the cropped number. In-sample climbing on cropped inputs
+while uncropped stalls is the failure the arm's own launcher names: learning to rank CROPS rather
+than poses. The ground-truth-cropped arm did exactly that at 0.6305 cropped against 0.5387
+uncropped. Cropped and uncropped agreeing means the crop was a convenience, not the mechanism.
+
+### REVIEW CORRECTION: the cropped held-out numbers were never significant
+
+Codex review of the tooling found that the report carried a **0.0044 paired s.e. and a +0.009
+bar over from the UNCROPPED comparison onto a CROPPED one.** Those do not transfer. Computed from
+the per-interface differences of each comparison's own `rows_*.csv`:
+
+| comparison | delta | paired s.e. | 95% bar | verdict |
+|---|---|---|---|---|
+| UNCROPPED, 0.90/0.35 arm ep20, ours mean-sel vs shipped recorded | −0.0023 | **0.0048** | +0.0094 | inside |
+| CROPPED label crop, GT-cropped arm ep30, ours mean-sel vs shipped MAX-sel | +0.0226 | **0.0125** | +0.0245 | **inside** |
+| CROPPED label crop, same, ours mean-sel vs shipped mean-sel | +0.0164 | **0.0138** | +0.0270 | **inside** |
+| CROPPED label crop, same, ours mean-sel vs shipped recorded ipTM | +0.0197 | **0.0133** | +0.0261 | **inside** |
+
+**Cropping inflates the per-interface spread by about 2.7x, so the bar nearly triples.** The
+uncropped 0.0048 validates the 0.0044 that has been in use. The cropped deltas do not clear their
+own bars, and the held-out splits are near-symmetric: 39 better / 34 worse / 19 identical on the
+primary comparison. Section 9b's **+0.0163 held-out was read in-session as "3.7 s.e., the only
+number in this project that clears the bar." That was wrong** -- it applied the uncropped error
+bar to a cropped comparison. It is about 1.3 s.e. of its own. The in-sample cropped numbers DO
+clear their bars (+0.0771 on a +0.0127 bar, 455 better / 183 worse of 738), which is the
+in-sample/held-out split section 15 already describes, not a new result.
+
+### Three further review fixes, all evaluation integrity
+
+1. **The report could print one crop variant's numbers under another's heading.** It globbed for
+   any shipped pass and took the most recently modified, and `--variant` only changed the heading.
+   It now requires the exact `--crop-id` and reports MISSING rather than substituting.
+2. **The crop fingerprint hashed mask FILENAMES, not contents**, so a mask rebuilt under the same
+   filename reused result files computed on the old tokens -- the same failure
+   `phase_k_train`'s crop digest exists to prevent on the training side. Now hashed over the
+   per-structure digests; the posefree variant moved `0958de3a` -> `7d2ae363` on the fix alone.
+3. **The cropped and uncropped columns used different shipped baselines.** Cropped compared
+   ours-mean against shipped-MEAN while uncropped compared against the shipped head's RECORDED
+   ipTM, so the gap moved the crop AND the shipped readout at once. Now reported as PRIMARY
+   (shipped MAX-selected, matching every uncropped number in this project) and DIAGNOSTIC
+   (shipped mean-selected), each with its own computed bar, and the gap is labelled indicative
+   because the two shipped baselines remain recomputed vs stored.
+
+**And a latent bug that would have bitten the first real run:** `phase_k_eval`'s mask loader
+excluded `__n` but not `__pairs` or `__meta`, so 53 real masks sat in a dict of 107 entries --
+`__pairs` (int chain indices) and `__meta` (a string blob) both survived `.astype(bool)` as
+plausible-looking masks. Lookups are by pdb id so the per-structure masks were never wrong, but
+the printed structure count read 107 and any coverage check against `len(_CROPTOK)` would have
+been wrong. No `--crop-tokens` eval had ever run, which is why it survived.
+
+### A distribution caveat the review raised, and it stands
+
+Training keeps peripheral tokens 35% of the time (`--token-keep-other 0.35`); a pure union-crop
+eval keeps **none** of them. So the eval is not the training distribution either. The two cropped
+readings bracket it: pure union is 0% periphery, uncropped is 100%, training sits at 35%.
+
+### THE TWO POOLS DISAGREE ABOUT WHICH MARGIN MATCHES TRAINING
+
+Corrects a claim made in session, that the +5 A condition is further from the training
+distribution than margin 0. That is true on held out and **false on train**, and the reason is
+worth keeping.
+
+The arm trains on **0.581-0.587 of tokens** (`run.log`'s own token-draw line across epochs
+20-24). Token dropout keeps 90% of the union AND **35% of the periphery**, and that periphery
+contribution is what lifts the margin-0 union's 0.414 up to 0.583.
+
+| mask | structures | poses per union | kept, median | vs training's ~0.583 |
+|------|-----------|-----------------|--------------|----------------------|
+| train, m0 posefree | 368 | 50 | 0.4142 | 0.169 BELOW |
+| train, m0 gt_ost (the training mask) | 368 | 50 | 0.4148 | 0.168 below |
+| train, m5 posefree | 368 | 50 | **0.5969** | **0.013 above** |
+| held out, m0 posefree | 53 | 150 | 0.5714 | 0.012 below |
+| held out, m5 posefree | 53 | 150 | 0.7436 | 0.161 above |
+
+**So on the in-sample pool, margin 5 reconstitutes almost exactly the amount of peripheral
+context the dropout was already feeding the head** -- 0.597 against 0.583 -- while margin 0 is
+0.17 short of it. On held out the ordering flips: margin 0 is the near match at 0.571 and margin
+5 overshoots.
+
+The flip is not a rule difference. Both pools use the identical crop rule; the held-out union
+spans **150 poses against train's 50** (budget 30 x nsample 5 against 10 x 5), so the union is
+simply wider there at every margin. Any comparison that reads "matched to training" off one pool
+and applies it to the other will get the sign wrong.
+
+WHAT THAT DOES TO THE READ. The in-sample cell under margin 5 is now the nearest thing to an
+on-distribution cropped read that exists for this arm, which makes it the more informative
+in-sample condition, not the less. The held-out cell has no training distribution to match -- the
+head never saw those structures -- so there both margins are legitimate inference-time choices and
+the monotone sequence in tokens kept (0.571 -> 0.744 -> 1.000 uncropped) is the thing to read: a
+metric that moves monotonically with crop size is showing a crop-size effect, and the middle point
+is what separates that from a context effect.
