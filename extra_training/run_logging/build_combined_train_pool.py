@@ -34,6 +34,22 @@ not all scored is the thing that made a fold look complete when it was not.
 import argparse, collections, csv, glob, math, os, sys
 
 COLS = ["pdb", "chain1", "chain2"]
+
+
+def parse_seed_field(txt):
+    """'500000-500014' or '500000,500003' or a mix -> a set of ints. Same grammar as
+    phase_k_train's --manifest-selection reader, so one declaration drives both."""
+    out = set()
+    for part in str(txt).replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            out.update(range(int(lo), int(hi) + 1))
+        else:
+            out.add(int(part))
+    return out
 ARM = "free"      # every queued training unit; checked against queue.tsv
 
 
@@ -54,8 +70,40 @@ def main():
                          "seeds present must be a contiguous run from --seed0 whatever the count")
     ap.add_argument("--nsample", type=int, default=5)
     ap.add_argument("--seed0", type=int, default=500000)
+    ap.add_argument("--expect-manifest", default="",
+                    help="the IMMUTABLE per-structure seed declaration (the --manifest-selection "
+                         "csv, with a `seeds` column). With it, an interface's seed set must EQUAL "
+                         "its structure's declared set; without it the gate can only check "
+                         "contiguity, which cannot tell intended mixed depth from a lost tail.")
+    ap.add_argument("--allow-short", default="",
+                    help="csv of iface,seeds naming interface-seeds no route can score, as "
+                         "docs/unrecoverable_interfaces.csv does. Only these may fall short of the "
+                         "declared depth, and only by exactly the seeds named.")
     ap.add_argument("--write", action="store_true")
     a = ap.parse_args()
+
+    # THE DECLARED DEPTH, WHICH IS THE ONLY THING THAT CAN TELL INTENDED FROM LOST.
+    # Raised in review and correct: the contiguity test accepts ANY prefix from --seed0, so a
+    # structure declared at 15 seeds that lost 500014 leaves a clean 14-seed run and passes. The
+    # 1-seed population legitimately passes too, so the gate could not distinguish them. Comparing
+    # against the same immutable manifest phase_k_train reads closes that, and refuses rather than
+    # inferring intent from the thing being checked.
+    declared = {}
+    if a.expect_manifest:
+        for r in csv.DictReader(open(a.expect_manifest)):
+            txt = str(r.get("seeds", "") or "").strip()
+            if txt:
+                declared[r["pdb"].strip().lower()] = parse_seed_field(txt)
+        if not declared:
+            raise SystemExit(f"STOP: --expect-manifest {a.expect_manifest} declares no seeds. An "
+                             f"empty declaration would make every interface fail, which is never "
+                             f"what a caller means.")
+    # AND THE ONLY INTERFACES PERMITTED TO FALL SHORT, by name and by exactly which seeds.
+    short_ok = {}
+    if a.allow_short:
+        for r in csv.DictReader(open(a.allow_short)):
+            txt = str(r.get("seeds", "") or "").strip()
+            short_ok[r["iface"].strip()] = parse_seed_field(txt) if txt else set()
 
     master = pool_ifaces(a.master)
     # THE EXACT KEY SET, NOT A ROW COUNT. Raised in review: "50 finite rows" does not mean "ten
@@ -86,6 +134,7 @@ def main():
     # lost, and that is exactly what a count of rows cannot see.
     samples = {str(k) for k in range(a.nsample)}
     keep, no_rows, short, by_nseeds = [], [], [], collections.Counter()
+    excused_ok = []
     for ifc, cols in sorted(master.items()):
         got = have.get(ifc, {})
         if not got:
@@ -102,12 +151,41 @@ def main():
         for sd, _arm, smp in got:
             per_seed[sd].add(smp)
         seeds_i = sorted(int(s) for s in per_seed)
-        run = [a.seed0 + i for i in range(len(seeds_i))]
-        if seeds_i != run:
-            why.append(f"seeds are not a contiguous run from {a.seed0}: "
-                       f"{seeds_i[:3]}..{seeds_i[-1]} ({len(seeds_i)} present)")
-        if len(seeds_i) < a.min_seeds:
-            why.append(f"{len(seeds_i)} seed(s), fewer than --min-seeds {a.min_seeds}")
+        pdb_l = cols[0].strip().lower()
+        if declared:
+            want_s = declared.get(pdb_l)
+            if want_s is None:
+                why.append(f"{pdb_l} is not declared in --expect-manifest")
+            else:
+                # SUBSET, NOT EQUALITY, AND THE DISTINCTION IS NOT PEDANTIC. The manifest
+                # declares which (pdb, seed) units may TRAIN; results.csv records every unit ever
+                # SCORED. Those differ legitimately: the 416 shallow structures are declared at
+                # seed 500000 because the 2026-11-04 trim reclaimed their trunks for 500001-500009,
+                # but their ROWS for those seeds are still in the canonical file and should be --
+                # nothing was unscored, only un-trunked. Requiring equality failed 790 interfaces
+                # for having more scores than the training set will use, which is not a defect.
+                #
+                # What must hold is that nothing DECLARED is missing. That still catches the case
+                # this gate was added for: a structure declared at 15 seeds that lost 500014 has
+                # 500014 in `missing` and fails, where the old contiguity test saw a clean 14-seed
+                # prefix and passed it.
+                excused = short_ok.get(ifc)
+                target = want_s - excused if excused is not None else want_s
+                got_s = set(seeds_i)
+                missing = sorted(target - got_s)
+                if missing:
+                    note = "" if excused is None else f" (excused {sorted(excused)})"
+                    why.append(f"declared {len(want_s)} seed(s), missing "
+                               f"{len(missing)}: {missing[:4]}{note}")
+                elif excused is not None:
+                    excused_ok.append((ifc, sorted(excused)))
+        else:
+            run = [a.seed0 + i for i in range(len(seeds_i))]
+            if seeds_i != run:
+                why.append(f"seeds are not a contiguous run from {a.seed0}: "
+                           f"{seeds_i[:3]}..{seeds_i[-1]} ({len(seeds_i)} present)")
+            if len(seeds_i) < a.min_seeds:
+                why.append(f"{len(seeds_i)} seed(s), fewer than --min-seeds {a.min_seeds}")
         incomplete = sorted(sd for sd, ss in per_seed.items() if ss != samples)
         if incomplete:
             why.append(f"{len(incomplete)} seed(s) short of {a.nsample} samples e.g. "
@@ -124,6 +202,12 @@ def main():
     print(f"  no rows at all             : {len(no_rows)}  {sorted(no_rows)}")
     print(f"  incomplete                 : {len(short)}  {sorted(short)[:6]}")
     print(f"  structures in the new pool : {len({c[0] for c in keep})}")
+    if declared:
+        print(f"  checked against            : {a.expect_manifest} "
+              f"({len(declared)} declared structure(s))")
+    if excused_ok:
+        print(f"  ACKNOWLEDGED short         : {len(excused_ok)} interface(s) via "
+              f"{os.path.basename(a.allow_short)} -- {excused_ok[:4]}")
 
     if short:
         print("BUILD FAILED: a training pool must not name a partially scored interface.")

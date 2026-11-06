@@ -656,7 +656,7 @@ cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,resolution,method,msa
 98,9dz4,pdb_00009dz4_C_B,3512,P548,1473,3,2.99,EM,1,500000-500014
 1867,9dzf,pdb_00009dzf_H_L,3453,P5,2289,4,2.70,EM,1,500000
 ,9dzg,,,,2289,,,,,500000
-1867,9dzj,pdb_00009dzj_G_K,2965,P5,1261,3,2.70,EM,1,500000
+1867,9dzj,pdb_00009dzj_G_K,2965,P5,1261,3,2.70,EM,1,500002
 ,9dzk,,,,1261,,,,,500000
 2126,9e3h,pdb_00009e3h_H_L,3461,P255/P388,600,4,2.90,EM,1,500000
 2126,9e3k,pdb_00009e3k_J_K,3383,P586,386,3,3.20,EM,1,500000

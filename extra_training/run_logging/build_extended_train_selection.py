@@ -42,6 +42,15 @@ def main():
     ap.add_argument("--skip", default="9mx1",
                     help="documented exclusions; 9mx1 is 2,941 residues against a 2,560-token limit")
     ap.add_argument("--out", default="train_val_splits/cache_train_structures_extended.csv")
+    ap.add_argument("--reclaim-journal", action="append", default=[],
+                    help="staged_reclaim journal(s), e.g. training/runs/reclaim_train.json. Names "
+                         "every trunk the trim unlinked, so a shallow structure whose declared "
+                         "seed was the one reclaimed is declared at the surviving seed instead. "
+                         "The journal is the trim DECISION, not the disk.")
+    ap.add_argument("--seed0", type=int, default=500000,
+                    help="the first seed the trim chose from, for resolving a survivor")
+    ap.add_argument("--window", type=int, default=10,
+                    help="how many seeds the trim chose from, for resolving a survivor")
     ap.add_argument("--require-ready", action="store_true",
                     help="refuse unless every declared (pdb, seed) has BOTH a trunk and a label")
     ap.add_argument("--write", action="store_true")
@@ -75,8 +84,54 @@ def main():
     if os.path.exists(a.prev):
         prev = {r["pdb"].strip().lower(): r for r in csv.DictReader(open(a.prev))}
 
+    # WHICH SEED THE TRIM ACTUALLY LEFT, FROM THE TRIM'S OWN JOURNAL. --shallow-seeds names one
+    # seed for all 416, and for 415 of them that is right. It is wrong for 9dzj: staged_reclaim
+    # unlinked trunks/9dzj/free_500000.npz (826 MB) and left free_500002, so the declaration asked
+    # for a unit that does not exist and --require-ready reported a missing trunk for a structure
+    # that is perfectly trainable at a different seed.
+    #
+    # THE JOURNAL, NOT A GLOB. The docstring's rule stands -- globbing the trunks would turn a lost
+    # unit into a quietly smaller training set. But the reclaim journal is not the disk: it is the
+    # recorded trim DECISION, naming every file it unlinked. Deriving the survivor from it is
+    # declaring the trim decision accurately, which is what the rule asks for. A structure whose
+    # journal entry does not leave exactly one survivor in the shallow window refuses rather than
+    # guessing.
+    removed = collections.defaultdict(set)
+    for jf in a.reclaim_journal:
+        if not os.path.exists(jf):
+            raise SystemExit(f"STOP: --reclaim-journal {jf} does not exist")
+        import json as _json
+        for f in _json.load(open(jf)).get("files", []):
+            rel = f.get("rel", "")
+            if "/trunks/" in rel and f.get("unlinked"):
+                bits = rel.split("/")
+                sd = bits[-1].replace("free_", "").replace(".npz", "")
+                if sd.isdigit():
+                    removed[bits[bits.index("trunks") + 1]].add(int(sd))
+    if a.reclaim_journal:
+        print(f"  reclaim journal(s): removals recorded for {len(removed)} structure(s)")
+
     def seeds_of(p):
-        return a.deep_seeds if p in deep else a.shallow_seeds
+        if p in deep:
+            return a.deep_seeds
+        if not removed.get(p):
+            return a.shallow_seeds
+        want = expand(a.shallow_seeds)
+        gone = removed[p]
+        if not (want & gone):
+            return a.shallow_seeds
+        # the declared shallow seed was reclaimed for this structure; take what the trim left
+        window = set(range(a.seed0, a.seed0 + a.window))
+        surv = sorted(window - gone)
+        if len(surv) != 1:
+            raise SystemExit(
+                f"STOP: {p}'s declared shallow seed(s) {sorted(want)} were reclaimed and the "
+                f"journal leaves {len(surv)} survivor(s) in {a.seed0}..{a.seed0 + a.window - 1} "
+                f"({surv[:6]}). Declare this structure explicitly rather than letting the builder "
+                f"pick.")
+        print(f"  {p}: declared shallow seed {sorted(want)} was reclaimed; "
+              f"the trim left {surv[0]}")
+        return str(surv[0])
 
     def expand(txt):
         out = set()
