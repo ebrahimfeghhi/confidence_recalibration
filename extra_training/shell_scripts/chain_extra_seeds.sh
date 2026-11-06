@@ -58,11 +58,71 @@ sys.exit(1 if miss else 0)
 EOF
 }
 
+# THE INLINE SCORER CANNOT SCORE EVERY INTERFACE, so a seed is not complete when the fold exits.
+# Measured on seed 500010: the fold left 1wej, 4p3c and 9blx with zero rows while all three had a
+# trunk and five sample cifs, and the chain's own gate then refused to start 500011 -- correctly,
+# but it meant the chain stopped after ONE seed and waited for a human. 1wej and 4p3c are in
+# docs/recovery_manifest_wave1.csv: OST groups the antibody H and L chains into one chemical class,
+# leaves one reference chain unassigned and silently drops the interface, so the inline scorer has
+# never scored them at ANY seed and never will. Their earlier rows all came from a recovery sweep.
+#
+# So the recovery is part of folding a seed, not a repair of it. This runs the pair-isolation route
+# over whatever the fold left unscored, merges it under the usual gates, and only then asks whether
+# the seed is complete. If the sweep cannot close the gap the gate still refuses, which is the
+# behaviour that caught this in the first place.
+#
+# --roles IS chain_roles_all.csv, NOT chain_roles.csv. The latter names 501 structures and none of
+# this wave's 356, and the sweep then fails every sample with "roles expect ('?', '?')" -- which is
+# what happened on the first attempt at 1wej and 4p3c. chain_roles_all.csv covers 853 of 853.
+recover_seed(){
+  local SEED=$1
+  local SC="$TG/.consolidate"
+  mkdir -p "$SC"
+  local T; T=$(SEED=$SEED $PY -I - <<'EOF'
+import csv, collections, os
+seed = os.environ["SEED"]
+want = [l.strip() for l in open("docs/extra_seed_structures.txt") if l.strip() and l[0] != "#"]
+got = collections.Counter()
+for r in csv.DictReader(open("training/fold/results.csv")):
+    if r["seed"] == seed:
+        got[r["iface"].split("_")[0]] += 1
+miss = {p for p in want if got[p] == 0}
+# THE POOL NAMES THE INTERFACES, and only sorted single-letter pairs are addressable by the sweep.
+out = []
+for r in csv.DictReader(open("training/fold/pool.csv")):
+    if r["pdb"] in miss:
+        c = "".join(sorted((r["chain1"], r["chain2"])))
+        if len(c) == 2:
+            out.append(f"{r['pdb']}:{r['pdb']}_{c}")
+print(",".join(sorted(set(out))))
+EOF
+)
+  if [ -z "$T" ]; then say "  seed $SEED: nothing left unscored, no recovery needed"; return 0; fi
+  local N; N=$(echo "$T" | tr ',' '
+' | wc -l)
+  say "  seed $SEED: $N interface(s) unscored by the fold; running the isolated route"
+  $PY -I phases/phase_j_rescore_unmapped.py --targets "$T"     --fold "$TG" --refs training/refs --roles "$TG/chain_roles_all.csv"     --seed0 "$SEED" --seeds 1 --nsample 5 --route isolated     --rows-out "$SC/rows_$SEED.csv" || { say "  sweep exit $?"; return 1; }
+  [ -s "$SC/rows_$SEED.csv" ] || { say "  sweep produced no rows"; return 1; }
+  local R; R=$(($(wc -l < "$SC/rows_$SEED.csv") - 1))
+  # THE MANIFEST NAMES WHICH INTERFACES MAY BE ADDED, which the merge requires with --replace.
+  { echo "iface,route"; echo "$T" | tr ',' '
+' | cut -d: -f2 | sort -u | sed 's/$/,iso/'; }     > "$SC/manifest_$SEED.csv"
+  local I; I=$(($(wc -l < "$SC/manifest_$SEED.csv") - 1))
+  # --out MUST SIT BESIDE THE CSV. os.replace is atomic only within one filesystem and raises
+  # EXDEV across devices; pointing it at the session scratchpad failed exactly that way AFTER
+  # every check had passed.
+  $PY -I phases/phase_l_merge_recovered.py --csv "$TG/results.csv"     --rows "iso=$SC/rows_$SEED.csv" --manifest "$SC/manifest_$SEED.csv"     --expect-rows "$R" --expect-ifaces "$I" --seeds 1 --seed0 "$SEED" --nsample 5     --out "$SC/merged_$SEED.csv" --replace || { say "  merge exit $?"; return 1; }
+  say "  seed $SEED: merged $R recovered row(s) over $I interface(s)"
+}
+
 say "waiting for seed $WAIT_FOR to be complete before starting"
 while ! complete "$WAIT_FOR" >/dev/null 2>&1; do
   S=$(tmux ls 2>/dev/null | grep -cE 'w1fold|w1val' || true)
   if [ "$S" -eq 0 ]; then
-    say "seed $WAIT_FOR is INCOMPLETE and no fold session is running -- refusing to chain onto it"
+    say "seed $WAIT_FOR: no fold session running and still incomplete -- attempting recovery"
+    recover_seed "$WAIT_FOR" || true
+    if complete "$WAIT_FOR" >/dev/null 2>&1; then break; fi
+    say "seed $WAIT_FOR is INCOMPLETE after recovery -- refusing to chain onto it"
     complete "$WAIT_FOR" || true
     exit 1
   fi
@@ -111,7 +171,11 @@ for SEED in $SEEDS; do
     S=$(tmux ls 2>/dev/null | grep -c w1fold || true)
     if complete "$SEED" >/dev/null 2>&1; then say "seed $SEED complete"; break; fi
     if [ "$S" -eq 0 ]; then
-      say "STOPPING: seed $SEED is incomplete and every worker has exited."
+      # THE WORKERS ARE DONE; the gap is now a SCORING gap, so try the sweep before refusing.
+      say "seed $SEED: workers exited while incomplete -- attempting recovery before refusing"
+      recover_seed "$SEED" || true
+      if complete "$SEED" >/dev/null 2>&1; then say "seed $SEED complete after recovery"; break; fi
+      say "STOPPING: seed $SEED is still incomplete after the recovery sweep."
       complete "$SEED" || true
       tail -4 $TG/w1fold_seed${SEED}_c4.log
       exit 1
