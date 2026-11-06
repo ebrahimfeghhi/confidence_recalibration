@@ -6943,8 +6943,16 @@ def main():
                               f"[<1 collapsing, >1 exaggerating, ~1 right magnitude]")
                     for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio"):
                         _rel_stat[_k3] = []
-                print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({a.rank_form}, "
-                      f"{a.rank_pairs}-seed pairs): "
+                # THE LINE MUST NAME THE OBJECTIVE THAT RAN. Raised in review: this printed
+                # "({rank_form}, {rank_pairs}-seed pairs)" for EVERY form, so a rel run -- which
+                # has no pair family at all and ignores --rank-pairs entirely -- was logged as
+                # "(rel, cross-seed pairs)". This is the one line most likely to be read back
+                # months later to establish what an arm trained on, and it was asserting a pair
+                # family for an objective that forms no pairs.
+                _obj = ("relative regression on true iTM, mean-centred per interface"
+                        if a.rank_form == "rel"
+                        else f"{a.rank_form}, {a.rank_pairs}-seed pairs")
+                print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({_obj}): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
                       f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s)"
                       + (f" [{_xs_stat['skipped']} step(s) SKIPPED: no straddling pair in either "
@@ -6955,9 +6963,14 @@ def main():
                       # zero floor would misreport the objective in the one line most likely to
                       # be read back later.
                       f"{_xs_stat['pairs']} "
-                      + ("pose(s)" if a.rank_form == "expected" else "pair(s)")
+                      # POSES FOR rel TOO, not just for expected. rank_loss.rel_coeffs returns
+                      # (coeffs, n_poses, loss), so this counter holds a POSE count under rel and
+                      # calling it "pair(s)" overstated the group size by the pair-count factor.
+                      + ("pose(s)" if a.rank_form in ("expected", "rel") else "pair(s)")
                       + ("  (0 is the FLOOR -- every pair ordered)"
                          if a.rank_form == "softplus" else "")
+                      + ("  (0 is the FLOOR -- centred prediction equals centred true iTM)"
+                         if a.rank_form == "rel" else "")
                       + ("  (NEGATIVE: this is -expected DockQ, floor -max(DockQ) per group)"
                          if a.rank_form == "expected" else ""), flush=True)
                 for _k in ("groups", "pairs", "steps", "skipped"):
