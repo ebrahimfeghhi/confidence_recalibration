@@ -1,6 +1,39 @@
 # Pruning degenerate structures, and what it buys on disk
 
-Measured 2026-11-04. Nothing in this document has been deleted; it is a sizing exercise.
+Measured 2026-11-04.
+
+> **STATUS, 2026-11-05: STEPS 2 AND 3 ARE DONE. This is no longer a sizing exercise.** Both trims
+> ran on 2026-11-04 through all five `staged_reclaim.py` stages, verify exit 0 before each unlink,
+> journalled in `training/runs/reclaim_train.json` (1,980 files, 565.06 GiB) and
+> `reclaim_val.json` (3,710 files, 492.20 GiB) — **1,057 GiB reclaimed**, quota deltas matching the
+> inventoried bytes to ~0.1%. The quarantine is empty; nothing is recoverable. The line that used
+> to sit here said nothing had been deleted, which was true when written and misleading afterwards.
+>
+> **The frozen digest in this document is stale.** Step 1 and the retention list both name
+> `adbcc352fb069b63`, which was produced by the buggy v1 algorithm and exists nowhere on disk. The
+> manifest was regenerated as `anchored-coverage-v2`, digest **`d86753b1a5a3d776`**, and that is
+> what `verify_val_manifest.py` now checks and passes on all six checks.
+>
+> **The validation pool is permanently locked to that digest.** The 3,710 non-selected trunks are
+> gone, so re-running the selection and picking differently would leave the new picks with no
+> trunk, short of a 70-seed refold.
+>
+> **And the trim broke every contiguous-seed evaluator**, which was blocker 2 and is now live:
+> 321 of 1,590 trunks are absent from the budget-30 range `400000-400029`, only 3 of 53 structures
+> still match it, and `phases/phase_k_eval.py:1012` raises `STOP: N intended unit(s) have no
+> trunk` unless `--allow-partial`. `run_logging/build_union_crop_masks.py` raises the same way, so
+> the five `training/valfull/union_crop_*.npz` masks still work but **can no longer be rebuilt**.
+> `--seed-manifest` support in both is now required for ANY valfull evaluation, not just the
+> selected pool.
+>
+> **The ledger below is stale.** It budgets from "free now 536.2" plus the two trims; both are
+> banked and ~1,099 GiB has since been spent on the wave-1 training fold and the 30-structure
+> validation fold. Real headroom is **487 GiB**.
+>
+> **What is still available**, measured 2026-11-05: the 196 wave-1 training structures whose every
+> interface is degenerate are at 10 seeds and would free **~300 GiB** if trimmed to 1. That is a
+> second step-3 pass this document does not authorise — step 3 was written for the original 488 —
+> and 55% wave-1 degeneracy is above the 44% its risk 1 predicted.
 
 ## The problem
 
