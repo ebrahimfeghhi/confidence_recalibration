@@ -22,7 +22,14 @@
 #
 # THE ENV VARS ARE WHERE THE TRUNKS COME FROM. The original fold's argv carries no trunk flag; the
 # 1.5 TB under training/fold/trunks was produced by TRUNK_DUMP_DIR and the two PROTENIX_DUMP_*
-# switches, so they are set here to match. 437 units at ~151 MB is about 66 GiB.
+# switches, so they are set here to match.
+#
+# THE COST IS 106 GiB, NOT 66. I first quoted 66 from the validation fold's ~151 MB/unit, which is
+# wrong for training structures: measured over these same 437 structures' existing ten seeds,
+# 4,370 trunks hold 1,056.6 GiB, so one seed across them is 105.7 GiB of trunks at 248 MiB/unit,
+# plus 0.8 GiB of poses at 1.8 MiB/unit. Sampling the run in flight also reads low -- the queue is
+# alphabetical and the early structures are small -- so the ten-seed figure over the whole
+# population is the one to use when sizing another seed.
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
@@ -76,9 +83,9 @@ for i,t in enumerate(o):
     if t.startswith('/dev/'):
         print(int((int(o[i+3])-int(o[i+1]))/2**20)); break
 ")
-say "quota headroom ${AVAIL} GiB; this run needs about 66 GiB of trunks"
-if [ "${AVAIL:-0}" -lt 150 ]; then
-  say "REFUSING: under 150 GiB of quota headroom."; exit 1
+say "quota headroom ${AVAIL} GiB; one seed over these structures costs about 106 GiB"
+if [ "${AVAIL:-0}" -lt 200 ]; then
+  say "REFUSING: under 200 GiB of quota headroom for a ~106 GiB run."; exit 1
 fi
 
 say "launching 3 workers on cards 4, 5, 7 -- fold AND score inline"
