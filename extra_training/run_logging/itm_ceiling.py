@@ -122,6 +122,14 @@ ap.add_argument("--ost-mapping", action="store_true",
                      "noise) and is NOT acceptable for the labels this feeds into training, where "
                      "a swapped pair trains toward another interface's target. Raised in review.")
 ap.add_argument("--report-only", action="store_true")
+ap.add_argument("--skip", default="",
+                help="comma-separated structures to leave out, mirroring phase_k_train's "
+                     "--manifest-skip. 4zto is the case this exists for: it was scored by the "
+                     "FULL-COMPLEX route, so its ost_json does not associate a pose with a sample "
+                     "(\"2.json describes , not sample 2\") and --ost-mapping refuses it rather "
+                     "than falling back to the static chain mapping -- which is exactly what that "
+                     "flag is for. One unresolvable structure aborted all 9 shards, so the skip is "
+                     "named here and the arm must carry the same name in --manifest-skip.")
 ap.add_argument("--seed-manifest", default="",
                 help="the per-structure seed declaration (a csv with pdb and seeds columns, as "
                      "train_val_splits/cache_train_structures_extended.csv). REQUIRED once the "
@@ -293,6 +301,12 @@ def seed_map():
 def run_shard(k):
     pairs_by_pdb, unres = interface_chain_pairs(os.path.join(ROOT, a.pool),
                                                 os.path.join(ROOT, a.roles))
+    skip = {x.strip().lower() for x in a.skip.split(",") if x.strip()}
+    if skip:
+        gone = sorted(set(pairs_by_pdb) & skip)
+        for p in gone:
+            pairs_by_pdb.pop(p, None)
+        print(f"  --skip removed {len(gone)} structure(s): {gone}")
     sm = seed_map()
     if sm:
         missing = [p for p in sorted(pairs_by_pdb) if p not in sm]
@@ -414,6 +428,13 @@ if __name__ == "__main__":
             # labels came out bit-identical to the static ones on all 36,900 rows, which is what
             # exposed it. The parent's own `a` is not the workers' `a`.
             + (["--ost-mapping"] if a.ost_mapping else [])
+            # AND THE TWO FLAGS ADDED FOR THE MIXED-DEPTH POPULATION, which I failed to forward
+            # the first time despite the comment above saying exactly this. The symptom was
+            # readable in the shard sizes: 948 units per shard is 853 structures x 10 seeds, not
+            # the 6,941 the manifest declares, and --skip 4zto printed nothing and refused 4zto in
+            # every shard. The parent's own `a` is not the workers' `a`.
+            + (["--seed-manifest", a.seed_manifest] if a.seed_manifest else [])
+            + (["--skip", a.skip] if a.skip else [])
             + (["--limit-units", str(a.limit_units)] if a.limit_units else []))
             for k in range(a.workers)]
         rc = [p.wait() for p in ps]
@@ -425,7 +446,8 @@ if __name__ == "__main__":
                    inputs=[a.pool, a.roles, os.path.join(a.rows_dir, "rows_b10_*_s*.csv"),
                            os.path.join(a.fold, "labels"), os.path.join(a.fold, "trunks")],
                    outputs_glob="gt_iptm_s*.csv",
-                   extra={"workers": a.workers,
+                   extra={"workers": a.workers, "skip": sorted(
+                              x.strip().lower() for x in a.skip.split(",") if x.strip()),
                           "seeds": (f"per-structure via {a.seed_manifest}" if a.seed_manifest
                                     else list(SEEDS)),
                           "chain_mapping": "per-pose OST" if a.ost_mapping

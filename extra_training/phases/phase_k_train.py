@@ -2922,10 +2922,13 @@ def main():
     if True:
         if not a.alignment_preflight:
             raise SystemExit(
-                "STOP: --minimal-items needs --alignment-preflight. Skipping the full dataset item "
-                "also skips check_alignment, which is what proves the trunk's features agree atom "
-                "for atom with the dataset's -- the one failure that would pair a pose with another "
-                "molecule's label. Run:\n"
+                "STOP: --alignment-preflight is REQUIRED. It is not conditional on "
+                "--minimal-items: the full dataset-item path is gone, so the minimal path is the "
+                "only path and check_alignment can no longer run per structure. Omitting "
+                "--minimal-items does NOT avoid this -- the message used to say it did, and that "
+                "cost a launch attempt. check_alignment is what proves the trunk's features agree "
+                "atom for atom with the dataset's, the one failure that would pair a pose with "
+                "another molecule's label. Run:\n"
                 "  phases/phase_k_alignment_preflight.py --out <marker>\n"
                 "and pass that marker.")
         if not os.path.exists(a.alignment_preflight):

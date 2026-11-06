@@ -31,14 +31,32 @@ _ap = argparse.ArgumentParser(description=__doc__)
 _ap.add_argument("--manifest-skip",
                  default="9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3",
                  help="the same exclusions the launch passes to phase_k_train")
-_ap.add_argument("--seeds", default="500000-500009")
+_ap.add_argument("--seeds", default="500000-500009",
+                 help="ignored when --seed-manifest is given")
+# THE INDICES FILE IS PART OF THE FINGERPRINT, so scanning with a different one than the labels
+# were built with reports every label as stale. These were hardcoded to job_indices.csv while the
+# 853-structure population's labels are built against all857_indices.csv, and the scan then
+# declared 2,010 labels over 223 structures mismatched on `bio`+`cif` -- with `code` and `loss`
+# matching exactly, which is the tell: the recipe agreed and only the per-structure inputs differed.
+# Nothing was wrong with the labels; the gate was comparing them against the wrong context.
+_ap.add_argument("--indices", default="training/prep/job_indices.csv")
+_ap.add_argument("--bio-dir", default="training/prep/job_bioassembly")
+_ap.add_argument("--mmcif-dir", default="training/prep/job_cifs")
+_ap.add_argument("--selection", default="train_val_splits/cache_train_structures.csv",
+                 help="which structures to scan")
+# AND THE SEED RANGE IS PER STRUCTURE NOW. A flat lo-hi scans seeds a shallow structure does not
+# have and never trains on: of the 223 structures reported above, 220 are declared at ONE seed, so
+# 9 of every 10 labels the scan judged are units the trainer will never read.
+_ap.add_argument("--seed-manifest", default="",
+                 help="per-structure seed declaration; overrides --seeds")
 _a = _ap.parse_args()
 SKIP = {x.strip().lower() for x in _a.manifest_skip.split(",") if x.strip()}
 _lo, _hi = (int(x) for x in _a.seeds.split("-"))
 a = types.SimpleNamespace(
-    indices=os.path.join(ROOT, "training/prep/job_indices.csv"),
-    bio_dir=os.path.join(ROOT, "training/prep/job_bioassembly"),
-    mmcif_dir=os.path.join(ROOT, "training/prep/job_cifs"))
+    indices=os.path.join(ROOT, _a.indices),
+    bio_dir=os.path.join(ROOT, _a.bio_dir),
+    mmcif_dir=os.path.join(ROOT, _a.mmcif_dir))
+print(f"indices {_a.indices}", flush=True)
 
 cfg = DS.build_configs(3400, a.indices, a.bio_dir, a.mmcif_dir,
                        os.path.join(ROOT, "building_msa/work/mmcif_msa"),
@@ -49,10 +67,38 @@ code_fp, loss_fp = BC.fingerprint_context(cfg, verbose=False)
 print(f"current context: code={code_fp} loss={loss_fp}", flush=True)
 
 idx_by_pdb = BC._indices_by_pdb(a.indices)
-rows = [r for r in csv.DictReader(open(os.path.join(ROOT, "train_val_splits/cache_train_structures.csv")))
+rows = [r for r in csv.DictReader(open(os.path.join(ROOT, _a.selection)))
         if r["tokens"].isdigit() and r["pdb"] not in SKIP]
 pdbs = [r["pdb"] for r in rows]
-print(f"scanning {len(pdbs)} structures x {_hi-_lo+1} seeds = {len(pdbs)*(_hi-_lo+1)} labels", flush=True)
+
+def _parse_seeds(txt):
+    out = set()
+    for part in str(txt).replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            _a1, _b1 = part.split("-", 1)
+            out.update(range(int(_a1), int(_b1) + 1))
+        else:
+            out.add(int(part))
+    return out
+
+SEEDS_OF = {}
+if _a.seed_manifest:
+    for r in csv.DictReader(open(os.path.join(ROOT, _a.seed_manifest))):
+        t = str(r.get("seeds", "") or "").strip()
+        if t:
+            SEEDS_OF[r["pdb"].strip().lower()] = sorted(_parse_seeds(t))
+    miss = [p for p in pdbs if p.lower() not in SEEDS_OF]
+    if miss:
+        sys.exit(f"STOP: {len(miss)} scanned structure(s) are not declared in --seed-manifest, "
+                 f"e.g. {miss[:5]}")
+    n = sum(len(SEEDS_OF[p.lower()]) for p in pdbs)
+    print(f"scanning {len(pdbs)} structures, per-structure seeds = {n} labels", flush=True)
+else:
+    print(f"scanning {len(pdbs)} structures x {_hi-_lo+1} seeds = "
+          f"{len(pdbs)*(_hi-_lo+1)} labels", flush=True)
 
 def want_fields(pdb):
     return {"schema": str(BC.SCHEMA), "code": code_fp, "loss": loss_fp,
@@ -64,7 +110,7 @@ bad = defaultdict(list)
 missing, checked = [], 0
 for i, pdb in enumerate(pdbs):
     w = want_fields(pdb)
-    for seed in range(_lo, _hi + 1):
+    for seed in (SEEDS_OF[pdb.lower()] if SEEDS_OF else range(_lo, _hi + 1)):
         lp = os.path.join(ROOT, "training/fold/labels", pdb, f"free_{seed}.npz")
         if not os.path.exists(lp):
             missing.append(f"{pdb}/{seed}"); continue

@@ -206,9 +206,23 @@ def main():
     # checks is the population that will be trained on.
     if not a.skip_gate:
         gate = [sys.executable, "-I", os.path.join(ROOT, "phases", "phase_k_fingerprint_scan.py")]
-        for flag in ("--manifest-skip", "--seeds"):
+        # THE INDICES FILE IS PART OF THE LABEL FINGERPRINT, so forwarding it is not optional:
+        # scanning with a different one than the run will use reports every label as stale. Both
+        # the trainer and the scan default to job_indices.csv, while the 853-structure population's
+        # labels are built against all857_indices.csv -- so a run that passes --indices and a gate
+        # that does not disagree about 2,010 labels with `code` and `loss` matching exactly, which
+        # is how this was found.
+        #
+        # AND --manifest-selection CARRIES THE PER-STRUCTURE SEEDS, so it feeds both --selection
+        # (which structures) and --seed-manifest (how many seeds each). A flat --seeds range scans
+        # seeds a shallow structure does not have and never trains on: 220 of 223 structures the
+        # old scan flagged are declared at ONE seed.
+        for flag in ("--manifest-skip", "--seeds", "--indices", "--bio-dir", "--mmcif-dir"):
             if flag in rest:
                 gate += [flag, rest[rest.index(flag) + 1]]
+        if "--manifest-selection" in rest:
+            sel = rest[rest.index("--manifest-selection") + 1]
+            gate += ["--selection", sel, "--seed-manifest", sel]
         print(f"  preflight: {' '.join(shlex.quote(c) for c in gate)}")
         g = subprocess.run(gate, env={**os.environ, "LAYERNORM_TYPE": "openfold"},
                            capture_output=True, text=True)
