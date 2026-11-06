@@ -1,0 +1,39 @@
+replaying 12qa/free_500010
+train scheduler 16.0
+inference scheduler 16.0
+Diffusion Module has 16.0
+  loss weights: plddt 0.0001  pde 0.0001  pae 0.0001  resolved 0.0001
+2026-11-06 06:43:03,145 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:1196] INFO protenix.data.pipeline.dataset: Using train sets ['sabdab_ft3']
+2026-11-06 06:43:03,147 [/home/ebrahim/Protenix/protenix/utils/file_io.py:267] INFO protenix.utils.file_io: [Protenix IO] load_json_cached finished in 0.002s: path=/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/pdb_seqs/seq_to_pdb_index.json
+2026-11-06 06:43:03,147 [/home/ebrahim/Protenix/protenix/utils/file_io.py:267] INFO protenix.utils.file_io: [Protenix IO] load_json_cached finished in 0.000s: path=/home/ebrahim/confidence_recalibration/extra_training/training/prep/rna_seq_index_empty.json
+2026-11-06 06:43:03,147 [/home/ebrahim/Protenix/protenix/data/msa/msa_featurizer.py:425] INFO protenix.data.msa.msa_featurizer: MSAFeaturizer for sabdab_ft3 initialized.
+2026-11-06 06:43:03,148 [/home/ebrahim/Protenix/protenix/utils/file_io.py:241] INFO protenix.utils.file_io: [Protenix IO] load_json_cached cache hit: path=/home/ebrahim/confidence_recalibration/extra_training/building_msa/work/pdb_seqs/seq_to_pdb_index.json
+2026-11-06 06:43:03,853 [/home/ebrahim/Protenix/protenix/utils/file_io.py:119] INFO protenix.utils.file_io: [Protenix IO] read_indices_csv finished in 0.010s: path=training/prep/all857_indices.csv, shape=(5087, 19)
+2026-11-06 06:43:03,854 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:166] INFO protenix.data.pipeline.dataset: #Rows in indices list: 5087
+2026-11-06 06:43:03,865 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:211] INFO protenix.data.pipeline.dataset: [Excluded by mol_1_type -- ['ions']] #Rows: 5087
+2026-11-06 06:43:03,876 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:211] INFO protenix.data.pipeline.dataset: [Excluded by mol_2_type -- ['ions']] #Rows: 5087
+2026-11-06 06:43:03,876 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:283] INFO protenix.data.pipeline.dataset: ---------- Dataset sabdab_ft3----------
+2026-11-06 06:43:03,878 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:292] INFO protenix.data.pipeline.dataset: intra_prot: 2545/5087(50.03%)
+2026-11-06 06:43:03,878 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:292] INFO protenix.data.pipeline.dataset: prot_prot: 2542/5087(49.97%)
+2026-11-06 06:43:03,878 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:294] INFO protenix.data.pipeline.dataset: ------------------------------
+2026-11-06 06:43:03,879 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:299] INFO protenix.data.pipeline.dataset: intra_prot: 49/98(50.0%)
+2026-11-06 06:43:03,880 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:299] INFO protenix.data.pipeline.dataset: prot_prot: 49/98(50.0%)
+2026-11-06 06:43:03,880 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:300] INFO protenix.data.pipeline.dataset: ------------------------------
+2026-11-06 06:43:03,880 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:302] INFO protenix.data.pipeline.dataset: Final pdb ids: 857
+2026-11-06 06:43:03,880 [/home/ebrahim/Protenix/protenix/data/pipeline/dataset.py:303] INFO protenix.data.pipeline.dataset: ------------------------------
+  5 pose(s), 3468 atoms, sample indices [0, 4, 1, 2, 3]
+  cache-side loss features taken from the npz: resolution, is_rna, is_dna, is_ligand, plddt_m_rep_atom_mask, distogram_rep_atom_mask, pae_rep_atom_mask, frame_atom_index, has_frame
+  pose 0 (sample 0): label max|dx| 0.00e+00 A, mask diff 0 | plddt 2.009908  pde 1.090881  pae 2.634807  resolved 0.026446  loss 0.000576
+  pose 1 (sample 4): label max|dx| 0.00e+00 A, mask diff 0 | plddt 2.287989  pde 1.215431  pae 2.617243  resolved 0.029238  loss 0.000615
+  pose 2 (sample 1): label max|dx| 0.00e+00 A, mask diff 0 | plddt 1.962332  pde 1.056057  pae 2.611615  resolved 0.026876  loss 0.000566
+  pose 3 (sample 2): label max|dx| 0.00e+00 A, mask diff 0 | plddt 2.023725  pde 1.075103  pae 2.620999  resolved 0.026351  loss 0.000575
+  pose 4 (sample 3): label max|dx| 0.00e+00 A, mask diff 0 | plddt 1.936714  pde 1.049922  pae 2.620245  resolved 0.026650  loss 0.000563
+
+gradient: 165 confidence-head tensor(s) with a non-zero grad, 0 outside it
+confidence head is 19.8M of 464.4M parameters (4.3%)
+
+label: max |stored - live| coordinate 0.00e+00 A, mask differences 0
+loss:  max |stored - live| over plddt_loss, pde_loss, pae_loss, resolved_loss, loss = 0.00e+00 (none)
+
+PASS: the cached label is the live label, the FT3 loss agrees term by term, and the gradient reaches the confidence head only.
+NOTE: this does not establish that the LABEL IS CORRECT -- both paths read the same stored structure. That is what phase_j_build_cache.py's two independent checks are for: every resolved label atom must be an atom of the job cif, and each pose's label must be a permutation of its siblings'.

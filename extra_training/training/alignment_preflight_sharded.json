@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "complete": true,
+  "n_manifest_structures": 851,
+  "limit": 0,
+  "manifest_digest": "568d3d3038004257",
+  "n_structures": 851,
+  "n_units": 6941,
+  "manifest_selection": "train_val_splits/cache_train_structures_extended.csv",
+  "manifest_skip": "9mx1,4zto,9q5m",
+  "seeds": "per-structure via cache_train_structures_extended.csv",
+  "checked_seed": "per-structure",
+  "mismatches": [],
+  "missing_trunks": [],
+  "sharded": 9,
+  "written": "2026-11-06T07:17:50-0800"
+}

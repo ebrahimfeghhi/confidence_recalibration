@@ -36,7 +36,8 @@ def main():
                     default=os.path.join(ROOT, "train_val_splits", "cache_train_structures.csv"))
     ap.add_argument("--manifest-skip",
                     default="9mx1,9q5m,9dzf,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,9dc3")
-    ap.add_argument("--seeds", default="500000-500009")
+    ap.add_argument("--seeds", default="500000-500009",
+                    help="ignored when the selection carries a `seeds` column")
     ap.add_argument("--fold", default=os.path.join(ROOT, "training", "fold"))
     ap.add_argument("--indices", default=os.path.join(ROOT, "training/prep/job_indices.csv"))
     ap.add_argument("--bio-dir", default=os.path.join(ROOT, "training/prep/job_bioassembly"))
@@ -46,6 +47,22 @@ def main():
                     default=os.path.join(ROOT, "building_msa/work/pdb_seqs/seq_to_pdb_index.json"))
     ap.add_argument("--crop-size", type=int, default=3400)
     ap.add_argument("--limit", type=int, default=0, help="debug: stop after N structures")
+    # SHARDING, BECAUSE THIS IS 851 STRUCTURES AT ~4 s EACH AND THE GPUS WAIT ON IT. The work is
+    # per-structure and independent: load the dataset item, load the trunk, compare features atom
+    # for atom. itm_ceiling.py already shards the same shape of work nine ways.
+    #
+    # THE DANGER IS SPECIFIC AND THE FILE ALREADY NAMES IT: the marker is what the trainer trusts
+    # INSTEAD of checking alignment itself, so a marker that says ok over structures nobody looked
+    # at is worse than no marker. Two rules make sharding safe, and both are checked by NAME and
+    # not by count:
+    #   - every shard must exit 0, and a shard that dies takes the whole run down;
+    #   - the union of the structures the shards report having CHECKED must equal the manifest
+    #     exactly -- not be the same size as it.
+    # --limit is refused with --workers, because a limited shard plus a full digest is precisely
+    # the false-authorisation shape review round 5 reproduced.
+    ap.add_argument("--workers", type=int, default=1,
+                    help="parallel shards; the parent merges and only it writes the marker")
+    ap.add_argument("--shard", type=int, default=-1, help="internal: set by the parent per worker")
     a = ap.parse_args()
 
     if os.environ.get("LAYERNORM_TYPE") != "openfold":
@@ -64,9 +81,40 @@ def main():
     # THE SAME DIGEST phase_k_train computes, over the same strings: "<pdb>/<label basename>" for
     # every unit, sorted. Reconstructed here rather than imported because the trainer builds it
     # inline; a mismatch is a REFUSAL at launch, never a false pass, so the failure is safe.
-    units = sorted(f"{p}/free_{s}.npz" for p in pdbs for s in range(lo, hi + 1))
+    # PER-STRUCTURE SEEDS WHEN THE SELECTION DECLARES THEM, because the digest has to match the
+    # trainer's and the trainer reads that column. A flat lo-hi cross product gives a different
+    # unit list on a mixed-depth population -- 8,530 against the real 6,941 -- so the marker would
+    # be refused at launch with a digest mismatch. Same grammar as everywhere else.
+    def _ps(txt):
+        out = set()
+        for part in str(txt).replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                _x, _y = part.split("-", 1)
+                out.update(range(int(_x), int(_y) + 1))
+            else:
+                out.add(int(part))
+        return out
+
+    seeds_of = {}
+    for r in rows:
+        t = str(r.get("seeds", "") or "").strip()
+        if t:
+            seeds_of[r["pdb"]] = sorted(_ps(t))
+    if seeds_of and len(seeds_of) != len(pdbs):
+        raise SystemExit(f"STOP: {a.manifest_selection} declares seeds for {len(seeds_of)} of "
+                         f"{len(pdbs)} structure(s). A partial declaration would silently mix a "
+                         f"per-structure depth with the flat --seeds range.")
+    units = sorted(f"{p}/free_{s}.npz" for p in pdbs
+                   for s in (seeds_of[p] if seeds_of else range(lo, hi + 1)))
     digest = hashlib.sha256("\n".join(units).encode()).hexdigest()[:16]
-    print(f"manifest digest {digest} over {len(units)} unit(s), {len(pdbs)} structure(s)")
+    print(f"manifest digest {digest} over {len(units)} unit(s), {len(pdbs)} structure(s)"
+          + (" (per-structure seeds)" if seeds_of else ""))
+    # AND THE TRUNK IT CHECKS IS ONE THE STRUCTURE ACTUALLY HAS. The check reads a single trunk per
+    # structure, and seed `lo` is not it for 9dzj, whose 500000 trunk the trim reclaimed.
+    check_seed = {p: (seeds_of[p][0] if seeds_of else lo) for p in pdbs}
     if not pdbs:
         # A PASS OVER NOTHING IS THE WORST POSSIBLE OUTCOME HERE, because the marker it writes is
         # what --minimal-items trusts instead of checking alignment itself. This fired for real:
@@ -86,10 +134,76 @@ def main():
     train_ds, _ = get_datasets(cfg, os.path.join(ROOT, "training", "prep", "dataset_errors"))
     byp = BC.merged_lookup(train_ds)
 
-    todo = pdbs[:a.limit] if a.limit else pdbs
+    if a.workers > 1 and a.limit:
+        raise SystemExit("STOP: --limit with --workers would write a marker whose digest covers "
+                         "the whole manifest from shards that each checked a slice of a slice.")
+
+    # ---- the parent: fan out, then merge by NAME -------------------------------------------
+    if a.workers > 1 and a.shard < 0:
+        import subprocess
+        parts = [f"{a.out}.shard{k}.json" for k in range(a.workers)]
+        for q in parts:
+            if os.path.exists(q):
+                os.remove(q)
+        procs = []
+        for k in range(a.workers):
+            cmd = [sys.executable, "-I", os.path.abspath(__file__),
+                   "--out", parts[k], "--shard", str(k), "--workers", str(a.workers),
+                   "--manifest-selection", a.manifest_selection,
+                   "--manifest-skip", a.manifest_skip, "--seeds", a.seeds,
+                   "--fold", a.fold, "--indices", a.indices, "--bio-dir", a.bio_dir,
+                   "--mmcif-dir", a.mmcif_dir, "--msa-root", a.msa_root,
+                   "--seq-index", a.seq_index, "--crop-size", str(a.crop_size)]
+            procs.append(subprocess.Popen(cmd, env={**os.environ,
+                                                    "LAYERNORM_TYPE": "openfold"}))
+        rcs = [pr.wait() for pr in procs]
+        print(f"  {a.workers} shard(s) finished, rc={rcs}", flush=True)
+        if any(rcs):
+            raise SystemExit(f"STOP: shard(s) failed with {rcs}; no marker written.")
+        seen, bad_all, miss_all = set(), [], []
+        for q in parts:
+            if not os.path.exists(q):
+                raise SystemExit(f"STOP: shard wrote no partial at {q}; no marker written.")
+            j = json.load(open(q))
+            seen |= set(j.get("checked", []))
+            bad_all += [(m["pdb"], m["error"]) for m in j.get("mismatches", [])]
+            miss_all += j.get("missing_trunks", [])
+        # BY NAME. A count can match while a structure is missing and another is doubled.
+        gap = sorted(set(pdbs) - seen)
+        extra = sorted(seen - set(pdbs))
+        if gap or extra:
+            raise SystemExit(
+                f"STOP: the shards checked a different set than the manifest declares -- "
+                f"{len(gap)} unchecked (e.g. {gap[:5]}), {len(extra)} unexpected "
+                f"(e.g. {extra[:5]}). No marker written.")
+        ok = not bad_all and not miss_all
+        rec = {"ok": ok, "complete": True, "n_manifest_structures": len(pdbs),
+               "limit": 0, "manifest_digest": digest,
+               "n_structures": len(seen), "n_units": len(units),
+               "manifest_selection": a.manifest_selection, "manifest_skip": a.manifest_skip,
+               "seeds": (f"per-structure via {os.path.basename(a.manifest_selection)}"
+                         if seeds_of else a.seeds),
+               "checked_seed": ("per-structure" if seeds_of else lo),
+               "mismatches": [{"pdb": pp, "error": ee} for pp, ee in bad_all],
+               "missing_trunks": miss_all,
+               "sharded": a.workers,
+               "written": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+        with open(a.out, "w") as fh:
+            json.dump(rec, fh, indent=2)
+        for q in parts:
+            os.remove(q)
+        if ok:
+            print(f"PREFLIGHT PASSED: {len(seen)} structure(s) aligned over {a.workers} shard(s) "
+                  f"-> {a.out}")
+            return 0
+        print(f"PREFLIGHT FAILED: {len(bad_all)} mismatch(es), {len(miss_all)} missing trunk(s)")
+        return 1
+
+    todo = (pdbs[a.shard::a.workers] if a.shard >= 0
+            else (pdbs[:a.limit] if a.limit else pdbs))
     bad, missing, t0 = [], [], time.time()
     for i, pdb in enumerate(todo, 1):
-        trunk = os.path.join(a.fold, "trunks", pdb, f"free_{lo}.npz")
+        trunk = os.path.join(a.fold, "trunks", pdb, f"free_{check_seed[pdb]}.npz")
         if not os.path.exists(trunk):
             missing.append(pdb); continue
         # BOUND BEFORE THE try, because `del it` sits outside it. If train_ds[...] raises -- which
@@ -115,13 +229,26 @@ def main():
     # reads ok, accepted it as authorisation for all 491. Review round 5 reproduced that. The
     # marker now records whether every structure in the manifest was actually checked, and a
     # partial run can never be ok.
+    if a.shard >= 0:
+        # A SHARD NEVER WRITES A MARKER, only what it saw. The parent decides, because only the
+        # parent knows whether the union covers the manifest.
+        with open(a.out, "w") as fh:
+            json.dump({"shard": a.shard, "checked": list(todo),
+                       "mismatches": [{"pdb": pp, "error": ee} for pp, ee in bad],
+                       "missing_trunks": missing}, fh)
+        print(f"  shard {a.shard}: {len(todo)} checked, {len(bad)} mismatch(es), "
+              f"{len(missing)} missing", flush=True)
+        return 1 if (bad or missing) else 0
+
     complete = len(todo) == len(pdbs)
     ok = not bad and not missing and complete
     rec = {"ok": ok, "complete": complete, "n_manifest_structures": len(pdbs),
            "limit": int(a.limit), "manifest_digest": digest,
            "n_structures": len(todo), "n_units": len(units),
            "manifest_selection": a.manifest_selection, "manifest_skip": a.manifest_skip,
-           "seeds": a.seeds, "checked_seed": lo,
+           "seeds": (f"per-structure via {os.path.basename(a.manifest_selection)}"
+                     if seeds_of else a.seeds),
+           "checked_seed": ("per-structure" if seeds_of else lo),
            "mismatches": [{"pdb": p, "error": e} for p, e in bad],
            "missing_trunks": missing,
            "schema": int(BC.SCHEMA),
@@ -131,7 +258,8 @@ def main():
         json.dump(rec, fh, indent=1)
     print(f"\nwrote {a.out}")
     if missing:
-        print(f"PREFLIGHT FAILED: {len(missing)} structure(s) have no trunk for seed {lo}: "
+        print(f"PREFLIGHT FAILED: {len(missing)} structure(s) have no trunk at their "
+              f"checked seed: "
               f"{missing[:8]}")
     if bad:
         print(f"PREFLIGHT FAILED: {len(bad)} structure(s) whose trunk disagrees with the dataset:")
