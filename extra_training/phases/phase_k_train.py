@@ -6955,8 +6955,15 @@ def main():
                 print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({_obj}): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
                       f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s)"
-                      + (f" [{_xs_stat['skipped']} step(s) SKIPPED: no straddling pair in either "
-                         f"structure, so no task gradient -- not handed to AdamW]"
+                      # THE REASON MUST MATCH THE FORM. Raised in review: this said "no
+                      # straddling pair" whatever the objective, which is false under rel -- rel
+                      # forms no pairs, and a skipped rel step means the step held no interface
+                      # with at least two labelled poses to centre over.
+                      + ((f" [{_xs_stat['skipped']} step(s) SKIPPED: "
+                          + ("no interface with two or more labelled poses to centre over"
+                             if a.rank_form == "rel" else
+                             "no straddling pair in either structure")
+                          + ", so no task gradient -- not handed to AdamW]")
                          if _xs_stat.get("skipped") else "") + ", "
                       # THE COUNT IS POSES FOR THE EXPECTED FORM, NOT PAIRS, and its floor is
                       # -max(DockQ) rather than 0. Calling 150 poses "150 pair(s)" and claiming a
