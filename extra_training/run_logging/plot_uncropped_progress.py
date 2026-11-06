@@ -126,7 +126,22 @@ def train_rank(run):
 
 
 def shards_complete(d):
-    """(ok, note) for one eval epoch directory, from the shards' own meta.json files.
+    """(ok, note): SHARD AND ROW-COUNT completeness for one eval epoch. NOT key-set identity.
+
+    WHAT THIS DOES NOT ESTABLISH, stated because the distinction was glossed once already. It
+    verifies that every shard index the producers declare is present, that each csv holds the row
+    count its own metadata claims, and that no shard reported an unmapped or unresolvable pose. It
+    does NOT compare the actual (iface, seed, sample) keys against the requested evaluation
+    manifest, and it does not reject a duplicated or unexpected key -- matching row counts do not
+    establish identity. An earlier version of the caller computed a tuple set and then executed
+    `pass`, which enforced nothing while looking like a duplicate check; that is removed rather
+    than left to mislead.
+    
+    So this is a plotting guard that stops a partial or crashed eval from becoming a plottable
+    point. The authoritative held-out numbers come from the evaluator's own aggregation gates, which
+    do validate the expected pose keys, and a selected-DockQ or significance claim should cite
+    those. The right improvement later is to call that same coverage function from here rather than
+    grow a second approximate gate beside it.
 
     A CORRELATION POINT FROM A PARTIAL SHARD SET IS NOT A HELD-OUT RESULT. Raised in review: this
     used to concatenate whichever rows_*.csv existed and plot as soon as three rows survived
@@ -200,9 +215,6 @@ def eval_corr(run, pool="valfull"):
         if len(rows) < 3:
             out[ep] = {"incomplete": f"only {len(rows)} usable row(s)"}
             continue
-        keys = [(i, a, d2, s2) for i, a, d2, s2 in rows]
-        if len(keys) != len(set((i, a, d2, s2) for i, a, d2, s2 in rows)):
-            pass  # identical score tuples are legitimate; duplicates are caught by the row count
         pooled_head = spearman([a for _i, a, _d, _s in rows], [d for _i, _a, d, _s in rows])
         pooled_ship = spearman([s for _i, _a, _d, s in rows], [d for _i, _a, d, _s in rows])
         byif = collections.defaultdict(list)
@@ -347,7 +359,8 @@ def main():
                           label="within-interface, shipped")
         ax[2].plot(e, ph, "^:", color="#9467bd", alpha=.7, label="pooled (across complexes)")
         ax[2].legend(fontsize=8)
-    ax[2].set_title("ipTM vs DockQ, Spearman\n(within-interface is what selection uses;"
+    ax[2].set_title("ipTM vs DockQ, Spearman -- shard/row-count complete epochs only\n"
+                    "(within-interface is what selection uses;"
                     + (f" {len(_part)} partial epoch(s) omitted)" if _part else " complete epochs only)"))
     ax[2].set_xlabel("epoch"); ax[2].set_ylabel("rho"); ax[2].grid(alpha=.3)
 
