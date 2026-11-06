@@ -89,6 +89,10 @@ MARKER="${MARKER:-training/alignment_preflight_sharded.json}"
 RELLAB="${RELLAB:-training/fold/itm_labels_extended}"
 # 0 MEANS CHECKPOINT EVERY UNIT, which is the only safe default for an UNCROPPED population.
 CKPT_THRESH="${CKPT_THRESH:-0}"
+# NOEVAL=1 DROPS THE HELD-OUT EVALUATION. The owner asked for training only on 2026-11-06; the
+# eval-free config existed only in resume_noeval_to_10.sh, which needs a bundle, so a fresh
+# relaunch after an OOM silently brought eval back. A fresh launch must be able to honour it.
+NOEVAL="${NOEVAL:-0}"
 POOL=training/combined/pool.csv
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 say "script $(basename "$0") sha $(sha1sum "$0" | cut -c1-12)  DRY=$DRY cards=$CARDS epochs=$EPOCHS"
@@ -140,7 +144,15 @@ EOF
 $PY -I run_logging/check_rel_label_coverage.py --labels "$RELLAB" --manifest "$MANIFEST" \
   --pool "$POOL" --skip '9mx1,4zto,9q5m' --exclude-ifaces docs/unrecoverable_interfaces.csv \
   || { say "REFUSING: the rel label key set is incomplete"; exit 1; }
+# A DRY RUN MUST NOT REQUIRE FREE CARDS. This gate sat before the DRY check, so validating a
+# config while anything was training refused at "cards_busy reports '5'" and never printed the
+# command line -- which made a dry run useless exactly when it is most wanted, and made my own
+# test of the NOEVAL path report a false pass.
 B=$($PY -I run_logging/cards_busy.py 2>/dev/null | tail -1)
+if [ "$DRY" = "1" ]; then
+  say "DRY RUN: cards_busy reports '$B' and MemAvailable $(awk '/MemAvailable/{printf "%.0f", $2/1048576}' /proc/meminfo) GB -- not gated on a dry run"
+  B=0
+fi
 [ "${B:-1}" != "0" ] && { say "REFUSING: cards_busy reports '$B', not 0."; exit 1; }
 M=$(awk '/MemAvailable/{printf "%.0f", $2/1048576}' /proc/meminfo)
 say "gate 5: cards_busy 0, MemAvailable ${M} GB"
@@ -164,9 +176,17 @@ ARGS=(--rank-loss --rank-form rel --rel-labels "$RELLAB"
       --max-rss-gb 80 --preload-min-free-gb 250
       --save-every 250
       --require-replay training/extended_mixed_replay.log
-      --eval-pool training/valfull/pool.csv --eval-pool-fold validation/fold
-      --eval-pool-seed-base 400000 --eval-pool-budget 30 --eval-pool-every 1
       --allow-code-drift)
+# WHAT DROPPING EVAL COSTS, stated so it is a choice and not a surprise: no held-out valfull
+# Spearman, no selected DockQ, no acceptable-pose fraction at 0.23. What survives is the trainer's
+# own per-epoch IN-SAMPLE lines -- WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ) and
+# SCORE SPREAD against std(true iTM) -- which need no eval and must never be read as generalisation.
+if [ "$NOEVAL" != "1" ]; then
+  ARGS+=(--eval-pool training/valfull/pool.csv --eval-pool-fold validation/fold
+         --eval-pool-seed-base 400000 --eval-pool-budget 30 --eval-pool-every 1)
+else
+  say "NOEVAL=1: no --eval-pool. IN-SAMPLE diagnostics only; no held-out number from this run."
+fi
 
 NOTE="$EPOCHS EPOCH(S), --rank-form rel at --alpha-rank 75 plus the PAE term, FULLY UNCROPPED TRAIN AND EVAL, over the 851-structure trained population (437 at 15 seeds, 416 at 1, less the three skips: 6,941 units in 231 cross-seed steps of 30). THE FIRST REAL RUN ON THIS DATA and the first exercise of the selection manifest's per-structure \`seeds\` column at world=3, where a wrong per-step unit count deadlocks on an all-reduce rather than failing. No crop on either side: every previous arm trained cropped and evaluated uncropped, and o2qczq's 0.6305 cropped against 0.5387 uncropped (shipped 0.5474) is what that gap looks like. rel regresses on the true iTM after mean-centring, so it uses every pose of an interface regardless of seed and has no pair family or tau. --indices all857_indices.csv because the labels were built against it and the indices path is part of their fingerprint. NOT a quality verdict at one epoch -- this measures that the path runs and what an epoch costs."
 
