@@ -72,8 +72,14 @@ RC=$?; say "dedupe exit $RC"
 
 if [ -z "$FAIL" ]; then
   say "step 3: merging the 850 recovered rows"
+  # --manifest IS NOT OPTIONAL HERE. Raised in review: the merge gate could name how MANY
+  # interfaces to expect but not WHICH, so this documented workflow still admitted a different
+  # set of 17 pooled interfaces carrying 850 otherwise valid rows. The routes are labelled
+  # (iso=, full=) because the two producers are not interchangeable and a filename is not an
+  # identity -- 4zto_DF cannot be pair-isolated at all.
   nice -n 19 ionice -c 3 $PY -I phases/phase_l_merge_recovered.py \
-    --csv $CSV --rows "$ISO" "$FULL" \
+    --csv $CSV --rows "iso=$ISO" "full=$FULL" \
+    --manifest "${MANIFEST:-docs/recovery_manifest_wave1.csv}" \
     --expect-rows 850 --expect-ifaces 17 --seeds 10 --seed0 500000 --nsample 5 \
     --out "$SNAP/merged.csv" --replace
   RC=$?; say "merge exit $RC"

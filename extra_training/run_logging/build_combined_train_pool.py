@@ -9,8 +9,11 @@ training/fold/results.csv, and until now only two of them were named by a traini
     orphans                   51 interfaces    19 structures   scored, in NO training pool
     never scored               4 interfaces     3 structures   needs GPU, excluded here
 
-The three sets share no structure, so the union is 1,688 interfaces over 863 structures. The 51
-orphans were complete all along -- 50 poses each, finite scores, all in the master pool -- and were
+The three sets share no INTERFACE, but 10 of the 19 orphan structures are structures full_train
+already names -- it pooled only some of their interfaces. So 488 + 356 + 19 = 863 double-counts
+those 10, and the union is 1,688 interfaces over **853** structures. (The first version of this
+docstring said 863, which is the figure you get by assuming the structure sets are disjoint too.)
+The 51 orphans were complete all along -- 50 poses each, finite scores, all in the master pool -- and were
 simply never written into a pool anyone trained on, so every arm so far silently ignored them.
 
 ALL 51 GO IN, NOT THE 22 THAT CARRY RANKING SIGNAL. Selecting interfaces by their own DockQ spread
@@ -31,6 +34,7 @@ not all scored is the thing that made a fold look complete when it was not.
 import argparse, collections, csv, glob, math, os, sys
 
 COLS = ["pdb", "chain1", "chain2"]
+ARM = "free"      # every queued training unit; checked against queue.tsv
 
 
 def pool_ifaces(path):
@@ -47,11 +51,15 @@ def main():
     ap.add_argument("--out", default="training/combined/pool.csv")
     ap.add_argument("--seeds", type=int, default=10)
     ap.add_argument("--nsample", type=int, default=5)
+    ap.add_argument("--seed0", type=int, default=500000)
     ap.add_argument("--write", action="store_true")
     a = ap.parse_args()
 
     master = pool_ifaces(a.master)
-    have = collections.Counter()
+    # THE EXACT KEY SET, NOT A ROW COUNT. Raised in review: "50 finite rows" does not mean "ten
+    # seeds times samples 0-4". A set with a missing sample, a seed outside the range and a
+    # duplicate key counts 50 too, and would have been written into a training pool as complete.
+    have = collections.defaultdict(collections.Counter)
     with open(a.results) as fh:
         for r in csv.DictReader(fh):
             try:
@@ -59,16 +67,29 @@ def main():
             except ValueError:
                 continue
             if math.isfinite(dq) and math.isfinite(ip):
-                have[r["iface"]] += 1
+                have[r["iface"]][(r["seed"], r["arm"], r["sample"])] += 1
 
-    want = a.seeds * a.nsample
+    want_keys = {(str(a.seed0 + i), ARM, str(k))
+                 for i in range(a.seeds) for k in range(a.nsample)}
+    want = len(want_keys)
     keep, no_rows, short = [], [], []
     for ifc, cols in sorted(master.items()):
-        n = have.get(ifc, 0)
-        if n == 0:
+        got = have.get(ifc, {})
+        if not got:
             no_rows.append(ifc)
-        elif n != want:
-            short.append((ifc, n))
+            continue
+        dup = sorted(k for k, n in got.items() if n > 1)
+        missing = sorted(want_keys - set(got))
+        extra = sorted(set(got) - want_keys)
+        if dup or missing or extra:
+            why = []
+            if dup:
+                why.append(f"{len(dup)} duplicated key(s) e.g. {dup[0]}")
+            if missing:
+                why.append(f"{len(missing)} missing e.g. {missing[0]}")
+            if extra:
+                why.append(f"{len(extra)} unexpected e.g. {extra[0]}")
+            short.append((ifc, "; ".join(why)))
         else:
             keep.append(cols)
 

@@ -151,6 +151,16 @@ def main():
     print(f"  fails both                                          {len(both):>4}")
     print(f"  USABLE for ranking                                  "
           f"{len(usable):>4}  {100*len(usable)/n:5.1f}%")
+    # NO ACCEPTABLE POSE IS NOT THE SAME AS NO RANKING INFORMATION. Raised in review: an interface
+    # whose oracle is 0.20 with a spread of 0.15 offers nothing to a SELECTION metric -- every
+    # choice is a failure by the 0.23 criterion -- but it still carries graded supervision, because
+    # 0.20 really is better than 0.02 and a relative loss can learn that ordering. These are
+    # counted apart so that "usable" is read as "usable for the acceptability metric", which is
+    # what it means, rather than as "contains no signal".
+    graded = [r for r in noacc if not r["flat"]]
+    print(f"  of the no-acceptable-pose ones, still GRADED        "
+          f"{len(graded):>4}  (spread >= {a.flat}, so a relative loss can order them)")
+    print(f"  genuinely inert (flat AND no acceptable pose)       {len(both):>4}")
     us = {r["pdb"] for r in usable}
     print(f"  structures with >=1 usable interface                 "
           f"{len(us):>4}  of {len(pdbs)}")

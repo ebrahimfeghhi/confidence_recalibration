@@ -761,16 +761,23 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
                 # Now every writer is in the same protocol. It is a shared lock because concurrent
                 # workers appending whole lines to O_APPEND are already safe against each other --
                 # what must be excluded is a replacement, which takes it exclusively.
-                with open(ctx.A.csv, "a") as fh:  # flushed per interface, not at the end
-                    lk = os.open(ctx.A.csv + ".rescore.lock", os.O_CREAT | os.O_RDWR, 0o644)
-                    try:
-                        fcntl.flock(lk, fcntl.LOCK_SH)
+                # THE LOCK IS TAKEN BEFORE THE FILE IS OPENED, and that order is the whole point.
+                # Raised in review, and it was a real lost-write race in the first version of this
+                # block, which opened the csv and only then waited for the lock: a replacement
+                # holding the exclusive lock could os.replace the file while this writer sat on an
+                # fd to the OLD inode, and the append then landed in an unlinked file and reported
+                # success. Locking first means a replacement either completes before this open --
+                # so the open sees the new file -- or waits for it.
+                lk = os.open(ctx.A.csv + ".rescore.lock", os.O_CREAT | os.O_RDWR, 0o644)
+                try:
+                    fcntl.flock(lk, fcntl.LOCK_SH)
+                    with open(ctx.A.csv, "a") as fh:  # flushed per interface, not at the end
                         fh.write("\n".join(l for _k, l in fresh) + "\n")
                         fh.flush()
                         os.fsync(fh.fileno())
-                    finally:
-                        fcntl.flock(lk, fcntl.LOCK_UN)
-                        os.close(lk)
+                finally:
+                    fcntl.flock(lk, fcntl.LOCK_UN)
+                    os.close(lk)
                 for k, _l in fresh:
                     have.add(k)
                 got += 1

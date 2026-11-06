@@ -73,7 +73,10 @@ def read_rows(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", required=True, help="the canonical results.csv")
-    ap.add_argument("--rows", nargs="+", required=True, help="recovered rows, canonical columns")
+    ap.add_argument("--rows", nargs="+", required=True,
+                    help="recovered rows as route=path, e.g. iso=a.csv full=b.csv. The route is "
+                         "declared by the caller and compared exactly against the manifest; a bare "
+                         "path is accepted only when no --manifest is given.")
     ap.add_argument("--pool", default="", help="pool.csv (default: beside --csv)")
     ap.add_argument("--expect-rows", type=int, required=True)
     ap.add_argument("--expect-ifaces", type=int, required=True)
@@ -123,10 +126,22 @@ def main():
                         f"(e.g. {sorted(dup)[:3]}); run dedupe_results.py --replace first")
 
     # ---- the recovered rows --------------------------------------------------------------------
-    src, rec = {}, []
-    for p in a.rows:
+    # ROUTE IS DECLARED, NOT INFERRED FROM THE FILENAME. Raised in review: comparing the
+    # manifest's route against the source PATH with `in` is substring matching -- any file whose
+    # name happens to contain "iso" satisfied the isolated route whatever produced it, and an
+    # empty route string matched every file, since "" in x is always true.
+    src, rec, route_of = {}, [], {}
+    for spec in a.rows:
+        if "=" in spec:
+            route, p = spec.split("=", 1)
+        elif a.manifest:
+            raise SystemExit(f"STOP: --rows {spec!r} has no route label. With --manifest every "
+                             f"input must be given as route=path so the producer is explicit.")
+        else:
+            route, p = "", spec
         rows = read_rows(p)
-        print(f"recovered {p}: {len(rows)} row(s)")
+        route_of[p] = route
+        print(f"recovered {p}: {len(rows)} row(s)" + (f"  route={route}" if route else ""))
         for r in rows:
             k = key_of(r)
             if k in src:
@@ -149,7 +164,19 @@ def main():
             if rd.fieldnames != ["iface", "route"]:
                 raise SystemExit(f"STOP: {a.manifest} header is {rd.fieldnames}, "
                                  f"expected ['iface', 'route']")
-            want_route = {r["iface"]: r["route"] for r in rd}
+            want_route, seen_m = {}, collections.Counter()
+            for r in rd:
+                seen_m[r["iface"]] += 1
+                want_route[r["iface"]] = r["route"]
+        dupm = sorted(i for i, n in seen_m.items() if n > 1)
+        if dupm:
+            raise SystemExit(f"STOP: {a.manifest} names {len(dupm)} interface(s) more than once "
+                             f"({dupm[:5]}); a second row would silently win.")
+        declared = set(route_of.values())
+        badr = sorted({v for v in want_route.values() if v not in declared})
+        if badr:
+            raise SystemExit(f"STOP: {a.manifest} requires route(s) {badr} but --rows declares "
+                             f"{sorted(declared)}. A route no input supplies can never be met.")
         got_ifaces = {r["iface"] for r in rec}
         missing = sorted(set(want_route) - got_ifaces)
         extra = sorted(got_ifaces - set(want_route))
@@ -159,16 +186,23 @@ def main():
         if extra:
             problems.append(f"{len(extra)} interface(s) are not in the manifest and would be added "
                             f"anyway: {extra[:5]}")
-        wrong = sorted({(r["iface"], os.path.basename(src[key_of(r)]))
+        wrong = sorted({(r["iface"], route_of[src[key_of(r)]] or "<unlabelled>")
                         for r in rec
                         if r["iface"] in want_route
-                        and want_route[r["iface"]] not in src[key_of(r)]})
+                        and route_of[src[key_of(r)]] != want_route[r["iface"]]})
         if wrong:
             problems.append(f"{len(wrong)} interface(s) came from a file that does not match the "
                             f"route the manifest requires: {wrong[:5]}")
+    elif a.replace:
+        # MANDATORY FOR A REPLACE. Raised in review: leaving it optional meant the documented
+        # consolidation workflow still had the hole it was written to close -- a different set of
+        # 17 pooled interfaces carrying 850 otherwise valid rows would pass every other gate.
+        raise SystemExit("STOP: --replace requires --manifest. Without it this knows how MANY "
+                         "interfaces to expect, not WHICH, and the canonical file is the one "
+                         "place that distinction cannot be undone.")
     else:
         print("NOTE: no --manifest, so the exact interface identities are NOT checked -- only "
-              "their count. Pass one before any merge that matters.")
+              "their count. This run cannot --replace.")
 
     bad = collections.Counter()
     for r in rec:

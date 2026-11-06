@@ -171,6 +171,12 @@ def free_provenance(run_dir):
             m = json.load(fh)
     except (OSError, ValueError) as e:
         return f"unreadable run.json ({type(e).__name__})"
+    # PRESENCE IS REQUIRED, NOT JUST A FALSY VALUE. Raised in review: reading these through
+    # .get() defaults meant a run.json that simply lacked `templated` passed as untemplated. An
+    # absent field is unknown provenance, and unknown provenance must not become donor_pose="-1".
+    for key in ("templated", "kind"):
+        if key not in m:
+            return f"run.json has no {key!r} field, so its provenance is unknown"
     if m.get("templated") not in (False, None):
         return f"templated={m.get('templated')!r}"
     if m.get("templates"):

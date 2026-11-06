@@ -429,8 +429,10 @@ def verify(a):
                 bucket, why = classify_missing(d, a.scorer, k, iface=ifc)
                 if bucket == "no_pose":
                     no_pose.append((ifc, seed, why))
+                    lbl = "no_pose"
                 elif bucket == "unscored":
                     no_rows.append((ifc, seed, why))
+                    lbl = "unscored"
                 elif bucket == "unmapped":
                     # THE THIRD CATEGORY, KEPT SEPARATE ON PURPOSE. The scorer ran and the pose is
                     # fine; OST mapped no model chain to one of this interface's reference chains,
@@ -449,10 +451,13 @@ def verify(a):
                     if t is False:
                         verified_absent.add(ifc)
                         no_contact.append((ifc, seed, why))
+                        lbl = "no_contact"
                     elif t is None:
                         uncheckable.append((ifc, seed, why))
+                        lbl = "contact_uncheckable"
                     else:
                         unmapped.append((ifc, seed, why))
+                        lbl = "unmapped"
                 else:
                     # MEASURED, NOT ASSUMED. The scorer's silence about this pair is consistent
                     # with the chains not touching, and also with a mapping that put the pose on
@@ -461,30 +466,22 @@ def verify(a):
                     if t is False:
                         verified_absent.add(ifc)
                         no_contact.append((ifc, seed, why))
+                        lbl = "no_contact"
                     elif t is True:
                         touching_but_missing.append((ifc, seed, why))
+                        lbl = "TOUCHING_but_unscored"
                     else:
                         uncheckable.append((ifc, seed, why))
-                if bucket:
-                    lbl = bucket
-                    if bucket == "no_contact" or bucket == "":
-                        # NOT UNCONDITIONALLY no_contact. Raised in review: an empty bucket means
-                        # the scorer said nothing, and the contact measurement above decides what
-                        # that meant -- absent, touching-but-unscored, or uncheckable. Labelling
-                        # all three "no_contact" per structure told a reader a pair was fine when
-                        # the totals and the exit status were calling it a failure.
-                        lbl = ("no_contact" if ifc in verified_absent
-                               else "TOUCHING_but_unscored"
-                               if any(t[0] == ifc for t in touching_but_missing)
-                               else "contact_uncheckable")
-                    # THE PER-STRUCTURE BREAKDOWN FOLLOWS THE SAME RULE as the buckets above, or it
-                    # would keep calling 6umg's non-contacting pair "unmapped 100" after the
-                    # totals had stopped doing so -- and that line is what a reader uses to decide
-                    # which structures still need work.
-                    if lbl == "unmapped" and ifc in verified_absent:
-                        lbl = "no_contact"
-                    by_pdb.setdefault(ifc.split("_")[0], {}).setdefault(lbl, 0)
-                    by_pdb[ifc.split("_")[0]][lbl] += 1
+                        lbl = "contact_uncheckable"
+                # EVERY MISSING SAMPLE IS COUNTED, AND THE LABEL COMES FROM THE BRANCH THAT TOOK
+                # IT. Raised in review: the previous form read `if bucket:` and then tried to
+                # special-case `bucket == ""` inside it, which can never be true -- so the
+                # correction was dead code, and a sample the scorer said nothing about was either
+                # labelled no_contact regardless of what the measurement found, or left out of the
+                # per-structure breakdown entirely. Each branch above now names its own label, so
+                # the breakdown cannot disagree with the totals or with the exit status.
+                by_pdb.setdefault(ifc.split("_")[0], {}).setdefault(lbl, 0)
+                by_pdb[ifc.split("_")[0]][lbl] += 1
             for k, (dq, ip) in got.items():
                 if not finite(dq) or not finite(ip):
                     bad_scores.append((ifc, seed, k, dq, ip))
