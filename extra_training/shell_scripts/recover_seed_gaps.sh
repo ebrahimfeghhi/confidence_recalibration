@@ -35,6 +35,25 @@ MIN_MEM_GB="${MIN_MEM_GB:-250}"
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 mkdir -p "$SC"
 
+# ONE COPY, AND NEVER A SECOND. This script waits for the fold to finish and then REPLACES
+# results.csv, so two copies that both pass the wait would merge over each other. It happened:
+# relaunching after an edit left the earlier copies alive, because killing the shell that started
+# the script orphans the script itself rather than stopping it -- three copies were queued on the
+# same wait loop, all of which would have woken on the same seed boundary. Same discipline, and the
+# same reason, as launch_seed500010_fold.sh and launch_wave1_val_fold.sh.
+exec 9>"$TG/.recover_gaps.lock"
+if ! flock -n 9; then
+  say "REFUSING: another copy of this script holds the lock. Nothing was changed."
+  exit 1
+fi
+
+# AND THE FILE MUST NOT CHANGE UNDER A RUNNING COPY. bash reads a script incrementally by byte
+# offset, so editing it mid-run can splice new text into the old position -- which is exactly how
+# the three copies above came about. The checksum is recorded at start so a log can be matched to
+# the text that produced it.
+say "script $(basename "$0") sha $(sha1sum "$0" | cut -c1-12)"
+
+
 # --out MUST SIT BESIDE results.csv. os.replace is atomic only within one filesystem and raises
 # EXDEV across devices; pointing it at the session scratchpad failed exactly that way AFTER every
 # check had passed, which is documented in consolidate_training_scores.sh and cost a whole run.
@@ -109,8 +128,18 @@ for SEED in $SEEDS; do
   $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 6 || FAIL="$FAIL seed$SEED(still-short)"
 done
 
-say "final coverage over [$SEEDS]"
-for SEED in $SEEDS; do $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 4 || true; done
+# THE AUTHORITATIVE GATE, AND IT IS NOT FOR DISPLAY. Raised in review: the first version ran this
+# loop with `|| true` and relied on the per-seed rechecks inside the loop above to set FAIL. That
+# left a real hole, because the merges are SEQUENTIAL and each one replaces results.csv wholesale --
+# so a seed this script judged complete at the top, and skipped, could be affected by a later
+# seed's merge and never be looked at again. It also means a plan that silently dropped an
+# unaddressable key cannot be mistaken for completeness: the gate asks the file, not the plan.
+# Every seed is re-gated here against the FINAL file, and a failure here fails the script.
+say "final coverage over [$SEEDS] -- the authoritative gate, against the final results.csv"
+for SEED in $SEEDS; do
+  $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 4 \
+    || FAIL="$FAIL seed$SEED(final-gate)"
+done
 if [ -n "$FAIL" ]; then
   say "RECOVERY INCOMPLETE --$FAIL"
   say "Backups are beside results.csv (.pre_recovered_merge). Each swap is atomic: the file is"
