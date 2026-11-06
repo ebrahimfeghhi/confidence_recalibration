@@ -27,6 +27,25 @@
 # reading carries forced ground-truth contacts and is never a deployment number. Uncropped costs
 # ~57 s/step and ~3.6 h/epoch at world=3, so quote that before proposing a long run.
 #
+# --ckpt-token-threshold IS 0 HERE, AND 855 IS WHAT KILLED tztukd. The flag means units AT OR BELOW
+# that many tokens run with checkpointing OFF. 855 was MEASURED by run_logging/bench_ckpt_by_size.py
+# on a population whose largest unit was 1,543 tokens AND which trained under token dropout, so its
+# pair work was about a quarter of full. This population's largest unit is 2,289 tokens and there is
+# no dropout, so an unchecked sub-855 unit no longer fits: tztukd died of CUDA OOM 2.6 h into epoch 1
+# on 8g30, a 731-token structure, in the backward through pairformer.pair_transition, with 93.9 of
+# 94.97 GiB in use on two ranks at once.
+#
+# The flag's own help says "SET IT FROM run_logging/bench_ckpt_by_size.py, NOT BY GUESSING ... A
+# threshold chosen by arithmetic would be an OOM 40 minutes into an epoch." I carried a measured
+# number to a population it was not measured on, which is the same mistake as guessing. 0 disables
+# the size rule so every unit keeps --blocks-per-ckpt 1.
+#
+# IT COSTS COMPUTE AND NO MATHEMATICS. Checkpointing recomputes the head's four pairformer blocks in
+# backward, about 30% more compute there, and gpu_backward was 70.3 min of a 143.9 min epoch at the
+# old scale. It is gradient-exact: test_perblock_ckpt_equiv.py gates blocks_per_ckpt=1 against off
+# at 0.000e+00 on every parameter. So this slows the arm and changes nothing about what it learns.
+# Re-benchmark on THIS population to recover the speed; do not reuse 855.
+#
 # --indices all857_indices.csv IS REQUIRED. phase_k_train and the fingerprint gate both DEFAULT to
 # job_indices.csv, which names 501 structures; this population's labels were built against
 # all857_indices.csv and the indices path is part of the label fingerprint. Left on the default the
@@ -68,6 +87,8 @@ DRY="${DRY:-1}"
 MANIFEST=train_val_splits/cache_train_structures_extended.csv
 MARKER="${MARKER:-training/alignment_preflight_sharded.json}"
 RELLAB="${RELLAB:-training/fold/itm_labels_extended}"
+# 0 MEANS CHECKPOINT EVERY UNIT, which is the only safe default for an UNCROPPED population.
+CKPT_THRESH="${CKPT_THRESH:-0}"
 POOL=training/combined/pool.csv
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 say "script $(basename "$0") sha $(sha1sum "$0" | cut -c1-12)  DRY=$DRY cards=$CARDS epochs=$EPOCHS"
@@ -138,7 +159,7 @@ ARGS=(--rank-loss --rank-form rel --rel-labels "$RELLAB"
       --epochs "$EPOCHS" --lr 0.01 --warmup-steps 20 --seed 0 --accum 30 --nsample 5
       --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0
       --prefetch-units 2 --prefetch-workers 4
-      --blocks-per-ckpt 1 --ckpt-token-threshold 855
+      --blocks-per-ckpt 1 --ckpt-token-threshold "$CKPT_THRESH"
       --dist-backend gloo --dist-timeout-min 240
       --max-rss-gb 80 --preload-min-free-gb 250
       --save-every 250

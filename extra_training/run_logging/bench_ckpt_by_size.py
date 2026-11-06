@@ -58,9 +58,10 @@ EPOCH = re.compile(r"\[rank 0\] epoch \d+ took (?P<min>[\d.]+) min")
 BUCKET = re.compile(r"(?P<k>gpu_backward|gpu_forward) (?P<m>[\d.]+)m/(?P<n>\d+)")
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--bundle", default="training/runs/jb5veo/resume_ep19.pt",
-                help="the arm's bundle; every architecture setting is taken from its guard so "
-                     "the benchmark cannot drift from the run it is for")
+ap.add_argument("--arm-argv", default="",
+                help="the arm's trainer argv, captured from /proc/<rank0>/cmdline while the run "
+                     "was up. THIS is what keeps the benchmark from drifting from the run it "
+                     "benchmarks. Defaults to training/runs/ckpt_bench/arm_argv.txt.")
 ap.add_argument("--units", type=int, default=24,
                 help="structures to walk. They are the manifest's, so the token range is the "
                      "run's own, not a synthetic sweep.")
@@ -134,32 +135,30 @@ if len(_CARDS) > 1:
 OUT = os.path.join(ROOT, a.out)
 
 
-ARGV = os.path.join(ROOT, "training/runs/ckpt_bench/arm_argv.txt")
+ARGV = (a.arm_argv if os.path.isabs(a.arm_argv or "") else
+        os.path.join(ROOT, a.arm_argv or "training/runs/ckpt_bench/arm_argv.txt"))
 
 
-def bundle_epoch(path):
-    """Epochs already completed in the bundle being resumed.
-
-    WHY THIS IS NEEDED AT ALL. The epoch loop is `for ep in range(from_epoch, n_epochs)` with
-    from_epoch taken from the bundle and n_epochs = ceil(--epochs). Passing --epochs 1 against a
-    bundle at epoch 21 makes that range EMPTY: the run would exit having trained nothing, write
-    no MEM line and no epoch-boundary timing line, and this benchmark would report "no MEM lines
-    parsed" without ever saying why. So --epochs is set to the bundle's epoch + 1, which is one
-    epoch of continuation. Found in review.
-    """
-    import torch
-    b = torch.load(os.path.join(ROOT, path) if not os.path.isabs(path) else path,
-                   map_location="cpu", weights_only=False)
-    if not isinstance(b, dict) or "epoch" not in b:
-        sys.exit(f"STOP: {path} carries no `epoch`, so the number of epochs to ask for cannot be "
-                 f"derived from it. Keys: {sorted(b)[:12] if isinstance(b, dict) else type(b)}")
-    return int(b["epoch"])
-
-
-# READ EVEN ON A DRY RUN, so the printed command line is the one that would actually be sent and
-# so an unreadable or wrong-shaped bundle is caught before any card is occupied.
-BUNDLE_EP = bundle_epoch(a.bundle)
-print(f"  bundle {a.bundle}: {BUNDLE_EP} epoch(s) done -> asking for --epochs {BUNDLE_EP + 1}")
+# NO BUNDLE, AND NOT AS A DEFAULT -- THE OPTION IS GONE. This benchmark reads the PEAK ALLOCATED
+# BYTES per pose against that pose's token count. That quantity is a function of ARCHITECTURE and
+# TOKEN COUNT: an activation tensor is the same size whatever numbers are in it, so a partly-trained
+# head and a fresh one measure identically. Requiring a trained bundle was a design flaw, not a
+# constraint.
+#
+# WHAT IT USED TO BE DOING, both incidental. It was implemented as a RESUME of the live arm so its
+# argv could not drift from the run it benchmarks -- a good goal reached by the wrong mechanism,
+# because the anti-drift property comes from the CAPTURED ARGV (--arm-argv, read from
+# /proc/<rank0>/cmdline) and not from the weights. And the bundle supplied `epoch`, because
+# `for ep in range(from_epoch, n_epochs)` is empty if you ask a bundle at epoch 21 for --epochs 1.
+# A fresh run starts at epoch 0, so --epochs 1 is already non-empty and that trap cannot arise.
+#
+# AND IT COST A MEASUREMENT. On 2026-11-06 all 1,307 checkpoints under training/runs were reclaimed
+# (137.9 GiB; nothing in the code referenced them) and the default bundle went with them. Re-measuring
+# the threshold for a new population was then blocked behind a 3.6 h epoch -- for a number that never
+# needed trained weights. The threshold itself had already been carried from a population whose
+# largest unit was 1,543 tokens to one whose largest is 2,289, which is what made the re-measurement
+# urgent: an OOM 2.6 h into epoch 1 on a 731-token structure.
+EPOCHS_ARG = "1"
 
 
 def arm_argv():
@@ -176,8 +175,12 @@ def arm_argv():
                  f"captured from /proc/<rank0>/cmdline while the run was up:\n"
                  f"  tr '\\0' '\\n' < /proc/<pid>/cmdline > {os.path.relpath(ARGV, ROOT)}")
     v = [x for x in open(ARGV).read().split("\n") if x != ""]
-    if "--resume" not in v:
-        sys.exit(f"STOP: {ARGV} has no --resume, so it is not a resume command line.")
+    # A LAUNCH LINE IS AS FAITHFUL A RECORD AS A RESUME LINE. This used to refuse an argv without
+    # --resume, which made a fresh-head measurement impossible for no measurement reason.
+    if not any(x.endswith("phase_k_train.py") for x in v):
+        sys.exit(f"STOP: {ARGV} does not look like a phase_k_train command line; it must be the "
+                 f"arm's own argv, captured with:\n"
+                 f"  tr '\\0' '\\n' < /proc/<rank0 pid>/cmdline > {ARGV}")
     return v
 
 
@@ -220,8 +223,13 @@ def run(tag, bpc, lean, extra=(), allow_oom=False):
         print(f"  {tag}: log exists but holds NO MEM line, so it measured nothing -- re-running. "
               f"Last line: {(open(log, errors='replace').read().strip().splitlines() or [''])[-1][:120]}")
     v = arm_argv()
-    for flag, val in (("--resume", a.bundle), ("--blocks-per-ckpt", str(bpc)),
-                      ("--limit-units", str(a.units)), ("--epochs", str(BUNDLE_EP + 1)),
+    # THE ARM'S --resume IS STRIPPED. A captured line may carry one, and honouring it would resume
+    # a bundle this benchmark no longer wants and may not even exist.
+    while "--resume" in v:
+        _i = v.index("--resume")
+        del v[_i:_i + 2]
+    for flag, val in (("--blocks-per-ckpt", str(bpc)),
+                      ("--limit-units", str(a.units)), ("--epochs", EPOCHS_ARG),
                       ("--save-every", "0"), ("--out", work),
                       # NOT THE ARM'S EVAL. --train-eval-every would spend cards scoring 92
                       # held-out interfaces in the middle of a timing measurement.
