@@ -75,7 +75,9 @@ def coverage(results, pool, structures, seed, nsample):
         got = {k for k in want if seen.get(k)}
         dup = sorted(k for k in want if seen.get(k, 0) > 1)
         if dup:
-            partial.append((p, len(got), len(want), [f"DUPLICATE {k[0]} sample {k[1]}" for k in dup[:3]]))
+            partial.append((p, len(got), len(want),
+                            [f"DUPLICATE {k[0]} sample {k[1]}" for k in dup[:3]],
+                            sorted({k[0] for k in dup})))
         elif not got:
             absent.append((p, f"0 of {len(want)} key(s)"))
         elif got == want:
@@ -84,7 +86,7 @@ def coverage(results, pool, structures, seed, nsample):
             miss = sorted(want - got)
             byif = collections.Counter(k[0] for k in miss)
             det = [f"{i} ({n} sample(s))" for i, n in sorted(byif.items())]
-            partial.append((p, len(got), len(want), det))
+            partial.append((p, len(got), len(want), det, sorted(byif)))
     return exact, partial, absent, extra
 
 
@@ -113,7 +115,7 @@ def main():
               f"(every interface in {os.path.basename(a.pool)} x {a.nsample} sample(s))")
         if partial:
             print(f"    {len(partial)} PARTIAL -- the old row-count gate called these complete:")
-            for p, g, w, det in sorted(partial)[:a.limit]:
+            for p, g, w, det, _sh in sorted(partial)[:a.limit]:
                 print(f"      {p}: {g} of {w} key(s); missing {', '.join(det[:4])}")
             if len(partial) > a.limit:
                 print(f"      ... and {len(partial) - a.limit} more")
@@ -125,7 +127,11 @@ def main():
     # THE SWEEP TARGET STRING, so the recovery acts on the gap this found rather than on its own
     # independently derived idea of the gap. That divergence is the defect itself.
     if a.targets_out:
-        tgt = sorted({f"{p}:{i}" for p, _g, _w, _d in partial for i in pool[p]}
+        # ONLY THE INTERFACES ACTUALLY SHORT, never every interface of a partial structure.
+        # The merge runs with --replace, so naming an interface that is already complete would
+        # overwrite good rows with rows from a DIFFERENT scoring route -- changing data that was
+        # fine. At seed 500010 the loose derivation named 46 interfaces where 23 were short.
+        tgt = sorted({f"{p}:{i}" for p, _g, _w, _d, _short in partial for i in _short}
                      | {f"{p}:{i}" for p, _why in absent for i in pool.get(p, ())})
         tgt = [t for t in tgt if len(t.split(":")[1].split("_")[-1]) == 2]
         with open(a.targets_out, "w") as fh:
