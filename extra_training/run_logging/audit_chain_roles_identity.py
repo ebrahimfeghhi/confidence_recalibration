@@ -37,8 +37,23 @@ def seqs(path):
 
 
 def frac(a, b):
-    """total matching blocks over len(a) -- gaps allowed, so a partially resolved copy still scores."""
-    sm = difflib.SequenceMatcher(None, a, b)
+    """total matching blocks over len(a) -- gaps allowed, so a partially resolved copy still scores.
+
+    autojunk=False IS LOAD-BEARING AND ITS ABSENCE INVALIDATED THIS AUDIT ONCE. difflib treats any
+    element occurring in more than 1% of a sequence longer than 200 as junk and ignores it. Every
+    amino acid clears that bar in any real chain, so with the default the matcher silently stops
+    matching for long sequences ONLY -- short chains scored 1.00 and long ones 0.00, which reads
+    exactly like "the antibody matched and the antigen is a different protein". On that basis this
+    audit reported 268 interfaces over 141 structures as scoring against a protein absent from the
+    model. With autojunk=False the same chains match at 1.00 and the finding evaporates:
+
+        9q5m ref B(372) vs model C/D/E/F(532)   0.00 with autojunk, 1.00 without
+        7cn2 ref N(466) vs model C/D/E(505)     0.00 with autojunk, 1.00 without
+
+    eval/ost_dockq.py and phase_j_rescore_unmapped.py both already pass autojunk=False, so the
+    production scorers were never affected -- this was a defect in the audit alone.
+    """
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
     return sum(bl.size for bl in sm.get_matching_blocks()) / max(1, len(a))
 
 
