@@ -32,6 +32,14 @@ TG=/home/ebrahim/confidence_recalibration/extra_training/training/fold
 SC="$TG/.consolidate"
 SEEDS="${SEEDS:-500010 500011 500012 500013 500014}"
 MIN_MEM_GB="${MIN_MEM_GB:-250}"
+# INTERFACES NO ROUTE CAN SCORE, BY NAME AND WITH EVIDENCE. 9q5m_EH has sequence-identical chains E
+# and F: isolation refuses rather than guess, and the full-complex route has OST drop the pair. It
+# was blocking the merge of ~90 good rows per seed, five times over, because the merge is one
+# transaction per seed. The gate reports it as an ACKNOWLEDGED gap and refuses to apply an exclusion
+# whose keys turn out to be present, so the file cannot grow into a way of hiding a real gap.
+EXCLUDE="${EXCLUDE:-docs/unrecoverable_interfaces.csv}"
+EXCL=""
+[ -s "$EXCLUDE" ] && EXCL="--exclude $EXCLUDE"
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 mkdir -p "$SC"
 
@@ -74,7 +82,7 @@ FAIL=""
 for SEED in $SEEDS; do
   say "--- seed $SEED ---"
   # THE GATE NAMES THE GAP. Exit 0 here means nothing to do, and that is the common case later.
-  if $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 0 \
+  if $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 0 $EXCL \
        --targets-out "$SC/targets_$SEED.txt" --plan-out "$SC/plan_$SEED.csv"; then
     say "  seed $SEED already exact, nothing to recover"; continue
   fi
@@ -125,7 +133,8 @@ for SEED in $SEEDS; do
 
   # RE-GATE, because a merge that succeeded is not the same as a seed that is complete: the sweep
   # can legitimately fail to score an interface OST cannot map at all.
-  $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 6 || FAIL="$FAIL seed$SEED(still-short)"
+  $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 6 $EXCL \
+    || FAIL="$FAIL seed$SEED(still-short)"
 done
 
 # THE AUTHORITATIVE GATE, AND IT IS NOT FOR DISPLAY. Raised in review: the first version ran this
@@ -137,7 +146,7 @@ done
 # Every seed is re-gated here against the FINAL file, and a failure here fails the script.
 say "final coverage over [$SEEDS] -- the authoritative gate, against the final results.csv"
 for SEED in $SEEDS; do
-  $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 4 \
+  $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 4 $EXCL \
     || FAIL="$FAIL seed$SEED(final-gate)"
 done
 if [ -n "$FAIL" ]; then

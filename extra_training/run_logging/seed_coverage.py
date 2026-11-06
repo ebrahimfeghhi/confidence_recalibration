@@ -97,13 +97,25 @@ def classify(results, pool, structures, seed, nsample):
     return {k for k in seen}, forbidden, unscored
 
 
-def coverage(results, pool, structures, seed, nsample):
-    """out: (exact, partial, absent, forbidden, unscored). partial/absent name structures."""
+def coverage(results, pool, structures, seed, nsample, excluded=()):
+    """out: (exact, partial, absent, forbidden, unscored). partial/absent name structures.
+
+    `excluded` names interfaces no route can score at this seed. A STALE exclusion -- one whose keys
+    are in fact all present -- is not applied, and the caller is told, so the file cannot drift into
+    suppressing a gap that has since become recoverable.
+    """
     good, forbidden, unscored = classify(results, pool, structures, seed, nsample)
     samples = [str(k) for k in range(nsample)]
+    stale = {i for i in excluded
+             if all((i, s) in good for s in samples)}
+    excluded = set(excluded) - stale
+    coverage.stale = sorted(stale)
+    coverage.applied = sorted(excluded)
     exact, partial, absent = [], [], []
     for p in structures:
         ifs = pool.get(p)
+        if ifs:
+            ifs = {i for i in ifs if i not in excluded}
         if not ifs:
             absent.append((p, "no interface in --pool", []))
             continue
@@ -131,14 +143,38 @@ def main():
     ap.add_argument("--plan-out",
                     help="csv of the EXACT missing (iface, seed, sample) keys, for the merge to "
                          "require equality against")
+    ap.add_argument("--exclude", default="",
+                    help="csv of iface,seeds,... naming interface-seeds that NO route can score, as "
+                         "docs/unrecoverable_interfaces.csv does. Their keys are subtracted from "
+                         "the expected set and reported as an acknowledged gap. An exclusion that "
+                         "is not actually missing is reported as STALE and not applied, so the file "
+                         "cannot quietly grow into a way of hiding a real gap.")
     ap.add_argument("--limit", type=int, default=12, help="how many partial structures to print")
     a = ap.parse_args()
 
     structures = [l.strip().lower() for l in open(a.structures)
                   if l.strip() and not l.startswith("#")]
     pool = pool_ifaces(a.pool, set(structures))
+
+    # THE EXCLUSIONS ARE SUBTRACTED FROM THE POOL, which is the only place they can be applied
+    # without weakening anything else: a key that is not expected cannot be "missing", and every
+    # other check -- forbidden arms, unexpected samples, duplicates -- still sees the row if one
+    # ever appears. 9q5m_EH is the case this exists for: chains E and F are sequence-identical, so
+    # pair isolation refuses rather than guessing and the full-complex route has OST drop the pair.
+    # One unrecoverable interface was otherwise blocking the merge of 450 good rows across 5 seeds.
+    excluded = set()
+    if a.exclude:
+        for r in csv.DictReader(open(a.exclude)):
+            ifc = r["iface"].strip()
+            lo_hi = str(r.get("seeds", "") or "").strip()
+            lo, hi = (lo_hi.split("-") + [lo_hi])[:2] if lo_hi else ("", "")
+            if lo and not (int(lo) <= int(a.seed) <= int(hi or lo)):
+                continue
+            if ifc.split("_")[0] in set(structures):
+                excluded.add(ifc)
+
     exact, partial, absent, forbidden, unscored = coverage(
-        a.results, pool, structures, a.seed, a.nsample)
+        a.results, pool, structures, a.seed, a.nsample, excluded=excluded)
 
     n = len(structures)
     if not a.quiet:
@@ -160,6 +196,12 @@ def main():
         if forbidden:
             print(f"    {len(forbidden)} FORBIDDEN key(s) -- these fail the gate on their own: "
                   f"{forbidden[:4]}")
+        if getattr(coverage, "applied", None):
+            print(f"    {len(coverage.applied)} ACKNOWLEDGED gap(s), excluded by name via "
+                  f"{os.path.basename(a.exclude)}: {coverage.applied}")
+        if getattr(coverage, "stale", None):
+            print(f"    {len(coverage.stale)} STALE exclusion(s) -- scored after all, so NOT "
+                  f"excluded: {coverage.stale}")
 
     miss_keys = sorted({k for _p, _g, _w, m in partial for k in m}
                        | {k for _p, _w, m in absent for k in m})
