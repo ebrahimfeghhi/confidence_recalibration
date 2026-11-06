@@ -178,6 +178,11 @@ def main():
                 f"(e.g. {extra[:5]}). No marker written.")
         ok = not bad_all and not miss_all
         rec = {"ok": ok, "complete": True, "n_manifest_structures": len(pdbs),
+               # THE NAMES, NOT JUST THE COUNT. A consumer whose manifest is a SUBSET of this one
+               # -- a short probe run, a --limit-units benchmark -- can then be authorised by this
+               # marker instead of being refused for having a different digest. A superset
+               # genuinely does vouch for a subset; a digest cannot express that.
+               "checked": sorted(seen),
                "limit": 0, "manifest_digest": digest,
                "n_structures": len(seen), "n_units": len(units),
                "manifest_selection": a.manifest_selection, "manifest_skip": a.manifest_skip,
@@ -243,6 +248,8 @@ def main():
     complete = len(todo) == len(pdbs)
     ok = not bad and not missing and complete
     rec = {"ok": ok, "complete": complete, "n_manifest_structures": len(pdbs),
+           # see the note in the sharded path: the names let a subset consumer be authorised.
+           "checked": sorted(todo),
            "limit": int(a.limit), "manifest_digest": digest,
            "n_structures": len(todo), "n_units": len(units),
            "manifest_selection": a.manifest_selection, "manifest_skip": a.manifest_skip,

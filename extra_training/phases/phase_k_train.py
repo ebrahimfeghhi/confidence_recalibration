@@ -2934,11 +2934,54 @@ def main():
         if not os.path.exists(a.alignment_preflight):
             raise SystemExit(f"STOP: no alignment preflight marker at {a.alignment_preflight}")
         _pf = json.load(open(a.alignment_preflight))
-        if _pf.get("manifest_digest") != _manifest_digest:
+        # A SUPERSET MARKER AUTHORISES A SUBSET RUN, which exact digest equality cannot express.
+        # Raised by the owner: a memory probe or a --limit-units benchmark builds a SHORT manifest,
+        # so its digest differs from the full marker's and the run was refused -- even though a
+        # marker proving alignment for 851 structures plainly vouches for the 2 a probe touches.
+        # That made short runs impossible and blocked re-measuring --ckpt-token-threshold for a new
+        # population, which is what let an OOM reach 2.6 h into an epoch.
+        #
+        # THE SUBSET TEST IS BY NAME AND STRICTER THAN THE DIGEST, not looser: every structure this
+        # run will train must appear in the marker's `checked` list, and the marker must still
+        # record ok and complete. A marker with no `checked` list cannot be used this way and falls
+        # back to requiring digest equality, so an old marker never silently authorises more than
+        # it did before.
+        # THE MARKER ALREADY PROVES THIS WITHOUT A NAME LIST, which is the cheap version I missed
+        # first. `complete: true` means the preflight checked EVERY structure in the selection it
+        # names, after that selection's skips. So a run using the SAME --manifest-selection and the
+        # SAME --manifest-skip is necessarily a subset of what was checked, whatever subset of UNITS
+        # it walks. No per-structure list is needed and no rebuild of the marker is needed; I
+        # regenerated one for 20 minutes of CPU, competing with a live trainer, before noticing.
+        #
+        # The `checked` list the preflight now also writes is a strictly tighter check and is used
+        # when present -- it covers the case of a run whose selection differs but whose structures
+        # happen to be covered.
+        _pf_checked = set(_pf.get("checked") or [])
+        _run_pdbs = {p for p, _lp, _c in flat}
+        _same_population = (
+            bool(_pf.get("complete"))
+            and (_pf.get("manifest_selection") or "") == (a.manifest_selection or "")
+            and (_pf.get("manifest_skip") or "") == (a.manifest_skip or ""))
+        _subset_ok = _same_population or (bool(_pf_checked) and _run_pdbs <= _pf_checked)
+        if _pf.get("manifest_digest") != _manifest_digest and _subset_ok:
+            _why = ("it is COMPLETE over the same selection and skip list, so every structure "
+                    "this run touches was checked" if _same_population else
+                    f"this run's {len(_run_pdbs)} structure(s) are a SUBSET of the "
+                    f"{len(_pf_checked)} named in its `checked` list")
+            print(f"  alignment preflight: digest differs ({_pf.get('manifest_digest')} vs "
+                  f"{_manifest_digest}) but {_why}, so it authorises this run.")
+        elif _pf.get("manifest_digest") != _manifest_digest:
             raise SystemExit(
                 f"STOP: the alignment preflight was run over manifest "
                 f"{_pf.get('manifest_digest')}, this run is {_manifest_digest}. It says nothing "
-                f"about the structures this run will train on; re-run it.")
+                f"about the structures this run will train on; re-run it.\n"
+                + (f"  Its selection/skip are {_pf.get('manifest_selection')!r} / "
+                   f"{_pf.get('manifest_skip')!r} against this run's "
+                   f"{a.manifest_selection!r} / {a.manifest_skip!r}, and it records no `checked` "
+                   f"list, so neither subset path applies."
+                   if not _pf_checked else
+                   f"  {len(_run_pdbs - _pf_checked)} of this run's structure(s) are NOT in the "
+                   f"marker's checked list, e.g. {sorted(_run_pdbs - _pf_checked)[:5]}."))
         if not _pf.get("ok"):
             raise SystemExit(f"STOP: {a.alignment_preflight} does not record a pass.")
         # THE MARKER MUST COVER THE WHOLE MANIFEST, not just carry its digest. The digest is
