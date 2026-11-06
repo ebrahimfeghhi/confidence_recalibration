@@ -49,7 +49,9 @@ def main():
                     help="the scoreable derivation of the master pool")
     ap.add_argument("--results", default="training/fold/results.csv")
     ap.add_argument("--out", default="training/combined/pool.csv")
-    ap.add_argument("--seeds", type=int, default=10)
+    ap.add_argument("--min-seeds", type=int, default=1,
+                    help="fewest seeds an interface may have and still count as complete; the "
+                         "seeds present must be a contiguous run from --seed0 whatever the count")
     ap.add_argument("--nsample", type=int, default=5)
     ap.add_argument("--seed0", type=int, default=500000)
     ap.add_argument("--write", action="store_true")
@@ -69,35 +71,59 @@ def main():
             if math.isfinite(dq) and math.isfinite(ip):
                 have[r["iface"]][(r["seed"], r["arm"], r["sample"])] += 1
 
-    want_keys = {(str(a.seed0 + i), ARM, str(k))
-                 for i in range(a.seeds) for k in range(a.nsample)}
-    want = len(want_keys)
-    keep, no_rows, short = [], [], []
+    # THE SEED COUNT IS NO LONGER UNIFORM, so a single expected key set is the wrong test.
+    # Requiring exactly seeds 500000-500009 was right while every structure had ten, and became
+    # wrong the moment 416 structures were trimmed to one seed and 437 were given an eleventh: at
+    # --seeds 10 the trimmed ones report 45 missing and the extended ones 5 unexpected, so the
+    # builder would have refused 853 of 853 interfaces for being the shape they are meant to be.
+    #
+    # What still has to hold, and is what the strict check was actually protecting:
+    #   - the seeds present are a CONTIGUOUS run starting at --seed0, with no gap in the middle;
+    #   - every seed present carries samples 0..nsample-1, none missing;
+    #   - no key appears twice;
+    #   - at least --min-seeds seeds, so a structure reduced to nothing is still caught.
+    # A gap is the interesting failure: seeds 500000 and 500002 with 500001 absent means a unit was
+    # lost, and that is exactly what a count of rows cannot see.
+    samples = {str(k) for k in range(a.nsample)}
+    keep, no_rows, short, by_nseeds = [], [], [], collections.Counter()
     for ifc, cols in sorted(master.items()):
         got = have.get(ifc, {})
         if not got:
             no_rows.append(ifc)
             continue
+        why = []
         dup = sorted(k for k, n in got.items() if n > 1)
-        missing = sorted(want_keys - set(got))
-        extra = sorted(set(got) - want_keys)
-        if dup or missing or extra:
-            why = []
-            if dup:
-                why.append(f"{len(dup)} duplicated key(s) e.g. {dup[0]}")
-            if missing:
-                why.append(f"{len(missing)} missing e.g. {missing[0]}")
-            if extra:
-                why.append(f"{len(extra)} unexpected e.g. {extra[0]}")
+        if dup:
+            why.append(f"{len(dup)} duplicated key(s) e.g. {dup[0]}")
+        bad_arm = sorted({k[1] for k in got} - {ARM})
+        if bad_arm:
+            why.append(f"arm(s) {bad_arm}, expected {ARM!r}")
+        per_seed = collections.defaultdict(set)
+        for sd, _arm, smp in got:
+            per_seed[sd].add(smp)
+        seeds_i = sorted(int(s) for s in per_seed)
+        run = [a.seed0 + i for i in range(len(seeds_i))]
+        if seeds_i != run:
+            why.append(f"seeds are not a contiguous run from {a.seed0}: "
+                       f"{seeds_i[:3]}..{seeds_i[-1]} ({len(seeds_i)} present)")
+        if len(seeds_i) < a.min_seeds:
+            why.append(f"{len(seeds_i)} seed(s), fewer than --min-seeds {a.min_seeds}")
+        incomplete = sorted(sd for sd, ss in per_seed.items() if ss != samples)
+        if incomplete:
+            why.append(f"{len(incomplete)} seed(s) short of {a.nsample} samples e.g. "
+                       f"{incomplete[0]} has {sorted(per_seed[incomplete[0]])}")
+        if why:
             short.append((ifc, "; ".join(why)))
         else:
             keep.append(cols)
+            by_nseeds[len(seeds_i)] += 1
 
     print(f"master scoreable pool : {len(master)} interface(s)")
-    print(f"  fully scored ({want} poses) : {len(keep)}")
-    print(f"  no rows at all              : {len(no_rows)}  {sorted(no_rows)}")
-    print(f"  partially scored            : {len(short)}  {sorted(short)[:10]}")
-    print(f"  structures in the new pool  : {len({c[0] for c in keep})}")
+    print(f"  complete                   : {len(keep)}")
+    print(f"  seeds per complete iface   : {dict(sorted(by_nseeds.items()))}")
+    print(f"  no rows at all             : {len(no_rows)}  {sorted(no_rows)}")
+    print(f"  incomplete                 : {len(short)}  {sorted(short)[:6]}")
+    print(f"  structures in the new pool : {len({c[0] for c in keep})}")
 
     if short:
         print("BUILD FAILED: a training pool must not name a partially scored interface.")
