@@ -67,9 +67,13 @@ def train_pae(run):
     return {e: sum(v) / len(v) for e, v in by.items() if v}
 
 
+# THE UNIT WORD IS CAPTURED, NOT ASSUMED. The trainer prints "pose(s)" for rel and expected and
+# "pair(s)" for the pairwise forms, because rank_loss.rel_coeffs returns a POSE count. An earlier
+# version of this file hardcoded "pair(s)", so it silently matched nothing on a rel run and the
+# ranking panel came out empty rather than wrong -- which is the better failure, but still wrong.
 RANK_RE = re.compile(
     r"\[rank 0\] epoch (\d+) rank-loss \(([^)]*)\): ([+-][\d.]+) over (\d+) interface-group\(s\) "
-    r"in (\d+) step\(s\), (\d+) pair\(s\)")
+    r"in (\d+) step\(s\)(?:[^,]*), (\d+) (pose|pair)\(s\)")
 
 
 def train_rank(run):
@@ -83,7 +87,8 @@ def train_rank(run):
             m = RANK_RE.search(line)
             if m:
                 out[int(m.group(1))] = (float(m.group(3)), int(m.group(4)),
-                                        int(m.group(5)), int(m.group(6)), m.group(2))
+                                        int(m.group(5)), int(m.group(6)), m.group(2),
+                                        m.group(7) + "(s)")
     return out
 
 
@@ -128,6 +133,41 @@ def eval_corr(run, pool="valfull"):
     return out
 
 
+def read_form(run):
+    """(rank_form, a short descriptor) from the run's own command line, falling back to the log."""
+    import json
+    cp = os.path.join(run, "config.json")
+    cmd = ""
+    if os.path.exists(cp):
+        try:
+            c = json.load(open(cp))
+            v = c.get("command") or c.get("passed_through") or ""
+            cmd = " ".join(v) if isinstance(v, list) else str(v)
+        except Exception:
+            cmd = ""
+    m = re.search(r"--rank-form\s+(\S+)", cmd)
+    form = m.group(1) if m else ""
+    if not form:
+        lp = os.path.join(run, "run.log")
+        if os.path.exists(lp):
+            with open(lp, errors="replace") as fh:
+                for line in fh:
+                    mm = re.search(r"RANKING LOSS on \S+: form (\S+?),", line)
+                    if mm:
+                        form = mm.group(1)
+                        break
+    form = form or "unknown"
+    bits = []
+    for f in ("--alpha-rank", "--rank-within-weight", "--rank-pairs"):
+        mm = re.search(re.escape(f) + r"\s+(\S+)", cmd)
+        # --rank-pairs and --rank-within-weight are INERT under rel and are not shown for it.
+        if mm and not (form == "rel" and f in ("--rank-pairs", "--rank-within-weight")):
+            bits.append(f"{f.lstrip('-')} {mm.group(1)}")
+    uncropped = not re.search(r"--crop-tokens|--crop-size", cmd)
+    bits.append("uncropped" if uncropped else "CROPPED")
+    return form, ", ".join(bits)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True, help="training/runs/<id>")
@@ -138,9 +178,14 @@ def main():
                                                           os.path.basename(a.run.rstrip("/")))
     pae, rank, corr = train_pae(run), train_rank(run), eval_corr(run, a.pool)
     rid = os.path.basename(run.rstrip("/"))
+    # THE OBJECTIVE IS READ FROM THE RUN, NOT WRITTEN INTO THIS FILE. Raised in review: the figure
+    # title hardcoded "--rank-pairs all", so a rel run -- which has no pair family -- was labelled
+    # with a flag it never used. A progress figure that misnames its own experiment is worse than
+    # no figure, because it outlives the conversation that would have corrected it.
+    form, cfgnote = read_form(run)
 
     print(f"run {rid}")
-    print(f"{'ep':>3s} {'train PAE':>10s} {'train RANK':>11s} {'groups':>7s} {'pairs':>9s} "
+    print(f"{'ep':>3s} {'train PAE':>10s} {'train RANK':>11s} {'groups':>7s} {'size':>9s} "
           f"{'within rho':>11s} {'shipped':>8s} {'pooled rho':>11s}")
     for ep in sorted(set(pae) | set(rank) | set(corr)):
         p = pae.get(ep)
@@ -155,8 +200,10 @@ def main():
               f"{(f'{c[chr(119)+chr(105)+chr(116)+chr(104)+chr(105)+chr(110)+chr(95)+chr(115)+chr(104)+chr(105)+chr(112)+chr(112)+chr(101)+chr(100)]:+.4f}' if c.get('within_shipped') is not None else '-'):>8s} "
               f"{(f'{c[chr(112)+chr(111)+chr(111)+chr(108)+chr(101)+chr(100)+chr(95)+chr(104)+chr(101)+chr(97)+chr(100)]:+.4f}' if c.get('pooled_head') is not None else '-'):>11s}")
     if rank:
-        _, _, _, _, what = rank[max(rank)]
-        print(f"\npair family as the trainer reports it: {what}")
+        _rk = rank[max(rank)]
+        print(f"\nobjective as the trainer reports it: {_rk[4]}")
+        print(f"group size unit: {_rk[5]}  (rel and expected count POSES, pairwise forms count "
+              f"pairs)")
 
     if not (pae or rank or corr):
         print("nothing to plot yet")
@@ -177,7 +224,10 @@ def main():
         e = sorted(rank)
         ax[1].plot(e, [rank[k][0] for k in e], "s-", color="#d62728")
         ax[1].axhline(0.0, color="k", lw=.8, ls=":")
-    ax[1].set_title("training RANKING loss\n(run.log, trainer's own accounting)")
+    _ttl = ("training RELATIVE REGRESSION loss\n(mean-centred vs true iTM; run.log)"
+            if form == "rel" else
+            f"training RANKING loss ({form})\n(run.log, trainer's own accounting)")
+    ax[1].set_title(_ttl)
     ax[1].set_xlabel("epoch"); ax[1].set_ylabel("ranking loss"); ax[1].grid(alpha=.3)
 
     if corr:
@@ -194,7 +244,8 @@ def main():
     ax[2].set_title("ipTM vs DockQ, Spearman\n(within-interface is what selection uses)")
     ax[2].set_xlabel("epoch"); ax[2].set_ylabel("rho"); ax[2].grid(alpha=.3)
 
-    fig.suptitle(f"{rid}: uncropped, mixed depth, --rank-pairs all", fontsize=11)
+    fig.suptitle(f"{rid}: rank-form {form}  |  {cfgnote}  |  mixed depth, 851 structures",
+                 fontsize=11)
     fig.tight_layout()
     out = a.out or os.path.join(run, "progress.png")
     fig.savefig(out, dpi=110)
