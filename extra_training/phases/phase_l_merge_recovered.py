@@ -78,8 +78,15 @@ def main():
                          "declared by the caller and compared exactly against the manifest; a bare "
                          "path is accepted only when no --manifest is given.")
     ap.add_argument("--pool", default="", help="pool.csv (default: beside --csv)")
-    ap.add_argument("--expect-rows", type=int, required=True)
-    ap.add_argument("--expect-ifaces", type=int, required=True)
+    ap.add_argument("--expect-rows", type=int, default=-1,
+                    help="required unless --plan is given, which derives it")
+    ap.add_argument("--expect-ifaces", type=int, default=-1,
+                    help="required unless --plan is given, which derives it")
+    ap.add_argument("--plan", default="",
+                    help="csv of iface,seed,sample naming the EXACT keys this merge must add, as "
+                         "written by run_logging/seed_coverage.py --plan-out. With it the gate is "
+                         "key equality against the plan rather than a per-interface row count, "
+                         "which is what makes a PARTIALLY scored interface mergeable at all.")
     ap.add_argument("--manifest", default="",
                     help="csv of iface,route naming EXACTLY the interfaces this merge may add, and "
                          "which producer each must come from. Without it the merge only knows how "
@@ -91,6 +98,18 @@ def main():
     ap.add_argument("--replace", action="store_true",
                     help="swap the snapshot in atomically after every check passes")
     a = ap.parse_args()
+    plan_keys = None
+    if a.plan:
+        with open(a.plan) as _fh:
+            plan_keys = {(r["iface"], r["seed"], str(r["sample"]))
+                         for r in csv.DictReader(_fh)}
+        if not plan_keys:
+            raise SystemExit(f"STOP: --plan {a.plan} names no keys. An empty plan would make every "
+                             f"recovered row 'not in the plan' and is never what a caller means.")
+    elif a.expect_rows < 0 or a.expect_ifaces < 0:
+        raise SystemExit("STOP: pass --plan, or both --expect-rows and --expect-ifaces. Without "
+                         "one of them this merge has no contract to check the producer against, "
+                         "and a short sweep would define its own success.")
     pool_csv = a.pool or os.path.join(os.path.dirname(os.path.abspath(a.csv)), "pool.csv")
     out = a.out or a.csv + ".merged"
     if os.path.abspath(out) == os.path.abspath(a.csv):
@@ -229,15 +248,53 @@ def main():
                         f"(e.g. {sorted(already)[:3]})")
 
     per = collections.Counter(r["iface"] for r in rec)
-    want_each = a.seeds * a.nsample
-    short = {i: n for i, n in per.items() if n != want_each}
-    if short:
-        problems.append(f"{len(short)} interface(s) do not have exactly {want_each} rows: "
-                        f"{sorted(short.items())[:5]}")
-    if len(rec) != a.expect_rows:
-        problems.append(f"{len(rec)} recovered row(s), expected {a.expect_rows}")
-    if len(per) != a.expect_ifaces:
-        problems.append(f"{len(per)} recovered interface(s), expected {a.expect_ifaces}")
+    if plan_keys is not None:
+        # KEY EQUALITY AGAINST THE PLAN, NOT A ROW COUNT PER INTERFACE. The old contract demanded
+        # exactly --seeds x --nsample rows for every recovered interface, which a legitimately
+        # PARTIAL fill can never satisfy: 9vaw_AB was missing 1 of 5 samples at seed 500010, so a
+        # sweep run with --skip-existing yields 4 rows and was refused for "not exactly 5", while a
+        # sweep run without it yields 5 and was refused for "already in the canonical file". The
+        # interface was unmergeable by either route. Raised in review; the plan is the way out,
+        # because it states which keys are missing instead of assuming a whole interface is.
+        got_keys = {(r["iface"], r["seed"], str(r["sample"])) for r in rec}
+        miss = sorted(plan_keys - got_keys)
+        extra = sorted(got_keys - plan_keys)
+        if miss:
+            problems.append(f"{len(miss)} planned key(s) were NOT recovered: {miss[:5]}")
+        if extra:
+            problems.append(f"{len(extra)} recovered key(s) are not in the plan: {extra[:5]}")
+        # THE COMBINED SET MUST BE COMPLETE, which is the thing the caller actually wants and
+        # which neither the plan nor the row count asserts on its own: a plan could be short.
+        bad_cov = []
+        for ifc in sorted({k[0] for k in plan_keys}):
+            for sd in sorted({k[1] for k in plan_keys if k[0] == ifc}):
+                want = {(ifc, sd, str(k)) for k in range(a.nsample)}
+                have = {k for k in want if k in got_keys} | {
+                    (c[0], c[1], c[3]) for c in seen if (c[0], c[1]) == (ifc, sd)}
+                if want - have:
+                    bad_cov.append((ifc, sd, sorted(want - have)[:3]))
+        if bad_cov:
+            problems.append(f"{len(bad_cov)} (interface, seed) would still be short of "
+                            f"{a.nsample} sample(s) after this merge: {bad_cov[:4]}")
+        # DERIVED FROM THE PLAN, NEVER FROM THE PRODUCER. A caller that also passes --expect-rows
+        # must agree with the plan, so a stale plan beside fresh numbers refuses instead of one
+        # silently winning.
+        if a.expect_rows >= 0 and a.expect_rows != len(plan_keys):
+            problems.append(f"--expect-rows {a.expect_rows} disagrees with the "
+                            f"{len(plan_keys)}-key plan")
+        if a.expect_ifaces >= 0 and a.expect_ifaces != len({k[0] for k in plan_keys}):
+            problems.append(f"--expect-ifaces {a.expect_ifaces} disagrees with the plan's "
+                            f"{len({k[0] for k in plan_keys})} interface(s)")
+    else:
+        want_each = a.seeds * a.nsample
+        short = {i: n for i, n in per.items() if n != want_each}
+        if short:
+            problems.append(f"{len(short)} interface(s) do not have exactly {want_each} rows: "
+                            f"{sorted(short.items())[:5]}")
+        if len(rec) != a.expect_rows:
+            problems.append(f"{len(rec)} recovered row(s), expected {a.expect_rows}")
+        if len(per) != a.expect_ifaces:
+            problems.append(f"{len(per)} recovered interface(s), expected {a.expect_ifaces}")
 
     if problems:
         print("\nMERGE REFUSED:")
@@ -260,7 +317,13 @@ def main():
     os.replace(tmp, out)
     print(f"\nALL CHECKS PASSED")
     print(f"  {len(live)} canonical + {len(rec)} recovered = {len(combined)} row(s), all distinct")
-    print(f"  {len(per)} interface(s), {want_each} row(s) each")
+    if plan_keys is not None:
+        # SAY WHAT THE PLAN ASKED FOR, not "N rows each": under a plan the counts differ per
+        # interface by design, which is the whole reason the plan exists.
+        print(f"  {len(per)} interface(s), every one of the {len(plan_keys)} planned key(s) "
+              f"recovered and nothing else")
+    else:
+        print(f"  {len(per)} interface(s), {want_each} row(s) each")
     print(f"  wrote the combined snapshot to {out}")
 
     if not a.replace:
