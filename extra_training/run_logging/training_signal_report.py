@@ -31,7 +31,8 @@ ACCEPTABLE = 0.23
 FLAT = 0.05
 
 
-def load(results_csv, queue_tsv, seeds, nsample, pool_csv=None, seed0=500000):
+def load(results_csv, queue_tsv, seeds, nsample, pool_csv=None, seed0=500000,
+         only=None, manifest=None):
     """iface -> [(seed, sample, iptm, dockq)] for the scope only.
 
     SCOPE IS A QUEUE OR A POOL, never "every row in the file". training/fold/results.csv holds rows
@@ -41,7 +42,21 @@ def load(results_csv, queue_tsv, seeds, nsample, pool_csv=None, seed0=500000):
     pool plus a seed range is how to scope a wave whose queue is no longer around.
     """
     scope = set()
-    if queue_tsv:
+    want_ifaces = None
+    if manifest:
+        # A PER-STRUCTURE SEED SET, BECAUSE THE KEPT TRUNKS ARE NOT A CONTIGUOUS RANGE. The wave-1
+        # validation trim kept 30 anchored-coverage seeds per structure, and 29 of the 30
+        # structures got a DIFFERENT set -- 7shz keeps 400037 and 400070, which no --seeds N range
+        # starting at 400000 contains. Scoring rows exist for all 100 seeds, so a contiguous
+        # budget still reports a number; it is just not the budget this pool can be EVALUATED at,
+        # because an eval needs the trunk. Reading the manifest is the only way to measure the
+        # headroom that is actually reachable.
+        import json
+        m = json.load(open(manifest))
+        for pdb, v in m["structures"].items():
+            for sd in v["seeds"]:
+                scope.add((pdb, str(sd)))
+    elif queue_tsv:
         with open(queue_tsv) as fh:
             for ln in fh:
                 f = ln.rstrip("\n").split("\t")
@@ -58,6 +73,20 @@ def load(results_csv, queue_tsv, seeds, nsample, pool_csv=None, seed0=500000):
                        for r in csv.DictReader(open(pool_csv))}
         pdbs = {i.split("_")[0] for i in want_ifaces}
         scope = {(p, str(seed0 + i)) for p in pdbs for i in range(seeds)}
+    # RESTRICTING TO A WAVE IS A SCOPE NARROWING, NOT A FILTER ON OUTCOME. The two validation
+    # waves were folded months apart against the same 100-seed budget, and their headroom is the
+    # thing being compared, so each has to be measured over its own structures alone. This clips
+    # the scope BEFORE any row is read, so pooled/scoreable counts and the gap are all computed
+    # over the same restricted set rather than one being the whole pool and another a subset.
+    if only:
+        missing = only - {p for p, _ in scope}
+        if missing:
+            raise SystemExit(f"STOP: {len(missing)} --only structure(s) are not in scope, so the "
+                             f"report would silently cover fewer than asked: {sorted(missing)[:8]}")
+        scope = {(p, sd) for p, sd in scope if p in only}
+    if want_ifaces is None and not queue_tsv and pool_csv:
+        want_ifaces = {f"{r['pdb']}_{r['chain1']}{r['chain2']}"
+                       for r in csv.DictReader(open(pool_csv))}
     out = collections.defaultdict(list)
     with open(results_csv) as fh:
         for r in csv.DictReader(fh):
@@ -70,7 +99,7 @@ def load(results_csv, queue_tsv, seeds, nsample, pool_csv=None, seed0=500000):
                 continue
             if not (math.isfinite(dq) and math.isfinite(ip)):
                 continue
-            if not queue_tsv and r["iface"] not in want_ifaces:
+            if want_ifaces is not None and r["iface"] not in want_ifaces:
                 continue
             out[r["iface"]].append((int(r["seed"]), int(r["sample"]), ip, dq))
     return out, scope
@@ -87,10 +116,21 @@ def main():
     ap.add_argument("--flat", type=float, default=FLAT)
     ap.add_argument("--seed0", type=int, default=500000,
                     help="first seed, used only when --queue is empty and scope comes from --pool")
+    ap.add_argument("--seed-manifest", default="",
+                    help="json with structures->seeds; scope each structure to its OWN kept seeds "
+                         "rather than a contiguous --seeds range")
+    ap.add_argument("--only", default="",
+                    help="file listing structures, one per line; restrict the whole report to them")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
 
-    per, scope = load(a.csv, a.queue, a.seeds, a.nsample, a.pool, a.seed0)
+    only = None
+    if a.only:
+        only = {l.split()[0] for l in open(a.only) if l.strip() and l[0] != "#"}
+        if not only:
+            raise SystemExit(f"STOP: --only {a.only} names no structure")
+    per, scope = load(a.csv, a.queue, a.seeds, a.nsample, a.pool, a.seed0, only,
+                      a.seed_manifest)
     pdbs = {p for p, _ in scope}
     want = a.seeds * a.nsample
 
