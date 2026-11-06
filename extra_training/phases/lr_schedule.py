@@ -101,7 +101,7 @@ def units_per_rank(units_by_pdb, world, cross_seed=False, n_units=None):
     return sum(v // max(1, world) for v in units_by_pdb.values())
 
 
-def pack_cross_seed_steps(depth, order, structs_per_step):
+def pack_cross_seed_steps(depth, order, structs_per_step, preserve_order=False):
     """ONE packing, used by the epoch builder AND by the horizon. in: {pdb: n_units}, the epoch's
     structure order, S.  out: (list of chunks of pdb, dropped pdbs, unit budget per step).
 
@@ -126,7 +126,13 @@ def pack_cross_seed_steps(depth, order, structs_per_step):
     if not order:
         return [], [], 0
     U = S * max(depth[p] for p in order)
-    pend = sorted(order, key=lambda p: -depth[p])
+    # preserve_order IS FOR --epoch-order manifest/tokens, WHERE THE ORDER IS THE POINT.
+    # Raised in review and correct: sorting by depth overrides a size-ascending token order, and a
+    # memory probe reads its threshold off exactly that order -- so the descending sort would have
+    # quietly made --epoch-order tokens mean something else. It is safe to skip the sort there
+    # because those modes do not reshuffle: the order is fixed across epochs by design, so the step
+    # count is already stable without it. The sort exists only to stabilise the SHUFFLED modes.
+    pend = list(order) if preserve_order else sorted(order, key=lambda p: -depth[p])
     steps, dropped = [], []
     while pend:
         room, chunk = U, []
@@ -149,7 +155,7 @@ def pack_cross_seed_steps(depth, order, structs_per_step):
 
 
 def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False, n_units=None,
-                    structs_per_step=0):
+                    structs_per_step=0, preserve_order=False):
     """Optimiser steps in one epoch, DERIVED FROM THE EPOCH BUILDER'S OWN GROUPING.
 
     build_epoch walks floor(n_seeds / world) whole seed-groups of each structure -- the remainder
@@ -173,7 +179,7 @@ def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False,
     if cross_seed and structs_per_step and structs_per_step > 0:
         # THE PACKER ITSELF, not a formula that models it. See pack_cross_seed_steps.
         _st, _dr, _U = pack_cross_seed_steps(dict(units_by_pdb), list(units_by_pdb),
-                                             structs_per_step)
+                                             structs_per_step, preserve_order=preserve_order)
         return max(1, len(_st))
     per_rank = units_per_rank(units_by_pdb, world, cross_seed, n_units)
     # CEILING, NOT FLOOR PLUS ONE. The loop flushes a partial accumulation at the epoch

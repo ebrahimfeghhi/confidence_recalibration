@@ -56,7 +56,7 @@ for SEED in $SEEDS; do
   say "--- seed $SEED ---"
   # THE GATE NAMES THE GAP. Exit 0 here means nothing to do, and that is the common case later.
   if $PY -I run_logging/seed_coverage.py --seed "$SEED" --limit 0 \
-       --targets-out "$SC/targets_$SEED.txt"; then
+       --targets-out "$SC/targets_$SEED.txt" --plan-out "$SC/plan_$SEED.csv"; then
     say "  seed $SEED already exact, nothing to recover"; continue
   fi
   T=$(cat "$SC/targets_$SEED.txt" 2>/dev/null)
@@ -70,26 +70,39 @@ for SEED in $SEEDS; do
   N=$(echo "$T" | tr ',' '\n' | wc -l)
   say "  $N interface(s) to rescore by the isolated route"
 
+  K=$(($(wc -l < "$SC/plan_$SEED.csv") - 1))
+  say "  the plan names $K missing key(s) over $N interface(s)"
+
   # --roles IS chain_roles_all.csv. chain_roles.csv names 501 structures and none of this wave's
   # 356; with it the sweep fails every sample as "roles expect ('?', '?')". The union covers 853/853.
+  #
+  # --skip-existing IS WHAT MAKES A PARTIAL INTERFACE RECOVERABLE. Without it the sweep re-emits
+  # all five samples of an interface that is missing only one, and the merge refuses them as
+  # "already in the canonical file". Raised in review, and 9vaw_AB at seed 500010 is exactly that
+  # shape, so this is reachable rather than theoretical.
   nice -n 19 ionice -c 3 $PY -I phases/phase_j_rescore_unmapped.py --targets "$T" \
     --fold "$TG" --refs training/refs --roles "$TG/chain_roles_all.csv" \
+    --skip-existing "$TG/results.csv" \
     --seed0 "$SEED" --seeds 1 --nsample 5 --route isolated \
     --rows-out "$SC/gap_rows_$SEED.csv" || { say "  sweep exit $?"; FAIL="$FAIL seed$SEED(sweep)"; continue; }
   [ -s "$SC/gap_rows_$SEED.csv" ] || { say "  sweep produced no rows"; FAIL="$FAIL seed$SEED(norows)"; continue; }
   R=$(($(wc -l < "$SC/gap_rows_$SEED.csv") - 1))
+  say "  sweep produced $R row(s) against a $K-key plan"
 
   # THE MANIFEST NAMES WHICH INTERFACES MAY BE ADDED, which --replace requires. It is derived from
   # the same target string, so it cannot name an interface the gate did not ask for.
   { echo "iface,route"; echo "$T" | tr ',' '\n' | cut -d: -f2 | sort -u | sed 's/$/,iso/'; } \
     > "$SC/gap_manifest_$SEED.csv"
-  I=$(($(wc -l < "$SC/gap_manifest_$SEED.csv") - 1))
+  # --plan RATHER THAN --expect-rows. The expectation comes from the GATE's key set, so a short
+  # sweep cannot define its own success -- deriving --expect-rows from what the producer emitted is
+  # precisely the weaker gate this is replacing. The merge additionally checks that canonical plus
+  # recovered leaves every targeted interface with a complete 0..4.
   nice -n 19 ionice -c 3 $PY -I phases/phase_l_merge_recovered.py --csv "$TG/results.csv" \
     --rows "iso=$SC/gap_rows_$SEED.csv" --manifest "$SC/gap_manifest_$SEED.csv" \
-    --expect-rows "$R" --expect-ifaces "$I" --seeds 1 --seed0 "$SEED" --nsample 5 \
+    --plan "$SC/plan_$SEED.csv" --seeds 1 --seed0 "$SEED" --nsample 5 \
     --out "$SC/gap_merged_$SEED.csv" --replace \
     || { say "  merge exit $?"; FAIL="$FAIL seed$SEED(merge)"; continue; }
-  say "  merged $R row(s) over $I interface(s)"
+  say "  merged $R row(s) over $N interface(s)"
 
   # RE-GATE, because a merge that succeeded is not the same as a seed that is complete: the sweep
   # can legitimately fail to score an interface OST cannot map at all.

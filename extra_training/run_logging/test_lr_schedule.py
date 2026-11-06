@@ -221,6 +221,29 @@ def main():
         check(f"uniform {_n}x{_d} at S={_S} still packs {_want} step(s) (= floor(n/S))",
               len(_s3) == _want == _n // _S, f"got {len(_s3)}, floor {_n // _S}")
 
+    # ---- --epoch-order manifest/tokens: THE ORDER IS THE POINT, so it must survive packing ----
+    # Raised in review: the FFD sort overrides a size-ascending token order, and a memory probe
+    # reads its threshold off exactly that order, so the descending sort would have quietly made
+    # --epoch-order tokens mean something else. preserve_order skips the sort, which is safe
+    # because those modes do not reshuffle -- the order is already fixed across epochs.
+    ASC = {f"s{i:03d}": (1 if i < 60 else 15) for i in range(120)}   # small first, large last
+    _asc = sorted(ASC)
+    _s4, _d4, _U4 = LRS.pack_cross_seed_steps(ASC, _asc, 2, preserve_order=True)
+    check("preserve_order keeps the caller's order in the first step",
+          _s4 and _s4[0] == _asc[:len(_s4[0])], f"{_s4[0][:4] if _s4 else None}")
+    check("preserve_order puts only SMALL structures in the first step of an ascending order",
+          _s4 and all(ASC[p] == 1 for p in _s4[0]), f"{sorted({ASC[p] for p in _s4[0]})}")
+    _s5, _, _ = LRS.pack_cross_seed_steps(ASC, _asc, 2, preserve_order=False)
+    check("and WITHOUT it the first step is the largest structures -- the regression",
+          _s5 and all(ASC[p] == 15 for p in _s5[0]), f"{sorted({ASC[p] for p in _s5[0]})}")
+    check("preserve_order is deterministic for a fixed order",
+          all(LRS.pack_cross_seed_steps(ASC, _asc, 2, preserve_order=True)[0] == _s4
+              for _ in range(5)))
+    check("steps_per_epoch honours preserve_order too",
+          LRS.steps_per_epoch(ASC, 3, 5, 30, cross_seed=True, n_units=sum(ASC.values()),
+                              structs_per_step=2, preserve_order=True) == len(_s4),
+          f"{LRS.steps_per_epoch(ASC, 3, 5, 30, cross_seed=True, n_units=sum(ASC.values()), structs_per_step=2, preserve_order=True)} vs {len(_s4)}")
+
     print(f"\n  {len(FAIL)} failure(s)" + (f": {FAIL}" if FAIL else ""))
     return 1 if FAIL else 0
 

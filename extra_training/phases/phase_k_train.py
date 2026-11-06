@@ -6262,7 +6262,8 @@ def main():
         # alone -- plain first-fit over a shuffled order gave 220..229 steps on this population,
         # so no constant steps-per-epoch existed to calibrate against.
         _depth = {_p: len(by[_p]) for _p in order}
-        _chunks, _dropped, U = _LRS.pack_cross_seed_steps(_depth, order, S)
+        _chunks, _dropped, U = _LRS.pack_cross_seed_steps(_depth, order, S,
+                                                           preserve_order=_manifest_order)
         steps = []
         for chunk in _chunks:
             units = []
@@ -6309,6 +6310,18 @@ def main():
                       f"(--rank-structs-per-step {S} x deepest structure {_maxd}); these could not "
                       f"fill one exactly. Trim the FRONT of the manifest or adjust S, or these are "
                       f"never run.", flush=True)
+        if _dropped and _manifest_order:
+            # REFUSE RATHER THAN WARN. Raised in review: in a size-sorted order the dropped chunk
+            # is the LARGEST structures, which is precisely what a memory probe exists to reach, so
+            # a probe that silently never ran them would report a threshold from the wrong
+            # structure. A warning in a log is not a gate. The shuffled modes keep the old
+            # behaviour because there the omitted set rotates with the epoch seed.
+            raise SystemExit(
+                f"STOP: --epoch-order {a.epoch_order} dropped {len(_dropped)} structure(s) as a "
+                f"short final step: {_dropped[:6]}. In a deterministic order the dropped chunk is "
+                f"the largest structures and they would never train, which silently changes what a "
+                f"size-ordered epoch means. Trim the manifest to a multiple of the "
+                f"{U}-unit budget, or adjust --rank-structs-per-step.")
         n_units = len(steps[0])
         base, rem = divmod(n_units, world)
         mine, quotas = [], []
@@ -7185,7 +7198,8 @@ def main():
     _spe_ep = _LRS.steps_per_epoch(_units_by_pdb, world, a.nsample, accum_local,
                                    cross_seed=bool(a.rank_cross_seed), n_units=len(flat),
                                    structs_per_step=(a.rank_structs_per_step
-                                                     if a.rank_cross_seed else 0))
+                                                     if a.rank_cross_seed else 0),
+                                   preserve_order=(a.epoch_order in ("manifest", "tokens")))
     # THE SPLIT, REPORTED HONESTLY. _full is whole accumulations and the partial exists only when
     # the poses do not divide accum_local -- at 368 structures they do (1,104 x 5 / 30 = 184), so
     # there is no partial step and the old unconditional "+ 1 partial" overstated the horizon.
