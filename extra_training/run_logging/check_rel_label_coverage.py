@@ -98,7 +98,9 @@ def main():
             for ifc in sorted(ifs[p]):
                 ex = excused.get(ifc)
                 if ex is not None and sd in ex:
-                    excused_hit += 1
+                    # COUNTED IN KEYS, NOT IN GROUPS. Raised in review: this incremented once per
+                    # (interface, seed) while printing "key(s) excused", understating by nsample.
+                    excused_hit += a.nsample
                     continue
                 for sm in range(a.nsample):
                     checked += 1

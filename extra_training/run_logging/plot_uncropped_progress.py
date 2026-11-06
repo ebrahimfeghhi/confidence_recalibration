@@ -52,19 +52,52 @@ def spearman(xs, ys):
 
 
 def train_pae(run):
-    """{epoch: mean pae_loss} from the trajectory."""
-    by = collections.defaultdict(list)
+    """{epoch: (mean, source)} -- the ALL-RANKS mean weighted by batch_n, not the rank-0 mean.
+
+    THE EPOCH MEAN COMES FROM batch_pae_loss, NOT pae_loss, and this file had it wrong. Raised in
+    review, and it is a defect this repository has already diagnosed once in
+    plot_train_insample.py: trajectory.csv is RANK 0 ONLY and its `pae_loss` is one pose's value,
+    so averaging those rows equally gives a rank-local per-pose mean -- unbiased but ~6.6x noisier
+    than the real thing, and not the run's global PAE. The trainer already computes the cross-rank
+    `batch_pae_loss` with its `batch_n` for each COMPLETED optimiser step, so the weighted mean over
+    `step_taken == 1` rows is the global per-pose mean.
+
+    Rows for steps that were not taken are excluded rather than averaged in: a step that failed or
+    was skipped has no gradient behind it and its batch value describes work that did not update
+    the model. The rank-0 fallback is kept only for runs predating the batch columns and is LABELLED
+    as such, so a noisier curve can never be mistaken for the global one.
+    """
+    agg = collections.defaultdict(list)
+    fallback = collections.defaultdict(list)
     p = os.path.join(run, "trajectory.csv")
     if not os.path.exists(p):
         return {}
     with open(p) as fh:
         for r in csv.DictReader(fh):
             try:
-                ep, v = int(r["epoch"]), float(r["pae_loss"])
+                ep = int(r["epoch"])
             except (ValueError, KeyError, TypeError):
                 continue
-            by[ep].append(v)
-    return {e: sum(v) / len(v) for e, v in by.items() if v}
+            try:
+                fallback[ep].append(float(r["pae_loss"]))
+            except (ValueError, KeyError, TypeError):
+                pass
+            if (r.get("step_taken") or "").strip() != "1":
+                continue
+            try:
+                v, n = float(r["batch_pae_loss"]), float(r["batch_n"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            if n > 0:
+                agg[ep].append((v, n))
+    out = {}
+    for e in set(agg) | set(fallback):
+        b = agg.get(e) or []
+        if b:
+            out[e] = (sum(v * n for v, n in b) / sum(n for _, n in b), "all-rank batch_n-weighted")
+        elif fallback.get(e):
+            out[e] = (sum(fallback[e]) / len(fallback[e]), "RANK-0 DIAGNOSTIC (noisier)")
+    return out
 
 
 # THE UNIT WORD IS CAPTURED, NOT ASSUMED. The trainer prints "pose(s)" for rel and expected and
@@ -92,14 +125,69 @@ def train_rank(run):
     return out
 
 
+def shards_complete(d):
+    """(ok, note) for one eval epoch directory, from the shards' own meta.json files.
+
+    A CORRELATION POINT FROM A PARTIAL SHARD SET IS NOT A HELD-OUT RESULT. Raised in review: this
+    used to concatenate whichever rows_*.csv existed and plot as soon as three rows survived
+    filtering, so a crashed or still-running shard produced a point that looked complete. In this
+    project that has been a real failure mode. Each shard writes
+    rows_*.csv.meta.json carrying `shard`, `nshards`, `rows`, `n_unmapped` and `n_unresolvable`, so
+    completeness is read from the producers rather than inferred from how many files turned up:
+    every shard index 0..nshards-1 must be present, each must agree with its own csv's row count,
+    and none may report an unmapped or unresolvable pose.
+    """
+    import json
+    metas = sorted(glob.glob(os.path.join(d, "rows_*.csv.meta.json")))
+    if not metas:
+        return False, "no shard metadata"
+    seen, nsh, want, bad = {}, None, 0, []
+    for mf in metas:
+        try:
+            j = json.load(open(mf))
+        except Exception as e:
+            return False, f"unreadable metadata ({type(e).__name__})"
+        nsh = nsh or int(j.get("nshards") or 0)
+        seen[int(j.get("shard", -1))] = j
+        want += int(j.get("rows") or 0)
+        if int(j.get("n_unmapped") or 0) or int(j.get("n_unresolvable") or 0):
+            bad.append(f"shard {j.get('shard')}: {j.get('n_unmapped')} unmapped, "
+                       f"{j.get('n_unresolvable')} unresolvable")
+    if not nsh:
+        return False, "metadata does not say how many shards there are"
+    gap = [k for k in range(nsh) if k not in seen]
+    if gap:
+        return False, f"shard(s) {gap} of {nsh} absent"
+    if bad:
+        return False, "; ".join(bad)
+    got = 0
+    for mf in metas:
+        c = mf[: -len(".meta.json")]
+        if not os.path.exists(c):
+            return False, f"metadata without its csv: {os.path.basename(c)}"
+        with open(c) as fh:
+            got += max(0, sum(1 for _ in fh) - 1)
+    if got != want:
+        return False, f"{got} row(s) on disk against {want} the shards claim"
+    return True, f"{nsh} shard(s), {got} row(s)"
+
+
 def eval_corr(run, pool="valfull"):
-    """{epoch: dict} of pooled and median-within-interface correlation, head and shipped."""
+    """{epoch: dict} of pooled and median-within-interface correlation, head and shipped.
+
+    Only COMPLETE epochs get a correlation; an incomplete one is recorded with its reason so the
+    caller can say so rather than plot it.
+    """
     out = {}
     for d in sorted(glob.glob(os.path.join(run, f"{pool}_eval_shards_ep*"))):
         m = re.search(r"_ep(\d+)$", d)
         if not m:
             continue
         ep = int(m.group(1))
+        ok, note = shards_complete(d)
+        if not ok:
+            out[ep] = {"incomplete": note}
+            continue
         rows = []
         for f in sorted(glob.glob(os.path.join(d, "rows_*.csv"))):
             with open(f) as fh:
@@ -110,7 +198,11 @@ def eval_corr(run, pool="valfull"):
                     except (ValueError, KeyError, TypeError):
                         continue
         if len(rows) < 3:
+            out[ep] = {"incomplete": f"only {len(rows)} usable row(s)"}
             continue
+        keys = [(i, a, d2, s2) for i, a, d2, s2 in rows]
+        if len(keys) != len(set((i, a, d2, s2) for i, a, d2, s2 in rows)):
+            pass  # identical score tuples are legitimate; duplicates are caught by the row count
         pooled_head = spearman([a for _i, a, _d, _s in rows], [d for _i, _a, d, _s in rows])
         pooled_ship = spearman([s for _i, _a, _d, s in rows], [d for _i, _a, d, _s in rows])
         byif = collections.defaultdict(list)
@@ -129,7 +221,8 @@ def eval_corr(run, pool="valfull"):
         med = lambda L: (sorted(L)[len(L) // 2] if L else None)
         out[ep] = {"pooled_head": pooled_head, "pooled_shipped": pooled_ship,
                    "within_head": med(wh), "within_shipped": med(ws),
-                   "n_rows": len(rows), "n_ifaces": len(byif), "n_within": len(wh)}
+                   "n_rows": len(rows), "n_ifaces": len(byif), "n_within": len(wh),
+                   "coverage": note}
     return out
 
 
@@ -188,9 +281,12 @@ def main():
     print(f"{'ep':>3s} {'train PAE':>10s} {'train RANK':>11s} {'groups':>7s} {'size':>9s} "
           f"{'within rho':>11s} {'shipped':>8s} {'pooled rho':>11s}")
     for ep in sorted(set(pae) | set(rank) | set(corr)):
-        p = pae.get(ep)
+        _pv = pae.get(ep)
+        p = _pv[0] if _pv else None
         r = rank.get(ep)
         c = corr.get(ep, {})
+        if c.get("incomplete"):
+            c = {}
         print(f"{ep:3d} "
               f"{(f'{p:.4f}' if p is not None else '-'):>10s} "
               f"{(f'{r[0]:+.5f}' if r else '-'):>11s} "
@@ -216,8 +312,11 @@ def main():
 
     if pae:
         e = sorted(pae)
-        ax[0].plot(e, [pae[k] for k in e], "o-", color="#1f77b4")
-    ax[0].set_title("training PAE loss\n(trajectory.csv, mean per epoch)")
+        ax[0].plot(e, [pae[k][0] for k in e], "o-", color="#1f77b4")
+        _src = pae[max(pae)][1]
+    else:
+        _src = ""
+    ax[0].set_title("training PAE loss\n" + (f"({_src})" if _src else ""))
     ax[0].set_xlabel("epoch"); ax[0].set_ylabel("pae_loss"); ax[0].grid(alpha=.3)
 
     if rank:
@@ -230,7 +329,14 @@ def main():
     ax[1].set_title(_ttl)
     ax[1].set_xlabel("epoch"); ax[1].set_ylabel("ranking loss"); ax[1].grid(alpha=.3)
 
-    if corr:
+    _part = sorted(k for k, v in corr.items() if v.get("incomplete"))
+    _full = {k: v for k, v in corr.items() if not v.get("incomplete")}
+    if _part:
+        print(f"\n{len(_part)} eval epoch(s) NOT plotted, shard coverage incomplete:")
+        for k in _part:
+            print(f"  epoch {k}: {corr[k]['incomplete']}")
+    if _full:
+        corr = _full
         e = sorted(corr)
         wh = [corr[k]["within_head"] for k in e]
         ws = [corr[k]["within_shipped"] for k in e]
@@ -241,7 +347,8 @@ def main():
                           label="within-interface, shipped")
         ax[2].plot(e, ph, "^:", color="#9467bd", alpha=.7, label="pooled (across complexes)")
         ax[2].legend(fontsize=8)
-    ax[2].set_title("ipTM vs DockQ, Spearman\n(within-interface is what selection uses)")
+    ax[2].set_title("ipTM vs DockQ, Spearman\n(within-interface is what selection uses;"
+                    + (f" {len(_part)} partial epoch(s) omitted)" if _part else " complete epochs only)"))
     ax[2].set_xlabel("epoch"); ax[2].set_ylabel("rho"); ax[2].grid(alpha=.3)
 
     fig.suptitle(f"{rid}: rank-form {form}  |  {cfgnote}  |  mixed depth, 851 structures",
