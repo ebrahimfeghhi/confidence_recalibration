@@ -468,7 +468,15 @@ def verify(a):
                 if bucket:
                     lbl = bucket
                     if bucket == "no_contact" or bucket == "":
-                        lbl = "no_contact"
+                        # NOT UNCONDITIONALLY no_contact. Raised in review: an empty bucket means
+                        # the scorer said nothing, and the contact measurement above decides what
+                        # that meant -- absent, touching-but-unscored, or uncheckable. Labelling
+                        # all three "no_contact" per structure told a reader a pair was fine when
+                        # the totals and the exit status were calling it a failure.
+                        lbl = ("no_contact" if ifc in verified_absent
+                               else "TOUCHING_but_unscored"
+                               if any(t[0] == ifc for t in touching_but_missing)
+                               else "contact_uncheckable")
                     # THE PER-STRUCTURE BREAKDOWN FOLLOWS THE SAME RULE as the buckets above, or it
                     # would keep calling 6umg's non-contacting pair "unmapped 100" after the
                     # totals had stopped doing so -- and that line is what a reader uses to decide

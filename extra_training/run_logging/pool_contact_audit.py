@@ -87,6 +87,14 @@ if a.out:
 # asserts both, plus that every pool row landed in exactly one cell.
 placed = sum(len(v) for v in cells.values())
 problems = []
+# AND THE OTHER DIRECTION. Raised in review: this loop walks pool.csv, so it can only ever say
+# something about interfaces the pool names. A scored interface ABSENT from the pool is invisible
+# to it, and "every scored interface was audited" was therefore not something the audit
+# established -- the placed == len(pool) identity is guaranteed by the loop, not evidence.
+orphans = sorted(set(scored) - {f"{p}_{c1}{c2}" for p, c1, c2 in pool})
+if orphans:
+    problems.append(f"{len(orphans)} scored interface(s) are not in the pool and were never "
+                    f"audited: {orphans[:5]}")
 if cells["apart_scored"]:
     problems.append(f"{len(cells['apart_scored'])} scored interface(s) have no reference contact")
 if cells["uncheckable"]:

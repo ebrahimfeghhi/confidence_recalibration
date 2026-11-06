@@ -73,6 +73,16 @@ def main():
                     help="write the derived files; without it this only reports")
     a = ap.parse_args()
 
+    # PATHS ARE CHECKED BEFORE ANYTHING IS READ OR WRITTEN. Raised in review: the collision check
+    # ran after the derived files had been written, so `--pool pool_scoreable.csv` would overwrite
+    # its own input and only then refuse.
+    d = os.path.dirname(os.path.abspath(a.pool))
+    sp = os.path.join(d, "pool_scoreable.csv")
+    xp = os.path.join(d, "pool_excluded.csv")
+    if os.path.abspath(a.pool) in (sp, xp):
+        raise SystemExit(f"STOP: --pool {a.pool} is one of this tool's own outputs; it would "
+                         f"overwrite its input. Point --pool at the original pool.csv.")
+
     with open(a.pool) as fh:
         rows = list(csv.DictReader(fh))
     s, e, u = classify(rows, a.refs, a.cutoff)
@@ -88,10 +98,15 @@ def main():
     for r, _mn, why in u[:10]:
         print(f"      UNCHECKABLE {r['pdb']}_{r['chain1']}{r['chain2']}: {why}")
 
+    if u:
+        # NOTHING IS PUBLISHED FROM AN INCOMPLETE CLASSIFICATION. Raised in review: the derived
+        # files used to be written and THEN the tool exited 1, so a reader that ignored the exit
+        # code consumed a pool missing every interface that could not be measured.
+        print("DERIVATION FAILED: the interfaces above are neither scoreable nor excluded for a "
+              "known reason. Nothing written -- a partial pool is worse than no pool.")
+        return 1
+
     if a.write:
-        d = os.path.dirname(os.path.abspath(a.pool))
-        sp = os.path.join(d, "pool_scoreable.csv")
-        xp = os.path.join(d, "pool_excluded.csv")
         for path, items, extra in ((sp, s, False), (xp, e, True)):
             tmp = path + ".tmp"
             with open(tmp, "w", newline="") as fh:
@@ -103,13 +118,7 @@ def main():
                                         f"{a.cutoff}", why] if extra else []))
             os.replace(tmp, path)
             print(f"  wrote {path} ({len(items)} row(s))")
-        if os.path.abspath(a.pool) in (os.path.abspath(sp), os.path.abspath(xp)):
-            raise SystemExit("STOP: refusing to overwrite the original pool")
 
-    if u:
-        print("DERIVATION FAILED: the interfaces above are neither scoreable nor excluded for a "
-              "known reason, so neither derived file is complete.")
-        return 1
     print(f"DERIVATION OK: {len(s)} + {len(e)} = {len(rows)}, every interface accounted for")
     return 0
 

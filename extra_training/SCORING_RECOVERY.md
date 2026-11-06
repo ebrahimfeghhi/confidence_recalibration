@@ -119,7 +119,14 @@ hardest.
     defects in it (section 6), fixed them, and re-ran the sweep to confirm the output was
     unchanged.
 
-14. **Did not write to `training/fold/results.csv`.** That step is still unauthorised and untaken.
+14. **Merged into `training/fold/results.csv`** at 6:15 PM EST, after a review had gated it: the
+    10 pre-existing duplicates were resolved first, then the 850 added, then the whole queue
+    verified and audited. *(Steps 1-13 above are the account as it stood before that merge; this
+    step is what closed it.)*
+
+15. **A second review found the merge gates guaranteed structural completeness more strongly than
+    semantic correctness**, and its findings are in [section 6c](#6c-the-second-review-structure-versus-meaning).
+    The merge itself was replayed from the backup and reproduces the live file byte for byte.
 
 ---
 
@@ -388,7 +395,8 @@ keys** — 10 duplicated poses:
 These are already known to [`run_logging/dedupe_results.py`](https://github.com/ebrahimfeghhi/confidence_recalibration/blob/perf/ckpt-by-size/extra_training/run_logging/dedupe_results.py),
 whose docstring names them and which resolves all 10 against the pose still on disk rather than by
 row order. But nothing has ever removed them, so those 10 poses still double-weight in any average
-over their seed. Unrelated to this recovery; outstanding on its own.
+over their seed. **Resolved:** all 10 were resolved against the pose still on disk, identified by
+OST's own chain_mapping, before the 850 were added -- 83,560 rows became 83,550.
 
 ---
 
@@ -449,6 +457,39 @@ session scratchpad, a different filesystem, so `os.replace` raised `EXDEV` **aft
 done all its work. Nothing was damaged — the failure is the swap itself — but the run was wasted.
 The script now defaults the snapshot directory to beside the csv and checks any override against
 the csv's device, so a caller cannot make the swap non-atomic.
+
+---
+
+## 6c. The second review: structure versus meaning
+
+A second review of the merge commit approved keeping the completed recovery and requested changes
+to the reusable gates, on one central observation: **the gates proved the rows had the right shape
+more strongly than that they were the right rows.** Its findings and what was done:
+
+| finding | fix |
+|---|---|
+| **P1** the merge checked 850 rows over 17 pooled interfaces with 50 keys each, but never *which* 17 -- a different set of 17 pooled interfaces with finite but wrong scores would have passed everything | `--manifest` names the exact interfaces and the producer each must come from, checked for set equality before the swap. Tested: a swapped interface and a wrong route are both refused |
+| **P1** `folder.py`'s append took no lock, so `.rescore.lock` only ever excluded cooperative rescorers, and a worker could append between the row count and `os.replace` | every writer is now in the same protocol: `folder.py` takes the lock shared around each append and fsyncs; the merge takes it **exclusively before its first read** and holds it through `os.replace` |
+| **P2** the derivation wrote its outputs and *then* exited 1 on an uncheckable interface, and checked for input/output collision after writing | paths are validated before anything is read, and nothing is published unless every interface classified |
+| **P2** `classify` checks the arm label but not `templated` / `templates`, while every recovered row asserts `donor_pose="-1"` | `free_provenance()` requires `templated` false and `templates` empty. Deliberately separate from `pose_sets`, which the drain gate shares -- tightening that would change what those tools call recoverable |
+| **P2** the audit walks `pool.csv`, so a scored interface *absent* from the pool was invisible to it | it now fails on `set(scored) - set(pool)` too. Confirmed empty on the live data |
+| **P3** the verifier labelled an empty bucket `no_contact` per structure even when the measurement said touching-but-unscored or uncheckable | the per-structure label now follows the measurement |
+| **P3** DockQ and ipTM were checked for finiteness, not range | both must be in [0, 1] |
+
+**What the review could not do, and what was done about it.** It had only the committed code -- the
+csv, the backups, the pose data and the recovery files are gitignored -- so it could not reproduce
+any production count and said so. Those checks were then run here:
+
+- the merge **replayed from `results.csv.pre_recovered_merge` plus the two row files is byte-identical to the live file** (`diff` clean), so the 850 that landed are exactly the 850 that were produced
+- the live file holds 84,400 rows with **0 duplicate `(iface, seed, arm, sample)` keys**
+- the contact audit passes with all 1,711 interfaces checked, 0 uncheckable, 0 scored-but-apart, and 0 scored interfaces outside the pool
+- a gated re-run reproduces a known row exactly: `5tl5_AC,500000,free,-1,,0,0.8840,0.8566`
+
+**One correction to this document.** It said the full-complex route "never forces a chain map".
+That is wrong as written: `ost_dockq.score` tries OST's automatic mapping first and *can* retry
+with the sequence-derived map via `-c`. It never forces one on the first attempt, and it behaves
+exactly as the production scorer does -- which is the property that matters -- but the fallback can
+and does supply a map.
 
 ---
 

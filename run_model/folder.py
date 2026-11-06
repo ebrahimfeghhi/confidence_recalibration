@@ -114,6 +114,7 @@ import argparse
 import collections
 import concurrent.futures
 import csv
+import fcntl
 import functools
 import glob
 import hashlib
@@ -752,8 +753,24 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
                     continue
                 fresh.append((k, line))
             if fresh:
+                # THE WRITER TAKES THE SAME LOCK THE REPLACERS TAKE. Raised in review: this append
+                # held no lock at all, so <csv>.rescore.lock only ever excluded cooperative
+                # rescorers from each other, and a tool replacing this csv was relying on a tmux
+                # name check plus a row count to notice a fold worker. Neither sees an append that
+                # lands between the count and the os.replace, and the rows would be lost silently.
+                # Now every writer is in the same protocol. It is a shared lock because concurrent
+                # workers appending whole lines to O_APPEND are already safe against each other --
+                # what must be excluded is a replacement, which takes it exclusively.
                 with open(ctx.A.csv, "a") as fh:  # flushed per interface, not at the end
-                    fh.write("\n".join(l for _k, l in fresh) + "\n")
+                    lk = os.open(ctx.A.csv + ".rescore.lock", os.O_CREAT | os.O_RDWR, 0o644)
+                    try:
+                        fcntl.flock(lk, fcntl.LOCK_SH)
+                        fh.write("\n".join(l for _k, l in fresh) + "\n")
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                    finally:
+                        fcntl.flock(lk, fcntl.LOCK_UN)
+                        os.close(lk)
                 for k, _l in fresh:
                     have.add(k)
                 got += 1

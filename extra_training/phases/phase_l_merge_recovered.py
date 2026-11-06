@@ -77,6 +77,10 @@ def main():
     ap.add_argument("--pool", default="", help="pool.csv (default: beside --csv)")
     ap.add_argument("--expect-rows", type=int, required=True)
     ap.add_argument("--expect-ifaces", type=int, required=True)
+    ap.add_argument("--manifest", default="",
+                    help="csv of iface,route naming EXACTLY the interfaces this merge may add, and "
+                         "which producer each must come from. Without it the merge only knows how "
+                         "MANY interfaces to expect, not WHICH.")
     ap.add_argument("--seeds", type=int, default=10)
     ap.add_argument("--seed0", type=int, default=500000)
     ap.add_argument("--nsample", type=int, default=5)
@@ -93,6 +97,20 @@ def main():
     samples = {str(i) for i in range(a.nsample)}
     pool = {f"{r['pdb']}_{r['chain1']}{r['chain2']}"
             for r in csv.DictReader(open(pool_csv))}
+
+    # ---- the lock is taken BEFORE the first read, when this run intends to replace --------------
+    # Raised in review: taking it only at swap time left a window between reading the canonical
+    # file and replacing it in which a writer could append, and the row-count check could not see
+    # an append that landed after the count. Held from here, no writer can start inside the
+    # transaction. A reporting run takes nothing, so it never blocks a fold.
+    lk = None
+    if a.replace:
+        lp = a.csv + ".rescore.lock"
+        lk = os.open(lp, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise SystemExit(f"STOP: another writer holds {lp}; nothing read, nothing written.")
 
     # ---- the canonical file, and its own cleanliness -------------------------------------------
     live = read_rows(a.csv)
@@ -118,10 +136,48 @@ def main():
             src[k] = p
             rec.append(r)
 
+    # THE EXACT IDENTITIES, NOT JUST THE COUNT. Raised in review and it is the strongest remaining
+    # hole: 850 rows over 17 pooled interfaces with 50 keys each and finite scores would pass every
+    # other gate no matter WHICH 17 interfaces they were. A manifest naming the interfaces, and the
+    # producer each is allowed to come from, turns "the right shape" into "the right thing" -- and
+    # the route matters because pair isolation and the full complex are not interchangeable:
+    # 4zto_DF cannot be isolated at all, so a 4zto_DF row arriving from the isolated sweep would
+    # mean something had gone wrong upstream even though its value looked plausible.
+    if a.manifest:
+        with open(a.manifest) as fh:
+            rd = csv.DictReader(fh)
+            if rd.fieldnames != ["iface", "route"]:
+                raise SystemExit(f"STOP: {a.manifest} header is {rd.fieldnames}, "
+                                 f"expected ['iface', 'route']")
+            want_route = {r["iface"]: r["route"] for r in rd}
+        got_ifaces = {r["iface"] for r in rec}
+        missing = sorted(set(want_route) - got_ifaces)
+        extra = sorted(got_ifaces - set(want_route))
+        if missing:
+            problems.append(f"the manifest names {len(missing)} interface(s) this merge does not "
+                            f"supply: {missing[:5]}")
+        if extra:
+            problems.append(f"{len(extra)} interface(s) are not in the manifest and would be added "
+                            f"anyway: {extra[:5]}")
+        wrong = sorted({(r["iface"], os.path.basename(src[key_of(r)]))
+                        for r in rec
+                        if r["iface"] in want_route
+                        and want_route[r["iface"]] not in src[key_of(r)]})
+        if wrong:
+            problems.append(f"{len(wrong)} interface(s) came from a file that does not match the "
+                            f"route the manifest requires: {wrong[:5]}")
+    else:
+        print("NOTE: no --manifest, so the exact interface identities are NOT checked -- only "
+              "their count. Pass one before any merge that matters.")
+
     bad = collections.Counter()
     for r in rec:
         if not finite(r["dockq"]) or not finite(r["iptm"]):
             bad["non-finite dockq or iptm (folder.open_csv would skip the row)"] += 1
+        elif not (0.0 <= float(r["dockq"]) <= 1.0 and 0.0 <= float(r["iptm"]) <= 1.0):
+            # FINITE IS NOT THE SAME AS VALID. Raised in review: DockQ and ipTM are both defined on
+            # [0, 1], so -3.0 or 7.5 is finite, passes open_csv, and trains on nonsense.
+            bad["dockq or iptm outside [0, 1]"] += 1
         if (r["arm"], r["donor_pose"], r["tmpl_chains"]) != (ARM, DONOR, TMPL):
             bad[f"provenance is not ({ARM},{DONOR},{TMPL!r})"] += 1
         if r["seed"] not in seeds:
@@ -191,15 +247,9 @@ def main():
     if sess:
         raise SystemExit(f"STOP: {sess} could still be writing {a.csv}. The snapshot is at "
                          f"{out}; re-run --replace once they have exited.")
-    lp = a.csv + ".rescore.lock"
-    lk = os.open(lp, os.O_CREAT | os.O_RDWR, 0o644)
-    try:
-        fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        raise SystemExit(f"STOP: another writer holds {lp}. The snapshot is at {out}.")
-    # THE FILE MUST STILL BE THE ONE THAT WAS READ. The lock excludes a rescore from here on, but
-    # not one that appended while the checks above were running, and swapping then would silently
-    # drop its rows.
+    # THE FILE MUST STILL BE THE ONE THAT WAS READ. The lock has been held since before the read,
+    # so this cannot fail for a cooperative writer -- it stays as the check that catches one which
+    # ignored the lock entirely.
     now = sum(1 for _ in csv.DictReader(open(a.csv)))
     if now != len(live):
         raise SystemExit(f"STOP: {a.csv} held {len(live)} row(s) when this snapshot was built and "

@@ -157,6 +157,31 @@ CANON = ["iface", "seed", "arm", "donor_pose", "tmpl_chains", "sample", "dockq",
 ARM, DONOR, TMPL = "free", "-1", ""      # every queued training unit; checked against queue.tsv
 
 
+def free_provenance(run_dir):
+    """out: "" when run.json describes an untemplated free fold, else why it does not.
+
+    Separate from pose_sets.provenance_ok on purpose. That resolver is shared with the drain gate
+    and the rescorer, which judge whether a unit's poses EXIST and are replayable; tightening it
+    would change what those two call recoverable. This asks the narrower question only this tool
+    needs: may a row be written claiming donor_pose="-1" and tmpl_chains=""?
+    """
+    rj = os.path.join(run_dir, "run.json")
+    try:
+        with open(rj) as fh:
+            m = json.load(fh)
+    except (OSError, ValueError) as e:
+        return f"unreadable run.json ({type(e).__name__})"
+    if m.get("templated") not in (False, None):
+        return f"templated={m.get('templated')!r}"
+    if m.get("templates"):
+        return f"templates={m.get('templates')!r}"
+    if m.get("template_namespace"):
+        return f"template_namespace={m.get('template_namespace')!r}"
+    if str(m.get("kind", ARM)) != ARM:
+        return f"kind={m.get('kind')!r}, not {ARM!r}"
+    return ""
+
+
 def ok_number(x):
     """True only for a value that run_model/folder.py's open_csv would accept as a score.
 
@@ -335,6 +360,17 @@ def main():
             if status != pose_sets.COMPLETE:
                 failed.append((pdb, seed, "*", f"{status}: {detail}"))
                 continue
+            # THE ARM LABEL IS NOT THE WHOLE PROVENANCE. Raised in review: classify checks
+            # run.json's arm, and every row written here carries donor_pose="-1" and
+            # tmpl_chains="" on the strength of it -- so a run labelled free that was actually
+            # folded against donor templates would be recorded as an untemplated pose. run.json
+            # also states `templated` and `templates`, and for a free fold both must be empty.
+            # `templates_found` is NOT checked: a free fold still runs the structural template
+            # search, and 4 found templates is its normal output, not a donor.
+            why = free_provenance(run_dir)
+            if why:
+                failed.append((pdb, seed, "*", f"run.json is not an untemplated free fold: {why}"))
+                continue
             samples = pose_sets.run_samples(run_dir)
             for k in range(a.nsample):
                 todo = [i for i in ifaces if (i, seed, str(k)) not in done
@@ -375,8 +411,11 @@ def main():
                     # ost_dockq.interface(res, c1, c2); the only difference here is that the json
                     # goes to scratch instead of into the pose directory, which keeps the cached
                     # FAILURE records that document the original bug. OST's own chain mapping
-                    # decides, with the repaired sequence retry as its fallback -- this route
-                    # never forces a map, because forcing one has been measured to turn a DockQ
+                    # decides first, and the repaired sequence map is reached only as its
+                    # fallback. That distinction was stated wrongly once and matters: this route
+                    # does not force a map on the first attempt, but the fallback does supply one,
+                    # exactly as the production scorer does. What it must never do is override a
+                    # mapping OST succeeded with -- forcing one has been measured to turn a DockQ
                     # near 0.9 into one near 0.01 on identical-copy structures.
                     out = f"{a.scratch}/{pdb}_full_{seed}_{k}.json"
                     if os.path.exists(out):
