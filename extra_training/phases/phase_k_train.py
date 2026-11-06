@@ -2791,10 +2791,61 @@ def main():
         if not (0 <= a.manifest_shard < a.manifest_nshards):
             raise SystemExit(f"STOP: --manifest-shard {a.manifest_shard} is not in "
                              f"[0, {a.manifest_nshards}).")
-    want = [(p, sd) for p in sel_pdbs if p not in skip for sd in range(lo_s, hi_s + 1)]
+    # A PER-STRUCTURE SEED SET, because the population is no longer uniform in depth. 437
+    # structures carry seeds 500000-500014 and 416 carry 500000 alone -- their other trunks were
+    # reclaimed on 2026-11-04 -- so a cross product with ONE range is wrong for whichever group it
+    # is not describing, and the incompleteness guard below then refuses the whole run for being
+    # the shape it is meant to be. An optional `seeds` column in --manifest-selection declares each
+    # structure's own depth; a row without one falls back to --seeds, so every existing arm's
+    # selection csv keeps its exact present meaning.
+    #
+    # DECLARED, NOT DISCOVERED, and that is the whole point of this file. Globbing the trunks would
+    # make a lost unit look like a smaller training set instead of an error, which is the defect
+    # review round 8 removed. The seeds column is a contract: if it names a seed with no label or
+    # no trunk, the run stops.
+    def _parse_seed_field(txt, who):
+        """'500000-500014' or '500000,500003' or a mix -> a set of ints."""
+        out = set()
+        for part in str(txt).replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part.lstrip("-"):
+                try:
+                    lo, hi = (int(x) for x in part.split("-"))
+                except ValueError:
+                    raise SystemExit(f"STOP: {who} seed field {part!r} is not lo-hi")
+                if hi < lo:
+                    raise SystemExit(f"STOP: {who} seed range {part!r} runs backwards")
+                out |= set(range(lo, hi + 1))
+            else:
+                try:
+                    out.add(int(part))
+                except ValueError:
+                    raise SystemExit(f"STOP: {who} seed field {part!r} is not an integer")
+        if not out:
+            raise SystemExit(f"STOP: {who} has an empty `seeds` field; remove the column or name "
+                             f"the seeds, but do not declare a structure with no depth")
+        return out
+
+    _seed_col = {}
+    for _r in _sel_rows:
+        _p = _r["pdb"].strip().lower()
+        _txt = str(_r.get("seeds", "") or "").strip()
+        if _txt:
+            _seed_col[_p] = _parse_seed_field(_txt, f"{a.manifest_selection}:{_p}")
+    want = [(p, sd) for p in sel_pdbs if p not in skip
+            for sd in sorted(_seed_col.get(p) or range(lo_s, hi_s + 1))]
+    if _seed_col:
+        _depths = collections.Counter(len(_seed_col.get(p) or range(lo_s, hi_s + 1))
+                                      for p in sel_pdbs if p not in skip)
+        print(f"manifest: per-structure seed depths from {a.manifest_selection}: "
+              f"{dict(sorted(_depths.items()))} "
+              f"({len(_seed_col)} of {len(sel_pdbs)} row(s) declare `seeds`)")
     _rank_check_coverage(want)
     print(f"manifest: {len(sel_pdbs)} selected structure(s) minus {sorted(skip) or 'none'} "
-          f"x seeds {lo_s}-{hi_s} = {len(want)} intended unit(s), from {a.manifest_selection}")
+          f"x seeds {lo_s}-{hi_s} (fallback for rows with no `seeds` column) = {len(want)} "
+          f"intended unit(s), from {a.manifest_selection}")
 
     manifest, no_label, no_trunk = [], [], []
     for pdb, sd in want:
@@ -6171,15 +6222,47 @@ def main():
             order = sorted(by)
             rng_e.shuffle(order)
         S = max(1, int(a.rank_structs_per_step))
+        # THE STEP IS A CONSTANT NUMBER OF UNITS, NOT A CONSTANT NUMBER OF STRUCTURES. With a
+        # uniform manifest the two are the same thing and this packs S structures per step exactly
+        # as before. With mixed depth they are not: 437 structures carry 15 seeds and 416 carry 1,
+        # so S=2 structures per step would mean 30 units for one pair and 2 for another.
+        #
+        # THAT WOULD HAVE BEEN SILENT, which is why the packing changed rather than the quotas.
+        # Three sites downstream read the step's size as a per-EPOCH constant:
+        #   n_units = len(steps[0])        quotas for EVERY step come from the FIRST step's length
+        #   _step_poses_g[0]               the divisor of the PAE term's per-step mean
+        #   the _xs_steps walk            slices ep_units by those quotas and demands they sum
+        # A longer step would be sliced to the first step's length and the rest of its units simply
+        # never trained; a shorter one would hand a rank fewer units than its quota -- python slices
+        # do not raise -- and the ranks would take different step counts and HANG on an all-reduce.
+        # Keeping every step the same unit count leaves all three correct as written.
+        #
+        # THE BUDGET IS S x THE DEEPEST STRUCTURE, so a step is the same size in poses as it was.
+        # Structures are taken in `order` and any whose depth does not fit the remaining budget is
+        # passed over for a later one that does -- 15 ones fill a 15-unit remainder exactly, which
+        # is why the two populations pack with nothing left over.
+        _depth = {_p: len(by[_p]) for _p in order}
+        _maxd = max(_depth.values())
+        U = S * _maxd
         steps, _dropped = [], []
-        for i in range(0, len(order), S):
-            chunk = order[i:i + S]
-            if len(chunk) < S:
-                _dropped = list(chunk)
+        _pend = list(order)
+        while _pend:
+            room, chunk = U, []
+            _i = 0
+            while _i < len(_pend) and room:
+                _p = _pend[_i]
+                if _depth[_p] <= room:
+                    chunk.append(_p)
+                    room -= _depth[_p]
+                    _pend.pop(_i)
+                else:
+                    _i += 1
+            if room:
                 # A SHORT FINAL STEP IS DROPPED, not padded. Padding would repeat poses inside one
-                # gradient, and a step holding fewer structures than S is still correct -- but the
-                # unit count would differ from every other step and the quota bookkeeping that
+                # gradient, and a step holding fewer units than the budget is still correct -- but
+                # the unit count would differ from every other step and the quota bookkeeping that
                 # keeps the ranks in lockstep is what matters more here than the last few units.
+                _dropped = list(chunk) + list(_pend)
                 break
             units = []
             for _p in chunk:
@@ -6190,6 +6273,13 @@ def main():
             if not _manifest_order:
                 rng_e.shuffle(units)
             steps.append(units)
+        if steps and is_main and len({len(x) for x in steps}) != 1:
+            # NOT REACHABLE BY CONSTRUCTION, asserted anyway: everything downstream treats the
+            # step size as a constant, and a packing bug here is the one that deadlocks instead of
+            # failing.
+            raise SystemExit(f"STOP: cross-seed steps are not all the same unit count: "
+                             f"{sorted({len(x) for x in steps})}. The quota bookkeeping, the PAE "
+                             f"per-step mean and the _xs_steps walk all assume one size.")
         if not steps:
             raise SystemExit(
                 f"STOP: --rank-cross-seed with --rank-structs-per-step {S} needs at least {S} "
@@ -6200,12 +6290,14 @@ def main():
             # LARGEST structures -- precisely the ones a memory probe exists to reach. A probe
             # that silently never ran them would recommend a threshold from the wrong structure.
             print(f"  EPOCH ORDER manifest: {len(order)} structure(s), "
-                  f"{len(steps)} step(s) of S={S}; first {order[:3]} last {order[-3:]}")
+                  f"{len(steps)} step(s) of {U} unit(s) (S={S} x deepest {_maxd}); "
+                  f"first {order[:3]} last {order[-3:]}")
             if _dropped:
                 print(f"  EPOCH ORDER manifest: {len(_dropped)} structure(s) DROPPED as a short "
-                      f"final step: {_dropped}. Make the structure count a multiple of "
-                      f"--rank-structs-per-step ({S}) by trimming the FRONT of the manifest, or "
-                      f"these are never run.", flush=True)
+                      f"final step: {_dropped}. A step is {U} unit(s) "
+                      f"(--rank-structs-per-step {S} x deepest structure {_maxd}); these could not "
+                      f"fill one exactly. Trim the FRONT of the manifest or adjust S, or these are "
+                      f"never run.", flush=True)
         n_units = len(steps[0])
         base, rem = divmod(n_units, world)
         mine, quotas = [], []
