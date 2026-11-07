@@ -101,6 +101,32 @@ def units_per_rank(units_by_pdb, world, cross_seed=False, n_units=None):
     return sum(v // max(1, world) for v in units_by_pdb.values())
 
 
+def deal_round_robin(lists):
+    """One cross-seed step's units, dealt round-robin across its structures.
+
+    THE ORDER OF THE RETURNED LIST IS THE RANK ASSIGNMENT, because phase_k_train splits a step
+    into CONTIGUOUS per-rank slices. Dealing one unit from each structure in turn means a
+    contiguous slice of length len(units)/world holds len(s)/world units of EVERY structure s,
+    which is exact whenever each depth divides `world`.
+
+    WHAT IT REPLACED was a global shuffle of the step's units, which gave each rank a random
+    subset -- for a step of two 15-seed structures, anything from 10+0 to 5+5. Per-unit memory and
+    time go as tokens^2, so a lopsided split makes every rank wait on the slowest at the step's
+    all-reduce.
+
+    `lists` is a list of per-structure unit lists and is not mutated. The result is a permutation
+    of their concatenation: same units, same count, different order. Shuffle `lists` beforehand if
+    the rotation should not always be led by the same structure.
+    """
+    q = [list(x) for x in lists]
+    out = []
+    while any(q):
+        for one in q:
+            if one:
+                out.append(one.pop(0))
+    return out
+
+
 def pack_cross_seed_steps(depth, order, structs_per_step, preserve_order=False):
     """ONE packing, used by the epoch builder AND by the horizon. in: {pdb: n_units}, the epoch's
     structure order, S.  out: (list of chunks of pdb, dropped pdbs, unit budget per step).

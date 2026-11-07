@@ -39,7 +39,6 @@ from matplotlib.ticker import MaxNLocator
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RID = sys.argv[1] if len(sys.argv) > 1 else "6t9h7d"
 OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/rel_arm_{RID}.png"
-EP_POSES = 5520
 
 # THE WHOLE CHAIN, oldest first. A resume writes to a FRESH run directory while continuing the
 # parent's epoch numbering, so reading only RID would plot epochs 28-60 of a 60-epoch arm and drop
@@ -56,8 +55,12 @@ if not _present:
 # A LATER RUN WINS on any epoch both wrote. A resume re-runs the epoch it was interrupted in, so
 # the parent's partial rows for that epoch would otherwise be averaged in with the full ones.
 pae = defaultdict(list)
+# THE POPULATION IS COUNTED, NOT ASSUMED. This title said "368 structures" as a literal for
+# eight arms; mqird6 fits 841 and the figure claimed 368. Count the distinct pdbs the epochs
+# actually wrote, so an arm that changes its --manifest-skip relabels itself.
+seen = defaultdict(set)
 for _r in _present:
-    _ep = defaultdict(list)
+    _ep, _st = defaultdict(list), defaultdict(set)
     for r in csv.DictReader(open(os.path.join(ROOT, "training", "runs", _r,
                                               "trajectory.csv"))):
         try:
@@ -67,9 +70,11 @@ for _r in _present:
             f = float(v)
             if np.isfinite(f):
                 _ep[int(float(e))].append(f)
+                _st[int(float(e))].add((r.get("pdb") or "").strip())
         except (ValueError, TypeError):
             continue
     pae.update(_ep)
+    seen.update(_st)
 
 # rank 0's per-epoch rel loss and the two diagnostics, from the log of every run in the chain
 rel, rho, sdr = {}, {}, {}
@@ -203,7 +208,25 @@ for _a in axes.ravel():
     _a.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=8))
 # SAYS "TRAINING" IN THE BOLD LINE, for the same reason the held-out figure says "HELD-OUT":
 # these two figures come from one arm and were previously distinguishable only by filename.
-fig.suptitle(f"{RID}   TRAINING metrics  (in-sample, the 368 structures it fits)",
+# THE POPULATION COMES FROM THE MANIFEST LINE, NOT FROM trajectory.csv. The trajectory is rank
+# 0's view: on an all-shallow step rank 0 takes 10 of ~29 structures, so counting distinct pdbs
+# there gives 572 for an arm whose population is 840 -- right about the file, wrong about the arm.
+# Parse run.log's "manifest: N selected structure(s) minus [...]" and subtract; fall back to the
+# trajectory count, LABELLED AS rank 0's, rather than printing a confident wrong number.
+_nstruct, _what = None, "structures it fits"
+for _r in RIDS:
+    _lg = os.path.join(ROOT, "training", "runs", _r, "run.log")
+    if not os.path.exists(_lg):
+        continue
+    _m = re.search(r"manifest: (\d+) selected structure\(s\) minus \[([^\]]*)\]",
+                   open(_lg, errors="replace").read())
+    if _m:
+        _nstruct = int(_m.group(1)) - len(re.findall(r"'[^']+'", _m.group(2)))
+        break
+if _nstruct is None:
+    _nstruct = max((len(v) for v in seen.values()), default=0)
+    _what = "structures in rank 0's trajectory"
+fig.suptitle(f"{RID}   TRAINING metrics  (in-sample, the {_nstruct} {_what})",
              x=0.012, ha="left",
              fontsize=11.5, fontweight="bold")
 fig.text(0.012, 0.938, "top row: the two training terms   |   bottom row: the arm's prediction",

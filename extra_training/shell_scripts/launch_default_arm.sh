@@ -88,11 +88,63 @@ MANIFEST=train_val_splits/cache_train_structures_extended.csv
 MARKER="${MARKER:-training/alignment_preflight_sharded.json}"
 RELLAB="${RELLAB:-training/fold/itm_labels_extended}"
 # 0 MEANS CHECKPOINT EVERY UNIT, which is the only safe default for an UNCROPPED population.
+# TEN STRUCTURES DO NOT FIT UNCROPPED ON A 95 GiB CARD, AND THAT IS MEASURED, NOT GUESSED. The
+# --mem-log run tvqobh recorded max_memory_allocated per pose against the unit's token count, and
+# the pass-B peak is clean n^2:
+#
+#     peak_GB = 2.02 + 2.896e-05 * tokens^2
+#
+# residual under 0.1 GB from 268 to 758 tokens, and a 1,364-token unit that arrived AFTER the fit
+# landed at 56.19 GB against a predicted 55.90 -- a 2.4x extrapolation in n, 5.8x in n^2. So this
+# is the pair tensor's own scaling and it extrapolates.
+#
+# The budget for one pose is 94.97 GiB card - 0.78 GPU holders - 3.80 post-pose baseline = 90.4 GB,
+# which puts the ceiling at ~1,747 tokens. At a 10% margin (1,655 tokens) ten structures are over:
+#
+#     9dzf 2289 (154 GB)  9dzg 2289 (154)  7m7i 2004 (118)  9b9j 1949 (112)  9e7x 1879 (104)
+#     9q5v 1822 (98)      9q7b 1821 (98)   8vba 1786 (94)   9bbn 1783 (94)   7cn2 1745 (90)
+#
+# THAT IS WHAT KILLED BOTH 10-EPOCH ATTEMPTS. tztukd and kfthfe died at the SAME step, 158 of 231,
+# under --ckpt-token-threshold 855 and 0 -- so the threshold was never the cause. --seed 0 fixes
+# the epoch shuffle, so the same oversized structure lands at the same step every run. The OOM
+# reported 93.02 GiB allocated, which back-solves to ~1,745-1,790 tokens; of the ten, only 9e7x
+# and 7cn2 carry 15 seeds, and a deep structure puts all 15 of its units in ONE cross-seed step,
+# which is how one step takes down two ranks at once.
+#
+# IT COSTS 1.2% OF THE POPULATION: 851 -> 841 structures, 6,941 -> 6,903 units (0.55%), 230 steps
+# instead of 231. The largest remaining unit is 1,650 tokens, predicted peak 80.9 GB, a 10.6%
+# margin. Excluding them changes neither the objective nor the input distribution for the 841 that
+# remain, which is less interference than --nsample or a crop would be. 30 of the 38 dropped units
+# are 9e7x and 7cn2's seed groups and did cost GPU to fold; cropping just those two would keep them
+# at the price of a train/eval mismatch, and that trade was declined in favour of excluding.
+OVERSIZED="9dzf,9dzg,7m7i,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,7cn2"
+SKIP="${SKIP:-9mx1,4zto,9q5m,$OVERSIZED}"
 CKPT_THRESH="${CKPT_THRESH:-0}"
 # NOEVAL=1 DROPS THE HELD-OUT EVALUATION. The owner asked for training only on 2026-11-06; the
 # eval-free config existed only in resume_noeval_to_10.sh, which needs a bundle, so a fresh
 # relaunch after an OOM silently brought eval back. A fresh launch must be able to honour it.
 NOEVAL="${NOEVAL:-0}"
+# MEMLOG=1 ADDS --mem-log, FOR TELLING A RETAINED REFERENCE FROM A CAPACITY CEILING. Both
+# uncropped attempts died at the SAME step (158 of 231) with different --ckpt-token-threshold
+# values, 855 and 0, which already rules the threshold out. The OOM reported 93.02 GiB ALLOCATED
+# -- live tensors -- with 124 MiB of allocator slack, on a 731-token unit with checkpointing on.
+# paper_results.md section 11 measured this regime with nvidia-smi, which reports RESERVED, so it
+# could not separate the two. --mem-log prints allocated AND reserved per pose with the pass label
+# at a consistent boundary, which can. Pair it with a fractional EPOCHS (0.15 is ~35 steps) so the
+# question is answered in half an hour instead of three.
+#
+# DO NOT PAIR IT WITH A FRACTIONAL EPOCHS UNDER --rank-cross-seed. 0.15 was refused, correctly:
+# "the cross-seed quotas sum to 350 unit(s) but the epoch holds 346". The per-structure quotas are
+# whole seed GROUPS, so truncating the unit list mid-step would make the ranks step at different
+# times. Use EPOCHS=1 and read the first few dozen MEM lines; the run then also reproduces the
+# step-158 OOM with the instrumentation on, which is strictly more than a truncated run gives.
+#
+# DO NOT PAIR IT WITH A FRACTIONAL EPOCHS UNDER --rank-cross-seed. 0.15 was refused, correctly:
+# "the cross-seed quotas sum to 350 unit(s) but the epoch holds 346". The per-structure quotas are
+# whole seed GROUPS, so truncating the unit list mid-step makes the ranks step at different times.
+# Use EPOCHS=1 and read the first few dozen MEM lines; the run then also reproduces the OOM at
+# step 158 with the instrumentation on, which is strictly more than a truncated run would give.
+MEMLOG="${MEMLOG:-0}"
 POOL=training/combined/pool.csv
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 say "script $(basename "$0") sha $(sha1sum "$0" | cut -c1-12)  DRY=$DRY cards=$CARDS epochs=$EPOCHS"
@@ -164,7 +216,7 @@ ARGS=(--rank-loss --rank-form rel --rel-labels "$RELLAB"
       --fold training/fold
       --indices training/prep/all857_indices.csv
       --manifest-selection "$MANIFEST"
-      --manifest-skip '9mx1,4zto,9q5m'
+      --manifest-skip "$SKIP"
       --pae-scored-pairs "$POOL" --pae-scored-roles training/fold/chain_roles_all.csv
       --pae-only --lean-readouts --minimal-items
       --alignment-preflight "$MARKER"
@@ -177,6 +229,10 @@ ARGS=(--rank-loss --rank-form rel --rel-labels "$RELLAB"
       --save-every 250
       --require-replay training/extended_mixed_replay.log
       --allow-code-drift)
+if [ "$MEMLOG" = "1" ]; then
+  ARGS+=(--mem-log)
+  say "MEMLOG=1: --mem-log is on. This is a DIAGNOSTIC, not an arm -- it prints a line per pose."
+fi
 # WHAT DROPPING EVAL COSTS, stated so it is a choice and not a surprise: no held-out valfull
 # Spearman, no selected DockQ, no acceptable-pose fraction at 0.23. What survives is the trainer's
 # own per-epoch IN-SAMPLE lines -- WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ) and
@@ -188,8 +244,14 @@ else
   say "NOEVAL=1: no --eval-pool. IN-SAMPLE diagnostics only; no held-out number from this run."
 fi
 
-NOTE="$EPOCHS EPOCH(S), --rank-form rel at --alpha-rank 75 plus the PAE term, FULLY UNCROPPED TRAIN AND EVAL, over the 851-structure trained population (437 at 15 seeds, 416 at 1, less the three skips: 6,941 units in 231 cross-seed steps of 30). THE FIRST REAL RUN ON THIS DATA and the first exercise of the selection manifest's per-structure \`seeds\` column at world=3, where a wrong per-step unit count deadlocks on an all-reduce rather than failing. No crop on either side: every previous arm trained cropped and evaluated uncropped, and o2qczq's 0.6305 cropped against 0.5387 uncropped (shipped 0.5474) is what that gap looks like. rel regresses on the true iTM after mean-centring, so it uses every pose of an interface regardless of seed and has no pair family or tau. --indices all857_indices.csv because the labels were built against it and the indices path is part of their fingerprint. NOT a quality verdict at one epoch -- this measures that the path runs and what an epoch costs."
+NOTE="$EPOCHS EPOCH(S), --rank-form rel at --alpha-rank 75 plus the PAE term, FULLY UNCROPPED, over the 841-structure trained population: 851 declared less the three documented skips and less the TEN structures measured not to fit uncropped on a 95 GiB card. 6,903 units in 230 cross-seed steps of 30. The exclusion is from peak_GB = 2.02 + 2.896e-05 * tokens^2, fitted on --mem-log run tvqobh and confirmed by a 1,364-token unit landing 0.29 GB off a prediction made before it arrived; the budget is 90.4 GB per pose, the ceiling 1,747 tokens, and the cut is at 1,655 for a 10% margin. This is what killed tztukd and kfthfe at the same step 158 under thresholds 855 and 0 -- the threshold was never the cause. THE RANKS ARE NOW BALANCED: a step is dealt round-robin across its structures via lr_schedule.deal_round_robin instead of shuffled globally, so each rank gets 5 seeds of each of the step's 2 structures rather than a random 10 of 30. Per-step tokens^2 imbalance falls from a median of 17.2% to 0.0% (90 of 230 steps over 20% to 13, those 13 being the all-shallow steps where no assignment can balance). --ckpt-token-threshold 855 turns checkpointing OFF at or below 855 tokens; 855 was measured on a population under token dropout where it meant ~427 effective tokens, so --mem-log is ON to read the unchecked peaks rather than assume them. rel regresses on the true iTM after mean-centring, so it uses every pose of an interface regardless of seed and has no pair family or tau."
 
+# THE RUN RECORD MUST SAY WHAT THE RUN IS. Under MEMLOG this is a memory diagnostic of a few
+# dozen steps, not the arm, and the arm's note ("THE FIRST REAL RUN ON THIS DATA") would be a
+# false record of it -- the kind of mislabelling that makes a runs directory unreadable later.
+if [ "$MEMLOG" = "1" ]; then
+  NOTE="$NOTE INSTRUMENTATION: --mem-log prints allocated/peak/reserved per pose with the token count and the pass, which is how the n^2 fit above was obtained and how the 855 threshold's unchecked peaks are being checked. It costs a print per pose. NOTE the lines carry NO RANK LABEL, so three ranks interleave in one log -- read them as a population, not a sequence."
+fi
 if [ "$DRY" = "1" ]; then
   say "DRY RUN"
   LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \

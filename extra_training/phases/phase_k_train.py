@@ -2958,14 +2958,36 @@ def main():
         # happen to be covered.
         _pf_checked = set(_pf.get("checked") or [])
         _run_pdbs = {p for p, _lp, _c in flat}
+
+        def _skipset(txt):
+            return {x.strip().lower() for x in (txt or "").split(",") if x.strip()}
+
+        # A WIDER SKIP LIST OVER THE SAME SELECTION IS STILL A SUBSET, which equality cannot see.
+        # The marker is `complete` over (selection - its own skip). This run trains
+        # (selection - this run's skip). So whenever the run's skip set CONTAINS the marker's,
+        # the run's structures are a subset of what was checked -- set algebra, not a heuristic:
+        #     run_skip >= pf_skip  =>  (sel - run_skip) <= (sel - pf_skip) = checked
+        #
+        # THE CASE THAT FORCED IT: ten structures were excluded for not fitting uncropped, so the
+        # skip went from '9mx1,4zto,9q5m' to that plus ten names. Same selection, 841 of the 851
+        # already-checked structures, and the digest changed -- so this refused a marker that
+        # plainly vouched for every structure in the run. Equality of the skip STRING is also
+        # order- and whitespace-sensitive, which would refuse a reordered list of identical names.
+        #
+        # STRICTLY NARROWER THAN THE DIGEST, never wider: a skip list that REMOVES a name the
+        # marker skipped means the run trains a structure the preflight never saw, and that fails
+        # this test and is refused as before.
+        _pf_skip, _run_skip = _skipset(_pf.get("manifest_skip")), _skipset(a.manifest_skip)
         _same_population = (
             bool(_pf.get("complete"))
             and (_pf.get("manifest_selection") or "") == (a.manifest_selection or "")
-            and (_pf.get("manifest_skip") or "") == (a.manifest_skip or ""))
+            and _run_skip >= _pf_skip)
         _subset_ok = _same_population or (bool(_pf_checked) and _run_pdbs <= _pf_checked)
         if _pf.get("manifest_digest") != _manifest_digest and _subset_ok:
-            _why = ("it is COMPLETE over the same selection and skip list, so every structure "
-                    "this run touches was checked" if _same_population else
+            _why = ((f"it is COMPLETE over the same selection and this run skips "
+                     f"{len(_run_skip)} structure(s) against the marker's {len(_pf_skip)} "
+                     f"(a superset: {sorted(_run_skip - _pf_skip) or 'identical'}), so every "
+                     f"structure this run touches was checked") if _same_population else
                     f"this run's {len(_run_pdbs)} structure(s) are a SUBSET of the "
                     f"{len(_pf_checked)} named in its `checked` list")
             print(f"  alignment preflight: digest differs ({_pf.get('manifest_digest')} vs "
@@ -6312,14 +6334,44 @@ def main():
                                                            preserve_order=_manifest_order)
         steps = []
         for chunk in _chunks:
-            units = []
+            # WHICH SEEDS, AND IN WHAT ORDER, STAYS RANDOM -- that is this shuffle, and it is the
+            # one that makes a structure's 15 units arrive in a different order each epoch.
+            _lists = []
             for _p in chunk:
                 u = by[_p][:]
                 if not _manifest_order:
                     rng_e.shuffle(u)
-                units += [(_p, _lp, _c) for _lp, _c in u]
-            if not _manifest_order:
-                rng_e.shuffle(units)
+                _lists.append([(_p, _lp, _c) for _lp, _c in u])
+            if _manifest_order:
+                units = [x for _l in _lists for x in _l]
+            else:
+                # DEAL THE STEP ROUND-ROBIN ACROSS ITS STRUCTURES, DO NOT SHUFFLE IT GLOBALLY.
+                # The split below takes CONTIGUOUS slices, so the order of this list IS the rank
+                # assignment. A global shuffle gave each rank a random 10 of the step's 30 units,
+                # which for a step of 2 deep structures means a random split of 15+15 -- so one
+                # rank could hold 8 units of the larger structure and another 2. Memory per unit
+                # goes as tokens^2 (measured: peak_GB = 2.02 + 2.896e-05 * tokens^2, residual
+                # under 0.3 GB from 268 to 1364 tokens), so an uneven split is an uneven WAIT:
+                # every rank sits at the step's all-reduce until the slowest finishes.
+                #
+                # MEASURED ON THE 841-STRUCTURE POPULATION, per-step tokens^2 work, max-min over
+                # min: global shuffle median 17.2% / mean 18.5% / p90 40.1%, 90 of 230 steps worse
+                # than 20%. Round-robin: median 0.0% / mean 2.3% / p90 0.0%, 13 of 230. The 13 are
+                # the all-shallow steps -- 30 distinct 1-seed structures, where no assignment can
+                # give three ranks the same structures and the imbalance is irreducible here.
+                #
+                # IT IS EXACT WHENEVER EVERY STRUCTURE'S DEPTH DIVIDES `world`: 216 of the 230
+                # steps are 2 structures x 15 seeds, 15 = 3 x 5, so each rank gets exactly 5 units
+                # of each -- the balance is structural, not probabilistic.
+                #
+                # RANDOMNESS IS PRESERVED WHERE IT MATTERS: the rotation's starting structure is
+                # shuffled, so it is not always the alphabetically-first one that leads, and the
+                # per-structure seed order above is untouched. What is removed is only the random
+                # ASSIGNMENT of units to ranks, which carried no training signal -- the ranking
+                # coefficients are gathered across all ranks before any backward, so which rank
+                # holds which seed cannot change the objective.
+                rng_e.shuffle(_lists)
+                units = _LRS.deal_round_robin(_lists)
             steps.append(units)
         # THE HORIZON AND THE BUILDER AGREE, ASSERTED EVERY EPOCH. The LR schedule was
         # calibrated once at startup from _LRS.steps_per_epoch; if this epoch packs a different
