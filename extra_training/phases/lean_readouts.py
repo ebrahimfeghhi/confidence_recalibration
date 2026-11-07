@@ -54,6 +54,132 @@ from protenix.model.utils import one_hot
 PINNED_SHA = "22df48da4e0ebd20f101f43dc0942fa0e13d91ba3d98b4bc5b963b77f2a0dc04"
 PINNED_WHERE = "ConfidenceHead.memory_efficient_forward"
 
+# ---- THE SECOND HALF OF THE SAME JOB: THE COMPUTE THAT FED THE DEAD READOUTS -----------------
+#
+# WHAT WAS STILL RUNNING. The mirror above stops COMPUTING pLDDT, PDE and resolved. It does not stop
+# computing the thing two of them read. PairformerBlock.forward updates `z` through tri_mul_out,
+# tri_mul_in, tri_att_start, tri_att_end and pair_transition -- every one a function of `z` ALONE --
+# and only then updates `s` through attention_pair_bias and single_transition, both of which read
+# `z`. So THE DEPENDENCY IS STRICTLY ONE-DIRECTIONAL: z never depends on s. Under --pae-only the
+# readout is linear_no_bias_pae(pae_ln(z_pair)), which reads z only, and `s` feeds nothing but the
+# pLDDT and resolved heads the mirror already stubs. The mirror's own comment says as much -- "s_single
+# is now unused by anything that is kept" -- and then keeps computing it in all four blocks, for
+# every pose of every unit of every epoch.
+#
+# THE SWITCH ALREADY EXISTS AND IS AN INSTANCE ATTRIBUTE. PairformerBlock gates the single track on
+# `if self.c_s > 0:` in BOTH __init__ (so the modules are not built) and forward (so they are not
+# called). Setting `block.c_s = 0` on a built block therefore turns the pathway off without touching
+# the module tree: the parameters stay where the checkpoint expects them, nothing is renamed, nothing
+# is dropped from the state dict, and phase_k_eval's set-equality check on head tensors still passes.
+# That is why this is done by attribute and NOT by rebuilding the stack with c_s=0.
+#
+# PairformerStack.forward DOES NOT TOUCH s EITHER -- it hands (s, z) to checkpoint_blocks and returns
+# what comes back -- so with c_s=0 on every block, `s_single` is the input `s_trunk` unchanged. The
+# mirror's `s_single.to(torch.float32)` therefore still works on a real tensor and still reaches
+# nothing.
+PINNED_BLOCK_SHA = "379f595070ca6467f33506b33869a7a7a5773893d362faa7a7530187ae950d78"
+PINNED_BLOCK_WHERE = "PairformerBlock.forward"
+PINNED_STACK_SHA = "5733f4f4930b37ba33147739f5856778948383ed576243257b155457e5df1076"
+PINNED_STACK_WHERE = "PairformerStack.forward"
+
+# THE PARAMETERS NOTHING READS UNDER --pae-only --lean-readouts, as name prefixes RELATIVE to the
+# confidence head. Measured by instantiating the live configuration (n_blocks 4, c_z 256, c_s 384,
+# c_s_inputs 449, b_pae 64, b_plddt 50, b_resolved 2, max_atoms_per_token 24, hidden_scale_up True,
+# which reproduces the head's 19,752,270 parameters and a block's 4,749,184 exactly):
+#
+#     pairformer single pathway   10,053,120   50.90%   attention_pair_bias + single_transition x4
+#     plddt_weight                   460,800    2.33%
+#     resolved_weight                 18,432    0.09%
+#     linear_no_bias_pde              16,384    0.08%
+#     input_strunk_ln / plddt_ln /
+#       resolved_ln / pde_ln            2,816    0.01%
+#     ------------------------------------------------
+#     dead                        10,551,552   53.42%   (live: 9,200,718)
+#
+# SO MORE THAN HALF THE "TRAINABLE" SET RECEIVES NO GRADIENT, and the project already knew: the
+# --grad-probe path prints "of 258 tensors marked trainable, PAE reaches 100, the rel term reaches
+# 100, and NEITHER reaches 158" and adds "EFFECTIVE trainable set is ... not ...". It diagnosed it and
+# never acted on it.
+#
+# input_strunk_ln IS ONLY DEAD ONCE THE SINGLE PATHWAY IS, which is why it is in this list and not in
+# the readout list: ConfidenceHead.forward applies it to s_trunk before the mirror is reached, so
+# with the single track live it is the first op of a live path.
+DEAD_UNDER_PAE_ONLY = (
+    "plddt_weight", "resolved_weight", "plddt_ln.", "resolved_ln.",
+    "linear_no_bias_pde.", "pde_ln.", "input_strunk_ln.",
+)
+DEAD_SINGLE_SUFFIXES = ("attention_pair_bias.", "single_transition.")
+
+
+def _pin(fn, want, where):
+    sha = hashlib.sha256(inspect.getsource(fn).encode()).hexdigest()
+    if sha != want:
+        raise SystemExit(
+            f"STOP: --lean-single is pinned to a specific {where}.\n"
+            f"  pinned    {want}\n"
+            f"  installed {sha}\n"
+            f"  at        {inspect.getsourcefile(fn)}\n"
+            f"The guard this relies on is `if self.c_s > 0:` and the property it relies on is that "
+            f"z never depends on s. Protenix's version of that function changed, so NEITHER is "
+            f"established any more. Re-read it, confirm both, update the pin, and re-run "
+            f"run_logging/test_lean_single.py before using this flag again.")
+    return sha
+
+
+def dead_head_params(head, single_dropped):
+    """Head parameter names (relative to the head) that receive no gradient under --pae-only.
+
+    `single_dropped` says whether the single pathway has been turned off; without that, the
+    pairformer's attention_pair_bias and single_transition still RUN, and although nothing reads
+    their output either, leaving them in the optimiser is the pre-existing behaviour and this
+    function does not quietly change it.
+    """
+    pats = list(DEAD_UNDER_PAE_ONLY)
+    out = []
+    for n, _p in head.named_parameters():
+        if any(n == p.rstrip(".") or n.startswith(p) for p in pats):
+            out.append(n)
+        elif single_dropped and n.startswith("pairformer_stack.blocks.") and \
+                any(s in n for s in DEAD_SINGLE_SUFFIXES):
+            out.append(n)
+    return out
+
+
+def drop_single_pathway(model):
+    """Turn off the dead single track in every confidence-head pairformer block.
+
+    Returns (n_blocks_changed, n_params_now_dead). Raises rather than warning on anything it
+    cannot establish: a flag that prints a line and changes nothing is the failure mode
+    --blocks-per-ckpt had for its whole life.
+    """
+    head = getattr(model, "confidence_head", None)
+    if head is None:
+        raise SystemExit("STOP: --lean-single: the model has no confidence_head.")
+    stack = getattr(head, "pairformer_stack", None)
+    blocks = list(getattr(stack, "blocks", []) or [])
+    if not blocks:
+        raise SystemExit("STOP: --lean-single: the head's pairformer_stack has no blocks, so there "
+                         "is no single pathway to turn off and the flag would be a no-op.")
+    _pin(type(blocks[0]).forward, PINNED_BLOCK_SHA, PINNED_BLOCK_WHERE)
+    _pin(type(stack).forward, PINNED_STACK_SHA, PINNED_STACK_WHERE)
+    changed = 0
+    for b in blocks:
+        if getattr(b, "c_s", 0) > 0:
+            b.c_s = 0
+            changed += 1
+    # ASSERT IT TOOK, on every block, by reading the attribute the forward actually branches on.
+    still = [i for i, b in enumerate(blocks) if getattr(b, "c_s", 0) > 0]
+    if still:
+        raise SystemExit(f"STOP: --lean-single did not take on block(s) {still}: c_s is still "
+                         f"positive, so attention_pair_bias and single_transition would still run.")
+    if not changed:
+        raise SystemExit("STOP: --lean-single: every block already had c_s <= 0, so this flag "
+                         "changed nothing. Something else has already patched the stack and the "
+                         "two changes must be reconciled rather than stacked blindly.")
+    dead = dead_head_params(head, single_dropped=True)
+    n_dead = sum(p.numel() for n, p in head.named_parameters() if n in set(dead))
+    return changed, n_dead
+
 
 def _lean_memory_efficient_forward(
     self,

@@ -297,6 +297,26 @@ if [ "${TRUNK_MEMMAP:-0}" = "1" ]; then
   ARGS+=(--trunk-memmap)
   say "TRUNK_MEMMAP=1: --trunk-memmap is on. Numerically identical, ~6 min/epoch, UNTESTED on GPU."
 fi
+# LEAN_SINGLE=1 STOPS COMPUTING THE PAIRFORMER'S SINGLE TRACK, which --lean-readouts left running.
+# z never depends on s (PairformerBlock.forward updates z through five ops that are functions of z
+# alone, then updates s), and under --pae-only the readout reads z only -- so the single track was
+# computed in all 4 blocks for every pose and thrown away.
+#
+# IT IS SMALL, AND THE NUMBERS ARE MEASURED NOT ARGUED. 10,551,552 of the head's 19,752,270
+# parameters (53.42%) stop being nominally trainable and leave AdamW and the gradient all-reduce --
+# but the pair track is O(N^3) and the single track O(N^2), so saved-activation bytes measured 4.0%
+# of a block at 128 tokens, 2.9% at 256 and 2.5% at 384, and the time difference was BELOW CPU
+# measurement noise. Expect ~1-2% of the epoch. It is here because it is free and provably dead.
+#
+# NUMERICALLY IDENTICAL: run_logging/test_lean_single.py gates z bit-identical with the track on and
+# off, and gates that the single track's parameters got NO gradient even when it ran -- which is why
+# dropping them from the optimiser is a no-op and not a capacity cut. UNTESTED ON A GPU.
+if [ "${LEAN_SINGLE:-0}" = "1" ]; then
+  ARGS+=(--lean-single)
+  say "LEAN_SINGLE=1: the pairformer's single track is NOT COMPUTED and 10.55M of 19.75M head"
+  say "  parameters leave the optimiser as provably gradient-free. Bit-identical on the pae path;"
+  say "  expect ~1-2% of the epoch, not a large win. Check the 'LEAN SINGLE:' startup line."
+fi
 # TRUNK_CACHE_GB HOLDS A STEP'S TRUNKS AS HOST ARRAYS, so pass A and pass B read each unit ONCE
 # instead of twice, and --prefetch-workers threads warm them while the GPU is busy. Estimated
 # 10-20 min of a 232 min epoch. 0 is off; 4 covers a typical step (a deep step of the largest
