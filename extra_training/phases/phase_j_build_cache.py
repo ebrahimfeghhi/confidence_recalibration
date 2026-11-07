@@ -445,7 +445,31 @@ def fingerprint_context(cfg, verbose=True):
     return code_fp, loss_fp
 
 
-def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
+def unit_content_fingerprint(a, pdb, trunk_p):
+    """The DATA half of unit_fingerprint: four SHAs of the files, and nothing about the code.
+
+    SPLIT OUT SO IT CAN BE MEMOISED ACROSS PROCESSES. This is the whole cost of a fingerprint --
+    sha256 of the trunk (~243 MB), the job cif and the bioassembly pickle, plus the structure's own
+    indices rows -- and it is a pure function of those files. `schema`, `code` and `loss` are three
+    short strings the caller already holds. Keeping them in the same string meant a persisted
+    fingerprint had to be thrown away whenever the BUILDER'S SOURCE changed, so every code edit
+    re-SHA'd 243 MB per unit from scratch: ~43 min off the front of every launch. The split lets the
+    expensive half survive an edit that cannot possibly have changed it.
+
+    THE COMPOSED STRING IS UNCHANGED, BYTE FOR BYTE. unit_fingerprint joins schema|code|loss onto
+    this with the same "|" separator and in the same field order, so every stored fingerprint, every
+    comparison and every diagnostic that parses the fields keeps working. That matters more than the
+    saving: see unit_fingerprint's own docstring and resolve_trunk in phase_k_train.
+    """
+    return "|".join([
+        f"cif={sha(os.path.join(a.mmcif_dir, f'{pdb}.cif'))}",
+        f"bio={sha(os.path.join(a.bio_dir, f'{pdb}.pkl.gz'))}",
+        f"idx={_indices_by_pdb(a.indices).get(pdb, 'absent')}",
+        f"trunk={sha(trunk_p)}",
+    ])
+
+
+def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp, content=None):
     """What this unit's label was built FROM, as one short string.
 
     WHY A LABEL MUST CARRY ONE. Reuse used to be `os.path.exists(out)`, decided before any check ran,
@@ -454,15 +478,17 @@ def unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp):
     have mixed labels built from the old job cifs with labels built from the new ones, with nothing
     able to tell which was which. The job cif in particular is the file the whole label is derived
     from, and it is exactly what the 2026-10-14 geometry fix rewrites.
+
+    `content` IS A MEMO, NOT A SHORTCUT PAST THE CHECK. Pass the string unit_content_fingerprint
+    returned earlier for this same (pdb, trunk_p) and it is used instead of recomputing the four
+    SHAs; pass nothing and they are computed here exactly as before. A caller that memoises owes
+    the invalidation -- phase_k_train keys its memo on every covered file's size and mtime_ns.
     """
     return "|".join([
         f"schema={SCHEMA}",
         f"code={code_fp}",
         f"loss={loss_fp}",
-        f"cif={sha(os.path.join(a.mmcif_dir, f'{pdb}.cif'))}",
-        f"bio={sha(os.path.join(a.bio_dir, f'{pdb}.pkl.gz'))}",
-        f"idx={_indices_by_pdb(a.indices).get(pdb, 'absent')}",
-        f"trunk={sha(trunk_p)}",
+        unit_content_fingerprint(a, pdb, trunk_p) if content is None else content,
     ])
 
 

@@ -145,6 +145,53 @@ NOEVAL="${NOEVAL:-0}"
 # Use EPOCHS=1 and read the first few dozen MEM lines; the run then also reproduces the OOM at
 # step 158 with the instrumentation on, which is strictly more than a truncated run would give.
 MEMLOG="${MEMLOG:-0}"
+# FREEZE_BLOCKS=1 TRAINS ONLY PAIRFORMER BLOCK 3 AND FREEZES BLOCKS 0-2. No trainer change: the
+# existing --train-only takes a comma-separated list of REGEXES matched with re.search against each
+# head tensor's name relative to `confidence_head.`, and it genuinely calls p.requires_grad_(False)
+# on everything unmatched (phases/phase_k_train.py:2745) rather than merely filtering the optimiser.
+# So with only blocks.3 trainable nothing below block 3 requires grad and AUTOGRAD BUILDS NO GRAPH
+# THROUGH BLOCKS 0-2 AT ALL. The head's stack is 4 UNTIED blocks (nn.ModuleList, a distinct block
+# per layer) of 4,749,184 parameters each, 24.0% of the head each, with 755,534 params (3.8%)
+# outside it -- so a quarter of the backward is a fair division.
+#
+# EXPECTED 1.5-1.7x, FROM mqird6's OWN EPOCH-3 TIMERS and nothing else: gpu_backward 110.0 min of a
+# 232.2 min epoch over 11,500 calls, gpu_forward 69.2 min over 23,000 (11,500 pass A + 11,500 pass
+# B), overhead ~53 min. Backward 110 -> ~28 min, forward UNCHANGED at 69.2 because block 3's output
+# still requires all four blocks to run: epoch 232 -> ~150 min, i.e. 1.55x, and up to ~1.67x if the
+# ~4x smaller retained activations let --ckpt-token-threshold rise and remove the checkpoint
+# re-forward (measured backward/forward is 3.2x per pose, 0.574 vs 0.181 s, where theory says ~2x).
+# THE ESTIMATE IS ANALYTICAL AND UNVALIDATED. An earlier projection by this same method, made the
+# same day, predicted 1.35x where the measured figure was 1.10x -- 25% optimistic. Falsify it in
+# ~20 steps against mqird6's measured 62.1 s/step; a collapsed backward shows as ~40 s immediately.
+#
+# IT IS A CAPACITY CUT, NOT A FREE OPTIMISATION, AND NEEDS ITS OWN CONTROL. 4.75M trainable
+# parameters instead of 19.75M. An arm run with this is NOT comparable against mqird6 or against any
+# full-head arm; it needs its own held-out control. It also makes per-block injection untrainable in
+# blocks 0-2 (--pose-perblock, --frame-direction at all four depths), so do not combine it with
+# those without saying what that means.
+#
+# WHY ~20 PRIOR ARMS DID NOT ALREADY GET THIS SPEEDUP. ~20 arms already used --train-only, but every
+# one of them targeted INPUT-SIDE parameters -- linear_no_bias_d, pose_perblock, frame_dir -- which
+# sit at the BOTTOM of the stack. The gradient still had to traverse all four blocks to reach them,
+# so those arms paid the FULL backward while updating almost nothing. This is the first
+# configuration that puts the trainable set at the TOP, which is the only place the saving lives.
+FREEZE_BLOCKS="${FREEZE_BLOCKS:-0}"
+# OVERRIDABLE, so "freeze 0-1" or "freeze 0" can be tried without editing the script. It is a
+# regex, not a prefix, and the backslashes must survive: inside DOUBLE quotes bash honours a
+# backslash only before $ ` " \ and newline, so `\.` passes through verbatim here. An override
+# given on the command line wants SINGLE quotes, since an unquoted \. would be eaten by the shell.
+#
+# IT ALSO FREEZES THE PAE READOUT, which is easy to miss and may not be what you want: everything
+# outside blocks.3 includes linear_no_bias_pae and pae_ln, the two tensors the objective's own
+# output passes through. Those sit ABOVE the stack (confidence.py applies them to z_pair after
+# pairformer_stack returns), so unfreezing them adds no backward depth at all -- their gradient
+# needs only their input and their output gradient. If the arm should keep an adaptable readout,
+# use
+#     FREEZE_PAT='pairformer_stack\.blocks\.3\.,^linear_no_bias_pae\.,^pae_ln\.'
+# which is 4.75M + ~16.9k parameters (64x256 for the projection plus pae_ln's 256 weight and 256
+# bias) and the same expected speedup. Left out of the default
+# because the 1.5-1.7x figure above was computed for one block exactly.
+FREEZE_PAT="${FREEZE_PAT:-pairformer_stack\.blocks\.3\.}"
 POOL=training/combined/pool.csv
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 say "script $(basename "$0") sha $(sha1sum "$0" | cut -c1-12)  DRY=$DRY cards=$CARDS epochs=$EPOCHS"
@@ -233,6 +280,47 @@ if [ "$MEMLOG" = "1" ]; then
   ARGS+=(--mem-log)
   say "MEMLOG=1: --mem-log is on. This is a DIAGNOSTIC, not an arm -- it prints a line per pose."
 fi
+if [ "$FREEZE_BLOCKS" = "1" ]; then
+  ARGS+=(--train-only "$FREEZE_PAT")
+  say "FREEZE_BLOCKS=1: --train-only '$FREEZE_PAT'. Pairformer blocks 0-2 are FROZEN; 4.75M of"
+  say "  19.75M head parameters train. This is a CAPACITY CUT and needs its own control arm -- it"
+  say "  is NOT comparable against mqird6. Expected 1.5-1.7x, ANALYTICAL AND UNVALIDATED."
+  say "  Check the trainer's own '--train-only ...: N of 248 head tensor(s)' line before walking"
+  say "  away: a pattern that matches nothing is refused, but one that matches TOO MUCH is not."
+fi
+# TRUNK_MEMMAP=1 MAPS z_trunk INSTEAD OF READING IT INTO A HEAP BUFFER. ~6 min of a 232 min epoch,
+# by removing one pass over ~243 MB per unit (~1.1 TB per rank per epoch). It changes NO number the
+# run produces -- phases/test_trunk_memmap.py gates the two paths bit-identical on real trunks --
+# but it is UNTESTED ON A GPU, so it is off by default and goes on with its own eyes on it. It also
+# moves the disk read out of trunk_npz_read and into trunk_h2d, because a mapping is lazy.
+if [ "${TRUNK_MEMMAP:-0}" = "1" ]; then
+  ARGS+=(--trunk-memmap)
+  say "TRUNK_MEMMAP=1: --trunk-memmap is on. Numerically identical, ~6 min/epoch, UNTESTED on GPU."
+fi
+# TRUNK_CACHE_GB HOLDS A STEP'S TRUNKS AS HOST ARRAYS, so pass A and pass B read each unit ONCE
+# instead of twice, and --prefetch-workers threads warm them while the GPU is busy. Estimated
+# 10-20 min of a 232 min epoch. 0 is off; 4 covers a typical step (a deep step of the largest
+# remaining structures is ~8.5 GB, and the cache refuses rather than evicts when full, so the cap
+# bounds RSS and nothing else). It changes NO number the run produces. UNTESTED ON A GPU.
+#
+# DO NOT SET IT AND TRUNK_MEMMAP=1 EXPECTING BOTH SAVINGS: a mapping is lazy, so a warmed memmap
+# does no read on the worker and hands the bytes back to the main thread's device copy. The warmer
+# always reads into a heap buffer for that reason; --trunk-memmap then only affects the inline
+# misses. Measure one at a time.
+#
+# GATED NUMERICALLY, NOT BY STRING. `[ "$TRUNK_CACHE_GB" != "0" ]` passed for 0.0, 00 and 0.0000:
+# the flag went on, the banner and the run NOTE both claimed a step's trunks were being held, and
+# the trainer computed int(0.0 * 2**30) == 0 and did nothing. A switch that lies in the run record
+# is worse than a switch that is off.
+TRUNK_CACHE_GB="${TRUNK_CACHE_GB:-0}"
+if $PY -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$TRUNK_CACHE_GB" 2>/dev/null; then
+  ARGS+=(--trunk-cache-gb "$TRUNK_CACHE_GB")
+  say "TRUNK_CACHE_GB=$TRUNK_CACHE_GB GiB/rank: a step's trunks are held as host arrays and warmed"
+  say "  on the --prefetch-workers threads. Watch the 'trunk cache ... hit' line: 50% means the"
+  say "  warmers contributed nothing, 100% means every unit was warmed before pass A. At 4 GiB a"
+  say "  30-unit step (~7.3 GB) fits about half its units, so ~75% is the target and 'refused for"
+  say "  cap' says how many were turned away."
+fi
 # WHAT DROPPING EVAL COSTS, stated so it is a choice and not a surprise: no held-out valfull
 # Spearman, no selected DockQ, no acceptable-pose fraction at 0.23. What survives is the trainer's
 # own per-epoch IN-SAMPLE lines -- WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ) and
@@ -251,6 +339,17 @@ NOTE="$EPOCHS EPOCH(S), --rank-form rel at --alpha-rank 75 plus the PAE term, FU
 # false record of it -- the kind of mislabelling that makes a runs directory unreadable later.
 if [ "$MEMLOG" = "1" ]; then
   NOTE="$NOTE INSTRUMENTATION: --mem-log prints allocated/peak/reserved per pose with the token count and the pass, which is how the n^2 fit above was obtained and how the 855 threshold's unchecked peaks are being checked. It costs a print per pose. NOTE the lines carry NO RANK LABEL, so three ranks interleave in one log -- read them as a population, not a sequence."
+fi
+# THE SAME RULE AS MEMLOG: a frozen-blocks arm is a DIFFERENT EXPERIMENT, not this one run faster,
+# and recording it under the default note would be a false record of what was trained.
+if [ "$FREEZE_BLOCKS" = "1" ]; then
+  NOTE="$NOTE FROZEN STACK: --train-only '$FREEZE_PAT' trains pairformer block 3 only and freezes blocks 0-2, so 4.75M of 19.75M head parameters move. THIS IS A CAPACITY CUT AND A DIFFERENT ARM -- it is NOT comparable against mqird6 or any full-head arm and needs its own held-out control. It is here for epoch time: blocks 0-2 build no autograd graph, so gpu_backward should fall from 110 min to ~28 while gpu_forward stays at 69.2 (all four blocks still run), i.e. 232 min -> ~150, 1.5-1.7x. That estimate is ANALYTICAL AND UNVALIDATED; the same method ran 25% optimistic on 2026-11-07. Per-block injection in blocks 0-2 (--pose-perblock, --frame-direction) cannot train under it."
+fi
+if [ "${TRUNK_MEMMAP:-0}" = "1" ]; then
+  NOTE="$NOTE --trunk-memmap maps z_trunk out of the npz in place instead of reading it into a heap buffer; gated bit-identical on CPU, so it changes epoch time and nothing else."
+fi
+if $PY -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$TRUNK_CACHE_GB" 2>/dev/null; then
+  NOTE="$NOTE --trunk-cache-gb $TRUNK_CACHE_GB holds a step's uncropped trunks as host numpy arrays so pass A and pass B read each unit once instead of twice, warmed on the prefetch workers. It changes epoch time and nothing else."
 fi
 if [ "$DRY" = "1" ]; then
   say "DRY RUN"
