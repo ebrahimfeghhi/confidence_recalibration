@@ -809,6 +809,32 @@ def main():
                          "ONE depth instead of four, silently and wrongly. phase_k_train passes "
                          "it automatically. Not accepting it is what made arm wd656y exit 1 after "
                          "its first epoch: the flag was forwarded to a parser that did not know it.")
+    # --------------------------------------------------------------------------------------
+    # IN-BLOCK POSE INJECTION, the pathway that had no scoring counterpart at all.
+    #
+    # phase_k_train --pose-inblock registers pose_inblock_d / pose_inblock_d_wo_onehot (and two
+    # more with --pose-inblock-pae) on the confidence head. _head_ckpt_tensors saves every head
+    # tensor, so those keys are IN the checkpoint -- and this evaluator knew nothing about them,
+    # so the exact key-set guard below refused every in-block checkpoint as carrying tensors the
+    # model does not have. The arm could train to completion and have no held-out DockQ at all.
+    # Found by review before any in-block arm was launched, which is the only reason it was not
+    # discovered as a dead eval shard after an epoch of GPU time.
+    ap.add_argument("--pose-inblock", action="store_true",
+                    help="the checkpoint was trained with phase_k_train --pose-inblock, so the "
+                         "head carries pose_inblock_d* tensors the stock model does not. Installs "
+                         "the same injection at the same point (inside the block, after "
+                         "tri_mul_in) before loading. phase_k_train passes this automatically; "
+                         "without it the checkpoint load refuses the extra tensors.")
+    ap.add_argument("--pose-inblock-block", type=int, default=-1,
+                    help="which pairformer block carries the injection. -1 (the default) means the "
+                         "LAST block, matching the trainer's default. THE DEPTH IS PART OF THE "
+                         "OPERATOR: the same two tensors at a different depth is a different "
+                         "function, and the key-set guard cannot see the difference because the "
+                         "tensor names do not carry the block index.")
+    ap.add_argument("--pose-inblock-pae", action="store_true",
+                    help="the checkpoint also carries the SECOND injection, after pae_ln in the "
+                         "PAE readout (pose_inblock_pae_d*). phase_k_train passes this "
+                         "automatically whenever it trained with it.")
     ap.add_argument("--no-self-check", action="store_true")
     ap.add_argument("--allow-roles-fallback", action="store_true",
                     help="use chain_roles.csv when OST's per-pose mapping is unusable. OFF by "
@@ -1075,6 +1101,25 @@ def main():
     elif a.pose_perblock_share or a.pose_perblock_copy:
         raise SystemExit("STOP: --pose-perblock-share/-copy without --pose-perblock changes "
                          "nothing, and scoring would silently use one-depth injection.")
+    # SAME REASON, SAME PLACE, and the refusals are the trainer's refusals verbatim so that a
+    # combination which is a hard stop when training is a hard stop when scoring too. A pathway
+    # whose evaluator is more permissive than its trainer is how a number gets reported for an
+    # architecture that was never trained.
+    if a.pose_inblock:
+        if a.pose_perblock:
+            raise SystemExit(
+                "STOP: --pose-inblock with --pose-perblock. Both replace "
+                "pairformer_stack._prep_blocks, so one of the two injections is silently dropped "
+                "depending on install order. The trainer refuses this combination; so does this.")
+        import pose_inblock
+        _pib_blk = a.pose_inblock_block
+        if _pib_blk < 0:
+            _pib_blk = len(model.confidence_head.pairformer_stack.blocks) - 1
+        pose_inblock.install(model, block_index=_pib_blk, pae_inject=a.pose_inblock_pae)
+    elif a.pose_inblock_pae:
+        raise SystemExit("STOP: --pose-inblock-pae without --pose-inblock. The readout injection "
+                         "reads the pose geometry the in-block wrapper stashes, so on its own it "
+                         "would never fire and the flag would be a silent no-op.")
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu")
         have = dict(model.named_parameters())
@@ -1109,7 +1154,8 @@ def main():
                 + f"  The head has {len(head_names)} trainable tensor(s); the checkpoint has "
                   f"{len(sd)}.\n"
                   f"  Pass the same pathway flags the run trained with -- --frame-direction, "
-                  f"--pose-perblock, --pose-perblock-tied, --pose-perblock-share -- or the "
+                  f"--pose-perblock, --pose-perblock-tied, --pose-perblock-share, "
+                  f"--pose-inblock, --pose-inblock-pae -- or the "
                   f"pathway is scored as though it were absent. NOTE "
                   f"--pose-perblock-share adds NO tensors, so this guard cannot catch its "
                   f"absence: the load succeeds and the score is simply wrong.")

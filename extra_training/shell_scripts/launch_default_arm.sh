@@ -335,8 +335,17 @@ INBLOCK="${INBLOCK:-0}"
 INBLOCK_PAE="${INBLOCK_PAE:-1}"
 # INBLOCK_READOUT=1 also leaves linear_no_bias_pae and pae_ln TRAINABLE. They sit ABOVE the stack,
 # so unfreezing them adds no backward depth at all -- their gradient needs only their input and
-# their output gradient. Off by default so the arm's capacity is exactly the injections.
-INBLOCK_READOUT="${INBLOCK_READOUT:-0}"
+# their output gradient.
+#
+# ON BY DEFAULT, changed from 0 after review. The second injection is added AFTER pae_ln, so it
+# hands an unnormalised quantity to linear_no_bias_pae; with the readout frozen, nothing
+# downstream can adapt its scale and the injection's whole influence is fixed by its
+# initialisation and the optimiser. The cost is 16,896 parameters -- linear_no_bias_pae's 64x256
+# weight plus pae_ln's two 256-vectors -- which is a small price for letting the layer that
+# consumes the injection learn to consume it. Set INBLOCK_READOUT=0 to run the frozen-readout
+# ABLATION, which is a legitimate arm -- it just should not be the default reading of the
+# two-injection design.
+INBLOCK_READOUT="${INBLOCK_READOUT:-1}"
 if [ "$INBLOCK" = "1" ]; then
   # REFUSED FIRST, BEFORE ANYTHING IS APPENDED. Both switches set --train-only, and argparse lets
   # the second win silently -- so the run would freeze whatever the loser's pattern said and the

@@ -4507,9 +4507,17 @@ def main():
               and getattr(dev, "type", "") == "cuda"
               and a.rank_cross_seed and a.rank_loss and not a.loss_only)
     _tr_cache = {}
-    _tr_inflight = set()
+    # PATH -> RESERVED BYTES, not a bare set of paths. A set records THAT a read is in flight; the
+    # cap needs to know HOW MUCH. Review found that _tr_bytes counted only ADMITTED entries, so the
+    # pre-read check `_tr_bytes[0] + _sz > _tr_cap` was evaluated against a number that four
+    # concurrent warmers all saw as the same low value: each passed, each allocated its whole
+    # ~243 MB, and TRUNK_CACHE_GB bounded the cache while the PROCESS went ~4x over it. The
+    # reservation is taken under the lock at the same instant the check passes and released in the
+    # `finally`, so the cap now bounds admitted + in-flight, which is what host RSS actually is.
+    _tr_inflight = {}
     _tr_lock = threading.Lock()
     _tr_bytes = [0]
+    _tr_resv = [0]
     # SHARED WITH THE WARMERS, AND `+=` ON A DICT ENTRY IS NOT ATOMIC, so a simultaneous put can
     # lose one sample out of thousands. Acceptable for a diagnostic and NOT acceptable for anything
     # the run branches on; nothing branches on these. Same bargain as _cpu_crop's counters.
@@ -4555,7 +4563,11 @@ def main():
                 return
             if trunk_p in _tr_cache:
                 return
-            if _tr_bytes[0] + nb > _tr_cap:
+            # THIS PATH'S OWN RESERVATION IS DISCOUNTED, because the bytes it reserved before the
+            # read are the very bytes it is now offering -- charging both would refuse a put that
+            # the reservation had already made room for.
+            _mine = _tr_inflight.get(trunk_p, 0)
+            if _tr_bytes[0] + (_tr_resv[0] - _mine) + nb > _tr_cap:
                 _tr_stat["full"] += 1
                 return
             _tr_cache[trunk_p] = host
@@ -4594,30 +4606,41 @@ def main():
                 with _tr_lock:
                     if gen != _tr_gen[0]:
                         return
+                    # ADMITTED PLUS ALREADY-RESERVED, which is the whole point of the fix. With
+                    # only _tr_bytes[0] here, every concurrent warmer saw the same pre-read total.
                     if (tp in _tr_cache or tp in _tr_inflight
-                            or _tr_bytes[0] + _sz > _tr_cap):
+                            or _tr_bytes[0] + _tr_resv[0] + _sz > _tr_cap):
                         _tr_stat["dup"] += 1
                         continue
-                    _tr_inflight.add(tp)
+                    _tr_inflight[tp] = _sz
+                    _tr_resv[0] += _sz
                 try:
                     _tr_put(tp, RC.read_unit_host(tp), gen=gen)
                 finally:
                     with _tr_lock:
-                        _tr_inflight.discard(tp)
+                        _tr_resv[0] -= _tr_inflight.pop(tp, 0)
             except BaseException:          # noqa: BLE001 -- see the docstring
                 # INSIDE THE LOCK, because `+=` on a dict entry is not atomic and several warmers
                 # reach this. The same reason `dup` is counted under the lock above.
                 with _tr_lock:
                     _tr_stat["err"] += 1
                     if tp is not None:
-                        _tr_inflight.discard(tp)
+                        # BOTH, OR THE CAP LEAKS. An exception between the reservation and the
+                        # `finally` -- resolve_trunk raising, a read error -- would otherwise leave
+                        # the bytes reserved forever and the cache would refuse everything after a
+                        # few failures.
+                        _tr_resv[0] -= _tr_inflight.pop(tp, 0)
 
     def _tr_reset():
         """Retire the current generation and drop its arrays. One lock, no joins."""
         with _tr_lock:
             _tr_gen[0] += 1
             _tr_cache.clear()
-            _tr_inflight.clear()
+            # THE RESERVATION IS NOT CLEARED HERE, only the admitted bytes. A warmer from the
+            # retired generation may still be inside its read; its `finally` will pop its own entry
+            # and decrement, and clearing the dict underneath it would make that pop a no-op and
+            # leave _tr_resv permanently above zero. The generation check stops NEW reservations,
+            # which is what retiring a step needs to do.
             _tr_bytes[0] = 0
             return _tr_gen[0]
 
@@ -6177,6 +6200,32 @@ def main():
             # not exist -- the --loss-only inheritance class, now seven instances.
             if a.pose_perblock_copy:
                 cmd.append("--pose-perblock-copy")
+        # THE IN-BLOCK PATHWAY AND THE LEAN TRIO -- the eighth and ninth instances of the
+        # --loss-only inheritance class, both found by review before an arm was launched.
+        #
+        # --pose-inblock ADDS tensors, so a child without it fails the resume guard's parameter-set
+        # comparison (phase_k_train.py:3373-3381) and the held-out point is simply absent.
+        #
+        # --lean-single is worse, because it would NOT fail loudly here. It changes no mathematics
+        # on the PAE path, so the child would compute the right number -- but the guard compares
+        # it, so the child refuses the bundle and the monitor reports nothing. Forwarded with the
+        # two flags it hard-requires (phase_k_train.py:1788), since the child parses them itself.
+        if a.pose_inblock:
+            cmd += ["--pose-inblock", "--pose-inblock-block", str(a.pose_inblock_block)]
+            if a.pose_inblock_pae:
+                cmd.append("--pose-inblock-pae")
+        # FORWARDED WHENEVER THE PARENT HAS IT, not only alongside --lean-single. lean_readouts
+        # replaces memory_efficient_forward rather than adding or removing tensors, so its absence
+        # in the child was invisible to both the key-set guard and the resume guard -- the child
+        # was simply computing readouts the parent does not, slower and on a different code path.
+        if a.lean_readouts:
+            cmd.append("--lean-readouts")
+        if a.lean_single:
+            if not a.lean_readouts or not a.pae_only:
+                raise SystemExit(
+                    "STOP: --lean-single without --lean-readouts and --pae-only reached "
+                    "val_loss_checkpoint. The parse-time check should have refused this run.")
+            cmd.append("--lean-single")
         if a.val_loss_prep:
             cmd += ["--indices", os.path.join(a.val_loss_prep, "job_indices.csv"),
                     "--bio-dir", os.path.join(a.val_loss_prep, "job_bioassembly"),
@@ -6623,6 +6672,17 @@ def main():
             # architecture -- but passing it is still the fix, not relying on the refusal.
             if a.pose_perblock_copy:
                 extra = extra + ["--pose-perblock-copy"]
+        # AND THE IN-BLOCK PATHWAY, which had no evaluator counterpart at all until review found
+        # it. The block index goes too: pose_inblock_d* carry no depth in their names, so an
+        # evaluator that installed at a DIFFERENT block would pass the key-set guard and score a
+        # different operator. --lean-single is deliberately NOT forwarded: it sets c_s = 0 on
+        # built blocks, leaves every module in the tree, and so changes neither the checkpoint's
+        # key set nor the PAE path's mathematics -- the evaluator has no such flag and needs none.
+        if a.pose_inblock:
+            extra = extra + ["--pose-inblock",
+                             "--pose-inblock-block", str(a.pose_inblock_block)]
+            if a.pose_inblock_pae:
+                extra = extra + ["--pose-inblock-pae"]
         # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
         #
         # --join-cache is the big one. The pose->sample join is a function of the trunk's own
