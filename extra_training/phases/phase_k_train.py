@@ -6200,8 +6200,13 @@ def main():
             # not exist -- the --loss-only inheritance class, now seven instances.
             if a.pose_perblock_copy:
                 cmd.append("--pose-perblock-copy")
-        # THE IN-BLOCK PATHWAY AND THE LEAN TRIO -- the eighth and ninth instances of the
+        # THE IN-BLOCK PATHWAY AND THE LEAN TRIO -- the NINTH AND TENTH instances of the
         # --loss-only inheritance class, both found by review before an arm was launched.
+        # (Ninth and tenth, not eighth and ninth: :6165 already claims the eighth for
+        # --crop-all-poses. The running count in these comments is off by one further up --
+        # :6177 says "sixth" and :6200 "now seven instances" for what are the seventh and
+        # eighth -- so the ordinals are a narrative, not an index. Worth one more than nothing
+        # because the POINT of the running count is that this keeps happening.)
         #
         # --pose-inblock ADDS tensors, so a child without it fails the resume guard's parameter-set
         # comparison (phase_k_train.py:3373-3381) and the held-out point is simply absent.

@@ -116,6 +116,37 @@ group, and AdamW's `state_dict` is keyed by the parameter's **index** in that gr
 with no shape error (many are the same shape) and no way to notice afterwards. It changes no
 mathematics in the forward, which is precisely why nothing else would have caught it.
 
+### The children have to inherit it, which is the same fact seen one level up
+
+The resume guard is also what the held-out monitor trips over. `val_loss_checkpoint` spawns
+**`phase_k_train.py` itself** with `--loss-only --resume <bundle>` and builds that child's argv from
+the parent's flags, so a parent running `--lean-single` and a child not passing it disagree on
+exactly the field the guard compares: the child **refuses the bundle**, and `val_loss.csv` gets no
+row — not for one epoch, but for **every epoch of the arm**. It is loud in the log (the shard's last
+six lines print as a `WARNING` and the epoch returns `None`, `phase_k_train.py:6398-6410`) and
+invisible in the data, which is the worst combination for a number that is read off a plot.
+`phase_k_train.py:6223-6229` now forwards it, and restates the `--lean-readouts`-and-`--pae-only`
+requirement where the argv is built rather than trusting the parse-time refusal at
+`phase_k_train.py:1786-1791` — the same invariant, checked at both ends.
+
+**`--lean-readouts` is forwarded in the same place, and it is the one no guard would have caught.**
+It is not a resume-guard field, and it replaces `memory_efficient_forward` rather than adding or
+removing tensors, so a child without it **succeeds**: it computes the pde, pLDDT and resolved
+readouts the parent does not, on a different code path, and reports a held-out PAE from a forward
+the parent never runs. That number should be identical — nothing in those three readouts feeds the
+PAE logits, which is the whole premise of `--lean-readouts` — but "should be identical" from a
+different code path is not what a monitor exists to produce.
+
+**The evaluator is the opposite call: `--lean-single` is deliberately NOT passed to it.**
+`phase_k_eval.py` has no such flag and needs none, for the reason this section opened with — setting
+`c_s = 0` on **already-built** blocks leaves every module in the tree, so it changes neither the
+checkpoint's key set (so the set-equality guard is unaffected) nor anything the PAE readout reads.
+An evaluator scoring with the single track still **running** scores the same function; it pays only
+the dead track's forward, which is 2.5-4.0% of a block's activations and a time cost **below the
+measurement floor** per the table above. `--lean-readouts` is likewise not passed, and that is the
+same reason `load_unit` must keep uploading `atom_to_tokatom_idx`: the eval child really does read
+it.
+
 ## The trunk load: audited, and the premise was wrong
 
 The brief expected this to be the biggest item — "mean 243 MB per unit, ~1.1 TB per rank per epoch".

@@ -344,6 +344,33 @@ Worth recording, because all three were lifecycle bugs rather than design errors
   npz's own `os.path.getsize` (a faithful proxy, since every member is stored uncompressed at the
   dtype it is read back as).
 
+  **Moving the check before the read was not enough, and the second review round is why.**
+  `_tr_bytes[0]` counts only **admitted** entries, so four warmers arriving inside the same window
+  all evaluated `_tr_bytes[0] + _sz > _tr_cap` against the **same low total**, all passed, and all
+  went on to allocate their whole ~243 MB each — `TRUNK_CACHE_GB` bounded the cache while the
+  process sat **~4x over it**, which is the original bug with one extra step in front of it. So
+  `_tr_inflight` is now a **dict of path → reserved bytes** rather than a set of paths
+  (`phase_k_train.py:4510-4520`): a set records *that* a read is in flight, and a byte cap needs to
+  know *how much*. There is a `_tr_resv[0]` running total beside `_tr_bytes[0]`, the reservation is
+  taken **under the same lock, in the same critical section in which the check passes**
+  (`phase_k_train.py:4611-4616`), and it is released in a `finally` (`:4619-4621`) **and again on
+  the `except BaseException` path** (`:4622-4632`) — both, because an exception between the
+  reservation and the `finally` (`resolve_trunk` raising, a read error) would otherwise leave those
+  bytes reserved for the rest of the run, and after a handful of failures the cache would refuse
+  every put while reporting a near-empty occupancy. `_tr_put` **discounts the offering path's own
+  reservation** before testing the cap (`:4566-4574`): the bytes it reserved before the read are the
+  very bytes it is now offering, and charging both would refuse a put the reservation had already
+  made room for. The cap therefore bounds **admitted + in-flight**, which is what host RSS actually
+  is — the number `--max-rss-gb 80` is defending.
+
+  **`_tr_reset` deliberately does NOT clear `_tr_inflight`** (`phase_k_train.py:4634-4645`). It
+  bumps the generation and drops the admitted arrays, but a warmer from the **retired** generation
+  may still be inside its 243 MB read — the same warmer the generation counter above exists to
+  tolerate. Clearing the dict underneath it would make its `finally`'s `pop` a no-op and leave
+  `_tr_resv[0]` permanently above zero, and that fails **closed**: a cache that refuses everything
+  for the rest of the run while `_tr_bytes[0]` says it is empty. Stopping **new** reservations is
+  all that retiring a step has to do, and the generation check already does that.
+
 Two accounting fixes came out of the same review. `fingerprint_hash` is in `_EXCL`, the sum
 subtracted from wall clock to get the residual — and warmers hashing concurrently with the main
 thread can put **more than the epoch's wall clock** into it and drive the residual negative, which

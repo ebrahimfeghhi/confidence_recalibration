@@ -1088,23 +1088,19 @@ def main():
     # pathway that caches per-sample state.
     model.confidence_head.pairformer_stack.blocks_per_ckpt = None
 
-    if a.frame_direction:
-        import pose_direction
-        pose_direction.install(model)
-    # SAME REASON, SAME PLACE: a head trained with --pose-perblock carries pose_perblock_proj
-    # tensors the stock model does not, and the guard below refuses any tensor the model lacks.
-    if a.pose_perblock:
-        import pose_perblock
-        pose_perblock.install(model, tied=a.pose_perblock_tied,
-                              share_pretrained=a.pose_perblock_share,
-                              copy_pretrained=a.pose_perblock_copy)
-    elif a.pose_perblock_share or a.pose_perblock_copy:
-        raise SystemExit("STOP: --pose-perblock-share/-copy without --pose-perblock changes "
-                         "nothing, and scoring would silently use one-depth injection.")
     # SAME REASON, SAME PLACE, and the refusals are the trainer's refusals verbatim so that a
     # combination which is a hard stop when training is a hard stop when scoring too. A pathway
     # whose evaluator is more permissive than its trainer is how a number gets reported for an
     # architecture that was never trained.
+    #
+    # AND BEFORE pose_direction, BECAUSE THAT IS THE TRAINER'S ORDER (phase_k_train.py:1820 then
+    # :1826). This block was first written after pose_direction and pose_perblock, which inverted
+    # the memory_efficient_forward nesting between the two processes whenever --frame-direction was
+    # also set: both modules wrap that method, so whichever installs second is the outer wrapper,
+    # and train and eval would have disagreed about which one that is. pose_direction does not
+    # touch _prep_blocks, so the inversion is probably numerically harmless -- "probably" is the
+    # reason to match the order rather than reason about it. NOTE --pose-inblock with
+    # --frame-direction is still an UNEXERCISED combination in both processes.
     if a.pose_inblock:
         if a.pose_perblock:
             raise SystemExit(
@@ -1120,6 +1116,19 @@ def main():
         raise SystemExit("STOP: --pose-inblock-pae without --pose-inblock. The readout injection "
                          "reads the pose geometry the in-block wrapper stashes, so on its own it "
                          "would never fire and the flag would be a silent no-op.")
+    if a.frame_direction:
+        import pose_direction
+        pose_direction.install(model)
+    # SAME REASON, SAME PLACE: a head trained with --pose-perblock carries pose_perblock_proj
+    # tensors the stock model does not, and the guard below refuses any tensor the model lacks.
+    if a.pose_perblock:
+        import pose_perblock
+        pose_perblock.install(model, tied=a.pose_perblock_tied,
+                              share_pretrained=a.pose_perblock_share,
+                              copy_pretrained=a.pose_perblock_copy)
+    elif a.pose_perblock_share or a.pose_perblock_copy:
+        raise SystemExit("STOP: --pose-perblock-share/-copy without --pose-perblock changes "
+                         "nothing, and scoring would silently use one-depth injection.")
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu")
         have = dict(model.named_parameters())
