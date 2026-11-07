@@ -249,8 +249,13 @@ def main():
                     help="HOW A POSE'S ipTM IS POOLED OVER ANCHOR ROWS, in BOTH pass A and the "
                          "pass-B term, so the quantity trained is the quantity scored. max is "
                          "shipped ipTM. mean measured +0.0140 +- 0.0034 (t=4.06) better than the "
-                         "max at the ORACLE on 738 winnable interfaces (67.7% of oracle headroom "
-                         "against 58.6%) and -0.0130 +- 0.0048 (t=-2.68) WORSE when swapped onto "
+                         # ESCAPED. argparse runs every help string through `% params`, so a bare
+                         # "67.7% of" is read as the conversion "% o" and `--help` died with
+                         # "TypeError: %o format: an integer is required, not dict" -- the whole
+                         # help, not just this entry. Present at 72148ac3 and found while adding
+                         # the two flags below, which nobody could otherwise have read.
+                         "max at the ORACLE on 738 winnable interfaces (67.7%% of oracle headroom "
+                         "against 58.6%%) and -0.0130 +- 0.0048 (t=-2.68) WORSE when swapped onto "
                          "the current trained head -- better if trained for, worse if swapped in. "
                          "It also gives gradient to every row rather than to the argmax alone, "
                          "which removes the moving-target problem the max has.")
@@ -668,6 +673,42 @@ def main():
                          "with the GPU idle throughout, and GPU busy time is only ~20 min of 73. "
                          "The worker never touches CUDA -- it hands back host tensors and the main "
                          "thread moves them -- so only one thread ever issues CUDA work.")
+    ap.add_argument("--trunk-memmap", action="store_true",
+                    help="MAP z_trunk INSTEAD OF READING IT INTO A HEAP BUFFER. The trunk npz's "
+                         "members are STORED, not deflated, and z_trunk.npy is the first member at "
+                         "zip header_offset 0 -- verified on three real trunks -- so np.memmap can "
+                         "address it in place and the host-to-device copy reads page cache "
+                         "directly instead of a buffer np.load just filled. That removes one pass "
+                         "over ~243 MB per unit, ~1.1 TB per rank per epoch, worth an estimated "
+                         "~6 min of a 232 min epoch. z_trunk is ~99%% of the bytes and is the only "
+                         "member mapped; the rest are at or under ~1.5 MB where the extra syscalls "
+                         "cost more than the copy. OFF BY DEFAULT AND UNTESTED ON A GPU: "
+                         "phases/test_trunk_memmap.py gates the two paths bit-identical on CPU "
+                         "over real trunks, bf16 compared through a uint16 view, and any member "
+                         "that cannot be mapped falls back to np.load silently. NOTE it moves the "
+                         "disk read out of trunk_npz_read and into trunk_h2d, because a mapping is "
+                         "lazy -- read their SUM when comparing against a run without it.")
+    ap.add_argument("--trunk-cache-gb", type=float, default=0.0,
+                    help="HOLD A STEP'S UNCROPPED TRUNKS AS HOST ARRAYS, up to this many GiB per "
+                         "rank; 0 is off. The cross-seed objective runs TWO passes over every "
+                         "step's units -- a no_grad scoring pass whose scores the relative-iTM "
+                         "coefficients need, then the backward pass -- so each unit's ~243 MB was "
+                         "read and copied to the device TWICE per step (4,600 load_unit calls for "
+                         "2,300 units, rank 0, epoch 3 of mqird6). Caching the HOST arrays for the "
+                         "span of one step halves the reads, and --prefetch-workers threads warm "
+                         "them while the GPU runs, which puts most of the rest behind compute. "
+                         "Estimated 10-20 min of a 232 min epoch. KEYED BY TRUNK PATH AND NEVER "
+                         "POPPED, unlike the cropped prefetch: a pop queue walked by both passes "
+                         "is the dsswrj bug that cost ~3 h an epoch. Purely advisory -- every miss "
+                         "falls back to the ordinary read, so there is no wait and nothing to "
+                         "deadlock on -- and REFUSES rather than evicts when full, because every "
+                         "entry in a step is wanted twice. Ignored when cropping is on (the crop "
+                         "prefetch already covers that path) or off a cuda device (host arrays "
+                         "would be ALIASED, not copied). 4.0 fits about half a 30-unit step's "
+                         "~7.3 GB, so expect a hit rate near 75%% there and read `full` for how "
+                         "many were turned away; the epoch line's rate is 50%% when the warmers "
+                         "contributed nothing and 100%% when every unit was warmed before pass A. "
+                         "CHANGES NO NUMBER the run produces, and is UNTESTED ON A GPU.")
     ap.add_argument("--val-loss-every", type=int, default=0,
                     help="EPOCHS BETWEEN HELD-OUT PAE PASSES; 0 is off. This is the monitor the "
                          "run had no way to compute: measured 2026-10-20, the lr 1e-2 anchor's "
@@ -3775,6 +3816,14 @@ def main():
     #
     # RAM: one short string per (pdb, trunk path), 4880 keys on the full set -- about 1 MB.
     _fp_cache = {}
+    # AND THE CONTENT HALF ALONE, which is the half that costs anything and the only half that is
+    # persisted. _fp_cache holds the COMPOSED string this process compares against labels;
+    # _fp_content holds `cif|bio|idx|trunk` for the same key, so a new process (or a sibling rank)
+    # can skip the four SHAs and recompose. Both are filled by _unit_fp and nothing else.
+    _fp_content = {}
+    # AND THE STAT SIGNATURE AS IT WAS WHEN THE CONTENT WAS HASHED, so what is persisted describes
+    # the files that were actually read. See _unit_fp.
+    _fp_sig_at_hash = {}
     # THE RESOLVED TRUNK PATH, per (pdb, label). resolve_trunk is a pure function of the label's
     # stored fingerprint and the candidate trunks' own, and the per-unit re-assertion in run_unit
     # still checks the chosen trunk every epoch -- so caching the CHOICE skips a label npz open
@@ -3796,18 +3845,34 @@ def main():
     # WHAT IT TRUSTS, AND WHAT THAT GIVES UP. unit_fingerprint is a pure function of SCHEMA,
     # code_fp, loss_fp, the job cif, the bioassembly pickle, the indices row and the trunk. A fresh
     # process currently re-reads all of those, which re-verifies them. Persisting replaces that
-    # with a stat signature -- size and mtime_ns of every file the fingerprint covers -- plus an
-    # exact match on code_fp and loss_fp. That is the same bargain phase_k_eval's --join-cache
-    # already makes ("the cache key carries each trunk's size and mtime, so a refold or rebuild
-    # invalidates it"), and it is a real reduction in checking: a file rewritten with its size and
-    # mtime preserved would go unnoticed. Everything that rewrites these files -- a refold, a
-    # rebuild, the 2026-10-14 geometry fix -- changes mtime.
+    # with a stat signature -- size and mtime_ns of every file the fingerprint covers. That is the
+    # same bargain phase_k_eval's --join-cache already makes ("the cache key carries each trunk's
+    # size and mtime, so a refold or rebuild invalidates it"), and it is a real reduction in
+    # checking: a file rewritten with its size and mtime preserved would go unnoticed. Everything
+    # that rewrites these files -- a refold, a rebuild, the 2026-10-14 geometry fix -- changes mtime.
+    #
+    # ONLY THE CONTENT HALF IS PERSISTED, AND THAT IS THE ~43 MIN FIX. Version 1 stored the WHOLE
+    # fingerprint and refused a file whose stored code_fp or loss_fp differed from this process's,
+    # dropping all ~11,040 entries at once -- so every edit to phase_j_build_cache or to the loss
+    # config threw away the entire cache and the run re-SHA'd ~243 MB per unit from scratch, ~43 min
+    # off the front of the launch. But `code` and `loss` are three short strings this process
+    # already holds and they cannot change what sha256(trunk) is. So the file now stores only
+    # BC.unit_content_fingerprint's output -- cif|bio|idx|trunk -- and the schema/code/loss prefix
+    # is recomposed at every use by BC.unit_fingerprint(..., content=...). The composed string is
+    # byte-identical to version 1's, gated by phases/test_unit_fingerprint_split.py against a
+    # literal of the pre-split format, so the provenance comparison is unchanged: a stale code_fp
+    # still mismatches the label's stored fingerprint and still raises, exactly as before. code_fp
+    # and loss_fp are still written into the file, as a record of what wrote it, and are no longer
+    # read for invalidation.
+    #
+    # THE STAT SIGNATURE IS STILL THE WHOLE INVALIDATION, and it covers every file the content half
+    # hashes -- trunk, cif, bioassembly, indices. Nothing is adopted from disk without it matching.
     #
     # PER RANK, AND ALL RANKS' FILES ARE READ. Each rank sees a third of the units and the shuffle
     # moves that third every epoch, so one rank's file covers only part of the manifest. Writing
     # one file per rank and loading every one of them accumulates coverage across epochs and across
     # runs without any rank having to write what another measured.
-    _FP_CACHE_VER = 1
+    _FP_CACHE_VER = 2
     _fp_disk = os.path.join(roots[0], f"unit_fingerprints.r{rank}.json")
 
     def _fp_sig(pdb, trunk_p):
@@ -3823,44 +3888,116 @@ def main():
                 out.append("absent")
         return "|".join(out)
 
-    def _fp_cache_load():
+    def _unit_fp(pdb, trunk_p, memo=None):
+        """The COMPOSED provenance string for (pdb, trunk_p), memoised through its content half.
+
+        THE ONE PLACE unit_fingerprint IS CALLED FROM. Both callers -- resolve_trunk's candidate
+        loop and run_unit's per-unit re-assertion -- used to call BC.unit_fingerprint directly and
+        each kept its own `if key not in cache` dance around it. Two call sites meant two chances
+        for the memoisation and the timing to drift apart; this is one.
+
+        WHAT IS MEMOISED AND WHAT IS NOT. The four SHAs (cif, bioassembly, indices rows, trunk) are
+        memoised, in `_fp_content`, and that memo is what survives to disk. schema, code_fp and
+        loss_fp are re-composed on every call from THIS process's values, so a cache written by a
+        different checkout cannot smuggle its code_fp into a comparison -- the composed string is
+        always this process's claim about this process's code. `_fp_cache` then holds the composed
+        result so a repeat call is one dict lookup.
+
+        `memo` OVERRIDES THE COMPOSED CACHE ONLY, deliberately: resolve_trunk takes a caller-
+        supplied dict for the composed strings, and the content memo stays global because it is
+        keyed on file identity and nothing else.
+        """
+        memo = _fp_cache if memo is None else memo
+        key = (pdb, trunk_p)
+        hit = memo.get(key)
+        if hit is not None:
+            return hit
+        content = _fp_content.get(key)
+        if content is None:
+            _t0 = time.perf_counter()
+            content = BC.unit_content_fingerprint(a, pdb, trunk_p)
+            # A WORKER'S HASH GOES IN ITS OWN BUCKET, because `fingerprint_hash` is in _EXCL -- the
+            # sum that is subtracted from the epoch's wall clock to get the residual. Several
+            # warmer threads hashing concurrently with the main thread can put MORE than the
+            # epoch's wall clock into that bucket and drive the printed residual negative. That is
+            # precisely the double-count the `rank_pass_a` comment on _EXCL was written about; it
+            # already applied to the cropped arm's _pf_worker and this makes it explicit for both.
+            # fingerprint_hash_warm is reported and is in neither _EXCL nor _leaves.
+            _tick("fingerprint_hash" if threading.current_thread() is threading.main_thread()
+                  else "fingerprint_hash_warm", _t0)
+            # THE SIGNATURE IS TAKEN NOW, NOT AT SAVE TIME. _fp_cache_save used to re-stat at the
+            # boundary, so a file rewritten between the hash and the save was persisted with a
+            # signature describing the NEW file and content describing the OLD -- the one direction
+            # a provenance cache must never be wrong in. Taking it beside the hash makes the pair
+            # consistent by construction. (Version 1 had the same pattern; this is a strengthening,
+            # not a regression fix.)
+            _fp_sig_at_hash[key] = _fp_sig(pdb, trunk_p)
+            _fp_content[key] = content
+        fp = BC.unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp, content=content)
+        memo[key] = fp
+        return fp
+
+    def _fp_cache_load(label="startup"):
+        """Adopt every rank's CONTENT fingerprints whose stat signature still holds.
+
+        CALLED AT EVERY EPOCH BOUNDARY, NOT ONLY AT STARTUP, so the three ranks pool their work.
+        Each rank hashes only the units it was dealt and the three jointly cover all 6,903 units in
+        epoch 1 -- but a rank that never loaded its siblings' files re-hashed, from epoch 2 onward,
+        every unit the shuffle moved onto it. Reloading after _fp_cache_save at the boundary makes
+        epoch 2 free for all three instead of one.
+
+        IT CANNOT UNDO A HASH THIS PROCESS COMPUTED. Entries already in `_fp_content` are skipped
+        before the signature is even looked at, so an adopted entry only ever fills a hole.
+        """
         kept = dropped = 0
         for fp_path in sorted(glob.glob(os.path.join(roots[0], "unit_fingerprints.r*.json"))):
             try:
                 blob = json.load(open(fp_path))
             except (OSError, ValueError):
                 continue
-            # A STALE SCHEMA OR A DIFFERENT CODE/LOSS FINGERPRINT INVALIDATES THE WHOLE FILE, not
-            # entry by entry: those three are in every fingerprint the file holds.
-            if (blob.get("ver") != _FP_CACHE_VER or blob.get("code_fp") != code_fp
-                    or blob.get("loss_fp") != loss_fp):
+            # A STALE SCHEMA INVALIDATES THE WHOLE FILE: version 1 stored composed fingerprints
+            # under the key "fp" and there is no way to recover the content half from one, since
+            # the prefix it was composed with is whatever that process held. code_fp and loss_fp
+            # are NOT checked -- that was the bug, see the block comment above.
+            if blob.get("ver") != _FP_CACHE_VER:
                 dropped += len(blob.get("entries", {}))
                 continue
             for key, ent in blob.get("entries", {}).items():
                 pdb, _, tp = key.partition("\t")
-                if not tp or (pdb, tp) in _fp_cache:
+                if not tp or (pdb, tp) in _fp_content:
                     continue
-                if ent.get("sig") == _fp_sig(pdb, tp):
-                    _fp_cache[(pdb, tp)] = ent["fp"]
+                if ent.get("content") and ent.get("sig") == _fp_sig(pdb, tp):
+                    _fp_content[(pdb, tp)] = ent["content"]
+                    # THE SIGNATURE JUST VERIFIED, carried forward so a later save re-writes what
+                    # was actually checked rather than re-statting at the boundary.
+                    _fp_sig_at_hash[(pdb, tp)] = ent["sig"]
                     kept += 1
                 else:
                     dropped += 1
-        if kept or dropped:
-            print(f"fingerprint cache: {kept} entry(ies) reused from {roots[0]}, {dropped} "
-                  f"invalidated by a changed input, code_fp or schema", flush=True)
+        # AT A BOUNDARY, ONLY ADOPTIONS ARE WORTH A LINE. `dropped` is sticky -- a save only ever
+        # adds, so an entry whose inputs really did change is re-reported at every boundary for the
+        # rest of the run -- and one such line per epoch per rank is noise, not information.
+        if kept or (dropped and label == "startup"):
+            print(f"fingerprint cache ({label}): {kept} content entry(ies) reused from "
+                  f"{roots[0]}, {dropped} invalidated by a changed input or an older cache "
+                  f"version", flush=True)
         return kept
 
     def _fp_cache_save():
         """Atomic, and only ever ADDS to what this rank already had on disk."""
         try:
             prev = json.load(open(_fp_disk))
-            entries = (prev.get("entries", {})
-                       if (prev.get("ver") == _FP_CACHE_VER and prev.get("code_fp") == code_fp
-                           and prev.get("loss_fp") == loss_fp) else {})
+            entries = prev.get("entries", {}) if prev.get("ver") == _FP_CACHE_VER else {}
         except (OSError, ValueError):
             entries = {}
-        for (pdb, tp), fp in _fp_cache.items():
-            entries[f"{pdb}\t{tp}"] = {"fp": fp, "sig": _fp_sig(pdb, tp)}
+        # list(), BECAUSE A WARMER THREAD CAN STILL BE WRITING IT. _tr_worker calls resolve_trunk,
+        # which fills _fp_content, and a warmer that outlived _tr_end's join would make this
+        # "RuntimeError: dictionary changed size during iteration" -- a crash at an epoch boundary,
+        # after the epoch's work, which is the worst possible moment. A snapshot costs one list of
+        # ~11,040 tuples. The signature comes from the hash, not from a fresh stat; see _unit_fp.
+        for (pdb, tp), content in list(_fp_content.items()):
+            entries[f"{pdb}\t{tp}"] = {"content": content,
+                                       "sig": _fp_sig_at_hash.get((pdb, tp)) or _fp_sig(pdb, tp)}
         tmp = _fp_disk + ".tmp"
         try:
             with open(tmp, "w") as fh:
@@ -4058,9 +4195,25 @@ def main():
                 _pf_pending.pop(_dk)
                 _pf_dropped.add(_dk)
 
+    # DID THE CROP PREFETCH ACTUALLY START THIS EPOCH? Read by the epoch report, which cannot use
+    # _pf_thread (it is cleared by _pf_end, which runs first) and must not use a.prefetch_units
+    # (set on uncropped arms, where _pf_start now declines).
+    _pf_started = [False]
+
     def _pf_start(units):
         nonlocal _pf_q, _pf_thread
+        _pf_started[0] = False
         if not a.prefetch_units:
+            return
+        # NOT ON AN UNCROPPED ARM, where every result is thrown away. _pf_take is reached only
+        # inside `if a.crop_margin > 0 or a.crop_tokens`, so with the crop off these workers ran a
+        # full np.load plus interface_crop_tokens plus slice_cached_unit per unit and nobody ever
+        # consumed one -- then blocked forever on a full put() once --prefetch-units x
+        # --prefetch-workers results had piled up, holding those slices in RSS for the whole epoch.
+        # The default arm passes --prefetch-units 2 --prefetch-workers 4, so that is 8 wasted
+        # crops and 8 retained slices on every uncropped run to date. The uncropped path has its
+        # own warmer (_tr_step_start) and does not use this queue.
+        if not (a.crop_margin > 0 or a.crop_tokens):
             return
         _pf_stop.clear(); _pf_pending.clear(); _pf_dropped.clear()
         _pf_stat.update(hit=0, miss=0, wait_s=0.0, dropped=0, exhausted=0)
@@ -4072,6 +4225,7 @@ def main():
                       for i in range(_w)]
         for _t in _pf_thread:
             _t.start()
+        _pf_started[0] = True
 
     def _pf_end():
         nonlocal _pf_q, _pf_thread
@@ -4126,6 +4280,191 @@ def main():
         finally:
             os.close(fd)
 
+    # ---- THE STEP-SCOPED TRUNK CACHE, for the UNCROPPED arm -------------------------------------
+    #
+    # WHY. On an uncropped arm the only per-unit I/O is RC.load_unit, and the cross-seed objective
+    # calls run_unit TWICE on every unit of a step -- a no_grad scoring pass A, then the backward
+    # pass B -- so each unit's ~243 MB was materialised and copied to the device twice. Rank 0,
+    # epoch 3 of mqird6: 4,600 load_unit calls for 2,300 units, 37.0 min of `unit_setup` with
+    # 0.2 min in named leaves and 31.0 of the epoch's 35.9 min residual INSIDE units. Holding the
+    # HOST arrays for the duration of ONE step halves the reads outright, and warming them on a
+    # worker thread puts the surviving half behind the GPU.
+    #
+    # KEYED BY TRUNK PATH AND NEVER POPPED, which is the whole design and is not negotiable. The
+    # cropped prefetch (_pf_take) is a POP QUEUE keyed by label with a 120 s blocking wait, and
+    # pass A walking the same units as pass B consumed each unit's result and left pass B waiting
+    # out the full budget per unit -- ~3 hours an epoch, observed on probe dsswrj, looking like a
+    # hang with flat CPU and 0% GPU. A read-only dict cannot do that: both passes LOOK UP the same
+    # key, a lookup never blocks, and a miss just reads inline.
+    #
+    # PURELY ADVISORY, SO NOTHING CAN DEADLOCK ON IT. Every path that consults it falls back to the
+    # ordinary read, so a worker that is slow, failed, capped out or never started costs time and
+    # nothing else. There is no wait, no budget and no eviction cascade to get wrong.
+    #
+    # ITS OWN CAP, IN BYTES, SEPARATE FROM THE CROP PREFETCH'S. _pf_pending's max(16, 8*workers)
+    # would be 32 entries, and at 243 MB per uncropped trunk that is ~7.8 GB of RSS per rank
+    # against --max-rss-gb. This caps on BYTES, defaults off, and REFUSES rather than evicts when
+    # full: every entry in a step is wanted twice, so dropping the oldest would drop one pass B is
+    # about to ask for, while refusing the newest only forgoes a saving. A deep step of the largest
+    # remaining structures is 10 units x 1,650 tokens ~= 8.5 GB, so a 4 GB cap covers a typical
+    # step and partially covers the worst, which is the intended behaviour.
+    #
+    # CLEARED AT EVERY STEP BOUNDARY. Scope is one step because that is the span over which a unit
+    # is read twice; holding longer would grow without bound, since the epoch's units are distinct.
+    _tr_cap = int(float(a.trunk_cache_gb) * (1 << 30))
+    # CUDA IS PART OF THE PRECONDITION, not an accident of this box. unit_from_host aliases the
+    # host arrays when the device is CPU, so two passes sharing one dict would share any in-place
+    # write; `.to(cuda)` always copies. dev is cuda at line 1528, and this says so out loud.
+    #
+    # AND ONLY WHERE THERE IS A PASS A. The cache is scoped to a step and warmed at a step
+    # boundary, both of which come from the cross-seed grouping; without it `_xs_at` is empty,
+    # _tr_step_start is never called, every unit is read exactly once and there is nothing to hit.
+    # The cache would then fill to its cap, refuse everything after that and hold the RSS for no
+    # benefit -- so the same condition that gates _xs_prepare gates this.
+    _tr_on = (_tr_cap > 0 and not (a.crop_margin > 0 or a.crop_tokens)
+              and getattr(dev, "type", "") == "cuda"
+              and a.rank_cross_seed and a.rank_loss and not a.loss_only)
+    _tr_cache = {}
+    _tr_inflight = set()
+    _tr_lock = threading.Lock()
+    _tr_bytes = [0]
+    # SHARED WITH THE WARMERS, AND `+=` ON A DICT ENTRY IS NOT ATOMIC, so a simultaneous put can
+    # lose one sample out of thousands. Acceptable for a diagnostic and NOT acceptable for anything
+    # the run branches on; nothing branches on these. Same bargain as _cpu_crop's counters.
+    _tr_stat = {"hit": 0, "miss": 0, "put": 0, "full": 0, "err": 0, "dup": 0}
+    _tr_threads = [None]
+    # A GENERATION COUNTER, NOT AN EVENT, AND THAT IS A BUG FIX. The first version used one shared
+    # threading.Event: _tr_step_start did set() -> join(timeout=30) -> clear(). A warmer still
+    # inside a 243 MB read when the join expired then resumed its loop, found the flag CLEARED, and
+    # went on warming the PREVIOUS step's remaining units -- spending the new step's cap on trunks
+    # nobody would ask for, so the step's real units were refused and read twice anyway. It was
+    # never joined again either, because _tr_threads[0] had been replaced, so up to
+    # --prefetch-workers orphans could leak per step boundary and live for the rest of the run, all
+    # of them writing _fp_cache / _fp_content / _T without a lock while the main thread iterated
+    # them at the epoch boundary. A generation number cannot be "un-cancelled": a worker compares
+    # its own `gen` against this cell and a stale worker can only exit.
+    #
+    # AND IT LETS THE JOIN GO, which is the other half. Joining W warmers on the MAIN thread at
+    # every one of 230 step boundaries put the main thread behind whatever read was in flight --
+    # inside the very critical path this exists to shorten. Nothing is joined per step now; the
+    # epoch boundary still joins, once, so no warmer races _fp_cache_save.
+    _tr_gen = [0]
+
+    def _tr_get(trunk_p):
+        """The cached host arrays for this trunk, or None. LOOKS UP, NEVER POPS, NEVER BLOCKS."""
+        if not _tr_on:
+            return None
+        with _tr_lock:
+            hit = _tr_cache.get(trunk_p)
+            _tr_stat["hit" if hit is not None else "miss"] += 1
+        return hit
+
+    def _tr_put(trunk_p, host, gen=None):
+        """Offer host arrays to the cache. Refused when full, which costs only the saving.
+
+        `gen` is the warmer's generation; a put from a step that is over is dropped rather than
+        charged to the current step's cap.
+        """
+        if not _tr_on or host is None:
+            return
+        nb = sum(int(v.nbytes) for v in host.values() if hasattr(v, "nbytes"))
+        with _tr_lock:
+            if gen is not None and gen != _tr_gen[0]:
+                return
+            if trunk_p in _tr_cache:
+                return
+            if _tr_bytes[0] + nb > _tr_cap:
+                _tr_stat["full"] += 1
+                return
+            _tr_cache[trunk_p] = host
+            _tr_bytes[0] += nb
+            _tr_stat["put"] += 1
+
+    def _tr_worker(units, gen):
+        """Materialise a step's trunks into the cache. NO TORCH, NO CUDA, NO EXCEPTION ESCAPES.
+
+        RESOLVES THE TRUNK ITSELF, in the thread, exactly as _pf_worker does -- resolve_trunk
+        raises SystemExit on an unresolvable fingerprint and that must surface on the main thread
+        when the unit is really reached, with its own diagnostics, not here where it would kill a
+        warmer and nothing else. A swallowed SystemExit here leaves _trunk_choice unwritten, so the
+        main thread re-resolves and refuses properly.
+
+        NEVER memmap. A mapping is lazy, so reading one here would transfer the work it is supposed
+        to absorb straight back to the main thread's device copy. The warmer exists to spend host
+        time, in a heap buffer, while the GPU is busy.
+
+        `gen` IS CHECKED THREE TIMES: at the top of each unit, under the lock before reserving, and
+        again inside _tr_put. A warmer whose step is over does no read and caches nothing.
+        """
+        for _t in units:
+            if gen != _tr_gen[0]:
+                return
+            tp = None
+            try:
+                tp = resolve_trunk(*_t)
+                # THE SIZE IS CHECKED BEFORE THE READ, not after. Reserving _tr_inflight and then
+                # refusing in _tr_put means the whole ~243 MB is already on the heap when the
+                # refusal happens, so the cap bounded the CACHE and not the PROCESS: with four
+                # warmers that is ~1 GB over the cap at any instant. The npz's file size is a
+                # faithful proxy for the host dict's bytes, since every member is stored
+                # uncompressed at the dtype it is read back as.
+                _sz = os.path.getsize(tp)
+                with _tr_lock:
+                    if gen != _tr_gen[0]:
+                        return
+                    if (tp in _tr_cache or tp in _tr_inflight
+                            or _tr_bytes[0] + _sz > _tr_cap):
+                        _tr_stat["dup"] += 1
+                        continue
+                    _tr_inflight.add(tp)
+                try:
+                    _tr_put(tp, RC.read_unit_host(tp), gen=gen)
+                finally:
+                    with _tr_lock:
+                        _tr_inflight.discard(tp)
+            except BaseException:          # noqa: BLE001 -- see the docstring
+                # INSIDE THE LOCK, because `+=` on a dict entry is not atomic and several warmers
+                # reach this. The same reason `dup` is counted under the lock above.
+                with _tr_lock:
+                    _tr_stat["err"] += 1
+                    if tp is not None:
+                        _tr_inflight.discard(tp)
+
+    def _tr_reset():
+        """Retire the current generation and drop its arrays. One lock, no joins."""
+        with _tr_lock:
+            _tr_gen[0] += 1
+            _tr_cache.clear()
+            _tr_inflight.clear()
+            _tr_bytes[0] = 0
+            return _tr_gen[0]
+
+    def _tr_step_start(step_units):
+        """Drop the previous step's arrays and start warming this step's. Called per step."""
+        if not _tr_on:
+            return
+        gen = _tr_reset()
+        _w = max(1, min(a.prefetch_workers, len(step_units)))
+        _tr_threads[0] = [threading.Thread(target=_tr_worker, args=(step_units[i::_w], gen),
+                                           daemon=True) for i in range(_w)]
+        for _t in _tr_threads[0]:
+            _t.start()
+
+    def _tr_end():
+        """At the EPOCH boundary: retire, then join, so nothing races _fp_cache_save.
+
+        THE RESET IS UNCONDITIONAL, NOT GATED ON THERE BEING THREADS. Returning early when
+        _tr_threads[0] is falsy left the cache holding up to --trunk-cache-gb across the evaluator
+        subprocesses in the case where the main thread had filled it but no warmer ever started.
+        """
+        _tr_reset()
+        for _t in _tr_threads[0] or ():
+            _t.join(timeout=30)
+        _tr_threads[0] = None
+        # A WARMER THAT OUTLIVES THE JOIN CAN STILL BE HOLDING ONE READ, and that is all it can do:
+        # its generation is retired, so _tr_put drops the result and the loop exits at its next
+        # top. Nothing it does after this line reaches the cache or the byte count.
+
     # LOADED HERE, after the helpers above are bound and before the first resolve_trunk call.
     # Calling it beside DS.build_configs raised UnboundLocalError: the name is local to main() and
     # that line runs ~280 lines before the def.
@@ -4150,12 +4489,7 @@ def main():
         stored = str(np.asarray(np.load(lab_p, allow_pickle=True)["fingerprint"]))
         ok = []
         for tp in cands:
-            key = (pdb, tp)
-            if key not in want_fp_cache:
-                _t0 = time.perf_counter()
-                want_fp_cache[key] = BC.unit_fingerprint(a, pdb, tp, code_fp, loss_fp)
-                _tick("fingerprint_hash", _t0)
-            if want_fp_cache[key] == stored:
+            if _unit_fp(pdb, tp, memo=want_fp_cache) == stored:
                 ok.append(tp)
         if len(ok) == 1:
             _trunk_choice[_ck] = ok[0]
@@ -4170,7 +4504,7 @@ def main():
                     if "=" in part:
                         k, v = part.split("=", 1); out[k] = v
                 return out
-            want_f = fields(want_fp_cache[(pdb, cands[0])])
+            want_f = fields(_unit_fp(pdb, cands[0], memo=want_fp_cache))
             got_f = fields(stored)
             diff = sorted(k for k in set(want_f) | set(got_f) if want_f.get(k) != got_f.get(k))
             if diff == ["code"] and a.allow_code_drift:
@@ -4246,12 +4580,7 @@ def main():
         # THE FINGERPRINT IS COMPARED, NOT MERELY PRESENT. resolve_trunk already proved one trunk
         # reproduces it; this re-asserts against the trunk actually being used, so the two cannot
         # come apart if resolve_trunk is ever bypassed.
-        _fp_key = (pdb, trunk_p)
-        if _fp_key not in _fp_cache:
-            _t_fp = time.perf_counter()
-            _fp_cache[_fp_key] = BC.unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp)
-            _tick("fingerprint_hash", _t_fp)
-        _want = _fp_cache[_fp_key]
+        _want = _unit_fp(pdb, trunk_p)
         _got = str(np.asarray(lab["fingerprint"]))
         if _got != _want:
             _dw = dict(x.split("=", 1) for x in _want.split("|") if "=" in x)
@@ -4355,7 +4684,24 @@ def main():
              crop_feat_loss, crop_labels, _nb) = crop_slice
         else:
             crop_feat_loss = crop_labels = None
-            feat_head, s_inputs, s_trunk, zt, poses, _nc = RC.load_unit(trunk_p, dev)
+            # TIMED, AT LAST. This is the UNCROPPED path's only trunk read and it carried no timer
+            # of any kind, which is why 31.0 of epoch 3's 35.9 min residual could be placed INSIDE
+            # units and no further. load_unit now ticks `trunk_npz_open`, `trunk_npz_read` and
+            # `trunk_h2d` through this closure's own accumulator, so the read and the device copy
+            # land in the epoch table separately -- the first answers whether prefetching it would
+            # pay (item 4 of docs/training_speedups.md), the second whether pinned staging would.
+            # ~243 MB per unit and 4,600 units per rank per epoch, i.e. ~1.1 TB each way.
+            #
+            # THE STEP'S CACHED HOST ARRAYS, IF THEY ARE THERE. A hit skips the npz entirely and
+            # leaves only the device copy; a miss reads inline AND OFFERS THE RESULT, so pass B
+            # hits on whatever pass A had to read itself. Both are lookups -- see the cache's own
+            # comment for why this is a dict and not the cropped path's pop queue.
+            _host = _tr_get(trunk_p)
+            if _tr_on and _host is None:
+                _host = RC.read_unit_host(trunk_p, tick=_tick, memmap=a.trunk_memmap)
+                _tr_put(trunk_p, _host)
+            feat_head, s_inputs, s_trunk, zt, poses, _nc = RC.load_unit(
+                trunk_p, dev, tick=_tick, memmap=a.trunk_memmap, host=_host)
 
         _t_fc = time.perf_counter()
 
@@ -6688,6 +7034,10 @@ def main():
             # STARTED PER EPOCH, over THIS epoch's shuffled order, so the worker walks the units
             # in the order the main loop will consume them.
             _pf_start(ep_units)
+            # PER EPOCH, like _pf_stat and for the same reason: the printed line reports an epoch,
+            # and a run-cumulative counter printed as one would be a different number every time.
+            for _k in _tr_stat:
+                _tr_stat[_k] = 0
             _T0, _TN0 = dict(_T), dict(_TN)
             # PEAK MEMORY PER EPOCH, reset here so each epoch reports its own rather than the
             # high-water mark of the whole run. This is the number that decides whether activation
@@ -6718,6 +7068,10 @@ def main():
             for ui, (pdb, lab_p, cands) in enumerate(ep_units):
                 if ui in _xs_at:
                     _step_poses[0] = len(_xs_steps[_xs_at[ui]]) * a.nsample
+                    # BEFORE PASS A, so the warmer is already reading unit 1 while pass A is on
+                    # the GPU with unit 0. It also drops the PREVIOUS step's arrays, which is what
+                    # bounds the cache to one step.
+                    _tr_step_start(_xs_steps[_xs_at[ui]])
                     _xs_prepare(_xs_steps[_xs_at[ui]], ep)
                 trunk_p = resolve_trunk(pdb, lab_p, cands)
                 # THE NEXT UNIT'S TRUNK, WARMED WHILE THIS ONE COMPUTES. Resolving it is cheap
@@ -6903,6 +7257,10 @@ def main():
             # run totals -- the first-touch costs (the per-unit fingerprint hash, the item cache)
             # land entirely in epoch 1 and would otherwise contaminate every later epoch's figure.
             _pf_end()
+            # AND THE TRUNK WARMER, so its arrays are not still held while the evaluator
+            # subprocesses have to fit beside this rank -- the same reason empty_cache() runs
+            # below for the device side.
+            _tr_end()
             # ANY EVENTS LEFT FROM THE EPOCH'S TAIL, so the last partial accumulation window's
             # GPU time is not carried silently into the next epoch's figures.
             _drain_gpu_spans()
@@ -6921,7 +7279,12 @@ def main():
             # out of both the printed line and _acc from epoch 2 onward. Only epoch 1 was right.
             _T["prefetch_wait"] += _pf_stat["wait_s"]
             _TN["prefetch_wait"] += _pf_stat["hit"] + _pf_stat["miss"]
-            _parts = [(k, _T[k] - _T0.get(k, 0.0), _TN[k] - _TN0.get(k, 0)) for k in sorted(_T)]
+            # sorted(list(_T)), BECAUSE A WARMER CAN ADD A KEY MID-ITERATION. _tr_worker's
+            # resolve_trunk ticks fingerprint_hash_warm, and a defaultdict grows on the FIRST tick
+            # of a key -- which is enough for "dictionary changed size during iteration" at an
+            # epoch boundary. The snapshot is 20-odd strings.
+            _parts = [(k, _T[k] - _T0.get(k, 0.0), _TN[k] - _TN0.get(k, 0))
+                      for k in sorted(list(_T))]
             # cropped_tokens is a WORKLOAD counter, not a duration: reported as a mean so the
             # per-rank imbalance is readable directly. The pair track is quadratic in tokens, so
             # equal unit counts across ranks still means unequal compute.
@@ -6939,7 +7302,14 @@ def main():
             # on j583i8 and 10-12 min of pass A on zg5fnw and 8fkrsu, with nothing to say which.
             # cpucrop_* are deliberately NOT here: they are a breakdown of work already counted by
             # crop_slice and by the worker, so adding them would double count.
+            # THE THREE trunk_* BUCKETS ARE EXCLUSIVE LEAVES TOO. They are the UNCROPPED path's
+            # load_unit, so they never co-occur with trunk_read_plus_crop_tokens or crop_slice
+            # (the crop branch returns its own tensors and load_unit is not called), and they sit
+            # in unit_setup before any pose, so they do not overlap pose_total either. Under
+            # --rank-cross-seed pass A ticks them into the same _T, which is already why
+            # rank_pass_a is kept out of this list.
             _EXCL = ("pose_total", "crop_slice", "fingerprint_hash", "prefetch_issue",
+                     "trunk_npz_open", "trunk_npz_read", "trunk_h2d",
                      "trunk_read_plus_crop_tokens", "label_open", "loss_feature_prep",
                      "loss_stats_collective_plus_wait", "apply_step_total",
                      "prefetch_wait", "grad_collective_plus_wait",
@@ -6955,7 +7325,12 @@ def main():
             # DID THE PREFETCH ACTUALLY FIRE? crop_slice alone cannot answer it: a miss falls back
             # to the inline crop and ticks the same counter, which is exactly how the first
             # version's 100% miss rate looked identical to no prefetch at all.
-            if a.prefetch_units:
+            # ON _pf_thread, NOT ON a.prefetch_units. _pf_start now declines to start on an
+            # uncropped arm, where nothing ever consumed its results -- but the default arm still
+            # passes --prefetch-units 2, so keying the print on the flag made every epoch of every
+            # uncropped run report "prefetch (4 worker(s)): 0/0 hit (0.0%)", which reads as a
+            # regression to 0% rather than as "there is no prefetch on this path".
+            if _pf_started[0]:
                 _pf_n = _pf_stat["hit"] + _pf_stat["miss"]
                 print(f"  [rank {rank}] epoch {ep + 1} prefetch "
                       f"({max(1, a.prefetch_workers)} worker(s)): {_pf_stat['hit']}/{_pf_n} hit "
@@ -6970,6 +7345,28 @@ def main():
                       + (f", {_pf_stat['dropped']} evicted-then-wanted, "
                          f"{_pf_stat['exhausted']} asked after the workers finished"
                          if (_pf_stat['dropped'] or _pf_stat['exhausted']) else ""), flush=True)
+            # DID THE TRUNK CACHE ACTUALLY FIRE? The same question and the same reason: a miss
+            # reads inline and ticks the same trunk_* buckets, so without a hit rate a cache that
+            # never fires is indistinguishable from one that always does.
+            #
+            # HOW TO READ THE RATE, stated because the first version printed "ceiling 50%" and that
+            # was wrong in the direction that stops you tuning. 50% is what the cache alone gives:
+            # pass A misses, fills, and pass B hits. A unit the WARMER got to before pass A is a
+            # hit in BOTH passes, so the range is 50% (the warmers contributed nothing) to 100%
+            # (every unit was warmed in time). Printing 50% as the ceiling would read a healthy 80%
+            # as impossible and a useless 50% as perfect. Note the cap also bounds it: at 4 GiB a
+            # 30-unit step of ~7.3 GB fits about half its units, so ~75% is the practical target
+            # there and `full` says how many were turned away.
+            if _tr_on:
+                _tr_n = _tr_stat["hit"] + _tr_stat["miss"]
+                print(f"  [rank {rank}] epoch {ep + 1} trunk cache "
+                      f"({a.trunk_cache_gb:g} GiB, {max(1, a.prefetch_workers)} warmer(s)): "
+                      f"{_tr_stat['hit']}/{_tr_n} hit "
+                      f"({100.0 * _tr_stat['hit'] / max(1, _tr_n):.1f}%; 50% = the warmers "
+                      f"contributed nothing, 100% = every unit was warmed before pass A), "
+                      f"{_tr_stat['put']} cached, {_tr_stat['full']} refused for cap, "
+                      f"{_tr_stat['dup']} skipped as present/full, {_tr_stat['err']} "
+                      f"warmer error(s)", flush=True)
             # THE DRIFT IS THE EXPERIMENT under --l2-sp, so it is reported, not inferred. The
             # full head reached ||dW||^2 = 67,052 unconstrained over 30 epochs; this says where
             # the penalised run actually sits.
@@ -7097,11 +7494,14 @@ def main():
             # whatever is left after that is between-unit work, which is a different fix.
             _us = dict((k, v) for k, v, c in _parts if c)
             if _us.get("unit_setup"):
+                # THE THREE trunk_* BUCKETS ARE LEAVES TOO, and leaving them out of this sum after
+                # instrumenting load_unit would report the very time they now name as still
+                # unaccounted -- the measurement would look like it had changed nothing.
                 _leaves = sum(_us.get(k, 0.0) for k in
                               ("label_open", "fingerprint_hash", "trunk_read_plus_crop_tokens",
                                "crop_slice", "cpucrop_label", "cpucrop_slice", "cpucrop_tokens",
                                "cpucrop_trunk", "loss_feature_prep", "prefetch_issue",
-                               "prefetch_wait"))
+                               "prefetch_wait", "trunk_npz_open", "trunk_npz_read", "trunk_h2d"))
                 print(f"  [rank {rank}] epoch {ep + 1} unit_setup {_us['unit_setup']/60:.1f}m, "
                       f"of which {_leaves/60:.1f}m is already in named leaves -> "
                       f"{(_us['unit_setup'] - _leaves)/60:.1f}m of the residual is INSIDE units, "
@@ -7123,6 +7523,17 @@ def main():
             # EVERY RANK SAVES ITS OWN, at the boundary rather than at exit: x3k2m4 died after
             # epoch 1 and would have discarded all 4,880 hashes it had just computed.
             _fp_cache_save()
+            # AND READ BACK WHAT THE OTHER RANKS JUST WROTE. The three ranks jointly cover all
+            # 6,903 units in epoch 1, but the shuffle moves a third of them onto a different rank
+            # every epoch -- so without this a rank re-hashes, from epoch 2 onward, every unit it
+            # has not personally seen, while the hash it needs is already on disk beside its own.
+            # Entries this process computed are never replaced; see _fp_cache_load.
+            #
+            # NOT SYNCHRONISED, AND IT DOES NOT NEED TO BE. Every rank writes its own file
+            # atomically via os.replace, so a sibling either sees the previous version or the new
+            # one and never a torn one; a miss here costs one re-hash and the next boundary picks
+            # it up. os.replace is also why this is safe to do while the siblings are writing.
+            _fp_cache_load(label=f"epoch {ep + 1} boundary")
             # HAND THE ALLOCATOR'S CACHE BACK BEFORE THE VAL HOOKS RUN. The ranks are parked at a
             # barrier for the held-out pass and the DockQ eval, not computing -- but PyTorch holds
             # freed activation blocks as *reserved*, so a parked rank still looks ~20-30 GB wide to

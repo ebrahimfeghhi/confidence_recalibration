@@ -26,8 +26,10 @@ import csv
 import functools
 import json
 import os
+import struct
 import sys
 import time
+import zipfile
 
 import numpy as np
 import torch
@@ -80,14 +82,165 @@ def build_model(ckpt_dir, model_name, device):
     return model, configs
 
 
-def load_unit(path, device):
-    """Rebuild what run_confidence_head consumes from one cached npz."""
-    z = np.load(path)
+def npy_memmap(path, key):
+    """A copy-on-write mapping of ONE STORED npz member, or None if it cannot be mapped.
+
+    WHY THIS IS POSSIBLE WITHOUT REWRITING THE 1.7 TB TRUNK CACHE. np.savez writes every member
+    UNCOMPRESSED, and the trunk writer uses it: measured on three real trunks (66.4, 104.4 and
+    191.8 MB) every member reports `compress_type 0`, and `z_trunk.npy` is the FIRST member at zip
+    `header_offset 0` with its payload at a fixed 61-byte offset (30-byte local header + 11-byte
+    name + 20-byte extra field, byte-identical in all three files). So the member's bytes are one
+    contiguous run of the file and np.memmap can address them in place.
+
+    WHAT IT BUYS. `z[key]` read()s the member into a fresh heap buffer and the device copy then
+    reads that buffer -- two passes over ~243 MB per unit, ~1.1 TB per rank per epoch. A mapping
+    lets the host-to-device copy read the page cache directly, so the heap pass disappears.
+
+    NOTHING IS ASSUMED AND NOTHING IS REQUIRED. The payload offset is read from the member's own
+    local header (the name and extra-field lengths live at fixed positions in it) and the shape,
+    dtype and order from its own npy header. A deflated member, a fortran-ordered member, an object
+    dtype, a short file or any OSError returns None and the caller falls back to np.load's own
+    path, which is what every reader did before this existed.
+
+    mode="c", NOT "r". A read-only mapping hands back a non-writeable array and torch.from_numpy
+    then warns on every unit; copy-on-write is writeable, is never written here, and never writes
+    back to the file.
+
+    THE MAPPING IS UNALIGNED, AND THAT MAY COST THE WHOLE SAVING. The payload starts at 61 bytes
+    (zip local header) plus a 128-byte npy header = byte 189, which is ODD -- so a uint16/bf16 array
+    mapped here has `flags.aligned == False` and an odd `data_ptr()`, on EVERY trunk, structurally.
+    That is bit-exact (verified) but a pageable cudaMemcpy from a 1-byte-aligned host pointer gives
+    up the wide-load staging path, so the ~6 min this is supposed to save could shrink or invert.
+    When it is finally measured on a GPU, compare `trunk_npz_read + trunk_h2d` SUMMED across the two
+    arms, not `trunk_h2d` alone, and be prepared for no win. If it loses, the alternative is
+    np.frombuffer on an mmap.mmap sliced to a 64-byte-aligned base plus a view offset.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            info = zf.getinfo(key + ".npy")
+        if info.compress_type != zipfile.ZIP_STORED:
+            return None
+        total = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            fh.seek(info.header_offset)
+            hdr = fh.read(30)
+            if len(hdr) < 30 or hdr[:4] != b"PK\x03\x04":
+                return None
+            n_name, n_extra = struct.unpack("<HH", hdr[26:30])
+            data0 = info.header_offset + 30 + n_name + n_extra
+            fh.seek(data0)
+            ver = np.lib.format.read_magic(fh)
+            reader = {(1, 0): np.lib.format.read_array_header_1_0,
+                      (2, 0): np.lib.format.read_array_header_2_0}.get(tuple(ver))
+            if reader is None:
+                return None
+            shape, fortran, dtype = reader(fh)
+            off = fh.tell()
+        if fortran or dtype.hasobject:
+            return None
+        n = 1
+        for d in shape:
+            n *= int(d)
+        # THE SPAN MUST EXHAUST THIS MEMBER EXACTLY, not merely fit inside the file. Checking only
+        # `off + bytes <= filesize` would happily map across a member boundary and hand the head a
+        # REINTERPRETATION of the wrong bytes -- which does not raise and is the worst failure mode
+        # available here. The zip directory already knows the member's uncompressed length, so the
+        # identity (npy header + payload == member length) is free and is the real check. Verified
+        # on a real trunk: payload offset 61, npy header 128, so off-data0 = 128 and
+        # 128 + 354*354*256*2 == info.file_size.
+        if n == 0 or off + n * dtype.itemsize > total:
+            return None
+        if (off - data0) + n * dtype.itemsize != info.file_size:
+            return None
+        return np.memmap(path, dtype=dtype, mode="c", offset=off, shape=tuple(shape))
+    except Exception:          # noqa: BLE001 -- THE CONTRACT IS "FALL BACK", NOT "RAISE".
+        # A NARROW except LIST WAS WRONG HERE. A corrupt npy header raises SyntaxError out of
+        # read_array_header_*, and a bad `descr` raises TypeError; neither is an OSError or a
+        # ValueError, so the narrow list turned "map this if you can" into "kill the run". Every
+        # caller has a working np.load path one line away.
+        return None
+
+
+# WHICH MEMBERS ARE WORTH MAPPING. z_trunk is ~99% of a trunk npz's bytes (187.4 MB of 191.8 on
+# 9mnq); every other member is at or under ~1.5 MB, where the extra open()/mmap() syscalls cost
+# more than the heap copy they would avoid.
+MEMMAP_MEMBERS = ("z_trunk",)
+
+
+# EVERY MEMBER load_unit CONSUMES, named once so the host read and the device build cannot drift.
+# Adding one here without adding it below gets it read and never used, which costs time silently;
+# the reverse raises a KeyError on the first unit, which is the better of the two failures.
+TRUNK_MEMBERS = ("ci_feat_asym_id", "ci_feat_has_frame", "ci_feat_atom_to_token_idx",
+                 "ci_feat_atom_to_tokatom_idx", "ci_feat_distogram_rep_atom_mask",
+                 "ci_feat_is_ligand", "ci_s_inputs", "ci_s_trunk_f32", "z_trunk",
+                 "ci_coordinate", "ci_N_cycle")
+
+
+def read_unit_host(path, tick=None, memmap=False):
+    """Every member load_unit consumes, as HOST numpy arrays, keyed by member name.
+
+    SPLIT OUT SO A WORKER THREAD CAN DO IT. There is no torch and no device anywhere in here, which
+    is what makes it safe to run off the main thread: only one thread may ever issue CUDA work, and
+    this issues none. phase_k_train warms a step's trunks through this while the GPU is busy and
+    hands the dicts to unit_from_host on the main thread.
+
+    AND SO THE READ CAN BE DONE ONCE PER UNIT PER STEP INSTEAD OF TWICE. The relative-iTM objective
+    runs two passes over every step's units -- a no_grad scoring pass, then the backward pass -- and
+    each used to call load_unit, so each unit's ~243 MB was materialised TWICE per step: 4,600
+    load_unit calls per rank per epoch for 2,300 units. A dict of host arrays is reusable between
+    the two; the device tensors are not, since they are freed with the pose.
+
+    HOST PEAK PER UNIT RISES, and it is the one behavioural difference from the old interleaved
+    load_unit. That read one member, moved it to the device and dropped it, so its host peak was one
+    member (~187 MB, z_trunk); this materialises all 11 before any tensor is built, so the peak is
+    the whole unit (~243 MB). Deliberate -- the dict is the thing the cache and the warmer hand
+    around -- but it is additive with phase_k_train's --trunk-cache-gb and is why that cap exists.
+
+    `tick(key, t0)` is phase_k_train's accumulator; None is no instrumentation and no cost. A
+    requested mapping that could not be made ticks `trunk_memmap_fallback`, because otherwise a run
+    can honestly report `--trunk-memmap` while never mapping anything -- the same failure as a
+    prefetch whose 100% miss rate looked identical to no prefetch at all.
+    """
+    _t0 = time.perf_counter()
+    # CLOSED, unlike the old code. np.load's NpzFile holds an open fd and up to --prefetch-workers
+    # warmer threads now call this at once; the lazy `z[key]` reads all happen inside the block, so
+    # closing at the end is deterministic rather than at the whim of the collector.
+    with np.load(path) as z:
+        if tick is not None:
+            tick("trunk_npz_open", _t0)
+        out = {}
+        for key in TRUNK_MEMBERS:
+            _ta = time.perf_counter()
+            want_mm = memmap and key in MEMMAP_MEMBERS
+            a = npy_memmap(path, key) if want_mm else None
+            if want_mm and a is None and tick is not None:
+                tick("trunk_memmap_fallback", _ta)
+            out[key] = z[key] if a is None else a
+            if tick is not None:
+                tick("trunk_npz_read", _ta)
+    return out
+
+
+def unit_from_host(host, device, tick=None):
+    """The tuple run_confidence_head consumes, from read_unit_host's dict. THE ONLY CUDA HALF.
+
+    EVERY MEMBER IS COPIED, NOT ALIASED, FOR A CUDA DEVICE -- `.to(cuda)` always copies -- which is
+    what makes it safe for two passes to build their tensors from ONE shared host dict. For a CPU
+    device `.to(cpu)` is a no-op and the tensors ALIAS the host arrays, so a caller that shares a
+    host dict across passes on CPU would also share any in-place write. phase_k_train's cache is
+    gated on a cuda device for exactly that reason.
+    """
     def t(key, dtype=None):
-        a = z[key]
-        if a.dtype == np.uint16:            # bf16 stored as uint16
-            return torch.from_numpy(a).to(device).view(torch.bfloat16)
-        return torch.from_numpy(a).to(device, dtype=dtype) if dtype else torch.from_numpy(a).to(device)
+        a = host[key]
+        _tb = time.perf_counter()
+        try:
+            if a.dtype == np.uint16:            # bf16 stored as uint16
+                return torch.from_numpy(a).to(device).view(torch.bfloat16)
+            return (torch.from_numpy(a).to(device, dtype=dtype) if dtype
+                    else torch.from_numpy(a).to(device))
+        finally:
+            if tick is not None:
+                tick("trunk_h2d", _tb)
     feat = {
         "asym_id": t("ci_feat_asym_id"),
         "has_frame": t("ci_feat_has_frame"),
@@ -97,7 +250,40 @@ def load_unit(path, device):
         "is_ligand": t("ci_feat_is_ligand"),
     }
     return (feat, t("ci_s_inputs").float(), t("ci_s_trunk_f32").float(), t("z_trunk"),
-            t("ci_coordinate").float(), int(z["ci_N_cycle"]))
+            t("ci_coordinate").float(), int(host["ci_N_cycle"]))
+
+
+def load_unit(path, device, tick=None, memmap=False, host=None):
+    """Rebuild what run_confidence_head consumes from one cached npz.
+
+    TIMED IN THREE BUCKETS WHEN `tick` IS GIVEN, because this call carried no timer at all and is
+    believed to hold essentially all of the in-unit time that `unit_setup` could not name: rank 0,
+    epoch 3 of mqird6 spent 37.0 min in `unit_setup` with 0.2 min in named leaves, and 31.0 of the
+    epoch's 35.9 min residual was INSIDE units.
+
+    WHY THREE AND NOT ONE. np.load on an npz is LAZY -- the open parses the central directory and
+    reads no member -- so `z[key]` is the disk read plus the numpy materialisation, and
+    `.to(device)` is a separate SYNCHRONOUS PAGEABLE host-to-device copy of the same bytes. At a
+    mean 243 MB per unit and 4,600 units per rank per epoch that is ~1.1 TB each way, and the two
+    are limited by different things -- page cache and readahead for the first, PCIe and the absence
+    of pinning for the second. Only the split says which of the two the 31 min is, and therefore
+    whether prefetching the read (which hides only the first) or pinned staging (only the second)
+    is the fix.
+
+    `tick(key, t0)` is phase_k_train's own accumulator, so these land in the epoch table beside
+    every other span; the default None is no instrumentation and no cost. `memmap=True` routes the
+    members in MEMMAP_MEMBERS through npy_memmap, falling back silently per member. `host` is a
+    dict read_unit_host returned earlier for THIS SAME path, and skips the read entirely.
+
+    THE SPLIT IS ONLY HONEST WITH memmap OFF, which is the default and is why the measurement runs
+    there first. A mapping is lazy: no byte is read until it is touched, so under `memmap=True` the
+    disk read MOVES INTO `trunk_h2d` and `trunk_npz_read` collapses to the zip-directory parse.
+    Read `trunk_npz_read + trunk_h2d` as the total either way; read them separately only at the
+    default.
+    """
+    if host is None:
+        host = read_unit_host(path, tick=tick, memmap=memmap)
+    return unit_from_host(host, device, tick=tick)
 
 
 def _np(v):
