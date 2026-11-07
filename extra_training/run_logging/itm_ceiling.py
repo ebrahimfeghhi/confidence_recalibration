@@ -116,12 +116,26 @@ ap.add_argument("--ost-mapping", action="store_true",
                 help="resolve each interface's chains PER POSE through OST, the way phase_k_eval "
                      "does, instead of once per structure through chain_roles. MEASURED by "
                      "run_logging/audit_chain_mapping.py on the training fold: the two disagree "
-                     "on 1158 of 18400 (structure, seed, pose) checks (6.29%), across 54 of 368 "
+                     "on 1158 of 18400 (structure, seed, pose) checks (6.29%%), across 54 of 368 "
                      "structures, with zero unresolvable -- so it is genuine disagreement, not "
                      "ambiguity. The static join was acceptable for a ceiling ESTIMATE (ranking "
                      "noise) and is NOT acceptable for the labels this feeds into training, where "
                      "a swapped pair trains toward another interface's target. Raised in review.")
 ap.add_argument("--report-only", action="store_true")
+ap.add_argument("--skip", default="",
+                help="comma-separated structures to leave out, mirroring phase_k_train's "
+                     "--manifest-skip. 4zto is the case this exists for: it was scored by the "
+                     "FULL-COMPLEX route, so its ost_json does not associate a pose with a sample "
+                     "(\"2.json describes , not sample 2\") and --ost-mapping refuses it rather "
+                     "than falling back to the static chain mapping -- which is exactly what that "
+                     "flag is for. One unresolvable structure aborted all 9 shards, so the skip is "
+                     "named here and the arm must carry the same name in --manifest-skip.")
+ap.add_argument("--seed-manifest", default="",
+                help="the per-structure seed declaration (a csv with pdb and seeds columns, as "
+                     "train_val_splits/cache_train_structures_extended.csv). REQUIRED once the "
+                     "population is not uniform: SEEDS below is a fixed 10-seed range and the unit "
+                     "list is a CROSS PRODUCT of it with the pool, so without this it asks for "
+                     "seeds a structure does not have and fails on the missing trunk.")
 a = ap.parse_args()
 OUT = os.path.join(ROOT, a.out)
 
@@ -258,10 +272,51 @@ def verify():
     return 0 if ok else 1
 
 
+def seed_map():
+    """{pdb: sorted seeds} from --seed-manifest, or {} when the population is uniform.
+
+    THE CROSS PRODUCT WITH A FIXED SEEDS TUPLE IS WRONG FOR A MIXED-DEPTH POPULATION, and it fails
+    in the confusing direction: 437 structures have seeds 500000-500014 while 416 have only 500000,
+    because the 2026-11-04 trim reclaimed the rest of their trunks. Asking for a seed a structure
+    does not have raises on the missing trunk partway through a shard, which reads as a corrupt
+    fold rather than a wrong unit list. Same defect class as the one fixed in
+    phase_k_train.build_epoch_cross_seed and run_logging/build_combined_train_pool.py; the grammar
+    is imported from the latter so three readers of one declaration cannot disagree about it.
+    """
+    if not a.seed_manifest:
+        return {}
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from build_combined_train_pool import parse_seed_field
+    out = {}
+    with open(os.path.join(ROOT, a.seed_manifest)) as fh:
+        for r in csv.DictReader(fh):
+            txt = str(r.get("seeds", "") or "").strip()
+            if txt:
+                out[r["pdb"].strip().lower()] = sorted(parse_seed_field(txt))
+    if not out:
+        sys.exit(f"STOP: --seed-manifest {a.seed_manifest} declares no seeds.")
+    return out
+
+
 def run_shard(k):
     pairs_by_pdb, unres = interface_chain_pairs(os.path.join(ROOT, a.pool),
                                                 os.path.join(ROOT, a.roles))
-    units = [(p, s) for p in sorted(pairs_by_pdb) for s in SEEDS]
+    skip = {x.strip().lower() for x in a.skip.split(",") if x.strip()}
+    if skip:
+        gone = sorted(set(pairs_by_pdb) & skip)
+        for p in gone:
+            pairs_by_pdb.pop(p, None)
+        print(f"  --skip removed {len(gone)} structure(s): {gone}")
+    sm = seed_map()
+    if sm:
+        missing = [p for p in sorted(pairs_by_pdb) if p not in sm]
+        if missing:
+            sys.exit(f"STOP: {len(missing)} pooled structure(s) are not declared in "
+                     f"--seed-manifest, e.g. {missing[:5]}. A structure with no declaration would "
+                     f"silently fall back to the fixed {len(SEEDS)}-seed range.")
+        units = [(p, s) for p in sorted(pairs_by_pdb) for s in sm[p]]
+    else:
+        units = [(p, s) for p in sorted(pairs_by_pdb) for s in SEEDS]
     mine = units[k::a.workers]
     if a.limit_units:
         mine = mine[:a.limit_units]
@@ -373,6 +428,13 @@ if __name__ == "__main__":
             # labels came out bit-identical to the static ones on all 36,900 rows, which is what
             # exposed it. The parent's own `a` is not the workers' `a`.
             + (["--ost-mapping"] if a.ost_mapping else [])
+            # AND THE TWO FLAGS ADDED FOR THE MIXED-DEPTH POPULATION, which I failed to forward
+            # the first time despite the comment above saying exactly this. The symptom was
+            # readable in the shard sizes: 948 units per shard is 853 structures x 10 seeds, not
+            # the 6,941 the manifest declares, and --skip 4zto printed nothing and refused 4zto in
+            # every shard. The parent's own `a` is not the workers' `a`.
+            + (["--seed-manifest", a.seed_manifest] if a.seed_manifest else [])
+            + (["--skip", a.skip] if a.skip else [])
             + (["--limit-units", str(a.limit_units)] if a.limit_units else []))
             for k in range(a.workers)]
         rc = [p.wait() for p in ps]
@@ -384,7 +446,10 @@ if __name__ == "__main__":
                    inputs=[a.pool, a.roles, os.path.join(a.rows_dir, "rows_b10_*_s*.csv"),
                            os.path.join(a.fold, "labels"), os.path.join(a.fold, "trunks")],
                    outputs_glob="gt_iptm_s*.csv",
-                   extra={"workers": a.workers, "seeds": list(SEEDS),
+                   extra={"workers": a.workers, "skip": sorted(
+                              x.strip().lower() for x in a.skip.split(",") if x.strip()),
+                          "seeds": (f"per-structure via {a.seed_manifest}" if a.seed_manifest
+                                    else list(SEEDS)),
                           "chain_mapping": "per-pose OST" if a.ost_mapping
                                            else "static chain_roles"})
         report()

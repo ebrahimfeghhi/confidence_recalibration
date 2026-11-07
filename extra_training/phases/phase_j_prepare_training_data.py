@@ -40,6 +40,8 @@ USAGE
 import argparse
 import csv
 import os
+import shutil
+import time
 import subprocess
 import sys
 
@@ -75,6 +77,16 @@ def main():
     ap.add_argument("--cluster-file", default=None)
     ap.add_argument("--n-cpu", type=int, default=32)
     ap.add_argument("--run", action="store_true", help="actually invoke prepare_training_data.py")
+    ap.add_argument("--prune", action="store_true",
+                    help="allow prepared structures outside --selection to be removed from "
+                         "--bio-dir. Without it a mismatch is a STOP and nothing is touched. Even "
+                         "with it, the extras are MOVED to <bio-dir>.pruned.<timestamp>/ rather "
+                         "than unlinked.")
+    ap.add_argument("--prune-force", action="store_true",
+                    help="allow --prune to exceed --prune-max-frac of the directory")
+    ap.add_argument("--prune-max-frac", type=float, default=0.25,
+                    help="refuse --prune when it would remove more than this fraction of the "
+                         "prepared set; that shape says the SELECTION is wrong, not the directory")
     ap.add_argument("--skipped", default=f"{ROOT}/training/prep/skipped.csv",
                     help="structures Protenix's parser cannot build, with the reason. A failure not "
                          "already listed here is a STOP; one that is listed is skipped.")
@@ -177,10 +189,56 @@ def main():
         raise SystemExit(f"STOP: {len(short)} selected structure(s) have no bioassembly dict: "
                          f"{short[:10]}")
     if extra:
-        print(f"  {len(extra)} prepared structure(s) are no longer selected: {extra[:6]}")
+        # THE INVARIANT STAYS, THE DELETION DOES NOT HAPPEN BY DEFAULT.
+        #
+        # This block used to os.remove() every prepared structure outside the selection, with no
+        # flag and no confirmation. On 2026-11-04 that destroyed all 501 bioassemblies of the
+        # previously folded set, because the caller passed the SHARED --bio-dir with a selection
+        # listing only the 356 new structures. --bio-dir reads like "where to write" and in fact
+        # means "the set this selection owns", and nothing in the interface said so.
+        #
+        # The invariant is worth keeping -- training/prep/ really did drift from 535 to 501 and a
+        # cache built from the difference would have been short AND contaminated. But enforcing it
+        # by deleting is the wrong default: a mismatch is usually a mistake in the SELECTION, not
+        # in the directory, and deleting makes the cheap fix (fix the selection) impossible to
+        # distinguish from the expensive one (rebuild everything).
+        #
+        # So: refuse by default, delete only under --prune, and even then move to a quarantine
+        # directory rather than unlink -- bioassemblies are derived data, but they are ~15 minutes
+        # of CPU per 500 and there is no reason to make the mistake irreversible.
+        pct = 100.0 * len(extra) / max(1, len(built))
+        print(f"  {len(extra)} prepared structure(s) are not in this selection "
+              f"({pct:.0f}% of the {len(built)} in {a.bio_dir}): {extra[:6]}")
+        if not a.prune:
+            raise SystemExit(
+                f"STOP: the prepared set does not match the selection, and nothing has been "
+                f"removed.\n"
+                f"  {len(extra)} structure(s) in {a.bio_dir} are outside --selection.\n"
+                f"  If the SELECTION is wrong -- the usual case when adding a batch -- re-run with "
+                f"a selection that lists every structure the directory should hold, or point "
+                f"--bio-dir at a fresh directory for the new batch.\n"
+                f"  If the DIRECTORY is wrong, re-run with --prune to quarantine the extras, or "
+                f"--prune --prune-force if more than {a.prune_max_frac:.0%} of it must go.")
+        if pct / 100.0 > a.prune_max_frac and not a.prune_force:
+            raise SystemExit(
+                f"STOP: --prune would remove {len(extra)} of {len(built)} prepared structure(s), "
+                f"{pct:.0f}%, above the {a.prune_max_frac:.0%} guard. That is the shape of a wrong "
+                f"--selection, not of a stale directory. Pass --prune-force if it really is "
+                f"intended.")
+        qdir = os.path.join(os.path.dirname(a.bio_dir.rstrip("/")) or ".",
+                            f"{os.path.basename(a.bio_dir.rstrip('/'))}.pruned."
+                            f"{time.strftime('%Y%m%d-%H%M%S')}")
+        os.makedirs(qdir, exist_ok=True)
         for f in extra:
-            os.remove(os.path.join(a.bio_dir, f + ".pkl.gz"))
-        print(f"  removed them; {len(built) - len(extra)} remain, matching the selection")
+            shutil.move(os.path.join(a.bio_dir, f + ".pkl.gz"),
+                        os.path.join(qdir, f + ".pkl.gz"))
+        with open(os.path.join(qdir, "MANIFEST.txt"), "w") as fh:
+            fh.write(f"pruned {time.strftime('%F %T')} by phase_j_prepare_training_data.py\n"
+                     f"selection: {a.selection}\nbio_dir: {a.bio_dir}\n"
+                     f"{len(extra)} structure(s):\n" + "\n".join(extra) + "\n")
+        print(f"  MOVED them to {qdir} (not deleted); {len(built) - len(extra)} remain, "
+              f"matching the selection")
+        print(f"  restore with: mv {qdir}/*.pkl.gz {a.bio_dir}/")
 
 
 if __name__ == "__main__":

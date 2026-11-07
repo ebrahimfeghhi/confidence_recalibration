@@ -114,6 +114,7 @@ import argparse
 import collections
 import concurrent.futures
 import csv
+import fcntl
 import functools
 import glob
 import hashlib
@@ -752,8 +753,31 @@ def score_fold(ctx, pdb, target, tag, seed, rdir, name, want, poses):
                     continue
                 fresh.append((k, line))
             if fresh:
-                with open(ctx.A.csv, "a") as fh:  # flushed per interface, not at the end
-                    fh.write("\n".join(l for _k, l in fresh) + "\n")
+                # THE WRITER TAKES THE SAME LOCK THE REPLACERS TAKE. Raised in review: this append
+                # held no lock at all, so <csv>.rescore.lock only ever excluded cooperative
+                # rescorers from each other, and a tool replacing this csv was relying on a tmux
+                # name check plus a row count to notice a fold worker. Neither sees an append that
+                # lands between the count and the os.replace, and the rows would be lost silently.
+                # Now every writer is in the same protocol. It is a shared lock because concurrent
+                # workers appending whole lines to O_APPEND are already safe against each other --
+                # what must be excluded is a replacement, which takes it exclusively.
+                # THE LOCK IS TAKEN BEFORE THE FILE IS OPENED, and that order is the whole point.
+                # Raised in review, and it was a real lost-write race in the first version of this
+                # block, which opened the csv and only then waited for the lock: a replacement
+                # holding the exclusive lock could os.replace the file while this writer sat on an
+                # fd to the OLD inode, and the append then landed in an unlinked file and reported
+                # success. Locking first means a replacement either completes before this open --
+                # so the open sees the new file -- or waits for it.
+                lk = os.open(ctx.A.csv + ".rescore.lock", os.O_CREAT | os.O_RDWR, 0o644)
+                try:
+                    fcntl.flock(lk, fcntl.LOCK_SH)
+                    with open(ctx.A.csv, "a") as fh:  # flushed per interface, not at the end
+                        fh.write("\n".join(l for _k, l in fresh) + "\n")
+                        fh.flush()
+                        os.fsync(fh.fileno())
+                finally:
+                    fcntl.flock(lk, fcntl.LOCK_UN)
+                    os.close(lk)
                 for k, _l in fresh:
                     have.add(k)
                 got += 1
@@ -928,7 +952,10 @@ def run_unit(ctx, unit):
     # required pair instead of the full chain set will not match and would refold
     if A.skip_by_template and unit_already_folded(ctx.units_done, pdb, seed, donor, chain_set):
         return "skipped"
-    if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
+    # all([]) IS TRUE, so an empty `want` would read as "already fully scored" and skip. The
+    # `not want` guard above has already returned, so `want` is non-empty here; the test keeps the
+    # explicit check rather than relying on that at a distance.
+    if want and all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
         return "skipped"
     claim = f"{A.claim_dir}/{pdb}_{target}_{tag}_{seed}".replace("*", "all") if A.claim_dir else None
     if claim:
@@ -963,7 +990,7 @@ def run_unit(ctx, unit):
     # guard, so a complete set of poses sat on disk unscorable.
     if A.claim_dir:
         ctx.rows_done, ctx.units_done = open_csv(A.csv)
-    if all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
+    if want and all(iface_scored(ctx.rows_done, i, seed, tag, A.nsample) for i in want):
         release()
         return "skipped"                  # another worker finished it while we queued
     rd = saved_run_dir(A.out, pdb, seed, tag=tag, donor=donor)

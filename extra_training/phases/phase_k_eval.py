@@ -1168,8 +1168,16 @@ def main():
     _CROPTOK = {}
     if a.crop_tokens:
         _ctz = np.load(a.crop_tokens)
+        # EXCLUDE __pairs AND __meta, NOT JUST __n. build_union_crop_masks writes three entries
+        # per structure -- <pdb>, <pdb>__n, <pdb>__pairs -- plus one __meta for the file. Filtering
+        # only __n left 53 real masks sitting in a dict of 107 entries, so the structure count
+        # printed below read 107, and __pairs (int chain indices) and __meta (a string blob) both
+        # survived .astype(bool) as plausible-looking masks rather than erroring. Nothing looked
+        # them up, because lookups are by pdb id, so the per-structure masks were never wrong --
+        # but any check of coverage against len(_CROPTOK) would have been. Raised in review of
+        # the label-free cropped eval, before the first --crop-tokens pass ever ran.
         _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
-                    if not k.endswith("__n")}
+                    if not (k.endswith("__n") or k.endswith("__pairs") or k == "__meta")}
         _ctn = {k[:-3]: np.asarray(_ctz[k]) for k in _ctz.files if k.endswith("__n")}
         _kf = [float(v[1]) / float(v[2]) for v in _ctn.values()] or [float("nan")]
         print(f"CROP: precomputed LABEL-FREE token masks from {a.crop_tokens} -- "

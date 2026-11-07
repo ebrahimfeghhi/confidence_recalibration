@@ -65,7 +65,11 @@ def spearman(xs, ys):
 # idx 0 = MAX-pooled ipTM, 1 = MEAN-pooled ipTM, 2 = shipped ipTM, 3 = true DockQ
 eps, ours = [], {"MEAN": defaultdict(list), "MAX": defaultdict(list)}
 ship = {"MEAN": defaultdict(list), "MAX": defaultdict(list)}
-for ep, d in sorted(eval_dirs.chain_shard_dirs(RIDS, RUNS).items()):
+# NAME THE POOL. A run with --extra-eval writes several pools per epoch, and an unqualified read
+# drew egw5wq's IN-SAMPLE numbers as held-out at epoch 10. This plot is the HELD-OUT one, so it
+# asks for valfull and gets nothing rather than something wrong if that pool is absent.
+_POOL = os.environ.get("VAL_POOL_TAG", "valfull")
+for ep, d in sorted(eval_dirs.chain_shard_dirs(RIDS, RUNS, tag=_POOL).items()):
     by = defaultdict(list)
     for f in glob.glob(os.path.join(d, "rows_b*_s*.csv")):
         for r in csv.DictReader(open(f)):

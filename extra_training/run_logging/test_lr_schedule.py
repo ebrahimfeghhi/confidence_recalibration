@@ -140,6 +140,110 @@ def main():
     check("the bug WOULD have left lr far above 1e-4 at epoch 50", bad > 5e-4,
           f"{bad:.3e} = {bad / 1e-4:.0f}x the intended floor")
 
+    # ---- THE STAIRCASE, as launch_unioncrop_dropout_l2.sh names it ----------------------
+    # That script asks for 1e-2 through epoch 19, 1e-3 from 20, 1e-4 from 40, held to 60. The
+    # decay shapes interpolate CONTINUOUSLY and cannot express a hold-then-drop, which is why
+    # --lr-steps exists; these pins are the reason to believe the flag does what the script says.
+    STEPS = LRS.parse_lr_steps("20:1e-3,40:1e-4")
+    check("the staircase parses to two milestones", STEPS == [(20.0, 1e-3), (40.0, 1e-4)],
+          f"{STEPS}")
+    for ep, want in ((1, 1e-2), (10, 1e-2), (19, 1e-2), (20, 1e-3), (30, 1e-3), (39, 1e-3),
+                     (40, 1e-4), (50, 1e-4), (59, 1e-4)):
+        got = LRS.lr_at_step(int(ep * spe_cs), lr=0.01, lr_final=1e-4, warmup_steps=20,
+                             steps_per_epoch=spe_cs, epochs=60, lr_steps=STEPS)
+        check(f"staircase lr at epoch {ep} is {want:.0e}", abs(got - want) < 1e-12,
+              f"got {got:.4e}")
+    # IT MUST BEAT lr_final AND THE WINDOW, or a stale --lr-final would quietly win.
+    got = LRS.lr_at_step(int(25 * spe_cs), lr=0.01, lr_final=1e-4, warmup_steps=20,
+                         steps_per_epoch=spe_cs, epochs=60, decay_start_epoch=20,
+                         decay_end_epoch=50, shape="cosine", lr_steps=STEPS)
+    check("the staircase overrides lr_final and the decay window", abs(got - 1e-3) < 1e-12,
+          f"got {got:.4e} with a cosine window also configured")
+    # AND AN EMPTY SPEC MUST CHANGE NOTHING, or every existing arm moved.
+    a_ = LRS.lr_at_step(int(30 * spe_cs), lr=0.01, lr_final=1e-4, warmup_steps=20,
+                        steps_per_epoch=spe_cs, epochs=60, decay_start_epoch=20,
+                        decay_end_epoch=50, shape="cosine")
+    b_ = LRS.lr_at_step(int(30 * spe_cs), lr=0.01, lr_final=1e-4, warmup_steps=20,
+                        steps_per_epoch=spe_cs, epochs=60, decay_start_epoch=20,
+                        decay_end_epoch=50, shape="cosine", lr_steps=())
+    check("an empty --lr-steps is bit-identical to before the flag existed", a_ == b_,
+          f"{a_:.6e} vs {b_:.6e}")
+    for bad_spec in ("20", "20:0", "-1:1e-3", "20:1e-3,20:1e-4"):
+        try:
+            LRS.parse_lr_steps(bad_spec)
+            check(f"refuses malformed spec {bad_spec!r}", False, "it did not refuse")
+        except ValueError:
+            check(f"refuses malformed spec {bad_spec!r}", True)
+
+    # ---- MIXED SEED DEPTH: the horizon must come from the packer, not from len(structs)//S ----
+    # THE THIRD RECURRENCE OF ONE BUG CLASS. steps_per_epoch exists because len(flat)//world
+    # mispredicted the step count (205 vs 184); structs_per_step was added because dividing poses
+    # by accum_local mispredicted it again (205 vs 184 in the cross-seed branch); and when a step
+    # became a constant number of UNITS rather than S whole structures, len(units_by_pdb)//S
+    # mispredicted it a third time -- 426 against 232 on the real population. So the arithmetic is
+    # pinned here against the packer for the population that actually trains.
+    import random as _rnd
+    MIX = {f"deep{i}": 15 for i in range(437)}
+    MIX.update({f"shallow{i}": 1 for i in range(416)})
+    _st, _dr, _U = LRS.pack_cross_seed_steps(MIX, list(MIX), 2)
+    check("mixed 437x15 + 416x1 at S=2 packs 232 step(s)", len(_st) == 232, f"got {len(_st)}")
+    check("every packed step holds exactly S x deepest = 30 unit(s)",
+          _U == 30 and all(sum(MIX[p] for p in c) == 30 for c in _st),
+          f"U={_U}, sizes {sorted({sum(MIX[p] for p in c) for c in _st})}")
+    check("only the arithmetic remainder is dropped (11 of 6,971 unit(s))",
+          sum(MIX[p] for p in _dr) == 11, f"dropped {sum(MIX[p] for p in _dr)}")
+    _spe = LRS.steps_per_epoch(MIX, 3, 5, 30, cross_seed=True,
+                               n_units=sum(MIX.values()), structs_per_step=2)
+    check("steps_per_epoch AGREES with the packer it now calls", _spe == len(_st),
+          f"steps_per_epoch {_spe} vs packer {len(_st)}")
+    check("the old formula len(units_by_pdb)//S would have claimed 426, a 1.84x horizon error",
+          len(MIX) // 2 == 426 and abs((len(MIX) // 2) / len(_st) - 1.84) < 0.04,
+          f"{len(MIX)//2} vs {len(_st)}")
+    # SHUFFLE INVARIANCE IS THE PROPERTY THE SCHEDULE NEEDS. Plain first-fit over a shuffled
+    # order gave 220..229 steps on this population, so no constant steps-per-epoch existed to
+    # calibrate a decay window against; the descending sort is stable, so the count depends only
+    # on the depth histogram while WHICH structures share a step still varies per epoch.
+    _counts, _co = set(), set()
+    for _e in range(25):
+        _o = list(MIX); _rnd.Random(_e).shuffle(_o)
+        _s2, _d2, _ = LRS.pack_cross_seed_steps(MIX, _o, 2)
+        _counts.add(len(_s2)); _co.add(tuple(sorted(_s2[0])))
+    check("the step count is identical under 25 different epoch shuffles",
+          _counts == {232}, f"got {sorted(_counts)}")
+    check("but WHICH structures share a step still varies per epoch",
+          len(_co) > 1, f"only {len(_co)} distinct first step(s) over 25 shuffles")
+    # UNIFORM POPULATIONS MUST NOT MOVE. The fix has to be a no-op where a step really was S
+    # whole structures of equal depth, which is every arm run so far.
+    for _n, _d, _S, _want in ((368, 10, 3, 122), (100, 10, 3, 33), (100, 10, 2, 50),
+                              (101, 10, 2, 50)):
+        _U2 = {f"s{i}": _d for i in range(_n)}
+        _s3, _, _ = LRS.pack_cross_seed_steps(_U2, list(_U2), _S)
+        check(f"uniform {_n}x{_d} at S={_S} still packs {_want} step(s) (= floor(n/S))",
+              len(_s3) == _want == _n // _S, f"got {len(_s3)}, floor {_n // _S}")
+
+    # ---- --epoch-order manifest/tokens: THE ORDER IS THE POINT, so it must survive packing ----
+    # Raised in review: the FFD sort overrides a size-ascending token order, and a memory probe
+    # reads its threshold off exactly that order, so the descending sort would have quietly made
+    # --epoch-order tokens mean something else. preserve_order skips the sort, which is safe
+    # because those modes do not reshuffle -- the order is already fixed across epochs.
+    ASC = {f"s{i:03d}": (1 if i < 60 else 15) for i in range(120)}   # small first, large last
+    _asc = sorted(ASC)
+    _s4, _d4, _U4 = LRS.pack_cross_seed_steps(ASC, _asc, 2, preserve_order=True)
+    check("preserve_order keeps the caller's order in the first step",
+          _s4 and _s4[0] == _asc[:len(_s4[0])], f"{_s4[0][:4] if _s4 else None}")
+    check("preserve_order puts only SMALL structures in the first step of an ascending order",
+          _s4 and all(ASC[p] == 1 for p in _s4[0]), f"{sorted({ASC[p] for p in _s4[0]})}")
+    _s5, _, _ = LRS.pack_cross_seed_steps(ASC, _asc, 2, preserve_order=False)
+    check("and WITHOUT it the first step is the largest structures -- the regression",
+          _s5 and all(ASC[p] == 15 for p in _s5[0]), f"{sorted({ASC[p] for p in _s5[0]})}")
+    check("preserve_order is deterministic for a fixed order",
+          all(LRS.pack_cross_seed_steps(ASC, _asc, 2, preserve_order=True)[0] == _s4
+              for _ in range(5)))
+    check("steps_per_epoch honours preserve_order too",
+          LRS.steps_per_epoch(ASC, 3, 5, 30, cross_seed=True, n_units=sum(ASC.values()),
+                              structs_per_step=2, preserve_order=True) == len(_s4),
+          f"{LRS.steps_per_epoch(ASC, 3, 5, 30, cross_seed=True, n_units=sum(ASC.values()), structs_per_step=2, preserve_order=True)} vs {len(_s4)}")
+
     print(f"\n  {len(FAIL)} failure(s)" + (f": {FAIL}" if FAIL else ""))
     return 1 if FAIL else 0
 
