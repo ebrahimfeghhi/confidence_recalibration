@@ -311,6 +311,54 @@ fi
 # NUMERICALLY IDENTICAL: run_logging/test_lean_single.py gates z bit-identical with the track on and
 # off, and gates that the single track's parameters got NO gradient even when it ran -- which is why
 # dropping them from the optimiser is a no-op and not a capacity cut. UNTESTED ON A GPU.
+# INBLOCK=1 INJECTS THE POSE INSIDE THE LAST PAIRFORMER BLOCK and freezes everything the injection
+# is supposed to make unnecessary. It sets --train-only itself, overriding FREEZE_PAT, because the
+# freeze and the injection placement are ONE design and splitting them across two switches is how
+# they would get combined wrongly.
+#
+# WHAT IS TRAINABLE UNDER IT: block 3's tri_att_start, tri_att_end and pair_transition, plus the two
+# (or four) injection projections. NOT blocks 0-2 and NOT block 3's tri_mul_out / tri_mul_in.
+#
+# THE PLACEMENT IS LOAD-BEARING. The injection goes AFTER tri_mul_in and BEFORE tri_att_start.
+# Autograd starts building at the first op whose parameters or inputs require grad, so injecting at
+# the block's INPUT instead -- which is where --pose-perblock injects -- makes the z entering
+# tri_mul_out require grad, brings both frozen tri-muls back into the backward, and evaporates the
+# saving SILENTLY. run_logging/test_pose_inblock_graph.py asserts the boundary with a negative
+# control that reproduces exactly that failure and checks the test can see it.
+#
+# BOTH INJECTIONS ARE ZERO-INIT AND VERIFIED EXACTLY ZERO, so step 0 is bit-identical to the
+# un-injected head. This is still a DIFFERENT ARM -- a capacity change on top of a freeze -- and
+# needs its own control. UNTESTED ON A GPU.
+INBLOCK="${INBLOCK:-0}"
+# INBLOCK_PAE=1 adds the second injection, after pae_ln in the readout. Separate because it adds an
+# UNNORMALISED quantity to a normalised one and nothing downstream rescales it.
+INBLOCK_PAE="${INBLOCK_PAE:-1}"
+# INBLOCK_READOUT=1 also leaves linear_no_bias_pae and pae_ln TRAINABLE. They sit ABOVE the stack,
+# so unfreezing them adds no backward depth at all -- their gradient needs only their input and
+# their output gradient. Off by default so the arm's capacity is exactly the injections.
+INBLOCK_READOUT="${INBLOCK_READOUT:-0}"
+if [ "$INBLOCK" = "1" ]; then
+  # REFUSED FIRST, BEFORE ANYTHING IS APPENDED. Both switches set --train-only, and argparse lets
+  # the second win silently -- so the run would freeze whatever the loser's pattern said and the
+  # banner would describe the winner's.
+  if [ "$FREEZE_BLOCKS" = "1" ]; then
+    say "REFUSING: INBLOCK=1 and FREEZE_BLOCKS=1 both set --train-only. The second occurrence wins"
+    say "  silently, so the arm would not be the one either switch describes. Pick one."
+    exit 1
+  fi
+  INBLOCK_PAT='pairformer_stack\.blocks\.3\.tri_att_start\.,pairformer_stack\.blocks\.3\.tri_att_end\.,pairformer_stack\.blocks\.3\.pair_transition\.,^pose_inblock_'
+  if [ "$INBLOCK_READOUT" = "1" ]; then
+    INBLOCK_PAT="$INBLOCK_PAT"',^linear_no_bias_pae\.,^pae_ln\.'
+  fi
+  ARGS+=(--pose-inblock --train-only "$INBLOCK_PAT")
+  [ "$INBLOCK_PAE" = "1" ] && ARGS+=(--pose-inblock-pae)
+  say "INBLOCK=1: the pose is injected inside the LAST pairformer block, after tri_mul_in and"
+  say "  before tri_att_start$([ "$INBLOCK_PAE" = "1" ] && echo ", and after pae_ln in the readout")."
+  say "  --train-only '$INBLOCK_PAT'"
+  say "  Blocks 0-2 AND block 3's two tri-muls are FROZEN. Check the trainer's own '--train-only"
+  say "  ...: N of 248 head tensor(s)' line and the 'POSE IN-BLOCK:' line before walking away."
+  say "  This is a DIFFERENT ARM and needs its own control. Expected 1.5-1.7x and UNVALIDATED."
+fi
 if [ "${LEAN_SINGLE:-0}" = "1" ]; then
   ARGS+=(--lean-single)
   say "LEAN_SINGLE=1: the pairformer's single track is NOT COMPUTED and 10.55M of 19.75M head"
@@ -370,6 +418,10 @@ if [ "${TRUNK_MEMMAP:-0}" = "1" ]; then
 fi
 if $PY -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$TRUNK_CACHE_GB" 2>/dev/null; then
   NOTE="$NOTE --trunk-cache-gb $TRUNK_CACHE_GB holds a step's uncropped trunks as host numpy arrays so pass A and pass B read each unit once instead of twice, warmed on the prefetch workers. It changes epoch time and nothing else."
+fi
+# THE SAME RULE AS MEMLOG AND FREEZE_BLOCKS: this is a different experiment, not this one run faster.
+if [ "$INBLOCK" = "1" ]; then
+  NOTE="$NOTE IN-BLOCK POSE INJECTION: the pose enters pairformer block 3 AFTER tri_mul_in and BEFORE tri_att_start, with both the 39-bin one-hot distance term and the raw-distance term$([ "$INBLOCK_PAE" = "1" ] && echo ", and again after pae_ln in the PAE readout"). Blocks 0-2 and block 3's tri_mul_out/tri_mul_in are FROZEN via --train-only '$INBLOCK_PAT'; trainable is block 3's tri_att_start, tri_att_end and pair_transition plus the injections$([ "$INBLOCK_READOUT" = "1" ] && echo " and the PAE readout"). THE PLACEMENT IS THE POINT: autograd starts at the first op whose parameters or inputs require grad, so injecting at the block INPUT -- where --pose-perblock injects -- would put both frozen tri-muls back into the backward and lose the saving silently; run_logging/test_pose_inblock_graph.py asserts the boundary with a negative control that reproduces exactly that failure. Both injections are ZERO-INIT and verified exactly zero, so step 0 is bit-identical to the un-injected head. THIS IS A CAPACITY CHANGE ON TOP OF A FREEZE AND A DIFFERENT ARM -- it is NOT comparable against mqird6 and needs its own held-out control. The readout injection is added AFTER the layer norm, so an unnormalised quantity is added to a normalised one and nothing downstream rescales it. UNTESTED on a GPU."
 fi
 if [ "$DRY" = "1" ]; then
   say "DRY RUN"

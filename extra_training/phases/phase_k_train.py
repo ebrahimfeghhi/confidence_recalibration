@@ -1040,6 +1040,52 @@ def main():
                          "receive no gradient EITHER WAY -- which is the proof that they were "
                          "already dead rather than being killed by this flag.\n"
                          "REQUIRES --lean-readouts AND --pae-only. UNTESTED ON A GPU.")
+    ap.add_argument("--pose-inblock", action="store_true",
+                    help="INJECT THE POSE INSIDE THE LAST PAIRFORMER BLOCK, after tri_mul_in and "
+                         "before tri_att_start, with BOTH the 39-bin one-hot distance term and the "
+                         "raw-distance term -- the same pair of projections the native pre-stack "
+                         "injection uses (confidence.py:297-305), shapes (c_z, num_bins) and "
+                         "(c_z, 1).\n"
+                         "THE PLACEMENT IS THE WHOLE POINT AND IS WHY THIS IS NOT A MODE OF "
+                         "--pose-perblock. Autograd starts building at the first op whose "
+                         "parameters or inputs require grad. With blocks 0-2 frozen and block 3's "
+                         "two triangle multiplications frozen, injecting at the block's INPUT -- "
+                         "which is where --pose-perblock injects -- makes the z entering "
+                         "tri_mul_out require grad, brings BOTH tri-muls back into the backward, "
+                         "and evaporates the saving SILENTLY: no error, no warning, just a slower "
+                         "epoch. After tri_mul_in is the earliest point at which the frozen "
+                         "tri-muls are already behind us.\n"
+                         "ZERO-INIT AND VERIFIED EXACTLY ZERO, by probing the modules rather than "
+                         "trusting the initialiser, so step 0 is BIT-IDENTICAL to the un-injected "
+                         "head and any later divergence is attributable.\n"
+                         "IT IS A MIRROR AND IT IS PINNED. Injecting between two ops inside "
+                         "PairformerBlock.forward means reimplementing that function for one "
+                         "block; the sha256 is pinned so a Protenix reorder is a hard stop rather "
+                         "than an injection that silently lands somewhere else. Only the "
+                         "inplace_safe=False branch is mirrored, which is the one this trainer "
+                         "takes.\n"
+                         "run_logging/test_pose_inblock_graph.py asserts the backward graph starts "
+                         "where intended AND carries a negative control that moves the injection "
+                         "to the block input and checks the tri-muls DO get gradient -- without "
+                         "that control the assertion proves nothing. UNTESTED ON A GPU.")
+    ap.add_argument("--pose-inblock-block", type=int, default=-1,
+                    help="WHICH BLOCK --pose-inblock injects into; -1 means the LAST one, which is "
+                         "the block the freeze leaves trainable. Any other value is for probing "
+                         "and must be paired with a --train-only that leaves that block's "
+                         "attention and transition trainable, or the injection trains against "
+                         "frozen downstream weights.")
+    ap.add_argument("--pose-inblock-pae", action="store_true",
+                    help="ALSO INJECT THE POSE AT THE READOUT, after pae_ln: "
+                         "linear_no_bias_pae(pae_ln(z) + pose_d(one_hot(d)) + pose_d_wo(d)). "
+                         "AFTER the layer norm, which is a deliberate choice with a consequence: "
+                         "an UNNORMALISED quantity is added to a NORMALISED one and nothing "
+                         "downstream rescales it, since linear_no_bias_pae is the next and last "
+                         "op. So the injection's effective influence is set by its initialisation "
+                         "and by the optimiser, not by the norm. Injecting BEFORE the norm would "
+                         "have bounded it. Implemented as a forward HOOK on pae_ln rather than a "
+                         "wrapper module, because wrapping would rename pae_ln.weight to "
+                         "pae_ln.ln.weight and break phase_k_eval's set-equality check on head "
+                         "tensors. Zero-init and verified zero. Requires --pose-inblock.")
     ap.add_argument("--pair-dropout", type=float, default=-1.0,
                     help="ROW-WISE DROPOUT RATE ON THE PAIR REPRESENTATION in the confidence "
                          "head's pairformer blocks. ConfidenceHead builds its stack with "
@@ -1752,6 +1798,30 @@ def main():
               f"from the optimiser below. PairformerBlock.forward pinned at "
               f"{_LS.PINNED_BLOCK_SHA[:16]}, PairformerStack.forward at "
               f"{_LS.PINNED_STACK_SHA[:16]}")
+    # AFTER lean_readouts AND --lean-single, BEFORE pose_direction/pose_perblock. It wraps
+    # memory_efficient_forward and replaces the stack's _prep_blocks, so lean_readouts -- which
+    # REPLACES that attribute rather than wrapping it -- must already be in place; its refusal list
+    # carries this module's marker so the wrong order is a hard stop.
+    if a.pose_inblock:
+        # AND NOT ALONGSIDE --pose-perblock. Both replace the stack's _prep_blocks, so whichever
+        # installs second wins and the other's injection silently disappears -- pose_perblock also
+        # raises _NoPose from its own _prep_blocks if it is the loser, which is a symptom and not a
+        # check. This combination has not been reasoned through and is refused rather than ordered.
+        if a.pose_perblock:
+            raise SystemExit(
+                "STOP: --pose-inblock with --pose-perblock. Both replace "
+                "pairformer_stack._prep_blocks, so one of the two injections is silently dropped "
+                "depending on install order. If you want the pose at every depth AND inside the "
+                "last block, that is a third design and needs its own module.")
+        import pose_inblock
+        _pib_blk = a.pose_inblock_block
+        if _pib_blk < 0:
+            _pib_blk = len(model.confidence_head.pairformer_stack.blocks) - 1
+        _pib = pose_inblock.install(model, block_index=_pib_blk, pae_inject=a.pose_inblock_pae)
+    elif a.pose_inblock_pae:
+        raise SystemExit("STOP: --pose-inblock-pae without --pose-inblock. The readout injection "
+                         "shares the pose geometry the in-block wrapper computes and stashes, so "
+                         "on its own it would never fire and the flag would be a silent no-op.")
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
@@ -3301,6 +3371,14 @@ def main():
                  # the same shape, and no way to notice afterwards. It changes no mathematics in
                  # the forward, which is exactly why nothing else would catch it.
                  "lean_single": a.lean_single,
+                 # THE PARAMETER SET AGAIN: --pose-inblock ADDS trainable tensors (two, or four
+                 # with --pose-inblock-pae), so a bundle written without it is missing them and
+                 # the _missing check below refuses it anyway. Compared here so the refusal names
+                 # the setting instead of reporting an absent tensor -- the same reason
+                 # frame_direction is compared. The BLOCK matters too: the same two tensors at a
+                 # different depth is a different operator.
+                 "pose_inblock": a.pose_inblock, "pose_inblock_pae": a.pose_inblock_pae,
+                 "pose_inblock_block": a.pose_inblock_block,
                  # NOT JUST THE OBJECTIVE -- THE PARAMETER SET. --frame-direction adds a trainable
                  # tensor, so a bundle written without it is missing one and the _missing check
                  # below refuses it anyway. It is compared here so the refusal names the setting
@@ -3373,6 +3451,9 @@ def main():
                      "pae_only": False,
                      # A BUNDLE PREDATING THE FLAG TRAINED THE FULL PARAMETER GROUP.
                      "lean_single": False,
+                     # A BUNDLE PREDATING THE FLAG HAD NO IN-BLOCK INJECTION AT ALL.
+                     "pose_inblock": False, "pose_inblock_pae": False,
+                     "pose_inblock_block": -1,
                      "frame_direction": False,
                      "pose_perblock": False, "pose_perblock_tied": False,
                      "pose_perblock_share": False, "pose_perblock_copy": False,
@@ -7021,6 +7102,9 @@ def main():
                                   "pae_scored_pairs": a.pae_scored_pairs,
                                   "pae_only": a.pae_only,
                                   "lean_single": a.lean_single,
+                                  "pose_inblock": a.pose_inblock,
+                                  "pose_inblock_pae": a.pose_inblock_pae,
+                                  "pose_inblock_block": a.pose_inblock_block,
                                   # SAVED, NOT ONLY COMPARED. frame_direction went into the
                                   # comparison side but not here, so a bundle carried no record of
                                   # it: a resume beside its args.json still matched, because the
