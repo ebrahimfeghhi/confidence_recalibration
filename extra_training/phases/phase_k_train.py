@@ -169,6 +169,18 @@ def main():
                          "window/shape, which interpolate continuously and so cannot "
                          "express a hold-then-drop. Warmup still applies to the first "
                          "steps. Empty (default) leaves every existing arm bit-identical.")
+    ap.add_argument("--save-init", default="",
+                    help="write the head to this path BEFORE any optimiser step, then exit. This "
+                         "is what step-zero parity needs and nothing else produced it: every "
+                         "other head save happens after at least one step, and both pose "
+                         "injections are zero-init, so a head saved after one step is no longer "
+                         "bit-identical to the un-injected one. With it, phase_k_eval can be "
+                         "handed a genuine in-block checkpoint whose PAE and ipTM MUST reproduce "
+                         "the shipped head exactly -- which tests the evaluator's install path, "
+                         "its key-set guard and the zero-init claim in one comparison, on the "
+                         "real CLI rather than in a test harness. Refuses under WORLD_SIZE > 1: "
+                         "it exits the process, and exiting one rank of three parks the others "
+                         "on a collective.")
     ap.add_argument("--grad-probe", action="store_true",
                     help="MEASURE, DON'T GUESS. Run EXACTLY ONE accumulation window -- the unit "
                          "count is derived as accum_local/nsample, not asked for, because a probe "
@@ -2972,6 +2984,40 @@ def main():
         # whole head trains, which is every run so far.
         return {n: pp.detach().cpu() for n, pp in model.named_parameters()
                 if n in _head_names}
+
+    # ---- --save-init: THE HEAD BEFORE ANY STEP IS TAKEN ----------------------------------------
+    # PLACED HERE, which is after every pathway has been installed (lean_readouts, --lean-single,
+    # pose_inblock, pose_direction, pose_perblock all happen around :1776-1835) and after
+    # _head_names is fixed, but far above the training loop. So the file holds exactly the
+    # architecture the run was configured for, with the injections still at their zero init.
+    if a.save_init:
+        if world > 1:
+            raise SystemExit(
+                f"STOP: --save-init with WORLD_SIZE={world}. It writes the head and exits, and "
+                f"exiting one rank of {world} leaves the others parked on the next collective "
+                f"until the elastic agent times out. Run it on one card.")
+        _si_d = os.path.dirname(os.path.abspath(a.save_init))
+        if _si_d:
+            os.makedirs(_si_d, exist_ok=True)
+        _si_t = _head_ckpt_tensors()
+        torch.save(_si_t, a.save_init)
+        # THE ZERO-INIT CLAIM, ASSERTED AT THE MOMENT IT IS SAVED rather than trusted. If a future
+        # change initialises either injection non-zero, step-zero parity against the shipped head
+        # stops being the right test and this says so instead of the parity run failing later with
+        # a number nobody can attribute.
+        _si_inj = {k: v for k, v in _si_t.items() if "pose_inblock" in k or "pose_perblock" in k
+                   or "frame_dir" in k}
+        _si_nz = sorted(k for k, v in _si_inj.items() if float(v.abs().max()) != 0.0)
+        print(f"--save-init: wrote {len(_si_t)} head tensor(s) to {a.save_init} before any step. "
+              f"{len(_si_inj)} injected tensor(s) present; "
+              + ("ALL EXACTLY ZERO, so this head is bit-identical to the un-injected one and its "
+                 "PAE/ipTM must reproduce the shipped head."
+                 if not _si_nz else
+                 f"NOT ZERO: {_si_nz}. Step-zero parity against the shipped head is NOT the right "
+                 f"check for this configuration."))
+        sys.stdout.flush()
+        raise SystemExit(0)
+    # -------------------------------------------------------------------------------------------
 
     # NO EXPERIMENT TRACKER. Runs are recorded by the files this script already writes --
     # trajectory.csv, metric_ep<N>.json, args.json -- and rendered by run_logging/render_report.py.

@@ -432,6 +432,17 @@ fi
 if [ "$INBLOCK" = "1" ]; then
   NOTE="$NOTE IN-BLOCK POSE INJECTION: the pose enters pairformer block 3 AFTER tri_mul_in and BEFORE tri_att_start, with both the 39-bin one-hot distance term and the raw-distance term$([ "$INBLOCK_PAE" = "1" ] && echo ", and again after pae_ln in the PAE readout"). Blocks 0-2 and block 3's tri_mul_out/tri_mul_in are FROZEN via --train-only '$INBLOCK_PAT'; trainable is block 3's tri_att_start, tri_att_end and pair_transition plus the injections$([ "$INBLOCK_READOUT" = "1" ] && echo " and the PAE readout"). THE PLACEMENT IS THE POINT: autograd starts at the first op whose parameters or inputs require grad, so injecting at the block INPUT -- where --pose-perblock injects -- would put both frozen tri-muls back into the backward and lose the saving silently; run_logging/test_pose_inblock_graph.py asserts the boundary with a negative control that reproduces exactly that failure. Both injections are ZERO-INIT and verified exactly zero, so step 0 is bit-identical to the un-injected head. THIS IS A CAPACITY CHANGE ON TOP OF A FREEZE AND A DIFFERENT ARM -- it is NOT comparable against mqird6 and needs its own held-out control. The readout injection is added AFTER the layer norm, so an unnormalised quantity is added to a normalised one and nothing downstream rescales it. UNTESTED on a GPU."
 fi
+# EXTRA PASSES RAW TRAINER ARGS THROUGH, word-split on purpose so EXTRA="--grad-probe --save-init
+# /tmp/h.pt" works. It exists because the GPU smoke needs --save-init and --grad-probe, and the
+# alternative was a second launcher that reconstructs this one's argv by hand -- which is how the
+# --src-cifs mistake happened. Appended LAST, so an EXTRA that repeats a flag wins, and the banner
+# prints it so the run.log records what was actually added.
+if [ -n "${EXTRA:-}" ]; then
+  # shellcheck disable=SC2206
+  ARGS+=($EXTRA)
+  say "EXTRA: appended $EXTRA"
+  NOTE="$NOTE EXTRA ARGS: $EXTRA."
+fi
 if [ "$DRY" = "1" ]; then
   say "DRY RUN"
   LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
