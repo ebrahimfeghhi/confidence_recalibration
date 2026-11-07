@@ -1003,6 +1003,43 @@ def main():
                          "loss.py:1772 does to it.\n"
                          "REQUIRES --pae-only, and is NOT inherited by the --loss-only val child, "
                          "which builds its own model in its own process.")
+    ap.add_argument("--lean-single", action="store_true",
+                    help="STOP COMPUTING THE PAIRFORMER'S SINGLE TRACK, which --lean-readouts left "
+                         "running. PairformerBlock.forward updates z through five ops that are "
+                         "functions of z ALONE, then updates s through attention_pair_bias and "
+                         "single_transition, both of which read z -- so z NEVER DEPENDS ON s. "
+                         "Under --pae-only the readout is linear_no_bias_pae(pae_ln(z_pair)), "
+                         "which reads z only, and s feeds nothing but the pLDDT and resolved heads "
+                         "--lean-readouts already stubs. The single track was therefore computed "
+                         "in all 4 blocks for every pose of every unit of every epoch and thrown "
+                         "away; lean_readouts.py's own comment says 's_single is now unused by "
+                         "anything that is kept' and then keeps computing it.\n"
+                         "HOW: PairformerBlock gates it on `if self.c_s > 0:` in both __init__ and "
+                         "forward, so setting c_s=0 on a BUILT block stops the calls without "
+                         "touching the module tree -- no renamed keys, no dropped state-dict "
+                         "entries, and phase_k_eval's set-equality check on head tensors still "
+                         "passes. Both that forward and PairformerStack.forward are PINNED to a "
+                         "sha256 so a Protenix upgrade hard-stops rather than silently removing "
+                         "the guard or the one-directional dependency this rests on.\n"
+                         "WHAT IT IS WORTH, measured on CPU at the live configuration rather than "
+                         "argued: 10,053,120 parameters (50.90%% of the head) stop being nominally "
+                         "trainable, and with the readout parameters nothing reads either, "
+                         "10,551,552 of 19,752,270 (53.42%%) are dropped from AdamW and from the "
+                         "gradient all-reduce -- ~84 MB of moment state and ~42 MB of the 79 MB "
+                         "flat collective buffer per step. BUT THE COMPUTE SAVING IS SMALL AND "
+                         "THAT IS THE HONEST HEADLINE: the pair track is O(N^3) and the single "
+                         "track's dominant term is O(N^2), so saved-activation bytes measured 4.0%% "
+                         "of a block at 128 tokens, 2.9%% at 256 and 2.5%% at 384, and the "
+                         "forward+backward time difference was BELOW CPU MEASUREMENT NOISE "
+                         "(-4.7%% to +9.2%% across four token counts). Expect ~1-2%% of the epoch, "
+                         "not a large win. It is here because it is free and provably dead, not "
+                         "because it is big.\n"
+                         "NUMERICS: the PAE logits are unchanged. "
+                         "run_logging/test_lean_single.py gates z BIT-IDENTICAL with the single "
+                         "track on and off, and gates that the single pathway's parameters "
+                         "receive no gradient EITHER WAY -- which is the proof that they were "
+                         "already dead rather than being killed by this flag.\n"
+                         "REQUIRES --lean-readouts AND --pae-only. UNTESTED ON A GPU.")
     ap.add_argument("--pair-dropout", type=float, default=-1.0,
                     help="ROW-WISE DROPOUT RATE ON THE PAIR REPRESENTATION in the confidence "
                          "head's pairformer blocks. ConfidenceHead builds its stack with "
@@ -1693,6 +1730,28 @@ def main():
         _lr_sha = lean_readouts.install(model, pae_only=a.pae_only)
         print(f"LEAN READOUTS: pde, pLDDT and resolved are NOT COMPUTED. "
               f"memory_efficient_forward pinned at {_lr_sha[:16]}")
+    # THE COMPUTE THAT FED THE DEAD READOUTS, which --lean-readouts did not touch. See
+    # lean_readouts.drop_single_pathway for why z never depends on s and why this is an attribute
+    # flip rather than a rebuild. MUST run after install(), because install() refuses to be the top
+    # of the patch chain and this reads the same module tree.
+    _dead_head = []
+    if a.lean_single:
+        import lean_readouts as _LS
+        if not (a.lean_readouts and a.pae_only):
+            raise SystemExit(
+                "STOP: --lean-single requires --lean-readouts AND --pae-only. It turns off the "
+                "pairformer's single track, which is what feeds pLDDT and resolved; without both "
+                "of those the two heads ARE trained and would be trained against a representation "
+                "that is no longer updated -- silently, since the shapes still line up.")
+        _n_blk, _n_dead = _LS.drop_single_pathway(model)
+        _dead_head = _LS.dead_head_params(model.confidence_head, single_dropped=True)
+        print(f"LEAN SINGLE: attention_pair_bias and single_transition are NOT CALLED in "
+              f"{_n_blk} pairformer block(s) (c_s set to 0; the modules stay in the tree, so the "
+              f"checkpoint's key set is unchanged). {_n_dead/1e6:.3f}M head parameter(s) across "
+              f"{len(_dead_head)} tensor(s) now provably receive no gradient; they are dropped "
+              f"from the optimiser below. PairformerBlock.forward pinned at "
+              f"{_LS.PINNED_BLOCK_SHA[:16]}, PairformerStack.forward at "
+              f"{_LS.PINNED_STACK_SHA[:16]}")
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
@@ -2777,6 +2836,38 @@ def main():
         if lora_report["adapted_with_bias"]:
             print(f"  NOTE {len(lora_report['adapted_with_bias'])} adapted module(s) have a bias; "
                   f"it stays FROZEN -- the adapter is the only thing that moves.")
+    # THE DEAD HEAD PARAMETERS COME OUT LAST, so --train-only and LoRA cannot put them back.
+    #
+    # WHY IT IS SAFE RATHER THAN MERELY CHEAP. Nothing reads these tensors' outputs, so autograd
+    # produces no gradient for them -- which _apply_step then turns into an explicit zeros tensor
+    # ("a rank with no gradient for a parameter still has to contribute a tensor, or the
+    # collective's shapes do not line up"). So today they are all-reduced as zeros, AdamW allocates
+    # exp_avg and exp_avg_sq for them, and with weight_decay=0.0 their update is exactly zero. They
+    # are therefore bit-identical whether they are in the optimiser or not; removing them removes
+    # ~84 MB of moment state and ~42 MB of the 79 MB flat collective buffer per step and NOTHING
+    # else. Verified on CPU by run_logging/test_lean_single.py, which checks the single pathway's
+    # parameters get .grad is None with the track ON as well as off.
+    #
+    # AND THE REPORTED NUMBER BECOMES HONEST. Every --pae-only arm in this project has printed
+    # "258 trainable tensor(s), 19.8M of 464.5M parameters (4.3%)" while 158 of those tensors
+    # received no gradient. The --grad-probe path already said so out loud and nothing acted on it.
+    if _dead_head:
+        _dead_abs = {f"{prefixes[0]}.{n}" for n in _dead_head}
+        _before_n, _before_p = len(trainable), sum(
+            p.numel() for n, p in model.named_parameters() if n in set(trainable))
+        trainable = [n for n in trainable if n not in _dead_abs]
+        if not trainable:
+            raise SystemExit(
+                "STOP: --lean-single left the trainable set EMPTY. Every tensor --train-only or "
+                "LoRA selected is one nothing reads under --pae-only, so the run would report "
+                "success while training nothing. Widen --train-only or drop --lean-single.")
+        _after_p = sum(p.numel() for n, p in model.named_parameters() if n in set(trainable))
+        print(f"--lean-single: {_before_n - len(trainable)} of {_before_n} trainable tensor(s) "
+              f"dropped from the optimiser as provably gradient-free "
+              f"({(_before_p - _after_p)/1e6:.3f}M of {_before_p/1e6:.3f}M parameters, "
+              f"{100.0 * (_before_p - _after_p) / max(1, _before_p):.2f}%). The remaining "
+              f"{len(trainable)} tensor(s) / {_after_p/1e6:.3f}M parameters are the EFFECTIVE "
+              f"capacity -- which is what the line below now prints.")
     head_ids = {id(p) for n, p in model.named_parameters() if n in set(trainable)}
     n_head = sum(p.numel() for n, p in model.named_parameters() if n in set(trainable))
     n_all = sum(p.numel() for _n, p in model.named_parameters())
@@ -3202,6 +3293,14 @@ def main():
                  # here, which left the guard inert: it compared neither, and the _PRE_CROP
                  # defaults for them were never consulted.
                  "pae_scored_pairs": a.pae_scored_pairs, "pae_only": a.pae_only,
+                 # THE PARAMETER SET AGAIN, AND THIS ONE CORRUPTS SILENTLY IF IT IS NOT GUARDED.
+                 # --lean-single drops 158 tensors from the optimiser's param group. AdamW's
+                 # state_dict is keyed by the parameter's INDEX in that group, so resuming a
+                 # --lean-single bundle without the flag (or the reverse) would load exp_avg and
+                 # exp_avg_sq onto DIFFERENT tensors -- no shape error, because many of them are
+                 # the same shape, and no way to notice afterwards. It changes no mathematics in
+                 # the forward, which is exactly why nothing else would catch it.
+                 "lean_single": a.lean_single,
                  # NOT JUST THE OBJECTIVE -- THE PARAMETER SET. --frame-direction adds a trainable
                  # tensor, so a bundle written without it is missing one and the _missing check
                  # below refuses it anyway. It is compared here so the refusal names the setting
@@ -3272,6 +3371,8 @@ def main():
                      # reads as real drift and must be named with --resume-override crop_all_poses.
                      "crop_all_poses": True,
                      "pae_only": False,
+                     # A BUNDLE PREDATING THE FLAG TRAINED THE FULL PARAMETER GROUP.
+                     "lean_single": False,
                      "frame_direction": False,
                      "pose_perblock": False, "pose_perblock_tied": False,
                      "pose_perblock_share": False, "pose_perblock_copy": False,
@@ -6919,6 +7020,7 @@ def main():
                                   "alpha_confidence": a.alpha_confidence,
                                   "pae_scored_pairs": a.pae_scored_pairs,
                                   "pae_only": a.pae_only,
+                                  "lean_single": a.lean_single,
                                   # SAVED, NOT ONLY COMPARED. frame_direction went into the
                                   # comparison side but not here, so a bundle carried no record of
                                   # it: a resume beside its args.json still matched, because the
@@ -7547,6 +7649,36 @@ def main():
                 torch.cuda.empty_cache()
             if is_main and write_traj:
                 _save_resume(ep + 1, step)
+                # THE EPOCH'S HEAD, WRITTEN HERE AND NOT BY THE EVALUATOR.
+                #
+                # IT USED TO BE WRITTEN ONLY WHEN AN EVAL RAN. The one `torch.save` of
+                # head_ep<N>_step<S>.pt sits INSIDE the evaluation function, before it spawns
+                # phase_k_eval -- so under NOEVAL=1 the function is never called and NO
+                # epoch-boundary head was ever written. The live arm mqird6 has only
+                # head_step250/500/750/1000.pt from the periodic --save-every path, and at 230
+                # steps per epoch those land at arbitrary points MID-epoch: there is no head
+                # checkpoint corresponding to any completed epoch of that run.
+                #
+                # THE HEAD IS THE ARTIFACT AND THE EVAL IS ONE CONSUMER OF IT. Coupling them meant
+                # turning off the consumer silently cost the artifact. Nothing was lost on the
+                # current run -- resume_ep<N>.pt is written unconditionally just above and contains
+                # the head -- but it has to be extracted, which is exactly the friction this
+                # removes.
+                #
+                # SAME NAME, so every downstream scorer, plot and eval_dirs reader keeps working,
+                # and the evaluator's own save becomes a no-op rewrite of an identical file rather
+                # than the only copy. ~79 MB per epoch against a 3,072 GiB quota.
+                _ep_cp = os.path.join(a.out, f"head_ep{ep + 1}_step{step}.pt")
+                try:
+                    torch.save(_head_ckpt_tensors(), _ep_cp)
+                    print(f"  saved {_ep_cp} "
+                          f"({os.path.getsize(_ep_cp)/2**20:.0f} MiB: the epoch's head)",
+                          flush=True)
+                except OSError as _e:
+                    # A CHECKPOINT IS WORTH REPORTING AND NOT WORTH THE RUN, the same bargain
+                    # _fp_cache_save makes. The resume bundle above already carries the head.
+                    print(f"  WARNING: could not write {_ep_cp} ({_e}); the epoch's head is still "
+                          f"inside resume_ep{ep + 1}.pt", flush=True)
             # NO write_traj IN THIS CONDITION. It is `is_main`, so including it meant ranks 1
             # and 2 skipped the whole block INCLUDING both barriers, while rank 0 entered them.
             # dist.barrier() is untagged, so rank 0's two calls paired with the other ranks' two
