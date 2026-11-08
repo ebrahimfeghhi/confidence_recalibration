@@ -119,7 +119,33 @@ RELLAB="${RELLAB:-training/fold/itm_labels_extended}"
 # at the price of a train/eval mismatch, and that trade was declined in favour of excluding.
 OVERSIZED="9dzf,9dzg,7m7i,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,7cn2"
 SKIP="${SKIP:-9mx1,4zto,9q5m,$OVERSIZED}"
+# WHETHER THE CALLER SET IT, captured before the default is applied, so INBLOCK can choose a
+# different default without overriding an explicit choice.
+CKPT_THRESH_SET="${CKPT_THRESH+yes}"
 CKPT_THRESH="${CKPT_THRESH:-0}"
+# ACTIVATION CHECKPOINTING IS LARGELY POINTLESS ONCE THE STACK IS FROZEN, so an INBLOCK arm takes
+# a different default. DECIDED HERE, not at the INBLOCK block further down, because ARGS is built
+# at :276 and would already hold the old value by then -- INBLOCK is read early for this reason
+# alone and is re-defaulted to the same value below.
+#
+# --ckpt-token-threshold means "units AT OR BELOW this many tokens run with checkpointing OFF".
+# The default 0 DISABLES the rule, so every unit uses --blocks-per-ckpt 1. mqird6 was launched with
+# 855 and its epoch-6 log reads "3900 unit(s) UNCHECKPOINTED, 700 checkpointed" -- so the unfrozen
+# arm already ran 85% of its units uncheckpointed, and an INBLOCK arm left at the default would
+# checkpoint MORE than the arm it is meant to beat.
+#
+# Checkpointing buys not storing activations at the price of a second forward. With blocks 0-2 and
+# block 3's two tri-muls frozen the backward begins after tri_mul_in, so the only activations
+# needing storage are block 3's tri_att_start, tri_att_end and pair_transition plus the injections.
+# Paying a whole extra forward to avoid storing that is the wrong trade.
+#
+# 99999 means every unit, the largest in the manifest being 1,650 tokens. UNMEASURED: mqird6 peaks
+# at 81.30 GB of 95.6 GB WITH a full backward, and whether the frozen graph fits uncheckpointed at
+# 1,650 tokens is exactly what gate 3 of inblock_gpu_smoke.sh measures on 7cn2. If it does not fit,
+# pass CKPT_THRESH=855 and the size rule returns.
+if [ "${INBLOCK:-0}" = "1" ] && [ -z "$CKPT_THRESH_SET" ]; then
+  CKPT_THRESH=99999
+fi
 # NOEVAL=1 DROPS THE HELD-OUT EVALUATION. The owner asked for training only on 2026-11-06; the
 # eval-free config existed only in resume_noeval_to_10.sh, which needs a bundle, so a fresh
 # relaunch after an OOM silently brought eval back. A fresh launch must be able to honour it.

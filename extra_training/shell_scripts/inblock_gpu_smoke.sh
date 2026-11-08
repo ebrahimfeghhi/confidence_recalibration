@@ -161,11 +161,17 @@ run "$PY" -I run_logging/argv_from_dry.py --log "$W/dry_gate3.log" \
 # OOM, which is the point: the new graph is shallower in backward than the arm this was fitted on,
 # so whether it now fits is an open question and not a formality.
 UNITS="${UNITS:-22gi,29tj,7cn2}"
-say "GATE 3: benchmarking units $UNITS on card $CARD (lean readouts, checkpointing ON)"
-run env LAYERNORM_TYPE=openfold "$PY" -I run_logging/bench_ckpt_by_size.py \
-    --arm-argv "$W/inblock_argv_oversized.txt" --cards "$CARD" \
-    --units "$UNITS" --only lean_ckpt_on --master-port 29571 \
-    --out "$W/bench" 2>&1 | tee "$W/gate3.log" | tail -25
+# BOTH ARMS, because Codex's gate 3 is "time and max VRAM, WITH AND WITHOUT checkpointing where
+# safe" -- and because INBLOCK now defaults to checkpointing OFF for every unit, which is a change
+# this benchmark exists to justify or overturn. ckpt_off is the new default; ckpt_on is the
+# fallback if the frozen graph turns out not to fit at 1,650 tokens.
+for ARM in lean_ckpt_off lean_ckpt_on; do
+  say "GATE 3: benchmarking units $UNITS on card $CARD ($ARM)"
+  run env LAYERNORM_TYPE=openfold "$PY" -I run_logging/bench_ckpt_by_size.py \
+      --arm-argv "$W/inblock_argv_oversized.txt" --cards "$CARD" \
+      --units "$UNITS" --only "$ARM" --master-port 29571 \
+      --out "$W/bench" 2>&1 | tee "$W/gate3_$ARM.log" | tail -20
+done
 
 # ---- the summary, so the verdict is one line and not a reading exercise --------------------------
 say "================ SMOKE SUMMARY ================"
@@ -177,7 +183,7 @@ fi
 say "Gate 0 (card idle)            PASS"
 say "Gate 1 (step-zero parity)     ${G1:-skipped}"
 say "Gate 2 (one step + probe)     see $W/gate2_verdict.txt -- READ IT, it is not auto-judged"
-say "Gate 3 (time and VRAM)        see $W/gate3.log and $W/bench -- also not auto-judged"
+say "Gate 3 (time and VRAM)        see $W/gate3_lean_ckpt_{off,on}.log -- also not auto-judged"
 say "Everything is under $W"
 say "NOTHING was merged, nothing long was launched, and mqird6 was not touched."
 # GATE 2 IS NOT GIVEN A PASS/FAIL BY THIS SCRIPT. Its evidence is the grad-probe block in the
