@@ -8269,8 +8269,18 @@ def main():
     # WHAT THE HORIZON WAS BUILT FROM, so build_epoch_cross_seed can refuse if it packs a
     # different number of steps than the schedule was calibrated for.
     _xs_spe[0] = _spe_ep if a.rank_cross_seed and a.rank_structs_per_step else 0
-    _sched = ("flat after warmup (no decay)" if a.lr_final <= 0.0 else
-              f"COSINE {a.lr:g} -> {a.lr_final:g} over steps {a.warmup_steps}..{_expect}")
+    # --lr-steps IS CHECKED FIRST, because it takes precedence over --lr-final and the decay
+    # window (see its help). This line derived the description from lr_final alone, so a run with
+    # a staircase printed "flat after warmup (no decay)" while the staircase was in fact applied
+    # -- parse_lr_steps' own docstring warns that "the run trains at the wrong lr for twenty
+    # epochs and nothing in the log says so", and the startup line was saying exactly nothing.
+    if a.lr_steps:
+        _sched = "STAIRCASE: " + f"{a.lr:g}" + "".join(
+            f" -> {_v:g} from epoch {_e:g}" for _e, _v in _LRS0.parse_lr_steps(a.lr_steps))
+    elif a.lr_final <= 0.0:
+        _sched = "flat after warmup (no decay)"
+    else:
+        _sched = f"COSINE {a.lr:g} -> {a.lr_final:g} over steps {a.warmup_steps}..{_expect}"
     print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
           f"~{_expect} optimiser step(s) for {a.epochs} epoch(s) "
           f"({_full} full + {_part} partial per epoch); no step cap, the epoch loop decides")
