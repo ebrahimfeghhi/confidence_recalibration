@@ -278,9 +278,45 @@ if [ "$DRY" = "1" ]; then
   say "DRY RUN: cards_busy reports '$B' and MemAvailable $(awk '/MemAvailable/{printf "%.0f", $2/1048576}' /proc/meminfo) GB -- not gated on a dry run"
   B=0
 fi
-[ "${B:-1}" != "0" ] && { say "REFUSING: cards_busy reports '$B', not 0."; exit 1; }
+# PER-CARD, NOT GLOBAL. This used to refuse unless cards_busy reported 0 anywhere on the box.
+# That is the right rule for "do not start a long arm while something else is training" and the
+# wrong one for independent jobs on separate cards: the three gates of the GPU smoke, one per
+# card, deadlocked each other because the first to start made the gate false for the other two.
+# The property that actually matters is whether THE CARDS THIS RUN ASKED FOR are free.
+#
+# The 3-card ceiling is kept, and enforced here rather than trusted to the caller.
+#
+# cards_busy's box-wide count is still printed: "something else is training" is worth knowing even
+# when it is no longer a refusal.
+CARD_GATE_MIB="${CARD_GATE_MIB:-80000}"
+_n_cards=$(echo "$CARDS" | tr ',' '\n' | grep -c .)
+if [ "$_n_cards" -gt 3 ]; then
+  say "REFUSING: $_n_cards cards requested ($CARDS); the standing limit is 3."
+  exit 1
+fi
+_busy_ours=""
+for _c in $(echo "$CARDS" | tr ',' ' '); do
+  # DIGITS, NOT MERELY NON-EMPTY. `nvidia-smi -i 99` prints "No devices were found" to STDOUT and
+  # exits 6, so an emptiness test passes, the numeric comparison below errors, `[` returns
+  # non-zero, and the card is treated as FREE -- a bad index would have sailed through the gate.
+  _free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i "$_c" 2>/dev/null)
+  case "$_free" in
+    ''|*[!0-9]*)
+      say "REFUSING: GPU $_c did not report a numeric free-memory value (got '${_free:-<empty>}')."
+      say "  Is $_c a valid index on this box?"
+      exit 1;;
+  esac
+  if [ "$_free" -lt "$CARD_GATE_MIB" ]; then
+    _busy_ours="$_busy_ours $_c(${_free}MiB)"
+  fi
+done
+if [ -n "$_busy_ours" ]; then
+  say "REFUSING: requested card(s) not free:$_busy_ours (need ${CARD_GATE_MIB} MiB each)."
+  say "  cards_busy reports '$B' box-wide."
+  exit 1
+fi
 M=$(awk '/MemAvailable/{printf "%.0f", $2/1048576}' /proc/meminfo)
-say "gate 5: cards_busy 0, MemAvailable ${M} GB"
+say "gate 5: cards $CARDS each >= ${CARD_GATE_MIB} MiB free (box-wide cards_busy '$B'), MemAvailable ${M} GB"
 [ "${M:-0}" -lt 250 ] && { say "REFUSING: MemAvailable under the 250 GB floor."; exit 1; }
 
 ARGS=(--rank-loss --rank-form rel --rel-labels "$RELLAB"

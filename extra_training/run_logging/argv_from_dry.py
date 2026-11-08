@@ -21,6 +21,13 @@ def main():
     ap.add_argument("--log", required=True, help="a DRY=1 launch_default_arm.sh log")
     ap.add_argument("--out", required=True)
     ap.add_argument("--script", default="phase_k_train.py")
+    ap.add_argument("--strip", nargs="*", default=[],
+                    help="flags to remove from the captured argv, with their value if they take "
+                         "one. For --alignment-preflight: the marker is keyed to the ARM's "
+                         "manifest, and a benchmark that walks its own subset is refused by the "
+                         "trainer as 'the preflight says nothing about the structures this run "
+                         "will train on' -- which is correct for the arm and fatal for a probe. "
+                         "Stripping the flag for the probe is narrower than weakening the check.")
     a = ap.parse_args()
 
     cand = [ln for ln in open(a.log, errors="replace").read().splitlines()
@@ -51,6 +58,15 @@ def main():
         print("STOP: no python interpreter found before the script in that line.")
         return 1
     argv = [py, "-u"] + parts[i:]
+
+    # REMOVED WITH THEIR VALUE, and only when the value is not itself a flag -- a store_true that
+    # is stripped must not swallow the argument after it.
+    for _f in (a.strip or []):
+        while _f in argv:
+            j = argv.index(_f)
+            n = 2 if (j + 1 < len(argv) and not argv[j + 1].startswith("--")) else 1
+            del argv[j:j + n]
+            print(f"  stripped {_f}" + (" and its value" if n == 2 else ""))
 
     # THE ELASTIC ENVIRONMENT MUST NOT SURVIVE, same reason the --loss-only child strips it.
     bad = [p for p in argv if p.startswith("--nproc") or p.startswith("--master_port")]

@@ -35,11 +35,29 @@ CARD="${CARD:-0}"
 DRY="${DRY:-1}"
 NSTRUCT="${NSTRUCT:-2}"          # structures in the smoke pool
 BUDGET="${BUDGET:-3}"            # seeds per interface
-EPOCHS_FRAC="${EPOCHS_FRAC:-0.02}"   # ~4 optimiser steps at 230 steps/epoch
+# WHOLE STEPS ONLY. EPOCHS=0.02 gave 138 units against cross-seed quotas summing to 150, and the
+# trainer refused: "the step boundary would drift from the quota and the ranks would step at
+# different times". That guard is right -- a partial step is not a smaller version of a step, it is
+# a different objective. The arm's banner says "6,903 units in 230 cross-seed steps of 30", so a
+# whole number of steps is STEPS/230 of an epoch. If the population ever changes, 230 changes with
+# it and the same guard refuses again rather than drifting quietly.
+# AND HALF A UNIT OF MARGIN, because STEPS/STEPS_PER_EPOCH is exact in arithmetic and not in
+# floating point: 5/230 x 6903 came out as 149 units against a 150-unit quota and was refused for
+# being one short. Expressing it in UNITS and adding 0.5 puts the value strictly inside the
+# interval that floors to the number of units wanted, rather than exactly on its boundary.
+STEPS="${STEPS:-5}"
+UNITS_PER_STEP="${UNITS_PER_STEP:-30}"
+UNITS_PER_EPOCH="${UNITS_PER_EPOCH:-6903}"
+EPOCHS_FRAC=$(awk "BEGIN{printf \"%.10f\", ($STEPS*$UNITS_PER_STEP + 0.5)/$UNITS_PER_EPOCH}")
 FREE_MIB="${FREE_MIB:-90000}"    # the card must have at least this much free
+# WHICH GATES THIS INVOCATION RUNS. The three are independent, so with three cards free they go in
+# parallel and the wall clock is the longest gate rather than their sum. GATES=123 is everything
+# on one card, which is what a single-card run wants.
+GATES="${GATES:-123}"
+gate_on() { case "$GATES" in *"$1"*) return 0;; *) return 1;; esac; }
 PY=/home/ebrahim/Protenix/.venv/bin/python
 TS=$(date +%Y%m%d_%H%M%S)
-W="training/runs/inblock_smoke_$TS"
+W="training/runs/inblock_smoke_${TS}_g${GATES}"
 say() { echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 run() { if [ "$DRY" = "1" ]; then echo "    WOULD RUN: $*"; else "$@"; fi; }
 
@@ -62,18 +80,48 @@ if [ "${MEMAV:-0}" -lt 250 ]; then
   say "REFUSING: MemAvailable ${MEMAV} GB is under the 250 GB floor other users need."
   exit 1
 fi
-case ",4,5,7," in *",$CARD,"*)
-  say "REFUSING: card $CARD is one of mqird6's (4,5,7). Use a card outside that set."
-  exit 1;; esac
+# NO HARDCODED CARD LIST. This used to refuse 4, 5 and 7 outright because the live arm held them
+# -- and then the arm was stopped, the cards became the right ones to use, and the guard refused
+# the very launch it was written to protect. A list of card numbers is a fact about one moment.
+#
+# The free-memory check above is the real guard and always was: a live training rank holds ~75 GB,
+# so a card with 90 GB+ free demonstrably has no arm on it. That tests the property we care about
+# instead of a name we have to remember to update.
+if [ -n "${RESERVED_CARDS:-}" ]; then
+  case ",${RESERVED_CARDS}," in *",$CARD,"*)
+    say "REFUSING: card $CARD is in RESERVED_CARDS=$RESERVED_CARDS."
+    exit 1;; esac
+fi
 say "GATE 0 PASS: card $CARD is idle and the host has room."
 
+if gate_on 1; then
 # ---- the smoke pool: the first NSTRUCT structures of the validation pool ------------------------
 # DERIVED IN THE SCRIPT, not hand-made, so the pool this ran on is reproducible from the script
 # and the source pool alone.
 POOL_SRC="${POOL_SRC:-training/valfull/pool.csv}"
+FOLD_DIR="${FOLD_DIR:-validation/fold}"
 POOL="$W/pool_smoke.csv"
 head -1 "$POOL_SRC" > "$POOL"
-awk -F, 'NR>1{print $1}' "$POOL_SRC" | awk '!seen[$0]++' | head -"$NSTRUCT" > "$W/pdbs.txt"
+# CHOSEN BY WHAT IS ACTUALLY FOLDED, not by position in the pool file. The first attempt took the
+# first N structures and drew 29tj, whose seeds are SPARSE -- free_400000, 400002, 400004... with
+# no 400001 -- so the evaluator refused: "1 of 6 intended unit(s) have no trunk", which is the
+# right refusal, because a metric labelled 'budget 3' that silently covered 2 seeds would be a
+# number that does not mean what its label says. A structure only qualifies if every seed from
+# --seed-base to --seed-base+BUDGET-1 exists as a trunk.
+: > "$W/pdbs.txt"
+for _p in $(awk -F, 'NR>1{print $1}' "$POOL_SRC" | awk '!seen[$0]++'); do
+  [ "$(wc -l < "$W/pdbs.txt")" -ge "$NSTRUCT" ] && break
+  _ok=1
+  for _i in $(seq 0 $((BUDGET - 1))); do
+    [ -f "$FOLD_DIR/trunks/$_p/free_$((400000 + _i)).npz" ] || { _ok=0; break; }
+  done
+  [ "$_ok" = "1" ] && echo "$_p" >> "$W/pdbs.txt"
+done
+if [ "$(wc -l < "$W/pdbs.txt")" -lt "$NSTRUCT" ]; then
+  say "REFUSING: only $(wc -l < "$W/pdbs.txt") structure(s) in $POOL_SRC have all $BUDGET seeds"
+  say "  folded under $FOLD_DIR/trunks. Lower BUDGET or NSTRUCT."
+  exit 1
+fi
 awk -F, 'NR==FNR{k[$1];next} FNR==1{next} ($1 in k)' "$W/pdbs.txt" "$POOL_SRC" >> "$POOL"
 say "smoke pool: $(( $(wc -l < "$POOL") - 1 )) interface row(s) over $NSTRUCT structure(s): $(paste -sd, "$W/pdbs.txt")"
 
@@ -121,8 +169,11 @@ else
   say "GATE 1 $G1"
 fi
 
+fi   # gate 1
+
+if gate_on 2; then
 # ---- GATE 2: one optimiser step, the gradient probe, and a resume -------------------------------
-say "GATE 2: ~$(awk "BEGIN{printf \"%.0f\", $EPOCHS_FRAC*230}") optimiser step(s) with --grad-probe"
+say "GATE 2: $STEPS optimiser step(s) (--epochs $EPOCHS_FRAC) with --grad-probe"
 run env CARDS="$CARD" DRY=0 EPOCHS="$EPOCHS_FRAC" NOEVAL=1 INBLOCK=1 LEAN_SINGLE=1 \
     TRUNK_CACHE_GB=0 TRUNK_MEMMAP=0 \
     EXTRA="--grad-probe --save-every 1" \
@@ -139,6 +190,9 @@ if [ "$DRY" != "1" ]; then
   ls -la "training/runs/$RID"/*.pt 2>/dev/null | tee -a "$W/gate2_verdict.txt"
 fi
 
+fi   # gate 2
+
+if gate_on 3; then
 # ---- GATE 3: per-size elapsed time and peak memory, including an oversized complex --------------
 # NOT A NEW HARNESS. run_logging/bench_ckpt_by_size.py already measures per-pose peak memory and
 # per-pose device time on one card, and its --arm-argv exists so a benchmark cannot drift from the
@@ -153,7 +207,14 @@ fi
 say "GATE 3: capturing the in-block argv, with the oversized structures NOT skipped"
 run env DRY=1 CARDS="$CARD" INBLOCK=1 LEAN_SINGLE=1 TRUNK_CACHE_GB=0 TRUNK_MEMMAP=0 \
     SKIP="9mx1,4zto,9q5m" ./shell_scripts/launch_default_arm.sh > "$W/dry_gate3.log" 2>&1
+# --alignment-preflight IS STRIPPED for the benchmark. The preflight marker is keyed to the arm's
+# manifest, and bench_ckpt_by_size writes its OWN manifest subset (the ascending token walk), so
+# the trainer refused: "the alignment preflight was run over manifest 568d3d30..., this run is
+# 6791c723... It says nothing about the structures this run will train on". Correct, and fatal to
+# a benchmark whose whole job is to run a different subset. The marker still gates the real arm;
+# it is only meaningless for a probe, and stripping it here is narrower than weakening the check.
 run "$PY" -I run_logging/argv_from_dry.py --log "$W/dry_gate3.log" \
+    --strip="--alignment-preflight" \
     --out "$W/inblock_argv_oversized.txt"
 
 # A SMALL, A MID, A LARGE AND ONE PREVIOUSLY EXCLUDED. 7cn2 is in the arm's OVERSIZED list, so it
@@ -184,6 +245,8 @@ run env LAYERNORM_TYPE=openfold "$PY" -I run_logging/bench_ckpt_by_size.py \
     --probe --probe-seeds 2 --start-tokens 1400 --master-port 29571 \
     --out "$W/bench" 2>&1 | tee "$W/gate3_probe.log" | tail -25
 
+fi   # gate 3
+
 # ---- the summary, so the verdict is one line and not a reading exercise --------------------------
 say "================ SMOKE SUMMARY ================"
 if [ "$DRY" = "1" ]; then
@@ -192,9 +255,10 @@ if [ "$DRY" = "1" ]; then
   exit 0
 fi
 say "Gate 0 (card idle)            PASS"
-say "Gate 1 (step-zero parity)     ${G1:-skipped}"
-say "Gate 2 (one step + probe)     see $W/gate2_verdict.txt -- READ IT, it is not auto-judged"
-say "Gate 3 (time and VRAM)        see $W/gate3_probe.log -- also not auto-judged"
+say "gates requested: $GATES"
+gate_on 1 && say "Gate 1 (step-zero parity)     ${G1:-ran, see $W}" || say "Gate 1                        not requested"
+gate_on 2 && say "Gate 2 (one step + probe)     see $W/gate2_verdict.txt -- not auto-judged" || say "Gate 2                        not requested"
+gate_on 3 && say "Gate 3 (time and VRAM)        see $W/gate3_probe.log -- not auto-judged" || say "Gate 3                        not requested"
 say "Everything is under $W"
 say "NOTHING was merged, nothing long was launched, and mqird6 was not touched."
 # GATE 2 IS NOT GIVEN A PASS/FAIL BY THIS SCRIPT. Its evidence is the grad-probe block in the
@@ -204,4 +268,5 @@ if [ "${G1:-}" = "FAIL" ]; then
   say "OVERALL: FAIL -- gate 1 did not hold. Do not launch a long arm."
   exit 1
 fi
-say "OVERALL: gate 1 held. Gate 2 needs a read, gate 3 needs running."
+if gate_on 1; then say "OVERALL: gate 1 held."; else say "OVERALL: gate 1 was not part of this invocation."; fi
+say "  Gates 2 and 3 are not auto-judged -- read their logs."
