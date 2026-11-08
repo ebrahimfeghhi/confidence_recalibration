@@ -375,31 +375,20 @@ def install(model, block_index=3, pae_inject=True, inject_at="after_tri_mul_in",
                 f"STOP: --pose-inblock-pae: pae_ln's output is {tuple(out.shape)} but the pose "
                 f"geometry is {tuple(oh.shape)}. The hook is firing on a call it was not written "
                 f"for, and adding across that mismatch would broadcast silently.")
-        # ---- ONE FUSED MATMUL, NOT TWO -------------------------------------------------------
-        # W1 @ oh + W2 @ dd == [W1 | W2] @ [oh ; dd]. Algebraically identical; the difference is
-        # that the two-term form materialises TWO [N, N, c_z] results and the fused form one.
+        # TWO TERMS, NOT ONE FUSED MATMUL -- and that is a measured decision, not an oversight.
+        # W1 @ oh + W2 @ dd == [W1 | W2] @ [oh ; dd] algebraically, and fusing looks like it should
+        # halve the readout's footprint: each term is a full [N, N, c_z], and lean_readouts runs
+        # the readout under autocast(enabled=False), so at 2,289 tokens each is 5.00 GiB in fp32.
         #
-        # THIS IS THE ALLOCATION THAT OOMed THE LARGEST STRUCTURES, and it is ours, not the
-        # pairformer's. lean_readouts runs the readout under autocast(enabled=False), so everything
-        # here is fp32: at 2,289 tokens a [N, N, 256] fp32 tensor is 5.00 GiB, and the probe's
-        # original failure was a 9.99 GiB allocation -- exactly two of them. Dead-op elimination
-        # and the transpose elision both left it untouched, because they act on the STACK and this
-        # is in the READOUT.
+        # It does not, because the two terms are never simultaneously live: `out = out + A` frees A
+        # before `out = out + B` allocates B, so the peak is two pair tensors either way. Fusing
+        # removed nothing and the concatenated [N, N, 40] input ADDED 0.78 GiB -- measured on card
+        # 4, allocated-at-OOM went from 90.85 GiB to 91.63 GiB. It is also not bit-identical, since
+        # one reduction over 40 terms is not two reductions summed.
         #
-        # The concatenated input is [N, N, 40] rather than [N, N, 256]: 0.78 GiB at 2,289 tokens,
-        # against the 5.00 GiB it replaces. The weight concat is 256x40 and free.
-        #
-        # BOTH MODULES STAY IN THE TREE and both weights are used, so the checkpoint key set,
-        # phase_k_eval's set-equality guard and --train-only's name matching are all unchanged, and
-        # each tensor still receives its own gradient.
-        #
-        # NOT bit-identical to the two-term form: one reduction over 40 terms instead of two
-        # reductions summed, so the floating-point order differs. At step 0 both are exactly zero
-        # (zero-init), so step-zero parity against the shipped head is unaffected.
-        _w = torch.cat([head.pose_inblock_pae_d.weight,
-                        head.pose_inblock_pae_d_wo_onehot.weight], dim=1)
-        _x = torch.cat([oh, dd.unsqueeze(-1)], dim=-1).to(_w.dtype)
-        out = out + torch.nn.functional.linear(_x, _w).to(out.dtype)
+        # Kept here so the next person does not re-derive the same plausible and wrong idea.
+        out = out + head.pose_inblock_pae_d(oh).to(out.dtype)
+        out = out + head.pose_inblock_pae_d_wo_onehot(dd.unsqueeze(-1)).to(out.dtype)
         return out
 
     head.memory_efficient_forward = memory_efficient_forward
