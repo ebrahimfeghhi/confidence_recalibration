@@ -289,13 +289,20 @@ fi
 # cards_busy's box-wide count is still printed: "something else is training" is worth knowing even
 # when it is no longer a refusal.
 CARD_GATE_MIB="${CARD_GATE_MIB:-80000}"
+# A DRY RUN MUST NOT REQUIRE FREE CARDS -- the same rule the box-wide check above already had, and
+# which I dropped when replacing it. Capturing an arm's argv with DRY=1 while another job holds a
+# card is exactly when a dry run is most useful, and refusing there made it useless at that moment.
 _n_cards=$(echo "$CARDS" | tr ',' '\n' | grep -c .)
+if [ "$DRY" = "1" ]; then
+  say "DRY RUN: per-card gate skipped ($_n_cards card(s) requested: $CARDS)"
+  _n_cards=0
+fi
 if [ "$_n_cards" -gt 3 ]; then
   say "REFUSING: $_n_cards cards requested ($CARDS); the standing limit is 3."
   exit 1
 fi
 _busy_ours=""
-for _c in $(echo "$CARDS" | tr ',' ' '); do
+for _c in $([ "$DRY" = "1" ] || echo "$CARDS" | tr ',' ' '); do
   # DIGITS, NOT MERELY NON-EMPTY. `nvidia-smi -i 99` prints "No devices were found" to STDOUT and
   # exits 6, so an emptiness test passes, the numeric comparison below errors, `[` returns
   # non-zero, and the card is treated as FREE -- a bad index would have sailed through the gate.
@@ -417,7 +424,14 @@ if [ "$INBLOCK" = "1" ]; then
     say "  silently, so the arm would not be the one either switch describes. Pick one."
     exit 1
   fi
-  INBLOCK_PAT='pairformer_stack\.blocks\.3\.tri_att_start\.,pairformer_stack\.blocks\.3\.tri_att_end\.,pairformer_stack\.blocks\.3\.pair_transition\.,^pose_inblock_'
+  # tri_att_end IS DELIBERATELY ABSENT. It is in the shipped checkpoint as a constant bit pattern
+  # that emits exactly zero, so it is a fixed point of gradient descent: zero output, zero
+  # gradient, it can never move. Measured on GPU (run vhhpyf, --grad-probe over 150 poses): all
+  # eight of its tensors accumulated exactly 0.000e+00 in BOTH the PAE and the rank terms, while
+  # every other trainable tensor was healthy. Training it is 330,240 parameters of optimiser
+  # state and all-reduce traffic buying nothing, and it made the arm's advertised capacity
+  # (1,484,800) overstate the real one (1,154,560) by 22%.
+  INBLOCK_PAT='pairformer_stack\.blocks\.3\.tri_att_start\.,pairformer_stack\.blocks\.3\.pair_transition\.,^pose_inblock_'
   if [ "$INBLOCK_READOUT" = "1" ]; then
     INBLOCK_PAT="$INBLOCK_PAT"',^linear_no_bias_pae\.,^pae_ln\.'
   fi

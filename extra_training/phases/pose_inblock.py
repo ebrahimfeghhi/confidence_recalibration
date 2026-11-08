@@ -223,14 +223,30 @@ def block_forward(head, blk, s, z, oh, dd, inject_at="after_tri_mul_in", pair_ma
         blk.tri_att_start(z, mask=pair_mask, triangle_attention=triangle_attention,
                           inplace_safe=False, chunk_size=chunk_size),
         blk.p_drop, blk.training)
-    z = z.transpose(-2, -3).contiguous()
-    z = dropout_add_rowwise(
-        z,
-        blk.tri_att_end(z, mask=pair_mask.transpose(-1, -2) if pair_mask is not None else None,
-                        triangle_attention=triangle_attention, inplace_safe=False,
-                        chunk_size=chunk_size),
-        blk.p_drop, blk.training)
-    z = z.transpose(-2, -3).contiguous()
+    # ---- tri_att_end, AND THE TWO TRANSPOSES THAT EXIST ONLY TO FEED IT -------------------------
+    # The transposes are not decoration: tri_att_end attends over the OTHER axis, so z is flipped
+    # before it and flipped back after. If its branch contributes exactly zero, the pair is a round
+    # trip to nowhere -- and each `.contiguous()` copies the whole pair representation, 2.50 GiB in
+    # bf16 at 2,289 tokens. Returning a zero from a stubbed module does NOT avoid them; only this
+    # branch does. Measured on card 4: with the module stubbed but the transposes left in, the
+    # 2,289-token case still OOMed with 90.85 GiB allocated.
+    #
+    # THE FLAG IS SET BY dead_ops, NEVER HERE, and dead_ops sets it only after RUNNING the module
+    # against the shipped weights and measuring an exactly-zero output in eight regimes, and after
+    # confirming it is not in the trainable set. `max|w| < 1e-30` on its own proves nothing about
+    # the gradient, which is the objection this flag exists to answer rather than assume.
+    if getattr(blk, "_verified_skip_tri_att_end", False):
+        pass
+    else:
+        z = z.transpose(-2, -3).contiguous()
+        z = dropout_add_rowwise(
+            z,
+            blk.tri_att_end(z, mask=pair_mask.transpose(-1, -2) if pair_mask is not None else None,
+                            triangle_attention=triangle_attention, inplace_safe=False,
+                            chunk_size=chunk_size),
+            blk.p_drop, blk.training)
+        z = z.transpose(-2, -3).contiguous()
+    # ---------------------------------------------------------------------------------------------
     z = z + blk.pair_transition(z)
     # THE SINGLE TRACK, ON THE SAME GUARD THE ORIGINAL USES, so --lean-single still turns it off.
     if blk.c_s > 0:
@@ -359,8 +375,31 @@ def install(model, block_index=3, pae_inject=True, inject_at="after_tri_mul_in",
                 f"STOP: --pose-inblock-pae: pae_ln's output is {tuple(out.shape)} but the pose "
                 f"geometry is {tuple(oh.shape)}. The hook is firing on a call it was not written "
                 f"for, and adding across that mismatch would broadcast silently.")
-        out = out + head.pose_inblock_pae_d(oh).to(out.dtype)
-        out = out + head.pose_inblock_pae_d_wo_onehot(dd.unsqueeze(-1)).to(out.dtype)
+        # ---- ONE FUSED MATMUL, NOT TWO -------------------------------------------------------
+        # W1 @ oh + W2 @ dd == [W1 | W2] @ [oh ; dd]. Algebraically identical; the difference is
+        # that the two-term form materialises TWO [N, N, c_z] results and the fused form one.
+        #
+        # THIS IS THE ALLOCATION THAT OOMed THE LARGEST STRUCTURES, and it is ours, not the
+        # pairformer's. lean_readouts runs the readout under autocast(enabled=False), so everything
+        # here is fp32: at 2,289 tokens a [N, N, 256] fp32 tensor is 5.00 GiB, and the probe's
+        # original failure was a 9.99 GiB allocation -- exactly two of them. Dead-op elimination
+        # and the transpose elision both left it untouched, because they act on the STACK and this
+        # is in the READOUT.
+        #
+        # The concatenated input is [N, N, 40] rather than [N, N, 256]: 0.78 GiB at 2,289 tokens,
+        # against the 5.00 GiB it replaces. The weight concat is 256x40 and free.
+        #
+        # BOTH MODULES STAY IN THE TREE and both weights are used, so the checkpoint key set,
+        # phase_k_eval's set-equality guard and --train-only's name matching are all unchanged, and
+        # each tensor still receives its own gradient.
+        #
+        # NOT bit-identical to the two-term form: one reduction over 40 terms instead of two
+        # reductions summed, so the floating-point order differs. At step 0 both are exactly zero
+        # (zero-init), so step-zero parity against the shipped head is unaffected.
+        _w = torch.cat([head.pose_inblock_pae_d.weight,
+                        head.pose_inblock_pae_d_wo_onehot.weight], dim=1)
+        _x = torch.cat([oh, dd.unsqueeze(-1)], dim=-1).to(_w.dtype)
+        out = out + torch.nn.functional.linear(_x, _w).to(out.dtype)
         return out
 
     head.memory_efficient_forward = memory_efficient_forward

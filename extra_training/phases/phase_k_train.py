@@ -749,6 +749,40 @@ def main():
                          "every prefix tensor reads requires_grad=False at runtime and every "
                          "dropout rate in the prefix blocks is 0.0. Validated on CPU by "
                          "run_logging/test_prefix_cache.py; UNTESTED ON A GPU.")
+    ap.add_argument("--skip-dead-ops", action="store_true",
+                    help="DO NOT RUN CONFIDENCE-HEAD MODULES WHOSE OUTPUT IS EXACTLY ZERO. The "
+                         "shipped checkpoint carries pairformer modules whose EVERY tensor sits in "
+                         "a band 4.904e-37..4.907e-37 -- a fixed exponent with only the low "
+                         "mantissa bits varying, not a trained weight and not a denormal (fp32's "
+                         "smallest normal is 1.175e-38). Two such factors multiplied underflow to "
+                         "zero, so the module emits EXACTLY 0.0: measured on the shipped head, "
+                         "NINE of the SIXTEEN O(N^3) pair operations (block 0 entirely, blocks "
+                         "1-2's two triangle attentions, block 3's tri_att_end) plus block 1's "
+                         "pair_transition. Every one is consumed as z + module(z), so adding its "
+                         "zero is the identity on z and NOT RUNNING IT IS BIT-IDENTICAL "
+                         "ARITHMETIC, not an approximation -- the module object is replaced by a "
+                         "husk returning zeros_like(z) and the block's own forward is untouched, "
+                         "so there is no third mirror of PairformerBlock.forward to go stale. "
+                         "DECIDED BY MEASUREMENT AT EVERY INSTALL, never from a list: a module is "
+                         "skipped only if every parameter is below 1e-30 AND running it returns "
+                         "exactly 0.0 at the input's shape and dtype, at |z| x1 and x1e3, in "
+                         "train and eval mode and under bf16 autocast. A hardcoded list would go "
+                         "stale against a different checkpoint, and a threshold alone would call "
+                         "a FRESH head fully dead (its residual branches are zero-init). The "
+                         "husks share the originals' parameters by reference, so the head's "
+                         "state-dict key set, --train-only's name matching and the evaluator's "
+                         "set-equality guard are all unchanged, and the weights are re-checked "
+                         "against the floor at every step boundary. REFUSES rather than degrading "
+                         "if a module it would skip is in the TRAINABLE set -- a stubbed module "
+                         "gets no gradient at all (.grad stays None rather than becoming zeros), "
+                         "which changes what the optimiser and the gradient collective see, so "
+                         "the resolution is to drop it from --train-only. NOTE this arm's "
+                         "--train-only includes block 3's tri_att_end, which IS dead, so the "
+                         "refusal fires until that pattern changes. COMPLEMENTARY to "
+                         "--prefix-cache-gb, not redundant with it: the cache removes the frozen "
+                         "prefix from pass B, this removes half of pass A, which the cache leaves "
+                         "running in full. Validated on CPU by run_logging/test_dead_ops.py; "
+                         "UNTESTED ON A GPU.")
     ap.add_argument("--val-loss-every", type=int, default=0,
                     help="EPOCHS BETWEEN HELD-OUT PAE PASSES; 0 is off. This is the monitor the "
                          "run had no way to compute: measured 2026-10-20, the lr 1e-2 anchor's "
@@ -2985,6 +3019,30 @@ def main():
           f"({n_head/n_all:.1%}), under {prefixes}")
     for n, p in model.named_parameters():
         p.requires_grad_(id(p) in head_ids)
+
+    # ---- DEAD OPERATION ELIMINATION ------------------------------------------------------------
+    # INSTALLED HERE, AND HERE FOR THE SAME REASON THE PREFIX CACHE IS: its central refusal is "a
+    # module I would stub is TRAINABLE", read from requires_grad on the tensors, and requires_grad
+    # is not final until the line above has applied --train-only, LoRA and --lean-single. Any
+    # earlier and it would be checking a flag's intent instead of the model's state.
+    #
+    # BEFORE THE PREFIX CACHE, though either order is correct -- the husks leave named_parameters()
+    # and named_modules() unchanged and move no value, so the cache's prefix set, its dropout scan
+    # and its digest are identical either way. This order only means a dead_ops refusal happens
+    # before the cache turns on, and that the cache's log line describes the tree that will run.
+    # phases/dead_ops.py's docstring states the full order.
+    _dops = None
+    if a.skip_dead_ops:
+        import dead_ops as DOPS
+        # THE KERNEL NAMES COME FROM configs, THE SAME PLACE run_confidence_head GETS THEM.
+        # Both default to "cuequivariance", and with hidden_scale_up the tri-mul cueq gate is
+        # open -- so probing the "torch" reference implementation would certify a code path this
+        # run never executes. Found in review after the first version hardcoded "torch".
+        _dops = DOPS.install(model, autocast_dtype=torch.bfloat16,
+                             triangle_multiplicative=configs.triangle_multiplicative,
+                             triangle_attention=configs.triangle_attention)
+    else:
+        DOPS = None
 
     # ---- THE FROZEN-PREFIX CACHE ---------------------------------------------------------------
     # INSTALLED HERE AND NOT AT THE pose_inblock SITE, which is ~1,100 lines above. Its central
@@ -6180,6 +6238,16 @@ def main():
                     f"gradient at step {step}. FT3 freezes the trunk; this is not FT3 any more.")
         opt.step()
         opt.zero_grad(set_to_none=True)
+        # THE DEAD-OP RE-CHECK, HERE AND NOT AT THE CROSS-SEED STEP BOUNDARY. The obvious home for
+        # it was beside PFC.step_reset() in the unit loop -- but that site is inside
+        # `if ui in _xs_at:`, and _xs_at is only populated under --rank-cross-seed, so on any other
+        # arm the check would have run ZERO times for the whole run while the install line claimed
+        # "re-checked at every step boundary". The prefix cache survives that because it has a
+        # second, unconditional call at the epoch boundary; this has no equivalent. Immediately
+        # after opt.step() is also the strictly better moment: an optimiser step is the only thing
+        # that could have written a stubbed tensor, and this is the first instruction after it.
+        if _dops is not None:
+            DOPS.step_check()
         return gn, outside, True
 
     # DERIVED FROM --seeds, NOT FROM --eval-budget. The validation fold holds 100 seeds per
@@ -7032,6 +7100,22 @@ def main():
         _depth = {_p: len(by[_p]) for _p in order}
         _chunks, _dropped, U = _LRS.pack_cross_seed_steps(_depth, order, S,
                                                            preserve_order=_manifest_order)
+        # THE DEEPEST STRUCTURE'S UNIT COUNT. Both diagnostics below interpolate `_maxd` and
+        # nothing ever bound it: `NameError: name '_maxd' is not defined`, raised from the
+        # _manifest_order branch, which the arm never takes and a size-ordered memory probe always
+        # does. So the one configuration that exists to find the memory ceiling died before
+        # reaching a single pose.
+        #
+        # Derived from _depth rather than from U, and then checked against U, so the message
+        # cannot drift from the packing it describes -- lr_schedule.pack_cross_seed_steps:154
+        # computes U = S * max(depth), and if that ever changes this stops rather than printing a
+        # number that is no longer true.
+        _maxd = max(_depth.values()) if _depth else 0
+        if _chunks and U != S * _maxd:
+            raise SystemExit(
+                f"STOP: a cross-seed step is {U} unit(s) but S={S} times the deepest structure "
+                f"({_maxd}) is {S * _maxd}. build_epoch_cross_seed's diagnostics describe a step "
+                f"as 'S x deepest', and pack_cross_seed_steps no longer agrees.")
         steps = []
         for chunk in _chunks:
             # WHICH SEEDS, AND IN WHAT ORDER, STAYS RANDOM -- that is this shuffle, and it is the
@@ -7436,6 +7520,11 @@ def main():
                     # the frozen prefix -- an optimiser step is the only thing that could have.
                     if _pfc is not None:
                         PFC.step_reset()
+                    # THE DEAD-OP RE-CHECK IS DELIBERATELY *NOT* HERE. This site is inside
+                    # `if ui in _xs_at:`, which is only reached under --rank-cross-seed, so a
+                    # check placed here runs zero times on every other arm -- silently. It lives
+                    # immediately after opt.step() in _apply_step instead, which is unconditional
+                    # and is the actual instant a stubbed tensor could have been written.
                     _xs_prepare(_xs_steps[_xs_at[ui]], ep)
                 trunk_p = resolve_trunk(pdb, lab_p, cands)
                 # THE NEXT UNIT'S TRUNK, WARMED WHILE THIS ONE COMPUTES. Resolving it is cheap
@@ -7756,6 +7845,19 @@ def main():
                       f"copy error(s); {_ps['d2h_bytes'] / (1 << 30):.1f} GiB staged to host, "
                       f"{_ps['h2d_bytes'] / (1 << 30):.1f} GiB read back", flush=True)
                 PFC.reset_stats()
+            # DID THE DEAD-OP SKIP ACTUALLY FIRE? Same question as the two caches above, and the
+            # same reason: a stub that is never reached costs nothing and saves nothing, and the
+            # epoch time is the only other signal. The count is per stub invocation, so under
+            # --prefix-cache-gb expect FEWER calls than stubs x poses x passes -- on a cache hit
+            # the blocks before the cut are identities and their stubs are not reached at all.
+            if _dops is not None:
+                _ds = DOPS.stats()
+                print(f"  [rank {rank}] epoch {ep + 1} dead ops: {_ds['calls']:,} stub call(s) "
+                      f"across {_ds['stubbed']} skipped module(s) "
+                      f"({_ds['tensors']} tensor(s) held at the floor); each one is an O(N^3) or "
+                      f"O(N^2) pair operation NOT computed, and each returned a zeros tensor the "
+                      f"block added to z -- bit-identical to running it", flush=True)
+                DOPS.reset_stats()
             # THE DRIFT IS THE EXPERIMENT under --l2-sp, so it is reported, not inferred. The
             # full head reached ||dW||^2 = 67,052 unconstrained over 30 epochs; this says where
             # the penalised run actually sits.
