@@ -60,7 +60,10 @@ def curve(rid, col, win=False):
     is kept only for `win=True`, which filters by pdb and therefore cannot use a cross-rank
     aggregate; that case is LABELLED by returning the source alongside."""
     if not win:
-        return {e: [v] for e, (v, _n, _s) in
+        # The downstream keeps the LONGEST list per epoch and drops short ones as incomplete, so
+        # the all-ranks mean is returned repeated to its own pose count. The mean of n copies of
+        # m is m, and len() stays the completeness signal it already was.
+        return {e: [v] * n for e, (v, n, _s) in
                 epoch_curve.epoch_means(rid, col, chain=False).items()}
     d = defaultdict(list)
     p = os.path.join(ROOT, "training", "runs", rid, "trajectory.csv")

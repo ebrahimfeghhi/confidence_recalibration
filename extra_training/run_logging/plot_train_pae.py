@@ -104,7 +104,7 @@ if not per:
 # so averaging it reports the mean over the third of the structures that rank walked. epoch_curve
 # uses the cross-rank batch column weighted by batch_n. per[] is still used for the pose counts
 # and the pdb filter, which are per-pose questions.
-_am = epoch_curve.epoch_means(rid, COL, chain=False)
+_am = epoch_curve.epoch_means(rid, COL, chain=CHAIN)
 eps = sorted(_am) or sorted(per)
 mean = [_am[e][0] if e in _am else float(np.mean(per[e])) for e in eps]
 n = [_am[e][1] if e in _am else len(per[e]) for e in eps]

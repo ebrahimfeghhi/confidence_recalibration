@@ -29,6 +29,7 @@ import collections
 import csv
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import epoch_curve
 import matplotlib
 matplotlib.use("Agg")
