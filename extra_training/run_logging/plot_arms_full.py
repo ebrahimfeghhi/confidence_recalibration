@@ -24,6 +24,8 @@ import os
 import re
 import sys
 import numpy as np
+
+import epoch_curve
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -56,18 +58,13 @@ def train_table(rids):
                 out.setdefault(int(m.group(1)), {})["sd"] = float(m.group(2))
         tj = os.path.join(ROOT, "training/runs", rid, "trajectory.csv")
         if os.path.exists(tj):
-            acc = collections.defaultdict(list)
-            for r in csv.DictReader(open(tj)):
-                e = r.get("epoch")
-                if e in (None, ""):
-                    continue
-                try:
-                    acc[int(float(e))].append(float(r["pae_loss"]))
-                except (TypeError, ValueError, KeyError):
-                    pass
-            for e, v in acc.items():
-                if len(v) >= 6000:
-                    out.setdefault(e, {})["pae"] = float(np.mean(v))
+            # THE ALL-RANKS MEAN, via run_logging/epoch_curve.py. trajectory.csv is RANK 0
+            # ONLY and its bare pae_loss is one pose's value, so averaging those rows gave the
+            # mean over the third of the structures rank 0 walked -- not the run's PAE. Same
+            # defect as plot_rel_arm.py and plot_uncropped_progress.py; fixed once, centrally.
+            for e, (_mu, _n, _src) in epoch_curve.epoch_means(rid, chain=False).items():
+                if _src == "all-ranks":
+                    out.setdefault(e, {})["pae"] = _mu
     return out
 
 

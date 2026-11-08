@@ -264,6 +264,40 @@ def main():
        "and written into the metric json beside the number",
        "budget + seed_base no longer imply the intended set")
 
+    print("\n11  THE 83-STRUCTURE SET (both waves) IS COMPLETE AND SELF-DESCRIBING")
+    P83 = os.path.join(ROOT, "training/valfull83")
+    if not os.path.exists(os.path.join(P83, "pool.csv")):
+        ok(False, "training/valfull83 exists", "absent")
+    else:
+        _pool83 = os.path.join(P83, "pool.csv")
+        _rol83 = os.path.join(P83, "chain_roles.csv")
+        _man83 = os.path.join(P83, "seed_manifest.json")
+        ok(all(os.path.exists(x) for x in (_pool83, _rol83, _man83)),
+           "the pool directory carries its own pool, roles and manifest")
+        _pairs, _unres = EV.interface_chain_pairs(_pool83, _rol83)
+        ok(len(_unres) == 0 and len(_pairs) == 83,
+           "all 83 structures resolve, none unmappable",
+           f"{len(_pairs)} structures, {len(_unres)} unresolved")
+        _n = sum(len(v) for v in _pairs.values())
+        ok(_n == 141, "and all 141 interfaces are present", f"{_n}")
+        # the fold's OWN roles must still fail here, or the merge changed nothing
+        _p2, _u2 = EV.interface_chain_pairs(_pool83, os.path.join(FOLD, "chain_roles.csv"))
+        ok(len(_u2) == 49,
+           "the fold's 53-structure roles still leaves 49 unmappable (so the merge matters)",
+           f"{len(_u2)} unresolved")
+        a83 = fresh(seed_manifest=_man83)
+        _miss = [f"{p}/{s}" for p in _pairs for s in EV.intended_seeds(a83, p)
+                 if not os.path.exists(trunk(p, s))]
+        ok(_miss == [], "every one of the 83 x 30 trunks is on disk",
+           f"0 of {83 * BUDGET} missing" if not _miss else str(_miss[:3]))
+        _m53 = set(json.load(open(MAN))["structures"])
+        _m83 = set(json.load(open(_man83))["structures"])
+        ok(_m53 < _m83 and len(_m83) == 83,
+           "the 83 manifest is a strict superset of the 53", f"{len(_m83 - _m53)} added")
+        _tr = open(os.path.join(ROOT, "phases/phase_k_train.py")).read()
+        ok('_srol if os.path.exists(_srol)' in _tr,
+           "and the trainer prefers a roles table beside the pool, falling back to the fold")
+
     print()
     if FAIL:
         print(f"  {len(FAIL)} FAILURE(S): {FAIL}")

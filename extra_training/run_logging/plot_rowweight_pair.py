@@ -36,6 +36,9 @@ import sys
 from collections import defaultdict
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import epoch_curve
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -51,6 +54,14 @@ SKIP = {l.strip() for l in open(os.path.join(ROOT, "training", "full_train",
 
 
 def curve(rid, col, win=False):
+    """Per-epoch values for `col`. WITHOUT a pdb filter this returns the ALL-RANKS mean from
+    epoch_curve; trajectory.csv is rank 0 only, so averaging its per-pose column gave the mean
+    over a third of the structures -- up to 45% of this curve's whole range. The per-pose path
+    is kept only for `win=True`, which filters by pdb and therefore cannot use a cross-rank
+    aggregate; that case is LABELLED by returning the source alongside."""
+    if not win:
+        return {e: [v] for e, (v, _n, _s) in
+                epoch_curve.epoch_means(rid, col, chain=False).items()}
     d = defaultdict(list)
     p = os.path.join(ROOT, "training", "runs", rid, "trajectory.csv")
     for r in csv.DictReader(open(p)):

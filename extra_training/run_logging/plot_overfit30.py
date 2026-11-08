@@ -34,16 +34,22 @@ def pae_by_epoch(rid):
     out = collections.defaultdict(list)
     try:
         with open(os.path.join(ROOT, "training", "runs", rid, "trajectory.csv")) as fh:
+            # ONLY THE ALL-RANKS COLUMN, AND ONLY ON TAKEN STEPS. `batch_pae_loss or pae_loss`
+            # fell through on every step_taken == 0 row (they carry an EMPTY batch_pae_loss), so
+            # each epoch averaged 231 cross-rank batch values together with ~11,300 single-pose
+            # ones -- a quantity with no definition. Measured error up to +0.034.
             for r in csv.DictReader(fh):
-                v = r.get("batch_pae_loss") or r.get("pae_loss")
-                if v and r.get("epoch"):
-                    try:
-                        out[int(float(r["epoch"]))].append(float(v))
-                    except ValueError:
-                        pass
+                if (r.get("step_taken") or "").strip() != "1":
+                    continue
+                try:
+                    out[int(float(r["epoch"]))].append(
+                        (float(r["batch_pae_loss"]), float(r["batch_n"])))
+                except (KeyError, TypeError, ValueError):
+                    pass
     except OSError:
         pass
-    return {k: statistics.mean(v) for k, v in out.items()}
+    return {k: sum(x * n for x, n in v) / sum(n for _x, n in v)
+            for k, v in out.items() if sum(n for _x, n in v) > 0}
 
 
 def evals(rid):

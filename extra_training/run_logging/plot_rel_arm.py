@@ -6,8 +6,8 @@ TWO AXES, NOT ONE, and that is the point. The PAE term runs order 2.0 and the re
 its shape, which is the thing being watched, is invisible. Two y-axes make both readable; the
 colours match the axis labels so nobody reads one curve against the other's scale.
 
-WHERE EACH COMES FROM. pae_loss is per POSE in trajectory.csv and is averaged over the epoch's
-poses here. The rel term is NOT in trajectory.csv -- it is a per-interface-group quantity, not a
+WHERE EACH COMES FROM. the PAE curve is the ALL-RANKS batch_n-weighted mean over completed steps
+(run_logging/epoch_curve.py), NOT the per-pose pae_loss column, which is rank 0's alone. Its poses here. The rel term is NOT in trajectory.csv -- it is a per-interface-group quantity, not a
 per-pose one -- so it is parsed from run.log's per-epoch "rank-loss (rel, ...)" line, which is
 rank 0's view of the groups that rank saw. Those are different denominators and the script says
 so rather than implying the two curves are commensurable.
@@ -58,22 +58,29 @@ pae = defaultdict(list)
 # THE POPULATION IS COUNTED, NOT ASSUMED. This title said "368 structures" as a literal for
 # eight arms; mqird6 fits 841 and the figure claimed 368. Count the distinct pdbs the epochs
 # actually wrote, so an arm that changes its --manifest-skip relabels itself.
+# THE EPOCH MEAN IS THE ALL-RANKS ONE, from epoch_curve.epoch_means. trajectory.csv is RANK 0
+# ONLY and its bare `pae_loss` is one pose's value, so averaging those rows gave the mean over the
+# third of the structures rank 0 walked -- not this run's PAE. This figure was sent to the user
+# with that error in it. The structure COUNT still comes from the per-pose rows, which is what it
+# is for: every pose rank 0 wrote names its pdb.
+import epoch_curve
+_means = epoch_curve.epoch_means(RID)
+_pae_src = {e: s for e, (_m, _n, s) in _means.items()}
+pae_n = {e: n for e, (_m, n, _s) in _means.items()}
+pae.update({e: m for e, (m, _n, _s) in _means.items()})
+
 seen = defaultdict(set)
 for _r in _present:
-    _ep, _st = defaultdict(list), defaultdict(set)
+    _st = defaultdict(set)
     for r in csv.DictReader(open(os.path.join(ROOT, "training", "runs", _r,
                                               "trajectory.csv"))):
         try:
-            e, v = r.get("epoch"), r.get("pae_loss")
-            if e in (None, "") or v in (None, ""):
+            e = r.get("epoch")
+            if e in (None, ""):
                 continue
-            f = float(v)
-            if np.isfinite(f):
-                _ep[int(float(e))].append(f)
-                _st[int(float(e))].add((r.get("pdb") or "").strip())
+            _st[int(float(e))].add((r.get("pdb") or "").strip())
         except (ValueError, TypeError):
             continue
-    pae.update(_ep)
     seen.update(_st)
 
 # rank 0's per-epoch rel loss and the two diagnostics, from the log of every run in the chain
@@ -94,10 +101,16 @@ for _r in RIDS:
 eps = sorted(pae)
 if not eps:
     sys.exit(f"  trajectory.csv for {RID} has no pae_loss rows yet")
-pv = [float(np.mean(pae[e])) for e in eps]
-pn = [len(pae[e]) for e in eps]
+pv = [float(pae[e]) for e in eps]
+pn = [pae_n[e] for e in eps]
 full = max(pn[:-1]) if len(pn) > 1 else 0
 partial = len(eps) > 1 and pn[-1] < full * 0.98
+# AND SAY SO IF ANY EPOCH FELL BACK. A rank-0 mean is ~6.6x noisier and must never be read as the
+# global curve just because it is drawn in the same colour.
+_fellback = sorted(e for e, s in _pae_src.items() if s != "all-ranks")
+if _fellback:
+    print(f"  NOTE: epoch(s) {_fellback} have no completed-step batch rows, so their PAE is the "
+          f"RANK-0 per-pose mean, not the all-ranks mean.")
 k = len(eps) - 1 if partial else len(eps)
 
 # FOUR SINGLE-AXIS PANELS, NOT TWO WITH TWIN AXES. The first version put PAE and rel on one
@@ -133,11 +146,12 @@ def draw(ax, xs, ys, colour, title, last_fmt="{:.4f}", hollow_last=False):
 draw(ax_pae, eps, pv, "#b03a3a", "PAE loss  (mean over the epoch's poses)",
      hollow_last=partial)
 if partial:
-    # ABOVE THE AXES, not at (0.98, 0.04): the PAE curve ends in the lower right, so the note
-    # printed straight through the last few epochs' markers.
-    ax_pae.annotate(f"epoch {eps[-1]} partial, n={pn[-1]}", (0.98, 0.97),
-                    xycoords="axes fraction", ha="right", va="top", fontsize=7.5,
-                    color="#999999")
+    # TOP LEFT, not top right. At (0.98, 0.97) it printed underneath the bold value annotation
+    # for the final point, which is drawn in the same corner -- the two overlapped into mush in
+    # the rendered PNG. n is the ALL-RANKS pose count, same units as every other epoch's.
+    ax_pae.annotate(f"epoch {eps[-1]} partial, n={pn[-1]:,} poses", (0.02, 0.03),
+                    xycoords="axes fraction", ha="left", va="bottom", fontsize=8,
+                    color="#888888")
 
 _re = sorted(rel)
 draw(ax_rel, _re, [rel[e] for e in _re], "#2f6fb0",

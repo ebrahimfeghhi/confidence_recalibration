@@ -23,6 +23,9 @@ import sys
 from collections import defaultdict
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import epoch_curve
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -97,9 +100,14 @@ if not per:
              + ("  (that column only exists on a --pae-row-frac arm)"
                 if COL.endswith("unweighted") else ""))
 
-eps = sorted(per)
-mean = [float(np.mean(per[e])) for e in eps]
-n = [len(per[e]) for e in eps]
+# THE ALL-RANKS MEAN. per[] above is the rank-0 per-pose column; trajectory.csv is rank 0 only,
+# so averaging it reports the mean over the third of the structures that rank walked. epoch_curve
+# uses the cross-rank batch column weighted by batch_n. per[] is still used for the pose counts
+# and the pdb filter, which are per-pose questions.
+_am = epoch_curve.epoch_means(rid, COL, chain=False)
+eps = sorted(_am) or sorted(per)
+mean = [_am[e][0] if e in _am else float(np.mean(per[e])) for e in eps]
+n = [_am[e][1] if e in _am else len(per[e]) for e in eps]
 # THE LAST EPOCH IS PARTIAL unless its pose count matches the completed epochs' mode.
 full = max(n[:-1]) if len(n) > 1 else 0
 partial = len(eps) > 1 and n[-1] < full * 0.98
