@@ -19,8 +19,9 @@
 #         Confirms on real geometry what the CPU test confirms on synthetic: both injection sites
 #         take finite non-zero gradient, nothing frozen takes any, and the bundle round-trips.
 #
-# Gate 3 (multi-size time and VRAM, including the ten excluded structures) is NOT here. It needs a
-# size-swept pool and is the long leg; it belongs in its own script and its own session.
+# Gate 3  PER-SIZE ELAPSED TIME AND PEAK MEMORY, including one previously excluded structure.
+#         Delegated to run_logging/bench_ckpt_by_size.py, which already does exactly this and
+#         takes the arm's own argv so it cannot drift from the arm.
 #
 # ONE CARD. mqird6 holds 4, 5 and 7, and the standing rule is never more than three GPUs, so this
 # runs on a card OUTSIDE that set and refuses if the one it is given is not genuinely idle.
@@ -138,18 +139,45 @@ if [ "$DRY" != "1" ]; then
   ls -la "training/runs/$RID"/*.pt 2>/dev/null | tee -a "$W/gate2_verdict.txt"
 fi
 
+# ---- GATE 3: per-size elapsed time and peak memory, including an oversized complex --------------
+# NOT A NEW HARNESS. run_logging/bench_ckpt_by_size.py already measures per-pose peak memory and
+# per-pose device time on one card, and its --arm-argv exists so a benchmark cannot drift from the
+# arm it benchmarks. For a live run that argv comes from /proc; this arm is not running, so it
+# comes from the launcher's own dry run via run_logging/argv_from_dry.py -- still the launcher's
+# output rather than a transcription of it.
+#
+# THE SKIP LIST IS DELIBERATELY SHORTER HERE. The arm skips the ten structures measured not to fit
+# uncropped, which is exactly the set Codex wants a number for, so this argv is generated with
+# SKIP holding only the three documented skips. That is why gate 3 captures its OWN argv instead
+# of reusing gates 1-2'.
+say "GATE 3: capturing the in-block argv, with the oversized structures NOT skipped"
+run env DRY=1 CARDS="$CARD" INBLOCK=1 LEAN_SINGLE=1 TRUNK_CACHE_GB=0 TRUNK_MEMMAP=0 \
+    SKIP="9mx1,4zto,9q5m" ./shell_scripts/launch_default_arm.sh > "$W/dry_gate3.log" 2>&1
+run "$PY" -I run_logging/argv_from_dry.py --log "$W/dry_gate3.log" \
+    --out "$W/inblock_argv_oversized.txt"
+
+# A SMALL, A MID, A LARGE AND ONE PREVIOUSLY EXCLUDED. 7cn2 is in the arm's OVERSIZED list, so it
+# is the "prior oversized complex" the acceptance report asks for -- and the one most likely to
+# OOM, which is the point: the new graph is shallower in backward than the arm this was fitted on,
+# so whether it now fits is an open question and not a formality.
+UNITS="${UNITS:-22gi,29tj,7cn2}"
+say "GATE 3: benchmarking units $UNITS on card $CARD (lean readouts, checkpointing ON)"
+run env LAYERNORM_TYPE=openfold "$PY" -I run_logging/bench_ckpt_by_size.py \
+    --arm-argv "$W/inblock_argv_oversized.txt" --cards "$CARD" \
+    --units "$UNITS" --only lean_ckpt_on --master-port 29571 \
+    --out "$W/bench" 2>&1 | tee "$W/gate3.log" | tail -25
+
 # ---- the summary, so the verdict is one line and not a reading exercise --------------------------
 say "================ SMOKE SUMMARY ================"
 if [ "$DRY" = "1" ]; then
   say "DRY RUN -- nothing executed. Re-run with DRY=0 CARD=$CARD to actually do it."
-  say "Gate 3 (multi-size time and VRAM, including the ten excluded structures) is NOT in this"
-  say "  script and is still outstanding before a long arm."
+  say "All three gates are wired. Gate 3 delegates to bench_ckpt_by_size.py."
   exit 0
 fi
 say "Gate 0 (card idle)            PASS"
 say "Gate 1 (step-zero parity)     ${G1:-skipped}"
 say "Gate 2 (one step + probe)     see $W/gate2_verdict.txt -- READ IT, it is not auto-judged"
-say "Gate 3 (time and VRAM)        NOT RUN -- still outstanding before a long arm"
+say "Gate 3 (time and VRAM)        see $W/gate3.log and $W/bench -- also not auto-judged"
 say "Everything is under $W"
 say "NOTHING was merged, nothing long was launched, and mqird6 was not touched."
 # GATE 2 IS NOT GIVEN A PASS/FAIL BY THIS SCRIPT. Its evidence is the grad-probe block in the
