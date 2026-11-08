@@ -77,6 +77,28 @@ _PRE_CROP = {"lora_rank": 0, "lora_alpha": 0.0, "lora_targets": "", "lora_dropou
              "lr_final": 0.0}
 
 
+#: The fields the MINIMAL copy records. The original's guard carries 64, half of them for
+#: features this copy does not support (LoRA, cropping, the tau-based ranking forms), and some of
+#: those are DERIVED rather than raw -- --rank-tau defaults to None while the guard stores the
+#: sentinel -1.0, so args.json is not a valid oracle for them. Scoping the comparison here keeps
+#: the contract honest instead of comparing fields neither side owns.
+ABANDONED = {
+    "l2_sp", "l2_sp_exclude", "lora_rank", "lora_alpha", "lora_targets", "lora_dropout",
+    "crop_margin", "crop_tokens", "crop_all_poses", "crop_contact", "token_keep_union",
+    "token_keep_other", "pose_perblock", "pose_perblock_tied", "pose_perblock_copy",
+    "pose_perblock_share", "frame_direction", "drop_pde", "pae_row_frac", "pae_row_mass",
+    "pae_row_floor", "rank_tau", "rank_pairs", "rank_topk_decay", "rank_straddle",
+    "rank_within_weight", "rank_spearman_tau", "rank_dist_weight", "rank_weight_by_gap",
+    "rank_rel_scale", "rank_labels", "lr_decay_start_epoch", "lr_decay_end_epoch",
+    "lr_decay_shape", "lr_final", "pair_dropout",
+}
+
+
+def live_fields(guard):
+    """The subset of a guard this copy compares: everything but the abandoned features."""
+    return {k: v for k, v in (guard or {}).items() if k not in ABANDONED}
+
+
 def compare_guard(mine, bundle_guard, fallback, migrations=None):
     """Which settings disagree. Pure.
 

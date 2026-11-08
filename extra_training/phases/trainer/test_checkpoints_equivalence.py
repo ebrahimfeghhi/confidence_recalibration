@@ -17,7 +17,7 @@ import sys
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from trainer.checkpoints import _PRE_CROP, compare_guard  # noqa: E402
+from trainer.checkpoints import _PRE_CROP, compare_guard, live_fields  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RUNS = os.path.join(ROOT, "training", "runs")
@@ -50,7 +50,10 @@ def main():
         if not g:
             continue
         side = json.load(open(aj))
-        # "mine" is that run's own recorded config, i.e. exactly what it resumed with
+        # "mine" is that run's own recorded config, restricted to the fields this copy compares.
+        # The abandoned ones are excluded because some are DERIVED -- the guard stores -1.0 for
+        # --rank-tau where args.json stores None -- so args.json is not their oracle.
+        g = live_fields(g)
         mine = {k: side[k] for k in g if k in side}
         bad, from_args, unknown, migrated = compare_guard(mine, g, side)
         checked += 1
@@ -63,7 +66,7 @@ def main():
 
     print("\n2  AND IT IS NOT ACCEPTING EVERYTHING (mutation)")
     b = bundles[-1]
-    g = (torch.load(b, map_location="cpu", weights_only=False) or {}).get("guard", {})
+    g = live_fields((torch.load(b, map_location="cpu", weights_only=False) or {}).get("guard", {}))
     side = json.load(open(os.path.join(os.path.dirname(b), "args.json")))
     mine = {k: side[k] for k in g if k in side}
     ok(bool(mine), "the last bundle yields comparable fields", f"{len(mine)} fields")
