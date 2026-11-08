@@ -23,6 +23,7 @@ import collections
 import csv
 import glob
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -110,6 +111,30 @@ def pose_rows(rid, chain=True):
                 with open(f) as fh:
                     rows.extend(csv.DictReader(fh))
     return rows, nrank, complete
+
+
+#: the per-epoch scalars rank 0 prints to run.log. They are NOT in trajectory.csv -- rel is per
+#: interface-group and rho/spread are computed over a held-out probe -- so they are parsed here,
+#: once, rather than by each plotter with its own regex.
+LOG_SERIES = {
+    "rel": r"\[rank 0\] epoch (\d+) rank-loss \(rel[^)]*\): ([+-][0-9.]+)",
+    "rho": r"\[rank 0\] epoch (\d+) WITHIN-INTERFACE SPEARMAN[^:]*: median ([+-][0-9.]+)",
+    "spread": r"\[rank 0\] epoch (\d+) SCORE SPREAD:.*?median ratio ([0-9.]+)",
+}
+
+
+def log_series(rid, chain=True):
+    """{name: {epoch: value}} for every LOG_SERIES key, newest run in the chain winning."""
+    out = {k: {} for k in LOG_SERIES}
+    for r_ in (run_chain(rid) if chain else [rid]):
+        f = os.path.join(ROOT, "training", "runs", r_, "run.log")
+        if not os.path.exists(f):
+            continue
+        t = open(f, errors="replace").read()
+        for k, pat in LOG_SERIES.items():
+            for m in re.finditer(pat, t):
+                out[k][int(m.group(1))] = float(m.group(2))
+    return out
 
 
 def partial_epochs(means, frac=0.98):

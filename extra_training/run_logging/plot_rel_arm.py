@@ -1,258 +1,104 @@
 #!/usr/bin/env python
-"""Both training loss components of the rel-iTM arm, per epoch, on one figure.
+"""THE training plot. One file, one definition, one or more arms on the same axes.
 
-TWO AXES, NOT ONE, and that is the point. The PAE term runs order 2.0 and the relative term order
-1e-2 -- roughly 180x apart -- so on a shared axis the rel curve is a flat line on the floor and
-its shape, which is the thing being watched, is invisible. Two y-axes make both readable; the
-colours match the axis labels so nobody reads one curve against the other's scale.
+    plot_rel_arm.py RID[,RID2,...] [OUT.png]
 
-WHERE EACH COMES FROM. the PAE curve is the ALL-RANKS batch_n-weighted mean over completed steps
-(run_logging/epoch_curve.py), NOT the per-pose pae_loss column, which is rank 0's alone. Its poses here. The rel term is NOT in trajectory.csv -- it is a per-interface-group quantity, not a
-per-pose one -- so it is parsed from run.log's per-epoch "rank-loss (rel, ...)" line, which is
-rank 0's view of the groups that rank saw. Those are different denominators and the script says
-so rather than implying the two curves are commensurable.
+Four panels, always the same four, because an arm is judged on all of them together:
+  PAE loss      the term that dominates the gradient
+  rel           the ranking term this arm adds
+  rho           median within-interface Spearman -- the ranking quality selection actually uses
+  score spread  std(predicted) / std(true iTM); 1.0 means the predictions are as spread as truth
 
-THE RATIO IS THE THIRD CURVE, and it is the one that decides whether beta is right. Over seven
-pre-launch windows the parity alpha ranged 30 to 1316 -- a 44x spread -- because rel's
-coefficients sum to exactly zero so its accumulated gradient is a residual after near-complete
-cancellation. beta 75 is a starting ratio, not a derived value, so what matters is whether the
-realised |g_rel| / |g_PAE| stays in a usable band as training proceeds, not what it was at init.
+WHERE THE NUMBERS COME FROM, and why none of it lives here: the PAE curve is the ALL-RANKS
+batch_n-weighted mean from epoch_curve.epoch_means (trajectory.csv is rank 0's alone, so averaging
+its per-pose column reports a third of the run), and rel/rho/spread are per-epoch scalars rank 0
+prints to run.log, parsed by epoch_curve.log_series. Both are shared with every other plotter so
+no two figures can disagree about what an epoch's value is -- which they did, repeatedly, before
+this was centralised.
 
-THE PARTIAL EPOCH IS DRAWN HOLLOW: trajectory.csv is appended per pose, so the newest epoch is
-usually incomplete and its mean is over fewer poses.
-
-Usage:  python -I run_logging/plot_rel_arm.py [run_id] [out.png]
+Several RIDs overlay for an A/B. The chain of each is resolved from args.json, so a resumed arm is
+one curve and not several, and partial epochs are drawn HOLLOW so an incomplete mean is never read
+as a finished one.
 """
-import json
-import csv
 import os
-import re
 import sys
-from collections import defaultdict
 
-import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MaxNLocator
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RID = sys.argv[1] if len(sys.argv) > 1 else "6t9h7d"
-OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/rel_arm_{RID}.png"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import epoch_curve as EC
 
-# THE WHOLE CHAIN, oldest first. A resume writes to a FRESH run directory while continuing the
-# parent's epoch numbering, so reading only RID would plot epochs 28-60 of a 60-epoch arm and drop
-# everything before the pause -- the exact bug that made the control look like a 35-epoch run.
-# plot_three.run_chain resolves it from args.json's recorded --resume path, not from the name.
-sys.path.insert(0, os.path.join(ROOT, "run_logging"))
-import plot_three                                                            # noqa: E402
-RIDS = list(plot_three.run_chain(RID))
-_present = [r for r in RIDS
-            if os.path.exists(os.path.join(ROOT, "training", "runs", r, "trajectory.csv"))]
-if not _present:
-    sys.exit(f"  no trajectory.csv for {RID} yet")
+PANELS = [("pae", "PAE loss", "PAE loss (all ranks)"),
+          ("rel", "relative iTM term", "rel loss"),
+          ("rho", "within-interface Spearman vs DockQ", "median rho"),
+          ("spread", "score spread  std(pred) / std(true iTM)", "ratio")]
+COLORS = ["tab:blue", "tab:red", "tab:green", "tab:purple"]
 
-# A LATER RUN WINS on any epoch both wrote. A resume re-runs the epoch it was interrupted in, so
-# the parent's partial rows for that epoch would otherwise be averaged in with the full ones.
-pae = defaultdict(list)
-# THE POPULATION IS COUNTED, NOT ASSUMED. This title said "368 structures" as a literal for
-# eight arms; mqird6 fits 841 and the figure claimed 368. Count the distinct pdbs the epochs
-# actually wrote, so an arm that changes its --manifest-skip relabels itself.
-# THE EPOCH MEAN IS THE ALL-RANKS ONE, from epoch_curve.epoch_means. trajectory.csv is RANK 0
-# ONLY and its bare `pae_loss` is one pose's value, so averaging those rows gave the mean over the
-# third of the structures rank 0 walked -- not this run's PAE. This figure was sent to the user
-# with that error in it. The structure COUNT still comes from the per-pose rows, which is what it
-# is for: every pose rank 0 wrote names its pdb.
-import epoch_curve
-_means = epoch_curve.epoch_means(RID)
-_pae_src = {e: s for e, (_m, _n, s) in _means.items()}
-pae_n = {e: n for e, (_m, n, _s) in _means.items()}
-pae.update({e: m for e, (m, _n, _s) in _means.items()})
 
-seen = defaultdict(set)
-for _r in _present:
-    _st = defaultdict(set)
-    for r in csv.DictReader(open(os.path.join(ROOT, "training", "runs", _r,
-                                              "trajectory.csv"))):
-        try:
-            e = r.get("epoch")
-            if e in (None, ""):
+def arm(rid):
+    """{panel: {epoch: value}}, plus the set of partial epochs."""
+    means = EC.epoch_means(rid)
+    logs = EC.log_series(rid)
+    return ({"pae": {e: v for e, (v, _n, _s) in means.items()}, **logs},
+            EC.partial_epochs(means), EC.run_chain(rid))
+
+
+def main():
+    rids = (sys.argv[1] if len(sys.argv) > 1 else "qip9ta").split(",")
+    out = sys.argv[2] if len(sys.argv) > 2 else f"figures/rel_arm_{rids[0]}.png"
+    data = {r: arm(r) for r in rids}
+    if not any(d[0]["pae"] for d in data.values()):
+        raise SystemExit(f"STOP: no completed epochs for {rids}")
+
+    plt.rcParams.update({"font.size": 11})
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+    for (key, title, ylab), ax in zip(PANELS, axes.ravel()):
+        for i, r in enumerate(rids):
+            series, partial, _chain = data[r]
+            pts = sorted(series.get(key, {}).items())
+            if not pts:
                 continue
-            _st[int(float(e))].add((r.get("pdb") or "").strip())
-        except (ValueError, TypeError):
-            continue
-    seen.update(_st)
+            col = COLORS[i % len(COLORS)]
+            full = [(e, v) for e, v in pts if e not in partial]
+            if full:
+                ax.plot(*zip(*full), "-o", color=col, lw=2, ms=7,
+                        label=r if len(rids) > 1 else None)
+            for e, v in pts:
+                if e in partial:          # hollow: fewer poses behind it
+                    ax.plot([e], [v], "o", mfc="none", mec=col, mew=2, ms=7)
+        ax.set_xlabel("epoch"); ax.set_ylabel(ylab); ax.set_title(title, fontsize=11)
+        ax.grid(alpha=.3); ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+        if len(rids) > 1 and ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize=9)
+    sub = "  vs  ".join(rids) if len(rids) > 1 else rids[0]
+    fig.suptitle(f"TRAINING metrics -- {sub}"
+                 + ("   (hollow = partial epoch)" if any(d[1] for d in data.values()) else ""),
+                 fontsize=13)
+    fig.tight_layout(rect=[0, 0, 1, .94])
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    fig.savefig(out, dpi=130)
+    print(f"-> {out}")
 
-# rank 0's per-epoch rel loss and the two diagnostics, from the log of every run in the chain
-rel, rho, sdr = {}, {}, {}
-for _r in RIDS:
-    log = os.path.join(ROOT, "training", "runs", _r, "run.log")
-    if not os.path.exists(log):
-        continue
-    _t = open(log, errors="replace").read()
-    for m in re.finditer(r"\[rank 0\] epoch (\d+) rank-loss \(rel[^)]*\): ([+-][0-9.]+)", _t):
-        rel[int(m.group(1))] = float(m.group(2))
-    for m in re.finditer(r"\[rank 0\] epoch (\d+) WITHIN-INTERFACE SPEARMAN[^:]*: median "
-                         r"([+-][0-9.]+)", _t):
-        rho[int(m.group(1))] = float(m.group(2))
-    for m in re.finditer(r"\[rank 0\] epoch (\d+) SCORE SPREAD:.*?median ratio ([0-9.]+)", _t):
-        sdr[int(m.group(1))] = float(m.group(2))
-
-eps = sorted(pae)
-if not eps:
-    sys.exit(f"  trajectory.csv for {RID} has no pae_loss rows yet")
-pv = [float(pae[e]) for e in eps]
-pn = [pae_n[e] for e in eps]
-full = max(pn[:-1]) if len(pn) > 1 else 0
-partial = len(eps) > 1 and pn[-1] < full * 0.98
-# AND SAY SO IF ANY EPOCH FELL BACK. A rank-0 mean is ~6.6x noisier and must never be read as the
-# global curve just because it is drawn in the same colour.
-_fellback = sorted(e for e, s in _pae_src.items() if s != "all-ranks")
-if _fellback:
-    print(f"  NOTE: epoch(s) {_fellback} have no completed-step batch rows, so their PAE is the "
-          f"RANK-0 per-pose mean, not the all-ranks mean.")
-k = len(eps) - 1 if partial else len(eps)
-
-# FOUR SINGLE-AXIS PANELS, NOT TWO WITH TWIN AXES. The first version put PAE and rel on one
-# panel with twin y-axes and the two diagnostics on another the same way: four axes, four
-# colour-coded tick sets, two legends and reference annotations that collided with the curves.
-# Each quantity has its own scale and its own question, so each gets its own panel; the only
-# thing they share is the epoch axis.
-plt.rcParams.update({"font.size": 10, "axes.titlesize": 10.5, "axes.labelsize": 9.5,
-                     "axes.spines.top": False, "axes.spines.right": False,
-                     "axes.grid": True, "grid.color": "#e8e8e8", "grid.linewidth": 0.8,
-                     "legend.frameon": False, "figure.facecolor": "white",
-                     "xtick.labelsize": 9, "ytick.labelsize": 9})
-fig, axes = plt.subplots(2, 2, figsize=(11.0, 6.4), sharex=True)
-(ax_pae, ax_rel), (ax_rho, ax_sd) = axes
+    for r in rids:
+        series, partial, chain = data[r]
+        print(f"\n{r}  (chain {' -> '.join(chain)})")
+        eps = sorted(series["pae"])
+        print(f"  {'ep':>3} " + " ".join(f"{k:>10}" for k, _t, _y in PANELS))
+        for e in eps:
+            row = " ".join(f"{series.get(k, {}).get(e, float('nan')):>10.4f}"
+                           for k, _t, _y in PANELS)
+            print(f"  {e:>3} {row}" + ("   PARTIAL" if e in partial else ""))
+        done = [e for e in eps if e not in partial]
+        if len(done) > 1:
+            v = [series["pae"][e] for e in done]
+            down = sum(1 for a_, b_ in zip(v, v[1:]) if b_ < a_)
+            print(f"  PAE monotonicity: {down} of {len(v) - 1} steps decreased, "
+                  f"net {v[-1] - v[0]:+.4f}")
+    return 0
 
 
-def draw(ax, xs, ys, colour, title, last_fmt="{:.4f}", hollow_last=False):
-    if not xs:
-        ax.text(0.5, 0.5, "no data yet", transform=ax.transAxes, ha="center", va="center",
-                color="#999999", fontsize=9)
-        ax.set_title(title, loc="left")
-        return
-    k = len(xs) - 1 if hollow_last else len(xs)
-    ax.plot(xs[:k], ys[:k], color=colour, lw=1.8, marker="o", ms=3.5)
-    if hollow_last:
-        ax.plot(xs[k:], ys[k:], color=colour, lw=1.2, ls=":", marker="o", ms=5.5,
-                mfc="white", mew=1.4)
-    ax.annotate(last_fmt.format(ys[-1]), (xs[-1], ys[-1]), color=colour, fontsize=9,
-                fontweight="bold", xytext=(5, 2), textcoords="offset points")
-    ax.set_title(title, loc="left", color=colour)
-
-
-draw(ax_pae, eps, pv, "#b03a3a", "PAE loss  (mean over the epoch's poses)",
-     hollow_last=partial)
-if partial:
-    # TOP LEFT, not top right. At (0.98, 0.97) it printed underneath the bold value annotation
-    # for the final point, which is drawn in the same corner -- the two overlapped into mush in
-    # the rendered PNG. n is the ALL-RANKS pose count, same units as every other epoch's.
-    ax_pae.annotate(f"epoch {eps[-1]} partial, n={pn[-1]:,} poses", (0.02, 0.03),
-                    xycoords="axes fraction", ha="left", va="bottom", fontsize=8,
-                    color="#888888")
-
-_re = sorted(rel)
-draw(ax_rel, _re, [rel[e] for e in _re], "#2f6fb0",
-     "relative iTM term  (mean over interface-groups)", "{:.5f}")
-
-# SPEARMAN gets a shaded band between where the head was and what the true iTM reaches, which
-# says "this is the distance to cover" without two more annotated lines crossing the data.
-_rhe = sorted(rho)
-# THE CURVE AND THE REFERENCES ARE MEASURED ON DIFFERENT INPUTS, and the band used to hide it.
-# This curve comes from the TRAINING loop, so every pose is CROPPED -- crop 3400 with a
-# 10-residue interface margin. Every reference number in this project (d32kqp ep66, the true-iTM
-# ceiling, the shipped head) comes from the evaluator, which has no crop flags and always runs the
-# FULL structure. Shading from 0.2994 to 0.6898 under a cropped curve therefore drew the arm
-# crossing most of a gap it was not measured against: the same epoch-27 checkpoint reads +0.5392
-# cropped here and +0.2819 uncropped on the identical 738 interfaces.
-#
-# SO THE BAND IS GONE and the references are drawn as what they are -- uncropped, on their own
-# axis -- with the ONE matched uncropped pair this arm has, measured by
-# run_logging/rank_gain_location.py at epoch 27. Read the curve for its SHAPE; read the uncropped
-# markers for where the arm actually stands.
-# ONE LINE OF TEXT, NOT FOUR DASHED LINES. Drawn on the axis they collided twice over: the panel
-# is ~0.63 of Spearman tall, and ours-uncropped (+0.2819) sits 0.0175 from d32kqp (+0.2994), so
-# the two labels printed on top of each other. They also do not BELONG on this axis -- they are
-# uncropped and the curve is cropped, so a reader should not be able to lay a ruler across them.
-# WHETHER THE CURVE IS CROPPED IS A PROPERTY OF THE ARM, NOT OF THIS SCRIPT. The label and the
-# ep27 reference line were hardcoded for the cropped arm (o2qczq -> t4jtjr, --crop-margin 10) and
-# then printed verbatim over the UNCROPPED arm, calling its full-structure curve "CROPPED" and
-# laying a cropped-arm reference beside it. Read it from the run's own args.json instead; a resume
-# cannot change crop_margin without --resume-override, so the plotted run's value is the chain's.
-_cm = None
-for _r in RIDS:
-    _ap = os.path.join(ROOT, "training", "runs", _r, "args.json")
-    if os.path.exists(_ap):
-        _cm = float(json.load(open(_ap)).get("crop_margin", 0.0) or 0.0)
-        break
-if _cm is None:
-    raise SystemExit(f"STOP: no args.json anywhere in the chain {RIDS}, so whether this arm "
-                     f"trains cropped is unknown and the axis cannot be labelled honestly.")
-
-draw(ax_rho, _rhe, [rho[e] for e in _rhe], "#3a8a5f",
-     "within-interface Spearman vs DockQ  "
-     + (f"(CROPPED, margin {_cm:g} A)" if _cm > 0 else "(UNCROPPED, full structures)"),
-     "{:+.4f}")
-# The ep27 markers are the CROPPED arm's own matched pair. They belong only on that arm's panel.
-if _cm > 0:
-    ax_rho.annotate("uncropped @ep27:   shipped +0.193    ours +0.282    "
-                    "d32kqp ep66 +0.299    true iTM +0.690",
-                    (0.02, 0.97), xycoords="axes fraction", ha="left", va="top",
-                    fontsize=7.5, color="#777777")
-    ax_rho.set_ylim(0.15, 0.78)
-
-_sde = sorted(sdr)
-# TWO REFERENCES: 1.0 is matching the truth, and 0.450 is where the row-weight arm sat at
-# epoch 66, so "is this arm less collapsed than the last one" is readable directly.
-ax_sd.axhspan(0.450, 1.0, color="#8a5f3a", alpha=0.07, lw=0)
-for _y, _lab in ((1.0, "matches the truth"), (0.450, "d32kqp ep66  0.450")):
-    ax_sd.axhline(_y, color="#8a5f3a", lw=0.9, ls="--", alpha=0.55)
-    ax_sd.annotate(_lab, (0.99, _y), xycoords=("axes fraction", "data"), ha="right",
-                   va="bottom", fontsize=8, color="#8a5f3a", alpha=0.9)
-draw(ax_sd, _sde, [sdr[e] for e in _sde], "#8a5f3a",
-     "score spread  std(predicted) / std(true iTM)", "{:.3f}")
-if _sde:
-    ax_sd.set_ylim(0, max(1.15, max(sdr.values()) * 1.15))
-
-for _a in (ax_rho, ax_sd):
-    _a.set_xlabel("epoch")
-for _a in axes.ravel():
-    _a.xaxis.set_major_locator(MaxNLocator(integer=True, nbins=8))
-# SAYS "TRAINING" IN THE BOLD LINE, for the same reason the held-out figure says "HELD-OUT":
-# these two figures come from one arm and were previously distinguishable only by filename.
-# THE POPULATION COMES FROM THE MANIFEST LINE, NOT FROM trajectory.csv. The trajectory is rank
-# 0's view: on an all-shallow step rank 0 takes 10 of ~29 structures, so counting distinct pdbs
-# there gives 572 for an arm whose population is 840 -- right about the file, wrong about the arm.
-# Parse run.log's "manifest: N selected structure(s) minus [...]" and subtract; fall back to the
-# trajectory count, LABELLED AS rank 0's, rather than printing a confident wrong number.
-_nstruct, _what = None, "structures it fits"
-for _r in RIDS:
-    _lg = os.path.join(ROOT, "training", "runs", _r, "run.log")
-    if not os.path.exists(_lg):
-        continue
-    _m = re.search(r"manifest: (\d+) selected structure\(s\) minus \[([^\]]*)\]",
-                   open(_lg, errors="replace").read())
-    if _m:
-        _nstruct = int(_m.group(1)) - len(re.findall(r"'[^']+'", _m.group(2)))
-        break
-if _nstruct is None:
-    _nstruct = max((len(v) for v in seen.values()), default=0)
-    _what = "structures in rank 0's trajectory"
-fig.suptitle(f"{RID}   TRAINING metrics  (in-sample, the {_nstruct} {_what})",
-             x=0.012, ha="left",
-             fontsize=11.5, fontweight="bold")
-fig.text(0.012, 0.938, "top row: the two training terms   |   bottom row: the arm's prediction",
-         fontsize=8.5, color="#777777")
-fig.tight_layout(rect=(0, 0, 1, 0.93))
-os.makedirs(os.path.join(ROOT, os.path.dirname(OUT)), exist_ok=True)
-fig.savefig(os.path.join(ROOT, OUT), dpi=150, bbox_inches="tight")
-print(f"  {len(eps)} epoch(s) -> {OUT}")
-print(f"  {'ep':>3} {'PAE':>9} {'rel':>10} {'rho':>8} {'sd_ratio':>9} {'poses':>7}")
-for e, v, n in zip(eps, pv, pn):
-    r, rh, sr = rel.get(e), rho.get(e), sdr.get(e)
-    print(f"  {e:>3} {v:>9.4f} {('%10.5f' % r) if r is not None else '         -'}"
-          f" {('%+8.4f' % rh) if rh is not None else '       -'}"
-          f" {('%9.3f' % sr) if sr is not None else '        -'} {n:>7}"
-          + ("  PARTIAL" if partial and e == eps[-1] else ""))
+if __name__ == "__main__":
+    raise SystemExit(main())

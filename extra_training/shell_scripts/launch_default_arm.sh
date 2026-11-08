@@ -336,7 +336,7 @@ ARGS=(--rank-loss --rank-form rel --rel-labels "$RELLAB"
       --pae-scored-pairs "$POOL" --pae-scored-roles training/fold/chain_roles_all.csv
       --pae-only --lean-readouts --minimal-items
       --alignment-preflight "$MARKER"
-      --epochs "$EPOCHS" --lr 0.01 --warmup-steps 20 --seed 0 --accum 30 --nsample 5
+      --epochs "$EPOCHS" --lr "${LR:-0.01}" --warmup-steps 20 --seed 0 --accum 30 --nsample 5
       --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0
       --prefetch-units 2 --prefetch-workers 4
       --blocks-per-ckpt 1 --ckpt-token-threshold "$CKPT_THRESH"
@@ -479,7 +479,12 @@ fi
 # own per-epoch IN-SAMPLE lines -- WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ) and
 # SCORE SPREAD against std(true iTM) -- which need no eval and must never be read as generalisation.
 if [ "$NOEVAL" != "1" ]; then
-  ARGS+=(--eval-pool training/valfull/pool.csv --eval-pool-fold validation/fold
+  # EVAL_POOL SELECTS THE HELD-OUT SET. training/valfull83 is the WHOLE validation fold -- both
+  # waves, 83 structures / 141 interfaces -- and carries its own chain_roles.csv and
+  # seed_manifest.json, which the trainer prefers over the fold's 53-structure ones.
+  # training/valfull (53 / 92) is what every number in paper_results.md section 3-4 was measured
+  # on, so it stays available for comparison.
+  ARGS+=(--eval-pool "${EVAL_POOL:-training/valfull/pool.csv}" --eval-pool-fold validation/fold
          --eval-pool-seed-base 400000 --eval-pool-budget 30 --eval-pool-every 1)
 else
   say "NOEVAL=1: no --eval-pool. IN-SAMPLE diagnostics only; no held-out number from this run."
@@ -526,7 +531,8 @@ fi
 if [ -n "${EXTRA:-}" ]; then
   # shellcheck disable=SC2206
   ARGS+=($EXTRA)
-  say "EXTRA: appended $EXTRA"
+  say "LR: ${LR:-0.01} (base, before --lr-steps)"
+say "EXTRA: appended $EXTRA"
   NOTE="$NOTE EXTRA ARGS: $EXTRA."
 fi
 if [ "$DRY" = "1" ]; then
