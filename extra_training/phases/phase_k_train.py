@@ -4670,6 +4670,9 @@ def main():
     # the run branches on; nothing branches on these. Same bargain as _cpu_crop's counters.
     _tr_stat = {"hit": 0, "miss": 0, "put": 0, "full": 0, "err": 0, "dup": 0}
     _tr_threads = [None]
+    # EVERY warmer ever started and not yet reaped. _tr_threads[0] holds only the CURRENT step's,
+    # which is what made an older generation's thread unjoinable.
+    _tr_live = []
     # A GENERATION COUNTER, NOT AN EVENT, AND THAT IS A BUG FIX. The first version used one shared
     # threading.Event: _tr_step_start did set() -> join(timeout=30) -> clear(). A warmer still
     # inside a 243 MB read when the join expired then resumed its loop, found the flag CLEARED, and
@@ -4797,10 +4800,19 @@ def main():
             return
         gen = _tr_reset()
         _w = max(1, min(a.prefetch_workers, len(step_units)))
+        # EVERY GENERATION'S THREADS ARE TRACKED, not just the latest. _tr_threads[0] was
+        # OVERWRITTEN here each step, so a warmer from an earlier generation became unreachable and
+        # _tr_end could never join it -- it could outlive the epoch boundary and run while
+        # _fp_cache_save iterated shared state. Retired threads are reaped first so the list cannot
+        # grow across 231 steps.
+        _tr_live[:] = [t for t in _tr_live if t.is_alive()]
         _tr_threads[0] = [threading.Thread(target=_tr_worker, args=(step_units[i::_w], gen),
                                            daemon=True) for i in range(_w)]
         for _t in _tr_threads[0]:
             _t.start()
+        # REGISTERED AFTER START, so _tr_end can join this generation even once _tr_threads[0]
+        # has been replaced by the next step's.
+        _tr_live.extend(_tr_threads[0])
 
     def _tr_end():
         """At the EPOCH boundary: retire, then join, so nothing races _fp_cache_save.
@@ -4810,8 +4822,24 @@ def main():
         subprocesses in the case where the main thread had filled it but no warmer ever started.
         """
         _tr_reset()
-        for _t in _tr_threads[0] or ():
+        # JOIN EVERY GENERATION STILL ALIVE, not only the newest. The generation counter already
+        # guarantees a stale warmer cannot reach the cache; this guarantees it is not still RUNNING
+        # when _fp_cache_save walks shared state at the boundary.
+        # DEDUPED. The current generation is registered in BOTH _tr_live and _tr_threads[0], so
+        # joining the concatenation gave every current thread two 30 s windows and doubled the
+        # worst-case boundary stall to 30 s x 2 x prefetch_workers. Threads are hashable, and
+        # dict.fromkeys keeps the order.
+        for _t in dict.fromkeys(list(_tr_live) + list(_tr_threads[0] or ())):
             _t.join(timeout=30)
+        _still = [t for t in _tr_live if t.is_alive()]
+        if _still:
+            print(f"  trunk warmer: {len(_still)} thread(s) still alive after a 30s join; their "
+                  f"generation is retired so they cannot reach the cache, but they are reading.",
+                  flush=True)
+        # A STRAGGLER STAYS REGISTERED. Clearing the list outright dropped the only reference to
+        # a thread that outlived its join, so it was never joined again and the next boundary
+        # could not wait for it either. _tr_start already reaps the ones that have since died.
+        _tr_live[:] = _still
         _tr_threads[0] = None
         # A WARMER THAT OUTLIVES THE JOIN CAN STILL BE HOLDING ONE READ, and that is all it can do:
         # its generation is retired, so _tr_put drops the result and the loop exits at its next
@@ -6834,6 +6862,16 @@ def main():
                      "--pool", train_pool,
                      "--roles", os.path.join(_tef, "chain_roles.csv"),
                      "--seed-base", str(_seed_base)]
+            # AND WHICH SEEDS THAT POOL KEPT. A trimmed fold keeps 30 of a 100-wide sweep, chosen
+            # per structure, so the evaluator's contiguous window asks for seeds the fold never
+            # wrote and its coverage guard stops on them -- which is exactly what killed the
+            # epoch-5 valfull eval. The manifest sits beside the POOL, not under the fold, because
+            # it describes what this pool's metric claims. Forwarded only when it exists, so an
+            # untrimmed pool keeps the contiguous behaviour.
+            _sman = os.path.join(os.path.dirname(os.path.abspath(train_pool)),
+                                 "seed_manifest.json")
+            if os.path.exists(_sman):
+                extra += ["--seed-manifest", _sman]
         # THE EVALUATOR MUST RUN THE SAME FUNCTION WE TRAINED. Without this it builds a head with
         # no frame_dir_proj, and its own guard refuses the checkpoint for holding a tensor the
         # model does not have -- a loud failure rather than a silently different metric, but a

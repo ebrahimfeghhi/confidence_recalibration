@@ -177,6 +177,123 @@ def ost_chain_pairs(unit_dir, pdb, k, refs):
     return pairs, ""
 
 
+_SEED_MANIFEST = {}          # path -> {pdb: (seed, ...)}
+_SEED_MANIFEST_META = {}     # path -> {algo, digest, k}
+
+
+def intended_seeds(a, pdb):
+    """The seed ids a "budget N" label CLAIMS for this structure, as a tuple.
+
+    Default is the contiguous window [seed_base, seed_base + budget), which is what an untrimmed
+    fold wrote. A TRIMMED fold is the case that broke this guard: the valfull pool's 53 structures
+    keep 30 seeds each, chosen out of the 100-wide sweep 400000-400099 by anchored-coverage-v2, so
+    the kept ids are SPARSE -- 29tj keeps 400000, 400002, 400004, 400005, 400011, ... up to 400092.
+    Against such a fold the contiguous window names seeds that were never meant to exist, and the
+    guard below called them missing trunks: 321 of that pool's 1590 units, every one a seed the trim
+    deliberately dropped rather than a gap in the data. 50 of the 53 keep a non-contiguous set, so
+    the sparse case is the rule and the contiguous one the exception. (The fold holds 83 structures
+    in all; the other 30 are a separate wave with its own manifest, so no single file covers it.)
+
+    --seed-manifest makes the kept set authoritative WITHOUT weakening the assertion. The manifest
+    must name this structure, must list exactly `budget` seeds for it, must agree with its own
+    declared `k`, and every seed must fall inside its own declared seed_range. Each failure is a
+    hard stop, because a partial or stale manifest would redefine what the metric covers while its
+    label stayed the same -- the very substitution the original guard exists to prevent.
+
+    NOTHING BUDGET-DEPENDENT IS CACHED. The file's shape and its own range are validated once per
+    path; every claim that mentions --budget is re-checked on each call, so two budgets in one
+    process cannot inherit each other's verdict.
+    """
+    if not getattr(a, "seed_manifest", ""):
+        return tuple(range(a.seed_base, a.seed_base + a.budget))
+    path = a.seed_manifest
+    if path not in _SEED_MANIFEST:
+        try:
+            with open(path) as fh:
+                man = json.load(fh)
+        except (ValueError, OSError) as _e:
+            raise SystemExit(f"STOP: --seed-manifest {path} is unreadable ({type(_e).__name__}: "
+                             f"{_e}). Without it the intended seed set is undefined.")
+        # EVERY SHAPE ERROR GETS ITS OWN STOP. Unguarded .get()/int()/[] on a hand-written file
+        # raised AttributeError or IndexError instead, which on the sharded path surfaces as a
+        # traceback buried in shard<i>.log rather than a sentence saying what is wrong.
+        if not isinstance(man, dict):
+            raise SystemExit(f"STOP: --seed-manifest {path} holds a {type(man).__name__} at the "
+                             f"top level, not an object with a 'structures' key.")
+        _st = man.get("structures")
+        if not isinstance(_st, dict):
+            raise SystemExit(f"STOP: --seed-manifest {path} has 'structures' as a "
+                             f"{type(_st).__name__}, not an object keyed by structure id.")
+        # THE DECLARED RANGE OR NO RANGE AT ALL. Inventing [seed_base, seed_base + budget - 1] as a
+        # fallback rejected correctly-trimmed manifests for exactly the seeds the trim KEPT, and
+        # blamed the manifest for a range it never declared.
+        _rng, lo, hi = man.get("seed_range"), None, None
+        if _rng is not None:
+            try:
+                lo, hi = int(_rng[0]), int(_rng[1])
+            except (TypeError, ValueError, IndexError, KeyError):
+                raise SystemExit(f"STOP: --seed-manifest {path} declares seed_range {_rng!r}, "
+                                 f"which is not a [lo, hi] pair of integers.")
+            if lo > hi:
+                raise SystemExit(f"STOP: --seed-manifest {path} declares seed_range [{lo}, {hi}], "
+                                 f"which is empty.")
+        got = {}
+        for _p, _d in _st.items():
+            if not isinstance(_d, dict) or not isinstance(_d.get("seeds"), (list, tuple)):
+                raise SystemExit(f"STOP: --seed-manifest {path} entry for {_p} is a "
+                                 f"{type(_d).__name__} with no 'seeds' list. The shape is "
+                                 f"{{structures: {{<pdb>: {{seeds: [...]}}}}}}.")
+            try:
+                sds = tuple(int(s) for s in _d["seeds"])
+            except (TypeError, ValueError):
+                raise SystemExit(f"STOP: --seed-manifest {path} lists a non-integer seed for {_p}: "
+                                 f"{list(_d['seeds'])[:4]!r}.")
+            if not sds:
+                raise SystemExit(f"STOP: --seed-manifest {path} lists no seeds for {_p}.")
+            if len(set(sds)) != len(sds):
+                raise SystemExit(f"STOP: --seed-manifest {path} lists a duplicate seed for {_p}. "
+                                 f"A duplicated seed would be weighted twice in the selection.")
+            if lo is not None:
+                _bad = [s for s in sds if not lo <= s <= hi]
+                if _bad:
+                    raise SystemExit(f"STOP: --seed-manifest {path} lists seed(s) {_bad[:4]} for "
+                                     f"{_p} outside its own seed_range [{lo}, {hi}].")
+            got[_p] = sds
+        if not got:
+            raise SystemExit(f"STOP: --seed-manifest {path} names no structures, so it defines no "
+                             f"seed set.")
+        _SEED_MANIFEST[path] = got
+        _SEED_MANIFEST_META[path] = {"algo": str(man.get("algo") or ""),
+                                     "digest": str(man.get("digest") or ""),
+                                     "k": man.get("k"),
+                                     "seed_range": [lo, hi] if lo is not None else None}
+        print(f"intended seed set: {path} (algo {man.get('algo')}, digest {man.get('digest')}, "
+              f"k={man.get('k')}, range {lo}-{hi}) over {len(got)} structure(s) -- the TRIMMED "
+              f"set, not the contiguous window")
+    got, meta = _SEED_MANIFEST[path], _SEED_MANIFEST_META[path]
+    # AND ITS OWN k MUST AGREE WITH THE LABEL. Checking only len(seeds) == budget let a manifest
+    # declaring k=99 pass at --budget 1 while every structure carried one seed: self-inconsistent,
+    # and the inconsistency is the signal that the file is not the one this budget means.
+    if meta["k"] is not None:
+        try:
+            _k = int(meta["k"])
+        except (TypeError, ValueError):
+            _k = None
+        if _k is not None and _k != a.budget:
+            raise SystemExit(f"STOP: --seed-manifest {path} declares k={_k} seeds per structure "
+                             f"but --budget is {a.budget}. One of the two is from a different "
+                             f"pass; the label would not describe the file.")
+    if pdb not in got:
+        raise SystemExit(f"STOP: --seed-manifest {path} does not name structure {pdb}, so the "
+                         f"seeds its 'budget {a.budget}' label claims are undefined. A manifest "
+                         f"covering only part of the pool would silently shrink the metric.")
+    if len(got[pdb]) != a.budget:
+        raise SystemExit(f"STOP: --seed-manifest {path} keeps {len(got[pdb])} seed(s) for {pdb} "
+                         f"but --budget is {a.budget}. The label would claim a depth the manifest "
+                         f"does not carry.")
+    return got[pdb]
+
+
 def merge_rows(a):
     """The aggregate half of the evaluator, over the UNION of several shards' rows. No GPU, no model.
 
@@ -372,8 +489,12 @@ def aggregate(a, rows, selfchk, want_ifaces):
     # and the label still claims the full sweep. The intended set is the cross product the budget
     # asserts -- every pool interface x every seed in the budget x every sample.
     have = {(iface, int(sd_), int(k)) for iface, sd_, k, _v, dq, _vm in rows if dq is not None}
+    # THE INTENDED SET IS PER STRUCTURE, because a trimmed fold keeps a different 30 seeds for
+    # each one. interface_chain_pairs builds the id as f"{pdb}_{c1}{c2}", so one rsplit recovers
+    # the structure; a wrong derivation cannot pass silently, because intended_seeds hard-stops on
+    # a pdb the manifest does not name.
     want = {(iface, sd_, k) for iface in want_ifaces
-            for sd_ in range(a.seed_base, a.seed_base + a.budget)
+            for sd_ in intended_seeds(a, iface.rsplit("_", 1)[0])
             for k in range(a.nsample)}
     extra = sorted(have - want)
     absent = sorted(want - have)
@@ -462,6 +583,14 @@ def aggregate(a, rows, selfchk, want_ifaces):
            "ckpt": a.ckpt or "shipped"}
     out["select_by"] = a.select_by
     out["headroom"] = round(out["oracle_mean_dockq"] - out["mean_dockq"], 4)
+    # WHICH SEEDS THIS NUMBER COVERS, RECORDED WITH THE NUMBER. budget + seed_base no longer imply
+    # the intended set: a trimmed fold's kept ids come from a manifest, and two different manifests
+    # with the same per-structure count would yield two different metrics whose json is otherwise
+    # byte-shape identical. Review found the only trace was a print the trainer discards on success.
+    out["seed_base"] = a.seed_base
+    _sm = getattr(a, "seed_manifest", "")
+    out["seed_manifest"] = os.path.abspath(_sm) if _sm else ""
+    out["seed_manifest_digest"] = _SEED_MANIFEST_META.get(_sm, {}).get("digest", "")
     # BOTH POOLINGS REPORTED, so a mean-trained arm and the shipped max baseline can be read off
     # one pass and nobody has to trust that the two runs were otherwise identical.
     if byif_m:
@@ -706,6 +835,11 @@ def main():
     ap.add_argument("--model-name", default="protenix-v2")
     ap.add_argument("--budget", type=int, default=100, help="seeds per interface, from --seed-base")
     ap.add_argument("--seed-base", type=int, default=400000)
+    ap.add_argument("--seed-manifest", default="",
+                    help="json recording WHICH seeds a trimmed fold kept per structure "
+                         "({structures: {pdb: {seeds: [...]}}, seed_range: [lo, hi]}). Without it "
+                         "the intended set is the contiguous window from --seed-base, which a "
+                         "trimmed fold does not satisfy.")
     ap.add_argument("--nsample", type=int, default=5,
                     help="poses per unit, as the fold wrote them. Part of the coverage contract: "
                          "the intended key set is interfaces x seeds x THIS, so a budget label "
@@ -962,6 +1096,7 @@ def main():
                  "model_name": a.model_name, "fold": os.path.abspath(a.fold),
                  "pool": os.path.abspath(a.pool) if a.pool else "",
                  "seed_base": a.seed_base, "budget": a.budget,
+                 "seed_manifest": os.path.abspath(a.seed_manifest) if a.seed_manifest else "",
                  "cutoff": a.dump_pae_cutoff, "nshards": a.nshards,
                  "restypes": os.path.abspath(a.dump_pae_restypes)}
         _pf = os.path.join(a.dump_pae, "_provenance.json")
@@ -1029,15 +1164,16 @@ def main():
     # happened to exist, so a "100-seed" metric could be computed from one seed and still print
     # "budget 100" -- review round 9 reproduced exactly that. The budget is a CLAIM about coverage,
     # so it is enforced rather than described.
-    units, missing_trunk = [], []
+    units, missing_trunk, n_intended = [], [], 0
     for pdb in sorted(pairs_by_pdb):
-        for sd_ in range(a.seed_base, a.seed_base + a.budget):
+        for sd_ in intended_seeds(a, pdb):
+            n_intended += 1
             tp = os.path.join(a.fold, "trunks", pdb, f"free_{sd_}.npz")
             (units if os.path.exists(tp) else missing_trunk).append(
                 (pdb, sd_, tp) if os.path.exists(tp) else f"{pdb}/free_{sd_}")
     if missing_trunk and not a.allow_partial:
         raise SystemExit(
-            f"STOP: {len(missing_trunk)} of {len(pairs_by_pdb)*a.budget} intended unit(s) have no "
+            f"STOP: {len(missing_trunk)} of {n_intended} intended unit(s) have no "
             f"trunk under {a.fold}/trunks, e.g. {missing_trunk[:5]}.\n  A metric labelled "
             f"'budget {a.budget}' must cover {a.budget} seeds for every structure. Lower --budget, "
             f"or pass --allow-partial to report a number that does NOT mean what its label says.")
