@@ -160,18 +160,29 @@ run "$PY" -I run_logging/argv_from_dry.py --log "$W/dry_gate3.log" \
 # is the "prior oversized complex" the acceptance report asks for -- and the one most likely to
 # OOM, which is the point: the new graph is shallower in backward than the arm this was fitted on,
 # so whether it now fits is an open question and not a formality.
-UNITS="${UNITS:-22gi,29tj,7cn2}"
-# BOTH ARMS, because Codex's gate 3 is "time and max VRAM, WITH AND WITHOUT checkpointing where
-# safe" -- and because INBLOCK now defaults to checkpointing OFF for every unit, which is a change
-# this benchmark exists to justify or overturn. ckpt_off is the new default; ckpt_on is the
-# fallback if the frozen graph turns out not to fit at 1,650 tokens.
-for ARM in lean_ckpt_off lean_ckpt_on; do
-  say "GATE 3: benchmarking units $UNITS on card $CARD ($ARM)"
-  run env LAYERNORM_TYPE=openfold "$PY" -I run_logging/bench_ckpt_by_size.py \
-      --arm-argv "$W/inblock_argv_oversized.txt" --cards "$CARD" \
-      --units "$UNITS" --only "$ARM" --master-port 29571 \
-      --out "$W/bench" 2>&1 | tee "$W/gate3_$ARM.log" | tail -20
-done
+# ONE ARM ONLY: lean readouts on, checkpointing OFF. Codex's second comment on issue #8
+# supersedes its first and says not to spend GPU time on a checkpointing-ON performance arm --
+# ckpt OFF is the intended fast variant and the one INBLOCK now defaults to. The ckpt-ON fallback
+# is one environment variable (CKPT_THRESH=855) if this does not fit.
+#
+# ASCENDING TO THE FIRST OOM, not descending from the largest. Codex asked to start at the biggest
+# structure and walk down, but --probe already walks UP in token order with lean readouts on and
+# checkpointing off and runs until it dies, which finds the SAME boundary while never beginning
+# with a near-certain crash -- and its own instruction is "avoid repeatedly crashing... recover
+# cleanly after OOM". The last structures to complete before the OOM are the top successful
+# high-memory cases it wants; the first to fail is the documented failure.
+#
+# --start-tokens 1400 skips the hundreds of units that obviously fit. The largest unit in the
+# TRAINED population is 1,650 (4rdq, observed peak 81.30 GB), and the ten excluded ones run
+# 1,745 (7cn2) to 2,289 (9dzf), so the interesting band is 1,400-2,289 and the walk crosses the
+# old boundary rather than stopping at it.
+say "GATE 3: probing UP from 1,400 tokens, lean readouts on, checkpointing OFF, until it OOMs"
+say "  the old predictor put the ceiling at ~1,747 tokens, but it was fitted on the FULL-backward"
+say "  arm -- with the frozen graph it does not transfer, which is the point of measuring."
+run env LAYERNORM_TYPE=openfold "$PY" -I run_logging/bench_ckpt_by_size.py \
+    --arm-argv "$W/inblock_argv_oversized.txt" --cards "$CARD" \
+    --probe --probe-seeds 2 --start-tokens 1400 --master-port 29571 \
+    --out "$W/bench" 2>&1 | tee "$W/gate3_probe.log" | tail -25
 
 # ---- the summary, so the verdict is one line and not a reading exercise --------------------------
 say "================ SMOKE SUMMARY ================"
@@ -183,7 +194,7 @@ fi
 say "Gate 0 (card idle)            PASS"
 say "Gate 1 (step-zero parity)     ${G1:-skipped}"
 say "Gate 2 (one step + probe)     see $W/gate2_verdict.txt -- READ IT, it is not auto-judged"
-say "Gate 3 (time and VRAM)        see $W/gate3_lean_ckpt_{off,on}.log -- also not auto-judged"
+say "Gate 3 (time and VRAM)        see $W/gate3_probe.log -- also not auto-judged"
 say "Everything is under $W"
 say "NOTHING was merged, nothing long was launched, and mqird6 was not touched."
 # GATE 2 IS NOT GIVEN A PASS/FAIL BY THIS SCRIPT. Its evidence is the grad-probe block in the
