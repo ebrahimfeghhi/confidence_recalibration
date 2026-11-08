@@ -3936,6 +3936,18 @@ def main():
         crop_p = f"{_stem}_rank{rank}{_ext or '.csv'}"
 
     traj_p = os.path.join(a.out, "trajectory.csv")
+    # AND A PER-RANK COPY, for the same reason crop_sizes.csv got one above. trajectory.csv is
+    # written by rank 0 alone (write_traj=is_main), so its per-pose columns describe the third of
+    # the units rank 0 walked while reading like the whole run -- which is how five plotters came
+    # to report a rank-local mean. The per-EPOCH curve is safe either way, because batch_<term> is
+    # already reduced across ranks; what is NOT recoverable from rank 0 alone is any per-pose
+    # question that filters by pdb (an unwinnable-structure filter, a per-structure histogram),
+    # because the other ranks' poses were never written down anywhere.
+    #
+    # trajectory.csv is left exactly as it is so nothing that reads it today changes. This is an
+    # ADDITIONAL file per rank, rank 0 included, so the full set is self-describing rather than
+    # "the main one plus the others".
+    traj_rank_p = os.path.join(a.out, f"trajectory_rank{rank}.csv")
     # THE BATCH COLUMNS ARE THE CURVE; the bare TERMS are the single pose that happened to be last.
     # batch_<term> is the mean over ALL accum_eff poses in the step, reduced across every rank, and
     # batch_n is how many actually contributed -- accum_eff on a normal step, fewer on the partial
@@ -6857,10 +6869,19 @@ def main():
             _seed_base = (seed_base if seed_base >= 0
                           else (a.train_eval_seed_base if a.train_eval_seed_base >= 0
                                 else _train_eval_seed_base))
+            # THE ROLES TABLE CAN ALSO LIVE BESIDE THE POOL, same rule as the seed manifest
+            # below and for the same reason. The fold's own chain_roles.csv names only the 53
+            # structures of the original valfull wave, so an 83-structure pool spanning BOTH
+            # waves leaves 49 of its 141 interfaces unmappable and phase_k_eval stops on them.
+            # A pool directory describes its own pool: pool.csv, chain_roles.csv, seed_manifest
+            # .json. Falling back to the fold keeps every existing pool working untouched.
+            _prd = os.path.dirname(os.path.abspath(train_pool))
+            _srol = os.path.join(_prd, "chain_roles.csv")
+            _roles = _srol if os.path.exists(_srol) else os.path.join(_tef, "chain_roles.csv")
             extra = ["--fold", _tef,
                      "--results", os.path.join(_tef, "results.csv"),
                      "--pool", train_pool,
-                     "--roles", os.path.join(_tef, "chain_roles.csv"),
+                     "--roles", _roles,
                      "--seed-base", str(_seed_base)]
             # AND WHICH SEEDS THAT POOL KEPT. A trimmed fold keeps 30 of a 100-wide sweep, chosen
             # per structure, so the evaluator's contiguous window asks for seeds the fold never
@@ -6868,8 +6889,7 @@ def main():
             # epoch-5 valfull eval. The manifest sits beside the POOL, not under the fold, because
             # it describes what this pool's metric claims. Forwarded only when it exists, so an
             # untrimmed pool keeps the contiguous behaviour.
-            _sman = os.path.join(os.path.dirname(os.path.abspath(train_pool)),
-                                 "seed_manifest.json")
+            _sman = os.path.join(_prd, "seed_manifest.json")
             if os.path.exists(_sman):
                 extra += ["--seed-manifest", _sman]
         # THE EVALUATOR MUST RUN THE SAME FUNCTION WE TRAINED. Without this it builds a head with
@@ -7659,8 +7679,17 @@ def main():
                                      met.get("pae_loss_unweighted", float("nan"))}
                                     if float(a.pae_row_frac) > 0 else {}),
                                  **means})
-                    if write_traj and len(rows) % 20 == 0:
-                        _flush(traj_p, traj_cols, rows); rows = []
+                    # EVERY RANK FLUSHES ITS OWN FILE; only rank 0 writes trajectory.csv.
+                    # The condition used to be `write_traj and ...`, which is is_main, so ranks 1+
+                    # never flushed AND never cleared `rows`: they accumulated the whole epoch in
+                    # memory and wrote nothing. That is the same defect the crop log was fixed for
+                    # in review round 6, and it is why every per-pose figure described a third of
+                    # the run.
+                    if len(rows) % 20 == 0:
+                        _flush(traj_rank_p, traj_cols, list(rows))
+                        if write_traj:
+                            _flush(traj_p, traj_cols, rows)
+                        rows = []
                     # THE CROP LOG FLUSHES ON EVERY RANK, and with the trajectory rather than only
                     # at the epoch boundary: a run that dies mid-epoch -- as this one did, on a
                     # hangup -- would otherwise leave no record of what it had cropped. Outside the
@@ -8119,8 +8148,11 @@ def main():
                 # training a whole pass behind the others.
                 if world > 1:
                     dist.barrier()
+                _flush(traj_rank_p, traj_cols, list(rows))
                 if is_main:
-                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    _flush(traj_p, traj_cols, rows)
+                rows.clear()
+                if is_main:
                     _bundle = os.path.join(a.out, f"resume_ep{ep + 1}.pt")
                     if not os.path.exists(_bundle):
                         print(f"  WARNING: no {_bundle}; skipping the held-out PAE for this epoch")
@@ -8154,8 +8186,11 @@ def main():
                 # the second one, rank 0 would re-enter training a whole evaluation behind.
                 if world > 1:
                     dist.barrier()
+                _flush(traj_rank_p, traj_cols, list(rows))
                 if is_main:
-                    _flush(traj_p, traj_cols, rows); rows = []
+                    _flush(traj_p, traj_cols, rows)
+                rows.clear()
+                if is_main:
                     eval_checkpoint(step, ep + 1)
                 if world > 1:
                     dist.barrier()
@@ -8165,8 +8200,11 @@ def main():
                 # over every card, the other ranks parked for its duration.
                 if world > 1:
                     dist.barrier()
+                _flush(traj_rank_p, traj_cols, list(rows))
                 if is_main:
-                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    _flush(traj_p, traj_cols, rows)
+                rows.clear()
+                if is_main:
                     eval_checkpoint(step, ep + 1, train_pool=a.train_eval_pool,
                                     crop_tokens=a.eval_pool_crop_tokens)
                 if world > 1:
@@ -8178,8 +8216,11 @@ def main():
                     continue
                 if world > 1:
                     dist.barrier()
+                _flush(traj_rank_p, traj_cols, list(rows))
                 if is_main:
-                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    _flush(traj_p, traj_cols, rows)
+                rows.clear()
+                if is_main:
                     print(f"  extra eval '{_ee['name']}': pool {_ee['pool']}, budget "
                           f"{_ee['budget'] or 'default'}, every {_ee['every']} epoch(s), "
                           f"{'CROPPED' if _ee['crop_tokens'] else 'uncropped'}", flush=True)
@@ -8200,6 +8241,10 @@ def main():
                             "unit": os.path.basename(lab_p)[:-4], "pose": i})
         if write_traj:
             _flush(traj_p, traj_cols, rows)
+        # EVERY RANK, including rank 0. _flush clears nothing, so the same rows go to both files;
+        # the final clear below is what retires them.
+        if rows:
+            _flush(traj_rank_p, traj_cols, list(rows))
         if crop_p and crop_rows:        # every rank, its own file
             _flush(crop_p, crop_cols, crop_rows)
             crop_rows.clear()

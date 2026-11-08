@@ -21,6 +21,7 @@ which source it came from, so a noisier curve can never be silently read as the 
 """
 import collections
 import csv
+import glob
 import os
 import sys
 
@@ -77,6 +78,38 @@ def epoch_means(rid, term="pae_loss", chain=True):
             elif fb.get(ep):
                 out[ep] = (sum(fb[ep]) / len(fb[ep]), len(fb[ep]), "rank0-fallback")
     return out
+
+
+def pose_rows(rid, chain=True):
+    """Every rank's PER-POSE rows for an arm -> (rows, n_ranks, complete).
+
+    Per-pose questions -- a pdb filter, a per-structure histogram -- cannot be answered from the
+    cross-rank batch columns, because those are per-step scalars with the individual poses already
+    summed away. They need the pose rows, and trajectory.csv holds rank 0's alone.
+
+    phase_k_train now writes trajectory_rank<N>.csv on EVERY rank, so this returns all of them
+    when they exist. `complete` is False for runs that predate that, where only rank 0's poses
+    were ever written down and no reader can recover the rest: callers must say so rather than
+    present a third of the run as the whole of it.
+    """
+    rids = run_chain(rid) if chain else [rid]
+    rows, nrank, complete = [], 0, True
+    for r_ in rids:
+        d = os.path.join(ROOT, "training", "runs", r_)
+        per = sorted(glob.glob(os.path.join(d, "trajectory_rank*.csv")))
+        if per:
+            nrank = max(nrank, len(per))
+            for f in per:
+                with open(f) as fh:
+                    rows.extend(csv.DictReader(fh))
+        else:
+            f = os.path.join(d, "trajectory.csv")
+            if os.path.exists(f):
+                complete = False
+                nrank = max(nrank, 1)
+                with open(f) as fh:
+                    rows.extend(csv.DictReader(fh))
+    return rows, nrank, complete
 
 
 def partial_epochs(means, frac=0.98):

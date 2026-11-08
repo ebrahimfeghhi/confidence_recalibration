@@ -150,6 +150,58 @@ def main():
     ok(all(os.path.exists(os.path.join(ROOT, "run_logging", k)) for k in ALLOWED),
        "and every allow-listed file still exists (no stale exemptions)")
 
+    print("\n6  PER-POSE QUESTIONS SEE EVERY RANK (trajectory_rank<N>.csv)")
+    # The cross-rank batch columns answer the per-EPOCH curve, but not a pdb filter or a
+    # per-structure histogram: those need the pose rows, and trajectory.csv holds rank 0's third.
+    tr = open(os.path.join(ROOT, "phases/phase_k_train.py")).read()
+    ok("traj_rank_p = os.path.join(a.out, f\"trajectory_rank{rank}.csv\")" in tr,
+       "the trainer names a per-rank trajectory")
+    # it must be flushed OUTSIDE the is_main / write_traj guard, or ranks 1+ write nothing
+    _bad = re.findall(r"if (?:is_main|write_traj)[^\n]*:\n\s+_flush\(traj_rank_p", tr)
+    ok(not _bad, "and flushed on every rank, not only rank 0",
+       f"{len(_bad)} guarded flush(es)" if _bad else "all unguarded")
+    ok(tr.count("_flush(traj_rank_p") >= 5,
+       "at every site trajectory.csv is flushed", f"{tr.count('_flush(traj_rank_p')} sites")
+    # ranks 1+ used to never clear `rows` either -- they accumulated the whole epoch in memory
+    ok("rows.clear()\n                if is_main:" in tr,
+       "and every rank clears its buffer at the epoch boundary")
+
+    # the reader, against a synthetic three-rank run, because no real run has these files yet
+    import shutil
+    rid_f = "zzfixture"
+    d = os.path.join(ROOT, "training", "runs", rid_f)
+    made = False
+    try:
+        if not os.path.exists(d):
+            os.makedirs(d); made = True
+            hdr = "epoch,pdb,pae_loss,batch_pae_loss,batch_n,step_taken\n"
+            for rk in range(3):
+                with open(os.path.join(d, f"trajectory_rank{rk}.csv"), "w") as fh:
+                    fh.write(hdr)
+                    for i in range(4):
+                        fh.write(f"1,pdb{rk}{i},{1.0 + rk},,0,0\n")
+            rows, nrank, complete = epoch_curve.pose_rows(rid_f, chain=False)
+            ok(nrank == 3 and complete, "pose_rows reports 3 ranks and complete",
+               f"{nrank} ranks, complete={complete}")
+            ok(len(rows) == 12, "and returns every rank's poses", f"{len(rows)} rows")
+            ok(len({r["pdb"] for r in rows}) == 12,
+               "spanning all three ranks' structures, not one rank's")
+        else:
+            ok(False, "fixture dir already exists; refusing to overwrite", d)
+    finally:
+        if made:
+            shutil.rmtree(d, ignore_errors=True)
+
+    _r, _n, _c = epoch_curve.pose_rows(RID)
+    ok(_c is False, "and a run predating the change is reported INCOMPLETE, not silently partial",
+       f"{_n} rank file(s) for {RID}")
+    for f_, who in ((os.path.join(ROOT, "run_logging/plot_pae_hist.py"), "the pae histogram"),
+                    (os.path.join(ROOT, "run_logging/plot_rowweight_pair.py"),
+                     "the row-weight pair figure")):
+        t_ = open(f_).read()
+        ok("epoch_curve.pose_rows" in t_ and "predate" in t_,
+           f"{who} reads every rank and says so when it cannot", os.path.basename(f_))
+
     print()
     if FAIL:
         print(f"  {len(FAIL)} FAILURE(S): {FAIL}")
