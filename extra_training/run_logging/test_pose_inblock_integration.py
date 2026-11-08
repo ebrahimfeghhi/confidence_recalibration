@@ -54,10 +54,17 @@ N_TOK = 16
 # to stay in step with the shell quoting. Trainable: block 3's two triangle ATTENTIONS, its pair
 # transition, and the injections. Everything else -- blocks 0-2 entirely, and block 3's two
 # triangle MULTIPLICATIONS -- is frozen.
+# INCLUDING THE READOUT, because INBLOCK_READOUT defaults to 1. This tuple omitted
+# linear_no_bias_pae and pae_ln, which was correct when the default was 0 and became wrong the
+# moment it was flipped -- so this file was asserting the ABLATION's 25 tensors / 1,467,904
+# parameters while the arm it is supposed to describe trains 28 / 1,484,800. Caught by a second
+# reader measuring the launcher's own pattern against a real head rather than reading this tuple.
 TRAINABLE = ("pairformer_stack.blocks.3.tri_att_start.",
              "pairformer_stack.blocks.3.tri_att_end.",
              "pairformer_stack.blocks.3.pair_transition.",
-             "pose_inblock_")
+             "pose_inblock_",
+             "linear_no_bias_pae.",
+             "pae_ln.")
 FROZEN_MUST = ("pairformer_stack.blocks.0.", "pairformer_stack.blocks.1.",
                "pairformer_stack.blocks.2.", "pairformer_stack.blocks.3.tri_mul_out.",
                "pairformer_stack.blocks.3.tri_mul_in.")
@@ -220,18 +227,19 @@ def main():
 
     print("\n3. the freeze: which tensors carry gradient at all")
     live, dead = _freeze(m.confidence_head)
-    # 25 TENSORS AND 1,467,904 PARAMETERS. The launcher's banner quotes ~1.47M for this arm, so
+    # 28 TENSORS AND 1,484,800 PARAMETERS at the INBLOCK_READOUT=1 default, so
     # these two numbers are the arm's advertised capacity and a change to either is a change to
     # the experiment. The head totals 19,772,750 here: the live 19,752,270 plus the injections'
     # 20,480 (2 x 39 x 256 for the one-hot terms, 2 x 1 x 256 for the raw-distance terms).
-    ok(len(live) == 25, "25 tensors are trainable", f"{len(live)}")
+    ok(len(live) == 28, "28 tensors are trainable (the INBLOCK_READOUT=1 default)",
+       f"{len(live)}")
     ok(all(any(n.startswith(t) or t in n for t in TRAINABLE) for n in live),
        "every trainable tensor is block 3's attentions, its transition, or an injection")
     bad = [n for n in live if any(n.startswith(f) for f in FROZEN_MUST)]
     ok(not bad, "no block 0-2 tensor and no block 3 tri-mul tensor is trainable", str(bad[:3]))
     n_live = sum(p.numel() for n, p in m.confidence_head.named_parameters() if p.requires_grad)
     n_tot = sum(p.numel() for p in m.confidence_head.parameters())
-    ok(n_live == 1_467_904, "and they hold 1,467,904 parameters", f"{n_live:,}")
+    ok(n_live == 1_484_800, "and they hold 1,484,800 parameters", f"{n_live:,}")
     ok(n_tot == 19_772_750, "the head totals 19,772,750 (19,752,270 live + 20,480 injected)",
        f"{n_tot:,}")
     print(f"      ({n_live:,} trainable of {n_tot:,} -- {100.0 * n_live / n_tot:.2f}%)")

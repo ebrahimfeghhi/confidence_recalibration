@@ -77,6 +77,25 @@ INJECT_AT = ("after_tri_mul_in", "block_input")
 # [N, N, 39] one-hot reachable between poses is how a per-pose leak looks from the outside.
 _CALL = {"onehot": None, "dist": None}
 
+# THE OPTIONAL PREFIX CUT. phases/prefix_cache.py registers a `plan` here; with no cache installed
+# it stays None and every line below behaves exactly as it did before.
+#
+# WHY THE HOOK LIVES IN THIS FILE AND NOT IN THAT ONE. The cut is between `tri_mul_in` and the
+# injection, which is a point that exists only inside the mirror of PairformerBlock.forward below.
+# A cache module that wanted to splice itself in there would have to mirror that function a second
+# time, and the whole reason this file pins a sha256 is that a mirror goes stale without saying so.
+# Two copies of the same mirror is two chances to drift, so the cut is a parameter of the one copy.
+#
+# `plan(pair_mask=..., **prep_kwargs)` is called ONCE per stack forward, from _prep_blocks, and
+# returns either None (no cache) or a dict with at most:
+#     "z"   -- the cached activation at the cut, ON THE COMPUTE DEVICE. Given, tri_mul_out and
+#              tri_mul_in are NOT RUN and this value is used in place of what they would have
+#              produced. Blocks before the cut are replaced with identities by _prep_blocks.
+#     "put" -- a callable invoked with the activation at the cut when it IS computed. It may be
+#              called TWICE for one pose, because with blocks_per_ckpt=1 the block's forward is
+#              re-run during backward, so it must be idempotent.
+CUT = {"plan": None}
+
 
 class _NoPose(RuntimeError):
     """The stack was prepared without the pose geometry set."""
@@ -128,10 +147,17 @@ def _inject(head, z, oh, dd):
 
 def block_forward(head, blk, s, z, oh, dd, inject_at="after_tri_mul_in", pair_mask=None,
                   triangle_multiplicative="torch", triangle_attention="torch",
-                  inplace_safe=False, chunk_size=None):
+                  inplace_safe=False, chunk_size=None, prefix_in=None, prefix_out=None):
     """PairformerBlock.forward's out-of-place branch, with the pose injected at `inject_at`.
 
     Every kept line mirrors the original. The ONLY difference is the two added terms.
+
+    prefix_in / prefix_out ARE THE PREFIX CUT, and both are None unless phases/prefix_cache.py is
+    installed. `prefix_in` replaces what tri_mul_out and tri_mul_in would have produced and skips
+    both; `prefix_out` is handed that same activation when it IS computed, so a later call can skip
+    it. The cut is legal only because BOTH tri-muls are frozen under this arm's --train-only and
+    both run before the injection -- see the module docstring. prefix_cache.install() is what
+    checks that; this function only honours the request.
     """
     if inplace_safe:
         raise SystemExit(
@@ -148,16 +174,41 @@ def block_forward(head, blk, s, z, oh, dd, inject_at="after_tri_mul_in", pair_ma
     if inject_at == "block_input":
         z = _inject(head, z, oh, dd)
 
-    tmu_update = blk.tri_mul_out(
-        z, mask=pair_mask, inplace_safe=False, _add_with_inplace=False,
-        triangle_multiplicative=triangle_multiplicative)
-    z = dropout_add_rowwise(z, tmu_update, blk.p_drop, blk.training)
-    del tmu_update
-    tmu_update = blk.tri_mul_in(
-        z, mask=pair_mask, inplace_safe=False, _add_with_inplace=False,
-        triangle_multiplicative=triangle_multiplicative)
-    z = dropout_add_rowwise(z, tmu_update, blk.p_drop, blk.training)
-    del tmu_update
+    if prefix_in is not None:
+        # ---- THE PREFIX CUT, TAKEN ---------------------------------------------------------
+        # tri_mul_out and tri_mul_in are NOT RUN. `prefix_in` is a previous call's value of
+        # exactly the tensor the two lines below would have bound to `z`, so the suffix from here
+        # on is byte-for-byte the same computation on the same input. The `z` ARGUMENT IS
+        # DISCARDED: _prep_blocks has already replaced every block before the cut with an identity,
+        # so what arrives here is the pre-stack z_pair and nothing has consumed it.
+        if inject_at != "after_tri_mul_in":
+            raise SystemExit(
+                f"STOP: pose_inblock was given prefix_in with inject_at={inject_at!r}. The cut is "
+                f"defined as 'after tri_mul_in, before the injection'; at any other injection "
+                f"point the pose -- and therefore a TRAINABLE parameter -- is upstream of the cut, "
+                f"so the cached value would be a function of weights that have since moved.")
+        if prefix_out is not None:
+            raise SystemExit(
+                "STOP: pose_inblock was given prefix_in AND prefix_out. One is 'use the cache', "
+                "the other is 'fill it'; asking for both at once means the caller does not know "
+                "whether this call was a hit, and the value it would store is the value it was "
+                "just handed.")
+        z = prefix_in
+    else:
+        tmu_update = blk.tri_mul_out(
+            z, mask=pair_mask, inplace_safe=False, _add_with_inplace=False,
+            triangle_multiplicative=triangle_multiplicative)
+        z = dropout_add_rowwise(z, tmu_update, blk.p_drop, blk.training)
+        del tmu_update
+        tmu_update = blk.tri_mul_in(
+            z, mask=pair_mask, inplace_safe=False, _add_with_inplace=False,
+            triangle_multiplicative=triangle_multiplicative)
+        z = dropout_add_rowwise(z, tmu_update, blk.p_drop, blk.training)
+        del tmu_update
+        # OFFERED HERE AND NOWHERE ELSE: this is the last point at which `z` is a function of
+        # frozen parameters alone. One line later the injection adds a trainable term to it.
+        if prefix_out is not None:
+            prefix_out(z)
 
     # ---- THE INJECTION, AFTER tri_mul_in AND BEFORE tri_att_start ---------------------------
     # Both frozen tri-muls are behind us, so this is the first op in the block whose input requires
@@ -263,10 +314,36 @@ def install(model, block_index=3, pae_inject=True, inject_at="after_tri_mul_in",
         blk = getattr(tgt, "func", tgt)
         kws = dict(getattr(tgt, "keywords", {}) or {})
 
+        # THE CUT, DECIDED ONCE PER STACK FORWARD. _prep_blocks runs exactly once per pose, so
+        # this is the right place to ask the cache: `run` itself is re-entered during backward
+        # when blocks_per_ckpt=1 and must not make a second, possibly different, decision.
+        #
+        # CAPTURED INTO LOCALS FOR THE SAME REASON oh/dd ARE. A hit's cached tensor has to stay
+        # reachable through the backward that re-runs this block, and the closure is what holds it.
+        plan = CUT["plan"]
+        cut = plan(pair_mask=pair_mask, **kw) if plan is not None else None
+        z_cut = (cut or {}).get("z")
+        put_cut = (cut or {}).get("put")
+
         def run(s, z):
-            return block_forward(head, blk, s, z, oh, dd, inject_at=inject_at, **kws)
+            return block_forward(head, blk, s, z, oh, dd, inject_at=inject_at,
+                                 prefix_in=z_cut, prefix_out=put_cut, **kws)
 
         prepped[block_index] = run
+        if z_cut is not None:
+            # EVERY BLOCK BEFORE THE CUT BECOMES AN IDENTITY, which is where the saving is: the
+            # cached tensor only skips block_index's two tri-muls, and blocks 0..block_index-1 are
+            # the other seven-eighths of the frozen prefix.
+            #
+            # REPLACED, NOT TRUNCATED. Returning a shorter list would be tidier and is a trap:
+            # checkpoint_blocks raises ValueError when blocks_per_ckpt > len(blocks), and
+            # --ckpt-token-threshold flips blocks_per_ckpt per unit, so a list of one with
+            # blocks_per_ckpt=4 would die on the first large unit and not before. An identity is
+            # a no-op whatever the chunking is.
+            def _ident(s, z):
+                return s, z
+            for _i in range(block_index):
+                prepped[_i] = _ident
         return prepped
 
     def _pae_hook(_mod, _inp, out):
@@ -291,6 +368,12 @@ def install(model, block_index=3, pae_inject=True, inject_at="after_tri_mul_in",
     hook = head.pae_ln.register_forward_hook(_pae_hook) if pae_inject else None
     head._pose_inblock_installed = True
     head._pose_inblock_hook = hook
+    # RECORDED ON THE HEAD, not just returned. phases/prefix_cache.py has to know WHERE the cut is
+    # and it must not take that from a command-line flag: --pose-inblock-block defaults to -1 and
+    # is resolved to the last block here, so the flag and the installed depth are not the same
+    # value. The wrong depth is a different operator and nothing in the key set can tell.
+    head._pose_inblock_block_index = int(block_index)
+    head._pose_inblock_inject_at = str(inject_at)
 
     # ASSERT IT TOOK. A flag that prints a line and changes nothing is the failure mode
     # --blocks-per-ckpt had for its whole life.

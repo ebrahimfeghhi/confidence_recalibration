@@ -721,6 +721,34 @@ def main():
                          "many were turned away; the epoch line's rate is 50%% when the warmers "
                          "contributed nothing and 100%% when every unit was warmed before pass A. "
                          "CHANGES NO NUMBER the run produces, and is UNTESTED ON A GPU.")
+    ap.add_argument("--prefix-cache-gb", type=float, default=0.0,
+                    help="HOLD THE FROZEN PREFIX OF THE CONFIDENCE HEAD FOR ONE STEP, up to this "
+                         "many GiB of HOST memory per rank; 0 is off. Different cache from "
+                         "--trunk-cache-gb: that one holds the INPUTS (z_trunk et al) so they are "
+                         "read once instead of twice, this one holds an ACTIVATION from partway "
+                         "THROUGH the head so pass B does not recompute it. Under "
+                         "--pose-inblock --lean-single the deepest point at which z is a function "
+                         "of frozen parameters alone is INSIDE the injected block, after "
+                         "tri_mul_in and before the pose enters -- the same boundary the injection "
+                         "is placed at, seen from the other side -- because --train-only freezes "
+                         "blocks 0-2 AND that block's two tri-muls. So a hit skips three whole "
+                         "blocks plus two of the last block's five pair operations, which is most "
+                         "of a forward: gpu_forward was 69.7 min over 23,000 calls on mqird6 epoch "
+                         "6, ~34.9 per pass, and the prefix is ~87%% of it. Expect ~25 min off a "
+                         "222 min epoch, net of the D2H on the fill and the H2D on the hit. "
+                         "SCOPE IS ONE OPTIMISER STEP: pass A fills, pass B hits, the step "
+                         "boundary drops it -- the epoch's poses are distinct, so nothing is "
+                         "reused across steps and a persistent cache would be ~6 TB an epoch "
+                         "against a 3,072 GiB quota. ON THE HOST, because z is [N, N, 256] bf16 = "
+                         "174 MB at the median 583 tokens and a 50-pose step is ~8.7 GB typical / "
+                         "~26 GB at the p90, which no card has spare. CAPPED IN BYTES WITH THE "
+                         "RESERVATION TAKEN BEFORE THE COPY, so the cap bounds RSS and not just "
+                         "the dict; a pose that does not fit RECOMPUTES. Purely advisory -- every "
+                         "miss recomputes the prefix, so NO NUMBER the run produces depends on a "
+                         "hit. REFUSES to enable unless --pose-inblock is on, --lean-single is on, "
+                         "every prefix tensor reads requires_grad=False at runtime and every "
+                         "dropout rate in the prefix blocks is 0.0. Validated on CPU by "
+                         "run_logging/test_prefix_cache.py; UNTESTED ON A GPU.")
     ap.add_argument("--val-loss-every", type=int, default=0,
                     help="EPOCHS BETWEEN HELD-OUT PAE PASSES; 0 is off. This is the monitor the "
                          "run had no way to compute: measured 2026-10-20, the lr 1e-2 anchor's "
@@ -2958,6 +2986,19 @@ def main():
     for n, p in model.named_parameters():
         p.requires_grad_(id(p) in head_ids)
 
+    # ---- THE FROZEN-PREFIX CACHE ---------------------------------------------------------------
+    # INSTALLED HERE AND NOT AT THE pose_inblock SITE, which is ~1,100 lines above. Its central
+    # precondition is that every prefix tensor reads requires_grad=False, and requires_grad is not
+    # set until the line above -- `trainable` is not final until --train-only, LoRA and
+    # --lean-single have all had their say. Installing it earlier would check the flag's intent
+    # instead of the model's state, which is the distinction the whole guard exists to make.
+    _pfc = None
+    if a.prefix_cache_gb > 0:
+        import prefix_cache as PFC
+        _pfc = PFC.install(model, a.prefix_cache_gb, lean_single=a.lean_single, device=dev)
+    else:
+        PFC = None
+
     _head_names = {n for n, _p in model.named_parameters()
                    if any(n == pr or n.startswith(pr + ".") for pr in prefixes)}
 
@@ -5021,16 +5062,34 @@ def main():
             x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
                 else torch.as_tensor(poses[i:i + 1], dtype=torch.float32, device=dev)
             _fe0, _fe1 = _gpu_span("gpu_forward")
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                plddt, pae, pde, resolved = model.run_confidence_head(
-                    input_feature_dict=feat_head, s_inputs=s_inputs, s_trunk=s_trunk, z_trunk=zt,
-                    pair_mask=None, x_pred_coords=x,
-                    triangle_multiplicative=configs.triangle_multiplicative,
-                    triangle_attention=configs.triangle_attention, inplace_safe=False,
-                    # CHUNKING WAS TRIED AND REMOVED: --chunk-size 64 cost 5.8x in speed for no
-                    # measurable memory, and Protenix's own config says chunk_size "should set to
-                    # null for normal training".
-                    chunk_size=None)
+            # WHICH POSE THE FROZEN-PREFIX CACHE IS LOOKING AT, and whether it may fill.
+            #
+            # (pdb, arm_seed, pose) IS ENOUGH OF AN IDENTITY because the cache is dropped at every
+            # step boundary and a step holds each pose exactly once; n_tok goes in too, so a unit
+            # re-entered at a different token count is a MISS rather than a shape that lines up.
+            # fill=score_only is the pass: pass A computes the prefix and offers it, pass B takes
+            # it. A fill in pass B would pay a D2H for a tensor nothing reads again.
+            #
+            # CLEARED IN A `finally`, so a forward that happens anywhere else in this process
+            # cannot be keyed as this pose and hit on it. The plan is decided once, inside
+            # _prep_blocks, so clearing it here does not disturb the backward that re-runs the
+            # block under blocks_per_ckpt=1.
+            if _pfc is not None:
+                PFC.set_pose((pdb, arm_seed, int(i)), fill=bool(score_only), n_tok=n_tok)
+            try:
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    plddt, pae, pde, resolved = model.run_confidence_head(
+                        input_feature_dict=feat_head, s_inputs=s_inputs, s_trunk=s_trunk,
+                        z_trunk=zt, pair_mask=None, x_pred_coords=x,
+                        triangle_multiplicative=configs.triangle_multiplicative,
+                        triangle_attention=configs.triangle_attention, inplace_safe=False,
+                        # CHUNKING WAS TRIED AND REMOVED: --chunk-size 64 cost 5.8x in speed for
+                        # no measurable memory, and Protenix's own config says chunk_size "should
+                        # set to null for normal training".
+                        chunk_size=None)
+            finally:
+                if _pfc is not None:
+                    PFC.clear_pose()
             if _fe1 is not None:
                 _fe1.record()
             # WHERE THE HEAD'S OUTPUTS LANDED. Compared BY INDEX, because torch.device("cuda") is not
@@ -7369,6 +7428,12 @@ def main():
                     # the GPU with unit 0. It also drops the PREVIOUS step's arrays, which is what
                     # bounds the cache to one step.
                     _tr_step_start(_xs_steps[_xs_at[ui]])
+                    # BEFORE PASS A AND AFTER THE OPTIMISER STEP THAT ENDED THE LAST ONE. Both
+                    # halves matter: the entries of the step that just finished are dead (its poses
+                    # never recur), and this is also where the cache re-verifies that nothing moved
+                    # the frozen prefix -- an optimiser step is the only thing that could have.
+                    if _pfc is not None:
+                        PFC.step_reset()
                     _xs_prepare(_xs_steps[_xs_at[ui]], ep)
                 trunk_p = resolve_trunk(pdb, lab_p, cands)
                 # THE NEXT UNIT'S TRUNK, WARMED WHILE THIS ONE COMPUTES. Resolving it is cheap
@@ -7558,6 +7623,10 @@ def main():
             # subprocesses have to fit beside this rank -- the same reason empty_cache() runs
             # below for the device side.
             _tr_end()
+            # SO THE EVALUATOR SUBPROCESSES DO NOT INHERIT UP TO --prefix-cache-gb OF HELD HOST
+            # MEMORY. Same reason _tr_end is unconditional.
+            if _pfc is not None:
+                PFC.step_reset()
             # ANY EVENTS LEFT FROM THE EPOCH'S TAIL, so the last partial accumulation window's
             # GPU time is not carried silently into the next epoch's figures.
             _drain_gpu_spans()
@@ -7664,6 +7733,27 @@ def main():
                       f"{_tr_stat['put']} cached, {_tr_stat['full']} refused for cap, "
                       f"{_tr_stat['dup']} skipped as present/full, {_tr_stat['err']} "
                       f"warmer error(s)", flush=True)
+            # DID THE PREFIX CACHE ACTUALLY FIRE? Same question, same reason: a miss recomputes
+            # the prefix and ticks the same gpu_forward bucket, so without a hit rate a cache that
+            # never fires looks exactly like one that always does.
+            #
+            # HOW TO READ THE RATE. The ceiling here really IS 50%: every pose is forwarded twice
+            # per step, pass A always misses (it is the fill) and pass B hits, so 50% means the
+            # cache worked on every pose and anything below it is poses that were refused for cap.
+            # That is the opposite of the trunk cache's range and the reason both lines say so.
+            if _pfc is not None:
+                _ps = PFC.stats()
+                _pn = _ps["hit"] + _ps["miss"]
+                print(f"  [rank {rank}] epoch {ep + 1} prefix cache "
+                      f"({a.prefix_cache_gb:g} GiB, cut in block {_pfc['block_index']} after "
+                      f"tri_mul_in, sig {_pfc['sig']}): "
+                      f"{_ps['hit']}/{_pn} hit ({100.0 * _ps['hit'] / max(1, _pn):.1f}%; 50% is "
+                      f"the ceiling -- pass A fills and pass B hits), {_ps['put']} cached, "
+                      f"{_ps['full']} refused for cap, {_ps['shape']} dropped on a shape "
+                      f"mismatch, {_ps['nokey']} forward(s) with no pose key, {_ps['err']} "
+                      f"copy error(s); {_ps['d2h_bytes'] / (1 << 30):.1f} GiB staged to host, "
+                      f"{_ps['h2d_bytes'] / (1 << 30):.1f} GiB read back", flush=True)
+                PFC.reset_stats()
             # THE DRIFT IS THE EXPERIMENT under --l2-sp, so it is reported, not inferred. The
             # full head reached ||dW||^2 = 67,052 unconstrained over 30 epochs; this says where
             # the penalised run actually sits.
