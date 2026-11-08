@@ -579,6 +579,20 @@ def main():
     m_mv2.confidence_head.linear_no_bias_d.weight.requires_grad_(True)
     r, msg = _refuses(PFC.step_reset, "require grad")
     ok(r, "and if one of them became trainable", msg)
+    # (g2) ANY CROP IS REFUSED. The key carries the token COUNT and not WHICH tokens were kept,
+    # so a crop giving pass A and pass B the same N over different residues would be a HIT on an
+    # activation computed from different inputs -- a plausible wrong gradient with no error. The
+    # arm is uncropped, so this costs nothing and exists because the combination is unreasoned.
+    PFC.uninstall()
+    for _kw, _label in (({"crop_margin": 10.0}, "--crop-margin"),
+                        ({"crop_tokens": "/tmp/x.npz"}, "--crop-tokens"),
+                        ({"crop_all_poses": True}, "--crop-all-poses")):
+        m_cr = _built()
+        r, msg = _refuses(
+            lambda: PFC.install(m_cr, 1.0, lean_single=True, loud=False, **_kw), "cropping")
+        ok(r, f"refuses {_label}, which could give the same N over different residues", msg)
+        PFC.uninstall()
+
     # (h) 0 IS OFF, and off means the planner is not installed at all.
     PFC.uninstall()
     m_off = _built()

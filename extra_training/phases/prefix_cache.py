@@ -393,7 +393,8 @@ def reset_stats():
     _S["stat"] = _zero_stats()
 
 
-def install(model, cap_gb, *, lean_single, device=None, loud=True):
+def install(model, cap_gb, *, lean_single, device=None, loud=True,
+            crop_margin=0.0, crop_tokens="", crop_all_poses=False):
     """Turn the cache on, after REFUSING everything that would make it unsound.
 
     Every precondition here is a hard stop, not a downgrade. A cache that silently declines to
@@ -404,6 +405,31 @@ def install(model, cap_gb, *, lean_single, device=None, loud=True):
     if cap <= 0:
         _S["on"] = False
         return None
+    # ---- REFUSE ANY CROP, which is the one failure mode that is silent in BOTH directions ------
+    #
+    # The key carries the token COUNT, so a unit re-entered at a different N is a miss. That is not
+    # enough. A crop can hand pass A and pass B the SAME N over DIFFERENT kept residues -- same
+    # shape, same key, different inputs -- and the cached z is then a valid-looking activation for
+    # a structure that was not the one being differentiated. No shape error, no NaN, just wrong
+    # gradients that look plausible.
+    #
+    # run_unit's pass-A and pass-B paths are not the same code: pass A crops inline while pass B
+    # can consume a prefetched tensor, so "the crop is a pure function of the seed" is a property
+    # of two code paths agreeing and not something this module can assert from here.
+    #
+    # The arm this was written for is FULLY UNCROPPED, so this costs nothing today. It is here
+    # because the combination is unreasoned rather than known-bad, and the failure would be a
+    # wrong number rather than a crash. Key on the crop's identity and lift this if cropping is
+    # ever wanted with the cache.
+    if float(crop_margin) > 0 or crop_tokens or crop_all_poses:
+        raise SystemExit(
+            "STOP: --prefix-cache-gb with cropping (--crop-margin "
+            f"{crop_margin}, --crop-tokens {crop_tokens!r}, --crop-all-poses {crop_all_poses}). "
+            "The cache key carries the token COUNT but not WHICH tokens were kept, so a crop that "
+            "gives pass A and pass B the same N over different residues would be a cache HIT on "
+            "an activation computed from different inputs -- wrong gradients, no error. This "
+            "combination has not been reasoned through and is refused rather than ordered. The "
+            "arm this was built for is fully uncropped.")
     head = getattr(model, "confidence_head", None)
     if head is None:
         raise SystemExit("STOP: --prefix-cache-gb: the model has no confidence_head.")

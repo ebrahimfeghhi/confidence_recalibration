@@ -2995,7 +2995,9 @@ def main():
     _pfc = None
     if a.prefix_cache_gb > 0:
         import prefix_cache as PFC
-        _pfc = PFC.install(model, a.prefix_cache_gb, lean_single=a.lean_single, device=dev)
+        _pfc = PFC.install(model, a.prefix_cache_gb, lean_single=a.lean_single, device=dev,
+                           crop_margin=a.crop_margin, crop_tokens=a.crop_tokens,
+                           crop_all_poses=a.crop_all_poses)
     else:
         PFC = None
 
