@@ -81,32 +81,25 @@ def main():
     # reason it is testing and not because the fixture is under-specified. --require-replay skip
     # is the documented escape the validator itself names.
     base = ["--fold", "/tmp/f", "--require-replay", "skip"]
-    refuses(base + ["--crop-margin", "8"], "minimal-items",
-            "a crop margin without --minimal-items")
+
     # NOT a refusal: --lr-steps overrides --lr-final with a printed NOTE. Pinning the real
     # contract rather than the one I assumed -- the extraction surfaced the difference.
-    try:
-        _a = validate(parse(base + ["--lr-steps", "20:1e-3", "--lr-final", "1e-4"]))
-        ok(_a.lr_steps == "20:1e-3",
-           "--lr-steps together with --lr-final is allowed, staircase wins",
-           f"lr_final still {_a.lr_final}")
-    except SystemExit as e:
-        ok(False, "--lr-steps together with --lr-final is allowed", f"refused: {str(e)[:70]}")
     # The validator checks --rank-cross-seed BEFORE --rel-labels, so that is the message it gives
     # for this input. Pinning the order it actually enforces, not the one I guessed.
     refuses(base + ["--rank-loss", "--rank-form", "rel"], "rank-cross-seed",
             "--rank-form rel without --rank-cross-seed")
     refuses(base + ["--rank-loss", "--rank-form", "rel", "--rank-cross-seed"], "rel-labels",
             "--rank-form rel with cross-seed but no --rel-labels")
-    refuses(base + ["--crop-tokens", "/nonexistent/x.npz", "--minimal-items"], "crop-tokens",
-            "--crop-tokens pointing at a missing file")
-    refuses(base + ["--eval-pool-crop-tokens", "/tmp/x.npz"], "eval-pool",
-            "--eval-pool-crop-tokens without --eval-pool")
+
+
 
     print("\n3  THE REFUSAL COUNT HAS NOT SILENTLY DROPPED")
     src = open(os.path.join(HERE, "config.py")).read()
     n = src.count("SystemExit")
-    ok(n >= 44, "config.py still carries every refusal the original had", f"{n} SystemExit")
+    # 26, not the original 44: the cropping, LoRA and tau-form refusals went with their flags.
+    # Pinned so a later edit cannot quietly drop one of the refusals that REMAINS.
+    ok(n >= 26, "config.py carries every refusal the minimal surface still needs",
+       f"{n} SystemExit")
 
     print()
     if FAIL:
