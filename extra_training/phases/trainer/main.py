@@ -77,6 +77,11 @@ def main(argv=None):
     # THE HEAD, AND EVERY MUTATION OF IT, BEFORE THE TRAINABLE SET IS DERIVED.
     # head_param_names() reads the module tree rather than a hand-written list, so an injection
     # installed after it would be created and never trained -- silently, since the shapes line up.
+    # What the head build and everything after it read. _LRS is NOT here: it is set by
+    # the dataset stage further down, and demanding it at this point was my error, not
+    # a missing export -- the gate is a claim about order and has to be accurate.
+    rt.require("TERMS", "ROOT", "head_param_names", "_LR_STEPS")
+
     rt.model, rt.configs, rt._dead_head = bootstrap.build_head(rt, a, dev)
 
     # THE RESOLVED DATASET GOES ONTO THE CONTEXT. A sed of mine removed this call while deleting
@@ -85,7 +90,13 @@ def main(argv=None):
     for _k, _v in dataset.resolve_training_dataset(rt, a, is_main=is_main).items():
         setattr(rt, _k, _v)
 
+    # ORDER, NOT MERE PRESENCE. The contract test proves a writer exists SOMEWHERE; these prove
+    # it ran BEFORE its reader on this configuration. Review on issue #9 made that distinction,
+    # and it is the difference between a static scan and an initialisation failure.
+    rt.require("model", "configs", "loss_fn")
+
     rt.prefixes, rt.trainable, rt._dops = trainable_mod.select_trainable(rt, a, rt.model)
+    rt.require("prefixes", "trainable")
     rt.opt, rt._drift_history = optimiser.build_optimiser(rt, a, rt.model, rt.trainable)
 
     rt.start_epoch, rt.start_step = resume_mod.load_resume(rt, a, rt.model, rt.opt)
@@ -93,6 +104,7 @@ def main(argv=None):
     # THE GLUE BETWEEN THE STAGES, LAST, because it reads the model, the trainable set and the
     # optimiser that the stages above build. Inside main() this was simply the rest of the
     # function body; here it is explicit, and everything it binds is exported onto the context.
+    rt.require("opt", "start_epoch", "start_step")
     runtime_mod.build_runtime(rt, a)
 
     # THE CALLBACKS loop.py REACHES THROUGH THE CONTEXT. Inside main() these were nested defs
@@ -106,6 +118,10 @@ def main(argv=None):
     # THE SIGNATURE IS THE LIVE ONE. train_loop takes the step cap, the base lr, a tag, whether
     # this rank writes the shared trajectory, and where to resume from. Calling it with the
     # context alone was a wiring bug the bloat audit caught -- a TypeError on the first run.
+    # THE LOOP'S OWN INPUTS, checked at the boundary rather than at first read 900 steps in.
+    rt.require("run_unit", "eval_checkpoint", "build_epoch_cross_seed",
+               "traj_p", "traj_cols", "accum_eff", "accum_local", "_T", "_TN")
+
     return loop.train_loop(rt,
                            steps_cap=0,
                            lr=a.lr,

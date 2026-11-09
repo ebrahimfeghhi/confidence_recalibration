@@ -85,6 +85,18 @@ def scan():
 
 def main():
     reads, writes = scan()
+    # Ctx's OWN MEMBERS are not stage exports. `rt.require(...)` is a method on the class; a
+    # test that demands a stage write it is asking the wrong question.
+    ctx_src = os.path.join(HERE, "context.py")
+    if os.path.exists(ctx_src):
+        ct = ast.parse(open(ctx_src).read())
+        for cls in [n for n in ct.body if isinstance(n, ast.ClassDef)]:
+            for n in ast.walk(cls):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    writes.add(n.name)
+                elif (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                      and n.value.id == "self" and isinstance(n.ctx, ast.Store)):
+                    writes.add(n.attr)
     missing = {k: v for k, v in sorted(reads.items())
                if k not in writes and k not in EXEMPT}
     print(f"  rt attributes read:     {len(reads)}")
