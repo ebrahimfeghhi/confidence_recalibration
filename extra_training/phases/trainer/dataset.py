@@ -23,7 +23,6 @@ from helpers import (_check_eval_pool, _pae_mask_check, _rank_key)
 import csv
 import json
 import os
-import re
 
 import torch
 
@@ -205,22 +204,22 @@ def resolve_training_dataset(rt, a, is_main=True):
     #
     # THE WEIGHTS ARE DETACHED. If they carried gradient the model could lower the loss by moving
     # weight onto rows it is already good at instead of getting better.
-    if float(a.pae_row_frac) > 0:
+    if float(0.0) > 0:
         if not a.pae_scored_pairs:
             raise SystemExit("STOP: --pae-row-frac needs --pae-scored-pairs. t_i is a mean over a "
                              "row's SCORED cross-chain targets; with no pool there is no cross "
                              "block to average over and the ranking of rows would be meaningless.")
-        if not 0.0 < float(a.pae_row_mass) < 1.0:
+        if not 0.0 < float(0.8) < 1.0:
             raise SystemExit(
-                f"STOP: --pae-row-mass must be in (0, 1), got {a.pae_row_mass}. At 1.0 every row "
+                f"STOP: --pae-row-mass must be in (0, 1), got {0.8}. At 1.0 every row "
                 f"outside the top set gets weight 0, which is a hard top-k mask: those rows are "
                 f"then unsupervised and free to drift over-confident, and since ipTM is a max an "
                 f"over-confident row is exactly the one selection reads. Pass 0.8 for the "
                 f"16x-focus-with-a-floor this flag is for.")
-        if not 0.0 < float(a.pae_row_frac) <= 1.0:
-            raise SystemExit(f"STOP: --pae-row-frac must be in (0, 1], got {a.pae_row_frac}.")
-        if int(a.pae_row_floor) < 1:
-            raise SystemExit(f"STOP: --pae-row-floor must be >= 1, got {a.pae_row_floor}.")
+        if not 0.0 < float(0.0) <= 1.0:
+            raise SystemExit(f"STOP: --pae-row-frac must be in (0, 1], got {0.0}.")
+        if int(10) < 1:
+            raise SystemExit(f"STOP: --pae-row-floor must be >= 1, got {10}.")
         # THE MATH LIVES IN phases/pae_row_weight.py so a test can import the same code this
         # run uses. run_logging/test_pae_row_weight.py asserts max(row_t(...)) equals Protenix's
         # own calculate_iptm, and that frac 1.0 reproduces the unweighted term bit for bit.
@@ -228,7 +227,7 @@ def resolve_training_dataset(rt, a, is_main=True):
         import pae_row_weight as _rw
         _orig_pae_fwd = loss_fn.pae_loss.forward
         _pl = loss_fn.pae_loss
-        _rf, _rm, _rfl = float(a.pae_row_frac), float(a.pae_row_mass), int(a.pae_row_floor)
+        _rf, _rm, _rfl = float(0.0), float(0.8), int(10)
         _row_seen = {"n": 0}
         _row_diag_p = os.path.join(a.out, f"pae_rows_rank{rank}.csv")
         _row_diag_fh = {"fh": None, "w": None}
@@ -332,8 +331,8 @@ def resolve_training_dataset(rt, a, is_main=True):
             hf = kw["has_frame"].reshape(-1).bool()
             n = int(hf.sum())
             _row_seen["n"] += 1
-            diag = (int(a.pae_row_log_every) > 0
-                    and _row_seen["n"] % int(a.pae_row_log_every) == 0)
+            diag = (int(50) > 0
+                    and _row_seen["n"] % int(50) == 0)
             _pae_keep["unw_label"] = None
             blocks = _pae_keep["blocks"]
             if n == 0 or not blocks:
@@ -528,7 +527,7 @@ def resolve_training_dataset(rt, a, is_main=True):
     # STEPS PER EPOCH THE HORIZON WAS CALIBRATED FROM, 0 when cross-seed packing is not in use.
     # build_epoch_cross_seed compares its own packing against it every epoch.
     _xs_spe = [0]
-    _rank_tau = float(a.rank_tau) if a.rank_tau is not None else None
+    _rank_tau = float(None) if None is not None else None
     _probe = {"rows": [], "units": 0, "poses": 0, "sum": {}, "finite": {}, "nonzero": {}}
     if a.rank_loss and a.loss_only:
         # SAME REASON. Nothing below is needed for a measurement, and --rank-labels points at the
@@ -540,7 +539,7 @@ def resolve_training_dataset(rt, a, is_main=True):
             raise SystemExit("STOP: --rank-loss needs --pae-scored-pairs. The ranking term reads "
                              "chain_pair_iptm for a NAMED interface; with no scored pair there is "
                              "nothing to rank and no join to the DockQ labels.")
-        _rl_p = a.rank_labels or os.path.join(a.fold, "results.csv")
+        _rl_p = None or os.path.join(a.fold, "results.csv")
         if not os.path.exists(_rl_p):
             raise SystemExit(f"STOP: --rank-loss found no DockQ labels at {_rl_p}. Pass "
                              f"--rank-labels explicitly.")
@@ -581,7 +580,7 @@ def resolve_training_dataset(rt, a, is_main=True):
                   f"cancels by construction -- alpha must come from --grad-probe norms, not from "
                   f"loss values.")
         print(f"RANKING LOSS on chain_pair_iptm: form {a.rank_form}, alpha {a.alpha_rank:g}, "
-              f"weight_by_gap={a.rank_weight_by_gap}, {len(_rank_lab)} labelled "
+              f"weight_by_gap={True}, {len(_rank_lab)} labelled "
               f"(pdb, seed, interface) group(s) from {_rl_p}"
               + (f", {_rl_bad} unparsed row(s)" if _rl_bad else ""))
         # VALIDATED BEFORE ANYTHING IS PRINTED. tau <= 0 is refused in three places while these
@@ -589,9 +588,9 @@ def resolve_training_dataset(rt, a, is_main=True):
         # weight nan and the `> 0` banner test below is FALSE for nan, so the log would not even
         # mention the decay while the loss trained on nan; --rank-within-weight -1 drives den
         # negative and flips the loss's sign.
-        for _nm, _vv in (("--rank-within-weight", a.rank_within_weight),
-                         ("--rank-topk-decay", a.rank_topk_decay),
-                         ("--rank-straddle", a.rank_straddle)):
+        for _nm, _vv in (("--rank-within-weight", 1.0),
+                         ("--rank-topk-decay", 0.0),
+                         ("--rank-straddle", 0.0)):
             if not math.isfinite(_vv) or _vv < 0:
                 raise SystemExit(f"STOP: {_nm} {_vv!r} must be a finite number >= 0.")
         # THE BANNERS MUST NOT DESCRIBE A PATH THAT IS NOT TAKEN. These three flags are read only
@@ -607,11 +606,11 @@ def resolve_training_dataset(rt, a, is_main=True):
         # pair family for a loss that has none.
         _group_form = a.rank_form in ("spearman", "distance", "spearman_distance")
         _ignores = (a.rank_form == "expected") or _group_form or not a.rank_cross_seed
-        _nondefault = [f"--rank-pairs {a.rank_pairs}" for _ in (1,) if a.rank_pairs != "cross"] \
-            + [f"--rank-within-weight {a.rank_within_weight:g}" for _ in (1,)
-               if a.rank_within_weight != 1.0] \
-            + [f"--rank-topk-decay {a.rank_topk_decay:g}" for _ in (1,) if a.rank_topk_decay != 0.0] \
-            + [f"--rank-straddle {a.rank_straddle:g}" for _ in (1,) if a.rank_straddle != 0.0]
+        _nondefault = [f"--rank-pairs {'cross'}" for _ in (1,) if 'cross' != "cross"] \
+            + [f"--rank-within-weight {1.0:g}" for _ in (1,)
+               if 1.0 != 1.0] \
+            + [f"--rank-topk-decay {0.0:g}" for _ in (1,) if 0.0 != 0.0] \
+            + [f"--rank-straddle {0.0:g}" for _ in (1,) if 0.0 != 0.0]
         if _ignores and _nondefault:
             raise SystemExit(
                 "STOP: " + ", ".join(_nondefault) + " cannot take effect here. "
@@ -637,7 +636,7 @@ def resolve_training_dataset(rt, a, is_main=True):
                               "CROSS-SEED pairs only (different seeds) -- the deployed objective"),
                     "within": "WITHIN-SEED pairs only (same seed) -- a PROXY for selection, not "
                               "the deployed objective",
-                    "all": "BOTH families at ONE tau"}[a.rank_pairs]
+                    "all": "BOTH families at ONE tau"}['cross']
         print(f"  PAIR FAMILY: {_fam_txt}")
         # NO STOP HERE, AND THE EARLIER ONE WAS WRONG. It refused --rank-pairs within/all
         # without an explicit --rank-tau, on the grounds that at the cross-seed tau a within-seed
@@ -652,7 +651,7 @@ def resolve_training_dataset(rt, a, is_main=True):
         # "inert" -- the softplus NONLINEARITY is inert, not the gradient. Within-seed pairs are
         # under-weighted (6.7% of pairwise gradient mass on overfit30), which is a question for
         # --rank-within-weight, not for tau. So this prints the regime and lets the run proceed.
-        if a.rank_pairs != "cross" and a.rank_form == "softplus":
+        if 'cross' != "cross" and a.rank_form == "softplus":
             _r = 0.0137 / _tau_eff          # overfit30 within-seed median; the training pool's
             _sg = 1.0 / (1.0 + math.exp(-_r))
             print(f"  within-seed pairs at tau {_tau_eff:g}: a median-gap pair (0.0137 on "

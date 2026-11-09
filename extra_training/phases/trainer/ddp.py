@@ -38,7 +38,7 @@ def setup_dist(a):
     # giving each rank one seed of the same K structures makes the per-step work equal across
     # ranks BY CONSTRUCTION rather than on average. --accum is honoured as a REQUEST: K is the
     # nearest whole number of structures to it.
-    structs_per_step = a.structures_per_step or max(
+    structs_per_step = 0 or max(
         1, int(round(a.accum / float(world * a.nsample))))
     accum_local = structs_per_step * a.nsample
     accum_eff = accum_local * world

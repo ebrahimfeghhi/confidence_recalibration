@@ -46,12 +46,35 @@ CTX = re.compile(r"\brt\.")
 #: explicit allowlist rather than a loose rule, so anything else that appears in the copy and not
 #: in the source is still a failure. These are the function scaffolding: `main()` had no returns,
 #: because its locals simply stayed in scope.
-ADDED = re.compile(r"^(return |def |pass  # body removed|import |from |seed_base=-1, budget=0\):)")
+ADDED = re.compile(r"^(return |def |pass  # body removed|import |from "
+                   r"|seed_base=-1, budget=0\):"
+                   r"|# The --loss-only LoRA inheritance block was here\."
+                   r"|# a\.lora_\* so the adapters would match on resume"
+                   r"|# nothing reads those values and the block only existed)")
+
+
+#: `(rt.)?a.<culled flag>` -> the literal the live arm passed. Applied to the LIVE side so the
+#: copy's substituted lines compare equal. Done with a regex rather than the AST because several
+#: regions do not parse standalone -- bootstrap begins inside a `try:` -- and a normaliser that
+#: silently skips the two largest regions is worse than none.
+_SUB = re.compile(r"\b(?:rt\.)?a\.(" + "|".join(sorted(lean.LIVE_VALUES)) + r")\b")
+
+
+def _sub_code_only(line):
+    """Substitute in the code part of a line, never in a comment.
+
+    The copy's substitution was done on the AST, which cannot see comments. Doing the live side
+    with a plain regex rewrote `# THE PAIR FAMILY IS a.rank_pairs, NOT ...` into the literal and
+    then reported the copy's untouched comment as a rewritten line -- a difference the tool
+    created itself.
+    """
+    code, sep, comment = line.partition("#")
+    return _SUB.sub(lambda m: repr(lean.LIVE_VALUES[m.group(1)]), code) + sep + comment
 
 
 def norm(lines, dedent):
     t = textwrap.dedent("".join(l + "\n" for l in lines))
-    return [CTX.sub("", l).rstrip() for l in t.splitlines()]
+    return [CTX.sub("", _sub_code_only(l)).rstrip() for l in t.splitlines()]
 
 
 def subsequence(copy, live):

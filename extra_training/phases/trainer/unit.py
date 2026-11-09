@@ -12,10 +12,8 @@ import numpy as np
 import phase_j_rescore_cache as RC
 # THE HELPERS main() DECLARED INLINE. Imported by name rather than with a star
 # so the dependency is visible and a missing one is an ImportError here.
-from helpers import (_crop_masks, _gpu_span, _pf_take, _pose_pairs, _rank_key, _set_pae_mask, _tick, _to_dev, _tr_get, _tr_put, _unit_fp)
-import collections
+from helpers import (_gpu_span, _pose_pairs, _rank_key, _set_pae_mask, _tick, _tr_get, _tr_put, _unit_fp)
 import csv
-import json
 import math
 import os
 import time
@@ -415,7 +413,7 @@ def run_unit(rt, pdb, lab_p, trunk_p, score_only=False):
         out = {k: (float(met[k]) if k in met else 0.0) for k in rt.TERMS}
         out["loss"] = float(met["loss"])
         out["pose"] = i
-        if float(rt.a.pae_row_frac) > 0:
+        if float(0.0) > 0:
             out["pae_loss_unweighted"] = rt._pae_unw["v"]
         # SCALED BY THE EFFECTIVE BATCH, so summing the ranks reconstructs the full-batch mean.
         # NOT UNDER --loss-only: there are no gradients to accumulate, and calling backward
@@ -614,7 +612,7 @@ def run_unit(rt, pdb, lab_p, trunk_p, score_only=False):
             if len(_idx) < 2:
                 continue
             _cs, _np_ = RKL.coeffs([_dqmap[_i] for _i in _idx],
-                                   weight_by_gap=rt.a.rank_weight_by_gap)
+                                   weight_by_gap=True)
             if _np_ == 0:
                 continue
             _nif += 1

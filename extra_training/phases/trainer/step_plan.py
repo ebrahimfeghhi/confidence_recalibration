@@ -84,8 +84,8 @@ def build_epoch_cross_seed(ep, a, flat, rank, world, lrs, lr_horizon, sel_tokens
     # ASCENDING BY TOKENS when asked. The pdb tie-break keeps it deterministic across ranks
     # and epochs. A structure the manifest gave no numeric `tokens` for sorts first and is
     # named below rather than silently placed.
-    _manifest_order = (a.epoch_order in ("manifest", "tokens"))
-    if a.epoch_order == "tokens":
+    _manifest_order = ('shuffle' in ("manifest", "tokens"))
+    if 'shuffle' == "tokens":
         order = sorted(by, key=lambda _q: (_sel_tokens.get(_q, 0), _q))
     elif _manifest_order:
         order = list(by)
@@ -222,7 +222,7 @@ def build_epoch_cross_seed(ep, a, flat, rank, world, lrs, lr_horizon, sel_tokens
         # structure. A warning in a log is not a gate. The shuffled modes keep the old
         # behaviour because there the omitted set rotates with the epoch seed.
         raise SystemExit(
-            f"STOP: --epoch-order {a.epoch_order} dropped {len(_dropped)} structure(s) as a "
+            f"STOP: --epoch-order {'shuffle'} dropped {len(_dropped)} structure(s) as a "
             f"short final step: {_dropped[:6]}. In a deterministic order the dropped chunk is "
             f"the largest structures and they would never train, which silently changes what a "
             f"size-ordered epoch means. Trim the manifest to a multiple of the "

@@ -13,9 +13,6 @@ import torch.distributed as dist
 # THE HELPERS main() DECLARED INLINE. Imported by name rather than with a star
 # so the dependency is visible and a missing one is an ImportError here.
 from helpers import (_apply_step, _drain_gpu_spans, _flush, _fp_cache_load, _fp_cache_save, _grad_probe_report, _head_ckpt_tensors, _pf_end, _pf_start, _prefetch, _tick, _tr_end, _tr_step_start, _xs_prepare, build_epoch, resolve_trunk)
-import collections
-import csv
-import json
 import math
 import os
 import time
@@ -137,7 +134,7 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                     "opt": rt.opt.state_dict(),
                     "epoch": epochs_done, "step": step_now,
                     "guard": {"drift_history": rt._drift_history,
-                              "lora_rank": rt.a.lora_rank, "lora_alpha": rt.a.lora_alpha,
+                              "lora_rank": 0, "lora_alpha": 0.0,
                               "train_only": rt.a.train_only,
                               "world": rt.world, "seed": rt.a.seed, "accum": rt.a.accum,
                               "nsample": rt.a.nsample, "lr": rt.a.lr,
@@ -187,15 +184,15 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
              "rank_pool": rt.a.rank_pool, "rel_labels": rt.a.rel_labels,
              "rel_standardize": rt.a.rel_standardize,
                               "rank_form": rt.a.rank_form,
-                              "rank_tau": (float(rt.a.rank_tau)
-                                           if rt.a.rank_tau is not None else -1.0),
+                              "rank_tau": (float(None)
+                                           if None is not None else -1.0),
                               "rank_cross_seed": rt.a.rank_cross_seed,
                               "rank_structs_per_step": rt.a.rank_structs_per_step,
                               # FIFTH TIME. rank_pairs, rank_within_weight and rank_topk_decay
                               # went into the comparison side with a comment claiming both
                               # sides were edited together; they were not, and
                               # test_guard_fields.py said so. Found in review.
-                              "alpha_pae": rt.a.alpha_pae, "drop_pde": rt.a.drop_pde,
+                              "alpha_pae": rt.a.alpha_pae, "drop_pde": False,
                               "clip_norm": rt.a.clip_norm,
                               "crop_tokens": rt._CROP_TOK_DIGEST,
              # THE CROP DEFINITION, for the same reason as the two above: a16911de changed
@@ -345,9 +342,9 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                 # _lr_horizon[0] is steps-per-epoch x epochs, derived from the EPOCH BUILDER's
                 # grouping -- see the comment at its assignment for the 205-vs-184 bug.
                 cur_lr = rt._LRS.lr_at_step(
-                    step, lr, rt.a.lr_final, rt.a.warmup_steps,
+                    step, lr, 0.0, rt.a.warmup_steps,
                     rt._lr_horizon[0] / max(1.0, float(rt.a.epochs)), rt.a.epochs,
-                    rt.a.lr_decay_start_epoch, rt.a.lr_decay_end_epoch, rt.a.lr_decay_shape,
+                    0.0, 0.0, 'cosine',
                     rt._LR_STEPS)
                 for g in rt.opt.param_groups:
                     g["lr"] = cur_lr
@@ -455,13 +452,13 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
             _apply_partial({"epoch": ep + 1, "lr": cur_lr, "pdb": pdb, "unit_i": ui,
                             "unit": os.path.basename(lab_p)[:-4], "pose": i})
 
-        if rt.a.early_stop_patience and ep_loss["n"]:
+        if 0 and ep_loss["n"]:
             _ep_loss = ep_loss["sum"] / ep_loss["n"]
-            if _ep_loss < stop_state["best"] - rt.a.early_stop_min_delta:
+            if _ep_loss < stop_state["best"] - 0.002:
                 stop_state["best"], stop_state["bad"] = _ep_loss, 0
             else:
                 stop_state["bad"] += 1
-            if stop_state["bad"] >= rt.a.early_stop_patience:
+            if stop_state["bad"] >= 0:
                 done = True
 
         # THE RESUME BUNDLE, WRITTEN BEFORE THE EVALUATION. The evaluator is a subprocess that
@@ -674,7 +671,7 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
             # family for an objective that forms no pairs.
             _obj = ("relative regression on true iTM, mean-centred per interface"
                     if rt.a.rank_form == "rel"
-                    else f"{rt.a.rank_form}, {rt.a.rank_pairs}-seed pairs")
+                    else f"{rt.a.rank_form}, {'cross'}-seed pairs")
             print(f"  [rank {rt.rank}] epoch {ep + 1} rank-loss ({_obj}): "
                   f"{rt._xs_stat['loss'] / rt._xs_stat['groups']:+.5f} over "
                   f"{rt._xs_stat['groups']} interface-group(s) in {rt._xs_stat['steps']} step(s)"
@@ -879,7 +876,7 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
             rows.clear()
             if rt.is_main:
                 rt.eval_checkpoint(step, ep + 1, train_pool=rt.a.train_eval_pool,
-                                crop_tokens=rt.a.eval_pool_crop_tokens)
+                                crop_tokens='')
             if rt.world > 1:
                 dist.barrier()
         # EVERY EXTRA PASS, each on its own cadence. SAME BARRIER DISCIPLINE: one evaluator

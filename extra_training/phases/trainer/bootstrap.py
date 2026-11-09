@@ -36,7 +36,6 @@ THE DEPENDENCY LEDGER for this region, which is what the review asked for before
 import os
 import time
 
-import torch
 
 import phase_j_rescore_cache as RC
 

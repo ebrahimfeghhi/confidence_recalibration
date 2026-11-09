@@ -14,7 +14,6 @@ convenience. phases/trainer/test_config_equivalence.py checks it against real ru
 against known-bad combinations.
 """
 import csv
-import hashlib
 import os
 import re
 import sys
@@ -217,7 +216,6 @@ def validate(a):
                          "silently NaN -- phase_j_replay.py's guard fired on this first.")
 
 
-    import torch
     import phase_j_dataset as DS
     import phase_j_build_cache as BC
     import phase_j_rescore_cache as RC

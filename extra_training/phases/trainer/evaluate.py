@@ -13,10 +13,8 @@ import sys
 # THE HELPERS main() DECLARED INLINE. Imported by name rather than with a star
 # so the dependency is visible and a missing one is an ImportError here.
 from helpers import (_head_ckpt_tensors, _record_val_loss)
-import collections
 import csv
 import json
-import math
 import os
 import time
 
@@ -61,8 +59,8 @@ def val_loss_checkpoint(rt, epoch, bundle, step):
            # --crop-margin 0 IS WHAT "UNCROPPED" MEANS here; the argument's own help says 0
            # is the whole structure. crop_contact and crop_size are still passed because they
            # are inert at margin 0 and passing them keeps the recorded config complete.
-           "--crop-margin", ("0" if rt.a.val_loss_uncropped else str(rt.a.crop_margin)),
-           "--crop-contact", str(rt.a.crop_contact),
+           "--crop-margin", ("0" if rt.a.val_loss_uncropped else str(0.0)),
+           "--crop-contact", str(5.0),
            "--crop-size", str(rt.a.crop_size), "--accum", str(rt.a.accum),
            # THE PATH IS PER SHARD, and the sharded launcher below rewrites it the same way
            # it rewrites --out. Handing every child this one path meant three processes
@@ -77,7 +75,7 @@ def val_loss_checkpoint(rt, epoch, bundle, step):
            # the same argument and was not passed, so a parent using the union would have been
            # monitored on a pose-0 crop. Caught in review.
            *(["--crop-all-poses"]
-             if (rt.a.crop_all_poses and not rt.a.val_loss_uncropped) else []),
+             if (False and not rt.a.val_loss_uncropped) else []),
            # ALPHA_PAE 0 IS A TRAINING CHOICE, NOT A MEASUREMENT ONE. A ranking-only arm sets
            # --alpha-pae 0 so no PAE gradient is taken, but the held-out number this
            # subprocess exists to produce IS the PAE loss, and passing 0 through would report
@@ -668,10 +666,10 @@ def eval_checkpoint(rt, step, epoch, train_pool="", crop_tokens="", tag="", fold
     sharded = "phase_k_eval_sharded.py" in cmd[2]
     if sharded:
         print(f"  evaluating epoch {epoch} ({kind}) sharded over GPU(s) {cards}")
-    elif rt.a.eval_device:
+    elif '':
         # ONLY ON THE SINGLE-CARD PATH. Pinning CUDA_VISIBLE_DEVICES here would hand the sharding
         # driver one card and silently undo the split.
-        env["CUDA_VISIBLE_DEVICES"] = str(rt.a.eval_device)
+        env["CUDA_VISIBLE_DEVICES"] = str('')
     else:
         # SHARING MEANS CHECKING FIRST. The trainer is still resident and does not hand its
         # allocator back, so a second 464M-parameter model has to fit alongside it.
@@ -683,10 +681,10 @@ def eval_checkpoint(rt, step, epoch, train_pool="", crop_tokens="", tag="", fold
             free_mib = int(q.stdout.strip().splitlines()[idx])
         except Exception:
             pass
-        if free_mib is not None and free_mib < rt.a.eval_min_free_mib:
+        if free_mib is not None and free_mib < 20000:
             raise SystemExit(
                 f"STOP: the epoch-{epoch} evaluation would share the training card with only "
-                f"{free_mib} MiB free, under --eval-min-free-mib {rt.a.eval_min_free_mib}. It "
+                f"{free_mib} MiB free, under --eval-min-free-mib {20000}. It "
                 f"loads a second 464M-parameter model (~16 GB) while the trainer stays "
                 f"resident. Pass --eval-device <idle gpu>, or raise the floor deliberately.")
         print(f"  evaluating epoch {epoch} on the TRAINING card, {free_mib} MiB free")

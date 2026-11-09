@@ -6,9 +6,6 @@ main() became parameters. test_optimiser_equivalence.py compares it line for lin
 so a change to the live trainer fails the test instead of drifting silently.
 """
 import copy
-import os
-import math
-import time
 
 import torch
 import torch.distributed as dist

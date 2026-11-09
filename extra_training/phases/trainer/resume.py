@@ -8,7 +8,6 @@ so a change to the live trainer fails the test instead of drifting silently.
 import json
 import os
 import math
-import time
 
 import torch
 import torch.distributed as dist
@@ -38,7 +37,7 @@ def load_resume(rt, a, model, opt):
         _mine = {"world": rt.world, "seed": a.seed, "accum": a.accum, "nsample": a.nsample,
                  "manifest_digest": rt._manifest_digest, "crop_size": a.crop_size,
                  "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
-                 "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
+                 "drop_pde": False, "clip_norm": a.clip_norm,
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
@@ -72,7 +71,7 @@ def load_resume(rt, a, model, opt):
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
-                 "crop_margin": a.crop_margin, "crop_contact": a.crop_contact,
+                 "crop_margin": 0.0, "crop_contact": 5.0,
                  # A CROP RULE CHANGE IS AN OBJECTIVE CHANGE: the loss averages over a different
                  # set of tokens and pairs, so resuming across it would blend two objectives.
                  "crop_tokens": rt._CROP_TOK_DIGEST,
@@ -121,8 +120,8 @@ def load_resume(rt, a, model, opt):
                  # tensors and one written without LoRA holds 248 head tensors; resuming one as
                  # the other fails on the missing-tensor check with a message about tensors
                  # rather than about the setting that changed.
-                 "lora_rank": a.lora_rank, "lora_alpha": a.lora_alpha,
-                 "lora_targets": a.lora_targets, "lora_dropout": a.lora_dropout,
+                 "lora_rank": 0, "lora_alpha": 0.0,
+                 "lora_targets": '', "lora_dropout": 0.0,
                  "train_only": a.train_only}
 
         # A BUNDLE WRITTEN BY OLDER CODE IS NOT DRIFT. The guard grew from four fields to twelve

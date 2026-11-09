@@ -5,16 +5,12 @@ EXTRACTED VERBATIM from `phases/phase_k_train.py`: 41 nested defs, 1741 lines
 over; collecting them here is what lets those two take an explicit context instead of
 reaching into an enclosing scope.
 """
-import collections
 import csv
 import glob
 import hashlib
 import json
 import math
 import os
-import re
-import shutil
-import sys
 import time
 
 import random
@@ -412,7 +408,7 @@ def _crop_masks(rt, pdb_, zc_):
         _sd_bytes = f"{int(rt.a.seed)}|{int(rt._crop_epoch[0])}|{pdb_}".encode()
         _rs = np.random.default_rng(
             int.from_bytes(hashlib.sha256(_sd_bytes).digest()[:8], "big"))
-        _p = np.where(kt_, float(rt.a.token_keep_union), float(rt.a.token_keep_other))
+        _p = np.where(kt_, float(-1.0), float(-1.0))
         _keep = _rs.random(kt_.shape[0]) < _p
         # EVERY SUPERVISED PAIR MUST STAY SCOREABLE -- per pair, not "two chains somewhere".
         # ipTM for pair (x, y) pools over token pairs spanning x and y, so if either chain
@@ -645,9 +641,9 @@ def _cpu_crop(rt, pdb, lab_p, trunk_p):
     zc = np.load(trunk_p)
     _tick("cpucrop_trunk", _t)
     _t = time.perf_counter()
-    kt, ka = (_crop_masks(pdb, zc) if rt.a.crop_tokens
-              else rt.BC.interface_crop_tokens(zc, lab_l, rt.a.crop_contact, rt.a.crop_margin,
-                                            all_poses=rt.a.crop_all_poses))
+    kt, ka = (_crop_masks(pdb, zc) if ''
+              else rt.BC.interface_crop_tokens(zc, lab_l, 5.0, 0.0,
+                                            all_poses=False))
     _tick("cpucrop_tokens", _t)
     if kt is None:
         return ("nocrop", None, None)
@@ -1273,17 +1269,17 @@ def _xs_prepare(rt, step_units, ep):
             # with nothing in the log to reveal it.
             tau=(rt._rank_tau if rt._rank_tau is not None else
                  (RKL.DEFAULT_SOFTMAX_TAU if rt.a.rank_form == "expected" else RKL.DEFAULT_TAU)),
-            weight_by_gap=rt.a.rank_weight_by_gap,
-            pairs=rt.a.rank_pairs,
-            within_weight=rt.a.rank_within_weight,
-            rank_decay_k=rt.a.rank_topk_decay,
-            straddle=rt.a.rank_straddle,
+            weight_by_gap=True,
+            pairs='cross',
+            within_weight=1.0,
+            rank_decay_k=0.0,
+            straddle=0.0,
             # GROUP-FORM KNOBS. Ignored by every pairwise form, and the pairwise knobs above
             # are ignored by these two -- which is why the startup guard refuses the
             # combinations rather than letting a flag look honoured.
-            spearman_tau=(rt.a.rank_spearman_tau if rt.a.rank_spearman_tau > 0
+            spearman_tau=(0.0 if 0.0 > 0
                           else RKL.DEFAULT_SPEARMAN_TAU),
-             dist_weight=rt.a.rank_dist_weight,
+             dist_weight=0.1,
              rel_scale=rt.a.rank_rel_scale)
         if npair == 0:
             continue
@@ -1737,8 +1733,8 @@ def build_epoch(rt, ep):
     # ASCENDING BY TOKENS when asked. The pdb tie-break keeps it deterministic across ranks
     # and epochs. A structure the manifest gave no numeric `tokens` for sorts first and is
     # named below rather than silently placed.
-    _manifest_order = (rt.a.epoch_order in ("manifest", "tokens"))
-    if rt.a.epoch_order == "tokens":
+    _manifest_order = ('shuffle' in ("manifest", "tokens"))
+    if 'shuffle' == "tokens":
         order = sorted(by, key=lambda _q: (rt._sel_tokens.get(rt._q, 0), rt._q))
     elif _manifest_order:
         order = list(by)

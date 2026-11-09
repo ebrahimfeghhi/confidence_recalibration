@@ -5,9 +5,6 @@ Statements and comments are the original; only the names this closed over inside
 main() became parameters. test_trainable_equivalence.py compares it line for line,
 so a change to the live trainer fails the test instead of drifting silently.
 """
-import os
-import math
-import time
 
 import torch
 import torch.distributed as dist
@@ -70,28 +67,15 @@ def select_trainable(rt, a, model):
         if _gr.get("rank_loss"):
             a.rank_loss = True
             a.alpha_rank = float(_gr.get("alpha_rank") or 0.0)
-            a.rank_weight_by_gap = bool(_gr.get("rank_weight_by_gap", True))
             if rt.is_main:
                 print(f"  --loss-only: inheriting the bundle's ranking configuration "
                       f"(alpha_rank {a.alpha_rank:g}, "
-                      f"weight_by_gap={a.rank_weight_by_gap}) so the guard matches; the ranking "
+                      f"weight_by_gap={True}) so the guard matches; the ranking "
                       f"term itself does not run -- a measurement takes no step.")
 
-    if a.loss_only and a.resume and not a.lora_rank:
-        try:
-            _g = (torch.load(a.resume, map_location="cpu", weights_only=False).get("guard")
-                  or {})
-        except Exception as _e:                              # noqa: BLE001
-            _g = {}
-            print(f"  (could not read {a.resume} for its LoRA config: {type(_e).__name__})")
-        if int(_g.get("lora_rank") or 0):
-            a.lora_rank = int(_g["lora_rank"])
-            a.lora_alpha = float(_g.get("lora_alpha") or 0.0)
-            a.lora_targets = _g.get("lora_targets") or ""
-            a.lora_dropout = float(_g.get("lora_dropout") or 0.0)
-            if rt.is_main:
-                pass  # body removed with a flag this copy does not carry
-
+    # The --loss-only LoRA inheritance block was here. It read a bundle's guard and set
+    # a.lora_* so the adapters would match on resume; LoRA is not carried by this copy, so
+    # nothing reads those values and the block only existed to populate them.
     lora_report = None
     # THE DEAD HEAD PARAMETERS COME OUT LAST, so --train-only and LoRA cannot put them back.
     #

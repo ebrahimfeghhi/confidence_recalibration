@@ -104,7 +104,7 @@ def dead_spans(tree, lines):
         spans.append((lo, hi, why))
 
     for n in ast.walk(tree):
-        if isinstance(n, ast.If) and dead_test(n.test):
+        if isinstance(n, ast.If) and (dead_test(n.test) or dead_const(n.test)):
             if n.orelse:
                 unhandled.append((n.lineno, "if/else -- else body would need promoting"))
             else:
@@ -193,3 +193,85 @@ def culled_in(tree):
             if ok:
                 out[n.attr] = out.get(n.attr, 0) + 1
     return out
+
+
+#: what each culled flag held on the live arm 87ja6a. Substituting these is what lets the
+#: remaining references go: `weight_by_gap=rt.a.rank_weight_by_gap` becomes `weight_by_gap=True`,
+#: exactly what the live run passes, and `if rt.a.crop_tokens` becomes `if ""` -- now provably
+#: dead, so a second strip pass removes the branch the first could not.
+LIVE_VALUES = {
+    "allow_unmasked_fallback": False, "crop_all_poses": False, "crop_contact": 5.0,
+    "crop_margin": 0.0, "crop_tokens": "", "drop_pde": False,
+    "early_stop_min_delta": 0.002, "early_stop_patience": 0, "epoch_order": "shuffle",
+    "eval_device": "", "eval_min_free_mib": 20000, "eval_pool_crop_tokens": "",
+    "l2_sp": 0.0, "l2_sp_exclude": "", "lora_alpha": 0.0, "lora_dropout": 0.0,
+    "lora_rank": 0, "lora_targets": "", "lr_decay_end_epoch": 0.0,
+    "lr_decay_shape": "cosine", "lr_decay_start_epoch": 0.0, "lr_final": 0.0,
+    "pae_row_floor": 10, "pae_row_frac": 0.0, "pae_row_log_every": 50,
+    "pae_row_mass": 0.8, "pair_dropout": -1.0, "rank_dist_weight": 0.1,
+    "rank_labels": None, "rank_pairs": "cross", "rank_spearman_tau": 0.0,
+    "rank_straddle": 0.0, "rank_tau": None, "rank_topk_decay": 0.0,
+    "rank_weight_by_gap": True, "rank_within_weight": 1.0, "structures_per_step": 0,
+    "token_keep_other": -1.0, "token_keep_union": -1.0,
+}
+
+_NO = object()
+
+
+def substitute(text):
+    """Replace every READ of a culled flag with the constant the live arm passed.
+
+    Reads only: `a.rank_weight_by_gap = ...` is a Store, and substituting there produces
+    `True = ...`, which is not valid Python. Resume inherits several of these from a bundle's
+    guard, so the Store form is common rather than a corner case.
+
+    Rewritten on the source text by AST position, right to left, so comments survive and earlier
+    offsets stay valid.
+    """
+    tree = ast.parse(text)
+    hits = []
+    for n in ast.walk(tree):
+        if not (isinstance(n, ast.Attribute) and n.attr in LIVE_VALUES):
+            continue
+        if not isinstance(n.ctx, ast.Load):
+            continue
+        base = n.value
+        ok = ((isinstance(base, ast.Name) and base.id == "a")
+              or (isinstance(base, ast.Attribute) and base.attr == "a"
+                  and isinstance(base.value, ast.Name) and base.value.id == "rt"))
+        if ok:
+            hits.append((n.lineno, n.col_offset, n.end_lineno, n.end_col_offset, n.attr))
+    lines = text.splitlines(keepends=True)
+    for ln, c0, _ln2, c1, name in sorted(set(hits), reverse=True):
+        lines[ln - 1] = lines[ln - 1][:c0] + repr(LIVE_VALUES[name]) + lines[ln - 1][c1:]
+    return "".join(lines), len(hits)
+
+
+def _const(node):
+    try:
+        return ast.literal_eval(node)
+    except Exception:
+        return _NO
+
+
+def dead_const(test):
+    """True when the condition has folded to something always falsy."""
+    v = _const(test)
+    if v is not _NO:
+        return not v
+    if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.Or):
+        return all(dead_const(x) for x in test.values)
+    if isinstance(test, ast.Compare) and len(test.ops) == 1:
+        l, r = _const(test.left), _const(test.comparators[0])
+        if l is _NO or r is _NO:
+            return False
+        op = test.ops[0]
+        try:
+            for cls, fn in ((ast.Gt, lambda: l > r), (ast.GtE, lambda: l >= r),
+                            (ast.Lt, lambda: l < r), (ast.LtE, lambda: l <= r),
+                            (ast.Eq, lambda: l == r), (ast.NotEq, lambda: l != r)):
+                if isinstance(op, cls):
+                    return not fn()
+        except TypeError:
+            return False
+    return False
