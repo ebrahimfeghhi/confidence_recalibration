@@ -1,0 +1,21 @@
+{
+ "ok": true,
+ "complete": true,
+ "n_manifest_structures": 1,
+ "checked": [
+  "8yvm"
+ ],
+ "limit": 0,
+ "manifest_digest": "1aeebbcc2a81423b",
+ "n_structures": 1,
+ "n_units": 15,
+ "manifest_selection": "run_logging/fixtures/parity_manifest.csv",
+ "manifest_skip": "",
+ "seeds": "per-structure via parity_manifest.csv",
+ "checked_seed": "per-structure",
+ "mismatches": [],
+ "missing_trunks": [],
+ "schema": 2,
+ "written": "2026-11-09T14:03:54-0800",
+ "seconds": 17.3
+}
