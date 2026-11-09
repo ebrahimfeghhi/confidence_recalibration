@@ -133,7 +133,7 @@ def select_trainable(rt, a, model):
     # EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT. Inside main() these were simply
     # still in scope for everything below; here the hand-off has to be explicit. Written
     # out by name rather than with vars() so the set is visible and a rename fails loudly.
-    for _n in ('_after', '_after_p', '_before', '_before_n', '_before_p', '_dead_abs', '_dops', '_gr', '_kept', '_n', '_p', '_pats', '_pfx', '_rel', 'head_ids', 'lora_report', 'n', 'n_all', 'n_head', 'p', 'prefixes', 't', 'trainable'):
+    for _n in ('_after', '_after_p', '_before', '_before_n', '_before_p', '_dead_abs', '_dops', '_gr', '_kept', '_n', '_p', '_pats', '_pfx', '_re', '_rel', 'head_ids', 'lora_report', 'n', 'n_all', 'n_head', 'p', 'prefixes', 'select_trainable', 't', 'trainable'):
         if _n in locals():
             setattr(rt, _n, locals()[_n])
     return prefixes, trainable, _dops

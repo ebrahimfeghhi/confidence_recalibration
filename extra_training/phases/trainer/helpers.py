@@ -378,89 +378,11 @@ def _parse_seed_field(rt, txt, who):
                          f"the seeds, but do not declare a structure with no depth")
     return out
 
-def _crop_masks(rt, pdb_, zc_):
-    """(keep_tok, keep_atom) from whichever crop rule is configured. One dispatch, two callers.
+# _crop_masks was here (80 lines). It built the token-drop and union-crop
+# masks, and its only call site is a ternary whose condition is --crop-tokens, which this
+# copy does not carry: `kt, ka = (_crop_masks(...) if '' else ...)`. Unreachable, so the
+# function and the --token-keep-* refusals inside it are gone rather than fed.
 
-    A MISSING MASK IS FATAL, never a silent fall-through to the full structure: a run where
-    some units were cropped and some were not would still write a complete trajectory and
-    name itself after the crop.
-    """
-    kt_ = rt._CROPTOK.get(pdb_)
-    if kt_ is None:
-        raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb_}. The file names "
-                         f"{len(rt._CROPTOK)} structure(s); this manifest needs {pdb_} too. "
-                         f"Rebuild the mask over this pool.")
-    a2t_ = np.asarray(zc_["ci_feat_atom_to_token_idx"]).reshape(-1)
-    ntok_ = int(np.asarray(zc_["ci_feat_asym_id"]).reshape(-1).shape[0])
-    if kt_.shape[0] != ntok_:
-        raise SystemExit(f"STOP: {pdb_}'s mask has {kt_.shape[0]} token(s) but its cached "
-                         f"trunk has {ntok_}. The mask was built against a different cache "
-                         f"and slicing with it would scramble the structure.")
-    if rt._TOK_DROP:
-        # ONE DRAW PER (STRUCTURE, EPOCH), seeded so it is reproducible and so every rank and
-        # the prefetch worker agree without communicating. Per-epoch IS per-step here:
-        # build_epoch_cross_seed puts every seed of a structure in a single step.
-        # hashlib, NOT hash(). Python salts str hashing per process (PYTHONHASHSEED), so
-        # hash() would give each RANK a different draw for the same structure -- and under
-        # --rank-cross-seed the ranks hold different SEEDS OF THE SAME STRUCTURE inside one
-        # step, so they must agree exactly or those poses are scored on different token sets
-        # and the relative loss grades the disagreement. It also has to survive a resume.
-        _sd_bytes = f"{int(rt.a.seed)}|{int(rt._crop_epoch[0])}|{pdb_}".encode()
-        _rs = np.random.default_rng(
-            int.from_bytes(hashlib.sha256(_sd_bytes).digest()[:8], "big"))
-        _p = np.where(kt_, float(-1.0), float(-1.0))
-        _keep = _rs.random(kt_.shape[0]) < _p
-        # EVERY SUPERVISED PAIR MUST STAY SCOREABLE -- per pair, not "two chains somewhere".
-        # ipTM for pair (x, y) pools over token pairs spanning x and y, so if either chain
-        # loses its tokens that interface is scored on an EMPTY pool while its label stays in
-        # the loss. A four-chain complex can keep two chains and still leave pair (3,1)
-        # unscoreable, and 81% of this pool has 2+ scored pairs. This is NOT a requirement
-        # that any ground-truth CONTACT survives -- the augmentation being tested is precisely
-        # that contacts may vanish. Raised in review.
-        _asym = np.asarray(zc_["ci_feat_asym_id"]).reshape(-1)
-        _prs = rt._CROPPAIRS.get(pdb_)
-        if _prs is None:
-            raise SystemExit(
-                f"STOP: --token-keep-* needs the scored pairs for {pdb_}, which this mask "
-                f"does not carry (no {pdb_}__pairs entry). It was built before the builder "
-                f"wrote them; rebuild with run_logging/build_union_crop_masks.py so the "
-                f"per-pair scoreability check has something to check.")
-        # REPAIRED, NOT REFUSED. The first version raised SystemExit here and killed the
-        # run 2,240 poses into vxwvzr's first epoch, on 9iut: chain 2 drew 3 survivors against
-        # a floor of 4. That was not bad luck. 98 scored-chain instances in this pool have an
-        # EXPECTED survivor count under 12 and some scored chains hold only 6 tokens in
-        # total -- short peptide antigens -- so a 0.70 draw dips under the floor routinely.
-        #
-        # Escalating a whole run over one small chain is the wrong response to a constraint
-        # that is local: the floor exists so each supervised pair has a non-degenerate ipTM
-        # pool, and that is restored by adding back a few of THAT CHAIN's tokens. Dropping
-        # context is the augmentation; a 6-token chain has no context to drop. The top-up uses
-        # the same generator in a deterministic order, so every rank still agrees exactly.
-        _MIN_CH = 4
-        for _x, _y in sorted({(int(_p0), int(_p1)) for _p0, _p1 in _prs}):
-            for _c in (_x, _y):
-                _idx_c = np.nonzero(_asym == _c)[0]
-                _floor = min(_MIN_CH, _idx_c.shape[0])
-                _have = int(_keep[_idx_c].sum())
-                if _have >= _floor:
-                    continue
-                _missing = _idx_c[~_keep[_idx_c]]
-                _add = _rs.permutation(_missing)[:_floor - _have]
-                _keep[_add] = True
-                rt._tok_drop_stat["topped"] += 1
-                rt._tok_drop_stat["topped_tok"] += int(_add.shape[0])
-        if int(_keep.sum()) < 16:
-            raise SystemExit(
-                f"STOP: the token draw for {pdb_} at epoch {rt._crop_epoch[0]} left only "
-                f"{int(_keep.sum())} token(s) in total. Raise the keep probabilities.")
-        rt._tok_drop_stat["kept"] += float(_keep.sum())
-        rt._tok_drop_stat["tot"] += float(_keep.shape[0])
-        rt._tok_drop_stat["n"] += 1
-        kt_ = _keep
-    inr_ = (a2t_ >= 0) & (a2t_ < ntok_)
-    ka_ = np.zeros(a2t_.shape[0], dtype=bool)
-    ka_[inr_] = kt_[a2t_[inr_]]
-    return kt_, ka_
 
 def _tick(rt, key, t0):
     rt._T[key] += time.perf_counter() - t0
@@ -641,9 +563,9 @@ def _cpu_crop(rt, pdb, lab_p, trunk_p):
     zc = np.load(trunk_p)
     _tick("cpucrop_trunk", _t)
     _t = time.perf_counter()
-    kt, ka = (_crop_masks(pdb, zc) if ''
-              else rt.BC.interface_crop_tokens(zc, lab_l, 5.0, 0.0,
-                                            all_poses=False))
+    # THE TERNARY'S OTHER ARM WAS _crop_masks, chosen on --crop-tokens, which this copy does not
+    # carry -- the condition had already folded to the literal ''. Only the else branch can run.
+    kt, ka = rt.BC.interface_crop_tokens(zc, lab_l, 5.0, 0.0, all_poses=False)
     _tick("cpucrop_tokens", _t)
     if kt is None:
         return ("nocrop", None, None)
@@ -1735,7 +1657,7 @@ def build_epoch(rt, ep):
     # named below rather than silently placed.
     _manifest_order = ('shuffle' in ("manifest", "tokens"))
     if 'shuffle' == "tokens":
-        order = sorted(by, key=lambda _q: (rt._sel_tokens.get(rt._q, 0), rt._q))
+        order = sorted(by, key=lambda _q: (rt._sel_tokens.get(_q, 0), _q))
     elif _manifest_order:
         order = list(by)
     else:

@@ -49,8 +49,11 @@ Epoch time, `73vv52` epoch 1, 94.7 min: GPU-busy 86.9 min = **92%**. Largest hos
 `phases/trainer/` holds all 8,402 lines of `main()`, extracted into 12 modules, and 8 CPU tests
 of which 7 pass. **It has never executed a forward pass and cannot complete a step.**
 
-`test_context_contract.py` is the one that fails, and it is the one that matters: **99 of the
-115 `rt.<attr>` reads are written by no stage** -- `TERMS`, the module handles (`BC`, `PFC`,
+**All 8 CPU tests now pass, including the context contract: every `rt.<attr>` read has a
+writer.** It still has NOT executed a forward pass -- that is the next gate, not a passing
+suite. What follows is the history of how far off the earlier claims were.
+
+The contract test used to fail: **99 of the 115 `rt.<attr>` reads were written by no stage** -- `TERMS`, the module handles (`BC`, `PFC`,
 `DOPS`, `RC`), the caches and the per-run callbacks. Those live in the ~1,300 lines of `main()`
 *between* the extracted regions, which have not been extracted.
 

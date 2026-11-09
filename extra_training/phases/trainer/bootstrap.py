@@ -174,7 +174,7 @@ def build_head(rt, a, dev, t_cuda=None):
     # EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT. Inside main() these were simply
     # still in scope for everything below; here the hand-off has to be explicit. Written
     # out by name rather than with vars() so the set is visible and a rename fails loudly.
-    for _n in ('_dead_head', '_lr_sha', '_n_blk', '_n_dead', '_nblk', '_pib', '_pib_blk', '_prd', '_t_cuda', 'configs', 'model'):
+    for _n in ('_LS', '_dead_head', '_lr_sha', '_n', '_n_blk', '_n_dead', '_nblk', '_pib', '_pib_blk', '_prd', '_t', '_t_cuda', 'build_head', 'configs', 'lean_readouts', 'model', 'pose_direction', 'pose_inblock', 'pose_perblock', 'pose_readout'):
         if _n in locals():
             setattr(rt, _n, locals()[_n])
     return model, configs, _dead_head

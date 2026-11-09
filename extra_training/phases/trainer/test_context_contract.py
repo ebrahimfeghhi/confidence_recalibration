@@ -19,7 +19,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODULES = ("ddp.py", "bootstrap.py", "dataset.py", "trainable.py", "optimiser.py", "resume.py",
            "unit.py", "evaluate.py", "loop.py", "helpers.py", "main.py", "step_plan.py",
-           "runtime.py")
+           "runtime.py", "derive.py", "constants.py")
 
 #: supplied by the interpreter, not by a stage
 EXEMPT = {"__file__", "__name__", "__doc__"}

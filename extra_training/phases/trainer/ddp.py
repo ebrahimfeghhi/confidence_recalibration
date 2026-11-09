@@ -76,7 +76,7 @@ def setup_dist(rt, a):
     # EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT. Inside main() these were simply
     # still in scope for everything below; here the hand-off has to be explicit. Written
     # out by name rather than with vars() so the set is visible and a rename fails loudly.
-    for _n in ('_fh', '_free', '_st', '_t_cuda', 'accum_eff', 'accum_local', 'dev', 'dist', 'is_main', 'l', 'local_rank', 'rank', 'structs_per_step', 'world'):
+    for _n in ('_fh', '_free', '_n', '_sp', '_st', '_t_cuda', 'accum_eff', 'accum_local', 'datetime', 'dev', 'dist', 'is_main', 'l', 'local_rank', 'rank', 'setup_dist', 'structs_per_step', 'world'):
         if _n in locals():
             setattr(rt, _n, locals()[_n])
     return rank, world, local_rank, is_main, dist, dev

@@ -1,14 +1,16 @@
 """`trainer/runtime.py` -- the glue between the extracted regions.
 
-EXTRACTED from `phases/phase_k_train.py`: 12 gaps, 507 lines (source `7fc6870c`).
+EXTRACTED from `phases/phase_k_train.py`: 15 gaps, 988
+lines (source `8534cd30`).
 
-WHAT THIS IS, AND WHY IT WAS MISSED. The named regions -- bootstrap, dataset, unit, loop
--- are the parts of main() that look like functions. Between them sits the state they
-all read: TERMS, the module handles, the seed columns, the prefetch and trunk caches,
-the fingerprint cache, the timers. 99 of 115 `rt.<attr>` reads had no writer because
-this was never extracted; I took what looked like code and left what looked like setup.
+WHAT THIS IS. The named regions -- bootstrap, dataset, unit, loop -- are the parts of
+main() that LOOK like functions. Between them sits the state they all read: TERMS, the
+seed columns, the prefetch and trunk caches, the fingerprint cache, the timers, the
+trajectory paths. 99 of 115 context reads had no writer because this was never extracted.
 
-Gaps whose first statement guards a culled flag are NOT ported: if a.save_init:, if a.l2_sp:, if a.lr_probe:.
+EVERY GAP IS KEPT and the lean pass removes culled blocks inside them. The first version
+dropped a whole gap when its FIRST statement guarded a culled flag, which threw away the
+trajectory and selection setup sitting after `if a.l2_sp:` and `if a.save_init:`.
 """
 import collections
 import csv
@@ -61,33 +63,113 @@ def build_runtime(rt, a):
 
 
 
+    # ---- --save-init: THE HEAD BEFORE ANY STEP IS TAKEN ----------------------------------------
+    # PLACED HERE, which is after every pathway has been installed (lean_readouts, --lean-single,
+    # pose_inblock, pose_direction, pose_perblock all happen around :1776-1835) and after
+    # _head_names is fixed, but far above the training loop. So the file holds exactly the
+    # architecture the run was configured for, with the injections still at their zero init.
+    if a.save_init:
+        if rt.world > 1:
+            raise SystemExit(
+                f"STOP: --save-init with WORLD_SIZE={rt.world}. It writes the head and exits, and "
+                f"exiting one rank of {rt.world} leaves the others parked on the next collective "
+                f"until the elastic agent times out. Run it on one card.")
+        _si_d = os.path.dirname(os.path.abspath(a.save_init))
+        if _si_d:
+            os.makedirs(_si_d, exist_ok=True)
+        _si_t = _head_ckpt_tensors()
+        torch.save(_si_t, a.save_init)
+        # THE ZERO-INIT CLAIM, ASSERTED AT THE MOMENT IT IS SAVED rather than trusted. If a future
+        # change initialises either injection non-zero, step-zero parity against the shipped head
+        # stops being the right test and this says so instead of the parity run failing later with
+        # a number nobody can attribute.
+        _si_inj = {k: v for k, v in _si_t.items() if "pose_inblock" in k or "pose_perblock" in k
+                   or "frame_dir" in k}
+        _si_nz = sorted(k for k, v in _si_inj.items() if float(v.abs().max()) != 0.0)
+        print(f"--save-init: wrote {len(_si_t)} head tensor(s) to {a.save_init} before any step. "
+              f"{len(_si_inj)} injected tensor(s) present; "
+              + ("ALL EXACTLY ZERO, so this head is bit-identical to the un-injected one and its "
+                 "PAE/ipTM must reproduce the shipped head."
+                 if not _si_nz else
+                 f"NOT ZERO: {_si_nz}. Step-zero parity against the shipped head is NOT the right "
+                 f"check for this configuration."))
+        sys.stdout.flush()
+        raise SystemExit(0)
+    # -------------------------------------------------------------------------------------------
+
+    # NO EXPERIMENT TRACKER. Runs are recorded by the files this script already writes --
+    # trajectory.csv, metric_ep<N>.json, args.json -- and rendered by run_logging/render_report.py.
+    # wandb was removed on 2026-10-16 at the user's direction: it needed an account, it put the
+    # record somewhere the repo cannot read, and instrumenting the trainer for a viewer means a
+    # restart whenever the viewer changes. The records outlive whatever reads them.
+
+    # ---- THE MANIFEST COMES FROM THE FROZEN SELECTION, NOT FROM WHATEVER FILES EXIST ----
+    # GLOBBING THE LABEL DIRECTORY CANNOT ESTABLISH COMPLETENESS. It did: the manifest was built by
+    # globbing *.npz and then checking that each DISCOVERED label had a trunk, so a label that was
+    # never written simply did not appear and the training set shrank with no error. Review round 8.
+    # The population is now the selection csv times the seed range, minus named exclusions, and a
+    # missing label is fatal.
+    roots = [r.strip() for r in a.fold.split(",") if r.strip()]
+    for r in roots:
+        if not os.path.isdir(r):
+            raise SystemExit(f"STOP: --fold root {r} does not exist")
+    label_dirs = [x.strip() for x in a.labels.split(",") if x.strip()]
+    lo_s, hi_s = (int(x) for x in a.seeds.split("-"))
+    skip = {x.strip().lower() for x in a.manifest_skip.split(",") if x.strip()}
+    with open(a.manifest_selection) as fh:
+        _sel_rows = list(csv.DictReader(fh))
+    sel_pdbs = [r["pdb"].strip().lower() for r in _sel_rows]
+    # THE TOKEN COUNT, KEPT THIS TIME. It was parsed and discarded, which left --epoch-order no
+    # way to sort by size -- so "manifest" order silently meant whatever order `flat` happened to
+    # be in, which is sorted by pdb. Absent or non-numeric `tokens` is simply missing here and
+    # sorts first, named by the builder rather than guessed at.
+    _sel_tokens = {r["pdb"].strip().lower(): int(r["tokens"])
+                   for r in _sel_rows if str(r.get("tokens", "")).strip().isdigit()}
+    if a.manifest_nshards and a.manifest_nshards > 1:
+        if not (0 <= a.manifest_shard < a.manifest_nshards):
+            raise SystemExit(f"STOP: --manifest-shard {a.manifest_shard} is not in "
+                             f"[0, {a.manifest_nshards}).")
+    # A PER-STRUCTURE SEED SET, because the population is no longer uniform in depth. 437
+    # structures carry seeds 500000-500014 and 416 carry 500000 alone -- their other trunks were
+    # reclaimed on 2026-11-04 -- so a cross product with ONE range is wrong for whichever group it
+    # is not describing, and the incompleteness guard below then refuses the whole run for being
+    # the shape it is meant to be. An optional `seeds` column in --manifest-selection declares each
+    # structure's own depth; a row without one falls back to --seeds, so every existing arm's
+    # selection csv keeps its exact present meaning.
+    #
+    # DECLARED, NOT DISCOVERED, and that is the whole point of this file. Globbing the trunks would
+    # make a lost unit look like a smaller training set instead of an error, which is the defect
+    # review round 8 removed. The seeds column is a contract: if it names a seed with no label or
+    # no trunk, the run stops.
+
+
     _seed_col = {}
-    for _r in rt._sel_rows:
+    for _r in _sel_rows:
         _p = _r["pdb"].strip().lower()
         _txt = str(_r.get("seeds", "") or "").strip()
         if _txt:
             _seed_col[_p] = _parse_seed_field(_txt, f"{a.manifest_selection}:{_p}")
-    want = [(p, sd) for p in rt.sel_pdbs if p not in rt.skip
-            for sd in sorted(_seed_col.get(p) or range(rt.lo_s, rt.hi_s + 1))]
+    want = [(p, sd) for p in sel_pdbs if p not in skip
+            for sd in sorted(_seed_col.get(p) or range(lo_s, hi_s + 1))]
     if _seed_col:
-        _depths = collections.Counter(len(_seed_col.get(p) or range(rt.lo_s, rt.hi_s + 1))
-                                      for p in rt.sel_pdbs if p not in rt.skip)
+        _depths = collections.Counter(len(_seed_col.get(p) or range(lo_s, hi_s + 1))
+                                      for p in sel_pdbs if p not in skip)
         print(f"manifest: per-structure seed depths from {a.manifest_selection}: "
               f"{dict(sorted(_depths.items()))} "
-              f"({len(_seed_col)} of {len(rt.sel_pdbs)} row(s) declare `seeds`)")
+              f"({len(_seed_col)} of {len(sel_pdbs)} row(s) declare `seeds`)")
     _rank_check_coverage(want)
-    print(f"manifest: {len(rt.sel_pdbs)} selected structure(s) minus {sorted(rt.skip) or 'none'} "
-          f"x seeds {rt.lo_s}-{rt.hi_s} (fallback for rows with no `seeds` column) = {len(want)} "
+    print(f"manifest: {len(sel_pdbs)} selected structure(s) minus {sorted(skip) or 'none'} "
+          f"x seeds {lo_s}-{hi_s} (fallback for rows with no `seeds` column) = {len(want)} "
           f"intended unit(s), from {a.manifest_selection}")
 
     manifest, no_label, no_trunk = [], [], []
     for pdb, sd in want:
         arm_seed = f"free_{sd}"
-        lp = next((os.path.join(d, pdb, f"{arm_seed}.npz") for d in rt.label_dirs
+        lp = next((os.path.join(d, pdb, f"{arm_seed}.npz") for d in label_dirs
                    if os.path.exists(os.path.join(d, pdb, f"{arm_seed}.npz"))), None)
         if lp is None:
             no_label.append(f"{pdb}/{arm_seed}"); continue
-        cands = [os.path.join(r, "trunks", pdb, f"{arm_seed}.npz") for r in rt.roots
+        cands = [os.path.join(r, "trunks", pdb, f"{arm_seed}.npz") for r in roots
                  if os.path.exists(os.path.join(r, "trunks", pdb, f"{arm_seed}.npz"))]
         if not cands:
             no_trunk.append(f"{pdb}/{arm_seed}"); continue
@@ -96,7 +178,7 @@ def build_runtime(rt, a):
         raise SystemExit(
             f"STOP: the training set is INCOMPLETE.\n"
             f"  {len(no_label)} intended unit(s) have no label, e.g. {no_label[:5]}\n"
-            f"  {len(no_trunk)} have no trunk under {rt.roots}, e.g. {no_trunk[:5]}\n"
+            f"  {len(no_trunk)} have no trunk under {roots}, e.g. {no_trunk[:5]}\n"
             f"  Build them, or name a deliberate exclusion in --manifest-skip and record it in "
             f"docs/build_cache_exclusions.md.")
 
@@ -270,7 +352,7 @@ def build_runtime(rt, a):
         print(f"SHARD COVERAGE shard={a.manifest_shard} nshards={a.manifest_nshards} "
               f"units_mine={len(flat)} units_all={_n_before} nsample={a.nsample}", flush=True)
     print(f"  resolved {len(flat)} unit(s) over {len(set(x[0] for x in flat))} structure(s) "
-          f"from {len(rt.roots)} fold root(s), shuffle={a.shuffle}, seed={a.seed}")
+          f"from {len(roots)} fold root(s), shuffle={a.shuffle}, seed={a.seed}")
 
     cfg = rt.DS.build_configs(a.crop_size, a.indices, a.bio_dir, a.mmcif_dir, a.msa_root,
                            a.seq_index, a.msa_root)
@@ -282,6 +364,71 @@ def build_runtime(rt, a):
     # the latter, because `fingerprint` was required to be PRESENT and never compared.
     code_fp, loss_fp = rt.BC.fingerprint_context(cfg)
     print(f"fingerprint context: code={code_fp} loss={loss_fp}")
+
+
+
+    # PERSIST THE TRAJECTORY PER STEP, not at the end. A run that dies at step 900 of 1000 must still
+    # be analysable, and a loss curve is the only way to see a learning rate that is wrong.
+    # CROP BOOKKEEPING, counted rather than assumed. An arm whose crop silently failed to apply on
+    # many structures is not the arm it claims to be, and the retained fraction is the only record
+    # that says which happened.
+    crop_stats = {"n": 0, "tok": 0, "kept": 0, "frames": 0, "undefined": 0}
+    crop_rows = []
+    crop_cols = ["pdb", "unit", "n_tok", "kept_tok", "frames_cleared", "status"]
+    # PER RANK, because each rank crops its own third of the units and only rank 0 was flushing:
+    # the other two accumulated rows forever and wrote none, so the csv described a third of the
+    # run while reading like the whole of it. Review round 6 caught that.
+    crop_p = ""
+
+    traj_p = os.path.join(a.out, "trajectory.csv")
+    # AND A PER-RANK COPY, for the same reason crop_sizes.csv got one above. trajectory.csv is
+    # written by rank 0 alone (write_traj=is_main), so its per-pose columns describe the third of
+    # the units rank 0 walked while reading like the whole run -- which is how five plotters came
+    # to report a rank-local mean. The per-EPOCH curve is safe either way, because batch_<term> is
+    # already reduced across ranks; what is NOT recoverable from rank 0 alone is any per-pose
+    # question that filters by pdb (an unwinnable-structure filter, a per-structure histogram),
+    # because the other ranks' poses were never written down anywhere.
+    #
+    # trajectory.csv is left exactly as it is so nothing that reads it today changes. This is an
+    # ADDITIONAL file per rank, rank 0 included, so the full set is self-describing rather than
+    # "the main one plus the others".
+    traj_rank_p = os.path.join(a.out, f"trajectory_rank{rt.rank}.csv")
+    # THE BATCH COLUMNS ARE THE CURVE; the bare TERMS are the single pose that happened to be last.
+    # batch_<term> is the mean over ALL accum_eff poses in the step, reduced across every rank, and
+    # batch_n is how many actually contributed -- accum_eff on a normal step, fewer on the partial
+    # step an epoch ends with. Added after review 2026-10-16: reporting read the stepping pose's own
+    # loss as the batch loss, which is 1 pose of 255, and no amount of reader-side work can
+    # reconstruct the other ranks' poses because they were never written.
+    traj_cols = ["wall_s", "step", "unit_i", "pdb", "unit", "pose", "lr"] + list(rt.TERMS) + \
+                ["batch_" + k for k in rt.TERMS] + ["batch_n", "partial_step", "step_ok"] + \
+                ["grad_norm", "outside_head", "epoch", "step_taken", "nonfinite_grad"] + \
+                (["pae_loss_unweighted"] if float(0.0) > 0 else [])
+    # pae_loss IS THE WEIGHTED TERM once --pae-row-frac is on, because it is what is trained, and
+    # a mean-1 row weight does NOT preserve the value: the weighted mean equals the unweighted one
+    # only if the per-row loss is uncorrelated with the weight, and the weight is chosen BY t_i.
+    # So the comparable curve lives in pae_loss_unweighted, read back every pose from the replayed
+    # label, and plot_train_pae.py --unweighted reads that column instead.
+    # the per-structure item build is the cost --preload-items exists to amortise, so it is measured
+    # rather than assumed; reported at the end against the number of structures actually visited.
+    # WHERE AN EPOCH'S WALL CLOCK ACTUALLY GOES, accumulated per rank and printed at every epoch
+    # boundary. Always on: a perf_counter pair is ~100 ns against a 0.58 s pose, and the last time
+    # this was guessed at rather than measured, 0.67 s of a 3.10 s step attributed to the collective
+    # turned out to be straggler wait (b829879d). The point is to order the optimisations by
+    # measurement instead of by which is easiest to write.
+    #
+    # READ EPOCH 2, NOT EPOCH 1. Two costs are first-touch only: resolve_trunk memoises
+    # unit_fingerprint in a mutable default argument, so the full-trunk hash runs once per unit per
+    # PROCESS, and the dataset item cache fills on first use. Epoch 1 pays both for all 4880 units
+    # and is not representative of the 499 that follow.
+    _T = collections.defaultdict(float)
+    _TN = collections.defaultdict(int)
+    # [units run UNCHECKPOINTED, units run CHECKPOINTED] under --ckpt-token-threshold. Reported
+    # per epoch because a threshold that silently matches nothing -- or everything -- looks
+    # exactly like a threshold that works until the timings fail to move.
+    # THE PRECOMPUTED CROP MASKS. __n and __meta are BOOKKEEPING, not structures: the evaluator's
+    # loader filters only __n and so counts __meta as a structure, which is why it prints one more
+    # than it has. Filter both.
+    _CROPTOK = {}
 
 
 
@@ -387,7 +534,7 @@ def build_runtime(rt, a):
     # one file per rank and loading every one of them accumulates coverage across epochs and across
     # runs without any rank having to write what another measured.
     _FP_CACHE_VER = 2
-    _fp_disk = os.path.join(rt.roots[0], f"unit_fingerprints.r{rt.rank}.json")
+    _fp_disk = os.path.join(roots[0], f"unit_fingerprints.r{rt.rank}.json")
 
 
 
@@ -548,11 +695,203 @@ def build_runtime(rt, a):
     # interface; the training fold holds exactly the ones this run trained on, and asking the
     # evaluator for more than exist makes it refuse rather than quietly report a thinner number.
 
-    # EVERYTHING THIS STAGE BOUND GOES ONTO THE CONTEXT. The extracted stages read these
-    # as rt.<name>; inside main() they were simply locals still in scope. Exported by name
-    # rather than by vars() so the set is visible and a rename is a failure, not a silent
-    # miss.
-    for _n in ('DOPS', 'PFC', '_FP_CACHE_VER', '_all_pdbs', '_c', '_ckpt_hist', '_crop_epoch', '_depths', '_dops', '_ev_pending', '_fp_cache', '_fp_content', '_fp_disk', '_fp_sig_at_hash', '_head_names', '_lim', '_lp', '_manifest_digest', '_mem_ep', '_mine', '_n_before', '_p', '_pf', '_pf_checked', '_pf_dropped', '_pf_pending', '_pf_q', '_pf_skip', '_pf_started', '_pf_stat', '_pf_stop', '_pf_thread', '_pfc', '_r', '_run_pdbs', '_run_skip', '_same_population', '_seed_col', '_subset_ok', '_tok_drop_stat', '_tr_bytes', '_tr_cache', '_tr_cap', '_tr_gen', '_tr_inflight', '_tr_live', '_tr_lock', '_tr_on', '_tr_resv', '_tr_stat', '_tr_threads', '_trunk_choice', '_txt', '_why', 'arm_seed', 'bypdb', 'cands', 'cfg', 'code_drift', 'code_fp', 'd', 'err', 'flat', 'loss_fp', 'lp', 'manifest', 'n', 'no_label', 'no_trunk', 'nonfinite', 'order', 'p', 'pdb', 'perm', 'pp', 'pr', 'r', 'rng', 'sd', 'trainable_params', 'want', 'x'):
+
+    # ---- LR PROBE: measure the learning rate instead of inheriting one tuned for a different job
+    if a.lr_probe:
+        lrs = [float(x) for x in a.lr_probe.split(",")]
+        print(f"\nLR PROBE: {a.probe_steps} optimiser step(s) at each of {lrs}, all from the SAME "
+              f"initial weights. Protenix's 0.0018 default is for finetuning the whole model; this "
+              f"moves 4.3% of it, so the default is not transferable.")
+        out = []
+        for lr in lrs:
+            for n, p in rt.model.named_parameters():
+                if n in set(rt.trainable):
+                    p.data.copy_(rt.init_state[n])
+            rt.opt.load_state_dict(rt.copy.deepcopy(rt.init_opt))
+    # The call to train_loop that stood here is main()'s epilogue, not glue. Keeping it
+    # would have this stage run the training loop as a side effect of being built.
+            if not rows:
+                print(f"  lr {lr:g}: no rows"); continue
+            # THE BATCH LOSS ON STEPS ACTUALLY TAKEN, not every per-pose row. `rows` is one entry
+            # per POSE on rank 0; averaging those compares learning rates on rank 0's slice of a
+            # handful of structures, and review 2026-10-16 built a case where the global batch loss
+            # fell while rank 0's pose losses rose, so this recommended LOWERING the lr. The
+            # cross-rank batch mean is in the row the optimiser stepped on.
+            _st = [r for r in rows if r.get("step_taken") and r.get("step_ok")
+                   and r.get("batch_loss") is not None]
+            if not _st:
+                print(f"  lr {lr:g}: no completed optimiser step to judge; skipped"); continue
+            k = max(1, len(_st) // 5)
+            first = sum(r["batch_loss"] for r in _st[:k]) / k
+            last = sum(r["batch_loss"] for r in _st[-k:]) / k
+            fin = all(math.isfinite(r["batch_loss"]) for r in _st)
+            out.append((lr, first, last, last - first, fin))
+            print(f"  lr {lr:<9g} loss first{k} {first:.6f} -> last{k} {last:.6f} "
+                  f"(delta {last-first:+.6f}) finite={fin}")
+        with open(os.path.join(a.out, "lr_probe.csv"), "w", newline="") as fh:
+            wr = csv.writer(fh, lineterminator="\n")
+            wr.writerow(["lr", "loss_first", "loss_last", "delta", "all_finite"])
+            wr.writerows(out)
+        print(f"\nwrote {os.path.join(a.out, 'lr_probe.csv')}")
+        print("A PROBE IS NOT A RESULT. It shows which rates are stable and which diverge over a few "
+              "dozen steps; it cannot show which generalises. Pick from it, then judge the run on "
+              "analysis/val_selection_metric.py, never on this loss.")
+        return 0
+
+    # THE ESTIMATE USES --nsample, not a hardcoded 5. It was 5 because every unit has 5 poses in
+    # this pilot, which is a fact about the data and not about the code.
+    total_poses = int(len(flat) * a.nsample * a.epochs)
+    # PER RANK. Each rank sees total_poses/world poses and steps every accum_local of them, so the
+    # step count is total_poses/(world*accum_local) = total_poses/accum_eff either way, and a
+    # multi-GPU run does the same number of optimiser steps as a single-GPU one -- in a third of the
+    # wall clock, rather than a third of the training.
+    # THE CAP IS FOR DEBUGGING ONLY, AND IS OFF FOR REAL TRAINING. total_poses // accum_eff counts
+    # full accumulations, but the loop ALSO flushes a partial one at every epoch boundary, so the
+    # step counter advances faster than the cap anticipates and the last epoch could be cut short.
+    # Review 2026-10-16 reproduced three epochs of ten poses running only 24 of 30. The epoch loop
+    # already knows when it is finished; `--limit-units` and the lr probe remain for capped runs.
+    # 9mfb4y escaped by one step (cap 481, 480 taken) only because total_poses counts all 491
+    # structures while the loop runs the 489 that survive shard truncation -- two errors cancelling.
+    # THE HORIZON MUST COME FROM THE EPOCH BUILDER, NOT FROM len(flat) // world. build_epoch
+    # takes floor(n_seeds / world) WHOLE seed-groups of each structure, so at ten seeds and world 3
+    # one seed per structure sits out and the rank walks 3 groups, not 10/3. len(flat) // world
+    # counts that sitting-out seed, and the error lands on the LEARNING RATE: at 368 structures it
+    # claimed 205 steps per epoch against an actual 184, which stretches the decay window by 11%.
+    # The configured "1e-2 flat to epoch 20, 1e-4 by epoch 50" came out as flat to 22.3 and 1e-4 at
+    # 55.7, leaving lr ~7.95e-4 at epoch 50 -- eight times the intended value -- so the schedule
+    # the arm is testing was not the schedule it ran. Caught in review of 38a83283.
+    _units_by_pdb = {}
+    for _p, _lp, _c in flat:
+        _units_by_pdb[_p] = _units_by_pdb.get(_p, 0) + 1
+    _units_per_rank = rt._LRS.units_per_rank(_units_by_pdb, rt.world,
+                                          bool(a.rank_cross_seed), len(flat))
+    _spe_ep = rt._LRS.steps_per_epoch(_units_by_pdb, rt.world, a.nsample, rt.accum_local,
+                                   cross_seed=bool(a.rank_cross_seed), n_units=len(flat),
+                                   structs_per_step=(a.rank_structs_per_step
+                                                     if a.rank_cross_seed else 0),
+                                   preserve_order=('shuffle' in ("manifest", "tokens")))
+    # THE SPLIT, REPORTED HONESTLY. _full is whole accumulations and the partial exists only when
+    # the poses do not divide accum_local -- at 368 structures they do (1,104 x 5 / 30 = 184), so
+    # there is no partial step and the old unconditional "+ 1 partial" overstated the horizon.
+    _poses_pr = _units_per_rank * a.nsample
+    _full = _poses_pr // max(1, rt.accum_local)
+    _part = 1 if _poses_pr % max(1, rt.accum_local) else 0
+    _expect = _spe_ep * max(1, math.ceil(a.epochs))
+    _naive = ((len(flat) // max(1, rt.world)) * a.nsample // rt.accum_local + 1)
+    if _naive != _spe_ep:
+        print(f"  steps/epoch {_spe_ep} from the epoch builder, NOT {_naive} from "
+              f"len(flat)//world: {len(flat)} unit(s) over {len(_units_by_pdb)} structure(s), of "
+              f"which this rank walks {_units_per_rank} "
+              f"(floor(seeds/{rt.world}) whole group(s) per structure; the remainder sits out and is "
+              f"reseeded each epoch). The lr schedule uses the former.")
+    steps_cap = 0
+    rt._lr_horizon[0] = _expect
+    # WHAT THE HORIZON WAS BUILT FROM, so build_epoch_cross_seed can refuse if it packs a
+    # different number of steps than the schedule was calibrated for.
+    rt._xs_spe[0] = _spe_ep if a.rank_cross_seed and a.rank_structs_per_step else 0
+    # --lr-steps IS CHECKED FIRST, because it takes precedence over --lr-final and the decay
+    # window (see its help). This line derived the description from lr_final alone, so a run with
+    # a staircase printed "flat after warmup (no decay)" while the staircase was in fact applied
+    # -- parse_lr_steps' own docstring warns that "the run trains at the wrong lr for twenty
+    # epochs and nothing in the log says so", and the startup line was saying exactly nothing.
+    if a.lr_steps:
+        _sched = "STAIRCASE: " + f"{a.lr:g}" + "".join(
+            f" -> {_v:g} from epoch {_e:g}" for _e, _v in rt._LRS0.parse_lr_steps(a.lr_steps))
+    elif 0.0 <= 0.0:
+        _sched = "flat after warmup (no decay)"
+    else:
+        _sched = f"COSINE {a.lr:g} -> {0.0:g} over steps {a.warmup_steps}..{_expect}"
+    print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
+          f"~{_expect} optimiser step(s) for {a.epochs} epoch(s) "
+          f"({_full} full + {_part} partial per epoch); no step cap, the epoch loop decides")
+    print(f"  lr schedule: {_sched}")
+    print(f"trajectory -> {traj_p}")
+    json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
+    # --grad-probe STOPS HERE. The return inside train_loop only exits train_loop; main() then
+    # ran on through the summaries to the unconditional head_final.pt save, so a probe wrote a
+    # checkpoint indistinguishable from a trained one WHILE PRINTING that it had not. Found in
+    # review of 523013a. It also corrects the claim: the probe DOES take one real optimiser step,
+    # by design -- what it must not do is leave a head behind that looks like an arm's.
+    if a.grad_probe:
+        if rt.is_main:
+            print(f"  --grad-probe complete. ONE optimiser step was taken (deliberately) and NO "
+                  f"checkpoint is written: {a.out} holds no head_*.pt from this invocation, so it "
+                  f"cannot be mistaken for a trained arm.", flush=True)
+        if rt.world > 1:
+            rt.dist.barrier()
+            rt.dist.destroy_process_group()
+        return
+
+    if a.pae_scored_pairs:
+        # ACROSS EVERY RANK, same reason as the crop summary: each rank masks its own third of the
+        # units, so one rank's counters describe a third of the run. These were being counted and
+        # printed NOWHERE, which made a mask that covered nothing indistinguishable in the log from
+        # one that covered everything.
+        _mk = ("masked", "unmasked")
+        _ms = dict(rt._pae_mask_stats)
+        if rt.world > 1:
+            _t = torch.tensor([float(rt._pae_mask_stats[k]) for k in _mk], dtype=torch.float64)
+            rt.dist.all_reduce(_t, op=rt.dist.ReduceOp.SUM)
+            _ms = {k: int(v) for k, v in zip(_mk, _t.tolist())}
+        if rt.is_main:
+            _tot = _ms["masked"] + _ms["unmasked"]
+            print(f"\nPAE mask: {_ms['masked']}/{_tot} pose-unit(s) masked to scored chain pairs "
+                  f"({_ms['masked'] / _tot * 100:.1f}%) across {rt.world} rank(s), from "
+                  f"{a.pae_scored_pairs}")
+            if _ms["unmasked"]:
+                print(f"  {_ms['unmasked']} fell back to the UNMASKED PAE term -- the structure is "
+                      f"absent from the pool, or no scored pair survived the crop. Those poses "
+                      f"trained the ungraded blocks too.")
+
+    if code_drift["n"]:
+        print(f"\nCODE DRIFT ACCEPTED on {code_drift['n']} unit(s) via --allow-code-drift. The "
+              f"labels' data provenance matched in every field; only the builder's source hash "
+              f"differed. This run is NOT reproducible from a clean checkout of that code.")
+    # RANK 0 WRITES THE CHECKPOINT. Every rank holds the same parameters after the all-reduce, so
+    # the content would be identical, but two processes writing one path concurrently can interleave
+    # and leave a truncated file -- the smoke test showed both ranks reporting the same save.
+    cp = os.path.join(a.out, "head_final.pt")
+    if a.loss_only:
+        # NOTHING TRAINED, SO NOTHING IS SAVED. --save-every is already refused for this mode, but
+        # this save is unconditional and wrote head_final.pt on the first --loss-only pass: a file
+        # indistinguishable from a trained head, holding the resumed bundle's weights under a name
+        # that says otherwise. The measurement's output is the trajectory.
+        _src = a.resume or "the shipped head"
+        print(f"\n--loss-only: no checkpoint written -- {cp} would duplicate {_src} under a name "
+              f"implying it was trained")
+    elif rt.is_main or a.debug_save_rank_heads:
+        import torch as _t
+        _sd = {n: p.detach().cpu() for n, p in rt.model.named_parameters() if n in set(rt.trainable)}
+        if rt.is_main:
+            _t.save(_sd, cp)
+            print(f"\nsaved {cp}")
+        if a.debug_save_rank_heads:
+            _rp = os.path.join(a.out, f"head_final_rank{rt.rank}.pt")
+            _t.save(_sd, _rp)
+            print(f"saved {_rp}")
+    if a.loss_only:
+        print("THE LOSS IS THE RESULT HERE, and only that: this mode measures a frozen head's loss "
+              "on the fold it was pointed at. Aggregate the per-pose pae_loss column of "
+              f"{os.path.join(a.out, 'trajectory.csv')} -- every pose is measured exactly once, so "
+              "the plain mean over all rows is the pose-weighted figure. Do NOT use the "
+              "step_taken==1 windows: --accum leaves a tail of poses outside the last complete "
+              "window, which a training run re-traverses next epoch and this single pass does not.")
+    else:
+        # NO HARDCODED TARGET. This printed "the target is mean DockQ 0.5775 and frac-acceptable
+        # 0.7283 at 100 seeds" after every run, which are the FULL validation pool's numbers --
+        # wrong for any run scored on a subset, and val10's are 0.2626 / 0.5000. The same string
+        # was hardcoded in phase_k_eval and is now derived there from the pool actually scored, so
+        # the baseline belongs in that output, not in a constant here.
+        print("THE LOSS IS NOT THE RESULT. Score this checkpoint with phases/phase_k_eval.py, which "
+              "reports the shipped head's baseline over the pool it scored alongside the metric.")
+    # Tear the group down so the ranks exit together rather than on NCCL's timeout.
+    if rt.world > 1:
+        rt.dist.barrier()
+        rt.dist.destroy_process_group()
+    return 0
+
+    # EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT, by name.
+    for _n in ('DOPS', 'PFC', '_CROPTOK', '_FP_CACHE_VER', '_T', '_TN', '_all_pdbs', '_c', '_ckpt_hist', '_crop_epoch', '_depths', '_dops', '_e', '_ev_pending', '_expect', '_fp_cache', '_fp_content', '_fp_disk', '_fp_sig_at_hash', '_full', '_head_names', '_lim', '_lp', '_manifest_digest', '_mem_ep', '_mine', '_mk', '_ms', '_n', '_n_before', '_naive', '_p', '_part', '_pf', '_pf_checked', '_pf_dropped', '_pf_pending', '_pf_q', '_pf_skip', '_pf_started', '_pf_stat', '_pf_stop', '_pf_thread', '_pfc', '_poses_pr', '_r', '_rp', '_run_pdbs', '_run_skip', '_same_population', '_sched', '_sd', '_seed_col', '_sel_rows', '_sel_tokens', '_si_d', '_si_inj', '_si_nz', '_si_t', '_skipset', '_spe_ep', '_src', '_st', '_subset_ok', '_t', '_tok_drop_stat', '_tot', '_tr_bytes', '_tr_cache', '_tr_cap', '_tr_gen', '_tr_inflight', '_tr_live', '_tr_lock', '_tr_on', '_tr_resv', '_tr_stat', '_tr_threads', '_trunk_choice', '_txt', '_units_by_pdb', '_units_per_rank', '_v', '_why', 'arm_seed', 'build_runtime', 'bypdb', 'cands', 'cfg', 'code_drift', 'code_fp', 'cp', 'crop_cols', 'crop_p', 'crop_rows', 'crop_stats', 'd', 'err', 'fh', 'fin', 'first', 'flat', 'hi_s', 'k', 'label_dirs', 'last', 'lo_s', 'loss_fp', 'lp', 'lr', 'lrs', 'manifest', 'n', 'no_label', 'no_trunk', 'nonfinite', 'order', 'out', 'p', 'pdb', 'perm', 'pp', 'pr', 'r', 'rng', 'roots', 'rows', 'sd', 'sel_pdbs', 'skip', 'steps_cap', 'total_poses', 'trainable_params', 'traj_cols', 'traj_p', 'traj_rank_p', 'v', 'want', 'wr', 'x'):
         if _n in locals():
             setattr(rt, _n, locals()[_n])
     return rt

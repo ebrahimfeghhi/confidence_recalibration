@@ -7,14 +7,16 @@ against its source by `test_region_equivalence.py`. The order here is not a styl
 the order the source enforces, and several steps are load-bearing for reasons that cost GPU time
 to learn (see each module's header).
 
-NOT RUNNABLE. NO FORWARD PASS HAS EVER EXECUTED FROM THIS PACKAGE.
+NO FORWARD PASS HAS EVER EXECUTED FROM THIS PACKAGE.
 
-This is an UNWIRED SKELETON, not a runnable copy. 99 of the 115 `rt.<attr>` reads across the
-package are written by no stage here: TERMS, the module handles (BC, PFC, DOPS, RC), the caches,
-and the per-run callbacks all live in the ~1,300 lines of `main()` BETWEEN the extracted regions,
-which have not been extracted. `test_context_contract.py` counts them and fails until it is zero.
-The import, name-resolution and equivalence tests all pass on this state, which is exactly why
-none of them may be read as evidence that it runs.
+Every stage is wired and all 8 CPU tests pass, including `test_context_contract.py`: every
+`rt.<attr>` the package reads is written by some earlier stage. That is a necessary condition
+for running, not a sufficient one. The gate is still a real execution -- a CPU smoke through
+dataset resolution, one unit, a PAE and rel score and a forward -- and then the paired
+original-vs-copy ladder.
+
+Twice before this, a green suite was reported as readiness. It was not, because parsing, name
+resolution and extraction fidelity are all true of a skeleton.
 
 NOT YET A CUTOVER. `phases/phase_k_train.py` remains the arm that runs experiments and the
 oracle this copy is checked against. Per the review on issue #9 the gate before any GPU switch is
@@ -41,6 +43,10 @@ import optimiser                                # noqa: E402
 import resume as resume_mod                     # noqa: E402
 import loop                                     # noqa: E402
 import runtime as runtime_mod                   # noqa: E402
+import derive as derive_mod                     # noqa: E402
+import unit as unit_mod                         # noqa: E402
+import evaluate as evaluate_mod                 # noqa: E402
+import step_plan                                # noqa: E402
 
 
 def main(argv=None):
@@ -63,6 +69,11 @@ def main(argv=None):
         if not _n.startswith("__"):
             setattr(rt, _n, getattr(constants, _n))
 
+    # THE DERIVED VALUES BEFORE ANYTHING READS THEM: the lr staircase, the token-drop schedule,
+    # the extra-eval spec, the trajectory paths. config.py holds this region's REFUSALS; these
+    # are its DERIVATIONS, and they were left in main() when config.py was culled.
+    derive_mod.derive(rt, a)
+
     # THE HEAD, AND EVERY MUTATION OF IT, BEFORE THE TRAINABLE SET IS DERIVED.
     # head_param_names() reads the module tree rather than a hand-written list, so an injection
     # installed after it would be created and never trained -- silently, since the shapes line up.
@@ -83,6 +94,14 @@ def main(argv=None):
     # optimiser that the stages above build. Inside main() this was simply the rest of the
     # function body; here it is explicit, and everything it binds is exported onto the context.
     runtime_mod.build_runtime(rt, a)
+
+    # THE CALLBACKS loop.py REACHES THROUGH THE CONTEXT. Inside main() these were nested defs
+    # closing over its scope; here each is bound explicitly so the loop's dependencies on them
+    # are visible rather than lexical.
+    rt.run_unit = lambda *args, **kw: unit_mod.run_unit(rt, *args, **kw)
+    rt.eval_checkpoint = lambda *args, **kw: evaluate_mod.eval_checkpoint(rt, *args, **kw)
+    rt.val_loss_checkpoint = lambda *args, **kw: evaluate_mod.val_loss_checkpoint(rt, *args, **kw)
+    rt.build_epoch_cross_seed = lambda *args, **kw: step_plan.build_epoch_cross_seed(*args, **kw)
 
     # THE SIGNATURE IS THE LIVE ONE. train_loop takes the step cap, the base lr, a tag, whether
     # this rank writes the shared trajectory, and where to resume from. Calling it with the

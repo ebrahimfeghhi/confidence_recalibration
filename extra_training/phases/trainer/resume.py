@@ -413,7 +413,7 @@ def load_resume(rt, a, model, opt):
     # EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT. Inside main() these were simply
     # still in scope for everything below; here the hand-off has to be explicit. Written
     # out by name rather than with vars() so the set is visible and a rename fails loudly.
-    for _n in ('_PRE_CROP', '_b', '_b_only', '_bad', '_dp', '_drift_history', '_fallback', '_fh', '_from_args', '_g', '_l2sp_anchor', '_l2sp_drift', '_l2sp_params', '_measured_epoch', '_measured_step', '_migrated', '_mine', '_missing', '_n', '_opt_note', '_ovr', '_p', '_pats_i', '_pfx_i', '_side', '_stale', '_tset', '_unknown', '_unknown_ovr', '_unnamed', '_via', '_want_i', 'b', 'f', 'k', 'm', 'start_epoch', 'start_step', 't', 'trainable', 'v'):
+    for _n in ('_PRE_CROP', '_b', '_b_only', '_bad', '_dp', '_drift_history', '_fallback', '_fh', '_from_args', '_g', '_l2sp_anchor', '_l2sp_drift', '_l2sp_params', '_measured_epoch', '_measured_step', '_migrated', '_mine', '_missing', '_n', '_opt_note', '_ovr', '_p', '_pats_i', '_pfx_i', '_re_i', '_side', '_stale', '_tset', '_unknown', '_unknown_ovr', '_unnamed', '_via', '_want_i', 'b', 'f', 'k', 'load_resume', 'm', 'start_epoch', 'start_step', 't', 'trainable', 'v'):
         if _n in locals():
             setattr(rt, _n, locals()[_n])
     return start_epoch, start_step
