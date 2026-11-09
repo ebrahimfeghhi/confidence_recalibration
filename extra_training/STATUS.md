@@ -44,7 +44,21 @@ OOM, so it does **not** transfer to this architecture. Runtime token counts equa
 Epoch time, `73vv52` epoch 1, 94.7 min: GPU-busy 86.9 min = **92%**. Largest host bucket is
 `trunk_h2d` at 10.1 min.
 
-## 4. PLANNED, NOT WRITTEN
+## 4. THE ORGANIZED TRAINER IS **NOT RUNNABLE**
+
+`phases/trainer/` holds all 8,402 lines of `main()`, extracted into 12 modules, and 8 CPU tests
+of which 7 pass. **It has never executed a forward pass and cannot complete a step.**
+
+`test_context_contract.py` is the one that fails, and it is the one that matters: **99 of the
+115 `rt.<attr>` reads are written by no stage** -- `TERMS`, the module handles (`BC`, `PFC`,
+`DOPS`, `RC`), the caches and the per-run callbacks. Those live in the ~1,300 lines of `main()`
+*between* the extracted regions, which have not been extracted.
+
+The other seven tests pass on this state. That is precisely why none of them may be read as
+evidence that it runs: parsing, name resolution and extraction fidelity are all true of a
+skeleton. I reported this package ready twice before this was measured.
+
+## 5. PLANNED, NOT WRITTEN
 
 `phases/trainer/` holds `cli`, `config`, `checkpoints`, `step_plan` and 4 passing CPU tests.
 Still to port out of `phase_k_train.py`'s 8,402-line `main()`: `bootstrap` (~823),

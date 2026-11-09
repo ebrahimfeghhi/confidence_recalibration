@@ -7,6 +7,15 @@ against its source by `test_region_equivalence.py`. The order here is not a styl
 the order the source enforces, and several steps are load-bearing for reasons that cost GPU time
 to learn (see each module's header).
 
+NOT RUNNABLE. NO FORWARD PASS HAS EVER EXECUTED FROM THIS PACKAGE.
+
+This is an UNWIRED SKELETON, not a runnable copy. 99 of the 115 `rt.<attr>` reads across the
+package are written by no stage here: TERMS, the module handles (BC, PFC, DOPS, RC), the caches,
+and the per-run callbacks all live in the ~1,300 lines of `main()` BETWEEN the extracted regions,
+which have not been extracted. `test_context_contract.py` counts them and fails until it is zero.
+The import, name-resolution and equivalence tests all pass on this state, which is exactly why
+none of them may be read as evidence that it runs.
+
 NOT YET A CUTOVER. `phases/phase_k_train.py` remains the arm that runs experiments and the
 oracle this copy is checked against. Per the review on issue #9 the gate before any GPU switch is
 a paired original-vs-copy run: Stage A compares the first optimiser step -- pose order, per-pose
@@ -45,6 +54,11 @@ def main(argv=None):
     # installed after it would be created and never trained -- silently, since the shapes line up.
     rt.model, rt.configs, rt._dead_head = bootstrap.build_head(a, dev)
 
+    # THE RESOLVED DATASET GOES ONTO THE CONTEXT. A sed of mine removed this call while deleting
+    # a stale line beside it, leaving `dataset` imported and never used -- caught in review, not
+    # by any test here, which is why test_context_contract.py now exists.
+    for _k, _v in dataset.resolve_training_dataset(rt, a, is_main=is_main).items():
+        setattr(rt, _k, _v)
 
     rt.prefixes, rt.trainable, rt._dops = trainable_mod.select_trainable(rt, a, rt.model)
     rt.opt, rt._drift_history = optimiser.build_optimiser(rt, a, rt.model, rt.trainable)
