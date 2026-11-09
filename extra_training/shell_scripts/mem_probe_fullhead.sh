@@ -15,6 +15,19 @@ set -u
 cd /home/ebrahim/confidence_recalibration/extra_training || exit 1
 SD=/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad
 CARD="${CARD:-4}"
+DEAD_MODULES="0:tri_mul_out 0:tri_mul_in 0:tri_att_start 0:tri_att_end 1:tri_att_start 1:tri_att_end 1:pair_transition 2:tri_att_start 2:tri_att_end 3:tri_att_end"
+TRAIN_ONLY="${TRAIN_ONLY:-$(/home/ebrahim/Protenix/.venv/bin/python -I - <<'PYX'
+DEAD = {(0,"tri_mul_out"),(0,"tri_mul_in"),(0,"tri_att_start"),(0,"tri_att_end"),
+        (1,"tri_att_start"),(1,"tri_att_end"),(1,"pair_transition"),
+        (2,"tri_att_start"),(2,"tri_att_end"),(3,"tri_att_end")}
+M = ("tri_mul_out","tri_mul_in","tri_att_start","tri_att_end","pair_transition")
+p = [r"^(?!pairformer_stack\.)"]
+for b in range(4):
+    for m in M:
+        if (b,m) not in DEAD: p.append(rf"blocks\.{b}\.{m}\.")
+print(",".join(p))
+PYX
+)}"
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 
 # ---- GATE: the card must be genuinely idle. Never probe next to a live arm. ----
@@ -28,6 +41,10 @@ say "card $CARD idle with ${F} MiB free"
 OUT=training/runs/memprobe_fullhead
 mkdir -p $OUT
 say "probing the FULL-HEAD five-site config, one rank on card $CARD, 12 units"
+# LAYERNORM_TYPE=openfold IS LOAD-BEARING, not cosmetic: without it the trunk's coordinates
+# are silently NaN. launch_default_arm.sh sets it on the torchrun line; a probe that calls
+# phase_k_train.py directly has to set it too, and the trainer refuses without it.
+LAYERNORM_TYPE=openfold \
 CUDA_VISIBLE_DEVICES=$CARD PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 /home/ebrahim/Protenix/.venv/bin/python -u phases/phase_k_train.py \
   --rank-loss --rank-form rel --rel-labels training/fold/itm_labels_extended \
@@ -46,7 +63,9 @@ CUDA_VISIBLE_DEVICES=$CARD PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   --dist-backend gloo --dist-timeout-min 240 --max-rss-gb 80 --preload-min-free-gb 100 \
   --allow-code-drift --mem-log --trunk-memmap --lean-single --trunk-cache-gb 4 \
   --skip-dead-ops --pose-perblock --pose-perblock-copy --frame-direction --pose-readout \
-  --limit-units 12 \
+  --require-replay training/extended_mixed_replay.log \
+  --train-only "$TRAIN_ONLY" \
+  --limit-units 240 \
   --out $(pwd)/$OUT > $SD/mem_probe_fullhead.log 2>&1
 RC=$?
 say "probe exit $RC"

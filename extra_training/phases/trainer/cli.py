@@ -769,6 +769,88 @@ def build_parser():
                          "Cached training is only FT3 if the cache reproduces it; see "
                          "phase_j_replay.py. Pass 'skip' to train without the gate and say why.")
 
+    # ---- POSE INJECTION AT EVERY BLOCK, AND AT THE READOUT ----
+    # COPIED VERBATIM from phases/phase_k_train.py, help text included, so the two parsers
+    # cannot disagree about what a flag means. These were dropped in the original cull
+    # because the arm running that day used --pose-inblock; the arm running now uses these,
+    # which is exactly how a CLI scoped to one live config goes stale.
+    ap.add_argument("--pose-perblock", action="store_true",
+                    help="PATHWAY A: re-inject the pose embedding before EVERY pairformer block "
+                         "instead of only before the first. One zero-initialised "
+                         "LinearNoBias(num_bins -> c_z) per injected block -- 3 matrices at "
+                         "39x128 = 14,976 parameters on a 4-block stack. Adds ACCESS, not "
+                         "information: the one-hot is the same tensor each time, so the "
+                         "hypothesis is that the pose signal degrades crossing the stack, which "
+                         "with 4 blocks is thin and is why --frame-direction was built first. "
+                         "Zero-init makes step 0 bit-identical, but it adds trainable tensors, so "
+                         "an existing resume bundle CANNOT be loaded and the evaluator must be "
+                         "given --pose-perblock too (this passes it). See docs/pose_pathways.md.")
+    ap.add_argument("--pose-perblock-tied", action="store_true",
+                    help="share ONE matrix across every injected block instead of one each. The "
+                         "sharper test of A's actual hypothesis -- the identical embedding "
+                         "re-presented at each depth -- where untied also lets each depth learn a "
+                         "different projection of distance, so a win is ambiguous between the "
+                         "two. NOT equivalent to scaling a single injection: each block "
+                         "transforms z before the next add. Requires --pose-perblock.")
+    ap.add_argument("--pose-perblock-share", action="store_true",
+                    help="SHARE BLOCK 0's OWN PRETRAINED INJECTION at every pairformer block "
+                         "instead of adding new matrices: blocks 1..n-1 re-apply "
+                         "linear_no_bias_d AND linear_no_bias_d_wo_onehot verbatim, both terms, "
+                         "because block 0 adds both. ZERO new parameters -- the whole experiment "
+                         "is one matrix pair applied at four depths, which is the literal form of "
+                         "'tie the weights so they are the same across all 4'. Requires "
+                         "--pose-perblock and is mutually exclusive with --pose-perblock-tied. "
+                         "STEP 0 IS NOT BIT-IDENTICAL to the shipped head: blocks 1..n-1 gain an "
+                         "injection they never had, from weights that are already non-zero. That "
+                         "is inherent to the mode, so this arm is a different ARCHITECTURE "
+                         "evaluated from the shipped weights, not a one-variable change to them. "
+                         "Pair it with --l2-sp to price how far that shared injection may move.")
+    ap.add_argument("--pose-perblock-copy", action="store_true",
+                    help="UNTIED, BUT EVERY DEPTH STARTS AS A COPY OF BLOCK 0's INJECTION. Each "
+                         "injected block gets its own linear_no_bias_d AND "
+                         "linear_no_bias_d_wo_onehot, initialised to block 0's pretrained weights "
+                         "-- 3 x (9,984 + 256) = 30,720 new parameters on a 4-block stack. "
+                         "STEP 0 IS BIT-IDENTICAL TO --pose-perblock-share's STEP 0, not to the "
+                         "shipped head, and that is the point: against a share arm the ONLY "
+                         "variable is capacity, where the zero-init --pose-perblock would change "
+                         "the starting function too. Verified at install against block 0's "
+                         "weights exactly, not approximately. Mutually exclusive with "
+                         "--pose-perblock-tied and --pose-perblock-share, and requires "
+                         "--pose-perblock. THE COPIES ARE NAMED pose_perblock_linear_no_bias_d*, "
+                         "so a --train-only that does not match them creates them and never "
+                         "trains them -- pass e.g. "
+                         "--train-only 'linear_no_bias_d,pose_perblock'.")
+    ap.add_argument("--frame-direction", action="store_true",
+                    help="ADD A THIRD POSE PATHWAY to the confidence head: for each ordered pair "
+                         "(i, j), the UNIT direction of j in i's backbone frame, through one "
+                         "zero-initialised LinearNoBias(3 -> c_z) added into z_pair beside the two "
+                         "distance paths that are already there. See docs/pose_pathways.md. The "
+                         "head's existing view of the pose is cdist over ONE representative atom "
+                         "per token, so the N and C atoms that define a residue's frame are not in "
+                         "its input at all and the frame's orientation is ABSENT, not merely "
+                         "implicit -- while PAE is defined on exactly that orientation. Zero-init "
+                         "means step 0 is bit-identical to the head without it, but it adds a "
+                         "trainable tensor, so an existing resume bundle CANNOT be loaded and the "
+                         "evaluator must be given --frame-direction too (this passes it). "
+                         "phases/phase_k_frame_direction_check.py checks the geometry on CPU.")
+    ap.add_argument("--pose-readout", action="store_true",
+                    help="THE FIFTH INJECTION SITE: pose distance (one-hot + raw) and, with "
+                         "--frame-direction, orientation, added after pae_ln and upstream of the "
+                         "PAE readout -- and unlike --pose-inblock-pae this one works ALONGSIDE "
+                         "--pose-perblock, because it READS the geometry that wrapper already "
+                         "published for this forward instead of needing the in-block wrapper's "
+                         "own stash. Zero-init and verified zero, so step 0 is bit-identical. The "
+                         "tensors are pose_readout_d, pose_readout_d_wo_onehot and "
+                         "pose_readout_frame_dir; a --train-only must match `pose_readout` to "
+                         "reach them.")
+    ap.add_argument("--pose-readout-copy-distance", action="store_true",
+                    help="Start --pose-readout's two DISTANCE arms at block 0's pretrained "
+                         "linear_no_bias_d/_wo_onehot instead of zero. STEP 0 IS THEN NOT "
+                         "BIT-IDENTICAL: those weights add into z_pair inside the stack where "
+                         "later blocks re-normalise, while this site adds after pae_ln with "
+                         "nothing downstream to rescale it. Shapes permit it, semantics do not "
+                         "match. The orientation arm stays zero either way.")
+
     return ap
 
 
