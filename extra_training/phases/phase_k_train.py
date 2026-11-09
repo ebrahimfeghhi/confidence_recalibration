@@ -749,6 +749,23 @@ def main():
                          "every prefix tensor reads requires_grad=False at runtime and every "
                          "dropout rate in the prefix blocks is 0.0. Validated on CPU by "
                          "run_logging/test_prefix_cache.py; UNTESTED ON A GPU.")
+    ap.add_argument("--pose-readout", action="store_true",
+                    help="THE FIFTH INJECTION SITE: pose distance (one-hot + raw) and, with "
+                         "--frame-direction, orientation, added after pae_ln and upstream of the "
+                         "PAE readout -- and unlike --pose-inblock-pae this one works ALONGSIDE "
+                         "--pose-perblock, because it READS the geometry that wrapper already "
+                         "published for this forward instead of needing the in-block wrapper's "
+                         "own stash. Zero-init and verified zero, so step 0 is bit-identical. The "
+                         "tensors are pose_readout_d, pose_readout_d_wo_onehot and "
+                         "pose_readout_frame_dir; a --train-only must match `pose_readout` to "
+                         "reach them.")
+    ap.add_argument("--pose-readout-copy-distance", action="store_true",
+                    help="Start --pose-readout's two DISTANCE arms at block 0's pretrained "
+                         "linear_no_bias_d/_wo_onehot instead of zero. STEP 0 IS THEN NOT "
+                         "BIT-IDENTICAL: those weights add into z_pair inside the stack where "
+                         "later blocks re-normalise, while this site adds after pae_ln with "
+                         "nothing downstream to rescale it. Shapes permit it, semantics do not "
+                         "match. The orientation arm stays zero either way.")
     ap.add_argument("--skip-dead-ops", action="store_true",
                     help="DO NOT RUN CONFIDENCE-HEAD MODULES WHOSE OUTPUT IS EXACTLY ZERO. The "
                          "shipped checkpoint carries pairformer modules whose EVERY tensor sits in "
@@ -1908,6 +1925,14 @@ def main():
         raise SystemExit("STOP: --pose-perblock-tied/-share/-copy without --pose-perblock does "
                          "nothing. They select how A shares its weights, not whether A is "
                          "installed.")
+    if a.pose_readout:
+        # AFTER both stack injections, because it refuses unless one of them is installed: it
+        # reads their per-forward geometry rather than recomputing cdist and the one-hot.
+        import pose_readout
+        _prd = pose_readout.install(model, copy_distance=a.pose_readout_copy_distance)
+    elif a.pose_readout_copy_distance:
+        raise SystemExit("STOP: --pose-readout-copy-distance without --pose-readout. It selects "
+                         "how the fifth site is initialised, not whether it exists.")
     loss_fn = ProtenixLoss(configs)
     if a.drop_pde:
         # A STUB IN PLACE OF THE MODULE, because a zero weight would still run it.
