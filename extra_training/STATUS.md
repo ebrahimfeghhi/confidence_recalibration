@@ -1,76 +1,51 @@
-# Current experiment
+# STATUS — what is running, what exists but is off, what is planned
 
-Everything below is read from the running process and its `args.json`, not from prose that may
-have gone stale. Regenerate with `python -I phases/trainer/status.py`.
+Regenerated 2026-11-09, source `b70fa96b`. If this disagrees with a run's own `args.json`, the
+`args.json` is right and this file is stale.
 
-## The question
+## 1. LIVE
 
-At equal or less compute than a free 50-seed budget, can we improve DockQ on FoldBench/PXM
-antibody–antigen interfaces by making the confidence head rank poses better?
+**`87ja6a`**, launched 10:17 AM EST 2026-11-09 on cards 4/5/7, 20 epochs, lr 1e-3.
 
-The head predicts ipTM; selection is an argmax over 150 poses *within* one interface. Pooled over
-all poses ipTM correlates with DockQ at **+0.83**, but *within* an interface — the only comparison
-the argmax makes — it is **+0.15**. That gap is the headroom.
+| | |
+|---|---|
+| trainable | **105 tensors / 5,358,000 params** — the whole confidence head except the 75 never-called LEAN_SINGLE tensors and the 81 behind the 10 certified-dead pair modules |
+| pose enters | the **four pairformer block inputs**: distance as an untied copy of block 0's pretrained injection, plus a zero-init orientation term at each |
+| checkpointing | off at or below **1,250 tokens** (measured, see below); above that, on |
+| pool | **845** structures (8 skipped; 3 of them for the memory cap) |
+| prefix cache | **off** — no frozen prefix exists once all four blocks train |
+| eval | held-out 83-structure fold at epochs 5 / 10 / 15 / 20 |
+| pace | ~95 min/epoch, worst peak 81.88 GB of 94.97 |
 
-## What is running
+## 2. EXISTS, BUT OFF IN THE LIVE ARM
 
-Two arms, identical in everything but the learning rate, so one is the other's control.
+| code | why off |
+|---|---|
+| `pose_readout.py` (site 5, after `pae_ln`) | removed at the owner's direction after `73vv52`. `--pose-readout-copy-distance` copies two arms and only the one-hot arm is bounded; the raw-distance arm is `||w|| * d` with d in angstroms — 474% of the normalised signal at 5 A, 1,895% at 20 A. `73vv52` opened at PAE **46.27** over its first 23 steps against a normal 2.95. **If reinstated: copy the one-hot arm only, leave raw-distance at zero.** |
+| `pose_inblock.py` (block 3 only) | superseded. It was the previous arm (`peae97`, 20 trainable tensors). Mutually exclusive with `--pose-perblock`. |
+| `prefix_cache.py` | caches a frozen prefix; there is no frozen prefix now. |
+| `lora.py`, `itm_quality_loss.py` | dropped by the owner; slated for removal. |
 
-| | `qip9ta` (live) | `hv2kqa` (control, stopped at epoch 7) |
+## 3. MEASURED, NOT FITTED
+
+Memory, one rank, the live config, checkpointing OFF:
+
+| tokens | pass A | pass B |
 |---|---|---|
-| lr | **0.003** | 0.01 |
-| staircase | 20 → 1e-3, 40 → 1e-4 | same |
-| epochs | 60 | 60 |
-| seed / accum / nsample | 0 / 30 / 5 | same |
-| loss | PAE + `rel` (relative iTM, mean-centred per interface), `alpha_rank` 75 | same |
-| held out | `training/valfull83/pool.csv`, budget 30, every 5 epochs | same |
+| 1,004 | 13.95 GB | 56.81 GB OK |
+| 1,254 | 20.78 GB | **87.62 GB OK** |
+| 1,499 | 28.93 GB | OOM |
+| 1,822 | 41.91 GB | OOM |
 
-Both start fresh from the shipped `protenix-v2` head. Cards 4, 5, 7.
+The old fit `peak = 2.02 + 2.896e-05 * tokens^2` predicted 67 GB at 1,499 where the truth was an
+OOM, so it does **not** transfer to this architecture. Runtime token counts equal the manifest's
+`tokens` column, so 1,250 is a true ceiling.
 
-**Trainable: 20 tensors, 1,154,560 params — 7.3% of the live confidence head.** Block 3's
-`tri_att_start` and `pair_transition`, the pose injection (20,480 params), and the PAE readout.
-Everything else is frozen.
+Epoch time, `73vv52` epoch 1, 94.7 min: GPU-busy 86.9 min = **92%**. Largest host bucket is
+`trunk_h2d` at 10.1 min.
 
-## The held-out set
+## 4. PLANNED, NOT WRITTEN
 
-83 structures / 141 interfaces, budget 30 seeds. Two disjoint waves: the "old 53" (92 interfaces,
-what every number in `paper_results.md` §3–4 was measured on) and a "new 30" (49 interfaces, much
-more headroom: 0.2173 vs 0.1299).
-
-**The seeds are TRIMMED, and this matters.** 30 kept out of a 100-wide sweep, chosen per structure
-by `anchored-coverage-v2` to preserve the oracle, so the kept ids are sparse — only 5 of 83
-structures kept a contiguous set. `training/valfull83/seed_manifest.json` is authoritative;
-assuming `400000..400029` reports 321 of 1,590 units as "missing trunks" and stops the run.
-
-## Reproduce the figures
-
-    ./run_logging/refresh_plots.sh qip9ta,hv2kqa figures
-    # -> figures/qip9ta_train.png        PAE, rel, within-interface rho, score spread
-    # -> figures/qip9ta_validation.png   DockQ, frac acceptable, rho vs the shipped baseline
-
-Those two are the only supported plotters. Both draw only; every number comes from
-`run_logging/epoch_curve.py` (training) and `eval_curve.py` (held out).
-
-**The training curve is the ALL-RANKS mean.** `trajectory.csv` is rank 0's alone, so averaging its
-per-pose column reports the third of the structures that rank walked. `epoch_curve` uses the
-cross-rank `batch_<term>` weighted by `batch_n`. This defect recurred three times before the logic
-was centralised; `run_logging/test_epoch_curve.py` fails if a plotter stops using the helper.
-
-## Tests that must pass
-
-    python -I run_logging/test_epoch_curve.py          all-ranks curve, per-rank trajectories
-    python -I run_logging/test_seed_manifest.py        the trimmed seed set, 83-structure pool
-    LAYERNORM_TYPE=openfold python -I phases/trainer/test_cli_equivalence.py
-    LAYERNORM_TYPE=openfold python -I phases/trainer/test_config_equivalence.py
-    python -I phases/trainer/test_checkpoints_equivalence.py
-    python -I phases/trainer/test_step_plan.py
-
-## Known, and deliberate
-
-- `protenix-v2` ships **81 dead tensors / 3.9M params** in the confidence head — every
-  `tri_att_end`, all of block 0's pair track. They hold ~4.9e-37 on a 1000-spaced integer lattice
-  with a constant exponent, which is neither trained weights nor an initialisation. `--skip-dead-ops`
-  declines to compute them; the arithmetic is bit-identical because a zero on a residual branch is
-  the identity. Every baseline carries the same dead modules.
-- `phases/trainer/` is a **separate minimal copy** of the trainer's config surface. Nothing runs it.
-  `phase_k_train.py` is what executes.
+`phases/trainer/` holds `cli`, `config`, `checkpoints`, `step_plan` and 4 passing CPU tests.
+Still to port out of `phase_k_train.py`'s 8,402-line `main()`: `bootstrap` (~823),
+`unit` (~721), `loop` (~977), `evaluate` (~690). **Nothing in `trainer/` runs the experiment.**

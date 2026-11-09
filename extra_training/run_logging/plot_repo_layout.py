@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch
 
 DONE, TODO, GONE = "#2e7d32", "#ef6c00", "#9e9e9e"
+OFF = "#6a1b9a"   # code exists, but the LIVE arm does not use it
 
 TODAY = [
     ("phases/phase_k_train.py", "8,513 lines -- ONE function of 8,402", TODO),
@@ -30,17 +31,18 @@ PROPOSED = [
     ("    unit.py",         "~721  run_unit: one pose end to end",  TODO),
     ("    loop.py",         "~977  train_loop",                     TODO),
     ("    evaluate.py",     "~690  held-out + val-loss passes",     TODO),
+    ("    lr_schedule.py",   "staircase + round-robin deal",        DONE),
     ("    tests/",          "4 equivalence tests, passing",         DONE),
     ("model/", "", None),
     ("    pose_direction.py",   "orientation features",             DONE),
     ("    pose_perblock.py",    "sites 1-4",                        DONE),
-    ("    pose_inblock.py",     "in-block variant",                 DONE),
-    ("    pose_readout.py",     "site 5",                           DONE),
+    ("    pose_inblock.py",     "block-3 variant -- superseded",     OFF),
+    ("    pose_readout.py",     "site 5 -- OFF in the live arm",     OFF),
     ("    dead_ops.py",         "10 of 20 modules, measured",       DONE),
     ("    lean_readouts.py",    "readout trimming",                 DONE),
-    ("    prefix_cache.py",     "frozen-prefix reuse",              DONE),
+    ("    prefix_cache.py",     "no frozen prefix now -- OFF",       OFF),
     ("    rank_loss.py",        "the ranking term",                 DONE),
-    ("    lr_schedule.py",      "staircase + round-robin deal",     DONE),
+    
     ("    pae_row_weight.py",   "PAE row weighting",                DONE),
     ("data/", "", None),
     ("    phase_a .. phase_j", "40 files, dataset build, unchanged", DONE),
@@ -136,13 +138,15 @@ def main(out="figures/repo_layout.png"):
 
     fig.suptitle("extra_training/ -- CODE layout after the trainer is reorganised",
                  fontsize=16.5, y=0.985)
+    fig.text(0.5, 0.937, "live arm 87ja6a, source b70fa96b", ha="center",
+             fontsize=10, color="#999")
     fig.text(0.5, 0.957,
              "SCOPE: the ~190 .py/.sh files that make up the training program and its tooling. "
              "NOT the whole repo.",
              ha="center", fontsize=10.5, color="#777")
     fig.text(0.5, 0.020,
-             "green = written and CPU-tested     orange = still to port from phase_k_train.py's main()     "
-             "grey = deleted\n"
+             "green = in the live arm     purple = code exists, OFF in the live arm     "
+             "orange = still to port     grey = deleted\n"
              "~3,200 lines remain to port; sizes marked ~ are the source span, not a written file.\n"
              "OUT OF SCOPE, untouched: training/ validation/ (448k data files), building_msa/, "
              "SAbDab2_data/, docs/, figures/, train_val_splits/,\n"

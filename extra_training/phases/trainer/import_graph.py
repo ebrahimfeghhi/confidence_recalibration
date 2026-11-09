@@ -25,14 +25,37 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SEARCH = ["phases", "run_logging", "shell_scripts"]
-ROOTS = ["shell_scripts/launch_default_arm.sh", "phases/phase_k_train.py",
+# THE LIVE LAUNCHERS ARE ROOTS. Review of b70fa96b: this list named launch_default_arm.sh but
+# not the scripts that actually start today's arm, so reachability computed from it would have
+# called the live memory gate unreachable.
+ROOTS = ["shell_scripts/launch_fullhead_5site.sh", "shell_scripts/mem_probe_fullhead.sh",
+         "shell_scripts/lr_sweep_ep5.sh",
+         "shell_scripts/launch_default_arm.sh", "phases/phase_k_train.py",
          "phases/phase_k_eval.py", "phases/phase_k_eval_sharded.py",
          "run_logging/refresh_plots.sh", "run_logging/plot_rel_arm.py",
          "run_logging/plot_eval_series.py"]
 
 
+def collisions():
+    """Basenames that exist in more than one searched directory.
+
+    index() resolves a bare name to ONE path. Where a basename is ambiguous that choice is
+    arbitrary, so an edge drawn to it may point at the wrong file and reachability computed
+    through it is not evidence. Reported rather than silently resolved.
+    """
+    seen = {}
+    for d in SEARCH:
+        for f in sorted(os.listdir(os.path.join(ROOT, d))):
+            if f.endswith((".py", ".sh")):
+                seen.setdefault(f, []).append(f"{d}/{f}")
+    return {k: v for k, v in seen.items() if len(v) > 1}
+
+
 def index():
-    """{module_or_basename: relpath} for everything we could resolve an edge to."""
+    """{module_or_basename: relpath} for everything we could resolve an edge to.
+
+    FIRST PATH WINS, and that is a real limitation, not a detail: see collisions().
+    """
     out = {}
     for d in SEARCH:
         for f in sorted(os.listdir(os.path.join(ROOT, d))):
@@ -81,6 +104,17 @@ def main():
     unreach = sorted(set(allf) - seen)
     print(f"roots: {len(ROOTS)} + {len(tests)} tests")
     print(f"reachable: {len(seen)} of {len(allf)} files in {', '.join(SEARCH)}")
+    col = collisions()
+    if col:
+        print(f"AMBIGUOUS BASENAMES: {len(col)} -- any edge through these is UNKNOWN, "
+              f"not safe-to-remove")
+        for k, v in sorted(col.items()):
+            print(f"  {k}: {v}")
+        print()
+    print("THIS IS TRIAGE, NOT A REACHABILITY PROOF. It regex-scans text, so comments and "
+          "strings make false edges; it resolves dotted imports by first component; and it "
+          "cannot see subprocess calls or shell variables. Absence of an edge is a question, "
+          "never a verdict.\n")
     print(f"NO STATIC EDGE: {len(unreach)}\n")
     by = {}
     for f in unreach:

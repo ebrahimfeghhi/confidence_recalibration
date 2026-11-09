@@ -3,11 +3,27 @@
 Nothing here runs the experiment. `phases/phase_k_train.py` does. This is a separate copy being
 assembled with a verification step per piece, so cutover is a later, deliberate decision.
 
+## WHICH ARM THIS DESCRIBES
+
+**Live arm `87ja6a`**, launched 2026-11-09, source `b70fa96b`. Full confidence head minus
+certified dead ops; pose at the four pairformer block inputs; `--ckpt-token-threshold 1250`;
+prefix cache off; lr 1e-3; 20 epochs; held-out eval at 5/10/15/20.
+
+**Code that exists but is OFF in this arm.** `pose_readout.py` installs a fifth injection site
+after `pae_ln`. It is **not** used by `87ja6a`. It was enabled once, in `73vv52`, with
+`--pose-readout-copy-distance`, and that copies two arms of which only the one-hot arm is bounded:
+the raw-distance arm is `||w|| * d` with d in angstroms, 474% of the normalised signal at 5 A and
+1,895% at 20 A. `73vv52` opened at PAE 46.27 over its first 23 steps against a normal 2.95. If the
+site is ever reinstated, copy the one-hot arm only and leave raw-distance at zero.
+
+**Superseded.** `pose_inblock.py` (injection inside block 3 only, 20 trainable tensors) was the
+previous arm `peae97`/`3h3y37`. This README described that arm until `b70fa96b`.
+
 ## The vocabulary, because nothing below parses without it
 
 | term | what it is |
 |---|---|
-| **structure** | one antibody–antigen complex, e.g. `9uax`. 849 of them in training. |
+| **structure** | one antibody-antigen complex, e.g. `9uax`. **845** of them in training (8 skipped: 3 for the 1,850-token memory cap). |
 | **pose** | one predicted 3D structure for it. Scored against truth by **DockQ** (0–1, ≥0.23 is "acceptable"). |
 | **seed** | one folding run. Each produces **5 samples**, so a seed is 5 poses. |
 | **unit** | one (structure, seed) pair — the cached trunk the head reads. `9uax/free_500012`. |
@@ -23,13 +39,16 @@ assembled with a verification step per piece, so cutover is a later, deliberate 
 
 1. A **unit** is a cached trunk: the frozen 464M-parameter model already ran, and its pair
    representation `z` is on disk.
-2. The **confidence head** reads `z`, plus the pose's geometry injected inside pairformer block 3,
-   and predicts a **PAE** distribution.
+2. The **confidence head** reads `z`, plus the pose's geometry injected at **each of the four
+   pairformer block inputs** (distance as an untied copy of block 0's pretrained injection, plus a
+   zero-init orientation term), and predicts a **PAE** distribution.
 3. **ipTM** is computed from that PAE — one number per pose per interface.
 4. Two losses: **PAE** against the true error, and **rel**, which regresses mean-centred ipTM onto
    mean-centred true iTM *within* an interface. Only `rel` can teach ranking; PAE dominates the
    gradient.
-5. 30 structures' worth of poses accumulate into one optimiser step. Only **20 tensors** move.
+5. 30 units' worth of poses accumulate into one optimiser step. **105 tensors / 5.36M parameters**
+   move: the whole head except the 75 never-called LEAN_SINGLE tensors and the 81 behind the 10
+   certified-dead pair modules.
 6. Every 5 epochs the head is scored on 83 held-out structures: pick the argmax-ipTM pose per
    interface, report its DockQ.
 
