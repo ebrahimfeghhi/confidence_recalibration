@@ -40,7 +40,7 @@ import time
 import phase_j_rescore_cache as RC
 
 
-def build_head(a, dev, t_cuda=None):
+def build_head(rt, a, dev, t_cuda=None):
     """Build the model and install every head mutation this run asks for.
 
     Returns (model, configs, dead_head). `dead_head` is the tensor list --lean-single proved
@@ -170,4 +170,11 @@ def build_head(a, dev, t_cuda=None):
     elif a.pose_readout_copy_distance:
         raise SystemExit("STOP: --pose-readout-copy-distance without --pose-readout. It selects "
                          "how the fifth site is initialised, not whether it exists.")
+
+    # EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT. Inside main() these were simply
+    # still in scope for everything below; here the hand-off has to be explicit. Written
+    # out by name rather than with vars() so the set is visible and a rename fails loudly.
+    for _n in ('_dead_head', '_lr_sha', '_n_blk', '_n_dead', '_nblk', '_pib', '_pib_blk', '_prd', '_t_cuda', 'configs', 'model'):
+        if _n in locals():
+            setattr(rt, _n, locals()[_n])
     return model, configs, _dead_head

@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(HERE))      # phases/, for pose_* and the mod
 sys.path.insert(0, "/home/ebrahim/Protenix")
 
 from context import Ctx                         # noqa: E402
+import constants                                # noqa: E402
 import cli                                      # noqa: E402
 import config as config_mod                     # noqa: E402
 import ddp                                      # noqa: E402
@@ -39,20 +40,33 @@ import trainable as trainable_mod               # noqa: E402
 import optimiser                                # noqa: E402
 import resume as resume_mod                     # noqa: E402
 import loop                                     # noqa: E402
+import runtime as runtime_mod                   # noqa: E402
 
 
 def main(argv=None):
     a = cli.parse(argv)
     config_mod.validate(a) if hasattr(config_mod, "validate") else None
 
-    rank, world, local_rank, is_main, dist, dev = ddp.setup_dist(a)
+    # setup_dist runs BEFORE the real context exists -- it is what decides this rank's device --
+    # so it fills a scratch Ctx whose attributes are folded into the real one below.
+    rt0 = Ctx(a=a)
+    rank, world, local_rank, is_main, dist, dev = ddp.setup_dist(rt0, a)
     rt = Ctx(a=a, rank=rank, world=world, local_rank=local_rank,
-              is_main=is_main, dist=dist, dev=dev)
+             is_main=is_main, dist=dist, dev=dev)
+
+    # THE MODULE-LEVEL BLOCK FIRST. ROOT, TERMS, head_param_names and the shared imports were
+    # never inside main(), which is why they were the last names with no writer -- I was reading
+    # the function and they are above it.
+    for _n in [k for k in vars(rt0) if not k.startswith("__")]:
+        setattr(rt, _n, getattr(rt0, _n))
+    for _n in dir(constants):
+        if not _n.startswith("__"):
+            setattr(rt, _n, getattr(constants, _n))
 
     # THE HEAD, AND EVERY MUTATION OF IT, BEFORE THE TRAINABLE SET IS DERIVED.
     # head_param_names() reads the module tree rather than a hand-written list, so an injection
     # installed after it would be created and never trained -- silently, since the shapes line up.
-    rt.model, rt.configs, rt._dead_head = bootstrap.build_head(a, dev)
+    rt.model, rt.configs, rt._dead_head = bootstrap.build_head(rt, a, dev)
 
     # THE RESOLVED DATASET GOES ONTO THE CONTEXT. A sed of mine removed this call while deleting
     # a stale line beside it, leaving `dataset` imported and never used -- caught in review, not
@@ -64,6 +78,11 @@ def main(argv=None):
     rt.opt, rt._drift_history = optimiser.build_optimiser(rt, a, rt.model, rt.trainable)
 
     rt.start_epoch, rt.start_step = resume_mod.load_resume(rt, a, rt.model, rt.opt)
+
+    # THE GLUE BETWEEN THE STAGES, LAST, because it reads the model, the trainable set and the
+    # optimiser that the stages above build. Inside main() this was simply the rest of the
+    # function body; here it is explicit, and everything it binds is exported onto the context.
+    runtime_mod.build_runtime(rt, a)
 
     # THE SIGNATURE IS THE LIVE ONE. train_loop takes the step cap, the base lr, a tag, whether
     # this rank writes the shared trajectory, and where to resume from. Calling it with the

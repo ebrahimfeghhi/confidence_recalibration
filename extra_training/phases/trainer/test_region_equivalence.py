@@ -50,7 +50,12 @@ ADDED = re.compile(r"^(return |def |pass  # body removed|import |from "
                    r"|seed_base=-1, budget=0\):"
                    r"|# The --loss-only LoRA inheritance block was here\."
                    r"|# a\.lora_\* so the adapters would match on resume"
-                   r"|# nothing reads those values and the block only existed)")
+                   r"|# nothing reads those values and the block only existed"
+                   r"|# EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT"
+                   r"|# EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT \(see runtime"
+                   r"|# still in scope for everything below; here the hand-off"
+                   r"|# out by name rather than with vars\(\) so the set is visible"
+                   r"|for _n in \(|if _n in locals\(\):|setattr\(rt, _n, locals\(\)\[_n\]\))")
 
 
 #: `(rt.)?a.<culled flag>` -> the literal the live arm passed. Applied to the LIVE side so the

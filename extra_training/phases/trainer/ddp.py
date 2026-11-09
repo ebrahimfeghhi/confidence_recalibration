@@ -10,7 +10,7 @@ import torch
 import torch.distributed as dist_mod
 
 
-def setup_dist(a):
+def setup_dist(rt, a):
     """Returns (rank, world, local_rank, is_main, dist, dev)."""
     # two ways: shards are whole structures truncated to an equal count (shard_by_structure), and
     # each unit is asserted to hold the same number of poses as every other.
@@ -72,4 +72,11 @@ def setup_dist(a):
         except Exception as _e:                   # noqa: BLE001
             print(f"  (child env probe failed: {type(_e).__name__}: {_e})", flush=True)
     _t_cuda = time.time()
+
+    # EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT. Inside main() these were simply
+    # still in scope for everything below; here the hand-off has to be explicit. Written
+    # out by name rather than with vars() so the set is visible and a rename fails loudly.
+    for _n in ('_fh', '_free', '_st', '_t_cuda', 'accum_eff', 'accum_local', 'dev', 'dist', 'is_main', 'l', 'local_rank', 'rank', 'structs_per_step', 'world'):
+        if _n in locals():
+            setattr(rt, _n, locals()[_n])
     return rank, world, local_rank, is_main, dist, dev

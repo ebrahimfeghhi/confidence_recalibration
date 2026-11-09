@@ -18,7 +18,8 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODULES = ("ddp.py", "bootstrap.py", "dataset.py", "trainable.py", "optimiser.py", "resume.py",
-           "unit.py", "evaluate.py", "loop.py", "helpers.py", "main.py", "step_plan.py")
+           "unit.py", "evaluate.py", "loop.py", "helpers.py", "main.py", "step_plan.py",
+           "runtime.py")
 
 #: supplied by the interpreter, not by a stage
 EXEMPT = {"__file__", "__name__", "__doc__"}
@@ -48,6 +49,37 @@ def scan():
                 if (isinstance(n, ast.Call) and getattr(n.func, "id", "") == "setattr"
                         and n.args and getattr(n.args[0], "id", "") == "rt"):
                     writes.add("*setattr*")
+        # A STAGE MAY EXPORT A WHOLE MODULE'S TOP LEVEL: `for _n in dir(constants): setattr(...)`.
+        # The module is importable here, so its public names are statically knowable.
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.For) and isinstance(n.iter, ast.Call)
+                    and getattr(n.iter.func, "id", "") == "dir" and n.iter.args
+                    and isinstance(n.iter.args[0], ast.Name)):
+                modname = n.iter.args[0].id
+                mp = os.path.join(HERE, modname + ".py")
+                if os.path.exists(mp):
+                    mt = ast.parse(open(mp).read())
+                    for mn in ast.walk(mt):
+                        if isinstance(mn, (ast.FunctionDef, ast.ClassDef)):
+                            writes.add(mn.name)
+                        elif isinstance(mn, (ast.Import, ast.ImportFrom)):
+                            for al in mn.names:
+                                writes.add((al.asname or al.name).split(".")[0])
+                        elif isinstance(mn, ast.Name) and isinstance(mn.ctx, ast.Store):
+                            writes.add(mn.id)
+
+        # A STAGE MAY EXPORT A LITERAL LIST OF NAMES. runtime.py ends with
+        #     for _n in ('TERMS', 'BC', ...): setattr(rt, _n, locals()[_n])
+        # The names are literals, so they are statically visible and count as writes. A dynamic
+        # vars() export would not, which is exactly why the export is written out by name.
+        for n in ast.walk(tree):
+            if (isinstance(n, ast.For) and isinstance(n.iter, (ast.Tuple, ast.List))
+                    and any(isinstance(b, ast.Expr) and isinstance(b.value, ast.Call)
+                            and getattr(b.value.func, "id", "") == "setattr"
+                            for b in ast.walk(n))):
+                for e in n.iter.elts:
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str):
+                        writes.add(e.value)
     return reads, writes
 
 
