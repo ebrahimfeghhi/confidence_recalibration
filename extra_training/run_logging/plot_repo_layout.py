@@ -15,7 +15,7 @@ DONE, TODO, GONE = "#2e7d32", "#ef6c00", "#9e9e9e"
 
 TODAY = [
     ("phases/phase_k_train.py", "8,513 lines -- ONE function of 8,402", TODO),
-    ("phases/  (80 .py)", "trainer, data prep, eval, model mods, tests", TODO),
+    ("phases/  (69 .py)", "DISSOLVED -- every file moves, see below", TODO),
     ("run_logging/  (105 .py)", "plotters, probes, one-off analyses", TODO),
     ("shell_scripts/  (55 .sh)", "one launcher per arm", TODO),
 ]
@@ -64,6 +64,18 @@ PROPOSED = [
     ("    mem_probe_fullhead.sh",   "the memory gate",              DONE),
 ]
 
+MAPPING = [
+    ("phase_k_train.py",        "1",  "trainer/   split into 8 modules"),
+    ("phase_a .. phase_l",      "37", "data/      dataset build, unchanged"),
+    ("pose_*, dead_ops, rank_loss,", "10", "model/     head mods + loss"),
+    ("  lr_schedule, prefix_cache", "",  ""),
+    ("phase_k_eval*",           "3",  "eval/      fold scoring"),
+    ("phase_k_*_check, preflight", "10", "eval/      consistency checks"),
+    ("test_*",                  "5",  "tests/     beside what they test"),
+    ("pick_unfolded_unit.py",   "1",  "data/      smoke-test helper"),
+    ("lora.py, itm_quality_loss.py", "2", "REMOVED"),
+]
+
 REMOVED = [
     "phases/phase_k_train.py        the 8,402-line main()",
     "phases/lora.py                 LoRA: owner dropped it",
@@ -93,6 +105,16 @@ def main(out="figures/repo_layout.png"):
     for r in REMOVED:
         axR.text(0.02, y, r, fontsize=10, family="monospace", color=GONE)
         y -= 0.062
+
+    y -= 0.055
+    axR.text(0.02, y, "phases/  DISSOLVES INTO", fontsize=12.5, fontweight="bold", color="#333")
+    y -= 0.050
+    for name, n, where in MAPPING:
+        axR.text(0.035, y, name, fontsize=9.3, family="monospace", color="#333")
+        axR.text(0.470, y, n, fontsize=9.3, family="monospace", color="#333", ha="right")
+        axR.text(0.510, y, where, fontsize=9.3, family="monospace",
+                 color=(GONE if where == "REMOVED" else DONE))
+        y -= 0.0315
 
     axP = fig.add_subplot(gs[:, 1]); axP.axis("off")
     axP.set_title("PROPOSED  extra_training/", fontsize=14, fontweight="bold", loc="left")
