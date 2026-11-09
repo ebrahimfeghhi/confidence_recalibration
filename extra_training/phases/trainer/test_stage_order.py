@@ -5,6 +5,13 @@ package. It is order-blind: a name written by the last stage and read by the fir
 cleanly. Review on issue #9 drew that distinction, and it is the difference between a static scan
 and an initialisation that fails at the right moment.
 
+WHAT THIS DOES NOT ESTABLISH, stated because the distinction is easy to lose: it checks the
+FIVE EXPLICITLY LISTED `rt.require` gates, not every runtime read. It says nothing about whether
+a value is correct, of the right dtype, or non-empty. And `exports_of` walks a module's whole
+AST, including names bound inside nested functions, so it can over-count what a stage really
+exports. It is a static order check on declared gates. The real oracle is a stage-by-stage
+execution trace, which needs a card.
+
 This walks `main()` in source order, tracking which stage each call belongs to, and checks that
 every `rt.require(...)` names only attributes some earlier stage provides. It also checks the
 require gates exist at all -- a stage boundary with no gate is a place where a misordered export
