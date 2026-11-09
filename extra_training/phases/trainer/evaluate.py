@@ -8,6 +8,11 @@ names they close over arrive as `ctx`, a plain namespace built by the caller. No
 them changed, and test_region_equivalence.py compares every line against the live source so a
 change there fails the test instead of drifting.
 """
+import glob
+import sys
+# THE HELPERS main() DECLARED INLINE. Imported by name rather than with a star
+# so the dependency is visible and a missing one is an ImportError here.
+from helpers import (_head_ckpt_tensors, _record_val_loss)
 import collections
 import csv
 import json
@@ -17,7 +22,7 @@ import time
 
 import torch
 
-def val_loss_checkpoint(ctx, epoch, bundle, step):
+def val_loss_checkpoint(rt, epoch, bundle, step):
     """Held-out PAE for the bundle this epoch just wrote. Returns the pose mean, or None.
 
     A SUBPROCESS, for the same reason eval_checkpoint is one: --loss-only carries its own
@@ -33,9 +38,9 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
     """
     import json
     import subprocess
-    out = os.path.join(ctx.a.out, f"val_loss_ep{epoch}")
-    labels = ctx.a.val_loss_labels or os.path.join(ctx.a.val_loss_fold, "labels")
-    cmd = [sys.executable, "-I", os.path.abspath(ctx.__file__),
+    out = os.path.join(rt.a.out, f"val_loss_ep{epoch}")
+    labels = rt.a.val_loss_labels or os.path.join(rt.a.val_loss_fold, "labels")
+    cmd = [sys.executable, "-I", os.path.abspath(rt.__file__),
            # A MEASUREMENT IS NOT A FORK, but it resumes the bundle with a different fold,
            # selection, seed range and epoch count, so every one of those reads as drift.
            # --resume-note is mandatory whenever drift is accepted, and the subprocess cannot
@@ -45,34 +50,34 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
            "--resume-note", (f"held-out PAE measurement of {os.path.basename(bundle)} at "
                              f"epoch {epoch}; --loss-only reads the weights and writes no "
                              f"checkpoint, so the bundle's schedule is not continued"),
-           "--fold", ctx.a.val_loss_fold, "--labels", labels,
-           "--manifest-selection", ctx.a.val_loss_selection,
-           "--alignment-preflight", ctx.a.val_loss_preflight, "--minimal-items",
-           "--pae-scored-pairs", ctx.a.val_loss_pool,
-           "--seeds", ctx.a.val_loss_seeds,
+           "--fold", rt.a.val_loss_fold, "--labels", labels,
+           "--manifest-selection", rt.a.val_loss_selection,
+           "--alignment-preflight", rt.a.val_loss_preflight, "--minimal-items",
+           "--pae-scored-pairs", rt.a.val_loss_pool,
+           "--seeds", rt.a.val_loss_seeds,
            # THE RUN'S OWN GEOMETRY AND WEIGHTS. A different crop or a different alpha would
            # make the held-out number incomparable to the training curve it is read against,
            # which is the only thing it is for.
            # --crop-margin 0 IS WHAT "UNCROPPED" MEANS here; the argument's own help says 0
            # is the whole structure. crop_contact and crop_size are still passed because they
            # are inert at margin 0 and passing them keeps the recorded config complete.
-           "--crop-margin", ("0" if ctx.a.val_loss_uncropped else str(ctx.a.crop_margin)),
-           "--crop-contact", str(ctx.a.crop_contact),
-           "--crop-size", str(ctx.a.crop_size), "--accum", str(ctx.a.accum),
+           "--crop-margin", ("0" if rt.a.val_loss_uncropped else str(rt.a.crop_margin)),
+           "--crop-contact", str(rt.a.crop_contact),
+           "--crop-size", str(rt.a.crop_size), "--accum", str(rt.a.accum),
            # THE PATH IS PER SHARD, and the sharded launcher below rewrites it the same way
            # it rewrites --out. Handing every child this one path meant three processes
            # opening it with "w" and truncating each other: rows overwritten, interleaved or
            # lost, and the existing coverage checks look at trajectory.csv, not at this file,
            # so the corruption would not have been detected. Found in review of 511519e7.
            *(["--emit-iptm-rows", os.path.join(out, "iptm_rows.csv")]
-             if ctx.a.val_loss_emit_iptm else []),
+             if rt.a.val_loss_emit_iptm else []),
            # EIGHTH INSTANCE OF THE --loss-only INHERITANCE CLASS. The three crop args above
            # are passed because "a different crop would make the held-out number incomparable
            # to the training curve it is read against"; --crop-all-poses changes the crop by
            # the same argument and was not passed, so a parent using the union would have been
            # monitored on a pose-0 crop. Caught in review.
            *(["--crop-all-poses"]
-             if (ctx.a.crop_all_poses and not ctx.a.val_loss_uncropped) else []),
+             if (rt.a.crop_all_poses and not rt.a.val_loss_uncropped) else []),
            # ALPHA_PAE 0 IS A TRAINING CHOICE, NOT A MEASUREMENT ONE. A ranking-only arm sets
            # --alpha-pae 0 so no PAE gradient is taken, but the held-out number this
            # subprocess exists to produce IS the PAE loss, and passing 0 through would report
@@ -81,28 +86,28 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
            # measures at alpha_pae 1. SIXTH instance of the --loss-only inheritance class:
            # --train-only, LoRA, --pose-perblock-share, the ranking guard fields, my own
            # coverage guard, now the loss weight itself.
-           "--nsample", str(ctx.a.nsample),
-           "--alpha-pae", str(ctx.a.alpha_pae if float(ctx.a.alpha_pae) > 0 else 1.0),
-           "--alpha-confidence", str(ctx.a.alpha_confidence), "--clip-norm", str(ctx.a.clip_norm),
-           "--blocks-per-ckpt", str(ctx.a.blocks_per_ckpt),
+           "--nsample", str(rt.a.nsample),
+           "--alpha-pae", str(rt.a.alpha_pae if float(rt.a.alpha_pae) > 0 else 1.0),
+           "--alpha-confidence", str(rt.a.alpha_confidence), "--clip-norm", str(rt.a.clip_norm),
+           "--blocks-per-ckpt", str(rt.a.blocks_per_ckpt),
            "--epochs", "1", "--save-every", "0", "--warmup-steps", "0",
            "--shuffle", "structure", "--out", out]
-    if ctx.a.pae_only:
+    if rt.a.pae_only:
         cmd.append("--pae-only")
-    if ctx.a.drop_pde:
+    if rt.a.drop_pde:
         cmd.append("--drop-pde")
-    if ctx.a.frame_direction:
+    if rt.a.frame_direction:
         cmd.append("--frame-direction")
-    if ctx.a.pose_perblock:
+    if rt.a.pose_perblock:
         cmd.append("--pose-perblock")
-        if ctx.a.pose_perblock_tied:
+        if rt.a.pose_perblock_tied:
             cmd.append("--pose-perblock-tied")
-        if ctx.a.pose_perblock_share:
+        if rt.a.pose_perblock_share:
             cmd.append("--pose-perblock-share")
         # PASSED TO THE CHILD, like the other two. A monitor that built a DIFFERENT
         # architecture than the parent would report a held-out number for a model that does
         # not exist -- the --loss-only inheritance class, now seven instances.
-        if ctx.a.pose_perblock_copy:
+        if rt.a.pose_perblock_copy:
             cmd.append("--pose-perblock-copy")
     # THE IN-BLOCK PATHWAY AND THE LEAN TRIO -- the NINTH AND TENTH instances of the
     # --loss-only inheritance class, both found by review before an arm was launched.
@@ -119,26 +124,26 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
     # on the PAE path, so the child would compute the right number -- but the guard compares
     # it, so the child refuses the bundle and the monitor reports nothing. Forwarded with the
     # two flags it hard-requires (phase_k_train.py:1788), since the child parses them itself.
-    if ctx.a.pose_inblock:
-        cmd += ["--pose-inblock", "--pose-inblock-block", str(ctx.a.pose_inblock_block)]
-        if ctx.a.pose_inblock_pae:
+    if rt.a.pose_inblock:
+        cmd += ["--pose-inblock", "--pose-inblock-block", str(rt.a.pose_inblock_block)]
+        if rt.a.pose_inblock_pae:
             cmd.append("--pose-inblock-pae")
     # FORWARDED WHENEVER THE PARENT HAS IT, not only alongside --lean-single. lean_readouts
     # replaces memory_efficient_forward rather than adding or removing tensors, so its absence
     # in the child was invisible to both the key-set guard and the resume guard -- the child
     # was simply computing readouts the parent does not, slower and on a different code path.
-    if ctx.a.lean_readouts:
+    if rt.a.lean_readouts:
         cmd.append("--lean-readouts")
-    if ctx.a.lean_single:
-        if not ctx.a.lean_readouts or not ctx.a.pae_only:
+    if rt.a.lean_single:
+        if not rt.a.lean_readouts or not rt.a.pae_only:
             raise SystemExit(
                 "STOP: --lean-single without --lean-readouts and --pae-only reached "
                 "val_loss_checkpoint. The parse-time check should have refused this run.")
         cmd.append("--lean-single")
-    if ctx.a.val_loss_prep:
-        cmd += ["--indices", os.path.join(ctx.a.val_loss_prep, "job_indices.csv"),
-                "--bio-dir", os.path.join(ctx.a.val_loss_prep, "job_bioassembly"),
-                "--mmcif-dir", os.path.join(ctx.a.val_loss_prep, "job_cifs")]
+    if rt.a.val_loss_prep:
+        cmd += ["--indices", os.path.join(rt.a.val_loss_prep, "job_indices.csv"),
+                "--bio-dir", os.path.join(rt.a.val_loss_prep, "job_bioassembly"),
+                "--mmcif-dir", os.path.join(rt.a.val_loss_prep, "job_cifs")]
     # A SINGLE-PROCESS CHILD, SO THE PARENT'S DISTRIBUTED ENVIRONMENT MUST GO. This script
     # reads WORLD_SIZE/RANK/LOCAL_RANK at startup, so an inherited WORLD_SIZE=3 makes the
     # monitor try to join a process group that already has all three of its members -- it
@@ -157,20 +162,20 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
     env["WORLD_SIZE"] = "1"
     env["RANK"] = "0"
     env["LOCAL_RANK"] = "0"
-    if ctx.a.val_loss_card:
-        env["CUDA_VISIBLE_DEVICES"] = str(ctx.a.val_loss_card)
+    if rt.a.val_loss_card:
+        env["CUDA_VISIBLE_DEVICES"] = str(rt.a.val_loss_card)
     # SHARDED ACROSS THE EVAL CARDS when there is more than one. This pass was a SINGLE
     # single-card child while the other two cards sat at the epoch-boundary barrier: measured
     # on j583i8, 12.8 min of a 46.0 min cycle, against a 24.1 min epoch. The children are
     # independent processes with no collective between them -- deliberately NOT a distributed
     # child, because --loss-only refuses WORLD_SIZE>1 and the comment there records the hang
     # that refusal prevents.
-    _cards = [c.strip() for c in (ctx.a.eval_cards or "").split(",") if c.strip()]
-    if ctx.a.val_loss_card:
-        _cards = [str(ctx.a.val_loss_card)]
+    _cards = [c.strip() for c in (rt.a.eval_cards or "").split(",") if c.strip()]
+    if rt.a.val_loss_card:
+        _cards = [str(rt.a.val_loss_card)]
     _nsh = len(_cards) if len(_cards) > 1 else 1
     _where = (f"{_nsh} shard(s) over card(s) {','.join(_cards)}" if _nsh > 1
-              else ('card ' + str(ctx.a.val_loss_card) if ctx.a.val_loss_card else 'the training card'))
+              else ('card ' + str(rt.a.val_loss_card) if rt.a.val_loss_card else 'the training card'))
     print(f"  held-out PAE for epoch {epoch} ({_where})", flush=True)
     if _nsh > 1:
         # EACH CHILD WRITES ITS OWN LOG FILE rather than a pipe the parent drains one at a
@@ -178,12 +183,12 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
         # 64 KiB pipe buffer BLOCKS until the parent gets round to reading it -- serialising
         # the very passes this change exists to run in parallel. Files also keep the whole
         # diagnostic instead of the last four lines of a failure. Caught in review.
-        os.makedirs(os.path.join(ctx.a.out, f"val_loss_ep{epoch}"), exist_ok=True)
+        os.makedirs(os.path.join(rt.a.out, f"val_loss_ep{epoch}"), exist_ok=True)
 
         def _spawn(_i):
             _env = dict(env)
             _env["CUDA_VISIBLE_DEVICES"] = _cards[_i]
-            _o = os.path.join(ctx.a.out, f"val_loss_ep{epoch}", f"shard{_i}")
+            _o = os.path.join(rt.a.out, f"val_loss_ep{epoch}", f"shard{_i}")
             os.makedirs(_o, exist_ok=True)
             _lg = os.path.join(_o, "shard.log")
             # ROTATE EVERY OUTPUT OF A PREVIOUS ATTEMPT, NOT JUST THE LOG.
@@ -279,12 +284,12 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
         # tv6hue epoch 4 is the first time in the project that actually happened.
         # ONLY THE FAILED INDICES ARE RE-RUN. Re-running a shard that already succeeded would
         # throw away good work and give the pooling a second chance to see a duplicate.
-        for _try in range(1, int(getattr(ctx.a, "val_loss_shard_retries", 2) or 0) + 1):
+        for _try in range(1, int(getattr(rt.a, "val_loss_shard_retries", 2) or 0) + 1):
             if not _bad:
                 break
             _idx = [_i for _i, _ in _bad]
             print(f"  held-out shard(s) {_idx} of epoch {epoch} failed; retry {_try} of "
-                  f"{int(getattr(ctx.a, 'val_loss_shard_retries', 2) or 0)}", flush=True)
+                  f"{int(getattr(rt.a, 'val_loss_shard_retries', 2) or 0)}", flush=True)
             for _i, _tail in _bad:
                 print(f"    shard {_i} said:\n      " + "\n      ".join(_tail), flush=True)
             time.sleep(15.0 * _try)
@@ -314,7 +319,7 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
                       + "\n    ".join(_tail), flush=True)
             print(f"  WARNING: epoch {epoch} has no held-out point; {len(_bad)} of {_nsh} "
                   f"shard(s) failed after "
-                  f"{int(getattr(ctx.a, 'val_loss_shard_retries', 2) or 0)} retry/retries and a "
+                  f"{int(getattr(rt.a, 'val_loss_shard_retries', 2) or 0)} retry/retries and a "
                   f"partial pool would be a different population.", flush=True)
             return None
         # POOLED AS A PLAIN MEAN OVER POSES. Each shard owns whole structures, every pose
@@ -385,8 +390,8 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
         # merged file rather than a partial one: dockq_from_iptm refuses duplicates anyway,
         # and a silently short file is exactly the "metric over whatever showed up" it warns
         # against.
-        if ctx.a.val_loss_emit_iptm:
-            _merged = os.path.join(ctx.a.out, f"val_loss_ep{epoch}", "iptm_rows.csv")
+        if rt.a.val_loss_emit_iptm:
+            _merged = os.path.join(rt.a.out, f"val_loss_ep{epoch}", "iptm_rows.csv")
             _rows_i, _keys_i, _bad_i = [], set(), []
             for _i, _o, _lg, _fh, _p in procs:
                 _f = os.path.join(_o, "iptm_rows.csv")
@@ -415,12 +420,12 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
             if not _bad_i:
                 try:
                     _pool_if = set()
-                    with open(ctx.a.val_loss_pool) as fh:
+                    with open(rt.a.val_loss_pool) as fh:
                         for _r in csv.DictReader(fh):
                             _pool_if.add(f"{_r['pdb']}_{_r['chain1']}{_r['chain2']}")
-                    _lo_s, _, _hi_s = ctx.a.val_loss_seeds.partition("-")
+                    _lo_s, _, _hi_s = rt.a.val_loss_seeds.partition("-")
                     _nseed = (int(_hi_s) - int(_lo_s) + 1) if _hi_s else 1
-                    _exp_depth = _nseed * int(ctx.a.nsample)
+                    _exp_depth = _nseed * int(rt.a.nsample)
                     _depth = {}
                     for _r in _rows_i:
                         _depth[_r["iface"]] = _depth.get(_r["iface"], 0) + 1
@@ -436,7 +441,7 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
                     if _short:
                         _bad_i.append(f"{len(_short)} interface(s) do not have the expected "
                                       f"{_exp_depth} row(s) ({_nseed} seed(s) x "
-                                      f"{ctx.a.nsample} sample(s)), e.g. "
+                                      f"{rt.a.nsample} sample(s)), e.g. "
                                       + ", ".join(f"{k}={_depth[k]}" for k in _short[:3]))
                 except (OSError, KeyError, ValueError) as _e:
                     _bad_i.append(f"could not establish the expected ipTM population ({_e})")
@@ -494,7 +499,7 @@ def val_loss_checkpoint(ctx, epoch, bundle, step):
     _record_val_loss(epoch, step, bundle, mean, len(vals))
     return mean
 
-def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fold="",
+def eval_checkpoint(rt, step, epoch, train_pool="", crop_tokens="", tag="", fold="",
                     seed_base=-1, budget=0):
     """One sharded evaluation. tag names its outputs; crop_tokens crops its INPUTS.
 
@@ -519,8 +524,8 @@ def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fol
     """
     import json
     import subprocess
-    cp = os.path.join(ctx.a.out, f"head_ep{epoch}_step{step}.pt")
-    if not ctx.is_main:
+    cp = os.path.join(rt.a.out, f"head_ep{epoch}_step{step}.pt")
+    if not rt.is_main:
         return          # the caller already holds the other ranks at a barrier
     torch.save(_head_ckpt_tensors(), cp)
     # NAMED AFTER THE POOL, like the files it writes. "pool@fold" named the FOLD, which is
@@ -545,7 +550,7 @@ def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fol
         _ptag = tag
     elif _ptag and crop_tokens:
         _ptag = f"{_ptag}_cropped"
-    mj = os.path.join(ctx.a.out, (f"metric_{_ptag}_ep%d.json" if train_pool else "metric_ep%d.json")
+    mj = os.path.join(rt.a.out, (f"metric_{_ptag}_ep%d.json" if train_pool else "metric_ep%d.json")
                       % epoch)
     extra = []
     if train_pool:
@@ -554,10 +559,10 @@ def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fol
         # fold, not from the one being trained on: a results.csv from the wrong fold would
         # look up DockQ for interfaces it does not contain and the coverage check would fail,
         # and a wrong --seed-base would ask for seeds the fold never wrote.
-        _tef = fold or ctx.a.train_eval_fold or ctx.a.fold
+        _tef = fold or rt.a.train_eval_fold or rt.a.fold
         _seed_base = (seed_base if seed_base >= 0
-                      else (ctx.a.train_eval_seed_base if ctx.a.train_eval_seed_base >= 0
-                            else ctx._train_eval_seed_base))
+                      else (rt.a.train_eval_seed_base if rt.a.train_eval_seed_base >= 0
+                            else rt._train_eval_seed_base))
         # THE ROLES TABLE CAN ALSO LIVE BESIDE THE POOL, same rule as the seed manifest
         # below and for the same reason. The fold's own chain_roles.csv names only the 53
         # structures of the original valfull wave, so an 83-structure pool spanning BOTH
@@ -586,18 +591,18 @@ def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fol
     # model does not have -- a loud failure rather than a silently different metric, but a
     # failure either way. Appended outside the train_pool branch so it reaches the validation
     # path too; both the sharded driver (--extra) and the single-card path forward `extra`.
-    if ctx.a.frame_direction:
+    if rt.a.frame_direction:
         extra = extra + ["--frame-direction"]
-    if ctx.a.pose_perblock:
+    if rt.a.pose_perblock:
         extra = extra + ["--pose-perblock"]
-        if ctx.a.pose_perblock_tied:
+        if rt.a.pose_perblock_tied:
             extra = extra + ["--pose-perblock-tied"]
-        if ctx.a.pose_perblock_share:
+        if rt.a.pose_perblock_share:
             extra = extra + ["--pose-perblock-share"]
         # AND THE COPY MODE. This one ADDS tensors, so omitting it makes the evaluator's
         # state-dict guard refuse outright rather than silently score a different
         # architecture -- but passing it is still the fix, not relying on the refusal.
-        if ctx.a.pose_perblock_copy:
+        if rt.a.pose_perblock_copy:
             extra = extra + ["--pose-perblock-copy"]
     # AND THE IN-BLOCK PATHWAY, which had no evaluator counterpart at all until review found
     # it. The block index goes too: pose_inblock_d* carry no depth in their names, so an
@@ -605,10 +610,10 @@ def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fol
     # different operator. --lean-single is deliberately NOT forwarded: it sets c_s = 0 on
     # built blocks, leaves every module in the tree, and so changes neither the checkpoint's
     # key set nor the PAE path's mathematics -- the evaluator has no such flag and needs none.
-    if ctx.a.pose_inblock:
+    if rt.a.pose_inblock:
         extra = extra + ["--pose-inblock",
-                         "--pose-inblock-block", str(ctx.a.pose_inblock_block)]
-        if ctx.a.pose_inblock_pae:
+                         "--pose-inblock-block", str(rt.a.pose_inblock_block)]
+        if rt.a.pose_inblock_pae:
             extra = extra + ["--pose-inblock-pae"]
     # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
     #
@@ -625,8 +630,8 @@ def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fol
     # --pair-iptm-only computes chain_pair_iptm straight from PAE instead of building the
     # whole Protenix summary and discarding every other field. Measured bit-identical.
     # --prefetch overlaps the next unit's trunk read with the current unit's compute.
-    _jc = os.path.join(os.path.dirname(os.path.abspath(train_pool or ctx.a.train_eval_pool or ".")),
-                       "join_cache.json") if train_pool else os.path.join(ctx.a.out, "join_cache.json")
+    _jc = os.path.join(os.path.dirname(os.path.abspath(train_pool or rt.a.train_eval_pool or ".")),
+                       "join_cache.json") if train_pool else os.path.join(rt.a.out, "join_cache.json")
     extra = extra + ["--join-cache", _jc, "--pair-iptm-only", "--prefetch"]
     # THE EVALUATOR MUST SELECT BY WHAT THE RUN IS TRAINING. --rank-pool mean optimises the
     # mean-pooled ipTM, and this pass selected by the MAX -- so the automatic validation curve
@@ -634,7 +639,7 @@ def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fol
     # Caught in review. --pool-mean also makes the evaluator report the shipped MAX selection
     # from the same pass, so the baseline is preserved rather than traded away: both appear as
     # mean_dockq / mean_dockq_select_max in its json.
-    if ctx.a.rank_pool == "mean" and ctx.a.rank_loss:
+    if rt.a.rank_pool == "mean" and rt.a.rank_loss:
         extra = extra + ["--pool-mean", "--select-by", "mean"]
     # THE CROP, FORWARDED. phase_k_eval's --crop-tokens takes the same npz --crop-tokens does
     # here, so a cropped reading of a pool is the evaluator's own code path and not a
@@ -645,31 +650,31 @@ def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fol
     # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
     # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one
     # shard on each card -- ~6 GB beside a parked rank's ~6 GB on a 98 GB card -- and merges.
-    cards = ctx.a.eval_cards or os.environ.get("CUDA_VISIBLE_DEVICES", "")
-    shard_work = os.path.join(ctx.a.out, (f"{_ptag}_eval_shards_ep%d" if train_pool
+    cards = rt.a.eval_cards or os.environ.get("CUDA_VISIBLE_DEVICES", "")
+    shard_work = os.path.join(rt.a.out, (f"{_ptag}_eval_shards_ep%d" if train_pool
                                        else "eval_shards_ep%d") % epoch)
     budget = (budget if budget else
-              (ctx._train_eval_budget if train_pool else ctx.a.eval_budget))
+              (rt._train_eval_budget if train_pool else rt.a.eval_budget))
     if len([c for c in cards.split(",") if c.strip()]) > 1:
         cmd = [sys.executable, "-I",
-               os.path.join(os.path.dirname(os.path.abspath(ctx.__file__)),
+               os.path.join(os.path.dirname(os.path.abspath(rt.__file__)),
                             "phase_k_eval_sharded.py"),
                "--cards", cards, "--ckpt", cp, "--budget", str(budget),
                "--work", shard_work, "--out", mj]
         if extra:
             cmd += ["--extra", " ".join(extra)]
     else:
-        cmd = [sys.executable, "-I", ctx.a.eval_script, "--ckpt", cp,
+        cmd = [sys.executable, "-I", rt.a.eval_script, "--ckpt", cp,
                "--budget", str(budget), "--out", mj, *extra]
     env = {**os.environ, "LAYERNORM_TYPE": "openfold"}
     sharded = "phase_k_eval_sharded.py" in cmd[2]
     if sharded:
         print(f"  evaluating epoch {epoch} ({kind}) sharded over GPU(s) {cards}")
-    elif ctx.a.eval_device:
+    elif rt.a.eval_device:
         # ONLY ON THE SINGLE-CARD PATH. Pinning CUDA_VISIBLE_DEVICES here would hand the sharding
         # driver one card and silently undo the split.
-        env["CUDA_VISIBLE_DEVICES"] = str(ctx.a.eval_device)
-        print(f"  evaluating epoch {epoch} on GPU {ctx.a.eval_device} (the trainer keeps its card)")
+        env["CUDA_VISIBLE_DEVICES"] = str(rt.a.eval_device)
+        print(f"  evaluating epoch {epoch} on GPU {rt.a.eval_device} (the trainer keeps its card)")
     else:
         # SHARING MEANS CHECKING FIRST. The trainer is still resident and does not hand its
         # allocator back, so a second 464M-parameter model has to fit alongside it.
@@ -681,10 +686,10 @@ def eval_checkpoint(ctx, step, epoch, train_pool="", crop_tokens="", tag="", fol
             free_mib = int(q.stdout.strip().splitlines()[idx])
         except Exception:
             pass
-        if free_mib is not None and free_mib < ctx.a.eval_min_free_mib:
+        if free_mib is not None and free_mib < rt.a.eval_min_free_mib:
             raise SystemExit(
                 f"STOP: the epoch-{epoch} evaluation would share the training card with only "
-                f"{free_mib} MiB free, under --eval-min-free-mib {ctx.a.eval_min_free_mib}. It "
+                f"{free_mib} MiB free, under --eval-min-free-mib {rt.a.eval_min_free_mib}. It "
                 f"loads a second 464M-parameter model (~16 GB) while the trainer stays "
                 f"resident. Pass --eval-device <idle gpu>, or raise the floor deliberately.")
         print(f"  evaluating epoch {epoch} on the TRAINING card, {free_mib} MiB free")

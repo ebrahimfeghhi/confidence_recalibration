@@ -3,6 +3,7 @@
 EXTRACTED VERBATIM from `phases/phase_k_train.py` lines 1713-1772 (source `d34baebc`).
 test_bootstrap_equivalence.py compares it line for line.
 """
+import time
 import os
 
 import torch

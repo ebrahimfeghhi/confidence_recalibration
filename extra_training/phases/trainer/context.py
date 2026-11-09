@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS. `unit.py` and `loop.py` were closures inside an 8,402-line function: they read
 75 enclosing locals directly, which is exactly what made that function impossible to split. Each
-of those reads is now `ctx.<name>`, so the dependencies are declared rather than implied, and a
+of those reads is now `rt.<name>`, so the dependencies are declared rather than implied, and a
 missing one is an AttributeError at the call site instead of a NameError 900 steps in.
 
 It is a plain mutable namespace on purpose. The review on issue #9 asked for an immutable

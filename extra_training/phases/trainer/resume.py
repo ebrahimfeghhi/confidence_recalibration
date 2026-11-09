@@ -5,6 +5,7 @@ Statements and comments are the original; only the names this closed over inside
 main() became parameters. test_resume_equivalence.py compares it line for line,
 so a change to the live trainer fails the test instead of drifting silently.
 """
+import json
 import os
 import math
 import time
@@ -13,7 +14,13 @@ import torch
 import torch.distributed as dist
 
 
-def load_resume(ctx, a, model, opt):
+def load_resume(rt, a, model, opt):
+    # INITIALISED BEFORE THE BRANCH, because `if a.resume:` is the only thing that sets them and
+    # the live arm runs with `resume: ""`. phase_k_train.py:3424 does this one line above the
+    # extracted span; cutting the region at the `if` left the function raising UnboundLocalError
+    # on exactly the configuration that is running. Found by the bloat audit, not by a test --
+    # the equivalence test compares the region, and this line is outside it.
+    start_epoch, start_step = 0, 0
     if a.resume:
         if not os.path.exists(a.resume):
             raise SystemExit(f"STOP: no resume bundle at {a.resume}")
@@ -28,8 +35,8 @@ def load_resume(ctx, a, model, opt):
         # schedule, so continuing would silently blend two experiments. Checking only the first four
         # let a resume through after the exclusions, the loss weights and the lr had all changed
         # (review 2026-10-16).
-        _mine = {"world": ctx.world, "seed": a.seed, "accum": a.accum, "nsample": a.nsample,
-                 "manifest_digest": ctx._manifest_digest, "crop_size": a.crop_size,
+        _mine = {"world": rt.world, "seed": a.seed, "accum": a.accum, "nsample": a.nsample,
+                 "manifest_digest": rt._manifest_digest, "crop_size": a.crop_size,
                  "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
@@ -86,7 +93,7 @@ def load_resume(ctx, a, model, opt):
                  "crop_margin": a.crop_margin, "crop_contact": a.crop_contact,
                  # A CROP RULE CHANGE IS AN OBJECTIVE CHANGE: the loss averages over a different
                  # set of tokens and pairs, so resuming across it would blend two objectives.
-                 "crop_tokens": ctx._CROP_TOK_DIGEST,
+                 "crop_tokens": rt._CROP_TOK_DIGEST,
                  # THE CROP DEFINITION ITSELF, not just its radii. a16911de changed the DEFAULT
                  # from the union over all nsample poses to pose 0 alone, so a resume across that
                  # change blends two crop definitions into one curve. f1268fe5 added the field to
@@ -338,14 +345,14 @@ def load_resume(ctx, a, model, opt):
                 "bundle_commit": _g.get("commit", "?"),
                 "bundle_written": _g.get("written", "?"),
                 "bundle_epoch": int(_b["epoch"]), "bundle_step": int(_b["step"]),
-                "accepted_at": ctx._dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+                "accepted_at": rt._dt.datetime.now().astimezone().isoformat(timespec="seconds"),
                 "via": _via,
                 "note": a.resume_note.strip(),
                 "fields": {k: {"bundle": b, "this_run": m} for k, (b, m) in _bad.items()},
                 "named": sorted(_ovr & set(_bad)),
                 "unnamed": sorted(_unnamed),
             })
-            if ctx.is_main:
+            if rt.is_main:
                 _dp = os.path.join(a.out, "resume_drift.json")
                 try:
                     with open(_dp, "w") as _fh:
@@ -375,13 +382,13 @@ def load_resume(ctx, a, model, opt):
         _b_only = (_b.get("guard") or {}).get("train_only") or ""
         if a.loss_only and _b_only and not a.train_only:
             import re as _re_i
-            _pfx_i = ctx.prefixes[0]
+            _pfx_i = rt.prefixes[0]
             _pats_i = [t.strip() for t in _b_only.split(",") if t.strip()]
             _want_i = {_n for _n in trainable
                        if any(_re_i.search(_p, _n[len(_pfx_i) + 1:]) for _p in _pats_i)}
             if _want_i and _want_i == set(_b["head"]):
                 trainable = sorted(_want_i)
-                if ctx.is_main:
+                if rt.is_main:
                     print(f"  --loss-only: inheriting the bundle's --train-only '{_b_only}'. It "
                           f"carries exactly the {len(_want_i)} tensor(s) that selects; the rest of "
                           f"the head was never trained and stays at the shipped weights, which is "
@@ -404,7 +411,7 @@ def load_resume(ctx, a, model, opt):
         if a.loss_only:
             _measured_epoch, _measured_step = start_epoch, start_step
             start_epoch, start_step = 0, 0
-        if ctx.is_main:
+        if rt.is_main:
             # SAY WHAT ACTUALLY HAPPENED TO THE OPTIMISER. This line claimed "AdamW state for 298
             # tensor(s) restored" on a --loss-only pass that deliberately does NOT restore it --
             # a log that misreports its own run is worse than a quiet one.

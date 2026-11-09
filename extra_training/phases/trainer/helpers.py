@@ -17,6 +17,9 @@ import shutil
 import sys
 import time
 
+import random
+import threading
+import queue
 import numpy as np
 import torch
 
@@ -30,7 +33,7 @@ _pf_q = None
 _pf_thread = None
 
 
-def _spearman(xs, ys):
+def _spearman(rt, xs, ys):
     """Rank correlation without scipy: rank both, then Pearson. Ties get average ranks."""
     n = len(xs)
     if n < 3:
@@ -58,7 +61,7 @@ def _spearman(xs, ys):
         return None
     return sum((a_ - mx) * (b_ - my) for a_, b_ in zip(rx, ry)) / (sx * sy)
 
-def _pose_pairs(pdb, lab_p, samp):
+def _pose_pairs(rt, pdb, lab_p, samp):
     """[(iface, ax, ay)] for ONE pose, from OST -- the SAME join phase_k_eval scores with.
 
     WHY NOT THE STATIC PAIRS. --rank-form rel's labels are computed on the pose's OST-resolved
@@ -73,46 +76,46 @@ def _pose_pairs(pdb, lab_p, samp):
     """
     import phase_j_build_cache as _BC
     key = (pdb, os.path.basename(lab_p), int(samp))
-    if key in _ost_cache:
-        return _ost_cache[key]
+    if key in rt._ost_cache:
+        return rt._ost_cache[key]
     sd = _rank_key(pdb, os.path.basename(lab_p)[:-4], (0, 0))[1]
     try:
-        ud = _BC.seed_dir(a.fold, pdb, int(sd))
+        ud = _BC.seed_dir(rt.a.fold, pdb, int(sd))
     except Exception as _e:                              # noqa: BLE001
         raise SystemExit(
             f"STOP: --rank-form rel cannot resolve a unit directory for {pdb}/{sd} "
             f"({type(_e).__name__}), so this pose's chains cannot be mapped the way its "
             f"label was built.")
-    got, why = _PKE.ost_chain_pairs(ud, pdb, int(samp), _rel_refs.get(pdb) or [])
+    got, why = rt._PKE.ost_chain_pairs(ud, pdb, int(samp), rt._rel_refs.get(pdb) or [])
     if got is None:
         raise SystemExit(
             f"STOP: --rank-form rel has no OST chain mapping for {pdb}/{sd} sample {samp} "
             f"({why}). Falling back to the static pair is the exact mismatch this resolution "
             f"exists to prevent.")
-    _ost_cache[key] = sorted(got)
-    return _ost_cache[key]
+    rt._ost_cache[key] = sorted(got)
+    return rt._ost_cache[key]
 
-def _rel_labels(pdb):
+def _rel_labels(rt, pdb):
     """{(seed, sample, ax, ay): g} for one structure, from --rel-labels.
 
     A MISSING FILE IS FATAL, not empty. An empty dict would make every group "short", the loop
     would skip them all, and the run would train on PAE alone while its log and saved guard
     both said --rank-form rel -- the row-weight bool-cast failure in another costume.
     """
-    if pdb in _rel_cache:
-        return _rel_cache[pdb]
-    if not a.rel_labels:
+    if pdb in rt._rel_cache:
+        return rt._rel_cache[pdb]
+    if not rt.a.rel_labels:
         raise SystemExit("STOP: --rank-form rel needs --rel-labels; build it with "
                          "run_logging/build_itm_labels.py")
-    f = os.path.join(a.rel_labels, f"{pdb}.npz")
+    f = os.path.join(rt.a.rel_labels, f"{pdb}.npz")
     if not os.path.exists(f):
-        _rel_stat["missing_files"] += 1
+        rt._rel_stat["missing_files"] += 1
         raise SystemExit(
             f"STOP: no relative-iTM label file for {pdb} at {f}. Every training structure "
             f"needs one; rebuild with run_logging/build_itm_labels.py and check its manifest "
             f"covers this manifest-selection.")
     z = np.load(f, allow_pickle=True)
-    col = "g_max" if a.rank_pool == "max" else "g_mean"
+    col = "g_max" if rt.a.rank_pool == "max" else "g_mean"
     # THE LABEL MUST MATCH THE POOLING. Training the mean-pooled score toward a max-pooled
     # label would regress onto a different quantity than the one being produced, and both
     # columns exist precisely so this is a lookup rather than a conversion.
@@ -123,10 +126,10 @@ def _rel_labels(pdb):
             f"the mismatch review caught. Rebuild with run_logging/build_itm_labels.py.")
     d = {(int(sd), int(sp), str(ifc)): float(g)
          for ifc, sd, sp, g in zip(z["iface"], z["seed"], z["sample"], z[col])}
-    _rel_cache[pdb] = d
+    rt._rel_cache[pdb] = d
     return d
 
-def _rank_key(pdb, arm_seed_or_int, pair):
+def _rank_key(rt, pdb, arm_seed_or_int, pair):
     """THE label key, built in exactly one place.
 
     A unit's identifier is the label/trunk basename -- "free_500000", not 500000 -- because
@@ -141,7 +144,7 @@ def _rank_key(pdb, arm_seed_or_int, pair):
         sd = sd.rsplit("_", 1)[-1]
     return (pdb, int(sd), pair)
 
-def _rank_check_coverage(want_units):
+def _rank_check_coverage(rt, want_units):
     """Every (pdb, seed, interface) this run will train must carry --nsample finite DockQ.
 
     DRIVEN FROM THE EXPECTED SET, NOT FROM THE LABELS. Two earlier versions were weaker and
@@ -165,18 +168,18 @@ def _rank_check_coverage(want_units):
     # interface) the run touches still needs its --nsample DockQ values, and the groups are
     # built from the same manifest units this set is built from. A group missing a seed's
     # labels is therefore already caught here, before pass A ever runs.
-    if not a.rank_loss or a.loss_only:
+    if not rt.a.rank_loss or rt.a.loss_only:
         return
     expected = {_rank_key(pdb, sd, pr) for pdb, sd in want_units
-                for pr in (_scored_asym.get(pdb) or ())}
+                for pr in (rt._scored_asym.get(pdb) or ())}
     if not expected:
         raise SystemExit("STOP: --rank-loss expected zero (pdb, seed, interface) groups. "
                          "Either the manifest or --pae-scored-pairs selects nothing.")
-    missing = sorted(expected - set(_rank_lab))
+    missing = sorted(expected - set(rt._rank_lab))
     short, nonfinite = [], []
-    for k in sorted(expected & set(_rank_lab)):
-        m = _rank_lab[k]
-        if sorted(m) != list(range(a.nsample)):
+    for k in sorted(expected & set(rt._rank_lab)):
+        m = rt._rank_lab[k]
+        if sorted(m) != list(range(rt.a.nsample)):
             short.append((k, sorted(m)))
         if not all(math.isfinite(v) for v in m.values()):
             nonfinite.append(k)
@@ -186,16 +189,16 @@ def _rank_check_coverage(want_units):
             f"(pdb, seed, interface) group(s) this run trains.\n"
             + (f"  {len(missing)} group(s) have NO labels, e.g. {missing[:6]}\n"
                if missing else "")
-            + (f"  {len(short)} group(s) lack samples 0..{a.nsample - 1}, e.g. {short[:4]}\n"
+            + (f"  {len(short)} group(s) lack samples 0..{rt.a.nsample - 1}, e.g. {short[:4]}\n"
                if short else "")
             + (f"  {len(nonfinite)} group(s) carry a non-finite DockQ, e.g. "
                f"{nonfinite[:4]}\n" if nonfinite else "")
             + "  Those poses would pay a forward and contribute no ranking gradient.")
-    if is_main:
+    if rt.is_main:
         print(f"  ranking label coverage: all {len(expected)} (pdb, seed, interface) group(s) "
-              f"hold {a.nsample} finite DockQ value(s)")
+              f"hold {rt.a.nsample} finite DockQ value(s)")
 
-def _check_eval_pool():
+def _check_eval_pool(rt, ):
     """Stat the training-eval pool now, not at the first epoch boundary.
 
     eval_checkpoint shells out to phase_k_eval.py, which hard-stops on a missing trunk or a
@@ -204,17 +207,17 @@ def _check_eval_pool():
     training and then a four-hour zombie. The default fold pool really does contain a
     structure the manifest skips (9mx1 has no trunk at all), so this is one wrong path away.
     """
-    if not a.train_eval_pool:
+    if not rt.a.train_eval_pool:
         return
     # THE POOL'S OWN FOLD, matching what eval_checkpoint will pass. Checking against --fold
     # when --train-eval-fold overrides it rejected a perfectly good validation pool for
     # having no trunks in the TRAINING fold, which is exactly where it should not have any.
-    _f = a.train_eval_fold or a.fold
+    _f = rt.a.train_eval_fold or rt.a.fold
     if "," in _f:
         raise SystemExit(f"STOP: --train-eval-pool needs a single fold; got {_f!r}. "
                          f"phase_k_eval treats --fold as one directory, so a comma-separated "
                          f"root would be read as a literal path.")
-    need = [a.train_eval_pool, os.path.join(_f, "results.csv"),
+    need = [rt.a.train_eval_pool, os.path.join(_f, "results.csv"),
             os.path.join(_f, "chain_roles.csv")]
     gone = [f for f in need if not os.path.exists(f)]
     if gone:
@@ -222,9 +225,9 @@ def _check_eval_pool():
     import csv as _csv2
     # --manifest-skip describes the TRAINING manifest, so it says nothing about a pool in
     # another fold; skipping a structure from training is not a reason it cannot be scored.
-    skip = ({x.strip() for x in (a.manifest_skip or "").split(",") if x.strip()}
-            if not a.train_eval_fold else set())
-    pool_pdbs = {r["pdb"] for r in _csv2.DictReader(open(a.train_eval_pool))}
+    skip = ({x.strip() for x in (rt.a.manifest_skip or "").split(",") if x.strip()}
+            if not rt.a.train_eval_fold else set())
+    pool_pdbs = {r["pdb"] for r in _csv2.DictReader(open(rt.a.train_eval_pool))}
     bad = sorted(pool_pdbs & skip)
     if bad:
         raise SystemExit(f"STOP: --train-eval-pool names {bad}, which --manifest-skip excludes "
@@ -237,7 +240,7 @@ def _check_eval_pool():
                          f"trunk directory, e.g. {notrunk[:4]}.")
     print(f"train-eval pool: {len(pool_pdbs)} structure(s), all present, none skipped")
 
-def _pae_mask_coverage(units):
+def _pae_mask_coverage(rt, units):
     """Every structure this run trains on must be named by the pool, checked BEFORE training.
 
     The running guard below only fires while NOTHING has been masked yet, so once a single
@@ -247,25 +250,25 @@ def _pae_mask_coverage(units):
     the pool is a manifest/pool mismatch, which is a setup error, and it is cheap to find here
     rather than impossible to notice later.
     """
-    if not _scored_asym:
+    if not rt._scored_asym:
         return
     want = sorted({t[0] for t in units})
-    gone = [p for p in want if not _scored_asym.get(p)]
+    gone = [p for p in want if not rt._scored_asym.get(p)]
     if not gone:
         print(f"  PAE mask: all {len(want)} training structure(s) are named by "
-              f"{a.pae_scored_pairs}")
+              f"{rt.a.pae_scored_pairs}")
         return
-    if not a.allow_unmasked_fallback:
+    if not rt.a.allow_unmasked_fallback:
         raise SystemExit(
             f"STOP: {len(gone)} of {len(want)} training structure(s) are NOT in "
-            f"{a.pae_scored_pairs}, so their poses would train the UNMASKED PAE term while "
+            f"{rt.a.pae_scored_pairs}, so their poses would train the UNMASKED PAE term while "
             f"this run is labelled masked: {gone[:8]}. Fix the pool, drop them from "
             f"--manifest-selection, or pass --allow-unmasked-fallback to accept it "
             f"deliberately -- it is recorded in args.json either way.")
     print(f"  PAE mask: ACCEPTING UNMASKED FALLBACK for {len(gone)} of {len(want)} "
           f"structure(s) (--allow-unmasked-fallback): {gone[:8]}")
 
-def _pae_mask_check():
+def _pae_mask_check(rt, ):
     """A mask that never fires is a baseline arm wearing the masked arm's label.
 
     Both fallbacks below are silent by design -- they keep training rather than dying on one
@@ -274,15 +277,15 @@ def _pae_mask_check():
     pool (the validation one, say): the banner reports 92 structures, every training unit then
     misses, and the run trains the unmasked term under the masked arm's name.
     """
-    st = _pae_mask_stats
-    if _scored_asym and st["masked"] == 0 and st["unmasked"] >= 20:
+    st = rt._pae_mask_stats
+    if rt._scored_asym and st["masked"] == 0 and st["unmasked"] >= 20:
         raise SystemExit(
             f"STOP: --pae-scored-pairs matched NO unit in the first {st['unmasked']} seen. "
-            f"The pool names {len(_scored_asym)} structure(s), none of which this run trains "
+            f"The pool names {len(rt._scored_asym)} structure(s), none of which this run trains "
             f"on, so every pose fell back to the UNMASKED PAE term while the run is labelled "
-            f"masked. Check that {a.pae_scored_pairs} covers --manifest-selection.")
+            f"masked. Check that {rt.a.pae_scored_pairs} covers --manifest-selection.")
 
-def _set_pae_mask(pdb, asym, has_frame, unit=None, pairs_override=None):
+def _set_pae_mask(rt, pdb, asym, has_frame, unit=None, pairs_override=None):
     """[N_frame, N_token] over the CROPPED tokens: keep only scored cross-chain entries.
 
     Falls back to no mask -- never to an all-zero one. An empty mask would make PAELoss divide
@@ -295,8 +298,8 @@ def _set_pae_mask(pdb, asym, has_frame, unit=None, pairs_override=None):
     different objects on the same pose. That is objective misalignment, not gradient noise.
     Raised in review. The override is per pose because OST's answer is.
     """
-    _pae_keep["pdb"], _pae_keep["unit"] = pdb, unit
-    if not _scored_asym and pairs_override is None:
+    rt._pae_keep["pdb"], rt._pae_keep["unit"] = pdb, unit
+    if not rt._scored_asym and pairs_override is None:
         return
     # COUNTED AND REPORTED, because "the override is wired" and "the override CHANGES
     # something" are different claims and only the second matters. Twice today a change to
@@ -305,16 +308,16 @@ def _set_pae_mask(pdb, asym, has_frame, unit=None, pairs_override=None):
     # the identical numbers were the only evidence anything was wrong. So the run says how
     # many poses got an override and on how many it DIFFERED from the static pairs.
     if pairs_override is not None:
-        _ov = _pae_keep.setdefault("ov", {"poses": 0, "differed": 0, "pdbs": set()})
+        _ov = rt._pae_keep.setdefault("ov", {"poses": 0, "differed": 0, "pdbs": set()})
         _ov["poses"] += 1
-        if set(pairs_override) != set(_scored_asym.get(pdb) or ()):
+        if set(pairs_override) != set(rt._scored_asym.get(pdb) or ()):
             _ov["differed"] += 1
             _ov["pdbs"].add(pdb)
-    pairs = pairs_override if pairs_override is not None else _scored_asym.get(pdb)
+    pairs = pairs_override if pairs_override is not None else rt._scored_asym.get(pdb)
     if not pairs:
-        _pae_keep["m"] = None
-        _pae_keep["blocks"] = None
-        _pae_mask_stats["unmasked"] += 1
+        rt._pae_keep["m"] = None
+        rt._pae_keep["blocks"] = None
+        rt._pae_mask_stats["unmasked"] += 1
         _pae_mask_check()
         return
     aa = asym.reshape(-1).long()
@@ -334,16 +337,16 @@ def _set_pae_mask(pdb, asym, has_frame, unit=None, pairs_override=None):
         if bool(blk.any()):
             blocks.append((blk, int(((aa == x) | (aa == y)).sum())))
     if not bool(keep.any()):
-        _pae_keep["m"] = None
-        _pae_keep["blocks"] = None
-        _pae_mask_stats["unmasked"] += 1
+        rt._pae_keep["m"] = None
+        rt._pae_keep["blocks"] = None
+        rt._pae_mask_stats["unmasked"] += 1
         _pae_mask_check()
         return
-    _pae_keep["m"] = keep
-    _pae_keep["blocks"] = blocks
-    _pae_mask_stats["masked"] += 1
+    rt._pae_keep["m"] = keep
+    rt._pae_keep["blocks"] = blocks
+    rt._pae_mask_stats["masked"] += 1
 
-def _head_ckpt_tensors():
+def _head_ckpt_tensors(rt, ):
     """The head checkpoint, ALWAYS in the shipped head's tensor names and shapes.
 
     Under LoRA the wrapper renames `blk.linear.weight` to `blk.linear.base.weight`, so
@@ -352,22 +355,22 @@ def _head_ckpt_tensors():
     makes a LoRA checkpoint indistinguishable from a full-finetune one. Without LoRA this is
     exactly the dict that was saved before.
     """
-    if a.lora_rank:
+    if rt.a.lora_rank:
         import lora as LORA
-        _pfx = prefixes[0]
+        _pfx = rt.prefixes[0]
         return {f"{_pfx}.{k}": v
                 for k, v in LORA.merged_head_tensors(
-                    dict(model.named_modules())[_pfx]).items()}
+                    dict(rt.model.named_modules())[_pfx]).items()}
     # EVERY HEAD TENSOR, NOT JUST THE TRAINABLE ONES. phase_k_eval requires SET EQUALITY
     # between the checkpoint's keys and the model's head parameters -- deliberately, so a
     # checkpoint from a different architecture cannot load with tensors left at their
     # initial values. Under --train-only the trainable set is three tensors, and writing
     # only those would be refused at the first eval. Identical to the old behaviour when the
     # whole head trains, which is every run so far.
-    return {n: pp.detach().cpu() for n, pp in model.named_parameters()
-            if n in _head_names}
+    return {n: pp.detach().cpu() for n, pp in rt.model.named_parameters()
+            if n in rt._head_names}
 
-def _parse_seed_field(txt, who):
+def _parse_seed_field(rt, txt, who):
     """'500000-500014' or '500000,500003' or a mix -> a set of ints."""
     out = set()
     for part in str(txt).replace(";", ",").split(","):
@@ -392,17 +395,17 @@ def _parse_seed_field(txt, who):
                          f"the seeds, but do not declare a structure with no depth")
     return out
 
-def _crop_masks(pdb_, zc_):
+def _crop_masks(rt, pdb_, zc_):
     """(keep_tok, keep_atom) from whichever crop rule is configured. One dispatch, two callers.
 
     A MISSING MASK IS FATAL, never a silent fall-through to the full structure: a run where
     some units were cropped and some were not would still write a complete trajectory and
     name itself after the crop.
     """
-    kt_ = _CROPTOK.get(pdb_)
+    kt_ = rt._CROPTOK.get(pdb_)
     if kt_ is None:
         raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb_}. The file names "
-                         f"{len(_CROPTOK)} structure(s); this manifest needs {pdb_} too. "
+                         f"{len(rt._CROPTOK)} structure(s); this manifest needs {pdb_} too. "
                          f"Rebuild the mask over this pool.")
     a2t_ = np.asarray(zc_["ci_feat_atom_to_token_idx"]).reshape(-1)
     ntok_ = int(np.asarray(zc_["ci_feat_asym_id"]).reshape(-1).shape[0])
@@ -410,7 +413,7 @@ def _crop_masks(pdb_, zc_):
         raise SystemExit(f"STOP: {pdb_}'s mask has {kt_.shape[0]} token(s) but its cached "
                          f"trunk has {ntok_}. The mask was built against a different cache "
                          f"and slicing with it would scramble the structure.")
-    if _TOK_DROP:
+    if rt._TOK_DROP:
         # ONE DRAW PER (STRUCTURE, EPOCH), seeded so it is reproducible and so every rank and
         # the prefetch worker agree without communicating. Per-epoch IS per-step here:
         # build_epoch_cross_seed puts every seed of a structure in a single step.
@@ -419,10 +422,10 @@ def _crop_masks(pdb_, zc_):
         # --rank-cross-seed the ranks hold different SEEDS OF THE SAME STRUCTURE inside one
         # step, so they must agree exactly or those poses are scored on different token sets
         # and the relative loss grades the disagreement. It also has to survive a resume.
-        _sd_bytes = f"{int(a.seed)}|{int(_crop_epoch[0])}|{pdb_}".encode()
+        _sd_bytes = f"{int(rt.a.seed)}|{int(rt._crop_epoch[0])}|{pdb_}".encode()
         _rs = np.random.default_rng(
             int.from_bytes(hashlib.sha256(_sd_bytes).digest()[:8], "big"))
-        _p = np.where(kt_, float(a.token_keep_union), float(a.token_keep_other))
+        _p = np.where(kt_, float(rt.a.token_keep_union), float(rt.a.token_keep_other))
         _keep = _rs.random(kt_.shape[0]) < _p
         # EVERY SUPERVISED PAIR MUST STAY SCOREABLE -- per pair, not "two chains somewhere".
         # ipTM for pair (x, y) pools over token pairs spanning x and y, so if either chain
@@ -432,7 +435,7 @@ def _crop_masks(pdb_, zc_):
         # that any ground-truth CONTACT survives -- the augmentation being tested is precisely
         # that contacts may vanish. Raised in review.
         _asym = np.asarray(zc_["ci_feat_asym_id"]).reshape(-1)
-        _prs = _CROPPAIRS.get(pdb_)
+        _prs = rt._CROPPAIRS.get(pdb_)
         if _prs is None:
             raise SystemExit(
                 f"STOP: --token-keep-* needs the scored pairs for {pdb_}, which this mask "
@@ -461,49 +464,49 @@ def _crop_masks(pdb_, zc_):
                 _missing = _idx_c[~_keep[_idx_c]]
                 _add = _rs.permutation(_missing)[:_floor - _have]
                 _keep[_add] = True
-                _tok_drop_stat["topped"] += 1
-                _tok_drop_stat["topped_tok"] += int(_add.shape[0])
+                rt._tok_drop_stat["topped"] += 1
+                rt._tok_drop_stat["topped_tok"] += int(_add.shape[0])
         if int(_keep.sum()) < 16:
             raise SystemExit(
-                f"STOP: the token draw for {pdb_} at epoch {_crop_epoch[0]} left only "
+                f"STOP: the token draw for {pdb_} at epoch {rt._crop_epoch[0]} left only "
                 f"{int(_keep.sum())} token(s) in total. Raise the keep probabilities.")
-        _tok_drop_stat["kept"] += float(_keep.sum())
-        _tok_drop_stat["tot"] += float(_keep.shape[0])
-        _tok_drop_stat["n"] += 1
+        rt._tok_drop_stat["kept"] += float(_keep.sum())
+        rt._tok_drop_stat["tot"] += float(_keep.shape[0])
+        rt._tok_drop_stat["n"] += 1
         kt_ = _keep
     inr_ = (a2t_ >= 0) & (a2t_ < ntok_)
     ka_ = np.zeros(a2t_.shape[0], dtype=bool)
     ka_[inr_] = kt_[a2t_[inr_]]
     return kt_, ka_
 
-def _tick(key, t0):
-    _T[key] += time.perf_counter() - t0
-    _TN[key] += 1
+def _tick(rt, key, t0):
+    rt._T[key] += time.perf_counter() - t0
+    rt._TN[key] += 1
 
-def _gpu_span(key):
+def _gpu_span(rt, key):
     if not torch.cuda.is_available():
         return None, None
     e0 = torch.cuda.Event(enable_timing=True)
     e1 = torch.cuda.Event(enable_timing=True)
     e0.record()
-    _ev_pending.append((key, e0, e1))
+    rt._ev_pending.append((key, e0, e1))
     return e0, e1
 
-def _drain_gpu_spans():
-    if not _ev_pending:
+def _drain_gpu_spans(rt, ):
+    if not rt._ev_pending:
         return
     torch.cuda.synchronize()
-    for key, e0, e1 in _ev_pending:
-        _T[key] += e0.elapsed_time(e1) / 1000.0
-        _TN[key] += 1
-    _ev_pending.clear()
+    for key, e0, e1 in rt._ev_pending:
+        rt._T[key] += e0.elapsed_time(e1) / 1000.0
+        rt._TN[key] += 1
+    rt._ev_pending.clear()
 
-def _fp_sig(pdb, trunk_p):
+def _fp_sig(rt, pdb, trunk_p):
     out = []
     for path in (trunk_p,
-                 os.path.join(a.mmcif_dir, f"{pdb}.cif"),
-                 os.path.join(a.bio_dir, f"{pdb}.pkl.gz"),
-                 a.indices):
+                 os.path.join(rt.a.mmcif_dir, f"{pdb}.cif"),
+                 os.path.join(rt.a.bio_dir, f"{pdb}.pkl.gz"),
+                 rt.a.indices):
         try:
             st = os.stat(path)
             out.append(f"{st.st_size}:{st.st_mtime_ns}")
@@ -511,7 +514,7 @@ def _fp_sig(pdb, trunk_p):
             out.append("absent")
     return "|".join(out)
 
-def _unit_fp(pdb, trunk_p, memo=None):
+def _unit_fp(rt, pdb, trunk_p, memo=None):
     """The COMPOSED provenance string for (pdb, trunk_p), memoised through its content half.
 
     THE ONE PLACE unit_fingerprint IS CALLED FROM. Both callers -- resolve_trunk's candidate
@@ -530,15 +533,15 @@ def _unit_fp(pdb, trunk_p, memo=None):
     supplied dict for the composed strings, and the content memo stays global because it is
     keyed on file identity and nothing else.
     """
-    memo = _fp_cache if memo is None else memo
+    memo = rt._fp_cache if memo is None else memo
     key = (pdb, trunk_p)
     hit = memo.get(key)
     if hit is not None:
         return hit
-    content = _fp_content.get(key)
+    content = rt._fp_content.get(key)
     if content is None:
         _t0 = time.perf_counter()
-        content = BC.unit_content_fingerprint(a, pdb, trunk_p)
+        content = rt.BC.unit_content_fingerprint(rt.a, pdb, trunk_p)
         # A WORKER'S HASH GOES IN ITS OWN BUCKET, because `fingerprint_hash` is in _EXCL -- the
         # sum that is subtracted from the epoch's wall clock to get the residual. Several
         # warmer threads hashing concurrently with the main thread can put MORE than the
@@ -554,13 +557,13 @@ def _unit_fp(pdb, trunk_p, memo=None):
         # a provenance cache must never be wrong in. Taking it beside the hash makes the pair
         # consistent by construction. (Version 1 had the same pattern; this is a strengthening,
         # not a regression fix.)
-        _fp_sig_at_hash[key] = _fp_sig(pdb, trunk_p)
-        _fp_content[key] = content
-    fp = BC.unit_fingerprint(a, pdb, trunk_p, code_fp, loss_fp, content=content)
+        rt._fp_sig_at_hash[key] = _fp_sig(pdb, trunk_p)
+        rt._fp_content[key] = content
+    fp = rt.BC.unit_fingerprint(rt.a, pdb, trunk_p, rt.code_fp, rt.loss_fp, content=content)
     memo[key] = fp
     return fp
 
-def _fp_cache_load(label="startup"):
+def _fp_cache_load(rt, label="startup"):
     """Adopt every rank's CONTENT fingerprints whose stat signature still holds.
 
     CALLED AT EVERY EPOCH BOUNDARY, NOT ONLY AT STARTUP, so the three ranks pool their work.
@@ -573,7 +576,7 @@ def _fp_cache_load(label="startup"):
     before the signature is even looked at, so an adopted entry only ever fills a hole.
     """
     kept = dropped = 0
-    for fp_path in sorted(glob.glob(os.path.join(roots[0], "unit_fingerprints.r*.json"))):
+    for fp_path in sorted(glob.glob(os.path.join(rt.roots[0], "unit_fingerprints.r*.json"))):
         try:
             blob = json.load(open(fp_path))
         except (OSError, ValueError):
@@ -582,18 +585,18 @@ def _fp_cache_load(label="startup"):
         # under the key "fp" and there is no way to recover the content half from one, since
         # the prefix it was composed with is whatever that process held. code_fp and loss_fp
         # are NOT checked -- that was the bug, see the block comment above.
-        if blob.get("ver") != _FP_CACHE_VER:
+        if blob.get("ver") != rt._FP_CACHE_VER:
             dropped += len(blob.get("entries", {}))
             continue
         for key, ent in blob.get("entries", {}).items():
             pdb, _, tp = key.partition("\t")
-            if not tp or (pdb, tp) in _fp_content:
+            if not tp or (pdb, tp) in rt._fp_content:
                 continue
             if ent.get("content") and ent.get("sig") == _fp_sig(pdb, tp):
-                _fp_content[(pdb, tp)] = ent["content"]
+                rt._fp_content[(pdb, tp)] = ent["content"]
                 # THE SIGNATURE JUST VERIFIED, carried forward so a later save re-writes what
                 # was actually checked rather than re-statting at the boundary.
-                _fp_sig_at_hash[(pdb, tp)] = ent["sig"]
+                rt._fp_sig_at_hash[(pdb, tp)] = ent["sig"]
                 kept += 1
             else:
                 dropped += 1
@@ -602,15 +605,15 @@ def _fp_cache_load(label="startup"):
     # rest of the run -- and one such line per epoch per rank is noise, not information.
     if kept or (dropped and label == "startup"):
         print(f"fingerprint cache ({label}): {kept} content entry(ies) reused from "
-              f"{roots[0]}, {dropped} invalidated by a changed input or an older cache "
+              f"{rt.roots[0]}, {dropped} invalidated by a changed input or an older cache "
               f"version", flush=True)
     return kept
 
-def _fp_cache_save():
+def _fp_cache_save(rt, ):
     """Atomic, and only ever ADDS to what this rank already had on disk."""
     try:
-        prev = json.load(open(_fp_disk))
-        entries = prev.get("entries", {}) if prev.get("ver") == _FP_CACHE_VER else {}
+        prev = json.load(open(rt._fp_disk))
+        entries = prev.get("entries", {}) if prev.get("ver") == rt._FP_CACHE_VER else {}
     except (OSError, ValueError):
         entries = {}
     # list(), BECAUSE A WARMER THREAD CAN STILL BE WRITING IT. _tr_worker calls resolve_trunk,
@@ -618,21 +621,21 @@ def _fp_cache_save():
     # "RuntimeError: dictionary changed size during iteration" -- a crash at an epoch boundary,
     # after the epoch's work, which is the worst possible moment. A snapshot costs one list of
     # ~11,040 tuples. The signature comes from the hash, not from a fresh stat; see _unit_fp.
-    for (pdb, tp), content in list(_fp_content.items()):
+    for (pdb, tp), content in list(rt._fp_content.items()):
         entries[f"{pdb}\t{tp}"] = {"content": content,
-                                   "sig": _fp_sig_at_hash.get((pdb, tp)) or _fp_sig(pdb, tp)}
-    tmp = _fp_disk + ".tmp"
+                                   "sig": rt._fp_sig_at_hash.get((pdb, tp)) or _fp_sig(pdb, tp)}
+    tmp = rt._fp_disk + ".tmp"
     try:
         with open(tmp, "w") as fh:
-            json.dump({"ver": _FP_CACHE_VER, "code_fp": code_fp, "loss_fp": loss_fp,
+            json.dump({"ver": rt._FP_CACHE_VER, "code_fp": rt.code_fp, "loss_fp": rt.loss_fp,
                        "entries": entries}, fh)
-        os.replace(tmp, _fp_disk)
+        os.replace(tmp, rt._fp_disk)
     except OSError as e:
         # A CACHE IS NOT WORTH A RUN. Reported and dropped.
-        print(f"  WARNING: could not write {_fp_disk} ({e}); the next process re-hashes",
+        print(f"  WARNING: could not write {rt._fp_disk} ({e}); the next process re-hashes",
               flush=True)
 
-def _cpu_crop(pdb, lab_p, trunk_p):
+def _cpu_crop(rt, pdb, lab_p, trunk_p):
     """The expensive CPU half, with no device in sight. Returns None if no crop is definable.
 
     TIMED IN FOUR STAGES, because this was a black box and every number anyone quoted about it
@@ -655,23 +658,23 @@ def _cpu_crop(pdb, lab_p, trunk_p):
     zc = np.load(trunk_p)
     _tick("cpucrop_trunk", _t)
     _t = time.perf_counter()
-    kt, ka = (_crop_masks(pdb, zc) if a.crop_tokens
-              else BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin,
-                                            all_poses=a.crop_all_poses))
+    kt, ka = (_crop_masks(pdb, zc) if rt.a.crop_tokens
+              else rt.BC.interface_crop_tokens(zc, lab_l, rt.a.crop_contact, rt.a.crop_margin,
+                                            all_poses=rt.a.crop_all_poses))
     _tick("cpucrop_tokens", _t)
     if kt is None:
         return ("nocrop", None, None)
     _t = time.perf_counter()
-    sl = BC.slice_cached_unit(zc, lab_l, kt, ka, torch.device("cpu"), torch)
+    sl = rt.BC.slice_cached_unit(zc, lab_l, kt, ka, torch.device("cpu"), torch)
     _tick("cpucrop_slice", _t)
     return ("ok", kt, sl)
 
-def _pf_worker(units):
+def _pf_worker(rt, units):
     # ROUND-ROBIN SLICES, so worker w takes units[w::W] and the queue is fed in roughly the
     # order the main loop consumes. Roughly, not exactly: with W workers the arrival order
     # can run ahead by up to W units, which is what _pf_pending absorbs.
     for _k, t in enumerate(units):
-        if _pf_stop.is_set():
+        if rt._pf_stop.is_set():
             break
         pdb_, lab_p_, cands_ = t
         try:
@@ -697,14 +700,14 @@ def _pf_worker(units):
             # and the main thread redoes that unit inline, where the real error surfaces with
             # its own diagnostics. A prefetcher that can crash training is worse than none.
             res = ("error", type(e).__name__, str(e)[:120])
-        while not _pf_stop.is_set():
+        while not rt._pf_stop.is_set():
             try:
                 _pf_q.put((lab_p_, res), timeout=1.0)
                 break
             except queue.Full:
                 continue
 
-def _pf_take(lab_p, budget_s=120.0):
+def _pf_take(rt, lab_p, budget_s=120.0):
     """The prefetched result for this unit, WAITING for the worker if it is not ready yet.
 
     IT MUST BLOCK, AND get_nowait() IS WHY THE FIRST VERSION DID NOTHING. Measured on the
@@ -733,16 +736,16 @@ def _pf_take(lab_p, budget_s=120.0):
     IN ORDER, WITH A SMALL HOLDING BUFFER. Results that arrive early are held by lab_p rather
     than discarded.
     """
-    if lab_p in _pf_pending:
-        _pf_stat["hit"] += 1
-        return _pf_pending.pop(lab_p)
+    if lab_p in rt._pf_pending:
+        rt._pf_stat["hit"] += 1
+        return rt._pf_pending.pop(lab_p)
     if _pf_q is None:
         return None
     # ALREADY DELIVERED AND EVICTED: it will never arrive again, so do not wait for it.
-    if lab_p in _pf_dropped:
-        _pf_dropped.discard(lab_p)
-        _pf_stat["dropped"] += 1
-        _pf_stat["miss"] += 1
+    if lab_p in rt._pf_dropped:
+        rt._pf_dropped.discard(lab_p)
+        rt._pf_stat["dropped"] += 1
+        rt._pf_stat["miss"] += 1
         return None
     _t_w = time.perf_counter()
     deadline = _t_w + budget_s
@@ -754,36 +757,36 @@ def _pf_take(lab_p, budget_s=120.0):
         if (_pf_thread is not None
                 and not any(_t.is_alive() for _t in _pf_thread)
                 and _pf_q.empty()):
-            _pf_stat["exhausted"] += 1
-            _pf_stat["miss"] += 1
-            _pf_stat["wait_s"] += time.perf_counter() - _t_w
+            rt._pf_stat["exhausted"] += 1
+            rt._pf_stat["miss"] += 1
+            rt._pf_stat["wait_s"] += time.perf_counter() - _t_w
             return None
         try:
             k, v = _pf_q.get(timeout=max(0.05, deadline - time.perf_counter()))
         except (queue.Empty, AttributeError):
-            _pf_stat["miss"] += 1
-            _pf_stat["wait_s"] += time.perf_counter() - _t_w
+            rt._pf_stat["miss"] += 1
+            rt._pf_stat["wait_s"] += time.perf_counter() - _t_w
             return None
         if k == lab_p:
-            _pf_stat["hit"] += 1
-            _pf_stat["wait_s"] += time.perf_counter() - _t_w
+            rt._pf_stat["hit"] += 1
+            rt._pf_stat["wait_s"] += time.perf_counter() - _t_w
             return v
-        _pf_pending[k] = v
+        rt._pf_pending[k] = v
         # SIZED FOR THE WORKERS, not a flat 8. W workers racing can deliver up to ~W units
         # ahead of the one wanted, and evicting a result that has not been consumed yet
         # turns into a miss and an inline recrop -- the very work the prefetch exists to
         # avoid. Each held slice is ~30 MB, so this is tens of MB per rank.
-        if len(_pf_pending) > max(16, 8 * max(1, a.prefetch_workers)):
+        if len(rt._pf_pending) > max(16, 8 * max(1, rt.a.prefetch_workers)):
             # RECORD IT. Dropping silently is what turned one eviction into a cascade of
             # full-budget waits; the set is units, not slices, so it costs nothing.
-            _dk = next(iter(_pf_pending))
-            _pf_pending.pop(_dk)
-            _pf_dropped.add(_dk)
+            _dk = next(iter(rt._pf_pending))
+            rt._pf_pending.pop(_dk)
+            rt._pf_dropped.add(_dk)
 
-def _pf_start(units):
+def _pf_start(rt, units):
     global _pf_q, _pf_thread
-    _pf_started[0] = False
-    if not a.prefetch_units:
+    rt._pf_started[0] = False
+    if not rt.a.prefetch_units:
         return
     # NOT ON AN UNCROPPED ARM, where every result is thrown away. _pf_take is reached only
     # inside `if a.crop_margin > 0 or a.crop_tokens`, so with the crop off these workers ran a
@@ -793,25 +796,25 @@ def _pf_start(units):
     # The default arm passes --prefetch-units 2 --prefetch-workers 4, so that is 8 wasted
     # crops and 8 retained slices on every uncropped run to date. The uncropped path has its
     # own warmer (_tr_step_start) and does not use this queue.
-    if not (a.crop_margin > 0 or a.crop_tokens):
+    if not (rt.a.crop_margin > 0 or rt.a.crop_tokens):
         return
-    _pf_stop.clear(); _pf_pending.clear(); _pf_dropped.clear()
-    _pf_stat.update(hit=0, miss=0, wait_s=0.0, dropped=0, exhausted=0)
-    _w = max(1, a.prefetch_workers)
+    rt._pf_stop.clear(); rt._pf_pending.clear(); rt._pf_dropped.clear()
+    rt._pf_stat.update(hit=0, miss=0, wait_s=0.0, dropped=0, exhausted=0)
+    _w = max(1, rt.a.prefetch_workers)
     # DEEP ENOUGH FOR EVERY WORKER TO BE IN FLIGHT. At maxsize 1 with W workers, W-1 of them
     # block on put() and the extra threads buy nothing.
-    _pf_q = queue.Queue(maxsize=max(1, a.prefetch_units) * _w)
+    _pf_q = queue.Queue(maxsize=max(1, rt.a.prefetch_units) * _w)
     _pf_thread = [threading.Thread(target=_pf_worker, args=(units[i::_w],), daemon=True)
                   for i in range(_w)]
     for _t in _pf_thread:
         _t.start()
-    _pf_started[0] = True
+    rt._pf_started[0] = True
 
-def _pf_end():
+def _pf_end(rt, ):
     global _pf_q, _pf_thread
     if _pf_thread is None:
         return
-    _pf_stop.set()
+    rt._pf_stop.set()
     for _t in _pf_thread:
         # DRAIN BETWEEN JOINS, not once before them. A worker blocked on a full put() never
         # sees the stop flag, so draining once and then joining W threads deadlocks on the
@@ -822,19 +825,19 @@ def _pf_end():
             except queue.Empty:
                 break
         _t.join(timeout=30)
-    _pf_thread = None; _pf_q = None; _pf_pending.clear(); _pf_dropped.clear()
+    _pf_thread = None; _pf_q = None; rt._pf_pending.clear(); rt._pf_dropped.clear()
 
-def _to_dev(x):
+def _to_dev(rt, x):
     """Move a slice_cached_unit payload onto the device, structure preserved."""
     if torch.is_tensor(x):
-        return x.to(dev, non_blocking=True)
+        return x.to(rt.dev, non_blocking=True)
     if isinstance(x, dict):
         return {k: _to_dev(v) for k, v in x.items()}
     if isinstance(x, (list, tuple)):
         return type(x)(_to_dev(v) for v in x)
     return x
 
-def _prefetch(path):
+def _prefetch(rt, path):
     """Ask the kernel to read a trunk ahead, so its I/O overlaps the current unit's compute.
 
     posix_fadvise(WILLNEED) rather than a thread and a queue: it is one syscall, it cannot
@@ -860,41 +863,41 @@ def _prefetch(path):
     finally:
         os.close(fd)
 
-def _tr_get(trunk_p):
+def _tr_get(rt, trunk_p):
     """The cached host arrays for this trunk, or None. LOOKS UP, NEVER POPS, NEVER BLOCKS."""
-    if not _tr_on:
+    if not rt._tr_on:
         return None
-    with _tr_lock:
-        hit = _tr_cache.get(trunk_p)
-        _tr_stat["hit" if hit is not None else "miss"] += 1
+    with rt._tr_lock:
+        hit = rt._tr_cache.get(trunk_p)
+        rt._tr_stat["hit" if hit is not None else "miss"] += 1
     return hit
 
-def _tr_put(trunk_p, host, gen=None):
+def _tr_put(rt, trunk_p, host, gen=None):
     """Offer host arrays to the cache. Refused when full, which costs only the saving.
 
     `gen` is the warmer's generation; a put from a step that is over is dropped rather than
     charged to the current step's cap.
     """
-    if not _tr_on or host is None:
+    if not rt._tr_on or host is None:
         return
     nb = sum(int(v.nbytes) for v in host.values() if hasattr(v, "nbytes"))
-    with _tr_lock:
-        if gen is not None and gen != _tr_gen[0]:
+    with rt._tr_lock:
+        if gen is not None and gen != rt._tr_gen[0]:
             return
-        if trunk_p in _tr_cache:
+        if trunk_p in rt._tr_cache:
             return
         # THIS PATH'S OWN RESERVATION IS DISCOUNTED, because the bytes it reserved before the
         # read are the very bytes it is now offering -- charging both would refuse a put that
         # the reservation had already made room for.
-        _mine = _tr_inflight.get(trunk_p, 0)
-        if _tr_bytes[0] + (_tr_resv[0] - _mine) + nb > _tr_cap:
-            _tr_stat["full"] += 1
+        _mine = rt._tr_inflight.get(trunk_p, 0)
+        if rt._tr_bytes[0] + (rt._tr_resv[0] - _mine) + nb > rt._tr_cap:
+            rt._tr_stat["full"] += 1
             return
-        _tr_cache[trunk_p] = host
-        _tr_bytes[0] += nb
-        _tr_stat["put"] += 1
+        rt._tr_cache[trunk_p] = host
+        rt._tr_bytes[0] += nb
+        rt._tr_stat["put"] += 1
 
-def _tr_worker(units, gen):
+def _tr_worker(rt, units, gen):
     """Materialise a step's trunks into the cache. NO TORCH, NO CUDA, NO EXCEPTION ESCAPES.
 
     RESOLVES THE TRUNK ITSELF, in the thread, exactly as _pf_worker does -- resolve_trunk
@@ -911,7 +914,7 @@ def _tr_worker(units, gen):
     again inside _tr_put. A warmer whose step is over does no read and caches nothing.
     """
     for _t in units:
-        if gen != _tr_gen[0]:
+        if gen != rt._tr_gen[0]:
             return
         tp = None
         try:
@@ -923,68 +926,68 @@ def _tr_worker(units, gen):
             # faithful proxy for the host dict's bytes, since every member is stored
             # uncompressed at the dtype it is read back as.
             _sz = os.path.getsize(tp)
-            with _tr_lock:
-                if gen != _tr_gen[0]:
+            with rt._tr_lock:
+                if gen != rt._tr_gen[0]:
                     return
                 # ADMITTED PLUS ALREADY-RESERVED, which is the whole point of the fix. With
                 # only _tr_bytes[0] here, every concurrent warmer saw the same pre-read total.
-                if (tp in _tr_cache or tp in _tr_inflight
-                        or _tr_bytes[0] + _tr_resv[0] + _sz > _tr_cap):
-                    _tr_stat["dup"] += 1
+                if (tp in rt._tr_cache or tp in rt._tr_inflight
+                        or rt._tr_bytes[0] + rt._tr_resv[0] + _sz > rt._tr_cap):
+                    rt._tr_stat["dup"] += 1
                     continue
-                _tr_inflight[tp] = _sz
-                _tr_resv[0] += _sz
+                rt._tr_inflight[tp] = _sz
+                rt._tr_resv[0] += _sz
             try:
-                _tr_put(tp, RC.read_unit_host(tp), gen=gen)
+                _tr_put(tp, rt.RC.read_unit_host(tp), gen=gen)
             finally:
-                with _tr_lock:
-                    _tr_resv[0] -= _tr_inflight.pop(tp, 0)
+                with rt._tr_lock:
+                    rt._tr_resv[0] -= rt._tr_inflight.pop(tp, 0)
         except BaseException:          # noqa: BLE001 -- see the docstring
             # INSIDE THE LOCK, because `+=` on a dict entry is not atomic and several warmers
             # reach this. The same reason `dup` is counted under the lock above.
-            with _tr_lock:
-                _tr_stat["err"] += 1
+            with rt._tr_lock:
+                rt._tr_stat["err"] += 1
                 if tp is not None:
                     # BOTH, OR THE CAP LEAKS. An exception between the reservation and the
                     # `finally` -- resolve_trunk raising, a read error -- would otherwise leave
                     # the bytes reserved forever and the cache would refuse everything after a
                     # few failures.
-                    _tr_resv[0] -= _tr_inflight.pop(tp, 0)
+                    rt._tr_resv[0] -= rt._tr_inflight.pop(tp, 0)
 
-def _tr_reset():
+def _tr_reset(rt, ):
     """Retire the current generation and drop its arrays. One lock, no joins."""
-    with _tr_lock:
-        _tr_gen[0] += 1
-        _tr_cache.clear()
+    with rt._tr_lock:
+        rt._tr_gen[0] += 1
+        rt._tr_cache.clear()
         # THE RESERVATION IS NOT CLEARED HERE, only the admitted bytes. A warmer from the
         # retired generation may still be inside its read; its `finally` will pop its own entry
         # and decrement, and clearing the dict underneath it would make that pop a no-op and
         # leave _tr_resv permanently above zero. The generation check stops NEW reservations,
         # which is what retiring a step needs to do.
-        _tr_bytes[0] = 0
-        return _tr_gen[0]
+        rt._tr_bytes[0] = 0
+        return rt._tr_gen[0]
 
-def _tr_step_start(step_units):
+def _tr_step_start(rt, step_units):
     """Drop the previous step's arrays and start warming this step's. Called per step."""
-    if not _tr_on:
+    if not rt._tr_on:
         return
     gen = _tr_reset()
-    _w = max(1, min(a.prefetch_workers, len(step_units)))
+    _w = max(1, min(rt.a.prefetch_workers, len(step_units)))
     # EVERY GENERATION'S THREADS ARE TRACKED, not just the latest. _tr_threads[0] was
     # OVERWRITTEN here each step, so a warmer from an earlier generation became unreachable and
     # _tr_end could never join it -- it could outlive the epoch boundary and run while
     # _fp_cache_save iterated shared state. Retired threads are reaped first so the list cannot
     # grow across 231 steps.
-    _tr_live[:] = [t for t in _tr_live if t.is_alive()]
-    _tr_threads[0] = [threading.Thread(target=_tr_worker, args=(step_units[i::_w], gen),
+    rt._tr_live[:] = [t for t in rt._tr_live if t.is_alive()]
+    rt._tr_threads[0] = [threading.Thread(target=_tr_worker, args=(step_units[i::_w], gen),
                                        daemon=True) for i in range(_w)]
-    for _t in _tr_threads[0]:
+    for _t in rt._tr_threads[0]:
         _t.start()
     # REGISTERED AFTER START, so _tr_end can join this generation even once _tr_threads[0]
     # has been replaced by the next step's.
-    _tr_live.extend(_tr_threads[0])
+    rt._tr_live.extend(rt._tr_threads[0])
 
-def _tr_end():
+def _tr_end(rt, ):
     """At the EPOCH boundary: retire, then join, so nothing races _fp_cache_save.
 
     THE RESET IS UNCONDITIONAL, NOT GATED ON THERE BEING THREADS. Returning early when
@@ -999,9 +1002,9 @@ def _tr_end():
     # joining the concatenation gave every current thread two 30 s windows and doubled the
     # worst-case boundary stall to 30 s x 2 x prefetch_workers. Threads are hashable, and
     # dict.fromkeys keeps the order.
-    for _t in dict.fromkeys(list(_tr_live) + list(_tr_threads[0] or ())):
+    for _t in dict.fromkeys(list(rt._tr_live) + list(rt._tr_threads[0] or ())):
         _t.join(timeout=30)
-    _still = [t for t in _tr_live if t.is_alive()]
+    _still = [t for t in rt._tr_live if t.is_alive()]
     if _still:
         print(f"  trunk warmer: {len(_still)} thread(s) still alive after a 30s join; their "
               f"generation is retired so they cannot reach the cache, but they are reading.",
@@ -1009,14 +1012,14 @@ def _tr_end():
     # A STRAGGLER STAYS REGISTERED. Clearing the list outright dropped the only reference to
     # a thread that outlived its join, so it was never joined again and the next boundary
     # could not wait for it either. _tr_start already reaps the ones that have since died.
-    _tr_live[:] = _still
-    _tr_threads[0] = None
+    rt._tr_live[:] = _still
+    rt._tr_threads[0] = None
 
-def resolve_trunk(pdb, lab_p, cands, want_fp_cache=None):
+def resolve_trunk(rt, pdb, lab_p, cands, want_fp_cache=None):
     _ck = (pdb, lab_p)
-    if _ck in _trunk_choice:
-        return _trunk_choice[_ck]
-    want_fp_cache = _fp_cache if want_fp_cache is None else want_fp_cache
+    if _ck in rt._trunk_choice:
+        return rt._trunk_choice[_ck]
+    want_fp_cache = rt._fp_cache if want_fp_cache is None else want_fp_cache
     """Pick the trunk whose PROVENANCE matches this label, not the first filename that exists.
 
     THE FIRST MATCHING FILENAME IS NOT THE RIGHT TRUNK. The multi-root lookup took it, so a
@@ -1034,7 +1037,7 @@ def resolve_trunk(pdb, lab_p, cands, want_fp_cache=None):
         if _unit_fp(pdb, tp, memo=want_fp_cache) == stored:
             ok.append(tp)
     if len(ok) == 1:
-        _trunk_choice[_ck] = ok[0]
+        rt._trunk_choice[_ck] = ok[0]
         return ok[0]
     if not ok:
         # WHICH FIELD DIFFERS IS THE ACTIONABLE PART. "stale" with no detail cannot be acted on,
@@ -1049,14 +1052,14 @@ def resolve_trunk(pdb, lab_p, cands, want_fp_cache=None):
         want_f = fields(_unit_fp(pdb, cands[0], memo=want_fp_cache))
         got_f = fields(stored)
         diff = sorted(k for k in set(want_f) | set(got_f) if want_f.get(k) != got_f.get(k))
-        if diff == ["code"] and a.allow_code_drift:
-            if not code_drift["warned"]:
+        if diff == ["code"] and rt.a.allow_code_drift:
+            if not rt.code_drift["warned"]:
                 print(f"  ACCEPTING CODE DRIFT (--allow-code-drift): labels were built by "
                       f"code={got_f.get('code')}, this run is code={want_f.get('code')}. Every "
                       f"data field matches -- cif, bio, idx, trunk, loss, schema -- so the "
                       f"labels are correct but not reproducible from this checkout.")
-                code_drift["warned"] = True
-            code_drift["n"] += 1
+                rt.code_drift["warned"] = True
+            rt.code_drift["n"] += 1
             return cands[0]
         raise SystemExit(
             f"STOP: {lab_p} does not match its inputs. No trunk among {cands} reproduces its "
@@ -1068,7 +1071,7 @@ def resolve_trunk(pdb, lab_p, cands, want_fp_cache=None):
     raise SystemExit(f"STOP: {len(ok)} trunks match {lab_p}'s fingerprint: {ok}. Ambiguous "
                      f"provenance is refused rather than resolved arbitrarily.")
 
-def _xs_prepare(step_units, ep):
+def _xs_prepare(rt, step_units, ep):
     """PASS A for one optimiser step: score every pose, share the scalars, build dL/ds.
 
     Fills _xs_coef for exactly the poses of `step_units` across ALL ranks, and sets _xs_div to
@@ -1094,9 +1097,9 @@ def _xs_prepare(step_units, ep):
     otherwise advance the generator and pass B would evaluate a different function than the one
     the coefficients describe.
     """
-    _xs_coef.clear()
-    _xs_div[0] = 1
-    if not (a.rank_cross_seed and a.rank_loss) or a.loss_only:
+    rt._xs_coef.clear()
+    rt._xs_div[0] = 1
+    if not (rt.a.rank_cross_seed and rt.a.rank_loss) or rt.a.loss_only:
         return
     import rank_loss as RKL
     _rng_cpu = torch.get_rng_state()
@@ -1110,7 +1113,7 @@ def _xs_prepare(step_units, ep):
         for _pdb, _lab, _cands in step_units:
             _tp = resolve_trunk(_pdb, _lab, _cands)
             _sd = _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1]
-            for _m in run_unit(_pdb, _lab, _tp, score_only=True):
+            for _m in rt.run_unit(_pdb, _lab, _tp, score_only=True):
                 local_samp[(_pdb, _sd, int(_m["pose"]))] = int(_m["sample"])
                 for _pair, _v in _m["iptm"].items():
                     local[(_pdb, _sd, int(_m["pose"]), _pair)] = float(_v)
@@ -1134,18 +1137,18 @@ def _xs_prepare(step_units, ep):
     # ASSERTED PER RANK, BEFORE THE GATHER. Every rank verifies its own units, so the merged
     # set is complete by construction -- there is no need to know the other ranks' units here.
     # Found by review of f01dec8a.
-    if a.rank_form == "rel":
+    if rt.a.rank_form == "rel":
         # EXPECTED KEYS ARE (pdb, seed, pose, IFACE) for rel, because that is what pass A
         # emits. Built from the pool's interface names, which every pose must score.
         _exp = {(_pdb, _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1], _i, _ifc)
                 for _pdb, _lab, _cands in step_units
-                for _ifc in (_rel_ifaces.get(_pdb) or ())
-                for _i in range(a.nsample)}
+                for _ifc in (rt._rel_ifaces.get(_pdb) or ())
+                for _i in range(rt.a.nsample)}
     else:
         _exp = {(_pdb, _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1], _i, _pair)
                 for _pdb, _lab, _cands in step_units
-                for _pair in (_scored_asym.get(_pdb) or ())
-                for _i in range(a.nsample)}
+                for _pair in (rt._scored_asym.get(_pdb) or ())
+                for _i in range(rt.a.nsample)}
     _got = set(local)
     if _exp != _got:
         _missing = sorted(_exp - _got)[:6]
@@ -1171,14 +1174,14 @@ def _xs_prepare(step_units, ep):
     # pickling is irrelevant next to a 205 MB trunk read. All ranks then compute the SAME
     # coefficients from the SAME inputs, and each applies only its own poses -- so the
     # cross-rank gradient sum reconstructs one group contribution, not `world` of them.
-    if world > 1:
+    if rt.world > 1:
         _t_g = time.perf_counter()
-        _bag = [None] * world
-        dist.all_gather_object(_bag, local)
+        _bag = [None] * rt.world
+        rt.dist.all_gather_object(_bag, local)
         # THE PERMUTATION IS GATHERED TOO. Without it a rank would hold scores for another
         # rank's poses and no way to key their labels, and the group would silently shrink.
-        _bag_s = [None] * world
-        dist.all_gather_object(_bag_s, local_samp)
+        _bag_s = [None] * rt.world
+        rt.dist.all_gather_object(_bag_s, local_samp)
         _tick("rank_gather", _t_g)
         allsc, allsamp = {}, {}
         for _d in _bag:
@@ -1197,7 +1200,7 @@ def _xs_prepare(step_units, ep):
     n_groups = 0
     for (_pdb, _pair), s_by in groups.items():
         dq_by = {}
-        if a.rank_form == "rel":
+        if rt.a.rank_form == "rel":
             # THE LABEL IS THE TRUE iTM, NOT DockQ. Keyed (seed, sample) to match s_by.
             _gl = _rel_labels(_pdb)
             for (_sd, _i) in s_by:
@@ -1215,10 +1218,10 @@ def _xs_prepare(step_units, ep):
                     dq_by[(_sd, _i)] = float(_g)
         else:
             for (_sd, _i) in s_by:
-                _lab = _rank_lab.get(_rank_key(_pdb, _sd, _pair))
+                _lab = rt._rank_lab.get(_rank_key(_pdb, _sd, _pair))
                 if _lab is not None and _i in _lab:
                     dq_by[(_sd, _i)] = float(_lab[_i])
-        if a.rank_form == "rel" and len(dq_by) != len(s_by):
+        if rt.a.rank_form == "rel" and len(dq_by) != len(s_by):
             # EXACT COVERAGE REQUIRED. The completeness guard elsewhere validates DockQ
             # labels, not this cache, so a partially covered group would quietly train on
             # fewer poses than it scored -- and a group centred on a SUBSET has a different
@@ -1230,20 +1233,20 @@ def _xs_prepare(step_units, ep):
                 f"cache with run_logging/build_itm_labels.py and check its manifest covers "
                 f"this manifest-selection.")
         if len(dq_by) < 2:
-            _rel_stat["short_groups"] += 1
+            rt._rel_stat["short_groups"] += 1
             continue
         # THE FORM IS PASSED THROUGH, NOT RE-DERIVED. This read
         #     form=("softplus" if a.rank_form == "softplus" else "linear")
         # which sent any third form to the LINEAR loss while every log line and the saved
         # guard still said otherwise -- a run that looks right and is the wrong experiment.
         # rank_loss.group_coeffs raises on an unknown form, so a typo fails loudly instead.
-        if a.rank_form == "rel":
+        if rt.a.rank_form == "rel":
             # NOT group_coeffs. rel is a regression, not a pairwise family, so none of the
             # pairwise knobs apply and passing them would make flags look honoured.
             c, npair, lval = RKL.rel_coeffs(s_by, dq_by,
-                                            standardize=a.rel_standardize)
-            _rel_stat["groups"] += 1
-            _rel_stat["poses"] += npair
+                                            standardize=rt.a.rel_standardize)
+            rt._rel_stat["groups"] += 1
+            rt._rel_stat["poses"] += npair
             # DIAGNOSTIC 1: WITHIN-INTERFACE SPEARMAN of the predicted mean-pooled ipTM
             # against DockQ -- the arm's actual prediction. The head measured +0.317 at
             # d32kqp epoch 66 against +0.690 for the TRUE iTM, and this is the quantity that
@@ -1259,73 +1262,73 @@ def _xs_prepare(step_units, ep):
             _ks = sorted(s_by)
             _sv = [float(s_by[_k2]) for _k2 in _ks]
             _gv = [float(dq_by[_k2]) for _k2 in _ks if _k2 in dq_by]
-            _dk = _rel_dqkey.get(_pair)
+            _dk = rt._rel_dqkey.get(_pair)
             _dv = []
             if _dk is not None:
                 for (_sd2, _i2) in _ks:
-                    _lab2 = _rank_lab.get(_rank_key(_pdb, _sd2, _dk))
+                    _lab2 = rt._rank_lab.get(_rank_key(_pdb, _sd2, _dk))
                     _sx2 = allsamp.get((_pdb, _sd2, int(_i2)))
                     if _lab2 is not None and _sx2 is not None and _sx2 in _lab2:
                         _dv.append(float(_lab2[_sx2]))
             if len(_dv) == len(_sv) and len(_sv) >= 3:
                 _rho = _spearman(_sv, _dv)
                 if _rho is not None:
-                    _rel_stat.setdefault("rho", []).append(_rho)
+                    rt._rel_stat.setdefault("rho", []).append(_rho)
             if len(_gv) == len(_sv) and len(_sv) >= 3:
                 _ms = sum(_sv) / len(_sv)
                 _mg = sum(_gv) / len(_gv)
                 _ss = (sum((v - _ms) ** 2 for v in _sv) / len(_sv)) ** 0.5
                 _sg = (sum((v - _mg) ** 2 for v in _gv) / len(_gv)) ** 0.5
-                _rel_stat.setdefault("sd_s", []).append(_ss)
-                _rel_stat.setdefault("sd_g", []).append(_sg)
+                rt._rel_stat.setdefault("sd_s", []).append(_ss)
+                rt._rel_stat.setdefault("sd_g", []).append(_sg)
                 if _sg > 1e-9:
-                    _rel_stat.setdefault("sd_ratio", []).append(_ss / _sg)
+                    rt._rel_stat.setdefault("sd_ratio", []).append(_ss / _sg)
             if npair:
-                _rel_stat["csum"] = max(_rel_stat["csum"],
+                rt._rel_stat["csum"] = max(rt._rel_stat["csum"],
                                         abs(sum(c.values())))
         else:
             c, npair, lval = RKL.group_coeffs(
              s_by, dq_by,
-             form=a.rank_form,
+             form=rt.a.rank_form,
             # THE DEFAULT DEPENDS ON THE FORM. DEFAULT_TAU is a margin scale in ipTM units;
             # the expected form's tau is a softmax temperature. Falling back to 0.0305 for
             # the expected form would be a sharper selection than the 0.05 default intends,
             # with nothing in the log to reveal it.
-            tau=(_rank_tau if _rank_tau is not None else
-                 (RKL.DEFAULT_SOFTMAX_TAU if a.rank_form == "expected" else RKL.DEFAULT_TAU)),
-            weight_by_gap=a.rank_weight_by_gap,
-            pairs=a.rank_pairs,
-            within_weight=a.rank_within_weight,
-            rank_decay_k=a.rank_topk_decay,
-            straddle=a.rank_straddle,
+            tau=(rt._rank_tau if rt._rank_tau is not None else
+                 (RKL.DEFAULT_SOFTMAX_TAU if rt.a.rank_form == "expected" else RKL.DEFAULT_TAU)),
+            weight_by_gap=rt.a.rank_weight_by_gap,
+            pairs=rt.a.rank_pairs,
+            within_weight=rt.a.rank_within_weight,
+            rank_decay_k=rt.a.rank_topk_decay,
+            straddle=rt.a.rank_straddle,
             # GROUP-FORM KNOBS. Ignored by every pairwise form, and the pairwise knobs above
             # are ignored by these two -- which is why the startup guard refuses the
             # combinations rather than letting a flag look honoured.
-            spearman_tau=(a.rank_spearman_tau if a.rank_spearman_tau > 0
+            spearman_tau=(rt.a.rank_spearman_tau if rt.a.rank_spearman_tau > 0
                           else RKL.DEFAULT_SPEARMAN_TAU),
-             dist_weight=a.rank_dist_weight,
-             rel_scale=a.rank_rel_scale)
+             dist_weight=rt.a.rank_dist_weight,
+             rel_scale=rt.a.rank_rel_scale)
         if npair == 0:
             continue
         n_groups += 1
-        _xs_stat["pairs"] += npair
-        _xs_stat["loss"] += lval
+        rt._xs_stat["pairs"] += npair
+        rt._xs_stat["loss"] += lval
         for (_sd, _i), _cv in c.items():
-            _xs_coef[(_pdb, _sd, _i, _pair)] = _cv
-    _xs_div[0] = max(1, n_groups)
+            rt._xs_coef[(_pdb, _sd, _i, _pair)] = _cv
+    rt._xs_div[0] = max(1, n_groups)
     # PER-STEP, not cumulative. Pass A is REPLICATED -- it fills _xs_coef for the poses of
     # step_units across ALL ranks -- so n_groups is identical on every rank and the skip
     # decision below needs no collective and cannot desynchronise them.
-    _xs_stat["last_groups"] = n_groups
-    _xs_stat["groups"] += n_groups
-    _xs_stat["steps"] += 1
+    rt._xs_stat["last_groups"] = n_groups
+    rt._xs_stat["groups"] += n_groups
+    rt._xs_stat["steps"] += 1
 
-def outside_head_grads():
-    return sum(1 for n, p in model.named_parameters()
-               if n not in set(trainable) and p.grad is not None
+def outside_head_grads(rt, ):
+    return sum(1 for n, p in rt.model.named_parameters()
+               if n not in set(rt.trainable) and p.grad is not None
                and bool(p.grad.abs().sum() > 0))
 
-def _grad_probe_report(pr, names, a, step_taken, accum_local, world):
+def _grad_probe_report(rt, pr, names, a, step_taken, accum_local, world):
     """Report, then RAISE on failure. A safety gate that only prints is not a gate.
 
     WHAT IT CHECKS, and why each one exists:
@@ -1376,7 +1379,7 @@ def _grad_probe_report(pr, names, a, step_taken, accum_local, world):
         v = torch.cat(fl)
         if world > 1:
             host = v.cpu()
-            dist.all_reduce(host, op=dist.ReduceOp.SUM)
+            rt.dist.all_reduce(host, op=rt.dist.ReduceOp.SUM)
             v = host.to(v.device)
         vecs[nm] = v
     if world > 1:
@@ -1446,7 +1449,7 @@ def _grad_probe_report(pr, names, a, step_taken, accum_local, world):
             _gl = sum(r[4] for r in pr["rows"])
             _t = torch.tensor([_cl, _gl], dtype=torch.float64)
             if world > 1:
-                dist.all_reduce(_t, op=dist.ReduceOp.SUM)
+                rt.dist.all_reduce(_t, op=rt.dist.ReduceOp.SUM)
             _cl, _gl = float(_t[0]), float(_t[1])
             if _cl > 0:
                 print(f"\n  rank DECOMPOSITION: sum_i |c_i| {_cl:.4e}   "
@@ -1460,7 +1463,7 @@ def _grad_probe_report(pr, names, a, step_taken, accum_local, world):
             loc = sum(r[col] for r in pr["rows"]) if pr["rows"] else 0.0
             tot = torch.tensor([loc], dtype=torch.float64)
             if world > 1:
-                dist.all_reduce(tot, op=dist.ReduceOp.SUM)
+                rt.dist.all_reduce(tot, op=rt.dist.ReduceOp.SUM)
             tot = float(tot[0])
             if vec is None or tot <= 0:
                 continue
@@ -1471,7 +1474,7 @@ def _grad_probe_report(pr, names, a, step_taken, accum_local, world):
             # two different 1/sqrt(N) baselines beside an identical ratio.
             _npt = torch.tensor([float(pr["poses"])], dtype=torch.float64)
             if world > 1:
-                dist.all_reduce(_npt, op=dist.ReduceOp.SUM)
+                rt.dist.all_reduce(_npt, op=rt.dist.ReduceOp.SUM)
             n_poses = int(_npt[0])
             print(f"\n  {nm} ALIGNMENT over {n_poses} pose(s): "
                   f"||sum g_i|| {acc:.4e} / sum ||g_i|| {tot:.4e} = {acc / tot:.4f}"
@@ -1522,7 +1525,7 @@ def _grad_probe_report(pr, names, a, step_taken, accum_local, world):
     absent_r = [n_ for n_ in names if n_ not in nz_r]
     absent_p = [n_ for n_ in names if n_ not in nz_p]
     dead = [n_ for n_ in names if n_ not in nz_r and n_ not in nz_p]
-    _ov = _pae_keep.get("ov")
+    _ov = rt._pae_keep.get("ov")
     if _ov:
         print(f"\n  PAE MASK OVERRIDE (--rank-form rel): applied on {_ov['poses']} pose(s), "
               f"DIFFERED from the static chain_roles pairs on {_ov['differed']} "
@@ -1590,7 +1593,7 @@ def _grad_probe_report(pr, names, a, step_taken, accum_local, world):
              f"--pae-only)." if dead else ""))
     print(f"{bar}\n", flush=True)
 
-def _apply_step(step):
+def _apply_step(rt, step):
     """Clip, assert, step. Returns (grad_norm, n_outside_head, ok).
 
     A FINITE LOSS DOES NOT MEAN FINITE GRADIENTS -- the loss is checked per pose already, and
@@ -1599,7 +1602,7 @@ def _apply_step(step):
     exponential averages and never recover. The gradients are dropped and the run continues,
     counted, rather than the step being taken.
     """
-    if a.loss_only:
+    if rt.a.loss_only:
         # THE WINDOW STILL CLOSES, so the trajectory keeps its step_taken==1 rows and the
         # pose-weighted epoch PAE is computed from them exactly as for a training run. What is
         # skipped is the clip, the all-reduce of gradients that do not exist, and AdamW.
@@ -1622,13 +1625,13 @@ def _apply_step(step):
     # |g_rank| is simply not in force on those steps.
     #
     # Counted, not silent: the epoch summary prints how many steps were skipped this way.
-    if (a.rank_loss and a.rank_cross_seed and not a.alpha_pae
-            and _xs_stat.get("last_groups", 1) == 0):
-        _xs_stat["skipped"] += 1
-        opt.zero_grad(set_to_none=True)
+    if (rt.a.rank_loss and rt.a.rank_cross_seed and not rt.a.alpha_pae
+            and rt._xs_stat.get("last_groups", 1) == 0):
+        rt._xs_stat["skipped"] += 1
+        rt.opt.zero_grad(set_to_none=True)
         return float("nan"), 0, False
-    params = [pp for _n, pp in trainable_params]
-    if world > 1:
+    params = [pp for _n, pp in rt.trainable_params]
+    if rt.world > 1:
         # BEFORE THE CLIP, NOT AFTER. Clipping each rank's partial gradient to norm 1 and then
         # averaging is not the same function as clipping the summed gradient, so the multi-GPU
         # run would not reproduce the single-GPU one. A rank with no gradient for a parameter
@@ -1646,12 +1649,12 @@ def _apply_step(step):
         _drain_gpu_spans()
         _t0 = time.perf_counter()
         flat = torch.cat([pp.grad.reshape(-1) for pp in params])
-        if a.dist_backend == "gloo":
+        if rt.a.dist_backend == "gloo":
             host = flat.cpu()
-            dist.all_reduce(host, op=dist.ReduceOp.SUM)
+            rt.dist.all_reduce(host, op=rt.dist.ReduceOp.SUM)
             flat = host.to(flat.device)
         else:
-            dist.all_reduce(flat, op=dist.ReduceOp.SUM)
+            rt.dist.all_reduce(flat, op=rt.dist.ReduceOp.SUM)
         off = 0
         for pp in params:
             k = pp.grad.numel()
@@ -1666,37 +1669,37 @@ def _apply_step(step):
     # gradient and adding before it would multiply the penalty by the world size; before the
     # clip, because the clip is meant to bound the total gradient actually applied.
     # d/dW [ lambda * ||W - W0||^2 ] = 2 * lambda * (W - W0).
-    if a.l2_sp and _l2sp_anchor is not None:
+    if rt.a.l2_sp and rt._l2sp_anchor is not None:
         with torch.no_grad():
             _sq = 0.0
-            for _n_sp, _p_sp in _l2sp_params:
-                _d_sp = _p_sp.detach() - _l2sp_anchor[_n_sp]
-                _p_sp.grad.add_(_d_sp, alpha=2.0 * a.l2_sp)
+            for _n_sp, _p_sp in rt._l2sp_params:
+                _d_sp = _p_sp.detach() - rt._l2sp_anchor[_n_sp]
+                _p_sp.grad.add_(_d_sp, alpha=2.0 * rt.a.l2_sp)
                 _sq += float((_d_sp * _d_sp).sum())
-            _l2sp_drift["sq"] = _sq
-            _l2sp_drift["n"] += 1
+            rt._l2sp_drift["sq"] = _sq
+            rt._l2sp_drift["n"] += 1
     try:
-        gn = float(torch.nn.utils.clip_grad_norm_(params, a.clip_norm,
+        gn = float(torch.nn.utils.clip_grad_norm_(params, rt.a.clip_norm,
                                                   error_if_nonfinite=True))
     except RuntimeError as e:
         nonfinite["n"] += 1
         print(f"  NON-FINITE GRADIENT at step {step} ({e}); gradients dropped, no step taken "
               f"({nonfinite['n']} so far)")
-        opt.zero_grad(set_to_none=True)
-        if nonfinite["n"] > a.max_nonfinite:
+        rt.opt.zero_grad(set_to_none=True)
+        if nonfinite["n"] > rt.a.max_nonfinite:
             raise SystemExit(f"STOP: {nonfinite['n']} non-finite gradient(s), over "
-                             f"--max-nonfinite {a.max_nonfinite}. The learning rate or the data "
+                             f"--max-nonfinite {rt.a.max_nonfinite}. The learning rate or the data "
                              f"is wrong; continuing would train on noise.")
         return float("nan"), -1, False
     outside = -1
-    if step % a.grad_check_every == 0:
+    if step % rt.a.grad_check_every == 0:
         outside = outside_head_grads()
         if outside:
             raise SystemExit(
                 f"STOP: {outside} parameter(s) OUTSIDE the confidence head carry a non-zero "
                 f"gradient at step {step}. FT3 freezes the trunk; this is not FT3 any more.")
-    opt.step()
-    opt.zero_grad(set_to_none=True)
+    rt.opt.step()
+    rt.opt.zero_grad(set_to_none=True)
     # THE DEAD-OP RE-CHECK, HERE AND NOT AT THE CROSS-SEED STEP BOUNDARY. The obvious home for
     # it was beside PFC.step_reset() in the unit loop -- but that site is inside
     # `if ui in _xs_at:`, and _xs_at is only populated under --rank-cross-seed, so on any other
@@ -1705,11 +1708,11 @@ def _apply_step(step):
     # second, unconditional call at the epoch boundary; this has no equivalent. Immediately
     # after opt.step() is also the strictly better moment: an optimiser step is the only thing
     # that could have written a stubbed tensor, and this is the first instruction after it.
-    if _dops is not None:
-        DOPS.step_check()
+    if rt._dops is not None:
+        rt.DOPS.step_check()
     return gn, outside, True
 
-def _seed_lo_hi(spec):
+def _seed_lo_hi(rt, spec):
     """--seeds is `lo-hi` and nothing else, so parse it that way and say so.
 
     The first version accepted comma-separated ranges, which the rest of the file does not:
@@ -1722,7 +1725,7 @@ def _seed_lo_hi(spec):
     lo, hi = (int(x) for x in str(spec).split("-"))
     return lo, hi - lo + 1
 
-def _record_val_loss(epoch, step, bundle, mean, n_poses):
+def _record_val_loss(rt, epoch, step, bundle, mean, n_poses):
     """Append one held-out point to val_loss.csv. Shared by the sharded and unsharded paths.
 
     RECORDING THE MEASUREMENT MUST NOT BE ABLE TO END THE RUN. A NameError on this exact
@@ -1731,7 +1734,7 @@ def _record_val_loss(epoch, step, bundle, mean, n_poses):
     durable record either way, so a failure here is reported and dropped.
     """
     try:
-        vp = os.path.join(a.out, "val_loss.csv")
+        vp = os.path.join(rt.a.out, "val_loss.csv")
         new_file = not os.path.exists(vp)
         with open(vp, "a", newline="") as fh:
             w = csv.writer(fh)
@@ -1742,7 +1745,7 @@ def _record_val_loss(epoch, step, bundle, mean, n_poses):
         print(f"  WARNING: could not append to val_loss.csv ({type(e).__name__}: {e}); the "
               f"number is in the line above", flush=True)
 
-def build_epoch(ep):
+def build_epoch(rt, ep):
     """This epoch's unit sequence FOR THIS RANK: K structures per step, one seed of each.
 
     Every rank walks the SAME structures in the SAME order and differs only in WHICH seed of
@@ -1766,13 +1769,13 @@ def build_epoch(ep):
     by = {}
     for _p, _lp, _c in flat:
         by.setdefault(_p, []).append((_lp, _c))
-    rng_e = random.Random(a.seed + ep)
+    rng_e = random.Random(rt.a.seed + ep)
     # ASCENDING BY TOKENS when asked. The pdb tie-break keeps it deterministic across ranks
     # and epochs. A structure the manifest gave no numeric `tokens` for sorts first and is
     # named below rather than silently placed.
-    _manifest_order = (a.epoch_order in ("manifest", "tokens"))
-    if a.epoch_order == "tokens":
-        order = sorted(by, key=lambda _q: (_sel_tokens.get(_q, 0), _q))
+    _manifest_order = (rt.a.epoch_order in ("manifest", "tokens"))
+    if rt.a.epoch_order == "tokens":
+        order = sorted(by, key=lambda _q: (rt._sel_tokens.get(rt._q, 0), rt._q))
     elif _manifest_order:
         order = list(by)
     else:
@@ -1784,8 +1787,8 @@ def build_epoch(ep):
         u = by[_p][:]
         if not _manifest_order:
             rng_e.shuffle(u)
-        for g in range(len(u) // world):
-            groups.append([(_p, _lp, _c) for _lp, _c in u[g * world:(g + 1) * world]])
+        for g in range(len(u) // rt.world):
+            groups.append([(_p, _lp, _c) for _lp, _c in u[g * rt.world:(g + 1) * rt.world]])
     if not _manifest_order:
         rng_e.shuffle(groups)
     # THE REMAINDER IS KEPT, as a short final step. Truncating to a whole number of steps
@@ -1796,13 +1799,13 @@ def build_epoch(ep):
     # already flushes a short step with the gradient scaled to the poses that contributed,
     # and on a measurement pass no step is taken at all.
     mine = []
-    for i in range(0, len(groups), structs_per_step):
-        for gi, grp in enumerate(groups[i:i + structs_per_step]):
+    for i in range(0, len(groups), rt.structs_per_step):
+        for gi, grp in enumerate(groups[i:i + rt.structs_per_step]):
             # ROTATED BY POSITION so a rank is not always handed the same seed slot.
-            mine.append(grp[(rank + gi) % world])
+            mine.append(grp[(rt.rank + gi) % rt.world])
     return mine
 
-def _flush(path, cols, rows):
+def _flush(rt, path, cols, rows):
     if not rows:
         return
     new = not os.path.exists(path)

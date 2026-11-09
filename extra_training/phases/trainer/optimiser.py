@@ -5,6 +5,7 @@ Statements and comments are the original; only the names this closed over inside
 main() became parameters. test_optimiser_equivalence.py compares it line for line,
 so a change to the live trainer fails the test instead of drifting silently.
 """
+import copy
 import os
 import math
 import time
@@ -13,7 +14,7 @@ import torch
 import torch.distributed as dist
 
 
-def build_optimiser(ctx, a, model, trainable):
+def build_optimiser(rt, a, model, trainable):
     opt = torch.optim.AdamW([p for n, p in model.named_parameters() if n in set(trainable)],
                             lr=a.lr, betas=(0.9, 0.95), weight_decay=0.0)
     init_state = copy.deepcopy({n: p.detach().clone() for n, p in model.named_parameters()

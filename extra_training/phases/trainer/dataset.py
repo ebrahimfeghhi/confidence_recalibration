@@ -14,6 +14,12 @@ direction. Every refusal that guards a flag this copy DOES carry is kept verbati
 several exist because the failure already happened here, so softening one would delete a
 lesson rather than a check.
 """
+import math
+import numpy as np
+import sys
+# THE HELPERS main() DECLARED INLINE. Imported by name rather than with a star
+# so the dependency is visible and a missing one is an ImportError here.
+from helpers import (_check_eval_pool, _pae_mask_check, _rank_key)
 import csv
 import json
 import os
@@ -22,9 +28,9 @@ import re
 import torch
 
 
-def resolve_training_dataset(ctx, a, is_main=True):
+def resolve_training_dataset(rt, a, is_main=True):
     """Returns the resolved manifest this run trains on."""
-    loss_fn = ctx.ProtenixLoss(ctx.configs)
+    loss_fn = rt.ProtenixLoss(rt.configs)
     _dropped_terms = set()
     if a.pae_only:
         # DO NOT COMPUTE THE ALL-ATOM LDDT WE THEN THROW AWAY.
@@ -61,7 +67,7 @@ def resolve_training_dataset(ctx, a, is_main=True):
         # be the easy case, is what produced that.
         class _Zero(torch.nn.Module):
             def forward(self, *_args, **_kw):
-                return torch.zeros((), device=ctx.dev)
+                return torch.zeros((), device=rt.dev)
 
             def __getattr__(self, name):
                 try:
@@ -81,7 +87,7 @@ def resolve_training_dataset(ctx, a, is_main=True):
                 raise SystemExit(f"STOP: --pae-only cannot drop {_name}: ProtenixLoss has no such "
                                  f"submodule. It has {sorted(k for k in dir(loss_fn) if 'loss' in k)}. "
                                  f"Dropping nothing while announcing PAE-only would mislabel the run.")
-            _stub = ctx._Zero()
+            _stub = rt._Zero()
             _base = set(dir(torch.nn.Module))
             _api = [m for m in dir(type(_orig))
                     if not m.startswith("_") and m not in _base and callable(getattr(_orig, m, None))]
@@ -218,7 +224,7 @@ def resolve_training_dataset(ctx, a, is_main=True):
         # THE MATH LIVES IN phases/pae_row_weight.py so a test can import the same code this
         # run uses. run_logging/test_pae_row_weight.py asserts max(row_t(...)) equals Protenix's
         # own calculate_iptm, and that frac 1.0 reproduces the unweighted term bit for bit.
-        sys.path.insert(0, os.path.dirname(os.path.abspath(ctx.__file__)))
+        sys.path.insert(0, os.path.dirname(os.path.abspath(rt.__file__)))
         import pae_row_weight as _rw
         _orig_pae_fwd = loss_fn.pae_loss.forward
         _pl = loss_fn.pae_loss
@@ -368,7 +374,7 @@ def resolve_training_dataset(ctx, a, is_main=True):
     # UNITS PER STEP, so the ranking term is a mean over units the way cum/accum_eff is a mean
     # over poses. accum_eff counts poses; each unit contributes --nsample of them.
     _rank_lab = {}
-    _rank_div = max(1, ctx.accum_eff // max(1, a.nsample))
+    _rank_div = max(1, rt.accum_eff // max(1, a.nsample))
     _rank_seen = {"loss": 0.0, "units": 0}
     # CROSS-SEED STATE. _xs_coef holds dL/ds for every pose of the CURRENT step, keyed
     # (pdb, seed, sample, pair) -- a pose's coefficient depends on every other pose of its
@@ -516,16 +522,16 @@ def resolve_training_dataset(ctx, a, is_main=True):
     # their seeds need not divide `world`, so the short rank rotates and the quota varies
     # by step. Driving the boundary from the quota keeps every rank stepping on the same
     # iteration -- a mismatch there HANGS on the first all-reduce rather than failing.
-    _step_poses = [ctx.accum_local]
+    _step_poses = [rt.accum_local]
     # AND THE GLOBAL COUNT, which is what the PAE term's mean is taken over. accum_eff is
     # K*nsample*world = 90 here, but a cross-seed step holds S*seeds*nsample = 100 poses across the
     # ranks, so dividing by accum_eff would scale the PAE gradient by 100/90. Set once per epoch
     # from the actual step shape; equal to accum_eff when --rank-cross-seed is off.
-    _step_poses_g = [ctx.accum_eff]
+    _step_poses_g = [rt.accum_eff]
     # THE COSINE HORIZON, in optimiser steps, filled in just before train_loop from the same
     # `_expect` the startup banner prints. A list because train_loop closes over it and the value
     # is not known until the unit list has been flattened and sharded.
-    sys.path.insert(0, os.path.dirname(os.path.abspath(ctx.__file__)))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(rt.__file__)))
     import lr_schedule as _LRS
     _lr_horizon = [0]
     # STEPS PER EPOCH THE HORIZON WAS CALIBRATED FROM, 0 when cross-seed packing is not in use.
@@ -980,3 +986,7 @@ def resolve_training_dataset(ctx, a, is_main=True):
                          f"ranking-only arm, pass --rank-loss: the ranking term differentiates "
                          f"ipTM directly and the guard allows alpha_pae 0 in that case.")
 
+    # THE RESOLVED DATASET, returned rather than left in locals. main() puts these on the context;
+    # the modules downstream read them as rt.<name>. Names follow the live trainer exactly so the
+    # equivalence test still lines up.
+    return {"loss_fn": loss_fn, "_scored_asym": _scored_asym, "_rank_lab": _rank_lab}

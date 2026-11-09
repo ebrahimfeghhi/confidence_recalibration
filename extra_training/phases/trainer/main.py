@@ -37,22 +37,30 @@ def main(argv=None):
     config_mod.validate(a) if hasattr(config_mod, "validate") else None
 
     rank, world, local_rank, is_main, dist, dev = ddp.setup_dist(a)
-    ctx = Ctx(a=a, rank=rank, world=world, local_rank=local_rank,
+    rt = Ctx(a=a, rank=rank, world=world, local_rank=local_rank,
               is_main=is_main, dist=dist, dev=dev)
 
     # THE HEAD, AND EVERY MUTATION OF IT, BEFORE THE TRAINABLE SET IS DERIVED.
     # head_param_names() reads the module tree rather than a hand-written list, so an injection
     # installed after it would be created and never trained -- silently, since the shapes line up.
-    ctx.model, ctx.configs, ctx._dead_head = bootstrap.build_head(a, dev)
+    rt.model, rt.configs, rt._dead_head = bootstrap.build_head(a, dev)
 
-    ctx.dataset = dataset.resolve_training_dataset(ctx, a, is_main=is_main)
 
-    ctx.prefixes, ctx.trainable, ctx._dops = trainable_mod.select_trainable(ctx, a, ctx.model)
-    ctx.opt, ctx._drift_history = optimiser.build_optimiser(ctx, a, ctx.model, ctx.trainable)
+    rt.prefixes, rt.trainable, rt._dops = trainable_mod.select_trainable(rt, a, rt.model)
+    rt.opt, rt._drift_history = optimiser.build_optimiser(rt, a, rt.model, rt.trainable)
 
-    ctx.start_epoch, ctx.start_step = resume_mod.load_resume(ctx, a, ctx.model, ctx.opt)
+    rt.start_epoch, rt.start_step = resume_mod.load_resume(rt, a, rt.model, rt.opt)
 
-    return loop.train_loop(ctx)
+    # THE SIGNATURE IS THE LIVE ONE. train_loop takes the step cap, the base lr, a tag, whether
+    # this rank writes the shared trajectory, and where to resume from. Calling it with the
+    # context alone was a wiring bug the bloat audit caught -- a TypeError on the first run.
+    return loop.train_loop(rt,
+                           steps_cap=0,
+                           lr=a.lr,
+                           tag="train",
+                           write_traj=is_main,
+                           from_epoch=rt.start_epoch,
+                           from_step=rt.start_step)
 
 
 if __name__ == "__main__":

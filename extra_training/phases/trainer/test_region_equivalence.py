@@ -4,7 +4,7 @@ This is the test that makes the copy safe to work on. The danger is not that an 
 to run -- it is that someone tidies a comment or reorders two installs while moving them, and the
 copy then trains a DIFFERENT model while everything still passes. So each region is compared
 against `phase_k_train.py` after undoing the two mechanical transforms the extraction applied:
-dedent by one level, and rewrite free names to `ctx.<name>`.
+dedent by one level, and rewrite free names to `rt.<name>`.
 
 A deliberate change to the live trainer FAILS this test. That is the point -- `trainer/cli.py`
 drifted silently once already, and the arm's command line was refused as a result.
@@ -28,7 +28,7 @@ REGIONS = {
     "evaluate.py":   ("def val_loss_checkpoint", 6356, 6831, True),
     "loop.py":       ("def train_loop", 7300, 8276, True),
 }
-CTX = re.compile(r"\bctx\.")
+CTX = re.compile(r"\brt\.")
 
 
 def norm(lines, dedent):
@@ -44,17 +44,17 @@ def main():
     for mod, (marker, lo, hi, dedent) in sorted(REGIONS.items()):
         want = norm(live_all[lo - 1:hi], dedent)
         got_all = open(os.path.join(HERE, mod)).read().splitlines()
-        # STRIP ctx. BEFORE MATCHING. The extraction rewrote free names to ctx.<name>, so the
+        # STRIP ctx. BEFORE MATCHING. The extraction rewrote free names to rt.<name>, so the
         # marker as it appears in the live source does not appear verbatim in the copy.
         def _bare(l):
-            return CTX.sub("", l).strip().replace("(ctx, ", "(", 1)
+            return CTX.sub("", l).strip().replace("(rt, ", "(", 1)
         start = next((i for i, l in enumerate(got_all) if _bare(l).startswith(marker)), None)
         if start is None:
             print(f"  FAIL  {mod:<14} marker {marker!r} not found"); fails.append(mod); continue
         got = [CTX.sub("", l).rstrip() for l in got_all[start:start + len(want)]]
         # the def line gained a ctx parameter; compare it with that undone
         if dedent and got:
-            got[0] = got[0].replace("(ctx, ", "(", 1)
+            got[0] = got[0].replace("(rt, ", "(", 1)
         diffs = [(lo + i, w, g) for i, (w, g) in enumerate(zip(want, got)) if w != g]
         ok = not diffs and len(got) == len(want)
         print(("  PASS  " if ok else "  FAIL  ") +

@@ -13,8 +13,8 @@ import torch
 import torch.distributed as dist
 
 
-def select_trainable(ctx, a, model):
-    prefixes, trainable = ctx.head_param_names(model)
+def select_trainable(rt, a, model):
+    prefixes, trainable = rt.head_param_names(model)
     # LoRA REPLACES THE TRAINABLE SET, it does not add to it. Applied to the confidence head only
     # -- head_param_names already established that module is the honest boundary -- and after the
     # head is built so the adapters inherit its device and dtype.
@@ -71,7 +71,7 @@ def select_trainable(ctx, a, model):
             a.rank_loss = True
             a.alpha_rank = float(_gr.get("alpha_rank") or 0.0)
             a.rank_weight_by_gap = bool(_gr.get("rank_weight_by_gap", True))
-            if ctx.is_main:
+            if rt.is_main:
                 print(f"  --loss-only: inheriting the bundle's ranking configuration "
                       f"(alpha_rank {a.alpha_rank:g}, "
                       f"weight_by_gap={a.rank_weight_by_gap}) so the guard matches; the ranking "
@@ -89,7 +89,7 @@ def select_trainable(ctx, a, model):
             a.lora_alpha = float(_g.get("lora_alpha") or 0.0)
             a.lora_targets = _g.get("lora_targets") or ""
             a.lora_dropout = float(_g.get("lora_dropout") or 0.0)
-            if ctx.is_main:
+            if rt.is_main:
                 print(f"  --loss-only: inheriting the bundle's LoRA configuration "
                       f"(rank {a.lora_rank}, alpha {a.lora_alpha:g}, dropout {a.lora_dropout:g}) "
                       f"-- it holds adapter tensors, so the model must carry the same adapters "
@@ -131,8 +131,8 @@ def select_trainable(ctx, a, model):
     # AND THE REPORTED NUMBER BECOMES HONEST. Every --pae-only arm in this project has printed
     # "258 trainable tensor(s), 19.8M of 464.5M parameters (4.3%)" while 158 of those tensors
     # received no gradient. The --grad-probe path already said so out loud and nothing acted on it.
-    if ctx._dead_head:
-        _dead_abs = {f"{prefixes[0]}.{n}" for n in ctx._dead_head}
+    if rt._dead_head:
+        _dead_abs = {f"{prefixes[0]}.{n}" for n in rt._dead_head}
         _before_n, _before_p = len(trainable), sum(
             p.numel() for n, p in model.named_parameters() if n in set(trainable))
         trainable = [n for n in trainable if n not in _dead_abs]
