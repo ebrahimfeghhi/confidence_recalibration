@@ -27,6 +27,8 @@ CULLED = frozenset({
     "lr_final", "lr_decay_start_epoch", "lr_decay_end_epoch", "lr_decay_shape",
     "early_stop_patience", "early_stop_min_delta",
     "epoch_order", "structures_per_step", "drop_pde", "pair_dropout",
+    "crop_log", "debug_save_rank_heads", "eval_every", "lr_probe", "probe_steps",
+    "rank_rel_scale", "shuffle",
     "eval_device", "eval_min_free_mib", "eval_pool_crop_tokens",
     "allow_unmasked_fallback",
 })
@@ -34,6 +36,32 @@ CULLED = frozenset({
 #: NOT culled, pending an owner decision. --grad-probe is the only way to re-measure alpha-rank
 #: on this frozen architecture, and --loss-only IS the per-epoch held-out monitor.
 OWNER_DECISION = frozenset({"grad_probe", "loss_only"})
+
+
+def cli_dests(path=None):
+    """Every dest `trainer/cli.py` can actually produce.
+
+    DERIVED, NOT HARDCODED. CULLED below was a hand-written list, so a flag nobody remembered --
+    `crop_log` -- was referenced by derive.py, absent from cli.py, and invisible to the test that
+    exists to catch exactly that. The authority on what the parser produces is the parser.
+    """
+    import os
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), "cli.py")
+    out = set()
+    for n in ast.walk(ast.parse(open(path).read())):
+        if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "add_argument"):
+            continue
+        dest = next((k.value.value for k in n.keywords
+                     if k.arg == "dest" and isinstance(k.value, ast.Constant)), None)
+        if dest is None:
+            longs = [a.value for a in n.args
+                     if isinstance(a, ast.Constant) and str(a.value).startswith("--")]
+            if longs:
+                dest = longs[0][2:].replace("-", "_")
+        if dest:
+            out.add(dest)
+    return out
 
 
 def _attrs(node):
@@ -213,6 +241,10 @@ LIVE_VALUES = {
     "rank_straddle": 0.0, "rank_tau": None, "rank_topk_decay": 0.0,
     "rank_weight_by_gap": True, "rank_within_weight": 1.0, "structures_per_step": 0,
     "token_keep_other": -1.0, "token_keep_union": -1.0,
+    # A SECOND BATCH, found only when the tests stopped using a hand-written module list.
+    # derive.py, runtime.py and constants.py were added after the first pass and never scanned.
+    "crop_log": "", "debug_save_rank_heads": False, "eval_every": 0, "lr_probe": "",
+    "probe_steps": 30, "rank_rel_scale": 0.07, "shuffle": "structure",
 }
 
 _NO = object()

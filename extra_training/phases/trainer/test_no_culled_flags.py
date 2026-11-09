@@ -18,9 +18,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import lean  # noqa: E402
 
-MODULES = ("ddp.py", "bootstrap.py", "dataset.py", "trainable.py", "optimiser.py", "resume.py",
-           "unit.py", "evaluate.py", "loop.py", "helpers.py", "step_plan.py", "config.py",
-           "checkpoints.py", "main.py", "context.py")
+#: EVERY module in the package, discovered rather than listed. A hand-written tuple went stale
+#: twice -- derive.py and constants.py were added and not listed, so both this test and the
+#: context contract reported clean while a module they never opened was broken.
+def _modules():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return tuple(sorted(f for f in os.listdir(here)
+                        if f.endswith(".py") and not f.startswith("test_")
+                        and f not in ("lean.py", "inventory.py", "import_graph.py")))
+
+
+MODULES = _modules()
 
 
 def main():
@@ -29,7 +37,19 @@ def main():
         p = os.path.join(HERE, m)
         if not os.path.exists(p):
             continue
-        left = lean.culled_in(ast.parse(open(p).read()))
+        # AGAINST cli.py ITSELF, not against a hand-written list. The list missed crop_log.
+        tree = ast.parse(open(p).read())
+        dests = lean.cli_dests()
+        left = {}
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Attribute) or n.attr in dests:
+                continue
+            base = n.value
+            ok = ((isinstance(base, ast.Name) and base.id == "a")
+                  or (isinstance(base, ast.Attribute) and base.attr == "a"
+                      and isinstance(base.value, ast.Name) and base.value.id == "rt"))
+            if ok:
+                left[n.attr] = left.get(n.attr, 0) + 1
         n = sum(left.values())
         total += n
         print(("  PASS  " if not n else "  FAIL  ") + f"{m:<16} {n:>3}" +

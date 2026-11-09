@@ -243,7 +243,7 @@ def derive(rt, a):
         if a.warmup_steps:
             raise SystemExit("STOP: --loss-only with --warmup-steps is meaningless -- there is no "
                              "optimiser to warm up, and the logged lr would imply one ran.")
-    if a.crop_log and 0.0 == 0 and not '':
+    if '' and 0.0 == 0 and not '':
         raise SystemExit("STOP: --crop-log was given but --crop-margin is 0, so nothing is cropped.")
 
     # PIN THE COMMIT NOW, before any work, so every bundle this process writes records the code it

@@ -17,9 +17,17 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODULES = ("ddp.py", "bootstrap.py", "dataset.py", "trainable.py", "optimiser.py", "resume.py",
-           "unit.py", "evaluate.py", "loop.py", "helpers.py", "main.py", "step_plan.py",
-           "runtime.py", "derive.py", "constants.py")
+#: EVERY module in the package, discovered rather than listed. A hand-written tuple went stale
+#: twice -- derive.py and constants.py were added and not listed, so both this test and the
+#: context contract reported clean while a module they never opened was broken.
+def _modules():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return tuple(sorted(f for f in os.listdir(here)
+                        if f.endswith(".py") and not f.startswith("test_")
+                        and f not in ("lean.py", "inventory.py", "import_graph.py")))
+
+
+MODULES = _modules()
 
 #: supplied by the interpreter, not by a stage
 EXEMPT = {"__file__", "__name__", "__doc__"}

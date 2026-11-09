@@ -850,6 +850,24 @@ def build_parser():
                          "later blocks re-normalise, while this site adds after pae_ln with "
                          "nothing downstream to rescale it. Shapes permit it, semantics do not "
                          "match. The orientation arm stays zero either way.")
+    ap.add_argument("--limit-units", type=int, default=0,
+                    help="debug: stop after N units. RE-ADDED after the cull, because the smoke "
+                         "gate needs it: running the composed entrypoint on the live argv is the "
+                         "only way to find the first real failure, and doing that over 2,300 "
+                         "units to learn something that shows up in one is waste. 0 means no cap, "
+                         "so the live arm is unaffected.")
+    # KEPT ON PURPOSE, against the cull. --loss-only IS the per-epoch held-out monitor
+    # (val_loss_checkpoint), and --grad-probe is the only way to re-measure alpha-rank on this
+    # frozen architecture. Both were confirmed by the owner and by review on issue #9.
+    ap.add_argument("--loss-only", action="store_true",
+                    help="measure, do not train: one pass that reports the loss and takes no "
+                         "optimiser step. This is what the per-epoch held-out monitor runs as a "
+                         "child process.")
+    ap.add_argument("--grad-probe", action="store_true",
+                    help="report the gradient NORM of the PAE term against the ranking term, "
+                         "which is the only honest way to set --alpha-rank: the relative form's "
+                         "coefficients sum to zero, so its accumulated gradient cancels and loss "
+                         "VALUES say nothing about its influence.")
 
     return ap
 

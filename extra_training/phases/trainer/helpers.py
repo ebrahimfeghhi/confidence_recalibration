@@ -1202,7 +1202,7 @@ def _xs_prepare(rt, step_units, ep):
             spearman_tau=(0.0 if 0.0 > 0
                           else RKL.DEFAULT_SPEARMAN_TAU),
              dist_weight=0.1,
-             rel_scale=rt.a.rank_rel_scale)
+             rel_scale=0.07)
         if npair == 0:
             continue
         n_groups += 1

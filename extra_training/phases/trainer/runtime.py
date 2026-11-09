@@ -187,30 +187,13 @@ def build_runtime(rt, a):
         bypdb.setdefault(pdb, []).append((lp, cands))
     order = sorted(bypdb)
     rng = random.Random(a.seed)
-    if a.shuffle == "structure":
+    if 'structure' == "structure":
         rng.shuffle(order)
         for pp in order:
             rng.shuffle(bypdb[pp])
     flat = [(pp, lp, cands) for pp in order for lp, cands in bypdb[pp]]
     if a.limit_units:
         flat = flat[:a.limit_units]
-    # THE POPULATION, AS ONE HASH. The resume guard compares this rather than the arguments that
-    # produced it: --manifest-selection, --manifest-skip, --seeds and --limit-units can all change
-    # which units exist, and a guard that checked the flags would still miss a rewritten selection
-    # csv. Review 2026-10-16 reproduced a resume accepted after the exclusions changed.
-    # --eval-every IS PARSED AND NEVER READ. Found in review: the flag has no effect anywhere in
-    # this file, so launch_lr_probe_full.sh asked for validation every 1,452 steps and would never
-    # have produced a single pass. Refused rather than implemented: a second eval trigger has to
-    # reproduce the barrier discipline of the epoch path exactly -- rank 0 evaluates while the
-    # others wait -- and a mistake there deadlocks rather than fails. The two working triggers do
-    # cover the need.
-    if a.eval_every:
-        raise SystemExit(
-            f"STOP: --eval-every {a.eval_every} has no effect -- it is parsed and never read, so "
-            f"it would promise a validation pass that never happens. Use --eval-every-epoch for "
-            f"the validation set every epoch, or --train-eval-pool with --train-eval-every N "
-            f"(optionally --train-eval-fold / --train-eval-seed-base / --train-eval-budget) to "
-            f"score any pool every N epochs. Both are exercised by the current arms.")
     _manifest_digest = hashlib.sha256(
         "\n".join(f"{p}/{os.path.basename(lp)}" for p, lp, _c in sorted(flat)).encode()
     ).hexdigest()[:16]
@@ -352,7 +335,7 @@ def build_runtime(rt, a):
         print(f"SHARD COVERAGE shard={a.manifest_shard} nshards={a.manifest_nshards} "
               f"units_mine={len(flat)} units_all={_n_before} nsample={a.nsample}", flush=True)
     print(f"  resolved {len(flat)} unit(s) over {len(set(x[0] for x in flat))} structure(s) "
-          f"from {len(roots)} fold root(s), shuffle={a.shuffle}, seed={a.seed}")
+          f"from {len(roots)} fold root(s), shuffle={'structure'}, seed={a.seed}")
 
     cfg = rt.DS.build_configs(a.crop_size, a.indices, a.bio_dir, a.mmcif_dir, a.msa_root,
                            a.seq_index, a.msa_root)
@@ -696,47 +679,6 @@ def build_runtime(rt, a):
     # evaluator for more than exist makes it refuse rather than quietly report a thinner number.
 
 
-    # ---- LR PROBE: measure the learning rate instead of inheriting one tuned for a different job
-    if a.lr_probe:
-        lrs = [float(x) for x in a.lr_probe.split(",")]
-        print(f"\nLR PROBE: {a.probe_steps} optimiser step(s) at each of {lrs}, all from the SAME "
-              f"initial weights. Protenix's 0.0018 default is for finetuning the whole model; this "
-              f"moves 4.3% of it, so the default is not transferable.")
-        out = []
-        for lr in lrs:
-            for n, p in rt.model.named_parameters():
-                if n in set(rt.trainable):
-                    p.data.copy_(rt.init_state[n])
-            rt.opt.load_state_dict(rt.copy.deepcopy(rt.init_opt))
-    # The call to train_loop that stood here is main()'s epilogue, not glue. Keeping it
-    # would have this stage run the training loop as a side effect of being built.
-            if not rows:
-                print(f"  lr {lr:g}: no rows"); continue
-            # THE BATCH LOSS ON STEPS ACTUALLY TAKEN, not every per-pose row. `rows` is one entry
-            # per POSE on rank 0; averaging those compares learning rates on rank 0's slice of a
-            # handful of structures, and review 2026-10-16 built a case where the global batch loss
-            # fell while rank 0's pose losses rose, so this recommended LOWERING the lr. The
-            # cross-rank batch mean is in the row the optimiser stepped on.
-            _st = [r for r in rows if r.get("step_taken") and r.get("step_ok")
-                   and r.get("batch_loss") is not None]
-            if not _st:
-                print(f"  lr {lr:g}: no completed optimiser step to judge; skipped"); continue
-            k = max(1, len(_st) // 5)
-            first = sum(r["batch_loss"] for r in _st[:k]) / k
-            last = sum(r["batch_loss"] for r in _st[-k:]) / k
-            fin = all(math.isfinite(r["batch_loss"]) for r in _st)
-            out.append((lr, first, last, last - first, fin))
-            print(f"  lr {lr:<9g} loss first{k} {first:.6f} -> last{k} {last:.6f} "
-                  f"(delta {last-first:+.6f}) finite={fin}")
-        with open(os.path.join(a.out, "lr_probe.csv"), "w", newline="") as fh:
-            wr = csv.writer(fh, lineterminator="\n")
-            wr.writerow(["lr", "loss_first", "loss_last", "delta", "all_finite"])
-            wr.writerows(out)
-        print(f"\nwrote {os.path.join(a.out, 'lr_probe.csv')}")
-        print("A PROBE IS NOT A RESULT. It shows which rates are stable and which diverge over a few "
-              "dozen steps; it cannot show which generalises. Pick from it, then judge the run on "
-              "analysis/val_selection_metric.py, never on this loss.")
-        return 0
 
     # THE ESTIMATE USES --nsample, not a hardcoded 5. It was 5 because every unit has 5 poses in
     # this pilot, which is a fact about the data and not about the code.
@@ -859,16 +801,12 @@ def build_runtime(rt, a):
         _src = a.resume or "the shipped head"
         print(f"\n--loss-only: no checkpoint written -- {cp} would duplicate {_src} under a name "
               f"implying it was trained")
-    elif rt.is_main or a.debug_save_rank_heads:
+    elif rt.is_main or False:
         import torch as _t
         _sd = {n: p.detach().cpu() for n, p in rt.model.named_parameters() if n in set(rt.trainable)}
         if rt.is_main:
             _t.save(_sd, cp)
             print(f"\nsaved {cp}")
-        if a.debug_save_rank_heads:
-            _rp = os.path.join(a.out, f"head_final_rank{rt.rank}.pt")
-            _t.save(_sd, _rp)
-            print(f"saved {_rp}")
     if a.loss_only:
         print("THE LOSS IS THE RESULT HERE, and only that: this mode measures a frozen head's loss "
               "on the fold it was pointed at. Aggregate the per-pose pae_loss column of "
