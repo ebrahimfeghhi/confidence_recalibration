@@ -54,6 +54,10 @@ PROPOSED = [
     ("    plot_rel_arm.py",     "THE training plot",                DONE),
     ("    plot_eval_series.py", "THE held-out plot",                DONE),
     ("    refresh_plots.sh",    "the only entry point",             DONE),
+    ("abag_rank/", "", None),
+    ("    11 .py", "the ab-ag ranking analysis line", DONE),
+    ("analysis/", "", None),
+    ("    3 .py", "one-off result analyses", DONE),
     ("scripts/", "", None),
     ("    launch_fullhead_5site.sh", "the live arm",                DONE),
     ("    lr_sweep_ep5.sh",         "the LR sweep",                 DONE),
@@ -71,7 +75,7 @@ REMOVED = [
 
 
 def main(out="figures/repo_layout.png"):
-    fig = plt.figure(figsize=(16.5, 12.0))
+    fig = plt.figure(figsize=(16.5, 12.6))
     gs = fig.add_gridspec(2, 2, height_ratios=[1, 2.35], width_ratios=[1, 1.32],
                           hspace=0.16, wspace=0.07)
 
@@ -108,11 +112,20 @@ def main(out="figures/repo_layout.png"):
         axP.text(0.470, y, note, fontsize=9.0, va="center", color="#555")
         y -= 0.0194
 
-    fig.suptitle("Repo layout after the trainer is reorganised", fontsize=16.5, y=0.975)
-    fig.text(0.5, 0.027,
+    fig.suptitle("extra_training/ -- CODE layout after the trainer is reorganised",
+                 fontsize=16.5, y=0.985)
+    fig.text(0.5, 0.957,
+             "SCOPE: the ~190 .py/.sh files that make up the training program and its tooling. "
+             "NOT the whole repo.",
+             ha="center", fontsize=10.5, color="#777")
+    fig.text(0.5, 0.020,
              "green = written and CPU-tested     orange = still to port from phase_k_train.py's main()     "
              "grey = deleted\n"
-             "~3,200 lines remain to port; sizes marked ~ are the source span, not a written file.",
+             "~3,200 lines remain to port; sizes marked ~ are the source span, not a written file.\n"
+             "OUT OF SCOPE, untouched: training/ validation/ (448k data files), building_msa/, "
+             "SAbDab2_data/, docs/, figures/, train_val_splits/,\n"
+             "and everything above extra_training/ (archive/ 647 .py, envs/ 13,103 .py, "
+             "experimental_data/, tools/, run_model/).",
              ha="center", fontsize=10.5, color="#444")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     fig.savefig(out, dpi=125, bbox_inches="tight", facecolor="white")
