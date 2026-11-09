@@ -42,51 +42,33 @@ def load_resume(rt, a, model, opt):
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
-                 "rank_weight_by_gap": a.rank_weight_by_gap,
                  # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
                  # shape, so a resume that moved any of them silently would be a different
                  # experiment wearing the same run id. FOURTH time a field has been added to this
                  # comparison without being added to the saved bundle below -- so both sides are
                  # edited in the same patch, and test_guard_fields.py asserts they agree.
                  "rank_form": a.rank_form,
-                 "rank_tau": (float(a.rank_tau) if a.rank_tau is not None else -1.0),
                  "rank_cross_seed": a.rank_cross_seed,
-                 "rank_pairs": a.rank_pairs,
-                 "rank_within_weight": a.rank_within_weight,
-                 "rank_topk_decay": a.rank_topk_decay,
-                 "rank_straddle": a.rank_straddle,
                  "rank_structs_per_step": a.rank_structs_per_step,
                  # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
                  # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
-                 "l2_sp": a.l2_sp,
-                 "l2_sp_exclude": a.l2_sp_exclude,
                  # AND SO DOES THE SCHEDULE. lr_final changes the lr at every step after warmup,
                  # so a resume that added or dropped the cosine would be a different experiment.
-                 "lr_final": a.lr_final,
                  "lr": a.lr, "warmup_steps": a.warmup_steps,
                  # ROW WEIGHTING CHANGES THE OBJECTIVE. The PAE term becomes a weighted mean
                  # over anchor rows, so moving frac, mass or the floor on resume blends two
                  # objectives into one curve -- the same failure the l2_sp and lr_final entries
                  # above exist to stop. Caught in review of 38a83283.
-                 "pae_row_frac": a.pae_row_frac,
-                 "pae_row_mass": a.pae_row_mass,
-                 "pae_row_floor": a.pae_row_floor,
                  # The decay WINDOW and SHAPE change the lr at every step just as lr_final does,
                  # so they belong beside it rather than being silently re-derived on resume.
-                 "lr_decay_start_epoch": a.lr_decay_start_epoch,
-                 "lr_decay_end_epoch": a.lr_decay_end_epoch,
-                 "lr_decay_shape": a.lr_decay_shape,
                  # THE STAIRCASE IS A SCHEDULE CHANGE like lr_final and the decay window, so a
                  # resume that silently changed it would splice two schedules into one curve.
                  "lr_steps": a.lr_steps,
                  # DROPOUT IS PART OF THE OBJECTIVE, not of the optimiser: flipping it on a
                  # resume changes the gradient's distribution at every step.
-                 "pair_dropout": a.pair_dropout,
                  # THE AUGMENTATION DISTRIBUTION. Changing either probability changes what the
                  # head sees at every step, so a resume that silently changed them would splice
                  # two augmentations into one curve. Raised in review.
-                 "token_keep_union": a.token_keep_union,
-                 "token_keep_other": a.token_keep_other,
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
@@ -100,7 +82,6 @@ def load_resume(rt, a, model, opt):
                  # the saved bundle and stopped there -- which is the inert guard described two
                  # entries down, repeated one commit later. It is compared HERE and defaulted in
                  # _PRE_CROP, which are the two halves that make a field actually checked.
-                 "crop_all_poses": a.crop_all_poses,
                  # SAME REASON AS CROPPING. --pae-scored-pairs changes which pairs the PAE term
                  # averages over and --pae-only changes which terms exist at all, so resuming
                  # across either blends two objectives into one curve, carrying the first one's

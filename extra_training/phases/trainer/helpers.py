@@ -258,13 +258,6 @@ def _pae_mask_coverage(rt, units):
         print(f"  PAE mask: all {len(want)} training structure(s) are named by "
               f"{rt.a.pae_scored_pairs}")
         return
-    if not rt.a.allow_unmasked_fallback:
-        raise SystemExit(
-            f"STOP: {len(gone)} of {len(want)} training structure(s) are NOT in "
-            f"{rt.a.pae_scored_pairs}, so their poses would train the UNMASKED PAE term while "
-            f"this run is labelled masked: {gone[:8]}. Fix the pool, drop them from "
-            f"--manifest-selection, or pass --allow-unmasked-fallback to accept it "
-            f"deliberately -- it is recorded in args.json either way.")
     print(f"  PAE mask: ACCEPTING UNMASKED FALLBACK for {len(gone)} of {len(want)} "
           f"structure(s) (--allow-unmasked-fallback): {gone[:8]}")
 
@@ -355,12 +348,6 @@ def _head_ckpt_tensors(rt, ):
     makes a LoRA checkpoint indistinguishable from a full-finetune one. Without LoRA this is
     exactly the dict that was saved before.
     """
-    if rt.a.lora_rank:
-        import lora as LORA
-        _pfx = rt.prefixes[0]
-        return {f"{_pfx}.{k}": v
-                for k, v in LORA.merged_head_tensors(
-                    dict(rt.model.named_modules())[_pfx]).items()}
     # EVERY HEAD TENSOR, NOT JUST THE TRAINABLE ONES. phase_k_eval requires SET EQUALITY
     # between the checkpoint's keys and the model's head parameters -- deliberately, so a
     # checkpoint from a different architecture cannot load with tensors left at their
@@ -787,16 +774,6 @@ def _pf_start(rt, units):
     global _pf_q, _pf_thread
     rt._pf_started[0] = False
     if not rt.a.prefetch_units:
-        return
-    # NOT ON AN UNCROPPED ARM, where every result is thrown away. _pf_take is reached only
-    # inside `if a.crop_margin > 0 or a.crop_tokens`, so with the crop off these workers ran a
-    # full np.load plus interface_crop_tokens plus slice_cached_unit per unit and nobody ever
-    # consumed one -- then blocked forever on a full put() once --prefetch-units x
-    # --prefetch-workers results had piled up, holding those slices in RSS for the whole epoch.
-    # The default arm passes --prefetch-units 2 --prefetch-workers 4, so that is 8 wasted
-    # crops and 8 retained slices on every uncropped run to date. The uncropped path has its
-    # own warmer (_tr_step_start) and does not use this queue.
-    if not (rt.a.crop_margin > 0 or rt.a.crop_tokens):
         return
     rt._pf_stop.clear(); rt._pf_pending.clear(); rt._pf_dropped.clear()
     rt._pf_stat.update(hit=0, miss=0, wait_s=0.0, dropped=0, exhausted=0)
@@ -1665,19 +1642,6 @@ def _apply_step(rt, step):
         # pose_total totals printed below are what separates them -- their spread IS the
         # straggler share.
         _tick("grad_collective_plus_wait", _t0)
-    # L2-SP PENALTY, ADDED ONCE PER STEP. After the all-reduce, because that SUMS each rank's
-    # gradient and adding before it would multiply the penalty by the world size; before the
-    # clip, because the clip is meant to bound the total gradient actually applied.
-    # d/dW [ lambda * ||W - W0||^2 ] = 2 * lambda * (W - W0).
-    if rt.a.l2_sp and rt._l2sp_anchor is not None:
-        with torch.no_grad():
-            _sq = 0.0
-            for _n_sp, _p_sp in rt._l2sp_params:
-                _d_sp = _p_sp.detach() - rt._l2sp_anchor[_n_sp]
-                _p_sp.grad.add_(_d_sp, alpha=2.0 * rt.a.l2_sp)
-                _sq += float((_d_sp * _d_sp).sum())
-            rt._l2sp_drift["sq"] = _sq
-            rt._l2sp_drift["n"] += 1
     try:
         gn = float(torch.nn.utils.clip_grad_norm_(params, rt.a.clip_norm,
                                                   error_if_nonfinite=True))

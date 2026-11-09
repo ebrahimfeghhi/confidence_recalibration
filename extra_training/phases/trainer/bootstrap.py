@@ -100,46 +100,6 @@ def build_head(a, dev, t_cuda=None):
           f"{model.confidence_head.pairformer_stack.blocks_per_ckpt}, chunking off")
     print(f"confidence_head.training = {model.confidence_head.training} "
           f"(trunk stays eval; train_confidence_only={configs.train_confidence_only})")
-    # THE THIRD POSE PATHWAY, INSTALLED BEFORE head_param_names() READS THE MODULE TREE. That
-    # function derives the trainable set from the tree rather than from a hand-written list, so the
-    # new projection is picked up automatically -- but only if it exists by then. Installed after
-    # .train() and the blocks_per_ckpt assignment so neither is applied to a module that is about
-    # to be wrapped.
-    # INSTALLED BEFORE BOTH POSE PATHWAYS, AND THAT ORDER IS LOAD-BEARING.
-    #
-    # pose_direction.py:234 and pose_perblock.py:232 each capture
-    # `orig_mef = head.memory_efficient_forward` and REPLACE the attribute with a wrapper that
-    # calls what it captured. They are a chain, not independent patches. Installing the lean
-    # mirror afterwards would overwrite the outermost wrapper and silently drop the orientation
-    # and per-block injections -- except it would not even be silent: the mirror still calls
-    # self.pairformer_stack, whose _prep_blocks is also wrapped and raises _NoPose when the
-    # one-hot cache is unset, so the run would die at pose 0 instead. Installing FIRST makes the
-    # mirror the base of the chain, which is what it is a mirror of. Found in review.
-    if a.pair_dropout >= 0.0:
-        _blocks = list(getattr(model.confidence_head.pairformer_stack, "blocks", []))
-        if not _blocks:
-            raise SystemExit("STOP: --pair-dropout: the confidence head's pairformer_stack has "
-                             "no .blocks, so there is nothing to set the rate on.")
-        _was = sorted({float(getattr(b, "p_drop", -1)) for b in _blocks})
-        for _b in _blocks:
-            # p_drop IS THE ONE THAT MATTERS: all four pair-rep sites in PairformerBlock pass
-            # self.p_drop to dropout_add_rowwise. dropout_row is the unused non-fused path; it is
-            # set too so the two cannot disagree if a refactor ever switches paths.
-            _b.p_drop = float(a.pair_dropout)
-            _dr = getattr(_b, "dropout_row", None)
-            if _dr is not None:
-                for _obj in (_dr, getattr(_dr, "dropout", None)):
-                    for _attr in ("p", "r"):
-                        if _obj is not None and hasattr(_obj, _attr):
-                            setattr(_obj, _attr, float(a.pair_dropout))
-        _now = sorted({float(b.p_drop) for b in _blocks})
-        if _now != [float(a.pair_dropout)]:
-            raise SystemExit(f"STOP: --pair-dropout did not take: p_drop is {_now} after "
-                             f"assignment, not [{a.pair_dropout}].")
-        print(f"PAIR DROPOUT: row-wise rate on z set to {a.pair_dropout:g} on {len(_blocks)} "
-              f"pairformer block(s), was {_was}. "
-              f"confidence_head.training={model.confidence_head.training} "
-              f"-- dropout is a NO-OP unless that is True")
     if a.lean_readouts:
         import lean_readouts
         _lr_sha = lean_readouts.install(model, pae_only=a.pae_only)

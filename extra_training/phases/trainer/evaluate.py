@@ -94,8 +94,6 @@ def val_loss_checkpoint(rt, epoch, bundle, step):
            "--shuffle", "structure", "--out", out]
     if rt.a.pae_only:
         cmd.append("--pae-only")
-    if rt.a.drop_pde:
-        cmd.append("--drop-pde")
     if rt.a.frame_direction:
         cmd.append("--frame-direction")
     if rt.a.pose_perblock:
@@ -674,7 +672,6 @@ def eval_checkpoint(rt, step, epoch, train_pool="", crop_tokens="", tag="", fold
         # ONLY ON THE SINGLE-CARD PATH. Pinning CUDA_VISIBLE_DEVICES here would hand the sharding
         # driver one card and silently undo the split.
         env["CUDA_VISIBLE_DEVICES"] = str(rt.a.eval_device)
-        print(f"  evaluating epoch {epoch} on GPU {rt.a.eval_device} (the trainer keeps its card)")
     else:
         # SHARING MEANS CHECKING FIRST. The trainer is still resident and does not hand its
         # allocator back, so a second 464M-parameter model has to fit alongside it.

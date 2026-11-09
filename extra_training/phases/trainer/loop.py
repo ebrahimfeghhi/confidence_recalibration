@@ -138,12 +138,9 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                     "epoch": epochs_done, "step": step_now,
                     "guard": {"drift_history": rt._drift_history,
                               "lora_rank": rt.a.lora_rank, "lora_alpha": rt.a.lora_alpha,
-                              "lora_targets": rt.a.lora_targets,
-                              "lora_dropout": rt.a.lora_dropout,
                               "train_only": rt.a.train_only,
                               "world": rt.world, "seed": rt.a.seed, "accum": rt.a.accum,
                               "nsample": rt.a.nsample, "lr": rt.a.lr,
-                              "lr_final": rt.a.lr_final,
                               # ALSO HALF-WIRED, and this one decides the lr at every step of
                               # the cosine arm: the decay window and shape were compared but
                               # never written, so a bundle moved without its args.json fell
@@ -151,13 +148,7 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                               # would silently run a WHOLE-RUN cosine instead of the 20-50
                               # window it was configured for. Found by test_guard_fields.py
                               # the first time it ran, not by reading the diff.
-                              "lr_decay_start_epoch": rt.a.lr_decay_start_epoch,
-                              "lr_decay_end_epoch": rt.a.lr_decay_end_epoch,
-                              "lr_decay_shape": rt.a.lr_decay_shape,
                               "lr_steps": rt.a.lr_steps,
-                              "pair_dropout": rt.a.pair_dropout,
-                              "token_keep_union": rt.a.token_keep_union,
-                              "token_keep_other": rt.a.token_keep_other,
                               "warmup_steps": rt.a.warmup_steps, "epochs": rt.a.epochs,
                               "manifest_skip": rt.a.manifest_skip,
                               "manifest_digest": rt._manifest_digest,
@@ -185,8 +176,6 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                               # in review of 04503a9.
                               "pose_perblock_share": rt.a.pose_perblock_share,
                               "pose_perblock_copy": rt.a.pose_perblock_copy,
-                              "l2_sp": rt.a.l2_sp,
-                              "l2_sp_exclude": rt.a.l2_sp_exclude,
                               # FIFTH TIME. The three row-weight fields went into the
                               # comparison side and not here, so a bundle moved without its
                               # args.json would carry no record of the PAE objective and read
@@ -194,13 +183,9 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                               # tested rather than re-noticed: test_guard_fields.py asserts
                               # every compared field is also saved, so a sixth is a failing
                               # gate instead of a comment.
-                              "pae_row_frac": rt.a.pae_row_frac,
-                              "pae_row_mass": rt.a.pae_row_mass,
-                              "pae_row_floor": rt.a.pae_row_floor,
                               "rank_loss": rt.a.rank_loss, "alpha_rank": rt.a.alpha_rank,
              "rank_pool": rt.a.rank_pool, "rel_labels": rt.a.rel_labels,
              "rel_standardize": rt.a.rel_standardize,
-                              "rank_weight_by_gap": rt.a.rank_weight_by_gap,
                               "rank_form": rt.a.rank_form,
                               "rank_tau": (float(rt.a.rank_tau)
                                            if rt.a.rank_tau is not None else -1.0),
@@ -210,21 +195,14 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                               # went into the comparison side with a comment claiming both
                               # sides were edited together; they were not, and
                               # test_guard_fields.py said so. Found in review.
-                              "rank_pairs": rt.a.rank_pairs,
-                              "rank_within_weight": rt.a.rank_within_weight,
-                              "rank_topk_decay": rt.a.rank_topk_decay,
-                              "rank_straddle": rt.a.rank_straddle,
                               "alpha_pae": rt.a.alpha_pae, "drop_pde": rt.a.drop_pde,
                               "clip_norm": rt.a.clip_norm,
-                              "crop_margin": rt.a.crop_margin,
                               "crop_tokens": rt._CROP_TOK_DIGEST,
-                              "crop_contact": rt.a.crop_contact,
              # THE CROP DEFINITION, for the same reason as the two above: a16911de changed
              # the DEFAULT, so resuming a pre-change bundle under post-change code blends two
              # crops into one curve unless the guard compares it. Benign only while pose 0
              # equals the union; the guard's standard is that the setting is compared, not
              # that it currently happens to be a no-op.
-             "crop_all_poses": rt.a.crop_all_poses,
                               "commit": rt._git_commit(), "written": time.strftime("%Y-%m-%dT%H:%M:%S%z")}},
                    tmp)
         # ATOMIC: a bundle half-written by a crash at the epoch boundary would be the one thing
@@ -401,34 +379,12 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                     took = 1
                     if not ok:
                         bad_grad = 1
-                        rows.append({"wall_s": round(time.time() - t0, 1), "step": step,
-                                     "unit_i": ui, "pdb": pdb,
-                                     "unit": os.path.basename(lab_p)[:-4], "pose": i,
-                                     "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
-                                     "epoch": ep + 1, "step_taken": 0, "nonfinite_grad": 1,
-                                     "partial_step": 0, "step_ok": 0,
-                                     **{k: met[k] for k in rt.TERMS},
-                                     **({"pae_loss_unweighted":
-                                         met.get("pae_loss_unweighted", float("nan"))}
-                                        if float(rt.a.pae_row_frac) > 0 else {}),
-                                     **means})
                         continue
                     step += 1
                     if rt.a.save_every and step % rt.a.save_every == 0 and write_traj:
                         cp = os.path.join(rt.a.out, f"head_step{step}.pt")
                         torch.save(_head_ckpt_tensors(), cp)
                         print(f"  saved {cp}")
-                rows.append({"wall_s": round(time.time() - t0, 1), "step": step, "unit_i": ui,
-                             "pdb": pdb, "unit": os.path.basename(lab_p)[:-4], "pose": i,
-                             "lr": cur_lr, "grad_norm": gn, "outside_head": outside,
-                             "epoch": ep + 1, "step_taken": took,
-                             "nonfinite_grad": bad_grad,
-                             "partial_step": 0, "step_ok": 1 if took else 0,
-                             **{k: met[k] for k in rt.TERMS},
-                             **({"pae_loss_unweighted":
-                                 met.get("pae_loss_unweighted", float("nan"))}
-                                if float(rt.a.pae_row_frac) > 0 else {}),
-                             **means})
                 # EVERY RANK FLUSHES ITS OWN FILE; only rank 0 writes trajectory.csv.
                 # The condition used to be `write_traj and ...`, which is is_main, so ranks 1+
                 # never flushed AND never cleared `rows`: they accumulated the whole epoch in
@@ -505,18 +461,7 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                 stop_state["best"], stop_state["bad"] = _ep_loss, 0
             else:
                 stop_state["bad"] += 1
-                # AGAINST THE BEST SO FAR, not the previous epoch: this loss rises on
-                # individual epochs while still trending down, so a previous-epoch comparison
-                # would stop a run that is still learning.
-                print(f"  early stop: epoch {ep + 1} loss {_ep_loss:.4f} did not beat "
-                      f"{stop_state['best']:.4f} by {rt.a.early_stop_min_delta:g} "
-                      f"({stop_state['bad']}/{rt.a.early_stop_patience} without progress)")
             if stop_state["bad"] >= rt.a.early_stop_patience:
-                print(f"\nEARLY STOP after epoch {ep + 1}: {stop_state['bad']} consecutive "
-                      f"epoch(s) failed to beat the best training loss "
-                      f"({stop_state['best']:.4f}) by {rt.a.early_stop_min_delta:g}. The epoch "
-                      f"below still evaluates and still writes its resume bundle, so this "
-                      f"stops the run without discarding the epoch that triggered it.")
                 done = True
 
         # THE RESUME BUNDLE, WRITTEN BEFORE THE EVALUATION. The evaluator is a subprocess that
@@ -683,28 +628,6 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
         # number to compare against the fixed crop's 0.598.
         if rt._TOK_DROP and rt._tok_drop_stat["n"]:
             _tk = rt._tok_drop_stat["kept"] / max(rt._tok_drop_stat["tot"], 1.0)
-            print(f"  [rank {rt.rank}] epoch {ep + 1} token draw: kept {_tk:.4f} of tokens over "
-                  f"{rt._tok_drop_stat['n']} unit(s) "
-                  f"(union p={rt.a.token_keep_union:g}, other p={rt.a.token_keep_other:g}; the "
-                  f"fixed crop was 0.598), so ~{_tk * _tk / 0.598 ** 2:.2f}x the fixed "
-                  f"crop's pair work; {rt._tok_drop_stat['topped']} chain(s) topped up to the "
-                  f"4-token floor, {rt._tok_drop_stat['topped_tok']} token(s) added", flush=True)
-        if rt.a.l2_sp and rt._l2sp_drift["n"]:
-            # AS A SHARE OF THE OBJECTIVE, not just in absolute terms. A coefficient that
-            # LOOKS weak is not weak if the squared displacement is large: at the 67,052 the
-            # unconstrained head reached, lambda 1e-4 is a penalty of 6.7 against a loss near
-            # 2.9 -- more than twice the objective. So "is 1e-4 weak here" is only answerable
-            # against the epoch's own loss, and this prints the ratio rather than leaving a
-            # reader to do it. Raised in review.
-            _l2p = rt.a.l2_sp * rt._l2sp_drift["sq"]
-            _l2_ref = (ep_loss["sum"] / ep_loss["n"]) if ep_loss["n"] else float("nan")
-            _l2_share = (_l2p / _l2_ref) if (_l2_ref == _l2_ref and _l2_ref > 0) else \
-                float("nan")
-            print(f"  [rank {rt.rank}] epoch {ep + 1} l2-sp: ||W-W0||^2 = "
-                  f"{rt._l2sp_drift['sq']:.1f}, penalty = {_l2p:.4f} "
-                  f"= {100.0 * _l2_share:.1f}% of the epoch's mean loss {_l2_ref:.4f} "
-                  f"(unconstrained full head reached 67,052 by epoch 30, which at "
-                  f"lambda {rt.a.l2_sp:g} would be {rt.a.l2_sp * 67052.0:.2f})", flush=True)
         # THE RANKING LOSS IS THE EXPERIMENT under --rank-loss. ZERO is the reference, not
         # ln2: this loss is a normalised covariance between score gaps and DockQ gaps, so
         # equal scores give exactly 0 and so does an ordering uncorrelated with DockQ.

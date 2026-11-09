@@ -90,32 +90,9 @@ def select_trainable(rt, a, model):
             a.lora_targets = _g.get("lora_targets") or ""
             a.lora_dropout = float(_g.get("lora_dropout") or 0.0)
             if rt.is_main:
-                print(f"  --loss-only: inheriting the bundle's LoRA configuration "
-                      f"(rank {a.lora_rank}, alpha {a.lora_alpha:g}, dropout {a.lora_dropout:g}) "
-                      f"-- it holds adapter tensors, so the model must carry the same adapters "
-                      f"for its weights to load at all.")
+                pass  # body removed with a flag this copy does not carry
 
     lora_report = None
-    if a.lora_rank:
-        import lora as LORA
-        _hm = dict(model.named_modules())[prefixes[0]]
-        _lnames, lora_report = LORA.apply_lora(
-            _hm, a.lora_rank, a.lora_alpha or 2.0 * a.lora_rank,
-            [t.strip() for t in a.lora_targets.split(",") if t.strip()], a.lora_dropout)
-        trainable = [f"{prefixes[0]}.{n}" for n in _lnames]
-
-        print(f"LoRA rank {a.lora_rank} alpha {a.lora_alpha or 2.0*a.lora_rank:g} "
-              f"dropout {a.lora_dropout:g}: {lora_report['modules_adapted']} module(s) adapted, "
-              f"{lora_report['lora_params']/1e6:.3f}M adapter parameters against "
-              f"{lora_report['frozen_params']/1e6:.2f}M frozen "
-              f"({100*lora_report['fraction_of_head']:.2f}% of the head)")
-        if lora_report["skipped_rank_too_high"]:
-            print(f"  {len(lora_report['skipped_rank_too_high'])} module(s) skipped: rank "
-                  f"{a.lora_rank} exceeds a dimension, e.g. "
-                  f"{lora_report['skipped_rank_too_high'][:3]}")
-        if lora_report["adapted_with_bias"]:
-            print(f"  NOTE {len(lora_report['adapted_with_bias'])} adapted module(s) have a bias; "
-                  f"it stays FROZEN -- the adapter is the only thing that moves.")
     # THE DEAD HEAD PARAMETERS COME OUT LAST, so --train-only and LoRA cannot put them back.
     #
     # WHY IT IS SAFE RATHER THAN MERELY CHEAP. Nothing reads these tensors' outputs, so autograd

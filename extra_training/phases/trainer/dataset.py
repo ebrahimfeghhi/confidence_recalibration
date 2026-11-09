@@ -357,15 +357,6 @@ def resolve_training_dataset(rt, a, is_main=True):
         loss_fn.pae_loss.forward = _row_weighted_fwd
         _bk = min(332, max(_rfl, -(-int(_rf * 332) // 1)))
         _bw = _rw.row_weights(torch.arange(332, dtype=torch.float32), None, _rf, _rm, _rfl)[0]
-        print(f"PAE term ROW-WEIGHTED, PER SCORED CHAIN PAIR: within each pair's block the top "
-              f"{_rf:.0%} of its rows by t_i (floor {_rfl}) carry {_rm:.0%} of that block's loss "
-              f"and the rest share {1 - _rm:.0%}. On a 332-row block that is k={_bk}, a top row "
-              f"weighing {float(_bw.max()):.2f} against {float(_bw[_bw > 0].min()):.2f} "
-              f"({float(_bw.max()) / float(_bw[_bw > 0].min()):.1f}x), effective sample size "
-              f"{_rw.predicted_ess(332, _rf, _rm, _rfl):.0f} of 332. Weights DETACHED, mask FLOAT. "
-              f"The unweighted value is read back EVERY pose into pae_loss_unweighted; the full "
-              f"diagnostic runs every {a.pae_row_log_every} pose(s) -> "
-              f"{os.path.basename(_row_diag_p)}")
 
     # RANKING LOSS SETUP. Refused rather than silently degraded when its inputs are absent: without
     # --pae-scored-pairs there is no interface to read ipTM for, and without labels there is no
@@ -603,12 +594,6 @@ def resolve_training_dataset(rt, a, is_main=True):
                          ("--rank-straddle", a.rank_straddle)):
             if not math.isfinite(_vv) or _vv < 0:
                 raise SystemExit(f"STOP: {_nm} {_vv!r} must be a finite number >= 0.")
-        if a.rank_within_weight == 0 and a.rank_pairs == "all":
-            print("  NOTE --rank-within-weight 0 drops the within-seed family from the WEIGHTING "
-                  "while --rank-pairs all still forms its pairs. Groups whose poses all come "
-                  "from one seed then carry no weighted pair and contribute nothing, which is "
-                  "handled (rank_loss guards den == 0) but means this is NOT the same run as "
-                  "--rank-pairs cross.")
         # THE BANNERS MUST NOT DESCRIBE A PATH THAT IS NOT TAKEN. These three flags are read only
         # by group_coeffs on the pass-A cross-seed path. The linear form without --rank-cross-seed
         # goes through RKL.coeffs, which takes labels alone and honours none of them, and the
@@ -654,27 +639,6 @@ def resolve_training_dataset(rt, a, is_main=True):
                               "the deployed objective",
                     "all": "BOTH families at ONE tau"}[a.rank_pairs]
         print(f"  PAIR FAMILY: {_fam_txt}")
-        if a.rank_pairs == "all":
-            print(f"  within-seed pairs weighted x{a.rank_within_weight:g} in numerator and W "
-                  f"(full training set at tau 0.0270: L=1 leaves within-seed at 7.0% of pairwise "
-                  f"gradient mass, L=3 18.3%, L=8 37.1%, L=20 59.3%)")
-        if a.rank_straddle > 0:
-            print(f"  STRADDLE-ONLY at DockQ {a.rank_straddle:g}: a pair counts only when exactly "
-                  f"one of its two poses is above {a.rank_straddle:g}. This is the subspace the "
-                  f"FRACTION-ACCEPTABLE criterion can see; mean DockQ is deliberately left as a "
-                  f"free variable and both are reported.")
-        if a.rank_topk_decay > 0:
-            print(f"  TOP-k RANK DECAY K={a.rank_topk_decay:g}: pair weight x "
-                  f"max(v(r_i), v(r_j)), v(r)=exp(-(r-1)/K) over the current ipTM order. "
-                  f"K=2 puts ~39% of weight on pairs touching rank 1 (1.6% undecayed) and ~93% "
-                  "inside the top 5. Ranks are taken from DETACHED scores, so the weight is a "
-                  "constant in the backward and the loss is not the exact gradient of a fixed "
-                  "objective.")
-        elif a.rank_within_weight != 1.0:
-            print(f"  NOTE --rank-within-weight {a.rank_within_weight:g} is INERT under "
-                  f"--rank-pairs {a.rank_pairs}: it scales one family against the other, and "
-                  "this run has only one family. Not an error; stated so the log cannot be read "
-                  "as if the weighting were in force.")
         # NO STOP HERE, AND THE EARLIER ONE WAS WRONG. It refused --rank-pairs within/all
         # without an explicit --rank-tau, on the grounds that at the cross-seed tau a within-seed
         # pair "sits at m/tau ~ 0 where the softplus gives a correct pair and an inverted one the
@@ -707,12 +671,6 @@ def resolve_training_dataset(rt, a, is_main=True):
             # defaulting silently to DEFAULT_TAU here would be a 1.6x sharper selection than
             # intended with nothing in the log to show it.
             _tau_sm = _rank_tau if _rank_tau is not None else _RKL_cfg.DEFAULT_SOFTMAX_TAU
-            print(f"  EXPECTED-DockQ, softmax temperature tau {_tau_sm:g}"
-                  + ("  (rank_loss.DEFAULT_SOFTMAX_TAU)" if _rank_tau is None else "  (given)")
-                  + "\n  L = -sum_i softmax(ipTM/tau)_i * DockQ_i over ALL poses of the "
-                    "interface; the floor is -max(DockQ) of the group, NOT 0. PAIR-FREE: "
-                    f"--rank-weight-by-gap={a.rank_weight_by_gap} and the cross-seed pair filter "
-                    "are INAPPLICABLE and are not applied.")
         if a.rank_cross_seed:
             print(f"  CROSS-SEED GROUPS: {a.rank_structs_per_step} structure(s) x all seeds per "
                   f"step; a pose's coefficient uses every other pose of its interface, so pass A "
@@ -874,13 +832,6 @@ def resolve_training_dataset(rt, a, is_main=True):
             print(f"  PAE mask: all {len(want)} training structure(s) are named by "
                   f"{a.pae_scored_pairs}")
             return
-        if not a.allow_unmasked_fallback:
-            raise SystemExit(
-                f"STOP: {len(gone)} of {len(want)} training structure(s) are NOT in "
-                f"{a.pae_scored_pairs}, so their poses would train the UNMASKED PAE term while "
-                f"this run is labelled masked: {gone[:8]}. Fix the pool, drop them from "
-                f"--manifest-selection, or pass --allow-unmasked-fallback to accept it "
-                f"deliberately -- it is recorded in args.json either way.")
         print(f"  PAE mask: ACCEPTING UNMASKED FALLBACK for {len(gone)} of {len(want)} "
               f"structure(s) (--allow-unmasked-fallback): {gone[:8]}")
 
