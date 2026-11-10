@@ -44,12 +44,22 @@ Usage:
         --fig figures/crop_itm_rank.png
 """
 import argparse
+import binascii
 import collections
 import csv
 import json
 import os
 import sys
 import time
+
+# THREAD CAPS GO BEFORE numpy, because OpenBLAS reads them at import and ignores them after.
+# Uncapped, each shard's sgemm grabs every core it can see: 16 shards on a 288-core box drove the
+# load average to 110 while a training run was using the same CPUs for trunk reads and prefetch.
+# The budget is a hard ceiling the user set (64 cores), so the default is deliberately modest and
+# the launcher multiplies it by the shard count rather than hoping.
+for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+           "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
+    os.environ.setdefault(_v, os.environ.get("CROP_THREADS", "3"))
 
 import numpy as np
 import torch
@@ -204,6 +214,17 @@ def sample_crops(xyz, resolved, chain_id, ref_asym, crop_size, n_crops, rng_seed
     return out
 
 
+def crop_seed(base, iface):
+    """A per-interface seed that is the SAME on every invocation.
+
+    This was `base + hash(iface) % 10**6`. str.__hash__ is salted per process in Python 3, so two
+    runs of this script drew DIFFERENT crops while the docstring promised reproducibility -- the
+    kind of defect that only shows up when someone tries to reproduce a number months later.
+    crc32 is stable across processes, versions and machines.
+    """
+    return int(base) + int(binascii.crc32(iface.encode())) % 10 ** 6
+
+
 # ----------------------------------------------------------------------------- driver
 
 def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
@@ -243,10 +264,20 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
     itm_full = itm_over_subsets(W, M, full_keep)[:, 0]
     rho_full = spearman(itm_full, dockq)
 
+    # REGRET IS THE DECISION-RELEVANT NUMBER, not rho. Spearman grades the whole ordering, but we
+    # only ever deploy the argmax, and this project has now watched rho improve four times without
+    # selected DockQ following. regret = oracle - DockQ(pose the label picks), so 0 means the label
+    # selects the best available pose and larger is worse.
+    oracle = float(dockq.max())
+    regret_full = oracle - float(dockq[int(np.argmax(itm_full))])
+
     rhos = np.empty(len(crops), dtype=np.float64)
+    regrets = np.empty(len(crops), dtype=np.float64)
     CH = 250
     for lo in range(0, len(crops), CH):
         blk = itm_over_subsets(W, M, keep[:, lo:lo + CH])          # [P, c]
+        pick = np.argmax(blk, axis=0)                              # [c] selected pose per crop
+        regrets[lo:lo + blk.shape[1]] = oracle - dockq[pick]
         for j in range(blk.shape[1]):
             rhos[lo + j] = spearman(blk[:, j], dockq)
     ok = ~np.isnan(rhos)
@@ -259,6 +290,13 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
             "rho_crop_p10": round(float(np.percentile(rhos[ok], 10)), 6) if ok.any() else float("nan"),
             "rho_crop_p90": round(float(np.percentile(rhos[ok], 90)), 6) if ok.any() else float("nan"),
             "delta": round(float(rhos[ok].mean() - rho_full), 6) if ok.any() else float("nan"),
+            "oracle_dockq": round(oracle, 6),
+            "regret_full": round(regret_full, 6),
+            "regret_crop_mean": round(float(regrets.mean()), 6),
+            "regret_crop_std": round(float(regrets.std()), 6),
+            "regret_crop_p90": round(float(np.percentile(regrets, 90)), 6),
+            "regret_crop_worse_frac": round(float((regrets > regret_full + 1e-9).mean()), 6),
+            "regret_delta": round(float(regrets.mean() - regret_full), 6),
             "retention_mean": round(float(ret.mean()), 6),
             "retention_p10": round(float(np.percentile(ret, 10)), 6),
             "kept_tokens_mean": round(float(keep.sum(0).mean()), 2)}
@@ -287,7 +325,7 @@ def main():
     ap.add_argument("--out", default="training/runs/crop_itm_rank.csv")
     a = ap.parse_args()
     os.chdir(ROOT)
-    torch.set_num_threads(max(1, 288 // max(1, a.workers) // 4))
+    torch.set_num_threads(int(os.environ.get("CROP_THREADS", "3")))
 
     skip = set(x for x in a.skip.split(",") if x)
     want = [r["pdb"] for r in csv.DictReader(open(a.manifest)) if r["pdb"] not in skip]
@@ -337,7 +375,7 @@ def main():
             sel = [poses[j] for j in np.nonzero(keep_pose)[0]]
             row = run_interface(pdb, iface, ax, ay, sel, d[keep_pose], xyz, resolved,
                                 asym, hf, a.crop_size, a.crops,
-                                not a.d0_from_crop, a.seed + hash(iface) % 10 ** 6)
+                                not a.d0_from_crop, crop_seed(a.seed, iface))
             if row is None:
                 skipped["degenerate"] += 1
                 continue
