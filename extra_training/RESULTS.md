@@ -22,6 +22,7 @@ Regenerated at each epoch boundary. Checkpoints, run logs and trajectories are n
 | 12 | 2.9061 | 0.0077 | 0.2989 | 0.3780 |
 | 13 | 2.9013 | 0.0077 | 0.2824 | 0.3630 |
 | 14 | 2.8931 | 0.0076 | 0.2854 | 0.3740 |
+| 15 | 2.8921 | 0.0074 | 0.3000 | 0.4370 |
 
 ## Held out — 83 structures / 141 interfaces, budget 30
 
@@ -29,6 +30,7 @@ Regenerated at each epoch boundary. Checkpoints, run logs and trajectories are n
 |---|---|---|---|---|---|
 | shipped | 0.5735 | 0.5813 | 0.7163 | — | 0.1515 |
 | epoch 10 | 0.5864 | 0.5836 | 0.7305 | 0.1728 | 0.1720 |
+| epoch 15 | 0.5828 | 0.5858 | 0.7092 | 0.1746 | 0.1644 |
 | epoch 5 | 0.5868 | 0.5807 | 0.7305 | 0.1628 | 0.1623 |
 
 ![training](figures/87ja6a_train.png)
