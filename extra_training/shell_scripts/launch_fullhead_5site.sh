@@ -87,7 +87,7 @@ CKPT_THRESH="${CKPT_THRESH:-1250}" \
   SKIP="4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m" EPOCHS="${EPOCHS:-20}" NOEVAL=0 DRY="${DRY:-0}" \
   CARDS=4,5,7 INBLOCK=0 FREEZE_BLOCKS=0 LEAN_SINGLE=1 MEMLOG=1 \
   TRUNK_CACHE_GB=10 TRUNK_MEMMAP=1 EVAL_POOL=training/valfull83/pool.csv LR="${LR:-1e-3}" \
-  EXTRA="--skip-dead-ops --pose-perblock --pose-perblock-copy --frame-direction --eval-pool-every 5 --train-only $TRAIN_ONLY" \
+  EXTRA="--skip-dead-ops --pose-perblock --pose-perblock-copy --frame-direction --eval-pool-every 5 --train-only $TRAIN_ONLY ${EXTRA_APPEND:-}" \
   ./shell_scripts/launch_default_arm.sh > $SD/arm_fullhead.log 2>&1
 say "launcher exit $?"
 NEW=$(grep -oE "^run [a-z0-9]{6}" $SD/arm_fullhead.log | head -1 | awk '{print $2}')
