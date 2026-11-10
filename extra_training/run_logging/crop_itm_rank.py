@@ -77,6 +77,14 @@ from phase_k_eval import interface_chain_pairs                     # noqa: E402
 from protenix.model.loss import PAELoss                            # noqa: E402
 from protenix.utils.cropping import get_spatial_crop_index         # noqa: E402
 
+# TWO TOKEN-LEVEL THRESHOLDS, because the only geometry available here is one REPRESENTATIVE ATOM
+# per token -- not the heavy atoms --crop-contact 5.0 uses on the trainer. At 5 A between
+# representative atoms almost nothing qualifies (12qa_AC returned ZERO contact tokens), which
+# would have made the retention column silently meaningless. 8 A is roughly a heavy-atom contact
+# plus side-chain reach; 15 A is Protenix's OWN definition, the interface_minimal_distance that
+# get_interface_token uses to decide which tokens may anchor a crop, so retention at 15 A is
+# retention of exactly the tokens Protenix calls interface tokens for this chain pair.
+CONTACT_A = (8.0, 15.0)
 N_BINS = 64
 MIN_BIN, MAX_BIN = 0.0, 32.0
 # TRUNK COVERAGE IS NOT UNIFORM, and it decides how many poses an interface can contribute.
@@ -182,6 +190,23 @@ def spearman(x, y):
     return float(((rx - rx.mean()) * (ry - ry.mean())).mean() / (sx * sy))
 
 
+def pick_pose(score, keys):
+    """(index of the selected pose, 1 if the top score was tied) under the EVALUATOR's rule.
+
+    phase_k_eval selects with max(v, key=(iptm, -seed, -sample)); np.argmax takes whichever row
+    happens to come first, which depends on the order poses were loaded. The evaluator's own
+    comment records why the tie-break is not cosmetic: without it "two poses with equal ipTM
+    selected different DockQ depending on how the work was split". Cropping makes ties MORE likely
+    -- a crop can flatten scores outright -- so the rule matters more here than in the evaluator.
+    """
+    top = float(np.max(score))
+    cand = np.nonzero(score >= top - 1e-12)[0]
+    if len(cand) == 1:
+        return int(cand[0]), 0
+    best = min(cand, key=lambda i: (-score[i], -keys[i][0], -keys[i][1]))
+    return int(best), 1
+
+
 def _rank(v):
     order = np.argsort(v, kind="stable")
     r = np.empty(len(v), dtype=np.float64)
@@ -240,7 +265,7 @@ def crop_seed(base, iface):
 
 # ----------------------------------------------------------------------------- driver
 
-def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
+def run_interface(pdb, iface, ax, ay, poses, dockq, pose_keys, xyz, resolved, asym, hf,
                   crop_size, n_crops, pin_d0, rng_seed):
     """One row of the output. poses: list of (bin_idx [N,N], pair_mask [F,N])."""
     N = asym.numel()
@@ -267,7 +292,14 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
 
     wcache = {}
     wb_fixed = weight_vector(n_pair_tokens, wcache).numpy()
-    W = np.stack([wb_fixed[p[0][hf].numpy()] for p in poses])   # [P, F, N]
+    # NO SECOND has_frame INDEX. PAELoss.calculate_label already does
+    # `frame_atom_index = frame_atom_index[has_frame]` and returns [N_sample, N_FRAME, N_token, 64]
+    # -- its own docstring says so -- so pose_bins' output is already frame-filtered. The earlier
+    # `p[0][hf]` applied a length-N_token mask to the N_frame axis, which is identity only because
+    # has_frame is True for every token in all 3000 label files on this fold. itm_ceiling.py
+    # carries the same pattern; that is a shared latent bug, not a precedent. Raised in review and
+    # initially dismissed by me on the strength of that precedent, which was the wrong call.
+    W = np.stack([wb_fixed[p[0].numpy()] for p in poses])       # [P, F, N]
 
     crops = sample_crops(xyz, resolved, asym, (ax, ay), crop_size, n_crops, rng_seed)
     keep = np.zeros((N, len(crops)), dtype=np.float32)
@@ -276,10 +308,31 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
 
     # GT interface retention: of the tokens that actually carry a scored cross-chain pair, how
     # many survive? Rows and columns both matter, so take the union of the two.
+    # TWO DIFFERENT RETENTIONS, because they answer different questions and the first was being
+    # reported under the second's name.
+    #   scored-pair-token retention: any token carrying a scored cross-chain pair, distant ones
+    #     included. This is what the iTM average is built from.
+    #   GT contact retention: tokens whose representative atom is within CONTACT_A of a token on
+    #     the OTHER chain of this interface, by TRUE coordinates -- the actual binding site. This
+    #     is the one that tests whether a random anchor misses the epitope.
     invol = np.zeros(N, dtype=bool)
     invol[np.asarray(hf_rows)[M.any(1)]] = True
     invol |= M.any(0) > 0
     ret = keep[invol].mean(0) if invol.any() else np.zeros(len(crops), dtype=np.float32)
+
+    in_x = ((asym == ax) & resolved).numpy()
+    in_y = ((asym == ay) & resolved).numpy()
+    gt = {}
+    if in_x.any() and in_y.any():
+        dxy = torch.cdist(xyz[torch.as_tensor(in_x)], xyz[torch.as_tensor(in_y)]).numpy()
+        for thr in CONTACT_A:
+            cx = np.nonzero(in_x)[0][(dxy < thr).any(1)]
+            cy = np.nonzero(in_y)[0][(dxy < thr).any(0)]
+            c = np.concatenate([cx, cy])
+            gt[thr] = (c, keep[c].mean(0) if len(c) else np.full(len(crops), np.nan, np.float32))
+    else:
+        for thr in CONTACT_A:
+            gt[thr] = (np.zeros(0, dtype=int), np.full(len(crops), np.nan, np.float32))
 
     row_tokens = np.asarray(hf_rows)                # frame row -> token index
     full_keep = np.ones((N, 1), dtype=np.float32)
@@ -291,10 +344,12 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
     # selected DockQ following. regret = oracle - DockQ(pose the label picks), so 0 means the label
     # selects the best available pose and larger is worse.
     oracle = float(dockq.max())
-    regret_full = oracle - float(dockq[int(np.argmax(itm_full))])
+    _kf, _tf = pick_pose(itm_full, pose_keys)
+    regret_full = oracle - float(dockq[_kf])
 
-    rhos = np.empty(len(crops), dtype=np.float64)
+    rhos = np.full(len(crops), np.nan, dtype=np.float64)
     regrets = np.full(len(crops), np.nan, dtype=np.float64)
+    ties = np.zeros(len(crops), dtype=np.float64)
     live_rows = np.empty(len(crops), dtype=np.float64)
     CH = 250
     for lo in range(0, len(crops), CH):
@@ -304,33 +359,57 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
         # come out as a confident 0.0, which would then win or lose the argmax on an artefact, so
         # those crops are excluded from both aggregates and counted instead.
         good = nlive > 0
-        pick = np.argmax(blk, axis=0)
-        regrets[lo:lo + blk.shape[1]][good] = oracle - dockq[pick[good]]
         for j in range(blk.shape[1]):
-            rhos[lo + j] = spearman(blk[:, j], dockq) if good[j] else np.nan
-    ok = ~np.isnan(rhos) & ~np.isnan(regrets)
-    if not ok.any():
+            if not good[j]:
+                continue
+            k, tied = pick_pose(blk[:, j], pose_keys)
+            regrets[lo + j] = oracle - dockq[k]
+            ties[lo + j] = tied
+            rhos[lo + j] = spearman(blk[:, j], dockq)
+    # SEPARATE VALIDITY. ok_reg is "the crop produced a score at all"; ok_rho additionally needs
+    # the scores to vary, because a constant vector has no rank correlation. Pooling them under one
+    # mask would silently drop from REGRET every crop that happened to flatten the scores, which is
+    # exactly the population a crop is most likely to damage.
+    ok_reg = ~np.isnan(regrets)
+    ok_rho = ok_reg & ~np.isnan(rhos)
+    if not ok_reg.any():
         return None
     return {"pdb": pdb, "iface": iface, "n_poses": len(dockq), "n_tokens": N,
             "n_pair_tokens": n_pair_tokens, "crop_size": crop_size,
-            "pin_d0": int(pin_d0), "n_crops": len(crops), "n_crops_valid": int(ok.sum()),
+            "pin_d0": int(pin_d0), "n_crops": len(crops),
+            # THE USABLE-CROP RATE IS A RESULT, NOT BOOKKEEPING. Every number below it is
+            # CONDITIONAL ON A USABLE CROP and must not be read as the expected behaviour of one
+            # random crop: a policy that resamples until valid, falls back to uncropped, or skips
+            # the update pays very different costs and carries different bias.
+            "usable_rate": round(float(ok_reg.mean()), 6),
+            "n_crops_usable": int(ok_reg.sum()),
+            "n_crops_rho_valid": int(ok_rho.sum()),
+            "tie_rate": round(float(ties[ok_reg].mean()), 6) if ok_reg.any() else float("nan"),
+            "tie_full": int(_tf),
             "rho_full": round(rho_full, 6),
-            "rho_crop_mean": round(float(rhos[ok].mean()), 6) if ok.any() else float("nan"),
-            "rho_crop_std": round(float(rhos[ok].std()), 6) if ok.any() else float("nan"),
-            "rho_crop_p10": round(float(np.percentile(rhos[ok], 10)), 6) if ok.any() else float("nan"),
-            "rho_crop_p90": round(float(np.percentile(rhos[ok], 90)), 6) if ok.any() else float("nan"),
-            "delta": round(float(rhos[ok].mean() - rho_full), 6) if ok.any() else float("nan"),
+            "rho_crop_mean": round(float(rhos[ok_rho].mean()), 6) if ok_rho.any() else float("nan"),
+            "rho_crop_std": round(float(rhos[ok_rho].std()), 6) if ok_rho.any() else float("nan"),
+            "rho_crop_p10": round(float(np.percentile(rhos[ok_rho], 10)), 6) if ok_rho.any() else float("nan"),
+            "rho_crop_p90": round(float(np.percentile(rhos[ok_rho], 90)), 6) if ok_rho.any() else float("nan"),
+            "delta": round(float(rhos[ok_rho].mean() - rho_full), 6) if ok_rho.any() else float("nan"),
             "oracle_dockq": round(oracle, 6),
             "regret_full": round(regret_full, 6),
-            "regret_crop_mean": round(float(regrets[ok].mean()), 6),
-            "regret_crop_std": round(float(regrets[ok].std()), 6),
-            "regret_crop_p90": round(float(np.percentile(regrets[ok], 90)), 6),
-            "regret_crop_worse_frac": round(float((regrets[ok] > regret_full + 1e-9).mean()), 6),
-            "regret_delta": round(float(regrets[ok].mean() - regret_full), 6),
+            "regret_crop_mean": round(float(regrets[ok_reg].mean()), 6),
+            "regret_crop_std": round(float(regrets[ok_reg].std()), 6),
+            "regret_crop_p90": round(float(np.percentile(regrets[ok_reg], 90)), 6),
+            "regret_crop_worse_frac": round(float((regrets[ok_reg] > regret_full + 1e-9).mean()), 6),
+            "regret_delta": round(float(regrets[ok_reg].mean() - regret_full), 6),
             "n_crops_degenerate": int((live_rows == 0).sum()),
             "live_rows_mean": round(float(live_rows.mean()), 2),
-            "retention_mean": round(float(ret.mean()), 6),
-            "retention_p10": round(float(np.percentile(ret, 10)), 6),
+            "scored_token_retention_mean": round(float(ret.mean()), 6),
+            "scored_token_retention_p10": round(float(np.percentile(ret, 10)), 6),
+            **{f"iface_tok_{int(thr)}a": int(len(gt[thr][0])) for thr in CONTACT_A},
+            **{f"iface_ret_{int(thr)}a_mean":
+               round(float(np.nanmean(gt[thr][1])), 6) if len(gt[thr][0]) else float("nan")
+               for thr in CONTACT_A},
+            **{f"iface_ret_{int(thr)}a_p10":
+               round(float(np.nanpercentile(gt[thr][1], 10)), 6) if len(gt[thr][0]) else float("nan")
+               for thr in CONTACT_A},
             "kept_tokens_mean": round(float(keep.sum(0).mean()), 2)}
 
 
@@ -345,8 +424,11 @@ def main():
     ap.add_argument("--crops", type=int, default=1000)
     ap.add_argument("--crop-size", type=int, default=256)
     ap.add_argument("--d0-from-crop", action="store_true",
-                    help="use Protenix's natural d0 (from the cropped token count) instead of "
-                         "pinning it at the uncropped count")
+                    help="NOT IMPLEMENTED -- refused. d0 is deliberately pinned at the uncropped "
+                         "scored chain-pair token count so that cropped and uncropped iTM differ "
+                         "by exactly one thing, which pairs are averaged. The metric is therefore "
+                         "a FIXED-KERNEL DIAGNOSTIC, not Protenix-on-cropped-input ipTM. The flag "
+                         "stays only to refuse explicitly rather than silently ignore.")
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--limit", type=int, default=0)
@@ -369,6 +451,9 @@ def main():
     except ImportError:
         print(f"[shard {a.shard}] threadpoolctl absent; cap {_CT} set via env only", flush=True)
 
+    if a.d0_from_crop:
+        raise SystemExit("STOP: --d0-from-crop is not implemented. d0 is pinned at the uncropped "
+                         "scored chain-pair token count by design; see the flag's help.")
     skip = set(x for x in a.skip.split(",") if x)
     want = [r["pdb"] for r in csv.DictReader(open(a.manifest)) if r["pdb"] not in skip]
     pairs_by_pdb, _ = interface_chain_pairs(a.pool, a.roles)
@@ -390,7 +475,7 @@ def main():
     pl = PAELoss()
     rows, t0, skipped = [], time.time(), collections.Counter()
     for i, pdb in enumerate(todo):
-        poses, dockq_by_iface, geom = [], collections.defaultdict(list), None
+        poses, pose_keys_all, dockq_by_iface, geom = [], [], collections.defaultdict(list), None
         for seed in SEEDS:
             got = unit_tensors(a.fold, pdb, seed)
             if got is None:
@@ -402,6 +487,7 @@ def main():
             for p in range(int(lb["n_pose"])):
                 samp = int(lb["sample_index"][p])
                 poses.append(pose_bins(pl, tr, lb, p, hf, fai, rep))
+                pose_keys_all.append((int(seed), samp))
                 for iface, _ax, _ay in pairs_by_pdb[pdb]:
                     dockq_by_iface[iface].append(dq.get(iface, {}).get((seed, samp), float("nan")))
         if geom is None or not poses:
@@ -414,10 +500,11 @@ def main():
             if keep_pose.sum() < a.min_poses:
                 skipped[f"<{a.min_poses} poses"] += 1
                 continue
-            sel = [poses[j] for j in np.nonzero(keep_pose)[0]]
-            row = run_interface(pdb, iface, ax, ay, sel, d[keep_pose], xyz, resolved,
-                                asym, hf, a.crop_size, a.crops,
-                                not a.d0_from_crop, crop_seed(a.seed, iface))
+            jj = np.nonzero(keep_pose)[0]
+            sel = [poses[j] for j in jj]
+            keys = [pose_keys_all[j] for j in jj]
+            row = run_interface(pdb, iface, ax, ay, sel, d[keep_pose], keys, xyz, resolved,
+                                asym, hf, a.crop_size, a.crops, True, crop_seed(a.seed, iface))
             if row is None:
                 skipped["degenerate"] += 1
                 continue
@@ -436,11 +523,14 @@ def main():
     # and are excluded by --min-poses, so a shard that drew only those has no rows. It must still
     # write its file, or the caller waiting for 16 CSVs waits forever.
     FIELDS = ["pdb", "iface", "n_poses", "n_tokens", "n_pair_tokens", "crop_size", "pin_d0",
-              "n_crops", "n_crops_valid", "rho_full", "rho_crop_mean", "rho_crop_std",
-              "rho_crop_p10", "rho_crop_p90", "delta", "oracle_dockq", "regret_full",
-              "regret_crop_mean", "regret_crop_std", "regret_crop_p90",
-              "regret_crop_worse_frac", "regret_delta", "n_crops_degenerate",
-              "live_rows_mean", "retention_mean", "retention_p10", "kept_tokens_mean"]
+              "n_crops", "usable_rate", "n_crops_usable", "n_crops_rho_valid", "tie_rate",
+              "tie_full", "rho_full", "rho_crop_mean", "rho_crop_std", "rho_crop_p10",
+              "rho_crop_p90", "delta", "oracle_dockq", "regret_full", "regret_crop_mean",
+              "regret_crop_std", "regret_crop_p90", "regret_crop_worse_frac", "regret_delta",
+              "n_crops_degenerate", "live_rows_mean", "scored_token_retention_mean",
+              "scored_token_retention_p10", "iface_tok_8a", "iface_tok_15a",
+              "iface_ret_8a_mean", "iface_ret_15a_mean", "iface_ret_8a_p10",
+              "iface_ret_15a_p10", "kept_tokens_mean"]
     with open(out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()) if rows else FIELDS)
         w.writeheader()

@@ -60,6 +60,60 @@ def case(name, P, N, crop, seed, drop_rows=0):
     return ok
 
 
+def real_label_gate():
+    """Full-mask iTM must reproduce the CACHED itm_labels on real interfaces and exact pose keys.
+
+    The synthetic gates check the sgemm's arithmetic; they cannot check the label joins, the
+    chain-pair resolution, the d0 token count or pose_bins' frame handling. This one does, against
+    the very numbers the trainer has been training on. Raised in external review.
+    """
+    import torch
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    "phases"))
+    import crop_itm_rank as C
+    from protenix.model.loss import PAELoss
+    from phase_k_eval import interface_chain_pairs
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    os.chdir(root)
+    if not os.path.exists("training/fold/itm_labels_extended"):
+        print("  SKIP  real-label gate (no cached itm_labels)")
+        return True
+    pairs, _ = interface_chain_pairs("training/combined/pool.csv",
+                                     "training/fold/chain_roles_all.csv")
+    pl = PAELoss()
+    worst, checked = 0.0, 0
+    for pdb in ("12qa",):
+        if pdb not in pairs or not os.path.exists(f"training/fold/itm_labels_extended/{pdb}.npz"):
+            continue
+        d = np.load(f"training/fold/itm_labels_extended/{pdb}.npz", allow_pickle=True)
+        lab = {(str(d["iface"][i]), int(d["seed"][i]), int(d["sample"][i])): float(d["g_mean"][i])
+               for i in range(len(d["iface"]))}
+        got = C.unit_tensors("training/fold", pdb, 500000)
+        if got is None:
+            continue
+        asym, hf, fai, rep, tr, lb = got
+        rows = np.asarray(torch.nonzero(hf, as_tuple=True)[0])
+        for iface, ax, ay in pairs[pdb]:
+            tok_in = (asym == ax) | (asym == ay)
+            wb = C.weight_vector(int(tok_in.sum()), {}).numpy()
+            for p in range(int(lb["n_pose"])):
+                key = (iface, 500000, int(lb["sample_index"][p]))
+                if key not in lab:
+                    continue
+                idx, pm = C.pose_bins(pl, tr, lb, p, hf, fai, rep)
+                M = (pm & (tok_in[hf].unsqueeze(1) & tok_in.unsqueeze(0))
+                     & (asym[hf].unsqueeze(1) != asym.unsqueeze(0))).float().numpy()
+                v, _ = C.itm_over_subsets(wb[idx.numpy()][None], M,
+                                          np.ones((asym.numel(), 1), np.float32), rows)
+                worst = max(worst, abs(float(v[0, 0]) - lab[key]))
+                checked += 1
+    ok = checked > 0 and worst < 1e-5
+    print(f"  {'PASS' if ok else 'FAIL'}  "
+          f"{'full mask == cached itm_labels g_mean':46s} "
+          f"max|diff| {worst:.2e} over {checked} real pose key(s)")
+    return ok
+
+
 def main():
     print("crop_itm_rank numerical gates")
     good = []
@@ -106,6 +160,8 @@ def main():
           f"{'fix changes the answer vs the old masking':46s} "
           f"max|diff| {float(np.abs(fixed - buggy).max()):.2e}")
     good.append(differs)
+
+    good.append(real_label_gate())
 
     print(f"\n{sum(good)}/{len(good)} gate(s) passed")
     return 0 if all(good) else 1
