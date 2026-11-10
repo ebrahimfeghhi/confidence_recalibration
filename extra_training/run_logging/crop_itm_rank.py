@@ -57,9 +57,13 @@ import time
 # load average to 110 while a training run was using the same CPUs for trunk reads and prefetch.
 # The budget is a hard ceiling the user set (64 cores), so the default is deliberately modest and
 # the launcher multiplies it by the shard count rather than hoping.
+# setdefault WAS NOT ENOUGH: it leaves a larger value already exported by the parent shell in
+# place, so the cap was advisory rather than enforced. Raised in external review. Assigned
+# unconditionally now, and main() verifies the pools BLAS actually built rather than trusting it.
+_CT = os.environ.get("CROP_THREADS", "3")
 for _v in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
            "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS"):
-    os.environ.setdefault(_v, os.environ.get("CROP_THREADS", "3"))
+    os.environ[_v] = _CT
 
 import numpy as np
 import torch
@@ -132,29 +136,38 @@ def weight_vector(nd, cache):
     return wb
 
 
-def itm_over_subsets(W, M, keep):
+def itm_over_subsets(W, M, keep, row_tokens):
     """Mean-pooled iTM for every pose under every crop, for ONE interface.
 
-    W    [P, F, N] float32 -- the TM weight of each (frame row, token) pair's TRUE bin
-    M    [F, N]    float32 -- 1 where the pair is a scored cross-chain pair of this interface
-    keep [N, C]    float32 -- column c is the indicator of crop c's kept tokens
-    rows [F]       bool    -- which frame rows are inside crop c is keep[row_token]
+    W          [P, F, N] float32 -- TM weight of each (frame row, token) pair's TRUE bin
+    M          [F, N]    float32 -- 1 where the pair is a scored cross-chain pair of this interface
+    keep       [N, C]    float32 -- column c is the indicator of crop c's kept tokens
+    row_tokens [F]       int     -- the TOKEN index each frame row belongs to
 
-    Returns [P, C].
+    Returns [P, C] and the per-crop count of rows that survived.
+
+    A ROW IS ONLY POOLED IF ITS OWN TOKEN SURVIVES THE CROP. The first version masked only the
+    target COLUMNS and then pooled any row with a surviving partner -- so a row whose anchor token
+    had been cropped away still contributed, which inflates the overlap between cropped and
+    uncropped iTM and therefore biases the whole analysis toward "cropping is harmless". Caught in
+    external review; reproduced against a slow sliced reference at 0.078 absolute on a 12-token
+    fixture before the fix, and 0 after. phases.calculate_iptm pools over tokens PRESENT in the
+    input, which is what row_keep reproduces.
 
     WHY A MATMUL. Naively this is C x P x F x N work -- 1000 crops x 50 poses x 600 x 600 is
-    1.8e10 operations per interface and would take days over the training set. But the row sum
+    1.8e10 operations per interface and would take days over the training set. The row sum
     sum_j W[p,i,j] M[i,j] 1[j in c] is linear in the crop indicator, so all C crops are one
-    sgemm: (W*M) @ keep. BLAS then does it in a fraction of a second.
+    sgemm: (W*M) @ keep.
     """
     P, F, N = W.shape
     WM = (W * M[None]).reshape(P * F, N)
     num = (WM @ keep).reshape(P, F, -1)             # [P, F, C] sum over kept columns
     den = (M @ keep)                                # [F, C]    how many kept columns per row
     t = num / np.clip(den, 1.0, None)[None]         # [P, F, C] per-row t
-    # A row with no kept cross-chain partner contributes nothing and must not count in the mean.
-    live = (den > 0).astype(np.float32)             # [F, C]
-    return (t * live[None]).sum(1) / np.clip(live.sum(0), 1.0, None)[None]
+    row_keep = keep[row_tokens]                     # [F, C] is this row's own token in the crop
+    live = ((den > 0) & (row_keep > 0)).astype(np.float32)
+    n_live = live.sum(0)                            # [C]
+    return (t * live[None]).sum(1) / np.clip(n_live, 1.0, None)[None], n_live
 
 
 def spearman(x, y):
@@ -238,7 +251,15 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
     hf_rows = torch.nonzero(hf, as_tuple=True)[0]
 
     # the scored cross-chain pair mask of THIS interface, same rule as itm_ceiling.pair_mask_for
+    # ONE MASK FOR EVERY POSE, ASSERTED RATHER THAN ASSUMED. The scored-pair mask comes from
+    # pose 0 and is reused, which is only sound if every pose of the structure has the same one.
+    # A silent mismatch would change both the label and the regret, so it is checked instead of
+    # trusted -- raised in external review.
     pm0 = poses[0][1]
+    n_mismatch = sum(1 for p in poses[1:] if not torch.equal(p[1], pm0))
+    if n_mismatch:
+        return {"pdb": pdb, "iface": iface, "skip_reason": f"pair mask varies across "
+                f"{n_mismatch} of {len(poses)} poses"}
     M = (pm0 & (tok_in[hf].unsqueeze(1) & tok_in.unsqueeze(0))
          & (asym[hf].unsqueeze(1) != asym.unsqueeze(0))).float().numpy()
     if M.sum() == 0:
@@ -260,8 +281,9 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
     invol |= M.any(0) > 0
     ret = keep[invol].mean(0) if invol.any() else np.zeros(len(crops), dtype=np.float32)
 
+    row_tokens = np.asarray(hf_rows)                # frame row -> token index
     full_keep = np.ones((N, 1), dtype=np.float32)
-    itm_full = itm_over_subsets(W, M, full_keep)[:, 0]
+    itm_full = itm_over_subsets(W, M, full_keep, row_tokens)[0][:, 0]
     rho_full = spearman(itm_full, dockq)
 
     # REGRET IS THE DECISION-RELEVANT NUMBER, not rho. Spearman grades the whole ordering, but we
@@ -272,15 +294,23 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
     regret_full = oracle - float(dockq[int(np.argmax(itm_full))])
 
     rhos = np.empty(len(crops), dtype=np.float64)
-    regrets = np.empty(len(crops), dtype=np.float64)
+    regrets = np.full(len(crops), np.nan, dtype=np.float64)
+    live_rows = np.empty(len(crops), dtype=np.float64)
     CH = 250
     for lo in range(0, len(crops), CH):
-        blk = itm_over_subsets(W, M, keep[:, lo:lo + CH])          # [P, c]
-        pick = np.argmax(blk, axis=0)                              # [c] selected pose per crop
-        regrets[lo:lo + blk.shape[1]] = oracle - dockq[pick]
+        blk, nlive = itm_over_subsets(W, M, keep[:, lo:lo + CH], row_tokens)   # [P, c], [c]
+        live_rows[lo:lo + blk.shape[1]] = nlive
+        # A CROP WITH NO SURVIVING SCORED ROW HAS NO iTM AT ALL. Clamping the denominator makes it
+        # come out as a confident 0.0, which would then win or lose the argmax on an artefact, so
+        # those crops are excluded from both aggregates and counted instead.
+        good = nlive > 0
+        pick = np.argmax(blk, axis=0)
+        regrets[lo:lo + blk.shape[1]][good] = oracle - dockq[pick[good]]
         for j in range(blk.shape[1]):
-            rhos[lo + j] = spearman(blk[:, j], dockq)
-    ok = ~np.isnan(rhos)
+            rhos[lo + j] = spearman(blk[:, j], dockq) if good[j] else np.nan
+    ok = ~np.isnan(rhos) & ~np.isnan(regrets)
+    if not ok.any():
+        return None
     return {"pdb": pdb, "iface": iface, "n_poses": len(dockq), "n_tokens": N,
             "n_pair_tokens": n_pair_tokens, "crop_size": crop_size,
             "pin_d0": int(pin_d0), "n_crops": len(crops), "n_crops_valid": int(ok.sum()),
@@ -292,11 +322,13 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, xyz, resolved, asym, hf,
             "delta": round(float(rhos[ok].mean() - rho_full), 6) if ok.any() else float("nan"),
             "oracle_dockq": round(oracle, 6),
             "regret_full": round(regret_full, 6),
-            "regret_crop_mean": round(float(regrets.mean()), 6),
-            "regret_crop_std": round(float(regrets.std()), 6),
-            "regret_crop_p90": round(float(np.percentile(regrets, 90)), 6),
-            "regret_crop_worse_frac": round(float((regrets > regret_full + 1e-9).mean()), 6),
-            "regret_delta": round(float(regrets.mean() - regret_full), 6),
+            "regret_crop_mean": round(float(regrets[ok].mean()), 6),
+            "regret_crop_std": round(float(regrets[ok].std()), 6),
+            "regret_crop_p90": round(float(np.percentile(regrets[ok], 90)), 6),
+            "regret_crop_worse_frac": round(float((regrets[ok] > regret_full + 1e-9).mean()), 6),
+            "regret_delta": round(float(regrets[ok].mean() - regret_full), 6),
+            "n_crops_degenerate": int((live_rows == 0).sum()),
+            "live_rows_mean": round(float(live_rows.mean()), 2),
             "retention_mean": round(float(ret.mean()), 6),
             "retention_p10": round(float(np.percentile(ret, 10)), 6),
             "kept_tokens_mean": round(float(keep.sum(0).mean()), 2)}
@@ -325,7 +357,17 @@ def main():
     ap.add_argument("--out", default="training/runs/crop_itm_rank.csv")
     a = ap.parse_args()
     os.chdir(ROOT)
-    torch.set_num_threads(int(os.environ.get("CROP_THREADS", "3")))
+    torch.set_num_threads(int(_CT))
+    # VERIFY, DO NOT ASSUME. threadpoolctl reports the pools the libraries actually created; an
+    # env var that arrived too late to be read looks identical to one that worked.
+    try:
+        import threadpoolctl
+        pools = [(d["user_api"], d["num_threads"]) for d in threadpoolctl.threadpool_info()]
+        over = [p for p in pools if p[1] > int(_CT)]
+        print(f"[shard {a.shard}] thread pools {pools} (cap {_CT})"
+              + ("  WARNING: a pool exceeds the cap" if over else ""), flush=True)
+    except ImportError:
+        print(f"[shard {a.shard}] threadpoolctl absent; cap {_CT} set via env only", flush=True)
 
     skip = set(x for x in a.skip.split(",") if x)
     want = [r["pdb"] for r in csv.DictReader(open(a.manifest)) if r["pdb"] not in skip]
@@ -379,6 +421,9 @@ def main():
             if row is None:
                 skipped["degenerate"] += 1
                 continue
+            if "skip_reason" in row:
+                skipped[row["skip_reason"].split(" across")[0]] += 1
+                continue
             rows.append(row)
         if (i + 1) % 10 == 0:
             el = time.time() - t0
@@ -387,8 +432,17 @@ def main():
 
     out = a.out if a.workers == 1 else a.out.replace(".csv", f".s{a.shard}.csv")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    # A SHARD CAN LEGITIMATELY PRODUCE NOTHING -- 416 of 846 structures have a single trunk seed
+    # and are excluded by --min-poses, so a shard that drew only those has no rows. It must still
+    # write its file, or the caller waiting for 16 CSVs waits forever.
+    FIELDS = ["pdb", "iface", "n_poses", "n_tokens", "n_pair_tokens", "crop_size", "pin_d0",
+              "n_crops", "n_crops_valid", "rho_full", "rho_crop_mean", "rho_crop_std",
+              "rho_crop_p10", "rho_crop_p90", "delta", "oracle_dockq", "regret_full",
+              "regret_crop_mean", "regret_crop_std", "regret_crop_p90",
+              "regret_crop_worse_frac", "regret_delta", "n_crops_degenerate",
+              "live_rows_mean", "retention_mean", "retention_p10", "kept_tokens_mean"]
     with open(out, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+        w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()) if rows else FIELDS)
         w.writeheader()
         w.writerows(rows)
     print(f"[shard {a.shard}] {len(rows)} interface(s) -> {out}   skipped {dict(skipped)}",
