@@ -24,6 +24,7 @@ Regenerated at each epoch boundary. Checkpoints, run logs and trajectories are n
 | 14 | 2.8931 | 0.0076 | 0.2854 | 0.3740 |
 | 15 | 2.8921 | 0.0074 | 0.3000 | 0.4370 |
 | 16 | 2.8802 | 0.0073 | 0.3000 | 0.4080 |
+| 17 | 2.8882 | 0.0071 | 0.3035 | 0.4280 |
 
 ## Held out — 83 structures / 141 interfaces, budget 30
 
