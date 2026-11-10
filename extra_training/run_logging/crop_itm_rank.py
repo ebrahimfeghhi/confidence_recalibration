@@ -85,6 +85,7 @@ from protenix.utils.cropping import get_spatial_crop_index         # noqa: E402
 # get_interface_token uses to decide which tokens may anchor a crop, so retention at 15 A is
 # retention of exactly the tokens Protenix calls interface tokens for this chain pair.
 CONTACT_A = (8.0, 15.0)
+ANCHOR_A = 15.0          # Protenix's own interface_minimal_distance, but PAIR-RESTRICTED
 N_BINS = 64
 MIN_BIN, MAX_BIN = 0.0, 32.0
 # TRUNK COVERAGE IS NOT UNIFORM, and it decides how many poses an interface can contribute.
@@ -256,6 +257,50 @@ def sample_crops(xyz, resolved, chain_id, ref_asym, crop_size, n_crops, rng_seed
     return out
 
 
+def sample_crops_pair_anchor(xyz, resolved, chain_id, ifaces, crop_size, n_crops, rng_seed):
+    """Crops whose ANCHOR must sit at a scored interface, not just any inter-chain contact.
+
+    THE CHANGE, AND ONLY THIS CHANGE. Protenix's get_interface_token accepts a contact with ANY
+    distinct chain -- `chain_id[None,:] != chain_id[:,None]` -- so on an antibody-antigen complex a
+    heavy-chain token qualifies by packing against the light chain, and an anchor there crops away
+    from the epitope. 27.6% of its crops left the scored interface with no surviving cross-chain
+    row at all. Here a token is eligible only if it is within ANCHOR_A of a token on the OTHER
+    member of a scored pair.
+
+    EVERYTHING DOWNSTREAM IS PROTENIX'S, DELIBERATELY. The k-nearest selection runs over the WHOLE
+    assembly with the same crop size and the same arange*1e-3 tie-break -- the restriction is on
+    which token may ANCHOR, never on what context may remain. Restricting the candidate pool too
+    would conflate two changes and quietly strip the third chains the head may still need.
+
+    One crop per STRUCTURE, shared by every interface and every pose: 82% of the analysed
+    structures carry more than one scored interface, so a crop that serves one and not the others
+    forces more than one forward pass and gives back the speedup that motivated cropping.
+    """
+    torch.manual_seed(rng_seed)
+    N = xyz.shape[0]
+    elig = torch.zeros(N, dtype=torch.bool)
+    for _if, ax, ay in ifaces:
+        a = (chain_id == ax) & resolved
+        b = (chain_id == ay) & resolved
+        if not (a.any() and b.any()):
+            continue
+        dab = torch.cdist(xyz[a], xyz[b])
+        elig[torch.nonzero(a, as_tuple=True)[0][(dab < ANCHOR_A).any(1)]] = True
+        elig[torch.nonzero(b, as_tuple=True)[0][(dab < ANCHOR_A).any(0)]] = True
+    cand = torch.nonzero(elig, as_tuple=True)[0]
+    if cand.numel() == 0:
+        return [], 0
+    noise = torch.arange(N).float() * 1e-3            # Protenix's own tie-break
+    out = []
+    for _ in range(n_crops):
+        a_idx = int(cand[torch.randint(0, cand.numel(), (1,)).item()])
+        dist = torch.cdist(xyz[a_idx:a_idx + 1], xyz)[0]
+        dist = torch.where(resolved, dist, torch.inf)
+        k = min(crop_size, N)
+        out.append(torch.topk(dist + noise, k, largest=False).indices.sort().values.numpy())
+    return out, int(cand.numel())
+
+
 def crop_seed(base, iface):
     """A per-interface seed that is the SAME on every invocation.
 
@@ -270,7 +315,7 @@ def crop_seed(base, iface):
 # ----------------------------------------------------------------------------- driver
 
 def run_interface(pdb, iface, ax, ay, poses, dockq, pose_keys, xyz, resolved, asym, hf,
-                  crop_size, n_crops, pin_d0, rng_seed):
+                  crop_size, crops, pin_d0, anchor_mode):
     """One row of the output. poses: list of (bin_idx [N,N], pair_mask [F,N])."""
     N = asym.numel()
     tok_in = (asym == ax) | (asym == ay)
@@ -305,7 +350,6 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, pose_keys, xyz, resolved, as
     # initially dismissed by me on the strength of that precedent, which was the wrong call.
     W = np.stack([wb_fixed[p[0].numpy()] for p in poses])       # [P, F, N]
 
-    crops = sample_crops(xyz, resolved, asym, (ax, ay), crop_size, n_crops, rng_seed)
     keep = np.zeros((N, len(crops)), dtype=np.float32)
     for c, idx in enumerate(crops):
         keep[idx, c] = 1.0
@@ -380,11 +424,12 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, pose_keys, xyz, resolved, as
         return None
     return {"pdb": pdb, "iface": iface, "n_poses": len(dockq), "n_tokens": N,
             "n_pair_tokens": n_pair_tokens, "crop_size": crop_size,
-            "pin_d0": int(pin_d0), "n_crops": len(crops),
+            "pin_d0": int(pin_d0), "anchor_mode": anchor_mode, "n_crops": len(crops),
             # THE USABLE-CROP RATE IS A RESULT, NOT BOOKKEEPING. Every number below it is
             # CONDITIONAL ON A USABLE CROP and must not be read as the expected behaviour of one
             # random crop: a policy that resamples until valid, falls back to uncropped, or skips
             # the update pays very different costs and carries different bias.
+            "_usable_vec": ok_reg.copy(),
             "usable_rate": round(float(ok_reg.mean()), 6),
             "n_crops_usable": int(ok_reg.sum()),
             "n_crops_rho_valid": int(ok_rho.sum()),
@@ -436,6 +481,12 @@ def main():
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--anchor-pair-only", action="store_true",
+                    help="a token may ANCHOR a crop only if it is within 15 A of a token on the "
+                         "OTHER member of a scored pair, instead of Protenix's any-distinct-chain "
+                         "rule. Everything downstream -- k-nearest over the WHOLE assembly, crop "
+                         "size, tie-break -- is unchanged: the restriction is on the anchor, not "
+                         "on what context may remain.")
     ap.add_argument("--min-poses", type=int, default=25,
                     help="skip an interface with fewer scored poses than this; a Spearman over 5 "
                          "poses is degenerate and 416 of 846 structures have only one trunk seed")
@@ -498,6 +549,21 @@ def main():
             skipped["no tensors"] += 1
             continue
         asym, hf, xyz, resolved = geom
+        # ONE CROP SET PER STRUCTURE, shared by every interface -- the thing a real training step
+        # would do. 82% of analysed structures carry more than one scored interface, so a crop
+        # that serves one and not the others costs an extra forward pass per structure.
+        if a.anchor_pair_only:
+            crops, n_elig = sample_crops_pair_anchor(
+                xyz, resolved, asym, pairs_by_pdb[pdb], a.crop_size, a.crops,
+                crop_seed(a.seed, pdb))
+        else:
+            crops = sample_crops(xyz, resolved, asym, pairs_by_pdb[pdb][0][1:],
+                                 a.crop_size, a.crops, crop_seed(a.seed, pdb))
+            n_elig = -1
+        if not crops:
+            skipped["no eligible anchor"] += 1
+            continue
+        per_iface_usable = {}
         for iface, ax, ay in pairs_by_pdb[pdb]:
             d = np.asarray(dockq_by_iface[iface], dtype=np.float64)
             keep_pose = ~np.isnan(d)
@@ -508,14 +574,28 @@ def main():
             sel = [poses[j] for j in jj]
             keys = [pose_keys_all[j] for j in jj]
             row = run_interface(pdb, iface, ax, ay, sel, d[keep_pose], keys, xyz, resolved,
-                                asym, hf, a.crop_size, a.crops, True, crop_seed(a.seed, iface))
+                                asym, hf, a.crop_size, crops, True,
+                                "pair" if a.anchor_pair_only else "protenix")
             if row is None:
                 skipped["degenerate"] += 1
                 continue
             if "skip_reason" in row:
                 skipped[row["skip_reason"].split(" across")[0]] += 1
                 continue
+            row["n_ifaces_in_structure"] = len(pairs_by_pdb[pdb])
+            row["n_eligible_anchors"] = n_elig
+            per_iface_usable[iface] = row.pop("_usable_vec")
             rows.append(row)
+        # JOINT COVERAGE: on how many crops is EVERY scored interface of this structure usable?
+        # A per-interface rate of 0.95 across two interfaces can still mean one crop in ten serves
+        # only one of them, and that is the crop that costs a second forward pass.
+        if per_iface_usable:
+            mats = np.stack(list(per_iface_usable.values()))        # [n_iface, n_crops]
+            joint = float(mats.all(0).mean())
+            anyone = float(mats.any(0).mean())
+            for r in rows[-len(per_iface_usable):]:
+                r["joint_usable_rate"] = round(joint, 6)
+                r["any_usable_rate"] = round(anyone, 6)
         if (i + 1) % 10 == 0:
             el = time.time() - t0
             print(f"  [shard {a.shard}] {i+1}/{len(todo)} structures, {len(rows)} interface(s), "
@@ -527,6 +607,8 @@ def main():
     # and are excluded by --min-poses, so a shard that drew only those has no rows. It must still
     # write its file, or the caller waiting for 16 CSVs waits forever.
     FIELDS = ["pdb", "iface", "n_poses", "n_tokens", "n_pair_tokens", "crop_size", "pin_d0",
+              "anchor_mode", "n_ifaces_in_structure", "n_eligible_anchors",
+              "joint_usable_rate", "any_usable_rate",
               "n_crops", "usable_rate", "n_crops_usable", "n_crops_rho_valid", "tie_rate",
               "tie_full", "rho_full", "rho_crop_mean", "rho_crop_std", "rho_crop_p10",
               "rho_crop_p90", "delta", "oracle_dockq", "regret_full", "regret_crop_mean",
