@@ -1302,3 +1302,83 @@ head never saw those structures -- so there both margins are legitimate inferenc
 the monotone sequence in tokens kept (0.571 -> 0.744 -> 1.000 uncropped) is the thing to read: a
 metric that moves monotonically with crop size is showing a crop-size effect, and the middle point
 is what separates that from a context effect.
+
+---
+
+## 20. PROTENIX'S OWN INTERFACE CROP DOES NOT DAMAGE THE iTM LABEL -- but a quarter of its crops are unusable
+
+**The question.** Cropping is attractive for speed: the measured cost exponent on `87ja6a` is 2.0-2.5
+in tokens, so a crop keeping ~57% of tokens is worth roughly 2x on the epoch. The risk is specific
+to this project's loss: `--rank-form rel` trains the head to reproduce each pose's TRUE iTM, and
+that iTM is an average over the interface's cross-chain pairs. Crop the structure and the average
+runs over a subset. If the subset stops ordering a structure's poses the way the full one does,
+no speedup is worth it.
+
+**What was measured, on the label alone -- no model, no GPU.** For every training interface:
+
+    rho_full    = Spearman(true iTM over ALL cross-chain pairs, DockQ)  across its poses
+    rho_crop(c) = Spearman(true iTM over the pairs crop c keeps,  DockQ)  across the same poses
+    regret(c)   = oracle_dockq - DockQ(the pose crop c's label picks)
+
+`protenix.utils.cropping.get_spatial_crop_index(..., interface_crop=True)` is called **unchanged**
+-- the same function the shipped pipeline trains with, same random interface anchor, same
+k-nearest token set. **One crop per structure is applied to every one of its poses**, so an iTM gap
+between two poses can never measure the crop instead of the poses.
+
+**d0 IS PINNED at the uncropped scored chain-pair token count.** Shrinking it with the crop would
+steepen the TM kernel -- scoring the same error worse -- for a task cropping does not make easier,
+and pinning it means cropped and uncropped iTM differ by exactly ONE thing, which pairs are
+averaged. The metric is therefore a FIXED-KERNEL DIAGNOSTIC, not Protenix-on-cropped-input ipTM.
+
+### 886 interfaces x 1000 crops each, crop_size 256
+
+| | mean | median | sd | p10 | p90 |
+|---|---|---|---|---|---|
+| rho delta (cropped - uncropped) | **+0.0307** | +0.0098 | 0.1332 | -0.0846 | +0.1801 |
+| DockQ regret delta | **-0.0066** | +0.0000 | 0.0781 | -0.0407 | +0.0302 |
+| usable crop rate | **0.724** | | | 0.506 | |
+| interface tokens kept (15 A) | 0.652 | | | 0.479 | |
+
+DockQ regret: **uncropped 0.0621, cropped 0.0555**, crop-to-crop sd 0.0320.
+
+**Among usable crops the label survives and is mildly BETTER ordered.** rho rises, regret falls.
+That is the far-pair dilution argument confirmed on the label: the pairs a crop discards are
+largely ones that barely differ between a good pose and a bad one, so dropping them concentrates
+the contrast. The median regret delta is exactly 0.0000, so for most interfaces the selected pose
+does not change at all and the mean is carried by a minority that improve.
+
+**THE BINDING CONSTRAINT IS THE USABLE RATE, NOT THE QUALITY. 27.6% of crops leave the interface
+with no surviving scored cross-chain row at all** -- the random anchor lands such that one side of
+the interface is gone. The p10 interface is only 50.6% usable, and 9% of interfaces are under 50%.
+A single random Protenix crop is not a usable training sample about a quarter of the time.
+
+**Everything in the table above is CONDITIONAL ON A USABLE CROP** and must not be read as the
+behaviour of one random crop. Three policies close the gap at different prices: resample until
+valid (~1.38x the crop construction, and biases anchors toward this interface), fall back to
+uncropped (reintroduces the long structures the crop existed to remove, which are the expensive
+ones), or skip the update (loses ~28% of gradient steps). That choice is unmade.
+
+**Why the anchor misses.** `get_interface_token`'s contact test is
+`chain_id[None,:] != chain_id[:,None]` -- ANY two distinct chains. An antibody heavy-chain token
+qualifies by packing against the light chain, so on an antibody-antigen complex a large share of
+eligible anchors sit on the internal H-L interface and crop away from the epitope.
+
+**Scope.** 886 interfaces over ~440 structures, not all 846: 416 structures have a single cached
+trunk seed (trunks are ~205 MB against a hard quota) and a Spearman over 5 poses is degenerate, so
+`--min-poses 25` excludes them.
+
+**Provenance.** Four defects were found in this code by external review before these numbers were
+trusted, three of which changed results: frame rows whose own token the crop removed were still
+being pooled (reproduced at 0.078 absolute against a sliced reference, 0 after); `has_frame` was
+applied twice to already-frame-filtered bins (latent here, all-True on this fold, and the same
+pattern is in `itm_ceiling.py`); degenerate crops scored a confident 0.0 through denominator
+clamping; and `pick_pose` implemented the evaluator's tie rule backward (measured impact: 1 of 886
+interfaces has any tied crop, 0 of 886 uncropped selections, so no aggregate moved).
+`run_logging/test_crop_itm_rank.py` gates all of it, including full-mask iTM reproducing the
+cached `itm_labels` `g_mean` on real pose keys to 4.77e-07. 11/11.
+
+    CROP_THREADS=4 python -I run_logging/crop_itm_rank.py --crops 1000 --workers 16 --shard $s \
+        --out training/runs/crop_itm4/rank.csv
+    python -I run_logging/plot_crop_itm_rank.py training/runs/crop_itm_rank.csv \
+        figures/crop_itm_rank.png
+    python -I run_logging/test_crop_itm_rank.py
