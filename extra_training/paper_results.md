@@ -1382,3 +1382,66 @@ cached `itm_labels` `g_mean` on real pose keys to 4.77e-07. 11/11.
     python -I run_logging/plot_crop_itm_rank.py training/runs/crop_itm_rank.csv \
         figures/crop_itm_rank.png
     python -I run_logging/test_crop_itm_rank.py
+
+---
+
+## 21. RESTRICTING THE CROP ANCHOR TO THE SCORED PAIR FIXES PROTENIX'S CROP ENTIRELY -- and makes the label better
+
+Section 20 found that 27.6% of Protenix's interface crops leave the scored interface with no
+surviving cross-chain row. The cause is `get_interface_token`'s contact test,
+`chain_id[None,:] != chain_id[:,None]`: ANY two distinct chains count, so an antibody heavy-chain
+token qualifies as an anchor by packing against the LIGHT chain, and the resulting crop centres
+away from the epitope.
+
+**The fix, proposed by the owner:** a token may anchor a crop only if it lies within 15 A of a
+token on the OTHER member of a scored pair. **Only the anchor is restricted** -- the k-nearest
+selection still runs over the whole assembly, same crop size, same `arange * 1e-3` tie-break, so
+third chains can still supply context. The vendored Protenix implementation is untouched.
+
+**CROPS ARE SAMPLED ONCE PER STRUCTURE** and shared by every pose AND every scored interface,
+which is what a training step does. This is not cosmetic: 358 of the 434 analysed structures
+(82%) carry more than one scored interface, usually heavy-antigen and light-antigen both
+supervised. A crop serving one and not the others forces a second forward pass per structure and
+gives back the speedup cropping exists for, so `joint_usable_rate` -- every interface usable on
+the same crop -- is the number that decides viability, not the per-interface rate.
+
+### A/B, 886 paired interfaces x 1000 crops, crop_size 256, d0 pinned uncropped
+
+| | Protenix anchor | pair-restricted | change |
+|---|---|---|---|
+| usable crop rate | 0.7234 | **0.9872** | +0.2639 |
+| **JOINT usable (all interfaces)** | 0.6961 | **0.9669** | +0.2708 |
+| interface kept, 15 A | 0.6251 | **0.8954** | +0.2703 |
+| rho cropped (vs 0.6429 uncropped) | 0.6736 | **0.6951** | +0.0215 |
+| regret cropped (vs 0.0621 uncropped) | 0.0560 | **0.0505** | -0.0055 |
+| rho delta | +0.0306 | **+0.0522** | +0.0215 |
+| regret delta | -0.0061 | **-0.0116** | -0.0055 |
+| tokens kept | 255.46 | 255.46 | 0.000 |
+
+    interfaces with joint usable == 1.000:   20.0%  ->  72.2%
+    interfaces with joint usable  < 0.50:    15.2%  ->   0.7%
+
+**Unusable crops fall from 27.7% to 1.3%**, and the 15.2% of interfaces where MORE THAN HALF of
+Protenix's crops were unusable essentially vanishes, to 0.7%.
+
+**The label also gets better, not merely more available.** Against the same uncropped baseline the
+pair-anchored crop reaches rho 0.6951 and regret 0.0505 -- roughly DOUBLE the improvement the
+unmodified crop managed on both. That is the dilution effect operating as predicted: anchoring at
+the epitope keeps 89.5% of the interface instead of 62.5%, so what the crop discards is almost
+entirely far pairs that barely differ between a good pose and a bad one.
+
+**Token count is identical at 255.46**, so none of this costs speed. The crop is the same size; it
+is merely placed where the supervision is.
+
+**WHAT THIS DOES NOT SHOW.** It is a statement about the LABEL, not about a trained head. It says
+a cropped head would be trained against a target that still orders poses correctly -- slightly
+better than uncropped, in fact -- and that one crop per structure suffices 96.7% of the time. It
+does not show that training on crops produces a better head; sections 13 and 14 found cropped
+training improved rho without improving selection, three times. The remaining 3.3% of crops that
+miss an interface still need a policy: resample, fall back to uncropped, or skip the update.
+
+**Label coordinates are used to build the crop**, which is legitimate for a TRAINING crop --
+Protenix does the same, and evaluates uncropped -- but it is not a deployable inference-time crop.
+
+    CROP_THREADS=4 python -I run_logging/crop_itm_rank.py --crops 1000 --workers 8 --shard $s \
+        [--anchor-pair-only] --out training/runs/crop_ab_{protenix,pair}/rank.csv
