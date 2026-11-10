@@ -4002,6 +4002,10 @@ def main():
     # and is not representative of the 499 that follow.
     _T = collections.defaultdict(float)
     _TN = collections.defaultdict(int)
+    # {(bucket_key, n_tok): [seconds, calls]} -- forward and backward GPU time against the pose's
+    # OWN token count, so the cost-vs-length exponent is measured rather than fitted. See the
+    # comment on _gpu_span for why the trajectory.csv-derived version was not good enough.
+    _T_TOK = {}
     # [units run UNCHECKPOINTED, units run CHECKPOINTED] under --ckpt-token-threshold. Reported
     # per epoch because a threshold that silently matches nothing -- or everything -- looks
     # exactly like a threshold that works until the timings fail to move.
@@ -4149,22 +4153,37 @@ def main():
     # anyway.
     _ev_pending = []
 
-    def _gpu_span(key):
+    # PER-TOKEN-COUNT GPU TIME. The aggregate buckets answer "where did the epoch go" but not
+    # "how does it scale", and the scaling is what decides whether cropping is worth the change.
+    # It had to be inferred from trajectory.csv's wall_s differences instead, which absorb the
+    # optimiser step, the all-reduce and the trunk load, and are logged at 0.1 s resolution -- so
+    # a log-log fit on them read an exponent of 1.31 when fitting an additive constant alongside
+    # the power gave 2.47. These are CUDA events around the forward and the backward only, keyed
+    # by the pose's own token count, so the exponent comes out of measurement rather than a fit.
+    #
+    # COST: one dict update per pose per pass, against a ~0.45 s pose. The table is a few hundred
+    # token values, printed once per epoch and reset with the other counters.
+    def _gpu_span(key, n_tok=None):
         if not torch.cuda.is_available():
             return None, None
         e0 = torch.cuda.Event(enable_timing=True)
         e1 = torch.cuda.Event(enable_timing=True)
         e0.record()
-        _ev_pending.append((key, e0, e1))
+        _ev_pending.append((key, e0, e1, n_tok))
         return e0, e1
 
     def _drain_gpu_spans():
         if not _ev_pending:
             return
         torch.cuda.synchronize()
-        for key, e0, e1 in _ev_pending:
-            _T[key] += e0.elapsed_time(e1) / 1000.0
+        for key, e0, e1, n_tok in _ev_pending:
+            _dt = e0.elapsed_time(e1) / 1000.0
+            _T[key] += _dt
             _TN[key] += 1
+            if n_tok is not None and n_tok > 0:
+                _slot = _T_TOK.setdefault((key, int(n_tok)), [0.0, 0])
+                _slot[0] += _dt
+                _slot[1] += 1
         _ev_pending.clear()
     nonfinite = {"n": 0}
     code_drift = {"n": 0, "warned": False}
@@ -5186,7 +5205,7 @@ def main():
         def _one_pose(i):
             x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
                 else torch.as_tensor(poses[i:i + 1], dtype=torch.float32, device=dev)
-            _fe0, _fe1 = _gpu_span("gpu_forward")
+            _fe0, _fe1 = _gpu_span("gpu_forward", n_tok)
             # WHICH POSE THE FROZEN-PREFIX CACHE IS LOOKING AT, and whether it may fill.
             #
             # (pdb, arm_seed, pose) IS ENOUGH OF AN IDENTITY because the cache is dropped at every
@@ -5436,7 +5455,7 @@ def main():
             # first pose -- the same defect review found at line 1067 with `want`. One binding,
             # above both readers.
             if not a.loss_only and not score_only:
-                _be0, _be1 = _gpu_span("gpu_backward")
+                _be0, _be1 = _gpu_span("gpu_backward", n_tok)
                 # UNDER --grad-probe: the two terms are measured with torch.autograd.grad,
                 # which returns gradients WITHOUT touching any parameter's .grad. The first
                 # version used .backward() with opt.zero_grad() around it, which wiped every
@@ -7564,6 +7583,7 @@ def main():
             for _k in _tr_stat:
                 _tr_stat[_k] = 0
             _T0, _TN0 = dict(_T), dict(_TN)
+            _T_TOK0 = {k: list(v) for k, v in _T_TOK.items()}
             # PEAK MEMORY PER EPOCH, reset here so each epoch reports its own rather than the
             # high-water mark of the whole run. This is the number that decides whether activation
             # checkpointing can stay off: --mem-log answers it too but emits one line per pose,
@@ -7871,6 +7891,28 @@ def main():
                      "rank_gather", "pose_a_total")
             _acc = sum(v for k, v, c in _parts if k in _EXCL and c)
             print(f"  [rank {rank}] epoch {ep + 1} took {_ep_s/60:.1f} min -- {_shown}", flush=True)
+            # COST VERSUS LENGTH, measured. Buckets are fixed so the lines are comparable epoch to
+            # epoch and arm to arm; a token value with fewer than 8 poses behind it in this epoch
+            # is still counted, since the bucket is the unit of report, not the token value.
+            _BK = (0, 350, 450, 550, 650, 800, 1000, 1300, 10 ** 9)
+            _tb = {}
+            for (_k, _nt), _v in _T_TOK.items():
+                _p = _T_TOK0.get((_k, _nt), [0.0, 0])
+                _ds, _dc = _v[0] - _p[0], _v[1] - _p[1]
+                if _dc <= 0:
+                    continue
+                _b = max(_i for _i in range(len(_BK) - 1) if _nt >= _BK[_i])
+                _slot = _tb.setdefault(_b, {"s": 0.0, "n": 0, "tok": 0.0})
+                _slot["s"] += _ds
+                _slot["n"] += _dc
+                _slot["tok"] += _nt * _dc
+            if _tb:
+                _line = "  ".join(
+                    f"[{_BK[_b]}-{'inf' if _BK[_b+1] >= 10**9 else _BK[_b+1]}] "
+                    f"{1000*_d['s']/_d['n']:.0f}ms/{_d['n']}@{_d['tok']/_d['n']:.0f}tok"
+                    for _b, _d in sorted(_tb.items()))
+                print(f"  [rank {rank}] epoch {ep + 1} gpu time by token count "
+                      f"(forward+backward, mean per call): {_line}", flush=True)
             # DID THE PREFETCH ACTUALLY FIRE? crop_slice alone cannot answer it: a miss falls back
             # to the inline crop and ticks the same counter, which is exactly how the first
             # version's 100% miss rate looked identical to no prefetch at all.
