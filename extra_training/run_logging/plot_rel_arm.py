@@ -38,10 +38,20 @@ PANELS = [("pae", "PAE loss", "PAE loss (all ranks)"),
 COLORS = ["tab:blue", "tab:red", "tab:green", "tab:purple"]
 
 
+#: a partial epoch holding less than this fraction of a full one is a FRAGMENT, not a data point:
+#: the run was stopped partway and a handful of poses says nothing about the epoch.
+FRAGMENT = 0.05
+
+
 def arm(rid):
     """{panel: {epoch: value}}, plus the set of partial epochs."""
     means = EC.epoch_means(rid)
     logs = EC.log_series(rid)
+    full = max((n for _v, n, _s in means.values()), default=0)
+    # Drop fragments outright. A stopped arm leaves a few hundred poses in the next epoch, and
+    # at 3.52 against a 2.94-3.00 curve that single point set the whole y-axis and squashed five
+    # real epochs into the bottom sixth of the panel.
+    means = {e: v for e, v in means.items() if v[1] >= FRAGMENT * full}
     return ({"pae": {e: v for e, (v, _n, _s) in means.items()}, **logs},
             EC.partial_epochs(means), EC.run_chain(rid))
 
@@ -69,15 +79,36 @@ def main():
             for e, v in pts:
                 if e in partial:          # hollow: fewer poses behind it
                     ax.plot([e], [v], "o", mfc="none", mec=col, mew=2, ms=7)
+        # SCALE TO COMPLETE EPOCHS. A partial one is drawn hollow but must not set the limits:
+        # it is a mean over fewer poses and is routinely an outlier.
+        done = [v for r in rids for e, v in data[r][0].get(key, {}).items()
+                if e not in data[r][1] and v == v]
+        if len(done) > 1:
+            lo, hi = min(done), max(done)
+            m = (hi - lo) * .28 or abs(hi) * .01 or 1e-4
+            ax.set_ylim(lo - m, hi + m)
         ax.set_xlabel("epoch"); ax.set_ylabel(ylab); ax.set_title(title, fontsize=11)
         ax.grid(alpha=.3); ax.xaxis.set_major_locator(MaxNLocator(integer=True))
-        if len(rids) > 1 and ax.get_legend_handles_labels()[0]:
-            ax.legend(fontsize=9)
+    # ONE LEGEND, OUTSIDE THE AXES. A per-panel legend sat at the upper right INSIDE the data
+    # area and started covering points as soon as a curve climbed into that corner -- rho reached
+    # 0.3000 at epochs 15-16 and spread 0.4370 at epoch 15, both in the top-right of their panels,
+    # exactly where the box was. Moving it under the figure cannot collide with anything by
+    # construction, which placement heuristics like loc="best" only promise per render.
+    handles, labels = [], []
+    for ax in axes.ravel():
+        for h, l in zip(*ax.get_legend_handles_labels()):
+            if l not in labels:
+                handles.append(h); labels.append(l)
     sub = "  vs  ".join(rids) if len(rids) > 1 else rids[0]
     fig.suptitle(f"TRAINING metrics -- {sub}"
                  + ("   (hollow = partial epoch)" if any(d[1] for d in data.values()) else ""),
                  fontsize=13)
-    fig.tight_layout(rect=[0, 0, 1, .94])
+    if len(rids) > 1 and handles:
+        fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
+                   fontsize=10, frameon=False, bbox_to_anchor=(0.5, 0.005))
+        fig.tight_layout(rect=[0, .045, 1, .94])
+    else:
+        fig.tight_layout(rect=[0, 0, 1, .94])
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     fig.savefig(out, dpi=130)
     print(f"-> {out}")
