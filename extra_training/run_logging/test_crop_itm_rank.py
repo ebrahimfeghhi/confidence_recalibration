@@ -14,7 +14,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from crop_itm_rank import itm_over_subsets          # noqa: E402
+from crop_itm_rank import itm_over_subsets, pick_pose   # noqa: E402
 
 
 def reference(W, M, crop, row_tokens):
@@ -58,6 +58,42 @@ def case(name, P, N, crop, seed, drop_rows=0):
         ok = d < 1e-5
     print(f"  {'PASS' if ok else 'FAIL'}  {name:46s} max|diff| {d:.2e}  live rows {int(nlive[0])}")
     return ok
+
+
+def tie_rule_gate():
+    """pick_pose must agree with phase_k_eval's max(v, key=(iptm, -seed, -sample)).
+
+    The first version minimised (-score, -seed, -sample), whose second key maximises seed -- the
+    OPPOSITE pick among tied scores. The 10-gate suite did not exercise pick_pose at all, so a
+    defect in the selector behind the headline statistic went unseen. Caught in review.
+    """
+    def evaluator(score, keys):
+        return max(range(len(score)), key=lambda i: (float(score[i]), -keys[i][0], -keys[i][1]))
+
+    cases = [
+        ("two-way tie, smaller seed must win",
+         [0.5, 0.5], [(500001, 0), (500000, 0)]),
+        ("two-way tie, reversed row order",
+         [0.5, 0.5], [(500000, 0), (500001, 0)]),
+        ("tie on seed, smaller sample must win",
+         [0.7, 0.7], [(500000, 3), (500000, 1)]),
+        ("three-way tie across seeds and samples",
+         [0.9, 0.9, 0.9], [(500002, 1), (500000, 4), (500001, 0)]),
+        ("no tie, plain argmax",
+         [0.1, 0.9, 0.3], [(500000, 0), (500001, 2), (500002, 1)]),
+        ("tie is NOT the global max",
+         [0.4, 0.4, 0.8], [(500000, 0), (500001, 1), (500002, 2)]),
+    ]
+    good = []
+    for name, sc, keys in cases:
+        sc = np.array(sc, dtype=np.float64)
+        got, tied = pick_pose(sc, keys)
+        want = evaluator(sc, keys)
+        ok = got == want
+        good.append(ok)
+        print(f"  {'PASS' if ok else 'FAIL'}  {name:46s} picked {keys[got]} want {keys[want]}"
+              + ("  (tied)" if tied else ""))
+    return all(good)
 
 
 def real_label_gate():
@@ -161,6 +197,7 @@ def main():
           f"max|diff| {float(np.abs(fixed - buggy).max()):.2e}")
     good.append(differs)
 
+    good.append(tie_rule_gate())
     good.append(real_label_gate())
 
     print(f"\n{sum(good)}/{len(good)} gate(s) passed")

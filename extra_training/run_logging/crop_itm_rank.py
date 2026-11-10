@@ -200,10 +200,14 @@ def pick_pose(score, keys):
     -- a crop can flatten scores outright -- so the rule matters more here than in the evaluator.
     """
     top = float(np.max(score))
-    cand = np.nonzero(score >= top - 1e-12)[0]
+    cand = np.nonzero(score == top)[0]          # EXACT ties, to match the evaluator exactly
     if len(cand) == 1:
         return int(cand[0]), 0
-    best = min(cand, key=lambda i: (-score[i], -keys[i][0], -keys[i][1]))
+    # THE DIRECTION IS EASY TO GET BACKWARD AND I DID. The evaluator maximises
+    # (iptm, -seed, -sample), so among equal scores the SMALLEST seed and sample win. The first
+    # version here minimised (-score, -seed, -sample), whose second key maximises seed -- the
+    # opposite pick. Caught in review; test_crop_itm_rank exercises it directly now.
+    best = max(cand, key=lambda i: (float(score[i]), -keys[i][0], -keys[i][1]))
     return int(best), 1
 
 

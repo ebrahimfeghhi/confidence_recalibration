@@ -42,9 +42,19 @@ def load(pattern):
 def main(src, out):
     rows, files = load(src)
     f = lambda k: np.array([float(r[k]) for r in rows])              # noqa: E731
-    rho_d, reg_d, ret = f("delta"), f("regret_delta"), f("retention_mean")
-    ok = ~(np.isnan(rho_d) | np.isnan(reg_d))
-    rho_d, reg_d, ret = rho_d[ok], reg_d[ok], ret[ok]
+    # THE COLUMN WAS RENAMED AND THIS WAS NOT UPDATED -- plotting the new schema raised KeyError.
+    # Falls back so old CSVs still plot, and prefers the pair-specific 15 A interface retention,
+    # which is what the third panel's question is actually about.
+    def col(*names):
+        for n in names:
+            if n in rows[0]:
+                return f(n)
+        raise SystemExit(f"STOP: none of {names} in the CSV; columns are {list(rows[0])}")
+    rho_d, reg_d = f("delta"), f("regret_delta")
+    ret = col("iface_ret_15a_mean", "retention_mean")
+    usable = col("usable_rate") if "usable_rate" in rows[0] else np.full(len(rho_d), np.nan)
+    ok = ~(np.isnan(rho_d) | np.isnan(reg_d) | np.isnan(ret))
+    rho_d, reg_d, ret, usable = rho_d[ok], reg_d[ok], ret[ok], usable[ok]
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
@@ -73,7 +83,7 @@ def main(src, out):
         axes[2].plot(mid, med, "-o", color="#2e8b57", lw=2, ms=6, label="binned median")
         axes[2].legend(fontsize=9, frameon=False, loc="upper center",
                        bbox_to_anchor=(.5, -.16))
-    axes[2].set_xlabel("fraction of the interface's scored tokens kept")
+    axes[2].set_xlabel("interface tokens kept (15 A, representative-atom proximity)")
     axes[2].set_ylabel("DockQ regret delta")
     axes[2].set_title("does damage track losing the interface?", fontsize=11)
     axes[2].grid(alpha=.3)
@@ -91,7 +101,11 @@ def main(src, out):
         print(f"  {nm:13s} mean {v.mean():+.4f}  median {np.median(v):+.4f}  "
               f"sd {v.std():.4f}  p10 {np.percentile(v,10):+.4f}  p90 {np.percentile(v,90):+.4f}  "
               f"worse on {100*(v>0).mean() if 'regret' in nm else 100*(v<0).mean():.0f}% of interfaces")
-    print(f"  retention     mean {ret.mean():.3f}  p10 {np.percentile(ret,10):.3f}")
+    print(f"  iface ret 15A mean {ret.mean():.3f}  p10 {np.percentile(ret,10):.3f}")
+    if not np.isnan(usable).all():
+        print(f"  usable crops  mean {np.nanmean(usable):.3f}  p10 "
+              f"{np.nanpercentile(usable,10):.3f}  "
+              f"interfaces under 50% usable: {100*np.nanmean(usable<.5):.0f}%")
     print(f"  regret: uncropped mean {f('regret_full')[ok].mean():.4f}  "
           f"cropped mean {f('regret_crop_mean')[ok].mean():.4f}  "
           f"crop-to-crop sd {f('regret_crop_std')[ok].mean():.4f}")
