@@ -11,7 +11,22 @@ cd "$(dirname "$0")/.." || exit 1
 RID="${1:?usage: push_epoch.sh <rid> [epoch]}"
 EP="${2:-?}"
 
-python3 run_logging/results_table.py "$RID" > RESULTS.md 2>/dev/null || true
+# THE INTERPRETER IS LOAD-BEARING. This was `python3`, the system python, which has no numpy --
+# results_table.py imports eval_curve, which imports numpy, so every call died on ModuleNotFound.
+# The `> RESULTS.md` truncated the file FIRST and `2>/dev/null || true` swallowed the traceback,
+# so RESULTS.md sat at zero bytes for every epoch and got committed that way. Build to a temp file
+# and move it into place only on success, so a future failure leaves the last good table standing
+# instead of silently publishing an empty one.
+PY=/home/ebrahim/Protenix/.venv/bin/python
+if "$PY" -I run_logging/results_table.py "$RID" > RESULTS.md.tmp 2>RESULTS.md.err && \
+   [ -s RESULTS.md.tmp ]; then
+  mv RESULTS.md.tmp RESULTS.md
+  rm -f RESULTS.md.err
+else
+  echo "  WARNING: results_table.py failed; keeping the previous RESULTS.md"
+  head -3 RESULTS.md.err 2>/dev/null
+  rm -f RESULTS.md.tmp
+fi
 
 cd ..
 git add -- "extra_training/figures/${RID}_train.png" \
