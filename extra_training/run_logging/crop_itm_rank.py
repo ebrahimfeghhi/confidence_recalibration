@@ -179,6 +179,32 @@ def itm_over_subsets(W, M, keep, row_tokens):
     return (t * live[None]).sum(1) / np.clip(n_live, 1.0, None)[None], n_live
 
 
+def side_counts(M, keep, row_tokens, col_in_x, col_in_y):
+    """Distinct surviving tokens on EACH side of a scored pair, per crop.
+
+    A PRODUCT THRESHOLD IS NOT ENOUGH, which is the point raised in review: a crop keeping one
+    antibody token against 256 antigen tokens scores 256 "pairs" that all share a single anchor
+    row, and the resulting iTM is one row's opinion. Flooring the SMALLER side is what rules that
+    out. Roles are not needed -- the two sides of the scored pair suffice, so this does not depend
+    on chain_roles being correct.
+
+    Counts a token only if it actually participates in a surviving scored pair, not merely if it
+    is inside the crop: an antigen token kept by the crop but whose partners were all dropped
+    contributes nothing.
+    """
+    # TWO MATMULS, NOT AN [F, N, C] BOOLEAN. The direct form is 600 x 600 x 250 booleans per
+    # chunk per interface and far too slow over 886 interfaces; both "is this row live" and "is
+    # this column live" are reductions linear in the crop indicator, so BLAS does them.
+    row_keep = (keep[row_tokens] > 0)                               # [F, C]
+    rows_live = ((M @ keep) > 0) & row_keep                         # [F, C]
+    cols_live = ((M.T @ row_keep.astype(np.float32)) > 0) & (keep > 0)   # [N, C]
+    tok_live = cols_live.copy()                                     # [N, C]
+    np.logical_or.at(tok_live, row_tokens, rows_live)
+    nx = (col_in_x[:, None] & tok_live).sum(0)
+    ny = (col_in_y[:, None] & tok_live).sum(0)
+    return nx, ny
+
+
 def spearman(x, y):
     """Spearman rho with average ranks; nan when either side is constant."""
     if len(x) < 3:
@@ -290,15 +316,23 @@ def sample_crops_pair_anchor(xyz, resolved, chain_id, ifaces, crop_size, n_crops
     cand = torch.nonzero(elig, as_tuple=True)[0]
     if cand.numel() == 0:
         return [], 0
+    # ENUMERATE, DO NOT SAMPLE. The crop is topk(distance to anchor) and therefore DETERMINISTIC
+    # given the anchor, so the number of distinct crops a structure can ever have is exactly its
+    # number of eligible anchors -- median 116 across the manifest, max 414. Sampling 1000 times
+    # just redraws the same ~116 crops nine times each; the smoke test showed 38 unique of 50.
+    # Enumerating gives every structure its true maximum diversity, is exact rather than a
+    # sampling artefact, and is cheaper because there is no redundancy. n_crops is a CAP.
+    if n_crops < cand.numel():
+        g = torch.Generator().manual_seed(rng_seed)
+        cand = cand[torch.randperm(cand.numel(), generator=g)[:n_crops]].sort().values
     noise = torch.arange(N).float() * 1e-3            # Protenix's own tie-break
     out = []
-    for _ in range(n_crops):
-        a_idx = int(cand[torch.randint(0, cand.numel(), (1,)).item()])
-        dist = torch.cdist(xyz[a_idx:a_idx + 1], xyz)[0]
+    for a_idx in cand.tolist():
+        dist = torch.cdist(xyz[int(a_idx):int(a_idx) + 1], xyz)[0]
         dist = torch.where(resolved, dist, torch.inf)
         k = min(crop_size, N)
         out.append(torch.topk(dist + noise, k, largest=False).indices.sort().values.numpy())
-    return out, int(cand.numel())
+    return out, int(elig.sum())
 
 
 def crop_seed(base, iface):
@@ -383,6 +417,22 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, pose_keys, xyz, resolved, as
             gt[thr] = (np.zeros(0, dtype=int), np.full(len(crops), np.nan, np.float32))
 
     row_tokens = np.asarray(hf_rows)                # frame row -> token index
+    in_x = ((asym == ax)).numpy()
+    in_y = ((asym == ay)).numpy()
+    side_min = np.empty(len(crops), dtype=np.float64)
+    CH2 = 250
+    for lo in range(0, len(crops), CH2):
+        nx, ny = side_counts(M, keep[:, lo:lo + CH2], row_tokens, in_x, in_y)
+        side_min[lo:lo + len(nx)] = np.minimum(nx, ny)
+    # THE REFERENCE FOR AN ABSOLUTE FLOOR IS THE UNCROPPED SCORABLE COUNT, not the chain length.
+    # A flat floor of 16 starves a fifth of the manifest because many antigens are short peptides,
+    # and min(16, CHAIN tokens) does not fix it: 12qa's antigen is 15 tokens of which only 9 ever
+    # participate in a scored pair, so that clause sets an unreachable floor of 15. min(16,
+    # uncropped scorable) is reachable by construction.
+    _fx, _fy = side_counts(M, np.ones((N, 1), dtype=np.float32), row_tokens, in_x, in_y)
+    side_min_full = float(min(_fx[0], _fy[0]))
+    rel_side = side_min / max(side_min_full, 1.0)
+
     full_keep = np.ones((N, 1), dtype=np.float32)
     itm_full = itm_over_subsets(W, M, full_keep, row_tokens)[0][:, 0]
     rho_full = spearman(itm_full, dockq)
@@ -457,6 +507,19 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, pose_keys, xyz, resolved, as
                round(float((rhos[ok_rho] < rho_full - t).mean()), 6) if ok_rho.any() else float("nan")
                for t in (0.05, 0.10, 0.20)},
             "regret_delta": round(float(regrets[ok_reg].mean() - regret_full), 6),
+            # THE SMALLER SURVIVING SIDE of the scored pair, which is what a geometric quality
+            # gate should floor. A product threshold passes 1 x 256, where every "pair" shares one
+            # anchor row and the iTM is one row's opinion. Raised in review.
+            "side_min_mean": round(float(side_min.mean()), 2),
+            "side_min_p10": round(float(np.percentile(side_min, 10)), 1),
+            "side_min_full": round(side_min_full, 1),
+            **{f"side_lt_{k:02d}": round(float((side_min < k).mean()), 6) for k in (4, 8, 16, 24)},
+            # floor = min(k, uncropped scorable) -- reachable for short peptides by construction
+            **{f"side_capped_{k:02d}": round(float((side_min < min(k, side_min_full)).mean()), 6)
+               for k in (8, 16, 24, 32)},
+            # scale-free alternative: keep at least this fraction of the scorable smaller side
+            **{f"side_rel_{int(100*t):02d}": round(float((rel_side < t).mean()), 6)
+               for t in (0.25, 0.50, 0.75)},
             "n_crops_degenerate": int((live_rows == 0).sum()),
             "live_rows_mean": round(float(live_rows.mean()), 2),
             "scored_token_retention_mean": round(float(ret.mean()), 6),
@@ -622,7 +685,9 @@ def main():
               "tie_full", "rho_full", "rho_crop_mean", "rho_crop_std", "rho_crop_p10",
               "rho_crop_p90", "delta", "oracle_dockq", "regret_full", "regret_crop_mean",
               "regret_crop_std", "regret_crop_p90", "regret_crop_worse_frac", "regret_delta",
-              "n_crops_degenerate", "live_rows_mean", "scored_token_retention_mean",
+              "side_min_mean", "side_min_p10", "side_min_full", "side_lt_04", "side_lt_08",
+              "side_lt_16", "side_lt_24", "side_capped_08", "side_capped_16", "side_capped_24",
+              "side_capped_32", "side_rel_25", "side_rel_50", "side_rel_75", "n_crops_degenerate", "live_rows_mean", "scored_token_retention_mean",
               "scored_token_retention_p10", "iface_tok_8a", "iface_tok_15a",
               "iface_ret_8a_mean", "iface_ret_15a_mean", "iface_ret_8a_p10",
               "iface_ret_15a_p10", "kept_tokens_mean"]

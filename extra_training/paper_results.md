@@ -1596,3 +1596,78 @@ crop) and any per-epoch cost outside poses, so epoch figures remain an upper bou
 and it costs 0.18x of speed against the three-tier version.
 
     python -I run_logging/crop_policy_eval.py
+
+---
+
+## 24. THE CROP POOL IS BUILT. 96.7% of structures need only 256, and NOTHING falls through to uncropped
+
+Sections 21-23 established that the pair-restricted anchor fixes Protenix's crop and that the
+label survives cropping. This is the pool a cropped arm would actually train on.
+
+### How it is built
+
+Crops are **enumerated, not sampled**. The crop is `topk(distance to anchor)` and therefore
+DETERMINISTIC given its anchor, so the number of distinct crops a structure can ever have is
+exactly its number of eligible anchors -- median 116, min 19, max 414 across the manifest.
+Sampling 1000 times just redraws the same ~116 crops nine times over; the first smoke test
+returned 38 unique masks from 50 draws. Enumerating gives every structure its true maximum
+diversity and is cheaper for having no redundancy.
+
+**THE ELIGIBLE-ANCHOR SET DOES NOT GROW WITH CROP SIZE.** It is fixed by the 15 A pair-contact
+rule, so a structure with 74 anchors has 74 crops at 256 and 74 at 768 -- the same 74 anchors.
+What a larger size provides is a DIFFERENT mask from each of those anchors, so the candidate pool
+is `anchors x sizes`, which is why escalation can add crops at all.
+
+### The selection rule, at the owner's direction
+
+    collect every crop at 256 whose DockQ regret is within 0.05 of the uncropped selection
+    if fewer than 40:  add 384's passing crops, then 512, then 768
+    if still fewer than 40:  run the structure uncropped
+
+Applied uniformly, including to the 412 single-seed structures whose regret comes from 5 poses and
+is noisy. Special-casing them was considered and rejected: the noise costs a few crops from a pool
+that is usually over a hundred, and anything it pushes under the floor is caught by escalation.
+ALL passing crops are kept, not just 40 -- the floor triggers escalation, it is not a cap.
+
+### Result over 846 structures
+
+| | n | share |
+|---|---|---|
+| **256 alone sufficed** | **818** | **96.7%** |
+| needed escalation | 28 | 3.3% |
+| **fell through to uncropped** | **0** | **0%** |
+
+    selected crops per structure:  min 40   median 109   mean 112   max 269
+
+    rungs used:  256 only            817
+                 256+384              21
+                 256+384+512           5
+                 256+512               1
+                 384 only              1
+                 384+512+768           1
+
+**Nothing is uncroppable.** `9f1i` and `9qqe` had ZERO passing crops at 256 -- section 23's two
+worst structures -- and both were rescued by a larger window. That settles a question section 23
+left open: those WERE coverage failures, and the 15 A retention measure was simply too blunt to
+see it. One structure needed 768 and one skipped 256 entirely.
+
+**The speedup survives.** 96.7% of structures carry only 256-token crops, so the blended cost is
+within a hair of the 3.56x that fixed-256 gives.
+
+**Every structure has at least 40 crops**, so a 40-epoch arm draws a fresh view every epoch, and
+the median structure has 109 for a longer run.
+
+### Why the bad crops were bad -- still unexplained
+
+Crops that worsen regret by >0.05 keep 0.800 of the interface against 0.883 for good ones, and
+their smaller surviving side is 42.3 tokens against 48.6. Real differences, but far too small to
+be the mechanism: the 25 majority-bad structures retain **87.6%** of their interface. Their
+uncropped regret is normal (0.053 vs 0.057) so selection is not already broken, and the
+narrow-margin hypothesis fails too -- DockQ gap between the best and second-best pose correlates
+with bad-crop fraction at only +0.162. Best predictors are interface retention (-0.456) and
+structure size (+0.420), which together leave most of the variance unexplained. Recorded as open.
+
+    python -I run_logging/build_crop_pool.py --crops 1000 --crop-size <N> --workers 20 \
+        --shard $s --skip-existing --out training/crop_pool_<N>
+    python -I run_logging/select_crop_pool.py --min-crops 40 --regret 0.05 \
+        --out training/crop_final
