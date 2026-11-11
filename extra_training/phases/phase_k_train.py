@@ -4098,6 +4098,22 @@ def main():
     # than it has. Filter both.
     _CROPTOK = {}
     _CROPPOOL = {}
+    # {pdb: bincount of the UNCROPPED asym_id}, so n_pair_tokens for a pair (i, j) is
+    # counts[i] + counts[j] exactly as (asym == i) | (asym == j) would have summed it.
+    _UNCROP_CHAIN_N = {}
+
+    def _uncrop_npt(pdb_, pair_):
+        """Uncropped scored chain-pair token count, or None when not cropping."""
+        if not _CROPPOOL:
+            return None
+        c_ = _UNCROP_CHAIN_N.get(pdb_)
+        if c_ is None:
+            raise SystemExit(f"STOP: no uncropped chain counts cached for {pdb_}; the crop mask "
+                             f"must be applied before the rel score is taken.")
+        i_, j_ = int(pair_[0]), int(pair_[1])
+        if i_ >= len(c_) or j_ >= len(c_):
+            raise SystemExit(f"STOP: {pdb_} pair {pair_} is outside its uncropped asym range.")
+        return int(c_[i_]) + int(c_[j_])
     if a.crop_pool:
         # ONE FILE PER STRUCTURE, each holding N masks of possibly DIFFERENT lengths -- a pool can
         # mix crop sizes, because 28 structures needed a larger rung to reach 40 passing crops.
@@ -4154,8 +4170,14 @@ def main():
         some units were cropped and some were not would still write a complete trajectory and
         name itself after the crop.
         """
-        ntok_ = int(np.asarray(zc_["ci_feat_asym_id"]).reshape(-1).shape[0])
+        _asym_full = np.asarray(zc_["ci_feat_asym_id"]).reshape(-1)
+        ntok_ = int(_asym_full.shape[0])
         if _CROPPOOL:
+            # THE UNCROPPED CHAIN-PAIR SIZE, recorded HERE because this is the last point at which
+            # the full token set is in hand -- everything downstream sees the cropped features.
+            # iptm_pooled needs it to pin d0 to the same value the rel target was built with.
+            if pdb_ not in _UNCROP_CHAIN_N:
+                _UNCROP_CHAIN_N[pdb_] = np.bincount(_asym_full.astype(np.int64))
             _ent = _CROPPOOL.get(pdb_)
             if _ent is None:
                 raise SystemExit(f"STOP: --crop-pool has no entry for {pdb_}. The pool holds "
@@ -5464,7 +5486,8 @@ def main():
                     # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
                     # describe one quantity and the backward would move another.
                     _v = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
-                                         pool=a.rank_pool)
+                                         pool=a.rank_pool,
+                                         n_pair_tokens=_uncrop_npt(pdb, _p))
                     if _v is not None:
                         _sc[_k_] = float(_v.detach())
                 del pred, x, plddt, pae, pde, resolved
@@ -5514,7 +5537,8 @@ def main():
                     # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
                     # describe one quantity and the backward would move another.
                     _v = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
-                                         pool=a.rank_pool)
+                                         pool=a.rank_pool,
+                                         n_pair_tokens=_uncrop_npt(pdb, _p))
                     if _v is None:
                         continue
                     _ifc = _iface_of.get((pdb, _p))

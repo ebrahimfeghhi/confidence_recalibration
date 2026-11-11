@@ -928,7 +928,7 @@ def pair_terms_distance(s_vals, dq_vals, rel_scale=DEFAULT_REL_SCALE):
 DEFAULT_REL_STD_FLOOR = 0.02
 
 
-def iptm_pooled(pae_logits, feat, configs, pair, pool="mean"):
+def iptm_pooled(pae_logits, feat, configs, pair, pool="mean", n_pair_tokens=None):
     """chain_pair ipTM for ONE pose and pair, pooled over anchor rows by `pool`.
 
     pool="max" is shipped ipTM and reproduces iptm() exactly. pool="mean" averages the anchor
@@ -943,6 +943,18 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean"):
     amount set by crop size rather than by pose quality.
     """
     if pool == "max":
+        # THE MAX PATH CANNOT PIN d0. iptm() delegates to Protenix's calculate_chain_based_ptm,
+        # which derives d0 from the asym_id it is handed -- the CROPPED one. Patching vendor code
+        # to accept an override is not worth it for a path this arm does not train on
+        # (rank_pool=mean), so it refuses instead of silently scoring with a different kernel than
+        # the target. Raised in external review.
+        if n_pair_tokens:
+            raise SystemExit(
+                "STOP: --rank-pool max cannot be used with a cropped run. iptm() computes d0 "
+                "inside Protenix's calculate_chain_based_ptm from the cropped asym_id, so the "
+                "predicted score would use a different TM kernel than the rel target, which pins "
+                "d0 at the uncropped chain-pair count. Use --rank-pool mean, or extend "
+                "pae_row_weight to cover the max pooling.")
         return iptm(pae_logits, feat, configs, pair)
     if pool != "mean":
         raise ValueError(f"pool must be 'mean' or 'max', got {pool!r}")
@@ -963,7 +975,14 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean"):
           & ((arow == i) | (arow == j)).unsqueeze(1))
     if int(tm.sum()) == 0:
         return None
-    t, cnt = rw.row_t(pae_logits, live, tm, n_pair_tokens=int(tok.sum()),
+    # d0 COMES FROM THE UNCROPPED PAIR WHEN ONE IS GIVEN. feat's asym_id is the
+    # CROPPED token set under --crop-pool, so int(tok.sum()) is the cropped chain-pair
+    # length and calculate_normalization would shrink d0 with the crop -- while the rel
+    # TARGET pins d0 at the uncropped count. Prediction and target would then use
+    # different kernels: at a 600 -> 256 pair-token crop, w(10 A) moves 0.423 -> 0.259.
+    # Caught in external review before any cropped run started.
+    _npt = int(n_pair_tokens) if n_pair_tokens else int(tok.sum())
+    t, cnt = rw.row_t(pae_logits, live, tm, n_pair_tokens=_npt,
                       min_bin=bp["min_bin"], max_bin=bp["max_bin"])
     if t is None:
         return None
