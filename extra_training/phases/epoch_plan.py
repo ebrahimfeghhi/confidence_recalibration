@@ -19,7 +19,8 @@ PAE-only arm has no such requirement and a fixed-size crop equalises the work an
 """
 
 
-def cover_all(flat, world, rank, seed, ep, order="shuffle", tokens=None):
+def cover_all(flat, world, rank, seed, ep, order="shuffle", tokens=None, balance=False,
+              per_step=0):
     """This rank's units for epoch `ep`: every unit once, dealt round-robin across ranks.
 
     flat   [(pdb, label_path, crop), ...]   every unit of the epoch, in any order
@@ -50,14 +51,53 @@ def cover_all(flat, world, rank, seed, ep, order="shuffle", tokens=None):
         units.sort(key=lambda _t: (tokens.get(_t[0], 0), _t[0]))
     elif order != "manifest":
         random.Random(seed + ep).shuffle(units)
+    # PAD FIRST, THEN DEAL. Every rank must walk the same NUMBER of units or the step
+    # boundaries diverge and the first all-reduce hangs rather than failing.
     short = (-len(units)) % world
     if short:
         depth = {}
         for _p, _l, _c in flat:
             depth[_p] = depth.get(_p, 0) + 1
-        # deepest first, then by pdb so two ranks computing this independently agree
         pad = sorted(units, key=lambda _t: (-depth.get(_t[0], 0), _t[0]))[:short]
         units = units + pad
+
+    if balance and tokens and per_step > 0:
+        # BALANCE WITHIN EACH STEP, NOT ACROSS THE EPOCH.
+        #
+        # The per-EPOCH totals are already even -- measured 1.77% spread under plain dealing --
+        # so balancing them changes nothing. The wait is per STEP: the ranks barrier at every
+        # optimiser step, so each step costs its SLOWEST rank, and one rank drawing a 1,650-token
+        # structure while another draws a 300-token one makes that step slow however even the
+        # epoch totals are. Measured on the live arm, loss_stats_collective_plus_wait is 7.8 min
+        # of a 19.9 min epoch (39%) while gloo's own all-reduce is documented at ~6 s per epoch,
+        # so essentially all of it is wait.
+        #
+        # WHY SIZE AND NOT TOKEN COUNT: the crop equalises GPU work at 256 tokens, but a
+        # 1,650-token structure still has a ~100 MB z_trunk to read before 97% of it is thrown
+        # away. The cost that differs between ranks is the READ.
+        #
+        # LONGEST-PROCESSING-TIME-FIRST inside each block of per_step*world units, which is
+        # exactly one optimiser step's worth. Deterministic, so every rank computes the same
+        # assignment without communicating.
+        blk = per_step * world
+        out = []
+        for b0 in range(0, len(units), blk):
+            chunk = units[b0:b0 + blk]
+            cap = (len(chunk) + world - 1) // world
+            load = [0] * world
+            cnt = [0] * world
+            bins = [[] for _ in range(world)]
+            for i in sorted(range(len(chunk)),
+                            key=lambda j: (-tokens.get(chunk[j][0], 0), chunk[j][0])):
+                r = min((x for x in range(world) if cnt[x] < cap),
+                        key=lambda x: (load[x], x))
+                bins[r].append(chunk[i])
+                load[r] += tokens.get(chunk[i][0], 0)
+                cnt[r] += 1
+            out.extend(bins[rank])
+        return out
+
+    # ALREADY PADDED ABOVE, before the balance branch, so both paths deal the same list.
     return units[rank::world]
 
 

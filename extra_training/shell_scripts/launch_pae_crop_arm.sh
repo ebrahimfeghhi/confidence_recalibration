@@ -72,6 +72,18 @@ DRY="${DRY:-1}"
 # accepted rather than refused as drift -- which is correct: it changes throughput, not the
 # objective, the population or the batch.
 RESUME="${RESUME:-}"
+# MEASURED, NOT ASSUMED. --trunk-memmap maps z_trunk instead of materialising it, so the crop
+# reads the rows it keeps rather than the whole ~100 MB member. On a 173-unit slice: 1.2 min ->
+# 0.5 min, cpucrop_slice 2.8m -> 0.1m, and the loss moved by 2.6e-07, i.e. the same bytes read
+# lazily. --epoch-balance deals each step so the ranks get similar total uncropped size; measured
+# per-step spread 16.93% -> 0.55%. Both default OFF so this launcher reproduces its own history.
+TRUNK_MEMMAP="${TRUNK_MEMMAP:-}"
+EPOCH_BALANCE="${EPOCH_BALANCE:-}"
+# NAMED FIELDS ONLY, NEVER --resume-allow-drift. The guard's own text warns that the blanket flag
+# "accepts everything at once, including what you did not intend"; naming the field means a second
+# divergence still stops the run.
+RESUME_OVERRIDE="${RESUME_OVERRIDE:-}"
+RESUME_NOTE="${RESUME_NOTE:-}"
 PREFETCH_WORKERS="${PREFETCH_WORKERS:-4}"
 
 # A HOLD FILE DISARMS THIS LAUNCHER WITHOUT KILLING ANYTHING.
@@ -88,7 +100,7 @@ if [ -f "$HOLD" ]; then
 fi
 
 say "PAE-only cropped arm: pool=$POOL_DIR cards=$CARDS epochs=$EPOCHS accum=$ACCUM nsample=$NSAMPLE"
-say "  prefetch-workers=$PREFETCH_WORKERS  resume=${RESUME:-none}  DRY=$DRY"
+say "  prefetch-workers=$PREFETCH_WORKERS  memmap=${TRUNK_MEMMAP:-off}  balance=${EPOCH_BALANCE:-off}  resume=${RESUME:-none}  DRY=$DRY"
 
 # THE CORE BUDGET IS 64 ACROSS EVERYTHING WE RUN, at the user's direction, and prefetch workers
 # are the one knob here that multiplies by world size. 16 x 3 = 48 crop threads; measured core
@@ -166,7 +178,7 @@ CROP_THREADS="${CROP_THREADS:-3}" $PY -I run_logging/check_crop_pairs.py \
 # truncated once -- 19 tensors against 102 -- and stopped before the first optimiser step.
 TRAIN_ONLY='^(?!pairformer_stack\.),blocks\.0\.pair_transition\.,blocks\.1\.tri_mul_out\.,blocks\.1\.tri_mul_in\.,blocks\.2\.tri_mul_out\.,blocks\.2\.tri_mul_in\.,blocks\.2\.pair_transition\.,blocks\.3\.tri_mul_out\.,blocks\.3\.tri_mul_in\.,blocks\.3\.tri_att_start\.,blocks\.3\.pair_transition\.'
 ARGS=(--crop-pool "$POOL_DIR"
-      --minimal-items --epoch-cover-all
+      --minimal-items --epoch-cover-all ${EPOCH_BALANCE:+--epoch-balance}
       --pae-only --alpha-pae 1.0 --alpha-confidence 1.0
       --accum "$ACCUM" --nsample "$NSAMPLE"
       --skip-dead-ops --pose-perblock --pose-perblock-copy --frame-direction --lean-single
@@ -221,7 +233,9 @@ LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   --warmup-steps 20 --seed 0 --clip-norm 25.0 \
   --blocks-per-ckpt 1 --ckpt-token-threshold 1250 --mem-log \
   --prefetch-units 2 --prefetch-workers "$PREFETCH_WORKERS" \
+  ${TRUNK_MEMMAP:+--trunk-memmap} \
   ${RESUME:+--resume "$RESUME"} \
+  ${RESUME_OVERRIDE:+--resume-override "$RESUME_OVERRIDE" --resume-note "$RESUME_NOTE"} \
   --dist-backend gloo --dist-timeout-min 240 \
   --max-rss-gb 80 --preload-min-free-gb 250 --save-every 250 \
   --require-replay training/extended_mixed_replay.log --allow-code-drift

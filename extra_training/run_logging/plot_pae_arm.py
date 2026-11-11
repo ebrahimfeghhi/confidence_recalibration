@@ -83,14 +83,32 @@ eps = sorted(SER)
 for k, (col, lab, ship, orc) in enumerate((
         ("mean_dockq", "mean DockQ of the selected pose", S.get("mean_dockq"), S.get("oracle_mean_dockq")),
         ("frac_acc", "fraction acceptable (DockQ >= 0.23)", S.get("frac_acc"), S.get("oracle_frac_acc")))):
+    # THE SHIPPED LINE MUST MATCH THE POOLING THE ARM SELECTS BY, or the plot invites the same
+    # apples-to-oranges reading. eval_curve.shipped() returns the MEAN-pooled baseline; the metric
+    # json carries the MAX-pooled one as baseline_*, written by the same pass. Reading this arm's
+    # max-pooled 0.5850 against the mean-pooled 0.5735 is the mistake this prevents.
+    _sb = next((SER[e].get("select_by") for e in eps if SER[e].get("select_by")), "max")
+    if _sb == "max":
+        _bv = next((SER[e].get("baseline_" + col) for e in eps
+                    if SER[e].get("baseline_" + col) is not None), None)
+        if _bv is not None:
+            ship = _bv
     a = ax[k + 1]
     if eps:
         a.plot(eps, [SER[e].get(col) for e in eps], "-s", color="tab:blue", ms=6,
-               label="arm, mean-pooled ipTM (what it selects on)")
-        mx = col + "_select_max"
+               label=f"arm, {_sb}-pooled ipTM (what it selects on)")
+        # THE OTHER POOLING, WHICHEVER IT IS. A run that SELECTS by the mean writes its max
+        # column as `_select_max`, and one that selects by the max writes its mean as
+        # `_select_mean`; the json's own `select_by` says which it is. Drawing whichever is
+        # present, labelled by what it actually is, stops the two being confused -- which is
+        # exactly the mistake that made me read this arm's max-pooled 0.5850 against the shipped
+        # MEAN baseline of 0.5735 instead of the max baseline of 0.5813.
+        _selby = next((SER[e].get("select_by") for e in eps if SER[e].get("select_by")), "max")
+        _other = "mean" if _selby == "max" else "max"
+        mx = f"{col}_select_{_other}"
         if any(SER[e].get(mx) is not None for e in eps):
             a.plot(eps, [SER[e].get(mx) for e in eps], "-s", color="tab:orange", ms=6,
-                   label="arm, max-pooled ipTM")
+                   label=f"arm, {_other}-pooled ipTM")
     else:
         a.text(.5, .5, "no held-out eval yet\n(first at epoch 5)", ha="center", va="center",
                transform=a.transAxes, color="#666")

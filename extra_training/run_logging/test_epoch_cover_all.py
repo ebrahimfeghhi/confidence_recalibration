@@ -97,6 +97,42 @@ def main():
     print(f"  {'PASS' if caught else 'FAIL'}  control: the old builder drops "
           f"{len(allp - old_cov)} structure(s), which is the bug")
 
+    # 6. SIZE BALANCE. The point of balance=True is per-rank BYTES, and it must not break any of
+    #    the invariants above: same unit count per rank, every structure present, ranks disjoint.
+    tok = {}
+    for r in csv.DictReader(open(MANIFEST)):
+        if r["pdb"] in SKIP:
+            continue
+        try:
+            tok[r["pdb"]] = int(r["tokens"])
+        except (KeyError, TypeError, ValueError):
+            tok[r["pdb"]] = 0
+    for lab, bal in (("round-robin", False), ("size-balanced", True)):
+        mine = [EP.cover_all(flat, WORLD, r, 0, 0, tokens=tok, balance=bal, per_step=16)
+                for r in range(WORLD)]
+        loads = [sum(tok.get(u[0], 0) for u in m) for m in mine]
+        sizes = [len(m) for m in mine]
+        spread = (max(loads) - min(loads)) / max(1, min(loads))
+        K = 16
+        st = []
+        for i in range(0, min(sizes) - K, K):
+            L = [sum(tok.get(u[0], 0) for u in m[i:i + K]) for m in mine]
+            st.append((max(L) - min(L)) / max(1, min(L)))
+        import statistics as _st
+        print(f"  {lab:14s} epoch spread {100*spread:5.2f}%   PER-STEP spread median "
+              f"{100*_st.median(st):6.2f}%  p90 {100*sorted(st)[int(.9*len(st))]:6.2f}%  "
+              f"units {sizes}")
+        if bal:
+            if len(set(sizes)) != 1:
+                fails.append(f"size-balanced gave unequal unit counts {sizes}")
+            seen2 = [u for m in mine for u in m]
+            if len(set(seen2)) != len(flat):
+                fails.append(f"size-balanced lost units: {len(set(seen2))} distinct of {len(flat)}")
+            if {u[0] for u in seen2} != allp:
+                fails.append("size-balanced dropped a structure")
+            if spread > 0.02:
+                fails.append(f"size-balanced spread is {100*spread:.2f}%, no better than dealing")
+
     print()
     if fails:
         print(f"{len(fails)} FAILURE(S):")

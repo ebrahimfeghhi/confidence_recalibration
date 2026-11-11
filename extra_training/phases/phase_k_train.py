@@ -974,6 +974,31 @@ def main():
                          "intended 102 and 5.3M -- launched truncated once, caught only because a "
                          "human read the startup line. The optimiser is non-empty either way, so "
                          "no existing guard fires. 0 (default) does not check.")
+    ap.add_argument("--epoch-balance", action="store_true",
+                    help="deal each step's units so the ranks get a similar TOTAL UNCROPPED SIZE, "
+                         "not just a similar count. The crop equalises GPU work at 256 tokens but "
+                         "not the read: a 1,650-token structure still has a ~100 MB z_trunk to "
+                         "open before 97%% of it is discarded. The ranks barrier every step, so a "
+                         "step costs its SLOWEST rank. Measured per-step spread in uncropped "
+                         "tokens: 16.93%% median under plain dealing, 0.55%% balanced -- while the "
+                         "per-EPOCH totals were already even at 1.77%%, which is why balancing "
+                         "those changes nothing. Needs --epoch-cover-all.")
+    ap.add_argument("--pose-batch-max-tokens", type=int, default=384,
+                    help="do not batch poses for a unit above this token count. Activation memory "
+                         "goes as nb x tokens^2, so 5 poses at 768 tokens is ~87 GB of a 98 GB "
+                         "card while 256 is ~11 GB -- and the per-pose overhead batching removes "
+                         "is 72%% of a 256-token pose against 17%% of a 768-token one, so the "
+                         "large crops both need it least and afford it least.")
+    ap.add_argument("--pose-batch", type=int, default=1,
+                    help="POSES PER FORWARD. The confidence head is ALREADY batched over samples "
+                         "-- x_pred_coords is [..., N_sample, N_atoms, 3] and every output carries "
+                         "N_sample -- so calling it once per pose pays the Python and "
+                         "host-to-device cost N times for one pair representation that does not "
+                         "change between poses of a unit. 1 (default) is the historical "
+                         "behaviour, bit-identical. The reason it was 1 is recorded on --accum: "
+                         "token counts ran 263-3,400 so poses could not be stacked without "
+                         "padding. Under a fixed-size crop that premise is gone -- poses of one "
+                         "unit always share a token count by construction, whatever its size.")
     ap.add_argument("--epoch-cover-all", action="store_true",
                     help="EVERY UNIT ONCE PER EPOCH, dealt so the ranks hold DISJOINT structures "
                          "in each step. Without it, and without --rank-cross-seed, build_epoch "
@@ -1504,6 +1529,43 @@ def main():
             raise SystemExit(f"STOP: --token-keep-other {a.token_keep_other} exceeds "
                              f"--token-keep-union {a.token_keep_union}, so the periphery would "
                              f"survive MORE often than the interface. That is not the experiment.")
+    if a.epoch_balance and not a.epoch_cover_all:
+        raise SystemExit("STOP: --epoch-balance needs --epoch-cover-all; it reorders the deal "
+                         "that builder performs and has no effect on the group-of-world builder.")
+    if a.pose_batch > 1:
+        # EVERY REASON THIS CAN BE WRONG, CHECKED AT STARTUP RATHER THAN AT POSE 0 OF EPOCH 1.
+        if a.nsample % a.pose_batch != 0:
+            raise SystemExit(
+                f"STOP: --pose-batch {a.pose_batch} does not divide --nsample {a.nsample}. The "
+                f"groups would be ragged ({a.nsample // a.pose_batch} full and one short), and "
+                f"since each group contributes one sample-mean scaled by its own size, the poses "
+                f"in the short group would carry a different weight from the rest.")
+        if a.pose_batch > a.nsample:
+            raise SystemExit(f"STOP: --pose-batch {a.pose_batch} exceeds --nsample {a.nsample}; "
+                             f"only poses of ONE unit may share a forward, because the trunk is "
+                             f"the thing being reused.")
+        if a.rank_loss:
+            raise SystemExit("STOP: --pose-batch > 1 is not supported with --rank-loss. A pose's "
+                             "ranking coefficient is resolved per pose, and under --rank-form rel "
+                             "the PAE mask is a per-pose chain pair -- batched, one mask would "
+                             "stand for poses that need not share it.")
+        if getattr(a, "emit_iptm_rows", ""):
+            raise SystemExit("STOP: --pose-batch > 1 with --emit-iptm-rows would write ONE row "
+                             "per group keyed with the first pose's sample index, for a value "
+                             "pooled over the group -- the same wrong-sample defect the emit path "
+                             "already documents.")
+        if getattr(a, "pae_row_frac", 0) and float(a.pae_row_frac) > 0:
+            raise SystemExit("STOP: --pose-batch > 1 with --pae-row-frac > 0 would count groups "
+                             "where the row diagnostics count poses, and average the per-row "
+                             "weighting over the group.")
+        if a.loss_only:
+            raise SystemExit("STOP: --pose-batch > 1 is not supported under --loss-only; the "
+                             "measurement path reports per pose.")
+        if not (a.crop_pool or a.crop_tokens or a.crop_margin > 0):
+            raise SystemExit("STOP: --pose-batch > 1 needs a crop. Poses of one unit share a "
+                             "token count either way, but the cropped label path is the only one "
+                             "that slices labels by RANGE; uncropped goes through "
+                             "BC.minimal_loss_inputs, which takes a single pose index.")
     if a.crop_pool:
         if not os.path.isdir(a.crop_pool):
             raise SystemExit(f"STOP: --crop-pool {a.crop_pool} is not a directory. Build it with "
@@ -3606,6 +3668,14 @@ def main():
                  # from a bundle written before the flag existed, so it reads as False, which is
                  # exactly what those runs did. Raised in external review of e4e39731.
                  "epoch_cover_all": bool(a.epoch_cover_all),
+                 # IT CHANGES THE STEP SHAPE, so by this guard's own stated convention it belongs
+                 # here: poses per forward alters the gradient scaling and, if the counter were
+                 # ever wrong again, the effective batch. Absent from older bundles, so it reads
+                 # as 1 via _PRE_CROP -- which is exactly what those runs did.
+                 "pose_batch": int(a.pose_batch),
+                 # IT CHANGES WHICH UNITS A RANK WALKS, so a resume that moved it would train a
+                 # different per-rank stream while restoring AdamW as if nothing had.
+                 "epoch_balance": bool(a.epoch_balance),
                  "manifest_digest": _manifest_digest, "crop_size": a.crop_size,
                  "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
@@ -3751,7 +3821,7 @@ def main():
                      # fall through to the unknown-key branch instead of migrating, and a resume
                      # that TURNS THE FLAG ON still shows as drift -- which is the point, since it
                      # changes which structures train while AdamW state is restored unchanged.
-                     "epoch_cover_all": False,
+                     "epoch_cover_all": False, "pose_batch": 1, "epoch_balance": False,
                      # A bundle written before these flags existed ran the full-run schedule, which
                      # is exactly what the 0 defaults mean, and "cosine" is what it computed.
                      "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
@@ -4662,7 +4732,18 @@ def main():
         if kt is None:
             return ("nocrop", None, None)
         _t = time.perf_counter()
-        sl = BC.slice_cached_unit(zc, lab_l, kt, ka, torch.device("cpu"), torch)
+        # MAP z_trunk WHEN ASKED. The uncropped path has had this since --trunk-memmap landed
+        # (phase_k_train.py:5408); the cropped path never took it and read the whole member.
+        _zt_src = None
+        if a.trunk_memmap:
+            try:
+                _zt_src = RC.npy_memmap(trunk_p, "z_trunk")
+            except Exception:                                       # noqa: BLE001
+                # A MAPPING THAT CANNOT BE MADE IS NOT FATAL, it is slower. Ticked so a run
+                # cannot honestly report --trunk-memmap while never mapping anything.
+                _tick("trunk_memmap_fallback", time.perf_counter())
+                _zt_src = None
+        sl = BC.slice_cached_unit(zc, lab_l, kt, ka, torch.device("cpu"), torch, zt_src=_zt_src)
         _tick("cpucrop_slice", _t)
         return ("ok", kt, sl)
 
@@ -5418,9 +5499,11 @@ def main():
 
         _tick("unit_setup", _t_unit_setup)
 
-        def _one_pose(i):
-            x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
-                else torch.as_tensor(poses[i:i + 1], dtype=torch.float32, device=dev)
+        def _one_pose(i, nb=1):
+            # nb POSES IN ONE FORWARD. The slice is the only difference: x already carried a
+            # sample dimension of 1, so widening it is what the head wanted all along.
+            x = poses[i:i + nb].to(dev).float() if torch.is_tensor(poses) \
+                else torch.as_tensor(poses[i:i + nb], dtype=torch.float32, device=dev)
             _fe0, _fe1 = _gpu_span("gpu_forward", n_tok)
             # WHICH POSE THE FROZEN-PREFIX CACHE IS LOOKING AT, and whether it may fill.
             #
@@ -5435,6 +5518,12 @@ def main():
             # _prep_blocks, so clearing it here does not disturb the backward that re-runs the
             # block under blocks_per_ckpt=1.
             if _pfc is not None:
+                if nb != 1:
+                    raise SystemExit(
+                        "STOP: --pose-batch > 1 is incompatible with the frozen-prefix cache. "
+                        "PFC keys a prefix by (pdb, seed, POSE) and a batched forward covers nb "
+                        "poses at once, so one key would stand for several and a later pose could "
+                        "hit on another's prefix.")
                 PFC.set_pose((pdb, arm_seed, int(i)), fill=bool(score_only), n_tok=n_tok)
             try:
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -5473,9 +5562,34 @@ def main():
                 # SLICED ONCE PER UNIT: the label coordinates for every pose were cropped together,
                 # so per pose this only picks a row.
                 _cc, _cm = crop_labels
-                ld = {"coordinate": torch.as_tensor(_cc[i], dtype=torch.float32, device=dev),
-                      "coordinate_mask": torch.as_tensor(_cm[i].astype(np.float32), device=dev)}
+                # THE SAME RANGE AS x, so label row k belongs to pose i+k. Slicing with [i] gave a
+                # (N_atom, 3) array and [i:i+nb] gives (nb, N_atom, 3), which is the shape the loss
+                # already expects for N_sample -- the single-pose path was the special case.
+                ld = {"coordinate": torch.as_tensor(_cc[i:i + nb], dtype=torch.float32, device=dev),
+                      "coordinate_mask": torch.as_tensor(_cm[i:i + nb].astype(np.float32),
+                                                         device=dev)}
+                # ONE LABEL FOR THE GROUP, WHICH IS WHAT PROTENIX DOES AND WHAT ITS LOSS
+                # SIGNATURE SAYS. protenix/model/protenix.py:1713 permutes the ground truth ONCE,
+                # against a single mini-rollout, then scores every sample against it; loss.py's
+                # docstrings accordingly take `true_coordinate [..., N_atom, 3]` and
+                # `coordinate_mask [N_atom]`. Our cache instead permutes PER POSE
+                # (phase_j_build_cache.py:1052), which is why five labels exist at all.
+                #
+                # FOR A PAE-ONLY ARM THAT COSTS EXACTLY NOTHING, measured over the whole training
+                # set rather than argued: run_logging/check_pae_label_shared.py compared every
+                # pose against pose 0 on the PAE representative atoms across all 8,981 label
+                # files -- 8,981 identical, 0 moved, worst displacement 0.000000 A. The per-pose
+                # permutation only ever swaps symmetric SIDE-CHAIN atoms, and PAE is built from
+                # the per-token representative atoms, which it never touches. The losses that
+                # would have noticed -- pLDDT, PDE, resolved -- are stubbed out under --pae-only,
+                # and the startup guard refuses --pose-batch > 1 without it.
+                ld = {k: v[0] for k, v in ld.items()}
             else:
+                if nb != 1:
+                    raise SystemExit(
+                        "STOP: --pose-batch > 1 needs the cropped label path. "
+                        "BC.minimal_loss_inputs takes ONE pose index and there is no range form, "
+                        "so batching here would silently train every pose against pose i's label.")
                 _, ld = BC.minimal_loss_inputs(lab, i, dev, torch)
             # THE POSE'S SAMPLE INDEX, resolved ONCE here and reused by the mask, pass A and
             # pass B. Three readers previously resolved it separately, and the first version of
@@ -5620,6 +5734,16 @@ def main():
                 _iptm_fh["fh"].flush()
             try:
                 cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
+                if nb > 1:
+                    # PROTENIX'S LOSSES MEAN OVER THE SAMPLE AXIS -- PAELoss loss.py:995, PDELoss
+                    # :771, PLDDTLoss :1372, ExperimentallyResolvedLoss :1058 all end in a mean.
+                    # Downstream, _obj = cum / _step_poses_g[0] divides by a POSE count, so with
+                    # nb = 1 each pose contributed L_i / accum_eff. Batched, the group would
+                    # contribute mean(L) / accum_eff -- nb times too little gradient -- and the
+                    # run would train perfectly happily with a quietly smaller effective lr.
+                    # Scaling by nb restores sum(L_i) / accum_eff, which is what the unbatched
+                    # path accumulated. Raised in adversarial review.
+                    cum = cum * float(nb)
             except RuntimeError as _e:
                 if "same device" not in str(_e):
                     raise
@@ -5647,6 +5771,10 @@ def main():
             out = {k: (float(met[k]) if k in met else 0.0) for k in TERMS}
             out["loss"] = float(met["loss"])
             out["pose"] = i
+            # HOW MANY POSES THIS ROW STANDS FOR. One at --pose-batch 1; nb above it. The
+            # accumulator, the batch means and the step boundary all count POSES, and without
+            # this a batched row would be indistinguishable from a single-pose one.
+            out["n_pose_in_group"] = int(nb)
             if float(a.pae_row_frac) > 0:
                 out["pae_loss_unweighted"] = _pae_unw["v"]
             # SCALED BY THE EFFECTIVE BATCH, so summing the ranks reconstructs the full-batch mean.
@@ -5858,7 +5986,28 @@ def main():
                 _rank_on = True
                 _rank_seen["units"] += 1
 
-        for i in range(n_pose):
+        # HOW MANY POSES PER FORWARD, decided once per unit and refused wherever it would change
+        # the objective rather than just the speed.
+        #   score_only  -- pass A keys ipTM per pose and returns one row each; batching it would
+        #                  need the per-pose unpacking that pass B has and pass A does not.
+        #   rank_loss   -- a pose's coefficient is resolved per pose, and under --rank-form rel the
+        #                  PAE mask is a PER-POSE chain pair (_samp_i). Batched, one mask would
+        #                  stand for five poses that may not share it.
+        #   nsample mismatch -- a short final group is fine, but only whole poses of ONE unit may
+        #                  share a forward; the trunk is the thing being reused.
+        _pb = max(1, int(getattr(a, "pose_batch", 1) or 1))
+        if score_only or a.rank_loss:
+            _pb = 1
+        # NOT ON A LARGE CROP. Activation memory goes as nb x tokens^2 (measured
+        # peak_GB = 2.02 + 2.896e-05 * tokens^2 per sample), so 5 poses at 768 tokens is ~87 GB of
+        # a 98 GB card -- no margin for fragmentation. At 256 it is ~11 GB. The batching is also
+        # worth least exactly there: the fixed per-pose cost is 72% of a 256-token pose and 17% of
+        # a 768-token one. 818 of this pool's 846 structures crop to 256, so the threshold costs
+        # almost nothing. At the user's direction.
+        if _pb > 1 and n_tok > int(getattr(a, "pose_batch_max_tokens", 384) or 384):
+            _pb = 1
+        for i in range(0, n_pose, _pb):
+            _nb = min(_pb, n_pose - i)
             _t_pose = time.perf_counter()
             # NO GRAPH UNDER --loss-only. Skipping only the backward would still build the
             # autograd graph for every pose and free it unused -- correct, but it pays the
@@ -5880,9 +6029,9 @@ def main():
                 torch.cuda.reset_peak_memory_stats(dev)
             if a.loss_only or score_only:
                 with torch.no_grad():
-                    m = _one_pose(i)
+                    m = _one_pose(i, _nb)
             else:
-                m = _one_pose(i)
+                m = _one_pose(i, _nb)
             # PASS A'S POSES GET THEIR OWN BUCKET. Ticking them into pose_total would double-count
             # every pose and make the epoch accounting -- which is checked against the wall clock
             # and reported as a residual -- silently wrong.
@@ -5896,7 +6045,8 @@ def main():
                 # THE PASS IS PART OF THE MEASUREMENT. A pass A pose runs under no_grad and
                 # stores no activations, so its peak is not comparable to a pass B pose's and is
                 # not what any checkpointing threshold is decided from.
-                print(f"MEM {pdb}/{arm_seed} pose {i} pass {_pass} tokens {n_tok}: "
+                print(f"MEM {pdb}/{arm_seed} pose {i}{'' if _nb == 1 else f'-{i + _nb - 1}'} "
+                      f"pass {_pass} tokens {n_tok}: "
                       f"allocated {torch.cuda.memory_allocated(dev) / 2**30:.2f} GB  "
                       f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f}  "
                       f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f}", flush=True)
@@ -7209,6 +7359,18 @@ def main():
         # mean_dockq / mean_dockq_select_max in its json.
         if a.rank_pool == "mean" and a.rank_loss:
             extra = extra + ["--pool-mean", "--select-by", "mean"]
+        else:
+            # BOTH POOLINGS REPORTED EVEN WHEN SELECTION IS THE MAX. --pool-mean makes the
+            # evaluator write mean_dockq_select_mean alongside the selected number, from the SAME
+            # pass, so a PAE-only arm can be read against both the shipped max baseline and the
+            # mean-pooled one without a second evaluation and without assuming two runs were
+            # otherwise identical. Selection is untouched: --select-by stays at the default max,
+            # which is the shipped convention and what this arm's json already records.
+            #
+            # WHY IT WAS MISSING: the flag was gated on `rank_pool == mean AND rank_loss`, which
+            # is false for an arm with no ranking loss, so epoch 5 of axrorr reported only the max
+            # column -- and I compared it against the shipped MEAN baseline by mistake.
+            extra = extra + ["--pool-mean"]
         # THE CROP, FORWARDED. phase_k_eval's --crop-tokens takes the same npz --crop-tokens does
         # here, so a cropped reading of a pool is the evaluator's own code path and not a
         # reimplementation. Absent, the pass is uncropped, which is what every pass has been.
@@ -7365,7 +7527,8 @@ def main():
         chance -- which costs an extra trunk read and nothing else.
         """
         import epoch_plan as _EP
-        _mine = _EP.cover_all(flat, world, rank, a.seed, ep, a.epoch_order, _sel_tokens)
+        _mine = _EP.cover_all(flat, world, rank, a.seed, ep, a.epoch_order, _sel_tokens,
+                              balance=bool(a.epoch_balance), per_step=structs_per_step)
         if is_main and ep == 0:
             # SAY THE COVERAGE OUT LOUD, because the failure this builder exists to fix was
             # silent: 412 structures absent from every epoch with nothing in the log.
@@ -7932,11 +8095,19 @@ def main():
                         _LR_STEPS)
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
-                    n_in_accum += 1
+                    # POSES, NOT YIELDS. One yield is one pose at --pose-batch 1 and nb poses
+                    # above it, and the step boundary below compares this against accum_local,
+                    # which is a POSE count. Counting yields would make the effective batch nb
+                    # times the requested --accum, drop the steps per epoch by nb, and stretch the
+                    # lr horizon by nb -- all silently, since every log line would still say
+                    # "poses". Raised in adversarial review.
+                    _nb_row = int(_m.get("n_pose_in_group", 1) or 1)
+                    n_in_accum += _nb_row
                     # EVERY POSE CONTRIBUTES TO THE WINDOW SUM, which is what the batch columns
-                    # average. The per-pose TERMS stay in the row too, for provenance.
+                    # average. The per-pose TERMS stay in the row too, for provenance. A batched
+                    # row carries the group's MEAN, so it is weighted by the poses behind it.
                     for _k in TERMS:
-                        batch_sum[_k] += float(met[_k])
+                        batch_sum[_k] += float(met[_k]) * _nb_row
                     gn, outside, took, bad_grad = float("nan"), -1, 0, 0
                     means = {"batch_" + _k: None for _k in TERMS}
                     means["batch_n"] = 0
