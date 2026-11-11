@@ -447,6 +447,15 @@ def run_interface(pdb, iface, ax, ay, poses, dockq, pose_keys, xyz, resolved, as
             "regret_crop_std": round(float(regrets[ok_reg].std()), 6),
             "regret_crop_p90": round(float(np.percentile(regrets[ok_reg], 90)), 6),
             "regret_crop_worse_frac": round(float((regrets[ok_reg] > regret_full + 1e-9).mean()), 6),
+            # HOW MANY CROPS ARE SUBSTANTIALLY WORSE, not merely worse. "worse by any amount" is
+            # dominated by ties broken the other way and by DockQ granularity; the question that
+            # matters for training is how often a crop costs a materially worse pose.
+            **{f"reg_worse_{int(100*t):02d}":
+               round(float((regrets[ok_reg] > regret_full + t).mean()), 6)
+               for t in (0.02, 0.05, 0.10)},
+            **{f"rho_worse_{int(100*t):02d}":
+               round(float((rhos[ok_rho] < rho_full - t).mean()), 6) if ok_rho.any() else float("nan")
+               for t in (0.05, 0.10, 0.20)},
             "regret_delta": round(float(regrets[ok_reg].mean() - regret_full), 6),
             "n_crops_degenerate": int((live_rows == 0).sum()),
             "live_rows_mean": round(float(live_rows.mean()), 2),
