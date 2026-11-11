@@ -67,6 +67,12 @@ NSAMPLE="${NSAMPLE:-5}"
 EVAL_POOL="${EVAL_POOL:-training/valfull83/pool.csv}"
 LR="${LR:-1e-3}"
 DRY="${DRY:-1}"
+# RESUME AND WORKER COUNT, so a mid-run parameter change does not mean losing the epochs already
+# done. --prefetch-workers is NOT in the resume guard (checked), so changing it across a resume is
+# accepted rather than refused as drift -- which is correct: it changes throughput, not the
+# objective, the population or the batch.
+RESUME="${RESUME:-}"
+PREFETCH_WORKERS="${PREFETCH_WORKERS:-4}"
 
 # A HOLD FILE DISARMS THIS LAUNCHER WITHOUT KILLING ANYTHING.
 # chain_pae_crop_arm.sh polls cards_busy in the background and invokes this script BY PATH when
@@ -81,7 +87,18 @@ if [ -f "$HOLD" ]; then
   exit 9
 fi
 
-say "PAE-only cropped arm: pool=$POOL_DIR cards=$CARDS epochs=$EPOCHS accum=$ACCUM nsample=$NSAMPLE DRY=$DRY"
+say "PAE-only cropped arm: pool=$POOL_DIR cards=$CARDS epochs=$EPOCHS accum=$ACCUM nsample=$NSAMPLE"
+say "  prefetch-workers=$PREFETCH_WORKERS  resume=${RESUME:-none}  DRY=$DRY"
+
+# THE CORE BUDGET IS 64 ACROSS EVERYTHING WE RUN, at the user's direction, and prefetch workers
+# are the one knob here that multiplies by world size. 16 x 3 = 48 crop threads; measured core
+# usage at 4 workers was 5.5, so this is a throughput change inside the budget, not a breach of
+# it. Asserted rather than assumed because the arithmetic is easy to get wrong by a factor of 3.
+_THREADS=$(( PREFETCH_WORKERS * 3 ))
+[ "$_THREADS" -gt 60 ] && {
+  say "REFUSING: $PREFETCH_WORKERS workers x 3 ranks = $_THREADS crop threads, over the 64-core budget"
+  exit 8; }
+say "  core budget: $_THREADS crop thread(s) across 3 ranks, ceiling 64"
 
 [ -d "$POOL_DIR" ] || { say "REFUSING: $POOL_DIR is not a directory"; exit 2; }
 
@@ -203,7 +220,8 @@ LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   --lean-readouts --train-only "$TRAIN_ONLY" --expect-trainable 113 \
   --warmup-steps 20 --seed 0 --clip-norm 25.0 \
   --blocks-per-ckpt 1 --ckpt-token-threshold 1250 --mem-log \
-  --prefetch-units 2 --prefetch-workers 4 \
+  --prefetch-units 2 --prefetch-workers "$PREFETCH_WORKERS" \
+  ${RESUME:+--resume "$RESUME"} \
   --dist-backend gloo --dist-timeout-min 240 \
   --max-rss-gb 80 --preload-min-free-gb 250 --save-every 250 \
   --require-replay training/extended_mixed_replay.log --allow-code-drift

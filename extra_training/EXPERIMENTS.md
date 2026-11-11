@@ -76,9 +76,18 @@ join; the two disagree on 90 of 846 structures. This arm has no ranking loss, an
 masked to scored chain pairs through `chain_roles` — the same static join the pool was validated
 against. `check_crop_pairs.py --join static` asserts it over all 94,630 crops before launch.
 
-**Epoch 1:** train PAE **2.9720**; grad_norm mean 1.150, median 0.890, max 4.949 (clip 25 never
-engaged); 0 nonfinite; 0 faults; 2,880 of 2,980 units cropped to exactly 256 tokens, the rest
-being structures already smaller than the crop.
+**Epoch 1:** train PAE **2.9720** over **19.6 min**, 2,308 units, **145 optimiser steps**;
+grad_norm mean 1.150, median 0.890, max 4.949 (clip 25 never engaged); 0 nonfinite; 0 faults;
+2,880 of 2,980 units cropped to exactly 256 tokens, the rest being structures already smaller
+than the crop. Epoch 2: 25.3 min, same 2,308 units and 145 steps.
+
+145 is exactly the planned `ceil(2308 / 16)`, and the checkpoints agree — `head_ep1_step145.pt`
+then `head_ep2_step290.pt`. The trainer's own line says 144 because `2308 / 16 = 144.25`: 144 full
+steps plus one short final step holding the remaining 4 units.
+
+*(An earlier version of this section reported 186 steps for epoch 1. That was a cumulative count
+taken while epoch 2 was already 41 steps in — 145 + 41 — not a different training set. Flagged in
+review.)*
 
 Do not read that against the uncropped arm's epoch-1 3.0144 — different loss set, batch and token
 counts. It is not evidence about cropping.
