@@ -1499,18 +1499,30 @@ def main():
             raise SystemExit("STOP: --crop-pool needs --minimal-items, for the same reason "
                              "--crop-margin does: the full dataset item carries FULL-SIZE arrays "
                              "that the crop never reaches.")
-        # THE LABELS MUST HAVE BEEN BUILT ON THIS POOL. A cropped prediction against an uncropped
-        # target is the one failure in this feature that produces no error at all -- the residual
-        # absorbs it and the run looks healthy. So the label directory is required to carry
-        # crop_index, which only build_itm_labels_cropped.py writes.
-        if not a.rel_labels:
+        # THE LABELS MUST HAVE BEEN BUILT ON THIS POOL -- WHEN THERE ARE LABELS AT ALL.
+        #
+        # A cropped prediction against an uncropped target is the one failure in this feature that
+        # produces no error at all: the residual absorbs it and the run looks healthy. So whenever
+        # a relative-iTM target is in play, the label directory must carry crop_index, which only
+        # build_itm_labels_cropped.py writes.
+        #
+        # BUT THAT ENTIRE HAZARD IS SPECIFIC TO THE RANKING LOSS. --rank-form rel compares a
+        # predicted ipTM for a named chain pair against a true iTM for that pair, so target and
+        # prediction must have been computed over the same token set. A PAE-only arm has no such
+        # target: the PAE loss is a per token-pair cross-entropy taken from the cropped unit's own
+        # coordinates, so it is self-consistent under any crop and there is nothing to mismatch.
+        # Requiring rel labels there would demand an artefact the run never reads.
+        _needs_rel = bool(a.rank_loss) and not a.loss_only
+        if _needs_rel and not a.rel_labels:
             raise SystemExit("STOP: --crop-pool needs --rel-labels pointing at labels built on "
                              "the same pool (run_logging/build_itm_labels_cropped.py).")
-        _probe = sorted(f for f in os.listdir(a.rel_labels) if f.endswith(".npz"))
-        if not _probe:
+        _probe = (sorted(f for f in os.listdir(a.rel_labels) if f.endswith(".npz"))
+                  if a.rel_labels else [])
+        if a.rel_labels and not _probe:
             raise SystemExit(f"STOP: --rel-labels {a.rel_labels} holds no npz files.")
-        _pz = np.load(os.path.join(a.rel_labels, _probe[0]), allow_pickle=True)
-        if "crop_index" not in _pz.files:
+        _pz = (np.load(os.path.join(a.rel_labels, _probe[0]), allow_pickle=True)
+               if _probe else {"files": []})
+        if _probe and "crop_index" not in _pz.files:
             raise SystemExit(
                 f"STOP: --crop-pool is set but --rel-labels {a.rel_labels} has no crop_index -- "
                 f"these are UNCROPPED labels. The head would predict a cropped ipTM against a "

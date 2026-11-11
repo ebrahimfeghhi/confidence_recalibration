@@ -52,9 +52,20 @@ def main():
     ap.add_argument("--fold", default="training/fold")
     ap.add_argument("--scored-pairs", default="training/combined/pool.csv")
     ap.add_argument("--limit", type=int, default=0)
+    # WHICH JOIN THE CONSUMER USES, because the two disagree on 90 of 846 structures and the
+    # crop only has to survive the one that will actually be asked for.
+    #   ost    -- the per-pose OST join, which --rank-form rel scores (_pose_pairs).
+    #   static -- the chain_roles join, which the PAE mask uses (phase_k_train.py:2096) and
+    #             which build_crop_pool.py validated against.
+    ap.add_argument("--join", choices=["ost", "static"], default="ost")
+    ap.add_argument("--roles", default="training/fold/chain_roles_all.csv")
     a = ap.parse_args()
 
     refs_by_pdb = PKE.pool_ref_pairs(a.scored_pairs)
+    static_pairs = {}
+    if a.join == "static":
+        _sp, _ = PKE.interface_chain_pairs(a.scored_pairs, a.roles)
+        static_pairs = {k: [(i, min(x, y), max(x, y)) for i, x, y in v] for k, v in _sp.items()}
     files = sorted(f for f in os.listdir(a.pool) if f.endswith(".npz"))
     if a.limit:
         files = files[:a.limit]
@@ -72,7 +83,8 @@ def main():
             continue
         asym = got[0].reshape(-1).long()
         hf = got[1].reshape(-1).bool()
-        pairs = ost_pairs_union(a.fold, pdb, refs_by_pdb.get(pdb) or [])
+        pairs = (ost_pairs_union(a.fold, pdb, refs_by_pdb.get(pdb) or [])
+                 if a.join == "ost" else static_pairs.get(pdb, []))
         if not pairs:
             bad.append((pdb, -1, "no OST pair for any pose"))
             continue
@@ -103,7 +115,8 @@ def main():
                                 f"(chain {i}: {int(in_i.sum())} tok/{int((in_i & ch).sum())} live, "
                                 f"chain {j}: {int(in_j.sum())} tok/{int((in_j & ch).sum())} live)"))
 
-    print(f"checked {checked} structure(s), {crops_checked} crop(s) against every pose's OST pair")
+    print(f"checked {checked} structure(s), {crops_checked} crop(s) against the "
+          f"{a.join.upper()} chain-pair join")
     if bad:
         print(f"REFUSING: {len(bad)} crop/pair combination(s) would score None and stop the run:")
         for pdb, ci, why in bad[:20]:
@@ -111,7 +124,7 @@ def main():
         if len(bad) > 20:
             print(f"    ... and {len(bad) - 20} more")
         return 1
-    print("OK: every selected crop keeps a scorable cross-chain pair for every pose's OST pair")
+    print(f"OK: every selected crop keeps a scorable cross-chain pair under the {a.join.upper()} join")
     return 0
 
 

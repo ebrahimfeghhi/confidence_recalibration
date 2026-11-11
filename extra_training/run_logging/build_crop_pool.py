@@ -60,6 +60,7 @@ SEEDS = list(range(500000, 500015))
 
 def one_structure(pdb, pairs, dq, pl, a):
     got_any = None
+    _uniq_ifaces = sorted({_i for _i, _x, _y in pairs})
     poses, keys = [], []
     dockq_by_iface = collections.defaultdict(list)
     for seed in SEEDS:
@@ -74,7 +75,13 @@ def one_structure(pdb, pairs, dq, pl, a):
             samp = int(lb["sample_index"][p])
             poses.append(C.pose_bins(pl, tr, lb, p, hf, fai, rep))
             keys.append((int(seed), samp))
-            for iface, _x, _y in pairs:
+            # ONE DockQ PER POSE PER *INTERFACE NAME*, not per (interface, asym pair) row.
+            # `pairs` now carries the same interface once per distinct asym pair OST resolves it
+            # to across poses, so iterating it here appended the same pose's DockQ two or three
+            # times and dockq_by_iface grew longer than `poses` -- the scoring loop then indexed
+            # poses[j] past its end. DockQ is a property of the INTERFACE; which asym pair
+            # represents it is exactly the detail these duplicate rows exist to vary.
+            for iface in _uniq_ifaces:
                 dockq_by_iface[iface].append(dq.get(iface, {}).get((seed, samp), float("nan")))
     if got_any is None or not poses:
         return None, "no tensors"
