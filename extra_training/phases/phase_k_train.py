@@ -1517,6 +1517,13 @@ def main():
                 f"full-structure target and nothing downstream would notice. Build cropped labels "
                 f"with run_logging/build_itm_labels_cropped.py --pool {a.crop_pool}")
 
+    # ONE SWITCH FOR "IS THIS A CROPPED RUN". --crop-pool was added as a loader and a label
+    # lookup but every execution gate still read `crop_margin > 0 or crop_tokens`, so a run given
+    # --crop-pool alone trained on FULL structures while the relative loss read CROPPED targets --
+    # no error anywhere, and the arm would have been named for a crop it never applied. Caught in
+    # external review. Every such gate now reads _USE_CROP.
+    _USE_CROP = bool(a.crop_pool) or bool(a.crop_tokens) or a.crop_margin > 0
+
     if a.crop_tokens and a.crop_margin > 0:
         raise SystemExit("STOP: --crop-tokens and --crop-margin are two crop rules at once. Which "
                          "one applied would depend on branch order, and the run would name itself "
@@ -4039,7 +4046,7 @@ def main():
     # the other two accumulated rows forever and wrote none, so the csv described a third of the
     # run while reading like the whole of it. Review round 6 caught that.
     crop_p = ""
-    if a.crop_margin > 0 or a.crop_tokens:
+    if _USE_CROP:
         _base = a.crop_log or os.path.join(a.out, "crop_sizes.csv")
         _stem, _ext = os.path.splitext(_base)
         crop_p = f"{_stem}_rank{rank}{_ext or '.csv'}"
@@ -4589,7 +4596,7 @@ def main():
         zc = np.load(trunk_p)
         _tick("cpucrop_trunk", _t)
         _t = time.perf_counter()
-        kt, ka = (_crop_masks(pdb, zc) if a.crop_tokens
+        kt, ka = (_crop_masks(pdb, zc) if (a.crop_tokens or a.crop_pool)
                   else BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin,
                                                 all_poses=a.crop_all_poses))
         _tick("cpucrop_tokens", _t)
@@ -4748,7 +4755,7 @@ def main():
         # The default arm passes --prefetch-units 2 --prefetch-workers 4, so that is 8 wasted
         # crops and 8 retained slices on every uncropped run to date. The uncropped path has its
         # own warmer (_tr_step_start) and does not use this queue.
-        if not (a.crop_margin > 0 or a.crop_tokens):
+        if not (_USE_CROP):
             return
         _pf_stop.clear(); _pf_pending.clear(); _pf_dropped.clear()
         _pf_stat.update(hit=0, miss=0, wait_s=0.0, dropped=0, exhausted=0)
@@ -4856,7 +4863,7 @@ def main():
     # _tr_step_start is never called, every unit is read exactly once and there is nothing to hit.
     # The cache would then fill to its cap, refuse everything after that and hold the RSS for no
     # benefit -- so the same condition that gates _xs_prepare gates this.
-    _tr_on = (_tr_cap > 0 and not (a.crop_margin > 0 or a.crop_tokens)
+    _tr_on = (_tr_cap > 0 and not (_USE_CROP)
               and getattr(dev, "type", "") == "cuda"
               and a.rank_cross_seed and a.rank_loss and not a.loss_only)
     _tr_cache = {}
@@ -5191,7 +5198,7 @@ def main():
         # chains with usable coordinates, or no cross-chain contact), and this trains on the whole
         # structure then, counted, rather than guessing at a window.
         crop_slice = None
-        if a.crop_margin > 0 or a.crop_tokens:
+        if _USE_CROP:
             # THE PREFETCHED SLICE, IF THE WORKER GOT THERE FIRST. A hit skips straight to the
             # device move; a miss falls through to the inline path below, so a worker that is
             # behind, failed, or disabled costs correctness nothing.
@@ -5236,7 +5243,7 @@ def main():
                 # argues for caching the crop indices and nothing else.
                 _t0 = time.perf_counter()
                 _zc = np.load(trunk_p)
-                _kt, _ka = (_crop_masks(pdb, _zc) if a.crop_tokens
+                _kt, _ka = (_crop_masks(pdb, _zc) if (a.crop_tokens or a.crop_pool)
                             else BC.interface_crop_tokens(_zc, lab, a.crop_contact,
                                                           a.crop_margin,
                                                           all_poses=a.crop_all_poses))
@@ -8609,7 +8616,7 @@ def main():
     # every counter at zero and printed nothing at all -- an arm would have reported no retained
     # fraction and no fallback count, which is exactly the bookkeeping it exists to provide.
     # Review round 6 caught it.
-    if a.crop_margin > 0 or a.crop_tokens:
+    if _USE_CROP:
         if crop_p and crop_rows:
             _flush(crop_p, crop_cols, crop_rows)
             crop_rows.clear()
