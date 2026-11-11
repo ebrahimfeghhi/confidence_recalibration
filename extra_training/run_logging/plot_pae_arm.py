@@ -62,8 +62,13 @@ if EP is None:
     EP = sorted((e, sum(v) / len(v), True) for e, v in acc.items() if e in done)
 
 S, SER = EC.shipped(), EC.series(CHAIN)
+RHO, RHO_SHIP = EC.rho_series(CHAIN)
+# AT THE USER'S DIRECTION: blue is the MAX pooling, orange is the MEAN pooling, for both the
+# arm's markers and the shipped baselines, so a reader never has to match a line to a series.
+C_MAX, C_MEAN = "tab:blue", "tab:orange"
+C_MAX_B, C_MEAN_B = "tab:blue", "tab:orange"
 plt.rcParams.update({"font.size": 11})
-fig, ax = plt.subplots(1, 3, figsize=(15, 4.4))
+fig, ax = plt.subplots(1, 4, figsize=(19, 4.4))
 fig.suptitle(f"PAE-only arm -- {RID}    (held-out: 83 structures / 141 interfaces, budget 30)")
 
 # 1. the only thing being optimised
@@ -95,7 +100,8 @@ for k, (col, lab, ship, orc) in enumerate((
             ship = _bv
     a = ax[k + 1]
     if eps:
-        a.plot(eps, [SER[e].get(col) for e in eps], "-s", color="tab:blue", ms=6,
+        a.plot(eps, [SER[e].get(col) for e in eps], "-s",
+               color=(C_MAX if _sb == "max" else C_MEAN), ms=6,
                label=f"arm, {_sb}-pooled ipTM (what it selects on)")
         # THE OTHER POOLING, WHICHEVER IT IS. A run that SELECTS by the mean writes its max
         # column as `_select_max`, and one that selects by the max writes its mean as
@@ -107,20 +113,60 @@ for k, (col, lab, ship, orc) in enumerate((
         _other = "mean" if _selby == "max" else "max"
         mx = f"{col}_select_{_other}"
         if any(SER[e].get(mx) is not None for e in eps):
-            a.plot(eps, [SER[e].get(mx) for e in eps], "-s", color="tab:orange", ms=6,
+            a.plot(eps, [SER[e].get(mx) for e in eps], "-s",
+                   color=(C_MAX if _other == "max" else C_MEAN), ms=6,
                    label=f"arm, {_other}-pooled ipTM")
     else:
         a.text(.5, .5, "no held-out eval yet\n(first at epoch 5)", ha="center", va="center",
                transform=a.transAxes, color="#666")
-    if ship is not None:
-        a.axhline(ship, color="#444", lw=1.4, label=f"shipped ({ship:.4f})")
+    # TWO BASELINES, EACH IN ITS SERIES' COLOUR. One grey line invited reading the arm's
+    # max-pooled point against the mean-pooled baseline, which is the mistake that turned
+    # +0.0038 into a reported +0.0115. Blue is max-pooled, orange is mean-pooled, matching the
+    # markers above them.
+    _bmax = next((SER[e].get("baseline_" + col) for e in eps
+                  if SER[e].get("baseline_" + col) is not None), None)
+    _bmean = S.get(col)
+    if _bmax is not None:
+        a.axhline(_bmax, color=C_MAX_B, lw=1.4, ls="-",
+                  label=f"shipped, max-pooled ({_bmax:.4f})")
+    if _bmean is not None:
+        a.axhline(_bmean, color=C_MEAN_B, lw=1.4, ls="-",
+                  label=f"shipped, mean-pooled ({_bmean:.4f})")
     a.set_title(lab + (f"\noracle {orc:.4f}" if orc else ""))
     a.set_xlabel("epoch"); a.grid(alpha=.3)
 ax[1].set_ylabel("mean DockQ"); ax[2].set_ylabel("frac acceptable")
+
+# 4. THE CORRELATION. rho is ipTM against DockQ WITHIN an interface -- the thing the confidence
+# head is for, independent of which pose a selection rule happens to pick. It is kept next to the
+# selection panels deliberately: this project has recorded five arms whose rho ROSE while their
+# selected DockQ FELL, so reading one without the other is how that keeps being missed.
+_re = sorted(RHO)
+if _re:
+    ax[3].plot(_re, [RHO[e]["max"] for e in _re], "-s", color=C_MAX, ms=6,
+               label="arm, max-pooled ipTM")
+    ax[3].plot(_re, [RHO[e]["mean"] for e in _re], "-s", color=C_MEAN, ms=6,
+               label="arm, mean-pooled ipTM")
+else:
+    ax[3].text(.5, .5, "no rho yet\n(needs the iptm_mean column,\nwritten under --pool-mean)",
+               ha="center", va="center", transform=ax[3].transAxes, color="#666")
+if RHO_SHIP == RHO_SHIP:
+    ax[3].axhline(RHO_SHIP, color="#444", lw=1.4, label=f"shipped ({RHO_SHIP:+.4f})")
+ax[3].set_title("within-interface Spearman, ipTM vs DockQ")
+ax[3].set_xlabel("epoch"); ax[3].set_ylabel("median rho"); ax[3].grid(alpha=.3)
 h, l = ax[1].get_legend_handles_labels()
+_h3, _l3 = ax[3].get_legend_handles_labels()
+for _hh, _ll in zip(_h3, _l3):
+    if _ll not in l:
+        h.append(_hh); l.append(_ll)
 if h:
-    fig.legend(h, l, loc="lower center", ncol=3, frameon=False, bbox_to_anchor=(.5, -.04))
-fig.tight_layout(rect=(0, .04, 1, .95))
+    # BELOW THE AXES, NOT ON TOP OF THEM. At ncol=3 and -.04 the legend sat over the "epoch"
+    # labels of the middle panels. tight_layout runs FIRST so it measures the axes without the
+    # legend, then the legend is placed in the margin that rect reserves for it.
+    fig.tight_layout(rect=(0, .14, 1, .95))
+    fig.legend(h, l, loc="lower center", ncol=4, frameon=False, bbox_to_anchor=(.5, .005),
+               fontsize=9)
+else:
+    fig.tight_layout(rect=(0, .04, 1, .95))
 os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)
 fig.savefig(OUT, dpi=110, bbox_inches="tight")
 print(f"-> {OUT}")
@@ -129,11 +175,28 @@ print(f"{'ep':>5} {'train PAE':>11}")
 for e, v, d in EP:
     print(f"{e:5d} {v:11.4f}")
 if eps:
-    print(f"\n{'ep':>5} {'mean':>9} {'max':>9} {'frac':>9}   shipped "
-          f"{S.get('mean_dockq'):.4f} / {S.get('frac_acc'):.4f}")
+    # THE TABLE MUST NAME THE POOLING IT PRINTS. The primary column is whatever `select_by` says;
+    # the alternate is written as _select_<the other one>. Hardcoding _select_max printed nan for
+    # a max-selected arm, whose alternate is _select_mean -- the same confusion that made me read
+    # 0.5850 against the wrong baseline.
+    _sb2 = next((SER[e].get("select_by") for e in eps if SER[e].get("select_by")), "max")
+    _alt = "mean" if _sb2 == "max" else "max"
+    _bm = next((SER[e].get("baseline_mean_dockq") for e in eps
+                if SER[e].get("baseline_mean_dockq") is not None), S.get("mean_dockq"))
+    _bf = next((SER[e].get("baseline_frac_acc") for e in eps
+                if SER[e].get("baseline_frac_acc") is not None), S.get("frac_acc"))
+    print(f"\n{'ep':>5} {_sb2 + '-pool':>11} {_alt + '-pool':>11} {'frac':>9} {'frac(' + _alt + ')':>12}"
+          f"   shipped {_sb2}-pooled {_bm:.4f} / {_bf:.4f}")
     for e in eps:
-        print(f"{e:5d} {SER[e].get('mean_dockq'):9.4f} "
-              f"{SER[e].get('mean_dockq_select_max') or float('nan'):9.4f} "
-              f"{SER[e].get('frac_acc'):9.4f}")
+        _a = SER[e].get(f"mean_dockq_select_{_alt}")
+        _af = SER[e].get(f"frac_acc_select_{_alt}")
+        print(f"{e:5d} {SER[e].get('mean_dockq'):11.4f} "
+              f"{(_a if _a is not None else float('nan')):11.4f} "
+              f"{SER[e].get('frac_acc'):9.4f} "
+              f"{(_af if _af is not None else float('nan')):12.4f}")
 else:
     print("\nno held-out eval yet -- first at epoch 5")
+if _re:
+    print(f"\n{'ep':>5} {'rho max':>9} {'rho mean':>10}   shipped {RHO_SHIP:+.4f}")
+    for e in _re:
+        print(f"{e:5d} {RHO[e]['max']:+9.4f} {RHO[e]['mean']:+10.4f}")
