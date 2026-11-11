@@ -62,9 +62,16 @@ def series(chain):
     # epoch 5 predates the 83 pool and was scored as two passes. Combining them is exact, not an
     # approximation: aggregate() picks a pose by argmax WITHIN one interface and holds no pool-wide
     # normalisation or threshold, so adding interfaces cannot change an already-scored pick.
+    #
+    # AND ONLY FOR 5dgrsu'S OWN CHAIN. The condition was `5 not in out`, so ANY arm without an
+    # epoch-5 metric of its own silently inherited 5dgrsu's -- a different run's numbers, drawn
+    # and printed as that arm's. Caught on privsp, which at 35 minutes old and two epochs in was
+    # reporting a held-out epoch 5 of mean 0.5753. The entry even carried ckpt=None, since the
+    # combined dict has no ckpt field, which is what gave it away. The same hazard the
+    # plot_eval_series docstring already warns about for chain resolution, one layer down.
     a = os.path.join(ROOT, "training/runs/5dgrsu/metric_valfull_ep5.json")
     b = os.path.join(ROOT, "training/runs/5dgrsu/metric_ep5_val30.json")
-    if 5 not in out and os.path.exists(a) and os.path.exists(b):
+    if "5dgrsu" in chain and 5 not in out and os.path.exists(a) and os.path.exists(b):
         A, B = json.load(open(a)), json.load(open(b))
         out[5] = {k: _comb(A, B, k) for k in KEYS} | {"n_interfaces": 141, "_combined": True}
     return out
