@@ -33,8 +33,11 @@ different pair subset, which is one sgemm for all crops at once.
 import argparse
 import collections
 import csv
+import glob
+import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -50,7 +53,9 @@ sys.path.insert(0, os.path.join(ROOT, "run_logging"))
 sys.path.insert(0, os.path.join(ROOT, "phases"))
 
 import crop_itm_rank as C                                          # noqa: E402
-from phase_k_eval import interface_chain_pairs                     # noqa: E402
+from phase_k_eval import (interface_chain_pairs, ost_chain_pairs,   # noqa: E402
+                          pool_ref_pairs)
+import phase_j_build_cache as BC                                    # noqa: E402
 from protenix.model.loss import PAELoss                            # noqa: E402
 
 SEEDS = list(range(500000, 500015))
@@ -87,57 +92,68 @@ def itm_both(W, M, keep, row_tokens):
     return mean, np.where(n_live[None] > 0, mx, np.nan)
 
 
-def one_structure(pdb, pairs, pool_dir, pl, a):
+def one_structure(pdb, pairs, pool_dir, pl, a, refs):
+    """PAIRS ARE RESOLVED PER POSE THROUGH OST, never from the static chain_roles join.
+
+    chain_roles assigns each model chain one reference chain for the whole structure, which is
+    unanswerable when two reference chains are chemically identical -- a structure with two
+    antigen copies of the same sequence has no sequence-determined "first antigen". OST decides it
+    per pose. The uncropped builder records that the static join was wrong on 3,154 of 36,900 rows
+    (8.55%) across 52 structures, and REFUSES a ceiling not built with --ost-mapping. This builder
+    reintroduced the same defect by taking (ax, ay) from interface_chain_pairs and reusing
+    poses[0]'s pair mask for every pose; caught in external review before any cropped run.
+    """
     masks, sizes = load_masks(pool_dir, pdb)
     if masks is None:
         return None, "not in pool"
-    poses, keys, geom = [], [], None
+    N = None
+    out = collections.defaultdict(list)
+    keep = None
     for seed in SEEDS:
         got = C.unit_tensors(a.fold, pdb, seed)
         if got is None:
             continue
         asym, hf, fai, rep, tr, lb = got
-        if geom is None:
-            geom = (asym, hf)
+        try:
+            ud = BC.seed_dir(a.fold, pdb, seed)
+        except Exception:                                          # noqa: BLE001
+            return None, "no unit dir for OST mapping"
+        if N is None:
+            N = int(asym.numel())
+            row_tokens = np.asarray(torch.nonzero(hf, as_tuple=True)[0])
+            keep = np.zeros((N, len(masks) + 1), dtype=np.float32)
+            keep[:, 0] = 1.0                           # column 0 is the UNCROPPED reference
+            for c, idx in enumerate(masks):
+                keep[np.asarray(idx, dtype=np.int64), c + 1] = 1.0
         for p in range(int(lb["n_pose"])):
-            poses.append(C.pose_bins(pl, tr, lb, p, hf, fai, rep))
-            keys.append((int(seed), int(lb["sample_index"][p])))
-    if geom is None or not poses:
+            samp = int(lb["sample_index"][p])
+            use, why = ost_chain_pairs(ud, pdb, samp, refs or [])
+            if use is None:
+                return None, f"no OST mapping ({why})"
+            idx_p, pm_p = C.pose_bins(pl, tr, lb, p, hf, fai, rep)
+            for iface, ax, ay in use:
+                tok_in = (asym == ax) | (asym == ay)
+                npt = int(tok_in.sum())
+                if npt < 4:
+                    continue
+                M = (pm_p & (tok_in[hf].unsqueeze(1) & tok_in.unsqueeze(0))
+                     & (asym[hf].unsqueeze(1) != asym.unsqueeze(0))).float().numpy()
+                if M.sum() == 0:
+                    continue
+                # d0 FROM THE UNCROPPED PAIR, for every crop. This is the pinning.
+                wb = C.weight_vector(npt, {}).numpy()
+                W = wb[idx_p.numpy()][None]
+                for lo in range(0, keep.shape[1], 400):
+                    mean, mx = itm_both(W, M, keep[:, lo:lo + 400], row_tokens)
+                    for j in range(mean.shape[1]):
+                        out["crop_index"].append(lo + j - 1)
+                        out["iface"].append(iface)
+                        out["seed"].append(int(seed))
+                        out["sample"].append(samp)
+                        out["g_mean"].append(mean[0, j])
+                        out["g_max"].append(mx[0, j])
+    if N is None:
         return None, "no tensors"
-    asym, hf = geom
-    N = int(asym.numel())
-    row_tokens = np.asarray(torch.nonzero(hf, as_tuple=True)[0])
-
-    keep = np.zeros((N, len(masks) + 1), dtype=np.float32)
-    keep[:, 0] = 1.0                                   # column 0 is the UNCROPPED reference
-    for c, idx in enumerate(masks):
-        keep[np.asarray(idx, dtype=np.int64), c + 1] = 1.0
-
-    out = collections.defaultdict(list)
-    for iface, ax, ay in pairs:
-        tok_in = (asym == ax) | (asym == ay)
-        npt = int(tok_in.sum())
-        if npt < 4:
-            continue
-        pm0 = poses[0][1]
-        M = (pm0 & (tok_in[hf].unsqueeze(1) & tok_in.unsqueeze(0))
-             & (asym[hf].unsqueeze(1) != asym.unsqueeze(0))).float().numpy()
-        if M.sum() == 0:
-            continue
-        # d0 FROM THE UNCROPPED PAIR, for every crop. This is the pinning.
-        wb = C.weight_vector(npt, {}).numpy()
-        W = np.stack([wb[p[0].numpy()] for p in poses])
-        for lo in range(0, keep.shape[1], 200):
-            mean, mx = itm_both(W, M, keep[:, lo:lo + 200], row_tokens)
-            for j in range(mean.shape[1]):
-                ci = lo + j - 1                        # -1 is the uncropped reference
-                for pi, (sd, sm) in enumerate(keys):
-                    out["crop_index"].append(ci)
-                    out["iface"].append(iface)
-                    out["seed"].append(sd)
-                    out["sample"].append(sm)
-                    out["g_mean"].append(mean[pi, j])
-                    out["g_max"].append(mx[pi, j])
     if not out:
         return None, "no scorable interface"
     return {"crop_index": np.array(out["crop_index"], np.int16),
@@ -167,6 +183,8 @@ def main():
     os.makedirs(a.out, exist_ok=True)
 
     pairs_by_pdb, _ = interface_chain_pairs(a.pool_csv, a.roles)
+    # THE REFERENCE-LETTER POOL, which ost_chain_pairs joins against per pose.
+    refs = pool_ref_pairs(a.pool_csv)
     todo = sorted(f[:-4] for f in os.listdir(a.pool) if f.endswith(".npz"))
     todo = [p for p in todo if p in pairs_by_pdb]
     todo = todo[a.shard::a.workers] if a.workers > 1 else todo
@@ -179,7 +197,7 @@ def main():
         if a.skip_existing and os.path.exists(os.path.join(a.out, f"{pdb}.npz")):
             skipped["already built"] += 1
             continue
-        out, why = one_structure(pdb, pairs_by_pdb[pdb], a.pool, pl, a)
+        out, why = one_structure(pdb, pairs_by_pdb[pdb], a.pool, pl, a, refs.get(pdb))
         if out is None:
             skipped[why] += 1
             continue
@@ -190,6 +208,50 @@ def main():
             print(f"  [shard {a.shard}] {i+1}/{len(todo)}, {done} written, {el/60:.1f} min, "
                   f"eta {el/(i+1)*(len(todo)-i-1)/60:.1f} min", flush=True)
     print(f"[shard {a.shard}] wrote {done} to {a.out}   skipped {dict(skipped)}", flush=True)
+
+    # THE MANIFEST THE TRAINER HARD-REQUIRES. phase_k_train refuses any --rel-labels directory
+    # without one, so a cropped launch would die at startup -- noisily, but it would still block.
+    # Only the last shard to finish writes it, and it is derived from what is ON DISK rather than
+    # from this shard's counters, so a partial build cannot produce a manifest claiming to be
+    # complete.
+    if a.workers > 1 and a.shard != a.workers - 1:
+        return
+    _files = sorted(glob.glob(os.path.join(a.out, "*.npz")))
+    _rows = _crops = 0
+    _h = hashlib.sha256()
+    for _f in _files:
+        _z = np.load(_f, allow_pickle=True)
+        _rows += int(_z["g_mean"].shape[0])
+        _crops += int(_z["n_crop"])
+        _h.update(os.path.basename(_f).encode())
+        _h.update(np.asarray(_z["g_mean"], np.float32).tobytes())
+    try:
+        _commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
+                                 capture_output=True, text=True).stdout.strip()
+    except Exception:                                               # noqa: BLE001
+        _commit = "unknown"
+    json.dump({
+        "structures": len(_files),
+        "rows": _rows,
+        "total_crops": _crops,
+        "digest": _h.hexdigest(),
+        "pool": a.pool,
+        "pool_csv": a.pool_csv,
+        "roles": a.roles,
+        "keys": "(crop_index, seed, sample, iface) -> g_mean, g_max",
+        "key_note": "crop_index -1 is the UNCROPPED reference, kept so a consumer can verify that "
+                    "d0 was pinned at the uncropped scored chain-pair count rather than "
+                    "recomputed from the crop",
+        "chain_mapping": "OST per pose (ost_chain_pairs), NOT the static chain_roles join -- the "
+                         "static join was wrong on 3,154 of 36,900 rows across 52 structures in "
+                         "the uncropped builder, and 7stf's pair swaps between samples of the "
+                         "same structure",
+        "d0": "pinned at the uncropped scored chain-pair token count",
+        "builder": "build_itm_labels_cropped.py",
+        "commit": _commit,
+    }, open(os.path.join(a.out, "manifest.json"), "w"), indent=1)
+    print(f"  manifest: {len(_files)} structure(s), {_rows} row(s), {_crops} crop(s) total",
+          flush=True)
 
 
 if __name__ == "__main__":
