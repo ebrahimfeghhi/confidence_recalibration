@@ -15,10 +15,12 @@ Status: **proposed, not built.** No GPU work, no change to `87ja6a`.
 - **One crop per STRUCTURE**, shared by every pose and every scored interface. Per-pose crops make
   the iTM gap between two poses measure the crop; per-interface crops hide the fact that 82% of
   structures carry more than one scored interface and would force a second forward pass.
-- **60 crops per structure, pre-computed, one drawn per epoch.** NOT a single deterministic crop:
-  the model should see multiple views, which is most of why Protenix crops randomly at all.
+- **200 crops per structure, pre-computed, one drawn per epoch.** NOT a single deterministic crop:
+  the model should see multiple views, which is most of why Protenix crops randomly at all. 200
+  rather than 60 because the pool is cheap (one bin pass plus N re-averages, ~0.3 GB) and an arm
+  that runs longer than the pool would start repeating views -- headroom is nearly free here.
 - **Keep only VALID crops.** A crop is valid when every scored interface of the structure still has
-  at least one surviving cross-chain pair. Sample until 60 valid ones exist.
+  at least one surviving cross-chain pair. Sample until 200 valid ones exist.
 - **Rebuild `--rel-labels` per crop**, with `d0` PINNED at the uncropped scored chain-pair token
   count.
 - **Validation stays uncropped.** Every historical number is uncropped and the comparison must not
@@ -37,17 +39,26 @@ point of keeping it random. The validity screen is pure geometry and carries no 
 simply not kept. So 256 + screen is better than two-tier on coverage AND keeps the full **3.56x**
 against two-tier's 3.00x. The two-tier recommendation in section 23 is superseded by this.
 
-**Why 60 valid crops is cheap.**
+**Why 200 valid crops is cheap.** Measured joint-usable rate per structure is mean 0.977, min
+0.372, so the rejection cost scales linearly and stays trivial:
 
-    draws needed to reach 60 valid:  mean 62.1,  p99 104.7,  max 161.3
-    all 434 structures reach 60 valid comfortably
-    label storage for 60 crop sets:  0.09 GB against a 3,072 GB quota
+    draws needed to reach 200 valid:  mean 207,  p99 349,  max 538
+    all 434 structures reach 200 valid comfortably
+    label storage for 200 crop sets:  ~0.30 GB against a 3,072 GB quota
+
+**ON THE ROTATION.** `epoch % N` fixes which crop a structure uses at which epoch. That is not a
+loss of diversity: a structure's N crops are independent samples of its own geometry, and
+structure A's crop 3 has nothing to do with structure B's crop 3, so a fixed order gives exactly
+the same view distribution as a random one. Its only consequence is that two runs sharing a pool
+see an identical sequence, which is reproducibility rather than a defect. Raised as a concern in
+the first draft and withdrawn here.
 
 **Why the label rebuild is ~15 minutes, not hours.** The expensive step is
 `PAELoss.calculate_label` on every pose, and it runs ONCE regardless of crop count. Evaluating a
 crop is then re-averaging the cached bin indices over a different pair subset -- one sgemm. That
 is why the 886-interface x 1000-crop analysis took ten minutes rather than ten times something.
-60 label sets is one bin pass plus 60 cheap re-averages.
+200 label sets is one bin pass plus 200 cheap re-averages, which is why raising the pool from 60
+to 200 costs almost nothing.
 
 **Expected speed.** 3.56x on the training pose work, from the measured per-pose cost
 `C0 + K2*N^2 + K3*N^3` fitted on 87ja6a epoch 12. `C0 = 0.081 s/pose` is the non-scaling part
@@ -61,10 +72,10 @@ goes 484 -> 145 min rather than 484/3.56.
    are valid; write `<pdb>.npz` with `[60, n_token]` bool masks plus a `__meta` record carrying the
    anchor rule, crop size, contact threshold, seed, the unit SHA digest and the builder commit.
    `--verify-rule` re-derives one mask from scratch and asserts bit-identity.
-2. `run_logging/build_itm_labels_cropped.py` -- one `calculate_label` pass per pose, then 60
+2. `run_logging/build_itm_labels_cropped.py` -- one `calculate_label` pass per pose, then N
    re-averages per interface; writes `itm_labels_crop/<pdb>.npz` keyed by
    `(crop_index, iface, seed, sample)`. d0 from the UNCROPPED scored chain-pair count.
-3. Trainer: `--crop-pool <dir>` selects crop `epoch % 60` for each structure, and `--rel-labels`
+3. Trainer: `--crop-pool <dir>` selects crop `epoch % N` for each structure, and `--rel-labels`
    points at the cropped label directory. Refuse at startup if the pool and the labels disagree on
    crop count, or if any structure's selected crop leaves a scored interface empty.
 4. Gates before any GPU time: full-mask equivalence (crop 0 == uncropped when the mask is all
