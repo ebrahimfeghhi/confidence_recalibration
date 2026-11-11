@@ -177,11 +177,17 @@ def main():
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--skip-existing", action="store_true")
+    ap.add_argument("--manifest-only", action="store_true",
+                    help="write manifest.json from whatever is already in --out and exit. Run "
+                         "this AFTER every shard has finished; a shard cannot know that it did.")
     a = ap.parse_args()
     os.chdir(ROOT)
     torch.set_num_threads(int(os.environ.get("CROP_THREADS", "1")))
     os.makedirs(a.out, exist_ok=True)
 
+    if a.manifest_only:
+        write_manifest(a)
+        return
     pairs_by_pdb, _ = interface_chain_pairs(a.pool_csv, a.roles)
     # THE REFERENCE-LETTER POOL, which ost_chain_pairs joins against per pose.
     refs = pool_ref_pairs(a.pool_csv)
@@ -209,13 +215,19 @@ def main():
                   f"eta {el/(i+1)*(len(todo)-i-1)/60:.1f} min", flush=True)
     print(f"[shard {a.shard}] wrote {done} to {a.out}   skipped {dict(skipped)}", flush=True)
 
-    # THE MANIFEST THE TRAINER HARD-REQUIRES. phase_k_train refuses any --rel-labels directory
-    # without one, so a cropped launch would die at startup -- noisily, but it would still block.
-    # Only the last shard to finish writes it, and it is derived from what is ON DISK rather than
-    # from this shard's counters, so a partial build cannot produce a manifest claiming to be
-    # complete.
-    if a.workers > 1 and a.shard != a.workers - 1:
+    # THE MANIFEST IS A SEPARATE STEP, not a shard's parting act. The first version let shard
+    # workers-1 write it on the theory that it finishes last. It does not: shard 19 finished while
+    # 38 structures were still being written by other shards, and the manifest went out claiming
+    # 791 structures with 829 on disk -- a partial build asserting completeness, which is the one
+    # thing the manifest exists to rule out. Run with --manifest-only after every shard exits.
+    if a.workers > 1:
+        print(f"  (no manifest from a shard -- run --manifest-only once every shard has exited)",
+              flush=True)
         return
+    write_manifest(a)
+
+
+def write_manifest(a):
     _files = sorted(glob.glob(os.path.join(a.out, "*.npz")))
     _rows = _crops = 0
     _h = hashlib.sha256()
