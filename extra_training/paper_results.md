@@ -1445,3 +1445,74 @@ Protenix does the same, and evaluates uncropped -- but it is not a deployable in
 
     CROP_THREADS=4 python -I run_logging/crop_itm_rank.py --crops 1000 --workers 8 --shard $s \
         [--anchor-pair-only] --out training/runs/crop_ab_{protenix,pair}/rank.csv
+
+---
+
+## 22. CROP SIZE: retention and label quality pull in OPPOSITE directions, and 256-scaling-to-512 is the sweet spot
+
+Section 21 left 10.5% of the interface being clipped on average under a 256-token crop, and
+section 21's own size breakdown showed why: retention tracks STRUCTURE size at Spearman **-0.754**
+-- a fixed 256-token ball cannot reach across a big complex no matter where it is centred. The
+interface's own size matters much less (-0.393), so this is not "big epitopes get clipped", it is
+"big structures get clipped".
+
+The owner proposed scaling the crop up for large structures, capped at 512. Measured at 256, 384
+and 512 with the pair-restricted anchor throughout, 886 paired interfaces x 1000 crops each.
+
+### Retention and joint coverage rise with crop size, as expected
+
+| structure size | n | ret 256 | ret 384 | ret 512 | joint 256 | joint 384 | joint 512 |
+|---|---|---|---|---|---|---|---|
+| <450 tok | 200 | 0.990 | 1.000 | 1.000 | 0.999 | 1.000 | 1.000 |
+| 450-600 | 205 | 0.954 | 0.997 | 1.000 | 0.997 | 1.000 | 1.000 |
+| 600-800 | 265 | 0.870 | 0.977 | 0.999 | 0.984 | 0.999 | 1.000 |
+| 800-1100 | 113 | 0.822 | 0.944 | 0.986 | 0.942 | 0.985 | 0.999 |
+| >1100 | 103 | 0.739 | 0.881 | 0.948 | 0.830 | 0.956 | 0.995 |
+| **ALL** | 886 | **0.895** | **0.972** | **0.992** | **0.967** | **0.993** | **0.999** |
+
+### BUT THE LABEL BENEFIT DECAYS MONOTONICALLY WITH CROP SIZE
+
+| crop size | rho delta | regret delta |
+|---|---|---|
+| 256 | **+0.0522** | **-0.0116** |
+| 384 | +0.0265 | -0.0070 |
+| 512 | +0.0125 | -0.0040 |
+
+This is the dilution mechanism being self-consistent rather than a surprise: the gain comes from
+DISCARDING far pairs that barely differ between a good pose and a bad one, so the more tokens a
+crop keeps the closer it is to uncropped and the smaller the gain. A 512 crop scores like a
+slightly-cropped structure because that is what it is.
+
+**So retention and label quality pull in opposite directions, and the right policy is the
+SMALLEST crop that keeps joint coverage high -- not the largest that fits.** That inverts the
+intuition the retention table alone would give.
+
+### Policies, composed per structure from the three measured sizes
+
+| policy | retention | joint | regret delta | speedup |
+|---|---|---|---|---|
+| fixed 256 | 0.895 | 0.967 | -0.0116 | **3.56x** |
+| **256; 512 if >800 tok** | 0.941 | **0.993** | **-0.0109** | **3.00x** |
+| 256; 384 if >600; 512 if >1000 | 0.969 | 0.998 | -0.0100 | 2.86x |
+| 256; 384 if >600; 512 if >800 | 0.973 | 0.998 | -0.0100 | 2.74x |
+| fixed 384 | 0.972 | 0.993 | -0.0070 | 2.58x |
+| fixed 512 | **0.992** | **0.999** | -0.0040 | 1.93x |
+
+**256 scaling to 512 above 800 tokens is the standout.** Joint coverage 0.967 -> 0.993 and
+retention 0.895 -> 0.941, while keeping -0.0109 of the -0.0116 regret benefit, for 3.56x -> 3.00x.
+Nearly all the coverage, almost none of the label quality, 16% of the speed.
+
+**Fixed 512 is the trap** the retention table would have led to: the best coverage, but it gives
+back two thirds of the label gain AND half the speedup.
+
+Speedups are from the measured per-pose cost `c0 + k2*N^2 + k3*N^3` (c0 = 0.081 s,
+k2 = 4.072e-07, k3 = 3.394e-10) fitted on 87ja6a epoch 12, applied over the 846-structure token
+distribution. c0 does not shrink with the crop, which is why 256 is 3.56x and not 5x.
+
+**SAME CAVEAT AS SECTION 21.** This is a statement about the LABEL. Sections 13 and 14 found
+cropped training improved rho without improving selection, three times. Nothing here shows a
+cropped head selects better; it shows the target it would be trained against is sound.
+
+    for cs in 256 384 512; do CROP_THREADS=4 python -I run_logging/crop_itm_rank.py \
+        --crops 1000 --workers 8 --shard $s --anchor-pair-only --crop-size $cs \
+        --out training/runs/crop_cs$cs/rank.csv; done
