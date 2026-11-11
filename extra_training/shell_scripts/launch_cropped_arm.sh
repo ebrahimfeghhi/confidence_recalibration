@@ -97,7 +97,8 @@ ARGS=(--crop-pool "$POOL_DIR"
       --rank-cross-seed --rank-structs-per-step 2
       --minimal-items
       --skip-dead-ops --pose-perblock --pose-perblock-copy --frame-direction --lean-single
-      --eval-pool "$EVAL_POOL" --eval-pool-every 5
+      --train-eval-pool "$EVAL_POOL" --train-eval-fold validation/fold
+      --train-eval-every 5 --train-eval-budget 30 --train-eval-seed-base 400000
       --epochs "$EPOCHS" --lr "$LR"
       --alpha-confidence 1.0 --alpha-pae 1.0)
 
@@ -113,6 +114,49 @@ if [ "$DRY" = "1" ]; then
   exit 0
 fi
 
-say "REFUSING to launch: the full launch path is not wired yet. DRY=0 is reserved until a GPU"
-say "  smoke has shown N_head equals the selected mask size on every rank."
-exit 5
+# THE SMOKE THAT OPENED THIS GATE, on card 0 at 10:32 PM: 185 of 185 MEM lines reported
+# `tokens 256` -- every structure, every pose, both passes -- against 2osl's 459 and 6pi7's 652
+# uncropped. Peak memory 4.86 GB against 94. That is the one assertion no CPU gate could make.
+B=$($PY -I run_logging/cards_busy.py 2>&1 | tail -1)
+[ "$B" = "0" ] || { say "REFUSING: cards_busy reports '$B'"; exit 3; }
+for c in $(echo "$CARDS" | tr ',' ' '); do
+  F=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i "$c" 2>/dev/null)
+  case "$F" in ''|*[!0-9]*) say "REFUSING: GPU $c unreadable"; exit 3;; esac
+  [ "$F" -lt 80000 ] && { say "REFUSING: GPU $c has only ${F} MiB free"; exit 3; }
+done
+M=$(awk '/MemAvailable/{printf "%.0f", $2/1048576}' /proc/meminfo)
+[ "${M:-0}" -lt 250 ] && { say "REFUSING: MemAvailable ${M} GB is under the 250 GB floor"; exit 3; }
+say "gates clear: cards $CARDS free, MemAvailable ${M} GB"
+
+NOTE="CROPPED ARM. Identical to 87ja6a except each structure trains on a 256-token crop drawn \
+from its own pool, one per epoch (epoch % n), with the relative-iTM target rebuilt under that \
+same crop and d0 PINNED at the uncropped scored chain-pair token count on BOTH the target and \
+the prediction. Pool: 846 structures, median 109 crops each, min 40, built by enumerating every \
+eligible anchor (the crop is deterministic given its anchor, so distinct crops == eligible \
+anchors) and keeping those whose DockQ regret is within 0.05 of the uncropped selection; 818 \
+structures needed only 256, 28 escalated to 384/512/768, none fell through to uncropped. Anchors \
+are PAIR-RESTRICTED at 15 A -- Protenix's own rule accepts a contact with ANY distinct chain, so \
+a heavy-chain token qualifies by packing against the light chain and 27.6 percent of its crops \
+left the scored interface with no surviving cross-chain row. Only the anchor is restricted; the \
+k-nearest selection still runs over the whole assembly. Labels use the PER-POSE OST join, not the \
+static chain_roles one, which disagrees on 52 structures. HELD-OUT EVAL IS UNCROPPED so every \
+historical number stays comparable. GPU smoke on card 0 at 10:32 PM: 185 of 185 poses reported \
+256 tokens against uncropped sizes of 459 and 652."
+
+say "LAUNCH"
+LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
+  --numa-map 0:0,1:0,2:1 --note "$NOTE" -- "${ARGS[@]}" \
+  --alignment-preflight training/alignment_preflight_sharded.json \
+  --manifest-selection "$MANIFEST" --manifest-skip "$SKIP" \
+  --fold training/fold --indices training/prep/all857_indices.csv \
+  --pae-scored-pairs training/combined/pool.csv \
+  --pae-scored-roles training/fold/chain_roles_all.csv \
+  --pae-only --lean-readouts --train-only "$TRAIN_ONLY" \
+  --warmup-steps 20 --seed 0 --accum 30 --nsample 5 --clip-norm 25.0 \
+  --blocks-per-ckpt 1 --ckpt-token-threshold 1250 --mem-log \
+  --trunk-cache-gb 10 --trunk-memmap \
+  --prefetch-units 2 --prefetch-workers 4 \
+  --dist-backend gloo --dist-timeout-min 240 \
+  --max-rss-gb 80 --preload-min-free-gb 250 --save-every 250 \
+  --require-replay training/extended_mixed_replay.log --allow-code-drift
+say "launch.py returned $?"
