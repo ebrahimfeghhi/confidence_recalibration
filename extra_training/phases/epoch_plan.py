@@ -94,17 +94,33 @@ def cover_all(flat, world, rank, seed, ep, order="shuffle", tokens=None, balance
                 bins[r].append(chunk[i])
                 load[r] += tokens.get(chunk[i][0], 0)
                 cnt[r] += 1
-            out.extend(bins[rank])
+            # SHUFFLE WITHIN THE RANK'S SHARE. The LPT fill is descending by size, and the
+            # prefetch workers take units[w::W], so with W == per_step worker 0 is pinned to the
+            # largest unit of EVERY step and workers 8-15 to the smallest. Simulated on the real
+            # manifest, per-worker load max/min went 1.35 (round-robin) -> 29.25 (balanced),
+            # which would make the main loop block on worker 0 at the head of every step. The
+            # order within a rank does not affect the cross-rank balance this function exists to
+            # fix, so shuffling it is free. Found in adversarial review.
+            _rng_w = random.Random(seed + ep + 31337 + b0)
+            _share = bins[rank][:]
+            _rng_w.shuffle(_share)
+            out.extend(_share)
         return out
 
     # ALREADY PADDED ABOVE, before the balance branch, so both paths deal the same list.
     return units[rank::world]
 
 
-def coverage(flat, world, seed, ep, order="shuffle", tokens=None):
-    """{pdb: how many of its units this epoch trains on}, summed over every rank."""
+def coverage(flat, world, seed, ep, order="shuffle", tokens=None, balance=False, per_step=0):
+    """{pdb: how many of its units this epoch trains on}, summed over every rank.
+
+    TAKES THE SAME KNOBS AS cover_all, because it has to validate the deal that is ACTUALLY
+    walked. Called without them it silently checked the round-robin assignment while the ranks
+    used the balanced one.
+    """
     seen = {}
     for r in range(world):
-        for pdb, _lp, _c in cover_all(flat, world, r, seed, ep, order, tokens):
+        for pdb, _lp, _c in cover_all(flat, world, r, seed, ep, order, tokens,
+                                      balance=balance, per_step=per_step):
             seen[pdb] = seen.get(pdb, 0) + 1
     return seen

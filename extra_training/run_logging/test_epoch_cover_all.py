@@ -40,15 +40,27 @@ def main():
     fails = []
 
     # 1. EVERY STRUCTURE IN EVERY EPOCH, singletons above all. This is the defect.
+    # BOTH DEALS, EVERY EPOCH. The balanced path was only exercised at epoch 0 by section 6,
+    # so a coverage defect that appeared under balancing would have passed. Raised in review.
+    tok0 = {}
+    for _r in csv.DictReader(open(MANIFEST)):
+        if _r["pdb"] in SKIP:
+            continue
+        try:
+            tok0[_r["pdb"]] = int(_r["tokens"])
+        except (KeyError, TypeError, ValueError):
+            tok0[_r["pdb"]] = 0
     for ep in range(6):
-        cov = EP.coverage(flat, WORLD, 0, ep)
+      for _bal in (False, True):
+        cov = EP.coverage(flat, WORLD, 0, ep, tokens=tok0, balance=_bal, per_step=16)
         miss = allp - set(cov)
         if miss:
-            fails.append(f"epoch {ep}: {len(miss)} structure(s) never appear, e.g. {sorted(miss)[:5]}")
+            fails.append(f"epoch {ep} balance={_bal}: {len(miss)} structure(s) never appear, "
+                         f"e.g. {sorted(miss)[:5]}")
         ms = singles - set(cov)
         if ms:
-            fails.append(f"epoch {ep}: {len(ms)} SINGLE-SEED structure(s) dropped")
-    print(f"  {'PASS' if not fails else 'FAIL'}  every structure appears in epochs 0-5 "
+            fails.append(f"epoch {ep} balance={_bal}: {len(ms)} SINGLE-SEED structure(s) dropped")
+    print(f"  {'PASS' if not fails else 'FAIL'}  every structure appears in epochs 0-5, BOTH deals "
           f"({len(singles)}/{len(singles)} singletons)")
 
     # 2. EVERY UNIT EXACTLY ONCE, minus the truncated tail.

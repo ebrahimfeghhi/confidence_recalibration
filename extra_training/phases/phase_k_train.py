@@ -1561,6 +1561,20 @@ def main():
         if a.loss_only:
             raise SystemExit("STOP: --pose-batch > 1 is not supported under --loss-only; the "
                              "measurement path reports per pose.")
+        if not a.pae_only:
+            # THE SHARED LABEL IS ONLY JUSTIFIED FOR PAE. _one_pose gives the whole group pose 0's
+            # coordinates and mask, which is exact for the PAE target -- measured over all 8,981
+            # label files, every pose against pose 0 on the PAE representative atoms, 0 moved. It
+            # is NOT exact for pLDDT, PDE or resolved, which read atom-level labels that the
+            # per-pose permutation DOES move (median 2 atoms, max 8). Without --pae-only those
+            # three losses are live and would be supervised with the first pose's labels for all
+            # nb poses, silently. Raised in external review of 03970def; the guard list had every
+            # other exclusion and not this one.
+            raise SystemExit(
+                "STOP: --pose-batch > 1 requires --pae-only. The batched path gives the whole "
+                "group pose 0's coordinates and mask, which is exact for the PAE target and NOT "
+                "for pLDDT/PDE/resolved -- the per-pose label permutation moves atoms those "
+                "losses read (median 2, max 8 of several thousand).")
         if not (a.crop_pool or a.crop_tokens or a.crop_margin > 0):
             raise SystemExit("STOP: --pose-batch > 1 needs a crop. Poses of one unit share a "
                              "token count either way, but the cropped label path is the only one "
@@ -4739,10 +4753,13 @@ def main():
             try:
                 _zt_src = RC.npy_memmap(trunk_p, "z_trunk")
             except Exception:                                       # noqa: BLE001
-                # A MAPPING THAT CANNOT BE MADE IS NOT FATAL, it is slower. Ticked so a run
-                # cannot honestly report --trunk-memmap while never mapping anything.
-                _tick("trunk_memmap_fallback", time.perf_counter())
                 _zt_src = None
+            # COUNTED, NOT INFERRED. npy_memmap REJECTS a member it cannot map -- deflated, bad
+            # header, non-C-order, wrong span -- by RETURNING None rather than raising, so the
+            # except clause above never fires for the ordinary failure and a run could report
+            # --trunk-memmap while mapping nothing at all. Two counters, so the epoch line says
+            # what fraction was actually mapped. Raised in external review of 03970def.
+            _TN["trunk_mapped" if _zt_src is not None else "trunk_memmap_fallback"] += 1
         sl = BC.slice_cached_unit(zc, lab_l, kt, ka, torch.device("cpu"), torch, zt_src=_zt_src)
         _tick("cpucrop_slice", _t)
         return ("ok", kt, sl)
@@ -4871,9 +4888,21 @@ def main():
             # turns into a miss and an inline recrop -- the very work the prefetch exists to
             # avoid. Each held slice is ~30 MB, so this is tens of MB per rank.
             if len(_pf_pending) > max(16, 8 * max(1, a.prefetch_workers)):
-                # RECORD IT. Dropping silently is what turned one eviction into a cascade of
-                # full-budget waits; the set is units, not slices, so it costs nothing.
-                _dk = next(iter(_pf_pending))
+                # EVICT THE NEWEST, NOT THE OLDEST.
+                #
+                # `next(iter(...))` is insertion order, so this dropped the LOWEST-numbered unit
+                # -- which, because the main loop consumes in that same order, is precisely the
+                # one it is about to ask for. Every eviction therefore bought a guaranteed miss
+                # and an inline recrop of the full trunk on the main thread.
+                #
+                # It got worse when the crop got faster: making _cpu_crop ~4.6x cheaper let the
+                # workers run hundreds of units ahead instead of the "~W" this comment used to
+                # claim, so on rdi25k epoch 5 the hit rate fell 68-80% -> 34-58% and evictions
+                # doubled to 980-1,524 per rank. The feature partly cannibalised itself.
+                #
+                # The newest entry is the one the main loop will want LAST, so dropping it costs
+                # the least and the entry it wants next survives. Found in adversarial review.
+                _dk = next(reversed(_pf_pending))
                 _pf_pending.pop(_dk)
                 _pf_dropped.add(_dk)
 
@@ -5394,7 +5423,23 @@ def main():
                                       "frames_cleared": "", "status": "no-crop-definable"})
                 else:
                     _t1 = time.perf_counter()
-                    crop_slice = BC.slice_cached_unit(_zc, lab, _kt, _ka, dev, torch)
+                    # THE INLINE RECROP NEEDS THE MAPPING TOO, and this is the path that matters
+                    # MOST because it is on the MAIN THREAD and therefore on the critical path.
+                    # When --trunk-memmap landed on the cropped path it was wired only into
+                    # _cpu_crop, which runs on the prefetch workers; every prefetch MISS fell
+                    # through to here and still materialised the whole ~100 MB z_trunk. Measured
+                    # on rdi25k epoch 5: 980 / 1,115 / 1,524 units per rank took this path, 42-66%
+                    # of 2,308, which is most of why the feature returned 10% rather than the 2.4x
+                    # its single-card smoke suggested. Raised in adversarial review of 03970def.
+                    _zts = None
+                    if a.trunk_memmap:
+                        try:
+                            _zts = RC.npy_memmap(trunk_p, "z_trunk")
+                        except Exception:                           # noqa: BLE001
+                            _zts = None
+                        _TN["trunk_mapped" if _zts is not None
+                            else "trunk_memmap_fallback"] += 1
+                    crop_slice = BC.slice_cached_unit(_zc, lab, _kt, _ka, dev, torch, zt_src=_zts)
                     _tick("crop_slice", _t1)
                     # THE CROPPED TOKEN COUNT, which is the workload. Equal structure counts per
                     # rank do not mean equal compute, and this is what shows it: the pair track is
@@ -7500,6 +7545,10 @@ def main():
                 mine.append(grp[(rank + gi) % world])
         return mine
 
+    # ONE-SHOT, so the coverage check runs on the first epoch this PROCESS sees rather than only
+    # on global epoch 0, which a resume never reaches.
+    _cov_checked = [False]
+
     def build_epoch_cover_all(ep):
         """Every unit exactly once per epoch, dealt round-robin so ranks hold disjoint structures.
 
@@ -7529,10 +7578,19 @@ def main():
         import epoch_plan as _EP
         _mine = _EP.cover_all(flat, world, rank, a.seed, ep, a.epoch_order, _sel_tokens,
                               balance=bool(a.epoch_balance), per_step=structs_per_step)
-        if is_main and ep == 0:
+        # THE FIRST EPOCH THIS PROCESS SEES, NOT GLOBAL EPOCH 0. Gating on `ep == 0` made the
+        # guard inert on every RESUMED run -- which is most of them -- so the defect it exists to
+        # catch (412 structures silently absent) would have gone unreported on exactly the runs
+        # least likely to be watched closely. Confirmed on rdi25k, which resumed at ep=4 and
+        # printed no coverage line at all. Raised in adversarial review.
+        if is_main and not _cov_checked[0]:
+            _cov_checked[0] = True
             # SAY THE COVERAGE OUT LOUD, because the failure this builder exists to fix was
             # silent: 412 structures absent from every epoch with nothing in the log.
-            _cov = _EP.coverage(flat, world, a.seed, ep, a.epoch_order, _sel_tokens)
+            # THE DEAL ACTUALLY WALKED, not the round-robin one. Without balance/per_step this
+            # validated a different assignment from the one the ranks use.
+            _cov = _EP.coverage(flat, world, a.seed, ep, a.epoch_order, _sel_tokens,
+                                balance=bool(a.epoch_balance), per_step=structs_per_step)
             _all = {_t[0] for _t in flat}
             print(f"  epoch plan (cover-all): {len(flat)} unit(s) over {len(_all)} structure(s); "
                   f"every rank walks {len(_mine)}; structures covered {len(_cov)} of {len(_all)}"
