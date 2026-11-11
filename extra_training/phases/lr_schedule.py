@@ -87,14 +87,24 @@ def lr_at_step(step, lr, lr_final, warmup_steps, steps_per_epoch, epochs,
     return lr_final + 0.5 * (lr - lr_final) * (1.0 + math.cos(math.pi * p))
 
 
-def units_per_rank(units_by_pdb, world, cross_seed=False, n_units=None):
+def units_per_rank(units_by_pdb, world, cross_seed=False, n_units=None, cover_all=False):
     """Units ONE RANK walks in one epoch, as the epoch builder groups them.
 
     build_epoch takes floor(n_seeds / world) WHOLE seed-groups of each structure, so the remainder
     -- one seed per structure at ten seeds and world 3 -- sits out, reseeded each epoch. That makes
     the per-rank count a SUM OF FLOORS, not one division of the total: 368 x floor(10/3) = 1,104,
     where len(flat) // world gives 1,226 and counts a seed that never trains.
+
+    COVER-ALL KEEPS EVERY UNIT AND PADS UP, so it is a CEILING of the total over world, not a sum
+    of floors. Getting this wrong is not cosmetic: on the 412x1 + 434x15 population the sum of
+    floors is 434*5 = 2,170 while cover_all actually deals 2,308 per rank, so the schedule would
+    predict 136 optimiser steps an epoch against 145 actual -- 450 steps over 50 epochs. The arm
+    that found this runs lr_final 0, i.e. flat after warmup, so its steady-state lr is unaffected;
+    an arm with decay enabled would have had its horizon shifted. Raised in external review.
     """
+    if cover_all:
+        _n = int(n_units if n_units is not None else sum(units_by_pdb.values()))
+        return -(-_n // max(1, world))
     if cross_seed:
         return int(n_units if n_units is not None
                    else sum(units_by_pdb.values())) // max(1, world)
@@ -181,7 +191,7 @@ def pack_cross_seed_steps(depth, order, structs_per_step, preserve_order=False):
 
 
 def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False, n_units=None,
-                    structs_per_step=0, preserve_order=False):
+                    structs_per_step=0, preserve_order=False, cover_all=False):
     """Optimiser steps in one epoch, DERIVED FROM THE EPOCH BUILDER'S OWN GROUPING.
 
     build_epoch walks floor(n_seeds / world) whole seed-groups of each structure -- the remainder
@@ -207,7 +217,7 @@ def steps_per_epoch(units_by_pdb, world, nsample, accum_local, cross_seed=False,
         _st, _dr, _U = pack_cross_seed_steps(dict(units_by_pdb), list(units_by_pdb),
                                              structs_per_step, preserve_order=preserve_order)
         return max(1, len(_st))
-    per_rank = units_per_rank(units_by_pdb, world, cross_seed, n_units)
+    per_rank = units_per_rank(units_by_pdb, world, cross_seed, n_units, cover_all=cover_all)
     # CEILING, NOT FLOOR PLUS ONE. The loop flushes a partial accumulation at the epoch
     # boundary, but only when one exists -- and at 368 structures the division is exact
     # (1,104 units x 5 poses / 30 = 184), so an unconditional +1 claims 185 and stretches

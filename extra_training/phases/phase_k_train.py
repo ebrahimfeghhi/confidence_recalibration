@@ -967,6 +967,13 @@ def main():
                     help="`structure` shuffles the ORDER OF STRUCTURES and the units within each, "
                          "which is as much as can be shuffled while building each structure's "
                          "dataset item once. `none` is deterministic for debugging.")
+    ap.add_argument("--expect-trainable", type=int, default=0,
+                    help="REFUSE unless --train-only leaves exactly this many trainable tensors. "
+                         "A regex is intent; this is the outcome. The bare negative lookahead of "
+                         "the full-head pattern yields 19 tensors and 0.3M parameters against the "
+                         "intended 102 and 5.3M -- launched truncated once, caught only because a "
+                         "human read the startup line. The optimiser is non-empty either way, so "
+                         "no existing guard fires. 0 (default) does not check.")
     ap.add_argument("--epoch-cover-all", action="store_true",
                     help="EVERY UNIT ONCE PER EPOCH, dealt so the ranks hold DISJOINT structures "
                          "in each step. Without it, and without --rank-cross-seed, build_epoch "
@@ -3045,6 +3052,16 @@ def main():
         print(f"--train-only {_pats}: {len(_kept)} of {len(_rel)} head tensor(s), "
               f"{_after:,} of {_before:,} parameters ({100.0*_after/max(1,_before):.3f}% of the "
               f"head). Everything else is FROZEN.")
+        # THE OUTCOME, NOT THE INTENT. --train-only matching SOMETHING is already checked above;
+        # this checks it matched what was meant. The full-head pattern truncated to its bare
+        # negative lookahead gives 19 tensors instead of 102 -- a non-empty optimiser, no guard
+        # fired, and the run was stopped only because the startup line was read by eye.
+        if a.expect_trainable and len(_kept) != a.expect_trainable:
+            raise SystemExit(
+                f"STOP: --expect-trainable {a.expect_trainable} but --train-only left "
+                f"{len(_kept)} trainable tensor(s) ({_after:,} parameters). The pattern matched "
+                f"something, so the optimiser is not empty and nothing else would have caught "
+                f"this.\n  patterns: {_pats}\n  kept e.g. {[_rel[n] for n in _kept[:6]]}")
         for n in _kept:
             print(f"    {_rel[n]:46} {tuple(dict(model.named_parameters())[n].shape)}")
 
@@ -3582,6 +3599,13 @@ def main():
         # let a resume through after the exclusions, the loss weights and the lr had all changed
         # (review 2026-10-16).
         _mine = {"world": world, "seed": a.seed, "accum": a.accum, "nsample": a.nsample,
+                 # THE EPOCH BUILDER IS PART OF THE TRAINING POPULATION, not a tuning knob.
+                 # Toggling --epoch-cover-all on a resume changes WHICH STRUCTURES TRAIN -- the
+                 # group-of-world builder drops every structure with fewer than `world` seeds,
+                 # 412 of 846 here -- while AdamW state is restored as if nothing moved. Absent
+                 # from a bundle written before the flag existed, so it reads as False, which is
+                 # exactly what those runs did. Raised in external review of e4e39731.
+                 "epoch_cover_all": bool(a.epoch_cover_all),
                  "manifest_digest": _manifest_digest, "crop_size": a.crop_size,
                  "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
@@ -3721,6 +3745,13 @@ def main():
         # like any other field -- which means a resume that ENABLES cropping shows up as real
         # drift and needs --resume-allow-drift, because it genuinely changes the objective.
         _PRE_CROP = {"lora_rank": 0, "lora_alpha": 0.0, "lora_targets": "", "lora_dropout": 0.0,
+                     # ABSENCE IS EVIDENCE, same reading as --pae-row-frac below. Every bundle
+                     # written before --epoch-cover-all existed ran the group-of-`world` builder,
+                     # which is exactly what False means. Without this entry such a bundle would
+                     # fall through to the unknown-key branch instead of migrating, and a resume
+                     # that TURNS THE FLAG ON still shows as drift -- which is the point, since it
+                     # changes which structures train while AdamW state is restored unchanged.
+                     "epoch_cover_all": False,
                      # A bundle written before these flags existed ran the full-run schedule, which
                      # is exactly what the 0 defaults mean, and "cosine" is what it computed.
                      "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
@@ -7666,6 +7697,7 @@ def main():
                                   "lora_dropout": a.lora_dropout,
                                   "train_only": a.train_only,
                                   "world": world, "seed": a.seed, "accum": a.accum,
+                                  "epoch_cover_all": bool(a.epoch_cover_all),
                                   "nsample": a.nsample, "lr": a.lr,
                                   "lr_final": a.lr_final,
                                   # ALSO HALF-WIRED, and this one decides the lr at every step of
@@ -8626,8 +8658,10 @@ def main():
     for _p, _lp, _c in flat:
         _units_by_pdb[_p] = _units_by_pdb.get(_p, 0) + 1
     _units_per_rank = _LRS.units_per_rank(_units_by_pdb, world,
-                                          bool(a.rank_cross_seed), len(flat))
+                                          bool(a.rank_cross_seed), len(flat),
+                                          cover_all=bool(a.epoch_cover_all))
     _spe_ep = _LRS.steps_per_epoch(_units_by_pdb, world, a.nsample, accum_local,
+                                   cover_all=bool(a.epoch_cover_all),
                                    cross_seed=bool(a.rank_cross_seed), n_units=len(flat),
                                    structs_per_step=(a.rank_structs_per_step
                                                      if a.rank_cross_seed else 0),

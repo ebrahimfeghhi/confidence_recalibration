@@ -45,6 +45,12 @@
 #
 # HELD-OUT EVAL IS UNCROPPED, every 5 epochs, so every historical number stays comparable.
 #
+# --expect-trainable 113 IS A FAIL-CLOSED LAUNCH GATE, not decoration. 87ja6a and 9gsbdq both
+# report "113 of 258 head tensor(s), 5,845,838 of 19,786,062 parameters" under this exact
+# pattern. The pattern truncated to its bare negative lookahead gives 19 tensors instead, which
+# leaves the optimiser non-empty so no existing guard fires -- that launch was caught only
+# because a human read the startup line. Now the trainer refuses before the first step.
+#
 # DRY=1 (default) prints the argv and runs every gate without touching a card.
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training || exit 1
@@ -194,7 +200,7 @@ LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   --fold training/fold --indices training/prep/all857_indices.csv \
   --pae-scored-pairs training/combined/pool.csv \
   --pae-scored-roles training/fold/chain_roles_all.csv \
-  --lean-readouts --train-only "$TRAIN_ONLY" \
+  --lean-readouts --train-only "$TRAIN_ONLY" --expect-trainable 113 \
   --warmup-steps 20 --seed 0 --clip-norm 25.0 \
   --blocks-per-ckpt 1 --ckpt-token-threshold 1250 --mem-log \
   --prefetch-units 2 --prefetch-workers 4 \
