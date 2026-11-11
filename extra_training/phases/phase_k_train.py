@@ -1327,6 +1327,15 @@ def main():
                          "491 structures, 0 with no definable crop) for a MEASURED 3.35x on the "
                          "head and ~1.99x on a whole step, landing near Protenix's own "
                          "train_crop_size of 256. Requires --minimal-items.")
+    ap.add_argument("--crop-pool", default="",
+                    help="DIRECTORY of per-structure crop POOLS from "
+                         "run_logging/select_crop_pool.py. Each <pdb>.npz holds N token masks and "
+                         "the structure uses mask `epoch %% N`, so it sees a different view every "
+                         "epoch instead of one fixed crop -- which is most of why Protenix crops "
+                         "randomly at all. REQUIRES --rel-labels to point at an itm_labels_crop "
+                         "directory built on the SAME pool: a cropped prediction against an "
+                         "uncropped target trains toward something unreachable and nothing would "
+                         "refuse. Mutually exclusive with --crop-tokens and --crop-margin.")
     ap.add_argument("--crop-tokens", default="",
                     help="TRAIN on a PRECOMPUTED token mask per structure instead of the "
                          "--crop-margin interface crop. The npz comes from "
@@ -1478,6 +1487,36 @@ def main():
             raise SystemExit(f"STOP: --token-keep-other {a.token_keep_other} exceeds "
                              f"--token-keep-union {a.token_keep_union}, so the periphery would "
                              f"survive MORE often than the interface. That is not the experiment.")
+    if a.crop_pool:
+        if not os.path.isdir(a.crop_pool):
+            raise SystemExit(f"STOP: --crop-pool {a.crop_pool} is not a directory. Build it with "
+                             f"run_logging/select_crop_pool.py")
+        if a.crop_tokens or a.crop_margin > 0:
+            raise SystemExit("STOP: --crop-pool is mutually exclusive with --crop-tokens and "
+                             "--crop-margin. They are three different crop rules and combining "
+                             "them would silently apply one of them.")
+        if not a.minimal_items:
+            raise SystemExit("STOP: --crop-pool needs --minimal-items, for the same reason "
+                             "--crop-margin does: the full dataset item carries FULL-SIZE arrays "
+                             "that the crop never reaches.")
+        # THE LABELS MUST HAVE BEEN BUILT ON THIS POOL. A cropped prediction against an uncropped
+        # target is the one failure in this feature that produces no error at all -- the residual
+        # absorbs it and the run looks healthy. So the label directory is required to carry
+        # crop_index, which only build_itm_labels_cropped.py writes.
+        if not a.rel_labels:
+            raise SystemExit("STOP: --crop-pool needs --rel-labels pointing at labels built on "
+                             "the same pool (run_logging/build_itm_labels_cropped.py).")
+        _probe = sorted(f for f in os.listdir(a.rel_labels) if f.endswith(".npz"))
+        if not _probe:
+            raise SystemExit(f"STOP: --rel-labels {a.rel_labels} holds no npz files.")
+        _pz = np.load(os.path.join(a.rel_labels, _probe[0]), allow_pickle=True)
+        if "crop_index" not in _pz.files:
+            raise SystemExit(
+                f"STOP: --crop-pool is set but --rel-labels {a.rel_labels} has no crop_index -- "
+                f"these are UNCROPPED labels. The head would predict a cropped ipTM against a "
+                f"full-structure target and nothing downstream would notice. Build cropped labels "
+                f"with run_logging/build_itm_labels_cropped.py --pool {a.crop_pool}")
+
     if a.crop_tokens and a.crop_margin > 0:
         raise SystemExit("STOP: --crop-tokens and --crop-margin are two crop rules at once. Which "
                          "one applied would depend on branch order, and the run would name itself "
@@ -2400,7 +2439,19 @@ def main():
         would skip them all, and the run would train on PAE alone while its log and saved guard
         both said --rank-form rel -- the row-weight bool-cast failure in another costume.
         """
-        if pdb in _rel_cache:
+        # UNDER --crop-pool THE CACHE KEY CARRIES THE CROP. The label changes with the crop, so a
+        # cache keyed by pdb alone would serve epoch 0's target for the whole run -- the silent
+        # failure this path exists to prevent. n_crop comes from the POOL, which _crop_masks also
+        # uses, so the two cannot drift apart.
+        if a.crop_pool:
+            _ent = _CROPPOOL.get(pdb)
+            if _ent is None:
+                raise SystemExit(f"STOP: --crop-pool has no entry for {pdb}, but its labels were "
+                                 f"requested. Pool and manifest disagree.")
+            _cidx = int(_crop_epoch[0]) % len(_ent[0])
+            if (pdb, _cidx) in _rel_cache:
+                return _rel_cache[(pdb, _cidx)]
+        elif pdb in _rel_cache:
             return _rel_cache[pdb]
         if not a.rel_labels:
             raise SystemExit("STOP: --rank-form rel needs --rel-labels; build it with "
@@ -2422,6 +2473,39 @@ def main():
                 f"STOP: {f} is an OLD label cache keyed by an asym pair. Those caches paired a "
                 f"value computed on the pose's OST pair with the STATIC pair as its key, which is "
                 f"the mismatch review caught. Rebuild with run_logging/build_itm_labels.py.")
+        if a.crop_pool:
+            # KEYED BY CROP, AND THE KEY MUST MATCH THE MASK _crop_masks CHOSE. Both use
+            # `epoch % n`, so a label built for crop 7 is only ever paired with the mask of crop 7.
+            # If the two ever disagreed the head would be graded against a different crop's target
+            # and the loss would still look perfectly healthy, which is why this is recomputed from
+            # the same expression rather than passed in.
+            if "crop_index" not in z.files:
+                raise SystemExit(
+                    f"STOP: --crop-pool is set but {f} has no crop_index. These are UNCROPPED "
+                    f"labels; the head would be graded against a full-structure target. Rebuild "
+                    f"with run_logging/build_itm_labels_cropped.py")
+            _n = int(z["n_crop"])
+            if _n != len(_CROPPOOL[pdb][0]):
+                raise SystemExit(
+                    f"STOP: {pdb} has {len(_CROPPOOL[pdb][0])} crop(s) in --crop-pool but its "
+                    f"label cache reports {_n}. They were built from different pools, so mask k "
+                    f"and label k are different crops and the head would be graded against the "
+                    f"wrong target with no error anywhere.")
+            _ci = _cidx
+            _m = np.asarray(z["crop_index"]) == _ci
+            if not _m.any():
+                raise SystemExit(
+                    f"STOP: {f} has no rows for crop {_ci} of {_n}. The label cache and the crop "
+                    f"pool disagree about how many crops {pdb} has -- they were built from "
+                    f"different pools.")
+            d = {(int(sd), int(sp), str(ifc)): float(g)
+                 for ifc, sd, sp, g in zip(z["iface"][_m], z["seed"][_m], z["sample"][_m],
+                                           z[col][_m])}
+            # NOT CACHED ACROSS EPOCHS. The label changes with the crop, so a cache keyed by pdb
+            # alone would serve epoch 0's target forever -- the exact silent failure this whole
+            # path exists to avoid.
+            _rel_cache[(pdb, _ci)] = d
+            return d
         d = {(int(sd), int(sp), str(ifc)): float(g)
              for ifc, sd, sp, g in zip(z["iface"], z["seed"], z["sample"], z[col])}
         _rel_cache[pdb] = d
@@ -4013,6 +4097,30 @@ def main():
     # loader filters only __n and so counts __meta as a structure, which is why it prints one more
     # than it has. Filter both.
     _CROPTOK = {}
+    _CROPPOOL = {}
+    if a.crop_pool:
+        # ONE FILE PER STRUCTURE, each holding N masks of possibly DIFFERENT lengths -- a pool can
+        # mix crop sizes, because 28 structures needed a larger rung to reach 40 passing crops.
+        # So the masks are kept as a list of index arrays rather than one rectangular block.
+        for _f in sorted(os.listdir(a.crop_pool)):
+            if not _f.endswith(".npz"):
+                continue
+            _z = np.load(os.path.join(a.crop_pool, _f), allow_pickle=True)
+            _ks = sorted((k for k in _z.files if k.startswith("c") and k[1:].isdigit()),
+                         key=lambda k: int(k[1:]))
+            _rows = [np.asarray(r, dtype=np.int64) for k in _ks for r in _z[k]]
+            if _rows:
+                _CROPPOOL[_f[:-4]] = (_rows, np.asarray(_z["sizes"]))
+        if not _CROPPOOL:
+            raise SystemExit(f"STOP: --crop-pool {a.crop_pool} produced no masks.")
+        if is_main:
+            _n = np.array([len(v[0]) for v in _CROPPOOL.values()])
+            _mix = sum(1 for v in _CROPPOOL.values() if len(set(v[1].tolist())) > 1)
+            print(f"CROP POOL: {len(_CROPPOOL)} structure(s) from {a.crop_pool} -- "
+                  f"crops per structure min {_n.min()} median {int(np.median(_n))} "
+                  f"max {_n.max()}; {_mix} structure(s) mix crop sizes; a structure uses "
+                  f"mask `epoch % n` so it sees a different view each epoch", flush=True)
+
     if a.crop_tokens:
         _ctz = np.load(a.crop_tokens)
         _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
@@ -4046,13 +4154,33 @@ def main():
         some units were cropped and some were not would still write a complete trajectory and
         name itself after the crop.
         """
-        kt_ = _CROPTOK.get(pdb_)
-        if kt_ is None:
-            raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb_}. The file names "
-                             f"{len(_CROPTOK)} structure(s); this manifest needs {pdb_} too. "
-                             f"Rebuild the mask over this pool.")
-        a2t_ = np.asarray(zc_["ci_feat_atom_to_token_idx"]).reshape(-1)
         ntok_ = int(np.asarray(zc_["ci_feat_asym_id"]).reshape(-1).shape[0])
+        if _CROPPOOL:
+            _ent = _CROPPOOL.get(pdb_)
+            if _ent is None:
+                raise SystemExit(f"STOP: --crop-pool has no entry for {pdb_}. The pool holds "
+                                 f"{len(_CROPPOOL)} structure(s); this manifest needs {pdb_} too.")
+            _rows, _ = _ent
+            # epoch % n, NOT a draw. The n masks of a structure are independent enumerations of
+            # its own eligible anchors, so a fixed rotation gives the same view distribution as a
+            # random one and makes two runs on the same pool reproducible. The crop_index used
+            # here MUST be the one the labels were keyed by -- see _rel_labels.
+            _ci = int(_crop_epoch[0]) % len(_rows)
+            kt_ = np.zeros(ntok_, dtype=bool)
+            _idx = _rows[_ci]
+            if _idx.size and int(_idx.max()) >= ntok_:
+                raise SystemExit(f"STOP: {pdb_} crop {_ci} indexes token {int(_idx.max())} but "
+                                 f"its cached trunk has {ntok_}. The pool was built against a "
+                                 f"different cache and slicing with it would scramble the "
+                                 f"structure.")
+            kt_[_idx] = True
+        else:
+            kt_ = _CROPTOK.get(pdb_)
+            if kt_ is None:
+                raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb_}. The file names "
+                                 f"{len(_CROPTOK)} structure(s); this manifest needs {pdb_} too. "
+                                 f"Rebuild the mask over this pool.")
+        a2t_ = np.asarray(zc_["ci_feat_atom_to_token_idx"]).reshape(-1)
         if kt_.shape[0] != ntok_:
             raise SystemExit(f"STOP: {pdb_}'s mask has {kt_.shape[0]} token(s) but its cached "
                              f"trunk has {ntok_}. The mask was built against a different cache "
