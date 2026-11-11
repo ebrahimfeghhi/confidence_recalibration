@@ -1516,3 +1516,83 @@ cropped head selects better; it shows the target it would be trained against is 
     for cs in 256 384 512; do CROP_THREADS=4 python -I run_logging/crop_itm_rank.py \
         --crops 1000 --workers 8 --shard $s --anchor-pair-only --crop-size $cs \
         --out training/runs/crop_cs$cs/rank.csv; done
+
+---
+
+## 23. THE THREE-TIER CROP POLICY IS A WASH AGAINST 256->512@800. The extra tier is not worth wiring
+
+Evaluated at the owner's request, via Codex: `N<=800 -> 256`, `800<N<=1100 -> 384`, `N>1100 -> 512`,
+keyed on the FULL uncropped assembly token count.
+
+**COMPOSED, NOT RESAMPLED, AND THAT IS EXACT HERE.** Sections 21-22 measured every interface at all
+three sizes with the same pair-restricted anchor, the same one-crop-per-structure protocol and d0
+pinned uncropped. A policy that assigns ONE size per STRUCTURE is a row selection over those runs,
+because the key (full token count) is a structure property identical across runs and the crop is
+shared by all of a structure's interfaces. `run_logging/crop_policy_eval.py` refuses a policy that
+would vary size within a structure rather than quietly averaging two regimes.
+
+### 886 paired interfaces over 434 structures, 1000 crops each
+
+| policy | ret 15A | usable | joint | rho d | reg d | reg p90 | worse% | speedup |
+|---|---|---|---|---|---|---|---|---|
+| fixed 256 | 0.895 | 0.9872 | 0.9669 | +0.0522 | -0.0116 | 0.0738 | 20.6 | **3.56x** |
+| **256; 512 if N>800** | 0.941 | 0.9972 | **0.9934** | +0.0537 | **-0.0109** | 0.0711 | 18.0 | 3.00x |
+| **THREE-TIER at 800, 1100** | 0.935 | 0.9965 | 0.9917 | +0.0533 | -0.0114 | 0.0713 | 18.8 | **3.18x** |
+| 256; 384 if N>600; 512 if N>1000 | 0.969 | 0.9991 | 0.9977 | +0.0533 | -0.0100 | 0.0694 | 16.7 | 2.86x |
+| fixed 384 | 0.972 | 0.9975 | 0.9929 | +0.0265 | -0.0070 | 0.0700 | 13.0 | 2.58x |
+| fixed 512 | 0.992 | 0.9998 | 0.9993 | +0.0125 | -0.0040 | 0.0679 | 6.7 | 1.93x |
+
+**THREE-TIER minus 256->512@800:** joint -0.0017, interface kept -0.0054, regret delta -0.0005,
+rho delta -0.0004, speedup **+0.18x**. Every difference is in the fourth decimal except the speed.
+
+The only bin that differs is 800-1100 tokens (n=113), which gets 384 instead of 512: retention
+0.986 -> 0.944 and joint 0.9989 -> 0.9853. **So the third tier buys 0.18x of speed by giving back
+about a seventh of the joint-coverage gain, in one bin covering 13% of interfaces.** That is a
+wash, and a wash is not worth an extra branch in the crop code and an extra threshold to defend.
+
+### THE REMAINING FAILURES ARE NOT A SIZE PROBLEM
+
+Worst cases under the three-tier policy, by joint coverage:
+
+    6vx4_AI/CI/AH   N= 703  crop 256   joint 0.677   3 scored interfaces
+    9kod_CF/CE/BE   N=1004  crop 384   joint 0.770   3 scored interfaces
+
+Both sit BELOW their tier's threshold, so a larger crop would not have been triggered. Holding
+structure size fixed at 450-800 tokens and splitting by interface count:
+
+| interfaces in structure | n | joint usable (crop 256) |
+|---|---|---|
+| 1 | 31 | 1.0000 |
+| 2 | 362 | 0.9923 |
+| **3** | **21** | **0.9127** |
+| 4 | 56 | 0.9943 |
+
+**Three-interface structures are the hard case, not large ones.** Two interfaces are heavy-antigen
+and light-antigen on a shared face, which one ball covers; a third is typically a second antigen
+copy or a second Fv elsewhere in the assembly, which no single 256-token ball reaches. Four
+behaves like two because it is usually two independent Fv-antigen pairs each internally shared.
+
+So the residual 2.5% of interfaces under joint 0.90 is a TOPOLOGY problem, and scaling crop size
+is the wrong lever for it. The policy options are the same three as before -- resample, fall back
+to uncropped, skip the update -- applied to ~1-3% of structures rather than 28%.
+
+### End-to-end time, and what the fit does and does not cover
+
+    measured uncropped epoch 94.3 min over 11,500 poses/rank
+    C0 = 0.081 s/pose is the NON-scaling part -- trunk H2D, optimiser step, collective, unit setup
+      = 15.5 min of the 94.3 min epoch, and it is ALREADY INSIDE every speedup above
+
+    fixed 256              epoch 26.5 min    5 epochs + one held-out eval  145.1 min
+    256; 512 if N>800      epoch 31.4 min                                  169.7 min
+    THREE-TIER             epoch 29.6 min                                  160.7 min
+    uncropped              epoch 94.3 min                                  484.0 min
+
+The earlier worry that these speedups ignore fixed costs was wrong in one direction: C0 is fitted
+from per-pose wall deltas and therefore already absorbs trunk H2D and the step. What the fit does
+NOT model is the held-out eval (12.5 min every 5 epochs, which does not shrink with a TRAINING
+crop) and any per-epoch cost outside poses, so epoch figures remain an upper bound on the saving.
+
+**RECOMMENDATION: take 256 -> 512 at N>800.** It is simpler, it is better on every quality axis,
+and it costs 0.18x of speed against the three-tier version.
+
+    python -I run_logging/crop_policy_eval.py
