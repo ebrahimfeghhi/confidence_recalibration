@@ -19,16 +19,29 @@
 #   --pae-only                 pLDDT, PDE and resolved stubbed out; ipTM derives from PAE alone
 #   no --rank-loss             no ranking objective, so no pass A: one forward per pose, not two
 #   no --rank-cross-seed       frees the epoch builder to shuffle over ALL structures
-#   --accum 144 --nsample 3    48 structures x 3 poses per step, 16 structures per rank
+#   --accum 240 --nsample 5    48 units per step, 16 per rank, ~47 distinct structures
+#   --epoch-cover-all          every unit once per epoch, ranks holding DISJOINT structures
 #   --epochs 50
 #
-# THE BATCH, AND WHY IT IS SHAPED THIS WAY. structs_per_step = accum / (world * nsample), so
-# 144 / (3 * 3) = 16 structures per rank, 48 distinct structures per gradient -- against 2 under
-# --rank-cross-seed, which needed many poses of ONE structure to form a ranking group.
-# WHOLE STRUCTURES GO TO ONE RANK. Splitting a structure's poses across ranks would make all
-# three load the same ~100 MB trunk, and measured rank imbalance at 16 structures per rank is
-# already ~0.5% because the 256-token crop makes almost every unit the same size. There is
-# nothing left to balance and three times the bytes to pay for.
+# --nsample 5 IS THE ONLY LEGAL VALUE. Every cached unit holds 5 poses: slice_cached_unit crops
+# ATOMS, not pose rows, and phase_k_train.py:5353 refuses n_pose != nsample when world > 1. An
+# earlier version of this launcher passed 3 and would have STOPPED on the first unit of epoch 1.
+# Caught by adversarial review and independently by external review of 216b0630.
+#
+# --epoch-cover-all IS NOT OPTIONAL HERE. Without --rank-cross-seed, build_epoch's unit of work is
+# `world` SEEDS OF ONE STRUCTURE -- `for g in range(len(u) // world)` -- so each of the 412
+# single-seed structures in this population yields 1//3 = 0 groups and NEVER TRAINS, in any epoch,
+# with nothing in the log saying so. 412 of 846. The cover-all builder deals every unit instead,
+# and run_logging/test_epoch_cover_all.py asserts the coverage against the real manifest.
+#
+# THE BATCH. structs_per_step = accum / (world * nsample) = 240 / (3 * 5) = 16 units per rank, so
+# a step is 48 units spanning 43-48 DISTINCT structures (median 47; they differ only where a deep
+# structure's seeds collide by chance) -- against 2 structures under --rank-cross-seed, which
+# needed many poses of ONE structure to form a ranking group.
+# WHOLE STRUCTURES GO TO ONE RANK, and the ranks hold disjoint units within a step. Splitting a
+# structure's poses across ranks would make all three load the same ~100 MB trunk, and measured
+# per-step rank imbalance here is already ~0.5% because the 256-token crop makes almost every
+# unit the same size. Nothing left to balance, three times the bytes to pay for.
 #
 # HELD-OUT EVAL IS UNCROPPED, every 5 epochs, so every historical number stays comparable.
 #
@@ -43,11 +56,24 @@ MANIFEST="${MANIFEST:-train_val_splits/cache_train_structures_extended.csv}"
 SKIP="${SKIP:-4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m}"
 CARDS="${CARDS:-4,5,7}"
 EPOCHS="${EPOCHS:-50}"
-ACCUM="${ACCUM:-144}"
-NSAMPLE="${NSAMPLE:-3}"
+ACCUM="${ACCUM:-240}"
+NSAMPLE="${NSAMPLE:-5}"
 EVAL_POOL="${EVAL_POOL:-training/valfull83/pool.csv}"
 LR="${LR:-1e-3}"
 DRY="${DRY:-1}"
+
+# A HOLD FILE DISARMS THIS LAUNCHER WITHOUT KILLING ANYTHING.
+# chain_pae_crop_arm.sh polls cards_busy in the background and invokes this script BY PATH when
+# the cards free, so the only safe way to stop a queued launch -- without pattern-killing a
+# process, which has self-killed this session twice -- is to make the launcher itself refuse.
+# The chain then reports a failed launch and exits, the cards stay as they are, and nothing on a
+# GPU is touched. Remove the file to re-arm.
+HOLD="${HOLD:-training/runs/chain_pae_crop/HOLD}"
+if [ -f "$HOLD" ]; then
+  say "REFUSING: $HOLD exists -- this arm is disarmed. Reason:"
+  sed 's/^/    /' "$HOLD"
+  exit 9
+fi
 
 say "PAE-only cropped arm: pool=$POOL_DIR cards=$CARDS epochs=$EPOCHS accum=$ACCUM nsample=$NSAMPLE DRY=$DRY"
 
@@ -74,6 +100,38 @@ $PY -I run_logging/test_crop_pool_wiring.py || { say "REFUSING: wiring gates fai
 
 # THE GATE 3pdv7i DID NOT HAVE. --join static because that is the join the PAE mask uses; the
 # OST join is the ranking loss's and is NOT what this arm asks of the crop.
+# THE POSE COUNT, FROM THE ACTUAL CACHE. phase_k_train.py:5353 refuses n_pose != --nsample when
+# world > 1, and slice_cached_unit crops ATOMS, not pose rows -- so --nsample must equal what the
+# trunks hold or the run STOPS on the first unit. An earlier version passed 3 against caches of 5.
+say "CPU gate: cached units hold exactly --nsample $NSAMPLE pose(s)"
+$PY -I - "$NSAMPLE" <<'PYG' || exit 7
+import glob, random, sys
+import numpy as np
+want = int(sys.argv[1])
+fs = glob.glob("training/fold/trunks/*/free_*.npz")
+if not fs:
+    print("  REFUSING: no trunks found under training/fold/trunks"); sys.exit(1)
+random.seed(0)
+bad, n = {}, 0
+for f in random.sample(fs, min(40, len(fs))):
+    z = np.load(f)
+    k = [x for x in z.files if "ci_coordinate" in x]
+    if not k:
+        continue
+    p = int(np.asarray(z[k[0]]).shape[0]); n += 1
+    if p != want:
+        bad.setdefault(p, []).append(f)
+print(f"  sampled {n} trunk(s) of {len(fs)}: pose counts "
+      f"{ {want: n - sum(len(v) for v in bad.values()), **{k: len(v) for k, v in bad.items()} } }")
+if bad:
+    print(f"  REFUSING: --nsample {want} but trunks hold {sorted(bad)}; the run would STOP at "
+          f"unit 0 (phase_k_train.py:5353). e.g. {list(bad.values())[0][0]}")
+sys.exit(1 if bad else 0)
+PYG
+
+say "CPU gate: the epoch plan covers every structure, singletons included"
+$PY -I run_logging/test_epoch_cover_all.py || { say "REFUSING: epoch coverage gate failed"; exit 6; }
+
 say "CPU gate: every crop keeps a scorable cross-chain pair under the STATIC join"
 CROP_THREADS="${CROP_THREADS:-3}" $PY -I run_logging/check_crop_pairs.py \
     --pool "$POOL_DIR" --join static --roles training/fold/chain_roles_all.csv \
@@ -85,7 +143,7 @@ CROP_THREADS="${CROP_THREADS:-3}" $PY -I run_logging/check_crop_pairs.py \
 # truncated once -- 19 tensors against 102 -- and stopped before the first optimiser step.
 TRAIN_ONLY='^(?!pairformer_stack\.),blocks\.0\.pair_transition\.,blocks\.1\.tri_mul_out\.,blocks\.1\.tri_mul_in\.,blocks\.2\.tri_mul_out\.,blocks\.2\.tri_mul_in\.,blocks\.2\.pair_transition\.,blocks\.3\.tri_mul_out\.,blocks\.3\.tri_mul_in\.,blocks\.3\.tri_att_start\.,blocks\.3\.pair_transition\.'
 ARGS=(--crop-pool "$POOL_DIR"
-      --minimal-items
+      --minimal-items --epoch-cover-all
       --pae-only --alpha-pae 1.0 --alpha-confidence 1.0
       --accum "$ACCUM" --nsample "$NSAMPLE"
       --skip-dead-ops --pose-perblock --pose-perblock-copy --frame-direction --lean-single

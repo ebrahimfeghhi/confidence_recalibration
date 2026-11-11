@@ -967,6 +967,16 @@ def main():
                     help="`structure` shuffles the ORDER OF STRUCTURES and the units within each, "
                          "which is as much as can be shuffled while building each structure's "
                          "dataset item once. `none` is deterministic for debugging.")
+    ap.add_argument("--epoch-cover-all", action="store_true",
+                    help="EVERY UNIT ONCE PER EPOCH, dealt so the ranks hold DISJOINT structures "
+                         "in each step. Without it, and without --rank-cross-seed, build_epoch "
+                         "forms groups of `world` SEEDS OF ONE STRUCTURE, so a structure with "
+                         "fewer than `world` seeds yields floor(1/3)=0 groups and NEVER TRAINS -- "
+                         "412 of this population's 846 structures, silently, in every epoch. "
+                         "Groups of same-structure seeds exist to make per-step work equal across "
+                         "ranks for the RANKING loss, which needs several poses of one structure "
+                         "in one step. A PAE-only arm has no such requirement, and a fixed-size "
+                         "crop already equalises the work, so the units can simply be dealt.")
     ap.add_argument("--epoch-order", default="shuffle",
                     choices=["shuffle", "manifest", "tokens"],
                     help="HOW THE EPOCH'S STRUCTURES ARE ORDERED, independently of "
@@ -7297,6 +7307,49 @@ def main():
                 mine.append(grp[(rank + gi) % world])
         return mine
 
+    def build_epoch_cover_all(ep):
+        """Every unit exactly once per epoch, dealt round-robin so ranks hold disjoint structures.
+
+        WHY THIS EXISTS. build_epoch's unit of work is `world` SEEDS OF ONE STRUCTURE, which makes
+        per-step work equal across ranks by construction -- the right answer when the RANKING loss
+        needs several poses of one structure in a single step. Its cost is that a structure with
+        fewer than `world` seeds produces NO group: `for g in range(len(u) // world)` is an empty
+        range at len(u)=1, so the structure never appears in any epoch and nothing says so. This
+        population is 412 structures at 1 seed and 434 at 15, so 412 of 846 would never train.
+        Found by adversarial review and independently by external review of 216b0630.
+
+        A PAE-ONLY ARM HAS NO SUCH REQUIREMENT. Each pose contributes an independent cross-entropy;
+        nothing is compared within a structure, so a step does not need several of its seeds.
+        Work is equalised a different way: the 256-token crop makes nearly every unit the same
+        size, and measured per-step rank imbalance at this batch size is ~0.5%.
+
+        EQUAL COUNTS PER RANK, OR THE FIRST ALL-REDUCE HANGS RATHER THAN FAILS. len(flat) need not
+        divide `world`, so the tail is truncated to a multiple of it -- at most world-1 units, a
+        different few each epoch because the shuffle is reseeded as seed+ep.
+
+        THE DEAL IS units[rank::world], so one step's units are a contiguous global block split
+        across the ranks: rank r takes global indices r, r+world, r+2*world ... Within a step of
+        `structs_per_step` units per rank that is `structs_per_step * world` DISTINCT units,
+        spanning that many distinct structures except where a deep structure's seeds collide by
+        chance -- which costs an extra trunk read and nothing else.
+        """
+        import epoch_plan as _EP
+        _mine = _EP.cover_all(flat, world, rank, a.seed, ep, a.epoch_order, _sel_tokens)
+        if is_main and ep == 0:
+            # SAY THE COVERAGE OUT LOUD, because the failure this builder exists to fix was
+            # silent: 412 structures absent from every epoch with nothing in the log.
+            _cov = _EP.coverage(flat, world, a.seed, ep, a.epoch_order, _sel_tokens)
+            _all = {_t[0] for _t in flat}
+            print(f"  epoch plan (cover-all): {len(flat)} unit(s) over {len(_all)} structure(s); "
+                  f"every rank walks {len(_mine)}; structures covered {len(_cov)} of {len(_all)}"
+                  + ("" if len(_cov) == len(_all)
+                     else f"  *** {len(_all) - len(_cov)} MISSING ***"), flush=True)
+            if len(_cov) != len(_all):
+                raise SystemExit(
+                    f"STOP: --epoch-cover-all left {len(_all) - len(_cov)} structure(s) out of "
+                    f"epoch {ep}. That is the defect this builder exists to prevent.")
+        return _mine
+
     def build_epoch_cross_seed(ep):
         """This epoch's unit sequence FOR THIS RANK, with ALL SEEDS OF A STRUCTURE IN ONE STEP.
 
@@ -7723,6 +7776,8 @@ def main():
                 # EVERY STEP HOLDS THE SAME TOTAL unit count across ranks -- only the per-rank
                 # split rotates -- so the global pose count per step is a constant.
                 _step_poses_g[0] = _xs_nunits * a.nsample
+            elif a.epoch_cover_all:
+                ep_units = build_epoch_cover_all(ep)
             else:
                 ep_units = build_epoch(ep)
             if world > 1:
