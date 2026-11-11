@@ -92,6 +92,15 @@ done
 say "letting the cards settle for 60s"
 sleep 60
 
+# WHAT `latest` POINTED AT BEFORE WE LAUNCHED, captured here rather than assumed to be $RID.
+# The original compared against $RID, which was only true when 87ja6a was the last run to start.
+# A run in between -- the cropped arm 3pdv7i -- left latest pointing at IT, so the loop below
+# would have matched on its first poll and adopted a dead run's id as the new one, then asserted
+# success by grepping that dead run's log for steps/epoch. Compare against what was actually
+# there a moment ago and the test means what it says.
+PREV=$(readlink training/runs/latest 2>/dev/null | xargs -r basename)
+say "latest currently points at '${PREV:-none}'; waiting for it to move off that"
+
 say "LAUNCH: $RID epochs 21-40, resume $RESUME"
 EPOCHS=40 EXTRA_APPEND="--resume $RESUME" DRY=0 \
   ./shell_scripts/launch_fullhead_5site.sh > "$LOGDIR/launch.log" 2>&1
@@ -103,7 +112,7 @@ EPOCHS=40 EXTRA_APPEND="--resume $RESUME" DRY=0 \
 NEW=""
 for _ in $(seq 1 60); do
   C=$(readlink training/runs/latest 2>/dev/null | xargs -r basename)
-  if [ -n "$C" ] && [ "$C" != "$RID" ]; then NEW="$C"; break; fi
+  if [ -n "$C" ] && [ "$C" != "${PREV:-$RID}" ]; then NEW="$C"; break; fi
   sleep 10
 done
 if [ -z "$NEW" ]; then
