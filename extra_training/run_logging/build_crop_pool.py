@@ -50,6 +50,9 @@ sys.path.insert(0, os.path.join(ROOT, "phases"))
 
 import crop_itm_rank as C                                          # noqa: E402
 from phase_k_eval import interface_chain_pairs                     # noqa: E402
+from phase_k_eval import ost_chain_pairs                           # noqa: E402
+from phase_k_eval import pool_ref_pairs as _PKE_pool_ref_pairs     # noqa: E402
+import phase_j_build_cache as BC                                   # noqa: E402
 from protenix.model.loss import PAELoss                            # noqa: E402
 
 SEEDS = list(range(500000, 500015))
@@ -184,7 +187,43 @@ def main():
 
     skip = set(x for x in a.skip.split(",") if x)
     want = [r["pdb"] for r in csv.DictReader(open(a.manifest)) if r["pdb"] not in skip]
-    pairs_by_pdb, _ = interface_chain_pairs(a.pool, a.roles)
+    # THE PAIRS MUST BE THE ONES TRAINING SCORES, WHICH ARE OST'S, NOT chain_roles'.
+    #
+    # THIS IS THE BUG THAT KILLED 3pdv7i 21 MINUTES INTO EPOCH 1. interface_chain_pairs reads
+    # chain_roles, which assigns each model chain one reference chain for the whole structure.
+    # phase_k_train scores the PER-POSE OST join instead (_pose_pairs -> ost_chain_pairs), and on
+    # 90 of 846 structures the two name DIFFERENT CHAINS. 9o4o is the one that fired: static says
+    # its interfaces are asym (0,3) and (1,3), OST says (0,2) and (1,2). The pool therefore
+    # certified a 256-token crop that preserves chains {0,1,3} and DELETES chain 2 -- the chain
+    # training actually needs -- so iptm_pooled returned None for both interfaces on every pose
+    # and the pass-A completeness guard stopped the run.
+    #
+    # A CROP IS ONE PER STRUCTURE, SHARED BY EVERY POSE, so validating the pair of a single pose
+    # is not enough: OST resolves the SAME interface to different asym pairs across poses of the
+    # same structure (10op_BM is (0,2) in some poses and (0,3) in others). The crop has to keep
+    # every pair ANY pose might ask for, so the union is what gets validated -- each distinct
+    # (iface, asym pair) becomes its own row, and `valid = usable.all(0)` then requires all of
+    # them to survive.
+    _refs = _PKE_pool_ref_pairs(a.pool)
+    pairs_by_pdb = {}
+    for _pdb in sorted(set(r["pdb"] for r in csv.DictReader(open(a.manifest)))):
+        _seen = set()
+        for _seed in SEEDS:
+            try:
+                _ud = BC.seed_dir(a.fold, _pdb, int(_seed))
+            except Exception:                                    # noqa: BLE001
+                continue
+            for _samp in range(5):
+                _got, _ = ost_chain_pairs(_ud, _pdb, _samp, _refs.get(_pdb) or [])
+                for _i, _x, _y in (_got or []):
+                    _seen.add((_i, min(_x, _y), max(_x, _y)))
+        if _seen:
+            pairs_by_pdb[_pdb] = sorted(_seen)
+    _nst, _ = interface_chain_pairs(a.pool, a.roles)
+    _diff = sum(1 for _p, _v in pairs_by_pdb.items()
+                if {(i, min(x, y), max(x, y)) for i, x, y in (_nst.get(_p) or [])} != set(_v))
+    print(f"  chain pairs from the PER-POSE OST join: {len(pairs_by_pdb)} structure(s); "
+          f"{_diff} differ from the static chain_roles join", flush=True)
     dq = collections.defaultdict(dict)
     for r in csv.DictReader(open(a.results)):
         if r.get("arm") != "free":

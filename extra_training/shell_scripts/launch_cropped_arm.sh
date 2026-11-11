@@ -35,8 +35,8 @@ cd /home/ebrahim/confidence_recalibration/extra_training || exit 1
 PY=/home/ebrahim/Protenix/.venv/bin/python
 say() { echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 
-POOL_DIR="${POOL_DIR:-training/crop_final}"
-RELLAB="${RELLAB:-training/fold/itm_labels_crop}"
+POOL_DIR="${POOL_DIR:-training/crop_final_ost}"
+RELLAB="${RELLAB:-training/fold/itm_labels_crop_ost}"
 MANIFEST="${MANIFEST:-train_val_splits/cache_train_structures_extended.csv}"
 SKIP="${SKIP:-4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m}"
 CARDS="${CARDS:-4,5,7}"
@@ -90,7 +90,23 @@ PYG
 say "CPU gates"
 $PY -I run_logging/test_crop_pool_wiring.py || { say "REFUSING: wiring gates failed"; exit 4; }
 
-TRAIN_ONLY='^(?!pairformer_stack\.)'
+# THE GATE THAT 3pdv7i DID NOT HAVE, and the only reason it burned three cards for 21 minutes.
+# Its pool was validated against the STATIC chain_roles join while training scores the PER-POSE
+# OST join; on 9o4o those name different chains, so the pool certified a crop that deleted the
+# chain training needed. Nothing about that required a GPU to find. This replays iptm_pooled's
+# own None branches over every structure and every crop in the pool, against every pose's OST
+# pair, on CPU, before a card is claimed.
+say "crop/pair gate: every crop scorable for every pose's OST pair"
+CROP_THREADS="${CROP_THREADS:-3}" $PY -I run_logging/check_crop_pairs.py --pool "$POOL_DIR" \
+    --fold training/fold --scored-pairs training/combined/pool.csv \
+    || { say "REFUSING: a selected crop would score None -- see the list above"; exit 5; }
+
+# THE EXACT PATTERN 87ja6a TRAINS, copied from its args.json rather than retyped. The bare
+# negative lookahead alone gives 19 tensors and 0.3M parameters -- the pairformer blocks are
+# re-included by the comma-separated list that follows it, and without them this is not the
+# full-head arm at all. I launched it truncated once; the run printed 19 tensors against
+# 87ja6a's 102 and was stopped before it finished a step.
+TRAIN_ONLY='^(?!pairformer_stack\.),blocks\.0\.pair_transition\.,blocks\.1\.tri_mul_out\.,blocks\.1\.tri_mul_in\.,blocks\.2\.tri_mul_out\.,blocks\.2\.tri_mul_in\.,blocks\.2\.pair_transition\.,blocks\.3\.tri_mul_out\.,blocks\.3\.tri_mul_in\.,blocks\.3\.tri_att_start\.,blocks\.3\.pair_transition\.'
 ARGS=(--crop-pool "$POOL_DIR"
       --rel-labels "$RELLAB"
       --rank-loss --rank-form rel --rank-pool mean --alpha-rank 75
@@ -138,8 +154,10 @@ structures needed only 256, 28 escalated to 384/512/768, none fell through to un
 are PAIR-RESTRICTED at 15 A -- Protenix's own rule accepts a contact with ANY distinct chain, so \
 a heavy-chain token qualifies by packing against the light chain and 27.6 percent of its crops \
 left the scored interface with no surviving cross-chain row. Only the anchor is restricted; the \
-k-nearest selection still runs over the whole assembly. Labels use the PER-POSE OST join, not the \
-static chain_roles one, which disagrees on 52 structures. HELD-OUT EVAL IS UNCROPPED so every \
+k-nearest selection still runs over the whole assembly. Pool AND labels both use the PER-POSE OST join. The previous pool used the static \
+chain_roles join and that is what killed 3pdv7i: the two disagree on 90 of 846 structures, so \
+the pool certified crops that delete the chain training scores. A CPU gate now replays \
+iptm_pooled's None branches over every crop before launch. HELD-OUT EVAL IS UNCROPPED so every \
 historical number stays comparable. GPU smoke on card 0 at 10:32 PM: 185 of 185 poses reported \
 256 tokens against uncropped sizes of 459 and 652."
 

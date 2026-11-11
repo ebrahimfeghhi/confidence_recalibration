@@ -2431,11 +2431,17 @@ def main():
                 f"({type(_e).__name__}), so this pose's chains cannot be mapped the way its "
                 f"label was built.")
         got, why = _PKE.ost_chain_pairs(ud, pdb, int(samp), _rel_refs.get(pdb) or [])
-        if got is None:
+        if not got:
+            # `not got`, NOT `got is None`. ost_chain_pairs returns (None, why) when it cannot
+            # read a mapping, but it returns an EMPTY LIST when it reads one and resolves no
+            # interface from it -- and sorted([]) passed straight through here, emitting zero
+            # keys for every pose of the structure while raising nothing. Pass A would then come
+            # up short and the completeness guard would blame a missing score, several hundred
+            # units after the real cause. An empty mapping is as fatal as no mapping.
             raise SystemExit(
                 f"STOP: --rank-form rel has no OST chain mapping for {pdb}/{sd} sample {samp} "
-                f"({why}). Falling back to the static pair is the exact mismatch this resolution "
-                f"exists to prevent.")
+                f"({why or 'the mapping resolved no scored interface'}). Falling back to the "
+                f"static pair is the exact mismatch this resolution exists to prevent.")
         _ost_cache[key] = sorted(got)
         return _ost_cache[key]
 

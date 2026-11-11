@@ -255,6 +255,22 @@ def iptm(pae_logits, feat, configs, pair):
     if cpi.dim() == 3:
         cpi = cpi[0]
     i, j = pair
+    # PROTENIX COMPACTS ASYM IDS, SO THE PAIR MUST BE COMPACTED TOO.
+    # calculate_chain_based_ptm remaps asym ids to 0..N-1 whenever `len(unique) != max+1` --
+    # which is exactly when a crop has removed a whole chain -- and sizes chain_pair_iptm to the
+    # compacted count. `pair` is in UNCROPPED model asym indices. Indexing a compacted matrix
+    # with them is out of range when the dropped chain precedes a scored one, and, worse, IN
+    # range and pointing at a different chain pair otherwise: a plausible number, no error.
+    # phase_k_eval._cpi_index has replicated this on the eval side all along; this is the same
+    # mapping, built the same way. It is the identity when the ids are already contiguous, so it
+    # applies unconditionally and the cropped and uncropped paths read the same code.
+    _u = torch.unique(feat["asym_id"].reshape(-1).long())
+    _remap = {int(o): n for n, o in enumerate(_u.tolist())}
+    if i not in _remap or j not in _remap:
+        # The chain is not in this (possibly cropped) structure at all. None is correct and the
+        # caller's completeness guard will refuse rather than train on a silent gap.
+        return None
+    i, j = _remap[i], _remap[j]
     if i >= cpi.shape[0] or j >= cpi.shape[1]:
         return None
     return cpi[i, j]
