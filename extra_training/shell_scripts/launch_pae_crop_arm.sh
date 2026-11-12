@@ -97,6 +97,29 @@ PAIR_DROPOUT="${PAIR_DROPOUT:-}"
 # usable range starts around 1e-3 (7.99%). LAMBDA IS THE HYPERPARAMETER OF THE EXPERIMENT and is
 # not derived; sweep it and read penalty-vs-loss.
 L2_SP="${L2_SP:-}"
+# LORA. Unset by default so nothing changes for an existing invocation.
+#
+# TARGETS DEFAULT TO $TRAIN_ONLY, AND THAT IS THE WHOLE POINT. apply_lora with an empty target
+# list adapts every module with a 2-D weight, and phase_k_train then sets `trainable` to the
+# adapter names ALONE -- so --train-only does not survive LoRA. Ten pairformer ops on this arm are
+# DEAD (blocks.0 all four, blocks.1 tri_att_start/tri_att_end/pair_transition, blocks.2
+# tri_att_start/tri_att_end, blocks.3 tri_att_end; measured "output exactly 0.0" in the run log),
+# so an empty list spends rank-8 adapters on modules nothing reads. Reusing $TRAIN_ONLY adapts
+# exactly the live set. run_logging/test_lora_targets.py is the gate and reads the pattern from
+# THIS file rather than keeping its own copy.
+#
+# KEEP THE POSE PATHWAY DENSE. frame_dir_proj is (256, 3) and
+# pose_perblock_linear_no_bias_d_wo_onehot is (256, 1), so at rank 8 apply_lora SKIPS them for
+# rank-too-high and they would train not at all -- frozen at their zero init, which is the same as
+# not having the feature. All ten pose tensors are 33,792 parameters, 0.6% of the head's effective
+# capacity, so keeping them dense is free.
+LORA_RANK="${LORA_RANK:-}"
+LORA_ALPHA="${LORA_ALPHA:-}"
+# LORA_TARGETS is derived from $TRAIN_ONLY and is therefore set BELOW, where TRAIN_ONLY exists.
+# Setting it here expanded ${TRAIN_ONLY#*,} against an undefined variable and produced a target
+# list beginning with a bare comma -- caught by an ordering assertion, not by bash, which was
+# perfectly happy to carry on.
+LORA_KEEP="${LORA_KEEP:-frame_dir_proj,pose_perblock_,^linear_no_bias_d}"
 L2_SP_EXCLUDE="${L2_SP_EXCLUDE:-frame_dir_proj,pose_perblock_}"
 # MEASURED, NOT ASSUMED. --trunk-memmap maps z_trunk instead of materialising it, so the crop
 # reads the rows it keeps rather than the whole ~100 MB member. On a 173-unit slice: 1.2 min ->
@@ -126,7 +149,7 @@ if [ -f "$HOLD" ]; then
 fi
 
 say "PAE-only cropped arm: pool=$POOL_DIR cards=$CARDS epochs=$EPOCHS accum=$ACCUM nsample=$NSAMPLE"
-say "  prefetch-workers=$PREFETCH_WORKERS  memmap=${TRUNK_MEMMAP:-off}  balance=${EPOCH_BALANCE:-off}  resume=${RESUME:-none}  pair-dropout=${PAIR_DROPOUT:-off}  l2-sp=${L2_SP:-off}  DRY=$DRY"
+say "  prefetch-workers=$PREFETCH_WORKERS  memmap=${TRUNK_MEMMAP:-off}  balance=${EPOCH_BALANCE:-off}  resume=${RESUME:-none}  pair-dropout=${PAIR_DROPOUT:-off}  l2-sp=${L2_SP:-off}  lora=${LORA_RANK:-off}  DRY=$DRY"
 
 # THE CORE BUDGET IS 64 ACROSS EVERYTHING WE RUN, at the user's direction, and prefetch workers
 # are the one knob here that multiplies by world size. 16 x 3 = 48 crop threads; measured core
@@ -199,10 +222,48 @@ CROP_THREADS="${CROP_THREADS:-3}" $PY -I run_logging/check_crop_pairs.py \
     --fold training/fold --scored-pairs training/combined/pool.csv \
     || { say "REFUSING: a selected crop leaves a scored pair unscorable"; exit 5; }
 
+# ONLY WHEN LoRA IS ON, and it must run BEFORE the launch rather than be a file nobody calls. The
+# first version of this gate was written, passed by hand, and never wired in -- so the arm it was
+# written to protect launched without it, and the review that caught that also found 35 of the
+# gate's 50 module names were invented and could never have matched anything.
+if [ -n "$LORA_RANK" ]; then
+    say "CPU gate: adapters avoid dead ops and dead readouts; all 12 pose tensors stay dense"
+    LORA_RANK="$LORA_RANK" $PY -I run_logging/test_lora_targets.py \
+        || { say "REFUSING: --lora-targets/--lora-keep-trainable do not place the adapters as intended"; exit 5; }
+fi
+
 # COPIED FROM 87ja6a's args.json, NOT RETYPED. The bare negative lookahead alone gives 19 tensors
 # and 0.3M parameters; the comma-separated list re-includes the pairformer blocks. Launched
 # truncated once -- 19 tensors against 102 -- and stopped before the first optimiser step.
 TRAIN_ONLY='^(?!pairformer_stack\.),blocks\.0\.pair_transition\.,blocks\.1\.tri_mul_out\.,blocks\.1\.tri_mul_in\.,blocks\.2\.tri_mul_out\.,blocks\.2\.tri_mul_in\.,blocks\.2\.pair_transition\.,blocks\.3\.tri_mul_out\.,blocks\.3\.tri_mul_in\.,blocks\.3\.tri_att_start\.,blocks\.3\.pair_transition\.'
+
+# THE POSE PATHWAY IS EXCLUDED FROM THE ADAPTERS AND KEPT DENSE, all twelve tensors of it. The
+# first attempt reused $TRAIN_ONLY unchanged and got this wrong in two ways that an adversarial
+# review measured on the live arm after one epoch:
+#
+#   1. $TRAIN_ONLY's `^(?!pairformer_stack\.)` admits every non-pairformer module, so the three
+#      (256,39) pose_perblock distance terms were ALSO adapted. With their base kept dense they
+#      trained dense + rank-8, and the two deltas were ~56% aligned and added: measured ||dW||
+#      5.77/6.16/6.85 against 2.82 for the adapter-only depth-0 copy. A ~1.65x effective learning
+#      rate, and a 2.1-2.4x asymmetry across copies that --pose-perblock-copy starts bit-identical
+#      -- confounding the per-depth comparison with lr rather than capacity.
+#   2. The keep pattern `frame_dir_proj,pose_perblock_` matched 10 of the 12 and MISSED BOTH
+#      DEPTH-0 TERMS. linear_no_bias_d_wo_onehot is (256,1), so rank 8 exceeds its dimension,
+#      apply_lora skips it, and it was frozen at its zero init -- in an arm whose premise is that
+#      pose information may train, and after training in every previous arm of this architecture.
+#
+# So: exclude pose from --lora-targets entirely and name all twelve in --lora-keep-trainable.
+# Uniformly dense, no adapters on pose, no per-depth asymmetry.
+#
+# THE DEAD READOUTS ARE EXCLUDED TOO. lean_readouts.DEAD_UNDER_PAE_ONLY names linear_no_bias_pde
+# and friends and the run log says "pde, pLDDT and resolved are NOT COMPUTED", yet
+# linear_no_bias_pde was adapted and its lora_B measured EXACTLY 0.0 after a full epoch -- it
+# never received a gradient. --lean-single cannot strip it: it keys on names ending `.weight` and
+# an adapter is `.lora_A`/`.lora_B`, so the "EFFECTIVE capacity" line was overstated by them.
+LORA_EXCLUDE='^(?!pairformer_stack\.|frame_dir_proj|pose_perblock_|linear_no_bias_d|linear_no_bias_pde|plddt_|resolved_|pde_ln|input_strunk_ln)'
+# DERIVED, never retyped: everything after $TRAIN_ONLY's first comma is its live-pairformer branch
+# list, so the adapted set and the trainable set cannot drift apart.
+LORA_TARGETS="${LORA_TARGETS:-${LORA_EXCLUDE},${TRAIN_ONLY#*,}}"
 ARGS=(--crop-pool "$POOL_DIR"
       --minimal-items --epoch-cover-all ${EPOCH_BALANCE:+--epoch-balance}
       --pae-only --alpha-pae 1.0 --alpha-confidence 1.0
@@ -262,6 +323,8 @@ LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   ${TRUNK_MEMMAP:+--trunk-memmap} \
   ${PAIR_DROPOUT:+--pair-dropout "$PAIR_DROPOUT"} \
   ${L2_SP:+--l2-sp "$L2_SP" --l2-sp-exclude "$L2_SP_EXCLUDE"} \
+  ${LORA_RANK:+--lora-rank "$LORA_RANK" --lora-targets "$LORA_TARGETS" --lora-keep-trainable "$LORA_KEEP"} \
+  ${LORA_RANK:+${LORA_ALPHA:+--lora-alpha "$LORA_ALPHA"}} \
   ${RESUME:+--resume "$RESUME"} \
   ${RESUME_OVERRIDE:+--resume-override "$RESUME_OVERRIDE" --resume-note "$RESUME_NOTE"} \
   --dist-backend gloo --dist-timeout-min 240 \

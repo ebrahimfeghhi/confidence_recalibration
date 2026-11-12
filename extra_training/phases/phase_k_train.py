@@ -504,6 +504,27 @@ def main():
                          "a different class and hold 1.57M parameters between them.")
     ap.add_argument("--lora-dropout", type=float, default=0.0,
                     help="dropout on the adapter input only; the frozen path is untouched.")
+    ap.add_argument("--lora-keep-trainable", default="",
+                    help="comma-separated REGEXES matched against head PARAMETER names that stay "
+                         "FULLY TRAINABLE alongside the adapters, instead of being frozen.\n"
+                         "WHY THIS IS NEEDED AT ALL. apply_lora freezes every parameter of the "
+                         "head and then phase_k_train sets `trainable` to the adapter names "
+                         "ALONE, so --train-only does not survive LoRA and anything LoRA did not "
+                         "adapt is frozen outright. Two classes of tensor are then lost: a module "
+                         "whose smaller dimension is below --lora-rank is skipped by apply_lora "
+                         "and frozen, and any parameter that is not a 2-D `weight` is never "
+                         "adaptable in the first place.\n"
+                         "THE CASE IT EXISTS FOR is the pose pathway. frame_dir_proj is (256, 3) "
+                         "and pose_perblock_linear_no_bias_d_wo_onehot is (256, 1), so at rank 8 "
+                         "BOTH are skipped for rank-too-high and would train not at all -- the "
+                         "terms this architecture adds, frozen at their zero init, which is the "
+                         "same as not having them. All ten pose tensors together are 33,792 "
+                         "parameters, 0.6% of the head's effective capacity, so keeping them "
+                         "dense costs essentially nothing.\n"
+                         "IT IS UNIONED BEFORE --lean-single, not after, so a pose tensor that is "
+                         "genuinely gradient-free is still dropped and --skip-dead-ops still "
+                         "refuses a module it would stub. This widens what MAY train; it never "
+                         "overrides what provably does not.")
     ap.add_argument("--structures-per-step", type=int, default=0,
                     help="K: WHOLE STRUCTURES PER OPTIMISER STEP. Each rank takes ONE seed of each "
                          "of the same K structures, so a step is K x world x --nsample poses. 0 "
@@ -3208,6 +3229,31 @@ def main():
             _hm, a.lora_rank, a.lora_alpha or 2.0 * a.lora_rank,
             [t.strip() for t in a.lora_targets.split(",") if t.strip()], a.lora_dropout)
         trainable = [f"{prefixes[0]}.{n}" for n in _lnames]
+        # KEEP THE NAMED PARAMETERS DENSE, unioned in BEFORE the --lean-single dead-strip below so
+        # a pose tensor nothing reads is still removed and --skip-dead-ops still refuses a module
+        # it would stub. apply_lora has already frozen the whole head, so requires_grad is restored
+        # for these at the `p.requires_grad_(id(p) in head_ids)` line that follows.
+        if a.lora_keep_trainable:
+            # LOCALLY, LIKE EVERY OTHER re USER IN THIS FILE. Module scope has no `re` -- see the
+            # comment at the --pae-scored-pairs block -- so a bare re.search here would NameError
+            # on the first LoRA run, after the model is built and the cards are already held.
+            import re as _re_lk
+            _keep_pats = [t.strip() for t in a.lora_keep_trainable.split(",") if t.strip()]
+            _pfx_dot = prefixes[0] + "."
+            _kept = [n for n, _p in model.named_parameters()
+                     if n.startswith(_pfx_dot) and n not in set(trainable)
+                     and any(_re_lk.search(_pt, n[len(_pfx_dot):]) for _pt in _keep_pats)]
+            if not _kept:
+                raise SystemExit(
+                    f"STOP: --lora-keep-trainable {_keep_pats} matched NO head parameter. A "
+                    f"pattern that matches nothing is indistinguishable from the flag being "
+                    f"absent, and the tensors it was meant to protect would train frozen at "
+                    f"their init while the run reported success.")
+            _kept_n = sum(p.numel() for n, p in model.named_parameters() if n in set(_kept))
+            trainable = trainable + _kept
+            print(f"--lora-keep-trainable: {len(_kept)} head parameter(s) stay DENSE alongside "
+                  f"the adapters ({_kept_n/1e6:.3f}M), e.g. "
+                  f"{[n[len(_pfx_dot):] for n in _kept[:3]]}")
 
         print(f"LoRA rank {a.lora_rank} alpha {a.lora_alpha or 2.0*a.lora_rank:g} "
               f"dropout {a.lora_dropout:g}: {lora_report['modules_adapted']} module(s) adapted, "
@@ -3716,6 +3762,7 @@ def main():
                  "rank_structs_per_step": a.rank_structs_per_step,
                  # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
                  # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
+                 "lora_keep_trainable": a.lora_keep_trainable,
                  "l2_sp": a.l2_sp,
                  "l2_sp_exclude": a.l2_sp_exclude,
                  # AND SO DOES THE SCHEDULE. lr_final changes the lr at every step after warmup,
@@ -8019,6 +8066,16 @@ def main():
                                   "pose_perblock_copy": a.pose_perblock_copy,
                                   "l2_sp": a.l2_sp,
                                   "l2_sp_exclude": a.l2_sp_exclude,
+                                  # SAVED AS WELL AS COMPARED. Added to the compared dict only,
+                                  # which test_guard_fields.py catches as "half-wired": the bundle
+                                  # then records no value, and a bundle moved away from its
+                                  # args.json lands in _unknown and hits the hard stop that runs
+                                  # BEFORE --resume-override and --resume-allow-drift are
+                                  # consulted -- unresumable, by a check no override can bypass.
+                                  # That is verbatim the crop_margin/crop_contact failure the
+                                  # comment above describes as "I turned a safety check into a
+                                  # wall", re-introduced.
+                                  "lora_keep_trainable": a.lora_keep_trainable,
                                   # FIFTH TIME. The three row-weight fields went into the
                                   # comparison side and not here, so a bundle moved without its
                                   # args.json would carry no record of the PAE objective and read
