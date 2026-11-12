@@ -1534,7 +1534,22 @@ def main():
                                      f"it would silently mis-pair scores with poses.")
                 summ.append(_s[0])
         else:
-            summ = _CONF(model, configs, feat, s_in, s_tr, z, x, nc)
+            # THE UNIT IS NAMED WHEN THIS RAISES. A confidence-head failure 2,000 units into a
+            # 2,185-unit shard printed a bare torch device error and no pdb, so the only way to
+            # find the structure was to reconstruct the strided unit order by hand -- after an
+            # hour of GPU had already been spent and discarded. The traceback is re-raised
+            # unchanged; this only adds the one fact it was missing.
+            try:
+                summ = _CONF(model, configs, feat, s_in, s_tr, z, x, nc)
+            except Exception as _e_conf:
+                _nt = (int(feat["asym_id"].shape[-1])
+                       if hasattr(feat.get("asym_id"), "shape") else "?")
+                _dev = {k: str(getattr(feat.get(k), "device", "n/a"))
+                        for k in ("asym_id", "has_frame", "atom_to_token_idx", "is_ligand")}
+                print(f"  CONFIDENCE HEAD FAILED on {pdb}/free_{sd_}: {type(_e_conf).__name__}: "
+                      f"{_e_conf}\n    tokens={_nt}  feat devices={_dev}  "
+                      f"x.device={getattr(x, 'device', 'n/a')}", flush=True)
+                raise
             summ = summ if isinstance(summ, (list, tuple)) else [summ]
         # join 2: pose -> sample, by coordinate identity. The pose DIRECTORY is itself resolved by
         # the trunk, because a refold leaves two finished directories for one seed and neither
