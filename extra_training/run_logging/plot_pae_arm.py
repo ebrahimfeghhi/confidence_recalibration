@@ -123,9 +123,22 @@ for k, (col, lab, ship, orc) in enumerate((
     # max-pooled point against the mean-pooled baseline, which is the mistake that turned
     # +0.0038 into a reported +0.0115. Blue is max-pooled, orange is mean-pooled, matching the
     # markers above them.
-    _bmax = next((SER[e].get("baseline_" + col) for e in eps
-                  if SER[e].get("baseline_" + col) is not None), None)
-    _bmean = S.get(col)
+    #
+    # BOTH COME FROM eval_curve.shipped(), NOT FROM THE ARM'S OWN METRIC JSON. The max line used
+    # to be read from SER[e]["baseline_<col>"], which is written by the arm's eval pass -- so it
+    # could not be drawn until that arm reached epoch 5, and every plot before then showed the
+    # mean-pooled baseline alone with nothing saying the other was missing. A reader comparing a
+    # training curve against "the shipped line" would have been comparing against one pooling
+    # without being told which.
+    #
+    # The two shipped passes carry BOTH poolings already: metric_shipped_kept30.json (92
+    # interfaces) and metric_shipped_val30.json (49) each hold mean_dockq / frac_acc under
+    # select_by=mean plus mean_dockq_select_max / frac_acc_select_max, and eval_curve.KEYS
+    # combines all four over the 141. Verified 2026-11-11 to reproduce the project's quoted
+    # numbers exactly: max-pooled 0.5813 / 0.7234, mean-pooled 0.5735 / 0.7163. So nothing is
+    # hardcoded and nothing waits on the arm.
+    _bmax = S.get(col + "_select_max") if S else None
+    _bmean = S.get(col) if S else None
     if _bmax is not None:
         a.axhline(_bmax, color=C_MAX_B, lw=1.4, ls="-",
                   label=f"shipped, max-pooled ({_bmax:.4f})")
@@ -150,7 +163,17 @@ else:
     ax[3].text(.5, .5, "no rho yet\n(needs the iptm_mean column,\nwritten under --pool-mean)",
                ha="center", va="center", transform=ax[3].transAxes, color="#666")
 if RHO_SHIP == RHO_SHIP:
-    ax[3].axhline(RHO_SHIP, color="#444", lw=1.4, label=f"shipped ({RHO_SHIP:+.4f})")
+    # BLUE, AND LABELLED MAX-POOLED, because that is what it is. eval_curve.rho_series derives it
+    # from results.csv's stored_iptm, which holds ONE pooling -- the max-pooled shipped ipTM. A
+    # grey line with no pooling in its label sat under BOTH arm curves and invited reading the
+    # arm's mean-pooled rho against it, which is not a pooling-matched comparison; Codex raised
+    # exactly this on issue 15. There is no mean-pooled shipped rho anywhere in the repo and it
+    # is not derivable from stored_iptm -- it needs the shipped head forwarded with --pool-mean --
+    # so the honest thing is to draw the one that exists, name its pooling, and say the other is
+    # absent rather than let a reader assume the line covers both.
+    ax[3].axhline(RHO_SHIP, color=C_MAX_B, lw=1.4,
+                  label=f"shipped, max-pooled ({RHO_SHIP:+.4f})")
+    ax[3].plot([], [], ' ', label="shipped mean-pooled rho: not computed")
 ax[3].set_title("within-interface Spearman, ipTM vs DockQ")
 ax[3].set_xlabel("epoch"); ax[3].set_ylabel("median rho"); ax[3].grid(alpha=.3)
 h, l = ax[1].get_legend_handles_labels()

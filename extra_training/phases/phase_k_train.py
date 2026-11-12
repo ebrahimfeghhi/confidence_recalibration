@@ -6710,13 +6710,64 @@ def main():
         # d/dW [ lambda * ||W - W0||^2 ] = 2 * lambda * (W - W0).
         if a.l2_sp and _l2sp_anchor is not None:
             with torch.no_grad():
+                # THE TASK GRADIENT NORM IS MEASURED FIRST, BEFORE THE PENALTY IS ADDED, and this
+                # ordering is the whole point. paper_results.md section 17: reporting the penalty
+                # as a share of the LOSS VALUE is the trap that made 1e-5 look like a meaningful
+                # setting -- it was 0.5% of the objective and 0.08% of the GRADIENT, i.e. off.
+                # The loss value does not act on the weights; the gradient does. This is the only
+                # point in the step where the task gradient still exists uncontaminated: after
+                # the all-reduce, before the L2 term, before the clip. `gn` from clip_grad_norm_
+                # below is the TOTAL after the penalty and cannot be decomposed back.
+                _tsq = 0.0
+                for _p_t in params:
+                    if _p_t.grad is not None:
+                        _tsq += float(_p_t.grad.detach().pow(2).sum())
                 _sq = 0.0
                 for _n_sp, _p_sp in _l2sp_params:
                     _d_sp = _p_sp.detach() - _l2sp_anchor[_n_sp]
+                    # .grad CAN BE None HERE and the penalty must still apply. zero_grad is
+                    # set_to_none=True, and under --pae-only some anchored tensors are reached by
+                    # neither loss term -- the --grad-probe PASS message says so explicitly. The
+                    # world>1 path happens to zero-fill before its collective, which masked this;
+                    # a single-GPU --l2-sp run would have hit
+                    # AttributeError: 'NoneType' object has no attribute 'add_'.
+                    # L2-SP prices distance from the anchor whether or not the task touched the
+                    # tensor, so the right fix is to CREATE the gradient, not to skip the tensor.
+                    if _p_sp.grad is None:
+                        _p_sp.grad = torch.zeros_like(_p_sp)
                     _p_sp.grad.add_(_d_sp, alpha=2.0 * a.l2_sp)
                     _sq += float((_d_sp * _d_sp).sum())
                 _l2sp_drift["sq"] = _sq
                 _l2sp_drift["n"] += 1
+                # PER-STEP SHARES, NOT A RUNNING MEAN, and NON-FINITE STEPS ARE EXCLUDED.
+                #
+                # Excluded because clip_grad_norm_(error_if_nonfinite=True) below DROPS the
+                # gradients of a non-finite step and takes no step, so its share describes nothing
+                # -- and nan is absorbing, so folding one in would have destroyed the whole
+                # epoch's number with no signal but the NON-FINITE GRADIENT line far above.
+                # --max-nonfinite defaults to 10, so up to ten such steps are tolerated per run.
+                #
+                # Per-step rather than a mean because the mean answers the wrong question. The
+                # danger case for an anchor is the step where the TASK gradient nearly vanishes:
+                # this head has had 16 of 69 taken steps under grad_norm 1e-3, the late ones
+                # clustered near 2.5e-4, and on those the penalty is in sole charge of the
+                # update. A ratio-of-means is dominated by the big-gradient steps and shows a few
+                # percent while that is happening. The median, the max and a count of steps where
+                # the penalty EXCEEDS the task gradient are what show it.
+                _tgn_step = _tsq ** 0.5
+                if _tgn_step == _tgn_step and _tgn_step > 0.0:
+                    _l2sp_drift.setdefault("shares", []).append(
+                        (2.0 * a.l2_sp * _sq ** 0.5) / _tgn_step)
+                    _l2sp_drift.setdefault("tgns", []).append(_tgn_step)
+                # ||2*lambda*(W-W0)|| = 2*lambda*||W-W0|| exactly, because the penalty gradient is
+                # a scalar multiple of the displacement over THIS SAME parameter set (_l2sp_params,
+                # which is the anchored 92 and not the full 102 -- the 10 zero-init tensors are
+                # excluded from the anchor, so they contribute to _tsq but not to _sq, which is
+                # correct: they receive no penalty gradient).
+                _l2sp_drift["task_gn_sum"] = _l2sp_drift.get("task_gn_sum", 0.0) + _tsq ** 0.5
+                _l2sp_drift["l2_gn_sum"] = (_l2sp_drift.get("l2_gn_sum", 0.0)
+                                            + 2.0 * a.l2_sp * _sq ** 0.5)
+                _l2sp_drift["share_n"] = _l2sp_drift.get("share_n", 0) + 1
         try:
             gn = float(torch.nn.utils.clip_grad_norm_(params, a.clip_norm,
                                                       error_if_nonfinite=True))
@@ -8519,6 +8570,36 @@ def main():
                       f"= {100.0 * _l2_share:.1f}% of the epoch's mean loss {_l2_ref:.4f} "
                       f"(unconstrained full head reached 67,052 by epoch 30, which at "
                       f"lambda {a.l2_sp:g} would be {a.l2_sp * 67052.0:.2f})", flush=True)
+                # THE NUMBER THAT DECIDES WHETHER THIS LAMBDA IS ON. The line above is kept for
+                # continuity with every earlier arm's logs, but it is the misleading one: section
+                # 17 measured 1e-5 at 0.5% of the objective and 0.08% of the gradient. Read THIS
+                # line instead. The reference points, measured on egw5wq at epoch 6 over 804 steps
+                # against a median task grad_norm of 1.080 with ||W-W0|| = 43.2: 1e-5 -> 0.08%,
+                # 1e-4 -> 0.80%, 1e-3 -> 7.99%. Below ~1% is "no L2", not "a little L2".
+                _sh = _l2sp_drift.get("shares") or []
+                if _sh:
+                    # MEDIAN, TO MATCH THE ESTIMATOR THE THRESHOLDS CAME FROM. Section 17's
+                    # reference points are ratios against the MEDIAN grad_norm (1.080, p10 0.475,
+                    # p90 2.421). That distribution is right-skewed, so a mean sits well above the
+                    # median and a mean-based share would read systematically LOW against the very
+                    # numbers printed beside it -- comparing two different estimators and calling
+                    # it a comparison.
+                    def _med(_v):
+                        _q = sorted(_v)
+                        _m = len(_q) // 2
+                        return _q[_m] if len(_q) % 2 else 0.5 * (_q[_m - 1] + _q[_m])
+                    _gshare = _med(_sh)
+                    _tgn = _med(_l2sp_drift.get("tgns") or [float("nan")])
+                    _over = sum(1 for _x in _sh if _x >= 1.0)
+                    print(f"  [rank {rank}] epoch {ep + 1} l2-sp GRADIENT share: median "
+                          f"{100.0 * _gshare:.2f}%, max {100.0 * max(_sh):.2f}%, "
+                          f"{_over} of {len(_sh)} step(s) where the penalty EXCEEDS the task "
+                          f"gradient; median task gradient {_tgn:.4f}, penalty gradient at the "
+                          f"epoch's end 2*lambda*||W-W0|| = {2.0 * a.l2_sp * _l2sp_drift['sq'] ** 0.5:.4e} "
+                          f"(>=1% acts, <1% is off; measured on egw5wq: 1e-5 0.08%, 1e-4 0.80%, "
+                          f"1e-3 7.99%)", flush=True)
+                _l2sp_drift["shares"] = []
+                _l2sp_drift["tgns"] = []
             # THE RANKING LOSS IS THE EXPERIMENT under --rank-loss. ZERO is the reference, not
             # ln2: this loss is a normalised covariance between score gaps and DockQ gaps, so
             # equal scores give exactly 0 and so does an ordering uncorrelated with DockQ.
