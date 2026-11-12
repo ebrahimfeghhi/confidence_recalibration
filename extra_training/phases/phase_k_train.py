@@ -1228,8 +1228,12 @@ def main():
                          "pair-rep sites in PairformerBlock call dropout_add_rowwise(z, "
                          "update, self.p_drop, self.training) and the head trains in train "
                          "mode -- only the rate is zero. Negative (default) touches nothing. "
-                         "It drops whole ROWS of z, structured noise over token pairs rather "
-                         "than per-element noise, which is the AF3 design.")
+                         "Structured noise over token pairs rather than per-element noise, "
+                         "which is the AF3 design. MEASURED, not inferred from the name: "
+                         "dropout_add_rowwise shares the mask along dim -3, so a dropped j is "
+                         "dropped for EVERY i -- it zeroes whole COLUMNS of the [i,j] grid. "
+                         "The 'rowwise' name refers to the mask being shared along rows, not "
+                         "to rows being dropped. This matches openfold's DropoutRowwise.")
     ap.add_argument("--alpha-confidence", type=float, default=1.0,
                     help="weight on the four confidence losses. Protenix ships 1e-4 because in full "
                          "AF3-style training these terms sit beside the diffusion and distogram "

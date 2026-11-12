@@ -986,12 +986,56 @@ that shell. So 2.5 buys no context over 0 and only loses coverage.
 
 ### AND THE CONFIDENCE HEAD HAS NEVER HAD DROPOUT
 
-`ConfidenceHead` builds its 4-block pairformer with `dropout=0.0`, overriding Protenix's own 0.25
-default for pair stacks. All four pair-rep sites call
+`ConfidenceHead` builds its 4-block pairformer with `dropout=0.0`. All four pair-rep sites call
 `dropout_add_rowwise(z, update, self.p_drop, self.training)` and the head trains in train mode, so
 the plumbing is live and only the rate is zero: **every arm in this project has trained 19.8M
 parameters with no dropout and no masking of any kind.** Dropout is also skipped entirely on the
 `inplace_safe=True` branch, which does a bare `z +=`.
+
+**WHERE THE 0.25 COMES FROM, AND WHO DEPARTS FROM WHOM.** Checked against the AF3 supplement
+(`41586_2024_7487_MOESM1_ESM.pdf`) rather than inferred:
+
+- AF3 **Algorithm 31** (Confidence head, p33) line 4 is
+  `{si}, {zij} += PairformerStack({si}, {zij}, Nblock)` with `Nblock = 4` -- the confidence head
+  invokes **the same Algorithm 17** as the trunk, just four blocks of it.
+- AF3 **Algorithm 17** (Pairformer stack, p24) hard-codes the rates into the algorithm box:
+  `DropoutRowwise 0.25` on TriangleMultiplicationOutgoing, TriangleMultiplicationIncoming and
+  TriangleAttentionStartingNode, and **`DropoutColumnwise 0.25`** on TriangleAttentionEndingNode.
+- AF3 **section 5.5 Dropout** (p35) names three dropout sites -- MsaModule (Alg 8), Pairformer
+  stack (Alg 17), template embedder (Alg 16). The confidence head is not listed separately
+  because it is not a separate site: it *is* Alg 17.
+
+So **AF3 does train its confidence-head pairformer at 0.25**, and Protenix is the one that departs:
+`configs/configs_base.py:347` sets `confidence_head.pairformer_dropout: 0.0` explicitly, against
+its own `0.25` for the trunk at line 314 and the `dropout: float = 0.25` signature defaults in
+`pairformer.py` (lines 75, 253, 988). Turning on `--pair-dropout 0.25` therefore moves TOWARD the
+AF3 recipe and AWAY from Protenix's shipped config -- both halves of that sentence matter when
+reporting an arm that uses it.
+
+**WHAT THE AXIS NAMES ACTUALLY MEAN -- MEASURED, NOT INFERRED.** Ran `dropout_add_rowwise` on a
+6x6x4 tensor of ones at p=0.5 and read the survival mask: **columns of the [i,j] grid come out
+fully 0 or fully 1, rows do not.** The kernel sets `shape[-3] = 1` (`fused_ops.py:220`), so the
+mask is shared along `i` and a dropped `j` is dropped for every `i`. The name refers to the mask
+being *shared along rows*, not to rows being dropped -- the same convention as openfold's
+`DropoutRowwise`, which also uses `batch_dim = -3`. Do not reason about this from the name.
+
+**NO FIDELITY GAP AT THE ENDING-NODE SITE -- I CLAIMED ONE AND IT WAS WRONG.** I read the four
+`dropout_add_rowwise` calls and concluded Protenix applied rowwise dropout where AF3 specifies
+columnwise. It does not. `pairformer.py` wraps the ending-node site in a transpose:
+
+```python
+z = z.transpose(-2, -3).contiguous()
+z = dropout_add_rowwise(z, self.tri_att_end(z, mask=pair_mask.transpose(-1, -2), ...),
+                        self.p_drop, self.training)
+z = z.transpose(-2, -3).contiguous()
+```
+
+`dropout_add_rowwise` shares the mask along dim -3, which in TRANSPOSED coordinates is the
+original `j`. So the mask is constant along original `j` and varies along original `i` -- columnwise
+in original coordinates, exactly AF3 Algorithm 17. The transpose is the mechanism and reading the
+dropout call without it is how I got this wrong; Codex caught it on issue 15. Protenix is faithful
+at all four sites. The unused `DropoutColumnwise` at `protenix/model/triangular/layers.py:650` is
+not evidence of a gap -- the transpose makes it unnecessary.
 
 ---
 

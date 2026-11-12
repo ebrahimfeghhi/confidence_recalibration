@@ -72,6 +72,32 @@ DRY="${DRY:-1}"
 # accepted rather than refused as drift -- which is correct: it changes throughput, not the
 # objective, the population or the batch.
 RESUME="${RESUME:-}"
+# PAIR DROPOUT, unset by default so an unset variable changes nothing. AF3 Algorithm 17 applies
+# p=0.25 shared dropout to all four triangle updates of every Pairformer block, and the confidence
+# head calls that same Algorithm 17 with Nblock=4 -- but Protenix's own config zeroes it for this
+# head (configs/configs_base.py:347 "pairformer_dropout": 0.0), so every arm in this project has
+# trained 19.8M parameters with no dropout of any kind. The trainer hard-stops if the assignment
+# does not take (phase_k_train.py:2009), so a silent no-op is not possible.
+PAIR_DROPOUT="${PAIR_DROPOUT:-}"
+# L2-SP ANCHOR, unset by default. --l2-sp prices distance from the SHIPPED head rather than from
+# zero; the anchor is written to <out>/l2sp_anchor.pt on a fresh run and read back on resume.
+#
+# THE EXCLUDE IS NOT OPTIONAL FOR THIS ARCHITECTURE. This arm runs --frame-direction and
+# --pose-perblock --pose-perblock-copy, whose tensors are ZERO-INIT by construction. L2-SP on a
+# zero-init tensor is plain weight decay toward zero -- it penalises the very term being added.
+# The default below is copied from egw5wq/args.json, the previous arm with this same architecture;
+# verified 2026-11-11 to match 10 of the 102 trainable tensors in rdi25k/resume_ep11.pt
+# (frame_dir_proj.weight, pose_perblock_linear_no_bias_d{,_wo_onehot}.0-2,
+# pose_perblock_frame_dir.0-2). An exclude that matched nothing would be the silent-no-op failure
+# the flag's own help warns about, so the trainer names the excluded tensors at startup.
+#
+# SCALE, measured and recorded in paper_results.md section 17: the L2-SP gradient is
+# 2*lambda*(W-W0), and against a median task grad_norm of 1.080 with ||W-W0|| = 43.2, lambda 1e-5
+# is 0.08% of the task gradient and 1e-4 is 0.80% -- both effectively OFF, not "a little L2". The
+# usable range starts around 1e-3 (7.99%). LAMBDA IS THE HYPERPARAMETER OF THE EXPERIMENT and is
+# not derived; sweep it and read penalty-vs-loss.
+L2_SP="${L2_SP:-}"
+L2_SP_EXCLUDE="${L2_SP_EXCLUDE:-frame_dir_proj,pose_perblock_}"
 # MEASURED, NOT ASSUMED. --trunk-memmap maps z_trunk instead of materialising it, so the crop
 # reads the rows it keeps rather than the whole ~100 MB member. On a 173-unit slice: 1.2 min ->
 # 0.5 min, cpucrop_slice 2.8m -> 0.1m, and the loss moved by 2.6e-07, i.e. the same bytes read
@@ -100,7 +126,7 @@ if [ -f "$HOLD" ]; then
 fi
 
 say "PAE-only cropped arm: pool=$POOL_DIR cards=$CARDS epochs=$EPOCHS accum=$ACCUM nsample=$NSAMPLE"
-say "  prefetch-workers=$PREFETCH_WORKERS  memmap=${TRUNK_MEMMAP:-off}  balance=${EPOCH_BALANCE:-off}  resume=${RESUME:-none}  DRY=$DRY"
+say "  prefetch-workers=$PREFETCH_WORKERS  memmap=${TRUNK_MEMMAP:-off}  balance=${EPOCH_BALANCE:-off}  resume=${RESUME:-none}  pair-dropout=${PAIR_DROPOUT:-off}  l2-sp=${L2_SP:-off}  DRY=$DRY"
 
 # THE CORE BUDGET IS 64 ACROSS EVERYTHING WE RUN, at the user's direction, and prefetch workers
 # are the one knob here that multiplies by world size. 16 x 3 = 48 crop threads; measured core
@@ -234,6 +260,8 @@ LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   --blocks-per-ckpt 1 --ckpt-token-threshold 1250 --mem-log \
   --prefetch-units 2 --prefetch-workers "$PREFETCH_WORKERS" \
   ${TRUNK_MEMMAP:+--trunk-memmap} \
+  ${PAIR_DROPOUT:+--pair-dropout "$PAIR_DROPOUT"} \
+  ${L2_SP:+--l2-sp "$L2_SP" --l2-sp-exclude "$L2_SP_EXCLUDE"} \
   ${RESUME:+--resume "$RESUME"} \
   ${RESUME_OVERRIDE:+--resume-override "$RESUME_OVERRIDE" --resume-note "$RESUME_NOTE"} \
   --dist-backend gloo --dist-timeout-min 240 \
