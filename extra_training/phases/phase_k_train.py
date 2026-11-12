@@ -504,6 +504,34 @@ def main():
                          "a different class and hold 1.57M parameters between them.")
     ap.add_argument("--lora-dropout", type=float, default=0.0,
                     help="dropout on the adapter input only; the frozen path is untouched.")
+    ap.add_argument("--pae-entropy", type=float, default=0.0, metavar="ALPHA",
+                    help="TEST-TIME ADAPTATION: REPLACE the labelled PAE cross-entropy with "
+                         "ALPHA * the mean Shannon entropy of the head's OWN predicted PAE "
+                         "distribution, H = -sum_b p_b log p_b over the 64 distance-error bins. "
+                         "0 (default) changes nothing.\n"
+                         "NO GROUND TRUTH ENTERS THE OBJECTIVE. The label npz is still opened --"
+                         " the unit pipeline and its coverage gates are built around it and a "
+                         "structure with no label is refused long before this point -- but `ld` "
+                         "is not read when this is on, so the gradient depends only on the "
+                         "model's own output. That is what makes it runnable on a pool whose "
+                         "DockQ nobody knows.\n"
+                         "THE POINT IS THE DEPLOYMENT SETTING, not a better training loss. At "
+                         "inference you hold the complex and its 50 poses and no labels at all, "
+                         "so an objective that needs none can adapt to the very structures being "
+                         "selected over. Adapting on the pool you then score is TRANSDUCTIVE by "
+                         "construction and that is legitimate for TTA -- but it is NOT a held-out "
+                         "measurement, and a number from it may not be compared with the "
+                         "train-on-846/score-on-141 numbers in paper_results.md without saying "
+                         "so.\n"
+                         "IT HAS A DEGENERATE OPTIMUM. Entropy is minimised by putting all mass "
+                         "in one bin regardless of which bin, so this can sharpen a confidently "
+                         "WRONG prediction exactly as happily as a right one, and nothing in the "
+                         "objective prefers a good pose's score over a bad one's. Watch "
+                         "pae_entropy against the held-out selection metrics, not on its own: "
+                         "entropy falling while rho falls is the collapse, not progress.\n"
+                         "MASKED TO THE SCORED CROSS-CHAIN PAIRS when --pae-scored-pairs supplies "
+                         "a mask, since those are the pairs ipTM is computed from; otherwise over "
+                         "every token pair, and the startup line says which.")
     ap.add_argument("--lora-keep-trainable", default="",
                     help="comma-separated REGEXES matched against head PARAMETER names that stay "
                          "FULLY TRAINABLE alongside the adapters, instead of being frozen.\n"
@@ -1323,6 +1351,24 @@ def main():
                          "in phase_j_build_cache.py invalidates all 5,000 labels. OFF by default: a "
                          "drift in any other field, or several fields, is still fatal, and every "
                          "accepted drift is printed with both hashes.")
+    ap.add_argument("--allow-stale-labels", action="store_true",
+                    help="--pae-entropy ONLY: accept a label whose fingerprint differs in the data "
+                         "provenance fields (code, bio, cif, idx) instead of stopping. This is "
+                         "sound for exactly one objective and no other. Entropy minimisation reads "
+                         "nothing out of the label: the gradient is a function of pred['pae'] "
+                         "alone, so a label built against an older bioassembly cannot change what "
+                         "is learned -- it can only make the labelled pae_loss that is still "
+                         "logged BESIDE it wrong. A `trunk` or `schema` difference is still fatal "
+                         "under this flag, because those two say the label is paired with a "
+                         "DIFFERENT trunk or laid out differently, which is a shape and ordering "
+                         "question rather than a provenance one. Measured on validation/fold on "
+                         "2026-11-12: 53 of 83 structures (1,590 labels) differ on bio+code "
+                         "because all 83 bioassemblies were re-dumped at 7:34 PM on 2026-11-04, "
+                         "about five hours AFTER those labels were written; the 30 built after the "
+                         "re-dump match. Every accepted label is counted; the first one prints a "
+                         "banner naming the differing fields and the end of the run prints the "
+                         "total with the structures, so a run that used this flag cannot have its "
+                         "labelled readouts mistaken for trustworthy ones.")
     ap.add_argument("--eval-script", default=f"{ROOT}/phases/phase_k_eval.py")
     ap.add_argument("--eval-device", default="",
                     help="CUDA index for the epoch-end evaluation. The subprocess would otherwise "
@@ -1464,6 +1510,25 @@ def main():
                          "phase_j_replay.py. Pass 'skip' to train without the gate and say why.")
     a = ap.parse_args()
     a.labels = a.labels or os.path.join(a.fold, "labels")
+
+    # THE ENTROPY TERM JOINS TERMS ONLY WHEN IT IS ON, and TERMS is what reaches trajectory.csv.
+    #
+    # TERMS is three things at once: the trajectory header, the keys the per-epoch all-reduce
+    # packs into one collective, and the list line ~5917 asserts is present in `met` for every
+    # pose. That assertion is the reason this is conditional rather than a fourth entry in the
+    # literal: a run without --pae-entropy never puts the key in `met`, so an unconditional
+    # TERMS would make every ordinary run stop on its first pose. Rebinding here, before any
+    # reader runs, keeps one code path for both and makes the term's absence from the log a
+    # crash rather than a silently missing column -- which is how a loss term that never
+    # actually fired would otherwise look exactly like one that did.
+    if a.pae_entropy > 0.0:
+        globals()["TERMS"] = TERMS + ("pae_entropy",)
+    if a.allow_stale_labels and not a.pae_entropy > 0.0:
+        raise SystemExit(
+            "STOP: --allow-stale-labels is only sound with --pae-entropy, where the gradient is a "
+            "function of pred['pae'] alone and the label is never read. Under any labelled "
+            "objective a stale label IS the training signal, and accepting one would train "
+            "against coordinates from a different bioassembly while reporting an ordinary loss.")
 
     # CROPPING IS ONLY COHERENT ON THE MINIMAL PATH. The dataset item carries a FULL-SIZE
     # label_dict, so cropping the prediction while the loss reads full-size masks would either
@@ -5329,6 +5394,19 @@ def main():
                     code_drift["warned"] = True
                 code_drift["n"] += 1
                 return cands[0]
+            _STALE_OK = {"code", "bio", "cif", "idx"}
+            if a.allow_stale_labels and diff and set(diff) <= _STALE_OK:
+                if not code_drift.get("stale_warned"):
+                    print(f"  ACCEPTING STALE LABELS (--allow-stale-labels, --pae-entropy "
+                          f"{a.pae_entropy:g}): {lab_p} differs on {diff}. THE LABELLED LOSSES IN "
+                          f"THIS RUN'S trajectory.csv ARE NOT TRUSTWORTHY -- pae_loss, pde_loss, "
+                          f"plddt_loss and resolved_loss are all computed against these labels. "
+                          f"The entropy objective does not read them, so the GRADIENT is "
+                          f"unaffected; nothing else here is.")
+                    code_drift["stale_warned"] = True
+                code_drift["stale_n"] = code_drift.get("stale_n", 0) + 1
+                code_drift.setdefault("stale_pdbs", set()).add(pdb)
+                return cands[0]
             raise SystemExit(
                 f"STOP: {lab_p} does not match its inputs. No trunk among {cands} reproduces its "
                 f"fingerprint.\n  field(s) differing: {diff}\n"
@@ -5399,7 +5477,13 @@ def main():
             _dw = dict(x.split("=", 1) for x in _want.split("|") if "=" in x)
             _dg = dict(x.split("=", 1) for x in _got.split("|") if "=" in x)
             _df = sorted(k for k in set(_dw) | set(_dg) if _dw.get(k) != _dg.get(k))
-            if not (_df == ["code"] and a.allow_code_drift):
+            # THE SAME ALLOWANCE AS resolve_trunk, OR THE FLAG DOES NOTHING. This re-assertion
+            # runs per unit after resolve_trunk has already accepted the label, so leaving it
+            # strict would stop the run one call later with a message that names no flag --
+            # exactly the half-wired shape the --lora-keep-trainable guard had.
+            _ok_drift = (_df == ["code"] and a.allow_code_drift) or (
+                a.allow_stale_labels and _df and set(_df) <= {"code", "bio", "cif", "idx"})
+            if not _ok_drift:
                 raise SystemExit(f"STOP: {lab_p} fingerprint differs in {_df}. Rebuild it.")
         _missing_lf = [k for k in BC.LOSS_FEATS if f"lf_{k}" not in lab]
         if _missing_lf:
@@ -5830,6 +5914,60 @@ def main():
                 _iptm_fh["fh"].flush()
             try:
                 cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
+                if a.pae_entropy > 0.0:
+                    # REPLACE, NOT ADD. `cum` above is the labelled objective; keeping any of it
+                    # would make this a semi-supervised arm and the comparison would no longer be
+                    # "what can be learned without labels". met is left as computed so
+                    # trajectory.csv still carries the labelled pae_loss as a READOUT -- it is
+                    # the only way to see whether sharpening is also fitting, and it costs a
+                    # forward that has already happened.
+                    _pl = pred["pae"]
+                    _lp = torch.log_softmax(_pl.float(), dim=-1)
+                    _ent = -(_lp.exp() * _lp).sum(-1)          # [..., n_tok, n_tok]
+                    # NameError, NOT dir(). `_pae_keep` is a closure variable from the
+                    # `if a.pae_scored_pairs:` block, and dir() with no argument lists only the
+                    # LOCAL names -- so `"_pae_keep" in dir()` is False even when the mask exists,
+                    # and the scored-pair mask would have been silently discarded in favour of a
+                    # mean over every token pair. Exactly the silent-fallback class this file's
+                    # other guards exist to prevent.
+                    try:
+                        _m_ent = _pae_keep.get("m")
+                    except NameError:
+                        _m_ent = None
+                    # AND THE FALLBACK IS A STOP, NOT A MEAN, WHENEVER A MASK WAS ASKED FOR.
+                    #
+                    # Falling back to _ent.mean() when --pae-scored-pairs is set would train a
+                    # DIFFERENT objective -- entropy over every token pair, antigen interior
+                    # included -- while the log, the args and the run name all still say the
+                    # scored pairs. That is the same shape of bug as the dir() one above, one
+                    # level up: not a discarded mask but a quietly substituted loss, and
+                    # unlabelled training has no held-out number that would catch it early.
+                    # A mean is only legitimate when no mask was requested at all.
+                    _want_mask = bool(getattr(a, "pae_scored_pairs", None))
+                    if _want_mask:
+                        if _m_ent is None or not torch.is_tensor(_m_ent):
+                            raise SystemExit(
+                                f"STOP: --pae-entropy with --pae-scored-pairs but no scored-pair "
+                                f"mask reached the loss for {pdb}/{arm_seed} pose {i} "
+                                f"(_pae_keep={'absent' if _m_ent is None else type(_m_ent)}). "
+                                f"Refusing to average entropy over every token pair.")
+                        if tuple(_m_ent.shape[-2:]) != tuple(_ent.shape[-2:]):
+                            raise SystemExit(
+                                f"STOP: scored-pair mask {tuple(_m_ent.shape)} does not match the "
+                                f"PAE grid {tuple(_ent.shape)} for {pdb}/{arm_seed} pose {i}.")
+                        _w = _m_ent.to(_ent.dtype)
+                        _den = _w.sum()
+                        if float(_den) <= 0.0:
+                            raise SystemExit(
+                                f"STOP: scored-pair mask is all zero for {pdb}/{arm_seed} pose "
+                                f"{i}; the entropy term would be 0.0 with no gradient and the "
+                                f"pose would look trained.")
+                        _ent_v = (_ent * _w).sum() / _den
+                    else:
+                        _ent_v = _ent.mean()
+                    cum = a.pae_entropy * _ent_v
+                    met = dict(met)
+                    met["pae_entropy"] = float(_ent_v.detach())
                 if nb > 1:
                     # PROTENIX'S LOSSES MEAN OVER THE SAMPLE AXIS -- PAELoss loss.py:995, PDELoss
                     # :771, PLDDTLoss :1372, ExperimentallyResolvedLoss :1058 all end in a mean.
@@ -9140,6 +9278,15 @@ def main():
                       f"absent from the pool, or no scored pair survived the crop. Those poses "
                       f"trained the ungraded blocks too.")
 
+    if code_drift.get("stale_n"):
+        _sp = sorted(code_drift.get("stale_pdbs", ()))
+        print(f"\nSTALE LABELS ACCEPTED on {code_drift['stale_n']} unit(s) across {len(_sp)} "
+              f"structure(s) via --allow-stale-labels: {_sp[:8]}"
+              f"{' ...' if len(_sp) > 8 else ''}\n"
+              f"  The entropy gradient never read them, so the TRAINING is unaffected. The "
+              f"labelled columns of trajectory.csv -- pae_loss, pde_loss, plddt_loss, "
+              f"resolved_loss, loss -- were computed against labels whose bioassembly provenance "
+              f"no longer matches, and are NOT a diagnostic for this run. pae_entropy is.")
     if code_drift["n"]:
         print(f"\nCODE DRIFT ACCEPTED on {code_drift['n']} unit(s) via --allow-code-drift. The "
               f"labels' data provenance matched in every field; only the builder's source hash "

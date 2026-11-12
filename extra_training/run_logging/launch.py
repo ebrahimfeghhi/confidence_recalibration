@@ -226,7 +226,13 @@ def main():
         # (which structures) and --seed-manifest (how many seeds each). A flat --seeds range scans
         # seeds a shallow structure does not have and never trains on: 220 of 223 structures the
         # old scan flagged are declared at ONE seed.
-        for flag in ("--manifest-skip", "--seeds", "--indices", "--bio-dir", "--mmcif-dir"):
+        # --fold TOO, OR THE SCAN READS THE WRONG LABEL TREE. The scan used to hardcode
+        # training/fold/labels, so a validation run's preflight looked 83 val structures up under
+        # the training labels and called them all missing. Forwarding --fold is what makes the
+        # population the gate checks the population the run reads, the same argument the comment
+        # above makes for --indices.
+        for flag in ("--manifest-skip", "--seeds", "--indices", "--bio-dir", "--mmcif-dir",
+                     "--fold", "--labels"):
             if flag in rest:
                 gate += [flag, rest[rest.index(flag) + 1]]
         if "--manifest-selection" in rest:
