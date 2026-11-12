@@ -1715,3 +1715,58 @@ structure size (+0.420), which together leave most of the variance unexplained. 
         --shard $s --skip-existing --out training/crop_pool_<N>
     python -I run_logging/select_crop_pool.py --min-crops 40 --regret 0.05 \
         --out training/crop_final
+
+---
+
+## 25. THE FIRST ARM WHOSE HELD-OUT SELECTION ROSE WHILE TRAINING LOSS FELL
+
+`7roo28` (chain `ea9vy2 -> 7roo28`), 2026-11-11. PAE-only, our 256-token crop pool,
+`--epoch-cover-all --trunk-memmap --epoch-balance`, 50 epochs, lr 1e-3, **plus
+`--pair-dropout 0.25` and `--l2-sp 1e-3`** (exclude `frame_dir_proj,pose_perblock_`). 141
+interfaces, budget 30, `select_by max`. Each pooling against its OWN baseline.
+
+| | ep5 | ep10 | shipped | ep10 vs shipped |
+|---|---|---|---|---|
+| DockQ max-pooled | 0.5845 | **0.5896** | 0.5813 | **+0.0083** |
+| DockQ mean-pooled | 0.5822 | **0.5840** | 0.5735 | **+0.0105** |
+| frac max-pooled | 0.7234 | **0.7305** | 0.7234 | +0.0071 |
+| frac mean-pooled | 0.7305 | 0.7305 | 0.7163 | +0.0142 |
+| rho max-pooled | +0.1878 | +0.1811 | +0.1515 | +0.0296 |
+| rho mean-pooled | +0.1813 | +0.1827 | n/a | -- |
+
+**THE MATCHED CONTROL IS THE POINT.** `rdi25k` is the same recipe with neither term. Over exactly
+this ep5 -> ep10 window it went **0.5851 -> 0.5786** max-pooled and **0.7234 -> 0.7163** frac,
+ending BELOW shipped on both, while its training PAE fell 2.7709 -> 2.6401. `7roo28` went
+**0.5845 -> 0.5896** and **0.7234 -> 0.7305** over the same window with training PAE falling
+2.8615 -> 2.7884. Same pool, same budget, same epochs, same selector: the dissociation that has
+appeared in every previous cropped arm did not appear in the one carrying regularisation.
+
+### WHY THIS IS NOT YET A RESULT
+
+1. **One eval pair.** Epoch 15 and 20 decide it.
+2. **141 interfaces.** +0.0071 frac is ONE interface flipping. The frac column is small-n and
+   must not be quoted on its own.
+3. **rho max-pooled FELL while selected DockQ ROSE** (+0.1878 -> +0.1811). That is the same
+   decoupling of correlation from selection recorded five times before in this project, pointing
+   the other way for once. The two do not have to move together, and reading whichever one is
+   favourable is exactly how that keeps being missed.
+
+### THE ANCHOR IS NOT WHAT DID IT -- MEASURED, NOT ASSUMED
+
+The l2-sp GRADIENT share (added this session; section 17 explains why the loss-value share is the
+wrong statistic) was under the 1% acting threshold every single epoch and FALLING:
+
+| ep | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|
+| median share | 0.97% | 0.93% | 0.91% | 0.83% | 0.81% | 0.77% | 0.70% | 0.70% |
+| median task grad | 0.9639 | 1.0770 | 1.1436 | 1.3040 | 1.3815 | 1.4926 | 1.6766 | 1.7225 |
+
+**0 of 145 steps in any epoch had the penalty exceed the task gradient.** It falls not because the
+penalty weakens -- `||W-W0||` grows throughout -- but because the median task gradient grows
+faster. At lambda 1e-3 this arm is, to a good approximation, **dropout-only**, so dropout is the
+term that plausibly produced the table above.
+
+**THE TWO TERMS ARE CONFOUNDED BY CONSTRUCTION** (one GPU slot instead of two, at the user's
+direction) and no single successor arm separates them. Separating them needs a dropout-only arm
+and an anchor-only arm against this one -- three slots, not one.
+
