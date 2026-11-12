@@ -451,73 +451,31 @@ def main():
     # one axis, labelled as the same loss. Caught in review of 92338a36. rank_rho now computes
     # both metrics for every run and run_rank_form says which objective was trained.
     ax = axes[len(panels) + (1 if far_panel else 0)]
-    _form, _tau = RHO.run_rank_form(os.path.join("training", "runs", a.rid))
-    if _form == "expected":
-        ho_col, ho_se_col = "exloss_trained", "exloss_sem"
-        _taus = sorted({round(v, 6) for v in g("exloss_tau")})
-        _lbl = f"-E[DockQ], softmax tau {_taus[0]:g}" if len(_taus) == 1 else "-E[DockQ]"
-        _floor_txt = " floor -max(DockQ) per group"
-    else:
-        ho_col, ho_se_col = "xsloss_trained", "xsloss_sem"
-        _lbl = objective_label(a.rid)
-        _floor_txt = " floor 0 = every pair ordered"
-    _tr_pool, _ho_pool = pool_names(a.rid)
-    _fam = rank_family(a.rid)
-    if not trained_rank_loss(a.rid):
-        # PAE RUN: the ranking columns exist but were never optimised, so drawing them here and
-        # calling them the objective is a false claim about the run. Draw the PAE it did minimise.
-        _pep, _ptr, _pho = pae_curves(a.rid)
-        if _pep:
-            ax.plot(_pep, _ptr, color="#ff7f0e", lw=2.0, marker="s", ms=3.5, label="training")
-            ax.plot(_pep, _pho, color="#1f77b4", lw=2.0, marker="o", ms=3.5, label="held out")
-        _lbl = objective_label(a.rid)
-        ax.set_title(f"{_lbl} loss: training vs held out", fontsize=11.5)
-    else:
-        tr = {}
-        for _r in run_chain(a.rid):
-            tr.update(train_rank_loss(_r))
-        tr_ep = [e for e in ep if e in tr]
-        if tr_ep:
-            ax.plot(tr_ep, [tr[e] for e in tr_ep], color="#ff7f0e", lw=2.0, marker="s", ms=3.5,
-                    label="training" + (f" ({_tr_pool}" if _tr_pool else " (")
-                          + (f", {_fam}-seed pairs)" if _fam and _fam != "cross" else ")"))
-        ho, ho_se = g(ho_col), g(ho_se_col)
-        ax.fill_between(ep, [v - s for v, s in zip(ho, ho_se)], [v + s for v, s in zip(ho, ho_se)],
-                        color="#1f77b4", alpha=0.18, lw=0)
-        ax.plot(ep, ho, color="#1f77b4", lw=2.0, marker="o", ms=3.5,
-                label="held out (" + (f"{_ho_pool}, " if _ho_pool else "")
-                      + f"{n_if} ifaces scored" + ")")
-        ax.axhline(0.0, color="#555555", ls="-", lw=0.9)
-        ax.text(0.98, 0.02, _floor_txt.strip(), transform=ax.transAxes, color="#555555",
-                fontsize=8, va="bottom", ha="right")
-        # THE ZERO-INFORMATION LINE, 2*tau*ln2. Set every margin to zero and softplus(0) = ln2
-        # factors out while the DockQ weights normalise away, so this is exactly what the loss
-        # reads when the head scores every pose of an interface identically -- no opinion at all.
-        # Below it the head orders better than a constant; above it, worse. It is NOT the floor:
-        # the floor is 0. It moves with tau (0.04228 at DEFAULT_TAU 0.0305, 0.00499 at the
-        # within-seed 0.0036), which is exactly why two arms at different tau must never share
-        # this axis. run_logging/zero_margin.py computes it and checks arms against it.
-        # run_rank_form returns tau=None when the run passed no --rank-tau, which MEANS
-        # DEFAULT_TAU rather than "no tau". Taking it at face value silently skipped this line on
-        # every arm that used the default -- 4y3ve6 and ykhvzs among them, i.e. exactly the ones
-        # worth comparing against the landmark. Resolve it the way rank_rho does.
-        if _tau is None:
-            _ph = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                               "phases")
-            if _ph not in sys.path:
-                sys.path.insert(0, _ph)
-            import rank_loss as _RKL
-            _tau = _RKL.DEFAULT_TAU
-        if _form != "expected" and _tau:
-            _zi = 2.0 * float(_tau) * math.log(2.0)
-            ax.axhline(_zi, color="#c0392b", ls="--", lw=1.2)
-            ax.text(0.02, _zi, f"no-information {_zi:.5f}  (2*tau*ln2, tau {float(_tau):g})",
-                    transform=ax.get_yaxis_transform(), color="#c0392b",
-                    fontsize=8, va="bottom", ha="left")
-        ax.set_title(f"{_lbl}: training vs held out", fontsize=11.5)
+    # THE HELD-OUT RANKING LOSS IS NO LONGER COMPUTED, SO THIS PANEL DRAWS THE PAE LOSS.
+    #
+    # It used to pick a column by the run's --rank-form: the pairwise objective's held-out twin
+    # for most arms, the expected form's -E[DockQ] for one, plus a 2*tau*ln2 "no information"
+    # landmark for the softplus. rank_rho stopped emitting all of those when --rank-form was cut
+    # down to rel alone -- a mean-centred regression against the true iTM needs --rel-labels,
+    # which neither that tool nor this one takes, so there is no held-out loss column left to
+    # draw. Drawing the training ranking curve alone here would put an unpaired line under a
+    # title promising a generalisation gap, which is the specific false claim the review of
+    # 92338a36 caught in the version before this one.
+    #
+    # The PAE curves are a real pair -- same function, training against held out -- so the panel
+    # keeps its meaning, and a ranking arm is told plainly that its own loss is not plotted.
+    _lbl = objective_label(a.rid)
+    _pep, _ptr, _pho = pae_curves(a.rid)
+    if _pep:
+        ax.plot(_pep, _ptr, color="#ff7f0e", lw=2.0, marker="s", ms=3.5, label="training")
+        ax.plot(_pep, _pho, color="#1f77b4", lw=2.0, marker="o", ms=3.5, label="held out")
+    ax.set_title("PAE loss: training vs held out", fontsize=11.5)
+    if trained_rank_loss(a.rid):
+        ax.text(0.98, 0.02, "held-out ranking loss not computed (rel needs --rel-labels)",
+                transform=ax.transAxes, color="#555555", fontsize=8, va="bottom", ha="right")
     ax.set_xlabel("epoch", fontsize=10.5)
     ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins="auto"))
-    ax.set_ylabel(f"{_lbl} (lower is better)", fontsize=9.5)
+    ax.set_ylabel("PAE loss (lower is better)", fontsize=9.5)
     ax.legend(fontsize=8.5, loc="upper right", framealpha=0.9)
     ax.grid(alpha=0.15)
     _note = "" if trained_rank_loss(a.rid) else "  [ranking columns exist but were NOT trained]"

@@ -264,6 +264,51 @@ LORA_EXCLUDE='^(?!pairformer_stack\.|frame_dir_proj|pose_perblock_|linear_no_bia
 # DERIVED, never retyped: everything after $TRAIN_ONLY's first comma is its live-pairformer branch
 # list, so the adapted set and the trainable set cannot drift apart.
 LORA_TARGETS="${LORA_TARGETS:-${LORA_EXCLUDE},${TRAIN_ONLY#*,}}"
+# ---- RANKING LOSS, OFF UNLESS ALPHA_RANK IS SET ----------------------------------------------
+#
+# rel IS THE ONLY FORM. The six pairwise ones were deleted, so there is no --rank-form to choose:
+# it is passed as rel for the record and the trainer admits nothing else.
+#
+# --rank-cross-seed IS NOT OPTIONAL and the trainer refuses rel without it: the loss centres on an
+# interface's poses across ALL its seeds, and within one seed it would centre on 5 poses and throw
+# away most of the signal. RANK_S structures x all their seeds x 5 poses is then the step, packed
+# to a constant 45 units (= 225 poses) by pack_cross_seed_steps: 3 deep structures fill one step,
+# and 45 single-seed structures fill one of their own, so the two depth populations pack with
+# nothing left over.
+#
+# IT OVERRIDES --epoch-cover-all, WHICH IS IN ARGS BELOW. phase_k_train:7981 takes the cross-seed
+# builder first and the cover-all branch is never reached. That is harmless here -- the cross-seed
+# builder uses every seed of every structure each epoch by construction, which is what cover-all
+# exists to guarantee -- but it is stated because the flag is still being passed.
+ALPHA_RANK="${ALPHA_RANK:-}"
+RANK_S="${RANK_S:-3}"
+REL_LABELS="${REL_LABELS:-training/fold/itm_labels}"
+RANK_LABELS="${RANK_LABELS:-training/fold/results.csv}"
+RANK_POOL_STAT="${RANK_POOL_STAT:-mean}"
+# OFF BY DEFAULT. The gradient split costs one extra backward per pose on a measured step, and
+# the real arm does not need it: beta is estimated once by the one-epoch diagnostic
+# (shell_scripts/queue_rank_gradprobe_1ep.sh, which sets K=1) and then held fixed. A 50-epoch arm
+# carrying the probe would pay for 7,750 measurements of a number it is not going to act on.
+GRAD_PROBE_EVERY="${GRAD_PROBE_EVERY:-0}"
+RANK_ARGS=()
+if [ -n "$ALPHA_RANK" ]; then
+  [ -d "$REL_LABELS" ] || { say "REFUSING: REL_LABELS $REL_LABELS is not a directory"; exit 4; }
+  [ -f "$REL_LABELS/manifest.json" ] || {
+      say "REFUSING: $REL_LABELS/manifest.json is missing, so the label set cannot be identified"
+      exit 4; }
+  RANK_ARGS=(--rank-loss --rank-form rel --alpha-rank "$ALPHA_RANK"
+             --rank-cross-seed --rank-structs-per-step "$RANK_S"
+             --rel-labels "$REL_LABELS" --rank-labels "$RANK_LABELS"
+             --rank-pool "$RANK_POOL_STAT")
+  # THE FLAG AND ITS VALUE TOGETHER, OR NEITHER. The first version of this line expanded to a
+  # BARE NUMBER with the flag name dropped, so K=1 would have appended "1" as a positional
+  # argument and argparse would have refused the whole launch. Appended conditionally instead,
+  # which is the only form where "off" means the flag is absent rather than present with 0.
+  if [ "${GRAD_PROBE_EVERY:-0}" != "0" ]; then
+    RANK_ARGS+=(--grad-norm-every "$GRAD_PROBE_EVERY")
+  fi
+fi
+
 ARGS=(--crop-pool "$POOL_DIR"
       --minimal-items --epoch-cover-all ${EPOCH_BALANCE:+--epoch-balance}
       --pae-only --alpha-pae 1.0 --alpha-confidence 1.0
@@ -271,12 +316,21 @@ ARGS=(--crop-pool "$POOL_DIR"
       --skip-dead-ops --pose-perblock --pose-perblock-copy --frame-direction --lean-single
       --train-eval-pool "$EVAL_POOL" --train-eval-fold validation/fold
       --train-eval-every 5 --train-eval-budget 30 --train-eval-seed-base 400000
-      --epochs "$EPOCHS" --lr "$LR")
+      --epochs "$EPOCHS" --lr "$LR"
+      "${RANK_ARGS[@]+${RANK_ARGS[@]}}")
 
 say "argv the trainer would receive:"
 printf '    %s\n' "${ARGS[@]}"
-say "NOT passed, deliberately: --rank-loss, --rank-form, --rank-cross-seed, --rel-labels,"
-say "  --crop-margin, --crop-tokens, --eval-pool-crop-tokens (eval stays UNCROPPED)"
+if [ -n "$ALPHA_RANK" ]; then
+  say "RANKING LOSS ON: rel at alpha $ALPHA_RANK, cross-seed, $RANK_S structure(s)/step,"
+  say "  labels $REL_LABELS, ipTM pooled by $RANK_POOL_STAT, gradient split logged every"
+  say "  $GRAD_PROBE_EVERY step(s). PAE stays on at --alpha-pae 1.0, so this is PAE + rel."
+else
+  say "NOT passed: --rank-loss, --rank-form, --rank-cross-seed, --rel-labels (set ALPHA_RANK to"
+  say "  turn the ranking term on)"
+fi
+say "NOT passed, deliberately: --crop-margin, --crop-tokens, --eval-pool-crop-tokens"
+say "  (eval stays UNCROPPED)"
 
 if [ "$DRY" = "1" ]; then
   say "DRY RUN -- nothing launched. Re-run with DRY=0 to go."

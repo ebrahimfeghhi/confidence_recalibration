@@ -227,36 +227,6 @@ def main():
                          "per structure, because a structure holds several and reading one "
                          "interface's ipTM against another's DockQ is the error phase_k_eval "
                          "refuses to run.")
-    ap.add_argument("--rank-weight-by-gap", dest="rank_weight_by_gap",
-                    action="store_true", default=True,
-                    help="weight each pose pair by |DockQ_i - DockQ_j| (default). Separating 0.1 "
-                         "from 0.7 then matters more than separating 0.41 from 0.43, which is "
-                         "what the metric cares about: frac_acc is a threshold at 0.23 and mean "
-                         "DockQ is driven by the big misses.")
-    ap.add_argument("--no-rank-weight-by-gap", dest="rank_weight_by_gap",
-                    action="store_false", help="weight every pose pair equally instead.")
-    ap.add_argument("--rank-spearman-tau", type=float, default=0.0,
-                    help="SOFT-RANK TEMPERATURE for --rank-form spearman, in the units of the "
-                         "quantity ranked (ipTM and DockQ, both 0..1). 0 takes "
-                         "rank_loss.DEFAULT_SPEARMAN_TAU = 0.05, which is ABAG-Rank's own training "
-                         "value. NOT --rank-tau: that is a margin scale for the softplus form, "
-                         "measured as the median cross-seed ipTM gap, and the two are unrelated.")
-    ap.add_argument("--rank-dist-weight", type=float, default=0.1,
-                    help="WEIGHT ON THE DISTANCE-PRESERVATION TERM relative to 1.0 on the ranking "
-                         "term, for --rank-form spearman_distance. 0.1 is ABAG-Rank's effective "
-                         "value (its configs define distance_lambda_start, while train.py:423 "
-                         "reads distance_lambda and falls back to 0.1). Note the term SUMS over "
-                         "pairs, so a 5-pose within-seed group gives ~4.5x less than upstream's "
-                         "10-pose group for the same per-pair error; raise this to compensate if "
-                         "you want upstream's magnitude rather than its weighting.")
-    ap.add_argument("--rank-rel-scale", type=float, default=0.07,
-                    help="RELEVANCE GATE for the two group forms: the group's loss is scaled by "
-                         "clamp(std(DockQ)/this, 0, 1), upstream's. 0 disables it. EXPECT IT TO "
-                         "BITE: 59%% of our training interfaces have pose-to-pose DockQ std below "
-                         "0.07 measured over all 50 poses, and a within-seed group of 5 should "
-                         "spread less, so a large share of groups will be down-weighted or "
-                         "silenced. The run logs the mean weight -- read it before concluding "
-                         "anything about the term's effect.")
     ap.add_argument("--rank-pool", choices=("max", "mean"), default="max",
                     help="HOW A POSE'S ipTM IS POOLED OVER ANCHOR ROWS, in BOTH pass A and the "
                          "pass-B term, so the quantity trained is the quantity scored. max is "
@@ -284,144 +254,38 @@ def main():
                          "measured, corr(within-interface std of the true iTM, DockQ range) = "
                          "+0.745, so wide-spread interfaces are exactly where a wrong pick is "
                          "expensive, and the narrow ones have frac acceptable median 1.00.")
-    ap.add_argument("--rank-form", choices=("linear", "softplus", "expected",
-                                            "spearman", "distance", "spearman_distance",
-                                            "rel"),
-                    default="linear",
-                    help="SHAPE of the ranking term. linear and softplus are PAIRWISE; expected "
-                         "is not.\n"
-                         "rel is MEAN-CENTRED REGRESSION ON THE TRUE iTM and is not a ranking "
-                         "loss at all: L = (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2 over "
-                         "an interface's poses, with g from --rel-labels. It exists because the "
-                         "head's failure is measured to be positional, not collapse: on d32kqp "
-                         "epoch 66, corr(interface MEAN ipTM, interface MEAN DockQ) = +0.866 "
-                         "while the median WITHIN-interface Spearman is +0.317 against +0.690 for "
-                         "the true iTM. Subtracting each interface's own mean from both sides "
-                         "removes the across-complex signal the head already has, so the only "
-                         "thing left to earn is the within-complex ordering selection uses. Its "
-                         "coefficients sum to EXACTLY zero, so it cannot move an interface's "
-                         "level and its accumulated gradient cancels by construction -- set "
-                         "--alpha-rank from gradient NORMS via --grad-probe, never from loss "
-                         "values.\n"
-                         "expected is L = -sum_i softmax(ipTM/tau)_i * DockQ_i over every pose of "
-                         "the interface: the expected DockQ of the pose the model would SELECT. "
-                         "It exists because a pairwise loss spends gradient in proportion to how "
-                         "many pairs a pose appears in, which is the same for rank 1 and rank 90, "
-                         "while deployment takes the argmax and nothing else -- so ordering the "
-                         "bottom of the list is work that cannot pay. h7msge is the evidence: "
-                         "held-out pairwise loss reached a run best and Spearman went +0.075 over "
-                         "shipped, while selected DockQ stayed flat-to-down and frac acceptable "
-                         "never beat shipped once in 37 epochs. The softmax is a differentiable "
-                         "argmax, so tau sets how much mass sits on the current leaders; it has "
-                         "NO PAIRS, so --rank-weight-by-gap and the cross-seed pair filter have "
-                         "nothing to act on and are reported as inapplicable rather than silently "
-                         "appearing to work. Its floor is -max(DockQ) for the group, not 0.\n"
-                         "linear (default, what every arm so far ran) is "
-                         "-(s_i - s_j)(dq_i - dq_j)/sum|ddq|. Its coefficients come from the "
-                         "LABELS ALONE, so it needs no scoring pass -- and that convenience IS "
-                         "its defect: a gradient that ignores the current scores is constant in "
-                         "them, so the loss has no stopping point and cannot tell an "
-                         "already-correct pair from an inverted one. Scaling all scores by lambda "
-                         "scales the loss by lambda, so WIDENING THE SPREAD PAYS WITHOUT LIMIT, "
-                         "and at the real gap scale spreading is worth ~71x more than reordering. "
-                         "Measured in ntwjfp: spread 0.0114 -> 0.0371 over 8 epochs while held-out "
-                         "rank loss went +0.00018 -> +0.00288 -- the training objective improved "
-                         "while held-out ORDERING got worse.\n"
-                         "softplus is (2 tau/W) sum w_ij softplus(-m_ij/tau), whose per-pair "
-                         "gradient weight sigmoid(-m/tau) decays to 0 once a pair is comfortably "
-                         "correct and caps at 1 when badly inverted. Spreading then buys a bounded "
-                         "amount and stops. Costs the scoring pass (--rank-form softplus implies "
-                         "one), which is exactly the price of having somewhere to stop.")
-    ap.add_argument("--rank-tau", type=float, default=None, metavar="TAU",
-                    help="softplus temperature, the margin scale over which the loss goes from "
-                         "'push hard' to 'satisfied'. Defaults to rank_loss.DEFAULT_TAU = 0.0305, "
-                         "the MEASURED median |ipTM gap| over cross-seed pairs of the full "
-                         "training set (497 structures, 1,028 interfaces, 1,056,035 pairs); "
-                         "reproduce with run_logging/measure_tau.py. NOT a free parameter: tau=1 "
-                         "is the units error the first softplus attempt made (gradient 0.495 for a "
-                         "correct pair vs 0.505 for an inverted one -- inert), and tau far below "
-                         "the gap scale ignores every pair that is not an outright inversion. "
-                         "The within-seed median is 0.0036 and does NOT transfer: cross-seed pairs "
-                         "are 8.5x wider. (An earlier 0.0081 was measured before DockQ ties "
-                         "were dropped; reproduce either with measure_tau.py --pairs within.) "
-                         "The scale is POPULATION-SPECIFIC and must come from the pool being "
-                         "TRAINED on: overfit30 gives within 0.0137 / cross 0.0426, while "
-                         "valfull gives within 0.0011 -- setting tau from val would let the "
-                         "eval set shape the training gradient.")
-    ap.add_argument("--rank-pairs", choices=("cross", "within", "all"), default="cross",
-                    metavar="FAMILY",
-                    help="WHICH PAIRS THE LOSS FORMS INSIDE A GROUP. This is the OBJECTIVE; "
-                         "--rank-cross-seed is the STEP SHAPE, and they are easy to confuse. "
-                         "--rank-cross-seed decides which poses land in one optimiser step (all "
-                         "seeds of a structure, so the group is the whole interface); "
-                         "--rank-pairs decides which pairs drawn from that group enter the loss. "
-                         "'cross' pairs poses from DIFFERENT seeds and is the deployed objective, "
-                         "since selection is argmax ipTM over every pose regardless of seed. "
-                         "'within' pairs poses from the SAME seed -- a separate family at a "
-                         "separate scale, NOT a subset reading of the same one: over the 497-"
-                         "structure training set the median |ipTM gap| is 0.0036 within-seed "
-                         "against 0.0305 cross-seed, 8.5x, so --rank-tau MUST be re-measured for "
-                         "it (measure_tau.py --pairs within, against the TRAINING pool; overfit30 "
-                         "gives 0.0137). Leaving tau at the cross-seed value puts every "
-                         "within-seed pair at m/tau ~ 0, where sigmoid gives a correct pair and "
-                         "an inverted one the same weight and the term is inert. 'all' takes "
-                         "both at ONE tau, which by the same argument can only suit one of them; "
-                         "it is here for completeness, not as a recommendation. NOTE the five "
-                         "earliest arms trained within-seed pairs and did not beat shipped, but "
-                         "they ran the LINEAR form with no tau at all, so they do not test this.")
-    ap.add_argument("--rank-topk-decay", type=float, default=0.0, metavar="K",
-                    help="weight each pair by max(v(r_i), v(r_j)) with v(r) = exp(-(r-1)/K) over "
-                         "the group's CURRENT ipTM order, r=1 the top pose. 0 disables it. "
-                         "WHY: selection is argmax ipTM over the group, so the selected pose "
-                         "changes only when some pose crosses the current top -- the pairs "
-                         "(top, j) are the ENTIRE selection-relevant subspace. Measured on "
-                         "valfull at the shipped head they are 1.33%% of pairs and 1.56%% of the "
-                         "loss's weight, while ordering them all correctly is identical to the "
-                         "top pose being the best pose, i.e. the full oracle (DockQ 0.5831 -> "
-                         "0.6926 over 92 interfaces). MAX, NOT PRODUCT: a product would "
-                         "annihilate the (rank 1, deep pose) pairs, which are the ones carrying "
-                         "the headroom -- the best-DockQ pose sits at a median rank of 68 of "
-                         "150. K INTERPOLATES: K->0 is the pure star (rank-1 pairs only), K->inf "
-                         "is the undecayed objective, and K=2 puts 39.3%% of the weight on the "
-                         "star and 92.8%% inside the top 5 while a rank-1/rank-2 swap moves "
-                         "their weights 1.00 <-> 0.61 rather than 1.00 <-> 0. A spike on the "
-                         "argmax would make the objective's identity change discontinuously "
-                         "whenever the top pose flips, which invites oscillation. STOP-GRADIENT: "
-                         "the ranks come from detached scores, so this is not the exact gradient "
-                         "of a fixed objective -- deliberate, and recorded so it is not read as "
-                         "an oversight.")
-    ap.add_argument("--rank-straddle", type=float, default=0.0, metavar="DOCKQ",
-                    help="keep ONLY pairs that straddle this DockQ threshold -- exactly one pose "
-                         "above it, one below. 0 disables it (every run before this flag). "
-                         "WHY: the reported criterion is the FRACTION of interfaces whose "
-                         "selected pose clears 0.23, and that fraction moves only when selection "
-                         "crosses the threshold. Two acceptable poses, or two unacceptable ones, "
-                         "can be reordered freely without changing it. COST, stated rather than "
-                         "hidden: mean DockQ is NOT invariant to the dropped pairs -- promoting "
-                         "0.61 over 0.38 raises the mean and leaves the fraction alone -- so this "
-                         "optimises the fraction and treats mean DockQ as a free variable. That "
-                         "is a change of objective, not a sparser estimate of the same one. "
-                         "The threshold applies to LABELS, never scores, so the included set is "
-                         "fixed by the data and cannot oscillate as the model trains. "
-                         "Needs its own tau: measure_tau.py --straddle.")
-    ap.add_argument("--rank-within-weight", type=float, default=1.0, metavar="L",
-                    help="with --rank-pairs all, multiply WITHIN-SEED pairs by L in both the "
-                         "numerator and the normaliser W, so the loss stays a weighted mean and "
-                         "L cannot act as a second --alpha-rank. Fixes a SHARE problem, not a "
-                         "gradient-strength one: at tau 0.0305 a median within-seed pair on "
-                         "overfit30 (gap 0.0137) already gets 0.376 correctly ordered against "
-                         "0.624 inverted, which discriminates fine -- but within-seed pairs are "
-                         "only 7.9%% of pairs and 7.0%% of the pairwise gradient mass, so "
-                         "deployment-relevant orderings inside a seed are barely trained. "
-                         "CALIBRATED ON THE FULL TRAINING SET, not on the pool being trained, "
-                         "so the knob does not move when the pool does -- the same rule "
-                         "DEFAULT_TAU follows. Within-seed mass share by L at tau 0.0270: "
-                         "1 -> 7.0%%, 3 -> 18.3%%, 8 -> 37.1%%, 20 -> 59.3%%, while mass reaching "
-                         "INVERTED pairs falls only 75.0%% -> 71.6%% at L=8. overfit30 gives "
-                         "6.7/17.6/36.0/58.0, within a point, so nothing hinges on the pool. "
-                         "Reproduce with run_logging/within_weight.py. Ignored unless "
-                         "--rank-pairs is 'all' (under 'within' every pair is scaled alike and L "
-                         "normalises away).")
+    ap.add_argument("--rank-form", choices=("rel",), default="rel",
+                    help="THE RANKING TERM, and there is exactly one. rel is MEAN-CENTRED "
+                         "REGRESSION ON THE TRUE iTM: L = (1/P) sum_i "
+                         "[(s_i - mean_s) - (g_i - mean_g)]^2 over an INTERFACE's poses, with g "
+                         "from --rel-labels and the means taken over that interface's whole "
+                         "group.\n"
+                         "WHY THIS ONE. The head's failure is measured to be positional, not "
+                         "collapse: on d32kqp epoch 66, corr(interface MEAN ipTM, interface MEAN "
+                         "DockQ) = +0.866 while the median WITHIN-interface Spearman is +0.317 "
+                         "against +0.690 for the true iTM. Subtracting each interface's own mean "
+                         "from both sides removes the across-complex signal the head already has, "
+                         "so the only thing left to earn is the within-complex ordering that "
+                         "selection actually uses.\n"
+                         "THE GROUP IS EVERY POSE OF THE INTERFACE, across all its seeds -- 15 "
+                         "seeds x --nsample 5 = 75 on a deep structure -- so poses sharing a seed "
+                         "are centred and compared alongside poses from every other seed. "
+                         "WITHIN-SEED POSES ARE PART OF THE LOSS. A single-seed structure gets a "
+                         "real 5-pose group on the same footing.\n"
+                         "ALPHA COMES FROM GRADIENT NORMS, NEVER FROM LOSS VALUES: the "
+                         "coefficients sum to EXACTLY zero, so this term cannot move an "
+                         "interface's level and its accumulated gradient cancels by construction. "
+                         "Use --grad-probe.\n"
+                         "SIX OTHER FORMS WERE DELETED at the user's direction -- linear, "
+                         "softplus, expected, spearman, distance, spearman_distance -- along with "
+                         "the nine flags that only served them: --rank-weight-by-gap, "
+                         "--rank-tau, --rank-pairs, --rank-within-weight, --rank-topk-decay, "
+                         "--rank-straddle, --rank-spearman-tau, --rank-dist-weight and "
+                         "--rank-rel-scale. --rank-pairs was the one that mattered: its `cross` "
+                         "default EXCLUDED the within-seed family from the pairwise forms, so "
+                         "deleting it removes the only mechanism that ever filtered those "
+                         "comparisons out. The choice is kept as a one-value argument rather than "
+                         "removed so a bundle's recorded rank_form still compares.")
     ap.add_argument("--rank-cross-seed", action="store_true",
                     help="RANK ACROSS SEEDS, not just within one. Deployment selects argmax of "
                          "ipTM over ALL poses of an interface regardless of seed, so cross-seed "
@@ -1343,6 +1207,27 @@ def main():
                          "SAME initial weights and reports the loss trend, then exits without "
                          "training. This is how --lr is chosen instead of inherited.")
     ap.add_argument("--probe-steps", type=int, default=30)
+    ap.add_argument("--grad-norm-every", type=int, default=0, metavar="K",
+                    help="EVERY K OPTIMISER STEPS, measure the PAE and ranking gradients "
+                         "SEPARATELY at identical weights and append |g_pae|, |g_rank|, their "
+                         "ratio and cos(PAE,rank) to grad_split.csv. 0 (default) is off.\n"
+                         "WHY IT EXISTS. --alpha-rank cannot be set from loss values: a rel loss "
+                         "of 0.01-0.25 against a PAE loss of 2.3 says nothing about their "
+                         "gradient magnitudes. --grad-probe already measures this, but it runs "
+                         "ONE window and exits, so every alpha this project has used came from a "
+                         "single measurement on one batch of 2-3 structures -- and the five such "
+                         "measurements on record span 0.0041 to 0.4728, mostly because they froze "
+                         "different amounts of the head. This logs the ratio along the whole run "
+                         "instead, so the next arm's alpha comes from a distribution.\n"
+                         "THE COST IS ONE EXTRA BACKWARD PER MEASURED POSE, which is why it is "
+                         "periodic: at K=50 it is ~2% of the step budget, at K=1 it roughly "
+                         "doubles backward time. It reuses --grad-probe's machinery exactly, so "
+                         "the numbers are the same quantity that tool reports.\n"
+                         "READ THE ACCUMULATED RATIO, NOT THE PER-POSE ONE. The rel coefficients "
+                         "sum to zero within an interface group, so per-pose contributions "
+                         "largely cancel -- measured 0.0311 per-pose against 0.0041 accumulated "
+                         "on 3hzrs8, a 7.6x difference. The accumulated figure is what the "
+                         "optimiser sees.")
     ap.add_argument("--allow-code-drift", action="store_true",
                     help="accept a label whose fingerprint differs ONLY in the `code` field, with "
                          "cif, bio, idx, trunk, loss and schema all matching. The data provenance "
@@ -2741,13 +2626,76 @@ def main():
     # STEPS PER EPOCH THE HORIZON WAS CALIBRATED FROM, 0 when cross-seed packing is not in use.
     # build_epoch_cross_seed compares its own packing against it every epoch.
     _xs_spe = [0]
-    _rank_tau = float(a.rank_tau) if a.rank_tau is not None else None
     _probe = {"rows": [], "units": 0, "poses": 0, "sum": {}, "finite": {}, "nonzero": {}}
-    if a.grad_probe:
+    # ONE-ELEMENT LIST, NOT A BARE BOOL, because the per-pose measurement site is inside a nested
+    # function and rebinding a plain name there would create a local instead of flipping this.
+    _gn_on = [False]
+    _gn_fh = [None]
+
+    def _gn_emit(step_i, ep_i):
+        """Append this step's PAE-vs-ranking gradient split to grad_split.csv, then clear it.
+
+        THE SAME QUANTITY --grad-probe REPORTS, by construction: both read _probe["sum"], which
+        the per-pose site fills with two separate autograd.grad calls at identical weights. The
+        difference is only that this one runs every K steps and does not exit.
+
+        ACCUMULATED, AND SUMMED ACROSS RANKS, because that is what the optimiser sees. ||sum_i
+        g_i|| is not sum_i ||g_i||, and the rel coefficients sum to zero within an interface
+        group, so the per-pose figure overstates the surviving magnitude -- 0.0311 against 0.0041
+        measured on 3hzrs8. The all-reduce is what makes this the real step gradient rather than
+        this rank's share of it.
+
+        EVERY RANK WRITES ITS OWN FILE and rank 0's is the one to read, matching how the
+        trajectory rows are already split. A collective here means every rank must reach it, so
+        it is called from the step boundary that every rank passes.
+        """
+        # NO EARLY RETURN BEFORE THE COLLECTIVE, AND THE VECTOR IS ALWAYS THE SAME LENGTH.
+        #
+        # The first version returned when this rank had no entries and built the vector from
+        # `_n in _d`, so a rank whose units carried no rel coefficient would have skipped the
+        # all_reduce -- or reached it with a shorter tensor -- while the others waited. Both are
+        # hangs, not errors, and this file's own comments record two of them. Every rank walks
+        # trainable_params in full and substitutes zeros, so the shape is a function of the
+        # parameter list alone and participation is unconditional.
+        _sm = _probe.get("sum") or {}
+        _flat = {}
+        for _nm in ("pae", "rank"):
+            _d = _sm.get(_nm) or {}
+            _v = torch.cat([(_d[_n].reshape(-1) if _n in _d
+                             else torch.zeros(_pp.numel(), device=_pp.device,
+                                              dtype=torch.float32))
+                            for _n, _pp in trainable_params])
+            if world > 1:
+                torch.distributed.all_reduce(_v, op=torch.distributed.ReduceOp.SUM)
+            _flat[_nm] = _v
+        _gp, _gr = _flat["pae"], _flat["rank"]
+        _np_, _nr = float(_gp.norm()), float(_gr.norm())
+        _cos = (float(torch.dot(_gp, _gr)) / (_np_ * _nr)) if (_np_ > 0 and _nr > 0) else float("nan")
+        if _gn_fh[0] is None:
+            _gn_fh[0] = open(os.path.join(a.out, f"grad_split.r{rank}.csv"), "a", buffering=1)
+            if _gn_fh[0].tell() == 0:
+                _gn_fh[0].write("epoch,step,g_pae,g_rank,ratio,cos,alpha_rank,"
+                                "alpha_for_parity,poses\n")
+        # alpha_for_parity IS THE POINT OF THE FILE: the alpha that would make the ranking
+        # gradient match the PAE one AT THIS STEP, given the alpha actually in force. The ratio
+        # already includes a.alpha_rank, so dividing it out first is what makes the answer
+        # independent of the arm's own setting.
+        _r = (_nr / _np_) if _np_ > 0 else float("nan")
+        _par = (float(a.alpha_rank) / _r) if (_r and _r == _r and _r > 0) else float("nan")
+        _gn_fh[0].write(f"{ep_i},{step_i},{_np_:.6e},{_nr:.6e},{_r:.6e},{_cos:+.4f},"
+                        f"{a.alpha_rank:g},{_par:.4g},{_probe.get('poses', 0)}\n")
+        _probe["sum"] = {}
+        _probe["poses"] = 0
+    # THE IMPORT FOLLOWS THE MEASUREMENT, NOT JUST --grad-probe. This was gated on a.grad_probe
+    # alone while the per-pose measurement site now also runs under --grad-norm-every, so the
+    # first measured step died with "cannot access free variable 'RKL_probe'" on all three ranks.
+    # Both flags reach the same code, so both must bring the module in.
+    if a.grad_probe or a.grad_norm_every:
         import rank_loss as RKL_probe
         if not a.rank_loss:
-            raise SystemExit("STOP: --grad-probe needs --rank-loss; there is nothing to compare "
-                             "the PAE gradient against.")
+            raise SystemExit(
+                f"STOP: {'--grad-probe' if a.grad_probe else '--grad-norm-every'} needs "
+                f"--rank-loss; there is nothing to compare the PAE gradient against.")
     if a.rank_loss and a.loss_only:
         # SAME REASON. Nothing below is needed for a measurement, and --rank-labels points at the
         # training fold while this subprocess reads the validation one.
@@ -2780,8 +2728,6 @@ def main():
         # the expected sample indices.
         _rl_pdbs = {k[0] for k in _rank_lab}
         _rl_missing = sorted(set(_scored_asym) - _rl_pdbs)
-        import rank_loss as _RKL_cfg
-        _tau_eff = _rank_tau if _rank_tau is not None else _RKL_cfg.DEFAULT_TAU
         if a.rank_form == "rel":
             # The refusals for this form run EARLY, before any hardware -- see the block beside
             # the LAYERNORM_TYPE check. This is only the report.
@@ -2799,150 +2745,32 @@ def main():
                   f"cancels by construction -- alpha must come from --grad-probe norms, not from "
                   f"loss values.")
         print(f"RANKING LOSS on chain_pair_iptm: form {a.rank_form}, alpha {a.alpha_rank:g}, "
-              f"weight_by_gap={a.rank_weight_by_gap}, {len(_rank_lab)} labelled "
-              f"(pdb, seed, interface) group(s) from {_rl_p}"
+              f"{len(_rank_lab)} labelled (pdb, seed, interface) group(s) from {_rl_p}"
               + (f", {_rl_bad} unparsed row(s)" if _rl_bad else ""))
-        # VALIDATED BEFORE ANYTHING IS PRINTED. tau <= 0 is refused in three places while these
-        # two floats took nan, inf and negatives silently: --rank-topk-decay nan makes every
-        # weight nan and the `> 0` banner test below is FALSE for nan, so the log would not even
-        # mention the decay while the loss trained on nan; --rank-within-weight -1 drives den
-        # negative and flips the loss's sign.
-        for _nm, _vv in (("--rank-within-weight", a.rank_within_weight),
-                         ("--rank-topk-decay", a.rank_topk_decay),
-                         ("--rank-straddle", a.rank_straddle)):
-            if not math.isfinite(_vv) or _vv < 0:
-                raise SystemExit(f"STOP: {_nm} {_vv!r} must be a finite number >= 0.")
-        if a.rank_within_weight == 0 and a.rank_pairs == "all":
-            print("  NOTE --rank-within-weight 0 drops the within-seed family from the WEIGHTING "
-                  "while --rank-pairs all still forms its pairs. Groups whose poses all come "
-                  "from one seed then carry no weighted pair and contribute nothing, which is "
-                  "handled (rank_loss guards den == 0) but means this is NOT the same run as "
-                  "--rank-pairs cross.")
-        # THE BANNERS MUST NOT DESCRIBE A PATH THAT IS NOT TAKEN. These three flags are read only
-        # by group_coeffs on the pass-A cross-seed path. The linear form without --rank-cross-seed
-        # goes through RKL.coeffs, which takes labels alone and honours none of them, and the
-        # expected form returns before the pair loop. Printing "CROSS-SEED pairs only -- the
-        # deployed objective" while training within-seed linear pairs is how a run gets written up
-        # as the wrong experiment, so a non-default setting on a path that ignores it is refused
-        # rather than announced.
-        # THE TWO GROUP FORMS IGNORE THEM TOO, for the same reason the expected form does: they
-        # are defined on a whole ordering, so there is no pair to include, weight or decay. Added
-        # to this guard rather than documented, because the banner below would otherwise print a
-        # pair family for a loss that has none.
-        _group_form = a.rank_form in ("spearman", "distance", "spearman_distance")
-        _ignores = (a.rank_form == "expected") or _group_form or not a.rank_cross_seed
-        _nondefault = [f"--rank-pairs {a.rank_pairs}" for _ in (1,) if a.rank_pairs != "cross"] \
-            + [f"--rank-within-weight {a.rank_within_weight:g}" for _ in (1,)
-               if a.rank_within_weight != 1.0] \
-            + [f"--rank-topk-decay {a.rank_topk_decay:g}" for _ in (1,) if a.rank_topk_decay != 0.0] \
-            + [f"--rank-straddle {a.rank_straddle:g}" for _ in (1,) if a.rank_straddle != 0.0]
-        if _ignores and _nondefault:
-            raise SystemExit(
-                "STOP: " + ", ".join(_nondefault) + " cannot take effect here. "
-                + (f"--rank-form {a.rank_form} is defined on the whole ordering of a group, not "
-                   "on pairs, so the family, the within-seed weight, the rank decay and the "
-                   "straddle filter are all inapplicable. Its own knobs are "
-                   "--rank-spearman-tau, --rank-dist-weight and --rank-rel-scale."
-                   if _group_form else
-                   "--rank-form expected is pair-free -- group_coeffs returns before the pair "
-                   "loop, so the family, the within-seed weight and the rank decay are all "
-                   "inapplicable."
-                   if a.rank_form == "expected" else
-                   "without --rank-cross-seed the loss goes through the per-unit path "
-                   "(rank_loss.coeffs), which takes labels alone and honours none of these three. "
-                   "Add --rank-cross-seed, or drop these flags.")
-                + " Refused rather than warned: the startup banner would otherwise name an "
-                  "objective the run is not training.")
-
-        # THE FAMILY IS NAMED BEFORE THE TAU, because the tau is only interpretable against it.
-        _fam_txt = {"cross": ("GROUPS OF ONE SEED -- ABAG-Rank's group terms, partitioned by seed "
-                              "inside group_coeffs; --rank-pairs does not apply"
-                              if _group_form else
-                              "CROSS-SEED pairs only (different seeds) -- the deployed objective"),
-                    "within": "WITHIN-SEED pairs only (same seed) -- a PROXY for selection, not "
-                              "the deployed objective",
-                    "all": "BOTH families at ONE tau"}[a.rank_pairs]
-        print(f"  PAIR FAMILY: {_fam_txt}")
-        if a.rank_pairs == "all":
-            print(f"  within-seed pairs weighted x{a.rank_within_weight:g} in numerator and W "
-                  f"(full training set at tau 0.0270: L=1 leaves within-seed at 7.0% of pairwise "
-                  f"gradient mass, L=3 18.3%, L=8 37.1%, L=20 59.3%)")
-        if a.rank_straddle > 0:
-            print(f"  STRADDLE-ONLY at DockQ {a.rank_straddle:g}: a pair counts only when exactly "
-                  f"one of its two poses is above {a.rank_straddle:g}. This is the subspace the "
-                  f"FRACTION-ACCEPTABLE criterion can see; mean DockQ is deliberately left as a "
-                  f"free variable and both are reported.")
-        if a.rank_topk_decay > 0:
-            print(f"  TOP-k RANK DECAY K={a.rank_topk_decay:g}: pair weight x "
-                  f"max(v(r_i), v(r_j)), v(r)=exp(-(r-1)/K) over the current ipTM order. "
-                  f"K=2 puts ~39% of weight on pairs touching rank 1 (1.6% undecayed) and ~93% "
-                  "inside the top 5. Ranks are taken from DETACHED scores, so the weight is a "
-                  "constant in the backward and the loss is not the exact gradient of a fixed "
-                  "objective.")
-        elif a.rank_within_weight != 1.0:
-            print(f"  NOTE --rank-within-weight {a.rank_within_weight:g} is INERT under "
-                  f"--rank-pairs {a.rank_pairs}: it scales one family against the other, and "
-                  "this run has only one family. Not an error; stated so the log cannot be read "
-                  "as if the weighting were in force.")
-        # NO STOP HERE, AND THE EARLIER ONE WAS WRONG. It refused --rank-pairs within/all
-        # without an explicit --rank-tau, on the grounds that at the cross-seed tau a within-seed
-        # pair "sits at m/tau ~ 0 where the softplus gives a correct pair and an inverted one the
-        # same weight, so the term is inert". The premise is right and the conclusion is not.
-        # At overfit30's within-seed median gap of 0.0137 against tau 0.0305 the weights are
-        # 0.376 correct / 0.624 inverted -- real discrimination; even at the full training set's
-        # 0.0036 they are 0.467 / 0.533, and BOTH PUSH THE SAME WAY, toward the better-DockQ
-        # pose. They add, they do not cancel. What a large tau costs is SATURATION: the loss
-        # never stops pushing pairs it has already ordered, so the term degenerates toward the
-        # linear loss. That is what the --rank-tau help means by the original units error being
-        # "inert" -- the softplus NONLINEARITY is inert, not the gradient. Within-seed pairs are
-        # under-weighted (6.7% of pairwise gradient mass on overfit30), which is a question for
-        # --rank-within-weight, not for tau. So this prints the regime and lets the run proceed.
-        if a.rank_pairs != "cross" and a.rank_form == "softplus":
-            _r = 0.0137 / _tau_eff          # overfit30 within-seed median; the training pool's
-            _sg = 1.0 / (1.0 + math.exp(-_r))
-            print(f"  within-seed pairs at tau {_tau_eff:g}: a median-gap pair (0.0137 on "
-                  f"overfit30) gets weight {1 - _sg:.3f} if correctly ordered and {_sg:.3f} if "
-                  f"inverted ({_sg / (1 - _sg):.2f}x). Re-measure for another pool with "
-                  "measure_tau.py --pairs within --restrict-to <pool>/structures.csv; the full "
-                  "training set gives 0.0036 and valfull 0.0011, so this ratio is "
-                  "POPULATION-SPECIFIC and tau must never be set from val.")
-        if a.rank_form == "softplus":
-            print(f"  softplus tau {_tau_eff:g}"
-                  + ("  (rank_loss.DEFAULT_TAU, the measured median cross-seed |ipTM gap| over "
-                     "the full training set)" if _rank_tau is None else "  (given)"))
-        elif a.rank_form == "expected":
-            # TWO DIFFERENT QUANTITIES SHARE THE --rank-tau FLAG, so say which one is in force.
-            # A margin scale of 0.0305 and a softmax temperature of 0.05 are not comparable, and
-            # defaulting silently to DEFAULT_TAU here would be a 1.6x sharper selection than
-            # intended with nothing in the log to show it.
-            _tau_sm = _rank_tau if _rank_tau is not None else _RKL_cfg.DEFAULT_SOFTMAX_TAU
-            print(f"  EXPECTED-DockQ, softmax temperature tau {_tau_sm:g}"
-                  + ("  (rank_loss.DEFAULT_SOFTMAX_TAU)" if _rank_tau is None else "  (given)")
-                  + "\n  L = -sum_i softmax(ipTM/tau)_i * DockQ_i over ALL poses of the "
-                    "interface; the floor is -max(DockQ) of the group, NOT 0. PAIR-FREE: "
-                    f"--rank-weight-by-gap={a.rank_weight_by_gap} and the cross-seed pair filter "
-                    "are INAPPLICABLE and are not applied.")
+        # ONE FORM, AND EVERY POSE OF THE INTERFACE IS IN ITS GROUP.
+        #
+        # Six other --rank-form values used to live here: linear, softplus, expected, spearman,
+        # distance, spearman_distance. Each carried its own pair family, tau, decay, straddle and
+        # within/cross weighting, and the banner block this replaces was larger than the loss
+        # itself -- its whole job was to say which of those knobs the chosen form silently
+        # ignored. Deleted at the user's direction. A flag that is inert on the path actually
+        # taken is how a run gets written up as the wrong experiment.
+        #
+        # WITHIN-SEED POSES ARE PART OF THE LOSS AND ALWAYS WERE UNDER rel. The group is every
+        # pose of an interface across all its seeds -- 15 x 5 = 75 on a deep structure -- and the
+        # mean-centring is over all of them, so the 5 poses sharing a seed are compared with each
+        # other and with every pose of every other seed. The flag that DID drop them was
+        # --rank-pairs, whose "cross" default excluded the within-seed family from the pairwise
+        # forms; deleting it removes the only mechanism that ever filtered them out. A single-seed
+        # structure gets a real 5-pose group on the same footing.
+        #
+        # --rank-cross-seed is a STEP GROUPING, not a pair filter: it puts all of a structure's
+        # seeds in one optimiser step so pass A can score the whole interface before the first
+        # backward. rel refuses to run without it, checked before any hardware is touched.
         if a.rank_cross_seed:
             print(f"  CROSS-SEED GROUPS: {a.rank_structs_per_step} structure(s) x all seeds per "
                   f"step; a pose's coefficient uses every other pose of its interface, so pass A "
                   f"scores the whole step before the first backward")
-        elif a.rank_form in ("spearman", "distance", "spearman_distance"):
-            raise SystemExit(
-                f"STOP: --rank-form {a.rank_form} requires --rank-cross-seed. Its coefficients "
-                "depend on every score in the group, so they need pass A, and pass A only runs on "
-                "the cross-seed step grouping. THIS IS NOT A CROSS-SEED OBJECTIVE: the groups are "
-                "partitioned by seed inside group_coeffs, so each group is one seed's --nsample "
-                "poses. --rank-cross-seed is what makes a step hold whole structures so pass A "
-                "can score them; the grouping it implies is then overridden.")
-        elif a.rank_form in ("softplus", "expected"):
-            raise SystemExit(
-                f"STOP: --rank-form {a.rank_form} without --rank-cross-seed is not implemented. "
-                "Its coefficients need pass A, which is wired to the cross-seed step grouping; "
-                "running it within-seed would silently fall through to the linear per-unit path "
-                "and train a different objective than the flags say. For the expected form this "
-                "would also defeat its purpose outright -- the softmax has to run over ALL poses "
-                "competing for selection, and within one seed it would range over 5 poses rather "
-                "than 50.")
         if _rl_missing:
             raise SystemExit(
                 f"STOP: {len(_rl_missing)} scored structure(s) have no DockQ labels in {_rl_p}, "
@@ -3261,12 +3089,10 @@ def main():
         if _gr.get("rank_loss"):
             a.rank_loss = True
             a.alpha_rank = float(_gr.get("alpha_rank") or 0.0)
-            a.rank_weight_by_gap = bool(_gr.get("rank_weight_by_gap", True))
             if is_main:
                 print(f"  --loss-only: inheriting the bundle's ranking configuration "
-                      f"(alpha_rank {a.alpha_rank:g}, "
-                      f"weight_by_gap={a.rank_weight_by_gap}) so the guard matches; the ranking "
-                      f"term itself does not run -- a measurement takes no step.")
+                      f"(alpha_rank {a.alpha_rank:g}) so the guard matches; the ranking term "
+                      f"itself does not run -- a measurement takes no step.")
 
     if a.loss_only and a.resume and not a.lora_rank:
         try:
@@ -3811,19 +3637,13 @@ def main():
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
-                 "rank_weight_by_gap": a.rank_weight_by_gap,
                  # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
                  # shape, so a resume that moved any of them silently would be a different
                  # experiment wearing the same run id. FOURTH time a field has been added to this
                  # comparison without being added to the saved bundle below -- so both sides are
                  # edited in the same patch, and test_guard_fields.py asserts they agree.
                  "rank_form": a.rank_form,
-                 "rank_tau": (float(a.rank_tau) if a.rank_tau is not None else -1.0),
                  "rank_cross_seed": a.rank_cross_seed,
-                 "rank_pairs": a.rank_pairs,
-                 "rank_within_weight": a.rank_within_weight,
-                 "rank_topk_decay": a.rank_topk_decay,
-                 "rank_straddle": a.rank_straddle,
                  "rank_structs_per_step": a.rank_structs_per_step,
                  # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
                  # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
@@ -3981,7 +3801,6 @@ def main():
                      "pose_perblock_share": False, "pose_perblock_copy": False,
                      "rank_loss": False, "alpha_rank": 1.0,
                      "rank_pool": "max", "rel_labels": "", "rel_standardize": False,
-                     "rank_weight_by_gap": True, "l2_sp": 0.0, "l2_sp_exclude": "",
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
@@ -3995,8 +3814,6 @@ def main():
                      # cannot be overridden, which would have made every pre-patch bundle --
                      # including the live zg5fnw's per-epoch held-out subprocess, which resumes
                      # its own bundle through this same file -- unresumable.
-                     "rank_pairs": "cross", "rank_within_weight": 1.0, "rank_topk_decay": 0.0,
-                     "rank_straddle": 0.0,
                      # A BUNDLE PREDATING --lr-final HELD lr FLAT AFTER WARMUP, which is exactly
                      # what lr_final 0.0 means -- the flag's own help says 0 "keeps the historical
                      # schedule ... hold --lr flat for the whole run, which is what every arm
@@ -6088,7 +5905,7 @@ def main():
                             f"its coefficient cannot be applied to the score it describes.")
                     return _v
 
-                if a.grad_probe and _cs_src:
+                if (a.grad_probe or _gn_on[0]) and _cs_src:
                     _rt = None
                     for _p, _cv in _cs_src:
                         if not _cv:
@@ -6195,30 +6012,18 @@ def main():
         # rides along on the backward that was happening anyway. One graph at a time, exact
         # gradient, zero extra forwards.
         _rank_c, _rank_on = {}, False
-        if a.rank_loss and not a.loss_only and not a.rank_cross_seed:
-            import rank_loss as RKL
-            _rk_pairs = sorted(_scored_asym.get(pdb) or ())
-            _rk_lab = [(_p, _rank_lab.get(_rank_key(pdb, arm_seed, _p))) for _p in _rk_pairs]
-            _rk_lab = [(_p, _d) for _p, _d in _rk_lab if _d]
-            # AVERAGED OVER THE UNIT'S INTERFACES, so a 3-interface structure does not get three
-            # times the weight of a 1-interface one.
-            _nif = 0
-            for _p, _dqmap in _rk_lab:
-                _idx = [_i for _i in range(n_pose) if _i in _dqmap]
-                if len(_idx) < 2:
-                    continue
-                _cs, _np_ = RKL.coeffs([_dqmap[_i] for _i in _idx],
-                                       weight_by_gap=a.rank_weight_by_gap)
-                if _np_ == 0:
-                    continue
-                _nif += 1
-                for _i, _cv in zip(_idx, _cs):
-                    _rank_c[(_i, _p)] = _rank_c.get((_i, _p), 0.0) + _cv
-            if _nif:
-                for _k in list(_rank_c):
-                    _rank_c[_k] /= float(_nif)
-                _rank_on = True
-                _rank_seen["units"] += 1
+        # THE WITHIN-SEED PER-UNIT PATH IS GONE WITH THE PAIRWISE FORMS.
+        #
+        # It read `if a.rank_loss and not a.loss_only and not a.rank_cross_seed`, built linear
+        # coefficients from RKL.coeffs over the 5 poses of ONE seed, and was the fallback for
+        # every form that did not need pass A. rel is the only form left and it refuses to run
+        # without --rank-cross-seed, so this branch was unreachable; keeping it would leave a
+        # second, differently-shaped ranking objective in the file for no caller.
+        #
+        # THIS IS NOT THE REMOVAL OF WITHIN-SEED COMPARISONS. Under rel every pose of an
+        # interface is in one group across all its seeds, so poses sharing a seed are compared
+        # with each other there -- see the banner block beside the RANKING LOSS print.
+
 
         # HOW MANY POSES PER FORWARD, decided once per unit and refused wherever it would change
         # the objective rather than just the speed.
@@ -6502,27 +6307,14 @@ def main():
                     _rel_stat["csum"] = max(_rel_stat["csum"],
                                             abs(sum(c.values())))
             else:
-                c, npair, lval = RKL.group_coeffs(
-                 s_by, dq_by,
-                 form=a.rank_form,
-                # THE DEFAULT DEPENDS ON THE FORM. DEFAULT_TAU is a margin scale in ipTM units;
-                # the expected form's tau is a softmax temperature. Falling back to 0.0305 for
-                # the expected form would be a sharper selection than the 0.05 default intends,
-                # with nothing in the log to reveal it.
-                tau=(_rank_tau if _rank_tau is not None else
-                     (RKL.DEFAULT_SOFTMAX_TAU if a.rank_form == "expected" else RKL.DEFAULT_TAU)),
-                weight_by_gap=a.rank_weight_by_gap,
-                pairs=a.rank_pairs,
-                within_weight=a.rank_within_weight,
-                rank_decay_k=a.rank_topk_decay,
-                straddle=a.rank_straddle,
-                # GROUP-FORM KNOBS. Ignored by every pairwise form, and the pairwise knobs above
-                # are ignored by these two -- which is why the startup guard refuses the
-                # combinations rather than letting a flag look honoured.
-                spearman_tau=(a.rank_spearman_tau if a.rank_spearman_tau > 0
-                              else RKL.DEFAULT_SPEARMAN_TAU),
-                 dist_weight=a.rank_dist_weight,
-                 rel_scale=a.rank_rel_scale)
+                # UNREACHABLE, AND A STOP RATHER THAN A FALLBACK. This was the group_coeffs call
+                # for the six deleted forms, with tau, weight_by_gap, pairs, within_weight,
+                # rank_decay_k, straddle, spearman_tau, dist_weight and rel_scale all threaded
+                # through it. --rank-form now admits only rel, so nothing reaches here; if a
+                # future form is added and forgets to wire itself up, this says so instead of
+                # training rel's coefficients under another form's name.
+                raise SystemExit(f"STOP: --rank-form {a.rank_form!r} has no coefficient path. "
+                                 f"rel is the only form; see --rank-form's help.")
             if npair == 0:
                 continue
             n_groups += 1
@@ -8227,20 +8019,17 @@ def main():
                                   "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
-                                  "rank_weight_by_gap": a.rank_weight_by_gap,
                                   "rank_form": a.rank_form,
-                                  "rank_tau": (float(a.rank_tau)
-                                               if a.rank_tau is not None else -1.0),
                                   "rank_cross_seed": a.rank_cross_seed,
                                   "rank_structs_per_step": a.rank_structs_per_step,
-                                  # FIFTH TIME. rank_pairs, rank_within_weight and rank_topk_decay
-                                  # went into the comparison side with a comment claiming both
-                                  # sides were edited together; they were not, and
-                                  # test_guard_fields.py said so. Found in review.
-                                  "rank_pairs": a.rank_pairs,
-                                  "rank_within_weight": a.rank_within_weight,
-                                  "rank_topk_decay": a.rank_topk_decay,
-                                  "rank_straddle": a.rank_straddle,
+                                  # BOTH SIDES IN ONE PATCH, which test_guard_fields.py asserts.
+                                  # Four separate fields once went into the comparison side with
+                                  # a comment claiming otherwise. rank_pairs, rank_within_weight,
+                                  # rank_topk_decay, rank_straddle, rank_tau, rank_weight_by_gap,
+                                  # rank_spearman_tau, rank_dist_weight and rank_rel_scale have
+                                  # since been deleted outright with the forms that read them, so
+                                  # a bundle recording them resumes only under a run that still
+                                  # has them -- which is none.
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
                                   "crop_margin": a.crop_margin,
@@ -8452,6 +8241,14 @@ def main():
                                          **means})
                             continue
                         step += 1
+                        # THE GRADIENT SPLIT FOR THIS STEP, written before the next one arms.
+                        if _gn_on[0]:
+                            _gn_emit(step, ep + 1)
+                        # ARM THE NEXT MEASURED STEP. Keyed on the step counter AFTER the
+                        # increment so step K, 2K ... are measured; the poses of the step are
+                        # accumulated as they are seen, so this has to be set before they are.
+                        _gn_on[0] = bool(a.grad_norm_every
+                                         and (step + 1) % a.grad_norm_every == 0)
                         if a.save_every and step % a.save_every == 0 and write_traj:
                             cp = os.path.join(a.out, f"head_step{step}.pt")
                             torch.save(_head_ckpt_tensors(), cp)
@@ -8807,15 +8604,9 @@ def main():
             # that were already correct, with the inverted fraction unchanged. The within-seed
             # inversion rate has to be read separately -- see run_logging/rank_rho.py.
             if a.rank_loss and a.rank_cross_seed and _xs_stat["groups"]:
-                # THE SOFTPLUS LOSS IS NOT sum_i c_i s_i, so it cannot be reconstructed from the
-                # coefficients the way the linear one is. group_coeffs returns the value in pass A
-                # and it is accumulated there; 0 is the floor (every pair ordered), not "no
-                # alignment".
-                # THE PAIR FAMILY IS a.rank_pairs, NOT the string "cross-seed". That was
-                # hardcoded here from a time when every arm formed cross-seed pairs, so x5frz6 --
-                # which forms WITHIN-SEED pairs only -- printed "cross-seed" at every epoch while
-                # the startup banner said the opposite. The pair count was the only thing that
-                # gave it away: 6,656 against the ~86,600 a cross-seed objective would form.
+                # THE LOSS VALUE IS ACCUMULATED IN PASS A, not reconstructed from the
+                # coefficients: rel's value is a sum of squares, so sum_i c_i s_i is not it.
+                # 0 is the floor, not "no alignment".
                 if a.rank_form == "rel" and _rel_stat.get("rho"):
                     def _med(v):
                         w = sorted(v)
@@ -8833,15 +8624,12 @@ def main():
                               f"[<1 collapsing, >1 exaggerating, ~1 right magnitude]")
                     for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio"):
                         _rel_stat[_k3] = []
-                # THE LINE MUST NAME THE OBJECTIVE THAT RAN. Raised in review: this printed
-                # "({rank_form}, {rank_pairs}-seed pairs)" for EVERY form, so a rel run -- which
-                # has no pair family at all and ignores --rank-pairs entirely -- was logged as
-                # "(rel, cross-seed pairs)". This is the one line most likely to be read back
-                # months later to establish what an arm trained on, and it was asserting a pair
-                # family for an objective that forms no pairs.
-                _obj = ("relative regression on true iTM, mean-centred per interface"
-                        if a.rank_form == "rel"
-                        else f"{a.rank_form}, {a.rank_pairs}-seed pairs")
+                # THE LINE NAMES THE OBJECTIVE THAT RAN. It once printed
+                # "({rank_form}, {rank_pairs}-seed pairs)" for every form, so a rel run -- which
+                # forms no pairs at all -- was logged as "(rel, cross-seed pairs)". This is the
+                # one line most likely to be read back months later to establish what an arm
+                # trained on. There is now one objective and it is named in full.
+                _obj = "relative regression on true iTM, mean-centred per interface"
                 print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({_obj}): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
                       f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s)"

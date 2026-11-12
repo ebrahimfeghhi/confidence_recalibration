@@ -142,7 +142,12 @@ def build():
                    train_pool=_pool(a.get("manifest_selection")),
                    val_pool=_pool(a.get("val_loss_selection")),
                    last_dockq=_f(last.get("dockq_mean")), last_frac=_f(last.get("frac_mean")),
-                   last_rho=_f(last.get("rho_trained")), last_xsloss=_f(last.get("xsloss_trained")),
+                   last_rho=_f(last.get("rho_trained")),
+                   # ALWAYS None SINCE rank_rho v7, and the column is kept rather than dropped so
+                   # existing index databases still open. The held-out ranking loss it recorded
+                   # went with the pairwise forms; .get() already returned None for a run whose
+                   # cache predated the column, so this needs no migration.
+                   last_xsloss=None,
                    best_dockq=best, best_dockq_epoch=best_ep,
                    **{c: (None if a.get(c) is None else str(a.get(c))) for c in COLS})
         con.execute(f"INSERT INTO runs ({','.join(row)}) VALUES ({','.join('?' * len(row))})",
