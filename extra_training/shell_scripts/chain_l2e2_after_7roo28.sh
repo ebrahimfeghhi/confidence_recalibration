@@ -66,7 +66,7 @@
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
-WATCH="${WATCH:-7roo28}"            # the run to wait for
+WATCH="${WATCH:-q6mgyc}"            # the run to wait for
 CARDS="${CARDS:-4,5,7}"
 HOLD_N="${HOLD_N:-3}"               # consecutive zero readings required
 POLL="${POLL:-120}"                 # seconds between readings
