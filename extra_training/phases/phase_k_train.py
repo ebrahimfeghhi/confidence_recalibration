@@ -451,15 +451,6 @@ def main():
     ap.add_argument("--eval-pool-every", "--train-eval-every", dest="train_eval_every", type=int, default=2,
                     help="epochs between training-set evaluations. Ignored without "
                          "--train-eval-pool.")
-    ap.add_argument("--eval-pool-crop-tokens", default="",
-                    help="run the PRIMARY in-training eval on a precomputed crop mask "
-                         "instead of full structures. The mask is the same kind of npz "
-                         "--crop-tokens takes, built for the EVAL pool. The pass is then "
-                         "tagged <pool>_cropped rather than <pool>, because a cropped "
-                         "reading written under the uncropped name is how five files called "
-                         "metric_train came to hold the only held-out numbers a run "
-                         "produced -- run_logging/plot_val_2x3.py reads <pool> and must keep "
-                         "getting the deployment-shaped number.")
     ap.add_argument("--extra-eval", action="append", default=[], metavar="SPEC",
                     help="AN ADDITIONAL eval pass at its own cadence, repeatable. The "
                          "trainer historically had exactly ONE: --eval-pool and "
@@ -470,7 +461,7 @@ def main():
                          "SPEC is comma-separated key=value with keys: name (required, "
                          "names metric_<name>_ep<N>.json and <name>_eval_shards_ep<N>), "
                          "pool (required), fold, seed_base, budget, every (required), "
-                         "crop_tokens. Example:\n"
+                         "Example:\n"
                          "  --extra-eval 'name=valfull,pool=training/valfull/pool.csv,"
                          "fold=validation/fold,seed_base=400000,budget=30,every=6'\n"
                          "Each pass costs a full sharded evaluation, so every=1 on three "
@@ -1332,15 +1323,6 @@ def main():
                          "Required when --resume-override or --resume-allow-drift accepts "
                          "anything: an unexplained deviation is the one a later reader cannot "
                          "tell from a mistake.")
-    ap.add_argument("--crop-margin", type=float, default=0.0,
-                    help="interface-plus-margin cropping: train on the window within this many "
-                         "angstroms of an interface token instead of the whole structure. 0 "
-                         "(default) is the whole structure. TRAINING ONLY -- validation is never "
-                         "cropped, so the metric stays comparable with every historical number. "
-                         "At 10 the population keeps a median 51.1%% of tokens (333 of 641, all "
-                         "491 structures, 0 with no definable crop) for a MEASURED 3.35x on the "
-                         "head and ~1.99x on a whole step, landing near Protenix's own "
-                         "train_crop_size of 256. Requires --minimal-items.")
     ap.add_argument("--crop-pool", default="",
                     help="DIRECTORY of per-structure crop POOLS from "
                          "run_logging/select_crop_pool.py. Each <pdb>.npz holds N token masks and "
@@ -1350,23 +1332,6 @@ def main():
                          "directory built on the SAME pool: a cropped prediction against an "
                          "uncropped target trains toward something unreachable and nothing would "
                          "refuse. Mutually exclusive with --crop-tokens and --crop-margin.")
-    ap.add_argument("--crop-tokens", default="",
-                    help="TRAIN on a PRECOMPUTED token mask per structure instead of the "
-                         "--crop-margin interface crop. The npz comes from "
-                         "run_logging/build_union_crop_masks.py and holds <pdb> -> "
-                         "bool[n_token]: the UNION over every one of the structure's 50 "
-                         "candidate poses of that pose's own predicted interface, "
-                         "optionally with the ground-truth contact tokens forced in "
-                         "(--force-gt). WHY A UNION AND NOT A PER-POSE CROP: the relative "
-                         "loss grades the GAPS between a structure's poses, so if one pose "
-                         "kept its whole interface and another kept half, the score "
-                         "difference would measure the crop and not the poses. One shared "
-                         "mask gives every pose the same tokens, the same n and the same "
-                         "ipTM d0. It also keeps every seed of a structure at an identical "
-                         "token count, which is what makes per-rank work equal BY "
-                         "CONSTRUCTION in build_epoch_cross_seed -- unequal per-rank unit "
-                         "counts do not degrade, they deadlock the first all-reduce. "
-                         "Mutually exclusive with --crop-margin.")
     ap.add_argument("--token-keep-union", type=float, default=-1.0,
                     help="STOCHASTIC TOKEN DROPOUT, biased toward the interface. Instead of "
                          "training on the union mask as a fixed crop, draw a fresh token "
@@ -1436,10 +1401,9 @@ def main():
     # raise on a shape or line up by accident and score poses against the wrong residues. The
     # minimal path builds the loss inputs from the same cached label the crop slices, so both
     # sides are cropped together or neither is.
-    if a.crop_margin > 0 and not a.minimal_items:
+    if False:
         raise SystemExit(
-            "STOP: --crop-margin needs --minimal-items. The dataset item's label_dict is built at "
-            "full size, so cropping only the prediction would score poses against the wrong "
+            "unreachable: --crop-margin was deleted 2026-11-13. "
             "residues. Pass --minimal-items with its --alignment-preflight marker.")
     # EXTRA EVAL PASSES, parsed and validated HERE so a typo costs a second rather than surfacing
     # at the first epoch boundary hours in, on three ranks, after a full epoch of training.
@@ -1456,11 +1420,11 @@ def main():
                 raise SystemExit(f"STOP: --extra-eval {_spec!r}: {_kv!r} is not key=value.")
             _k, _v = _kv.split("=", 1)
             _d[_k.strip()] = _v.strip()
-        _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every",
-                                     "crop_tokens"})
+        _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every"})
         if _unknown:
             raise SystemExit(f"STOP: --extra-eval {_spec!r} has unknown key(s) {_unknown}. "
-                             f"Known: name, pool, fold, seed_base, budget, every, crop_tokens.")
+                             f"Known: name, pool, fold, seed_base, budget, every. The crop_tokens "
+                             f"key went with --crop-tokens on 2026-11-13.")
         for _req in ("name", "pool", "every"):
             if not _d.get(_req):
                 raise SystemExit(f"STOP: --extra-eval {_spec!r} is missing {_req}=.")
@@ -1480,9 +1444,6 @@ def main():
             if not os.path.exists(_need):
                 raise SystemExit(f"STOP: --extra-eval {_nm}: {_need} does not exist. A pool is "
                                  f"scored against its OWN fold's results and roles.")
-        if _d.get("crop_tokens") and not os.path.exists(_d["crop_tokens"]):
-            raise SystemExit(f"STOP: --extra-eval {_nm}: crop_tokens {_d['crop_tokens']} does "
-                             f"not exist.")
         try:
             _ev = int(_d["every"])
             _bg = int(_d.get("budget") or 0)
@@ -1493,14 +1454,7 @@ def main():
         if _ev <= 0:
             raise SystemExit(f"STOP: --extra-eval {_nm}: every={_ev} must be positive.")
         _EXTRA_EVAL.append(dict(name=_nm, pool=_d["pool"], fold=_ef, seed_base=_sb,
-                                budget=_bg, every=_ev,
-                                crop_tokens=_d.get("crop_tokens", "")))
-    if a.eval_pool_crop_tokens and not a.train_eval_pool:
-        raise SystemExit("STOP: --eval-pool-crop-tokens without --eval-pool: there is no primary "
-                         "eval pass to crop.")
-    if a.eval_pool_crop_tokens and not os.path.exists(a.eval_pool_crop_tokens):
-        raise SystemExit(f"STOP: --eval-pool-crop-tokens {a.eval_pool_crop_tokens} does not "
-                         f"exist. Build it with run_logging/build_union_crop_masks.py.")
+                                budget=_bg, every=_ev))
     _TOK_DROP = (a.token_keep_union >= 0.0) or (a.token_keep_other >= 0.0)
     if _TOK_DROP:
         if not (a.token_keep_union >= 0.0 and a.token_keep_other >= 0.0):
@@ -1512,10 +1466,9 @@ def main():
             if not (0.0 < _v <= 1.0):
                 raise SystemExit(f"STOP: {_nm}={_v} must be in (0, 1]. Zero would delete a whole "
                                  f"population outright, which is a crop and not a dropout.")
-        if not a.crop_tokens:
-            raise SystemExit("STOP: --token-keep-union needs --crop-tokens, which supplies the "
-                             "union the probabilities are conditioned on. Without it there is no "
-                             "'inside' to bias toward.")
+        raise SystemExit("STOP: --token-keep-union conditioned its probabilities on the "
+                         "--crop-tokens union, which was deleted 2026-11-13 with its builder. "
+                         "There is no 'inside' to bias toward any more.")
         if a.token_keep_other > a.token_keep_union:
             raise SystemExit(f"STOP: --token-keep-other {a.token_keep_other} exceeds "
                              f"--token-keep-union {a.token_keep_union}, so the periphery would "
@@ -1566,7 +1519,7 @@ def main():
                 "group pose 0's coordinates and mask, which is exact for the PAE target and NOT "
                 "for pLDDT/PDE/resolved -- the per-pose label permutation moves atoms those "
                 "losses read (median 2, max 8 of several thousand).")
-        if not (a.crop_pool or a.crop_tokens or a.crop_margin > 0):
+        if not a.crop_pool:
             raise SystemExit("STOP: --pose-batch > 1 needs a crop. Poses of one unit share a "
                              "token count either way, but the cropped label path is the only one "
                              "that slices labels by RANGE; uncropped goes through "
@@ -1575,10 +1528,6 @@ def main():
         if not os.path.isdir(a.crop_pool):
             raise SystemExit(f"STOP: --crop-pool {a.crop_pool} is not a directory. Build it with "
                              f"run_logging/select_crop_pool.py")
-        if a.crop_tokens or a.crop_margin > 0:
-            raise SystemExit("STOP: --crop-pool is mutually exclusive with --crop-tokens and "
-                             "--crop-margin. They are three different crop rules and combining "
-                             "them would silently apply one of them.")
         if not a.minimal_items:
             raise SystemExit("STOP: --crop-pool needs --minimal-items, for the same reason "
                              "--crop-margin does: the full dataset item carries FULL-SIZE arrays "
@@ -1618,46 +1567,17 @@ def main():
     # --crop-pool alone trained on FULL structures while the relative loss read CROPPED targets --
     # no error anywhere, and the arm would have been named for a crop it never applied. Caught in
     # external review. Every such gate now reads _USE_CROP.
-    _USE_CROP = bool(a.crop_pool) or bool(a.crop_tokens) or a.crop_margin > 0
+    # ONE CROP RULE, AND _USE_CROP IS STILL THE SWITCH EVERY GATE READS. --crop-tokens and
+    # --crop-margin were deleted 2026-11-13: the first consumed a precomputed mask whose builder
+    # no longer exists, the second defined its window from label_coordinate so nothing it
+    # produced was a deployment number. The indirection stays because a crop flag that some
+    # gates did not consult is the defect _USE_CROP was introduced for.
+    _USE_CROP = bool(a.crop_pool)
 
-    if a.crop_tokens and a.crop_margin > 0:
-        raise SystemExit("STOP: --crop-tokens and --crop-margin are two crop rules at once. Which "
-                         "one applied would depend on branch order, and the run would name itself "
-                         "after whichever flag the reader noticed.")
-    if a.crop_tokens and not os.path.exists(a.crop_tokens):
-        raise SystemExit(f"STOP: --crop-tokens {a.crop_tokens} does not exist. Build it with "
-                         f"run_logging/build_union_crop_masks.py.")
-    # THE MASK'S CONTENTS, DIGESTED AT STARTUP -- here and not beside the loader because the
-    # resume guard dict is built before the loader runs. The guard recorded
-    # basename(a.crop_tokens) first, so rebuilding the mask with a different margin, contact
-    # cutoff or forced-pair rule under the SAME NAME resumed as "unchanged": the whole training
-    # input distribution could move while the record said it had not. This hashes the
-    # per-structure masks themselves in sorted order, plus the builder's provenance blob.
-    # Found in review.
-    _CROP_TOK_DIGEST = ""
-    if a.crop_tokens:
-        _ctd = hashlib.sha256()
-        _z0 = np.load(a.crop_tokens)
-        # __pairs HOLDS CHAIN INDICES, NOT A MASK. Hashing it through .astype(bool) collapsed
-        # every nonzero index to True, so pair (3,1) and pair (2,1) contributed the same bytes and
-        # two masks differing only in which chains are supervised would have shared a digest.
-        # Hash the integer bytes for those and the packed bits for the masks. Raised in review.
-        for _k0 in sorted(k for k in _z0.files if not (k.endswith("__n") or k == "__meta")):
-            _ctd.update(_k0.encode())
-            if _k0.endswith("__pairs"):
-                _ctd.update(np.asarray(_z0[_k0], dtype=np.int64).tobytes())
-            else:
-                _ctd.update(np.packbits(np.asarray(_z0[_k0]).astype(bool)).tobytes())
-        if "__meta" in _z0.files:
-            _ctd.update(np.asarray(_z0["__meta"]).tobytes())
-        _CROP_TOK_DIGEST = _ctd.hexdigest()[:16]
-        del _z0
-    if a.crop_tokens and not a.minimal_items:
-        raise SystemExit("STOP: --crop-tokens needs --minimal-items, for the same reason "
-                         "--crop-margin does: the full dataset item is built uncropped and "
-                         "check_alignment would compare it against cropped features.")
-    if a.crop_margin < 0:
-        raise SystemExit("STOP: --crop-margin cannot be negative.")
+    # _CROP_TOK_DIGEST IS GONE WITH --crop-tokens. It hashed the mask file's contents so a
+    # rebuild under the same name could not resume as 'unchanged'. The crop pool's own
+    # identity is covered by crop_pool in the resume guard plus the rel labels' manifest
+    # digest, so nothing is left unverified by removing it.
     # A THRESHOLD WITH NOTHING TO TURN OFF IS A NO-OP THAT READS LIKE A SETTING. With
     # --blocks-per-ckpt 0 every unit is already uncheckpointed, so the rule would select between
     # "off" and "off" and the run would look configured when it is not.
@@ -1771,8 +1691,9 @@ def main():
         if a.warmup_steps:
             raise SystemExit("STOP: --loss-only with --warmup-steps is meaningless -- there is no "
                              "optimiser to warm up, and the logged lr would imply one ran.")
-    if a.crop_log and a.crop_margin == 0 and not a.crop_tokens:
-        raise SystemExit("STOP: --crop-log was given but --crop-margin is 0, so nothing is cropped.")
+    if a.crop_log and not a.crop_pool:
+        raise SystemExit("STOP: --crop-log was given but --crop-pool is unset, so nothing is "
+                         "cropped.")
 
     # PIN THE COMMIT NOW, before any work, so every bundle this process writes records the code it
     # is running rather than whatever HEAD has become hours later. Caching it lazily at the first
@@ -3248,8 +3169,7 @@ def main():
     if a.prefix_cache_gb > 0:
         import prefix_cache as PFC
         _pfc = PFC.install(model, a.prefix_cache_gb, lean_single=a.lean_single, device=dev,
-                           crop_margin=a.crop_margin, crop_tokens=a.crop_tokens,
-                           crop_all_poses=a.crop_all_poses)
+                           crop_pool=a.crop_pool, crop_all_poses=a.crop_all_poses)
     else:
         PFC = None
 
@@ -3696,10 +3616,9 @@ def main():
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
-                 "crop_margin": a.crop_margin, "crop_contact": a.crop_contact,
+                 "crop_contact": a.crop_contact,
                  # A CROP RULE CHANGE IS AN OBJECTIVE CHANGE: the loss averages over a different
                  # set of tokens and pairs, so resuming across it would blend two objectives.
-                 "crop_tokens": _CROP_TOK_DIGEST,
                  # THE CROP DEFINITION ITSELF, not just its radii. a16911de changed the DEFAULT
                  # from the union over all nsample poses to pose 0 alone, so a resume across that
                  # change blends two crop definitions into one curve. f1268fe5 added the field to
@@ -3792,7 +3711,7 @@ def main():
                      # is exactly what the 0 defaults mean, and "cosine" is what it computed.
                      "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
                      "lr_decay_shape": "cosine", "lr_steps": "",
-                     "pair_dropout": -1.0, "crop_tokens": "",
+                     "pair_dropout": -1.0,
                      "token_keep_union": -1.0, "token_keep_other": -1.0,
                      # ABSENCE IS EVIDENCE: a bundle written before --pae-row-frac existed ran the
                      # unweighted term, which is exactly what frac 0 means. The mass and floor
@@ -3800,7 +3719,7 @@ def main():
                      # weighting ON still shows up as drift on the frac field.
                      "pae_row_frac": 0.0, "pae_row_mass": 0.8, "pae_row_floor": 10,
                  "train_only": "",
-                     "crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
+                     "crop_contact": 5.0, "pae_scored_pairs": "",
                      # ABSENCE IS EVIDENCE, as for the two above: a bundle written before
                      # a16911de was written by code that had no such flag and always took the
                      # union, so it migrates to True. A resume that switches to pose 0 therefore
@@ -4280,31 +4199,10 @@ def main():
                   f"max {_n.max()}; {_mix} structure(s) mix crop sizes; a structure uses "
                   f"mask `epoch % n` so it sees a different view each epoch", flush=True)
 
-    if a.crop_tokens:
-        _ctz = np.load(a.crop_tokens)
-        _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
-                    if not (k.endswith("__n") or k.endswith("__pairs") or k == "__meta")}
-        # THE SCORED PAIRS PER STRUCTURE, as asym indices. Needed by --token-keep-*: a draw must
-        # leave BOTH chains of EVERY supervised pair scoreable, and "two chains survived
-        # somewhere" does not establish that for a four-chain complex -- 81% of this pool has more
-        # than one scored pair. Absent on a mask built before the builder wrote them, which the
-        # draw refuses rather than silently checking a weaker condition. Raised in review.
-        _CROPPAIRS = {k[:-7]: np.asarray(_ctz[k]).reshape(-1, 2)
-                      for k in _ctz.files if k.endswith("__pairs")}
-        # the content digest is computed at STARTUP (see _CROP_TOK_DIGEST), because the resume
-        # guard dict is built before this loader runs. Reported here so a run's log says which
-        # mask it actually trained on.
-        _ctn = {k[:-3]: np.asarray(_ctz[k]) for k in _ctz.files if k.endswith("__n")}
-        _kf = [float(v[1]) / float(v[2]) for v in _ctn.values()] or [float("nan")]
-        _forced = [int(v[5]) for v in _ctn.values() if len(v) > 5]
-        if is_main:
-            print(f"CROP: precomputed token masks from {a.crop_tokens} -- {len(_CROPTOK)} "
-                  f"structure(s), median kept fraction {float(np.median(_kf)):.4f}, built from "
-                  f"{int(np.median([v[0] for v in _ctn.values()]))} pose(s) each (median)"
-                  + f", content digest {_CROP_TOK_DIGEST}"
-                  + (f", ground-truth contacts forced in (median {int(np.median(_forced))} "
-                     f"token(s) added, max {max(_forced)})" if _forced else
-                     " -- NO --force-gt, so interface coverage is NOT guaranteed"))
+    # THE --crop-tokens LOADER WAS HERE, with _CROPTOK, _CROPPAIRS and their reporting.
+    # Deleted 2026-11-13 with the flag: its masks came from a builder that no longer
+    # exists, and --crop-pool is the one crop rule left.
+
 
     def _crop_masks(pdb_, zc_):
         """(keep_tok, keep_atom) from whichever crop rule is configured. One dispatch, two callers.
@@ -4351,11 +4249,10 @@ def main():
                                  f"structure.")
             kt_[_idx] = True
         else:
-            kt_ = _CROPTOK.get(pdb_)
-            if kt_ is None:
-                raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb_}. The file names "
-                                 f"{len(_CROPTOK)} structure(s); this manifest needs {pdb_} too. "
-                                 f"Rebuild the mask over this pool.")
+            # UNREACHABLE: --crop-pool is the only crop rule, and _crop_masks is only called
+            # when _USE_CROP, which is now bool(a.crop_pool). Kept as a refusal rather than
+            # deleted so a future second rule cannot fall through to an undefined mask.
+            raise SystemExit(f"STOP: _crop_masks reached with no --crop-pool entry for {pdb_}.")
         a2t_ = np.asarray(zc_["ci_feat_atom_to_token_idx"]).reshape(-1)
         if kt_.shape[0] != ntok_:
             raise SystemExit(f"STOP: {pdb_}'s mask has {kt_.shape[0]} token(s) but its cached "
@@ -4388,7 +4285,7 @@ def main():
                 raise SystemExit(
                     f"STOP: --token-keep-* needs the scored pairs for {pdb_}, which this mask "
                     f"does not carry (no {pdb_}__pairs entry). It was built before the builder "
-                    f"wrote them; rebuild with run_logging/build_union_crop_masks.py so the "
+                    f"wrote them; rebuild with run_logging/build_crop_pool.py (run_logging/build_crop_pool.py (build_union_crop_masks.py was removed 2026-11-13; the crop pool this project uses is --crop-pool, built by build_crop_pool*.py) was removed 2026-11-13; the crop pool this project uses is --crop-pool, built by build_crop_pool*.py) so the "
                     f"per-pair scoreability check has something to check.")
             # REPAIRED, NOT REFUSED. The first version raised SystemExit here and killed the
             # run 2,240 poses into vxwvzr's first epoch, on 9iut: chain 2 drew 3 survivors against
@@ -4743,9 +4640,7 @@ def main():
         zc = np.load(trunk_p)
         _tick("cpucrop_trunk", _t)
         _t = time.perf_counter()
-        kt, ka = (_crop_masks(pdb, zc) if (a.crop_tokens or a.crop_pool)
-                  else BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin,
-                                                all_poses=a.crop_all_poses))
+        kt, ka = _crop_masks(pdb, zc)
         _tick("cpucrop_tokens", _t)
         if kt is None:
             return ("nocrop", None, None)
@@ -5435,10 +5330,7 @@ def main():
                 # argues for caching the crop indices and nothing else.
                 _t0 = time.perf_counter()
                 _zc = np.load(trunk_p)
-                _kt, _ka = (_crop_masks(pdb, _zc) if (a.crop_tokens or a.crop_pool)
-                            else BC.interface_crop_tokens(_zc, lab, a.crop_contact,
-                                                          a.crop_margin,
-                                                          all_poses=a.crop_all_poses))
+                _kt, _ka = _crop_masks(pdb, _zc)
                 _tick("trunk_read_plus_crop_tokens", _t0)
                 if _kt is None:
                     crop_stats["undefined"] += 1
@@ -6927,7 +6819,6 @@ def main():
                # --crop-margin 0 IS WHAT "UNCROPPED" MEANS here; the argument's own help says 0
                # is the whole structure. crop_contact and crop_size are still passed because they
                # are inert at margin 0 and passing them keeps the recorded config complete.
-               "--crop-margin", ("0" if a.val_loss_uncropped else str(a.crop_margin)),
                "--crop-contact", str(a.crop_contact),
                "--crop-size", str(a.crop_size), "--accum", str(a.accum),
                # THE PATH IS PER SHARD, and the sharded launcher below rewrites it the same way
@@ -7365,9 +7256,9 @@ def main():
         _record_val_loss(epoch, step, bundle, mean, len(vals))
         return mean
 
-    def eval_checkpoint(step, epoch, train_pool="", crop_tokens="", tag="", fold="",
+    def eval_checkpoint(step, epoch, train_pool="", tag="", fold="",
                         seed_base=-1, budget=0):
-        """One sharded evaluation. tag names its outputs; crop_tokens crops its INPUTS.
+        """One sharded evaluation. tag names its outputs. Nothing here crops.
 
         tag EXISTS BECAUSE TWO PASSES CAN SHARE A POOL. A cropped and an uncropped reading of
         valfull are different numbers, and writing both under metric_valfull_ep<N>.json would
@@ -7414,8 +7305,6 @@ def main():
         # must keep getting the deployment-shaped number.
         if tag:
             _ptag = tag
-        elif _ptag and crop_tokens:
-            _ptag = f"{_ptag}_cropped"
         mj = os.path.join(a.out, (f"metric_{_ptag}_ep%d.json" if train_pool else "metric_ep%d.json")
                           % epoch)
         extra = []
@@ -7522,8 +7411,6 @@ def main():
         # THE CROP, FORWARDED. phase_k_eval's --crop-tokens takes the same npz --crop-tokens does
         # here, so a cropped reading of a pool is the evaluator's own code path and not a
         # reimplementation. Absent, the pass is uncropped, which is what every pass has been.
-        if crop_tokens:
-            extra = extra + ["--crop-tokens", os.path.abspath(crop_tokens)]
         # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
         # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
         # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one
@@ -8103,8 +7990,6 @@ def main():
                                   # has them -- which is none.
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
-                                  "crop_margin": a.crop_margin,
-                                  "crop_tokens": _CROP_TOK_DIGEST,
                                   "crop_contact": a.crop_contact,
                  # THE CROP DEFINITION, for the same reason as the two above: a16911de changed
                  # the DEFAULT, so resuming a pre-change bundle under post-change code blends two
@@ -8905,7 +8790,7 @@ def main():
                 rows.clear()
                 if is_main:
                     eval_checkpoint(step, ep + 1, train_pool=a.train_eval_pool,
-                                    crop_tokens=a.eval_pool_crop_tokens)
+                                    )
                 if world > 1:
                     dist.barrier()
             # EVERY EXTRA PASS, each on its own cadence. SAME BARRIER DISCIPLINE: one evaluator
@@ -8922,9 +8807,9 @@ def main():
                 if is_main:
                     print(f"  extra eval '{_ee['name']}': pool {_ee['pool']}, budget "
                           f"{_ee['budget'] or 'default'}, every {_ee['every']} epoch(s), "
-                          f"{'CROPPED' if _ee['crop_tokens'] else 'uncropped'}", flush=True)
+                          f"uncropped", flush=True)
                     eval_checkpoint(step, ep + 1, train_pool=_ee["pool"],
-                                    crop_tokens=_ee["crop_tokens"], tag=_ee["name"],
+                                    tag=_ee["name"],
                                     fold=_ee["fold"], seed_base=_ee["seed_base"],
                                     budget=_ee["budget"])
                 if world > 1:
@@ -9105,7 +8990,7 @@ def main():
             _cs = {k: int(v) for k, v in zip(_keys, _t.tolist())}
         if is_main:
             if _cs["n"]:
-                print(f"\ncrop: contact {a.crop_contact:.0f} A, margin {a.crop_margin:.0f} A over "
+                print(f"\ncrop: pool {a.crop_pool} over "
                       f"{_cs['n']} unit(s) across {world} rank(s): kept {_cs['kept']}/{_cs['tok']} "
                       f"token(s) ({_cs['kept'] / _cs['tok'] * 100:.1f}%), "
                       f"{_cs['frames']} frame(s) cleared for want of their atoms")

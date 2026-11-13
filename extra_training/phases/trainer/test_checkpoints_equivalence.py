@@ -81,11 +81,13 @@ def main():
        "a field in the bundle and equal -> no finding")
     ok(compare_guard({"seed": 0}, {}, {"seed": 0})[1] == ["seed"],
        "absent from the bundle but in args.json -> matched there, reported")
-    ok(compare_guard({"crop_tokens": ""}, {}, {})[3] == ["crop_tokens"],
+    # pair_dropout, NOT crop_all_poses: the latter's pre-crop default is True, so passing
+    # False would be drift rather than a migration and the next case would have no subject.
+    ok(compare_guard({"pair_dropout": -1.0}, {}, {})[3] == ["pair_dropout"],
        "a field postdating the bundle -> migrated to the pre-crop default")
     ok(compare_guard({"zzz": 1}, {}, {})[2] == ["zzz"],
        "recorded nowhere -> reported as NOT compared, never silently passed")
-    ok(compare_guard({"crop_tokens": "/x.npz"}, {}, {})[0] != {},
+    ok(compare_guard({"pair_dropout": 0.25}, {}, {})[0] != {},
        "and enabling a post-dating feature IS drift, as the comment requires")
     ok(len(_PRE_CROP) >= 40, "the migration table is intact", f"{len(_PRE_CROP)} fields")
 

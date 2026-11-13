@@ -71,10 +71,9 @@ def load_resume(rt, a, model, opt):
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
-                 "crop_margin": 0.0, "crop_contact": 5.0,
+                 "crop_contact": 5.0,
                  # A CROP RULE CHANGE IS AN OBJECTIVE CHANGE: the loss averages over a different
                  # set of tokens and pairs, so resuming across it would blend two objectives.
-                 "crop_tokens": rt._CROP_TOK_DIGEST,
                  # THE CROP DEFINITION ITSELF, not just its radii. a16911de changed the DEFAULT
                  # from the union over all nsample poses to pose 0 alone, so a resume across that
                  # change blends two crop definitions into one curve. f1268fe5 added the field to
@@ -159,7 +158,7 @@ def load_resume(rt, a, model, opt):
                      # is exactly what the 0 defaults mean, and "cosine" is what it computed.
                      "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
                      "lr_decay_shape": "cosine", "lr_steps": "",
-                     "pair_dropout": -1.0, "crop_tokens": "",
+                     "pair_dropout": -1.0,
                      "token_keep_union": -1.0, "token_keep_other": -1.0,
                      # ABSENCE IS EVIDENCE: a bundle written before --pae-row-frac existed ran the
                      # unweighted term, which is exactly what frac 0 means. The mass and floor
@@ -167,7 +166,7 @@ def load_resume(rt, a, model, opt):
                      # weighting ON still shows up as drift on the frac field.
                      "pae_row_frac": 0.0, "pae_row_mass": 0.8, "pae_row_floor": 10,
                  "train_only": "",
-                     "crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
+                     "crop_contact": 5.0, "pae_scored_pairs": "",
                      # ABSENCE IS EVIDENCE, as for the two above: a bundle written before
                      # a16911de was written by code that had no such flag and always took the
                      # union, so it migrates to True. A resume that switches to pose 0 therefore

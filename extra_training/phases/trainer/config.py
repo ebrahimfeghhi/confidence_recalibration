@@ -60,10 +60,11 @@ def validate(a):
             _k, _v = _kv.split("=", 1)
             _d[_k.strip()] = _v.strip()
         _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every",
-                                     "crop_tokens"})
+                                     })
         if _unknown:
             raise SystemExit(f"STOP: --extra-eval {_spec!r} has unknown key(s) {_unknown}. "
-                             f"Known: name, pool, fold, seed_base, budget, every, crop_tokens.")
+                             f"Known: name, pool, fold, seed_base, budget, every. The "
+                             f"crop_tokens key went with --crop-tokens on 2026-11-13.")
         for _req in ("name", "pool", "every"):
             if not _d.get(_req):
                 raise SystemExit(f"STOP: --extra-eval {_spec!r} is missing {_req}=.")
@@ -83,9 +84,6 @@ def validate(a):
             if not os.path.exists(_need):
                 raise SystemExit(f"STOP: --extra-eval {_nm}: {_need} does not exist. A pool is "
                                  f"scored against its OWN fold's results and roles.")
-        if _d.get("crop_tokens") and not os.path.exists(_d["crop_tokens"]):
-            raise SystemExit(f"STOP: --extra-eval {_nm}: crop_tokens {_d['crop_tokens']} does "
-                             f"not exist.")
         try:
             _ev = int(_d["every"])
             _bg = int(_d.get("budget") or 0)
@@ -97,7 +95,7 @@ def validate(a):
             raise SystemExit(f"STOP: --extra-eval {_nm}: every={_ev} must be positive.")
         _EXTRA_EVAL.append(dict(name=_nm, pool=_d["pool"], fold=_ef, seed_base=_sb,
                                 budget=_bg, every=_ev,
-                                crop_tokens=_d.get("crop_tokens", "")))
+                                ))
     # THE MASK'S CONTENTS, DIGESTED AT STARTUP -- here and not beside the loader because the
     # resume guard dict is built before the loader runs. The guard recorded
     # basename(a.crop_tokens) first, so rebuilding the mask with a different margin, contact

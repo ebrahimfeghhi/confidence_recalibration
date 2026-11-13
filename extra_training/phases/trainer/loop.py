@@ -194,7 +194,6 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
                               # test_guard_fields.py said so. Found in review.
                               "alpha_pae": rt.a.alpha_pae, "drop_pde": False,
                               "clip_norm": rt.a.clip_norm,
-                              "crop_tokens": rt._CROP_TOK_DIGEST,
              # THE CROP DEFINITION, for the same reason as the two above: a16911de changed
              # the DEFAULT, so resuming a pre-change bundle under post-change code blends two
              # crops into one curve unless the guard compares it. Benign only while pose 0
@@ -876,7 +875,7 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
             rows.clear()
             if rt.is_main:
                 rt.eval_checkpoint(step, ep + 1, train_pool=rt.a.train_eval_pool,
-                                crop_tokens='')
+                                )
             if rt.world > 1:
                 dist.barrier()
         # EVERY EXTRA PASS, each on its own cadence. SAME BARRIER DISCIPLINE: one evaluator
@@ -893,9 +892,9 @@ def train_loop(rt, steps_cap, lr, tag, write_traj, from_epoch=0, from_step=0):
             if rt.is_main:
                 print(f"  extra eval '{_ee['name']}': pool {_ee['pool']}, budget "
                       f"{_ee['budget'] or 'default'}, every {_ee['every']} epoch(s), "
-                      f"{'CROPPED' if _ee['crop_tokens'] else 'uncropped'}", flush=True)
+                      f"uncropped", flush=True)
                 rt.eval_checkpoint(step, ep + 1, train_pool=_ee["pool"],
-                                crop_tokens=_ee["crop_tokens"], tag=_ee["name"],
+                                tag=_ee["name"],
                                 fold=_ee["fold"], seed_base=_ee["seed_base"],
                                 budget=_ee["budget"])
             if rt.world > 1:

@@ -18,7 +18,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import eval_curve as EC
 import plot_three
 
-RID = sys.argv[1] if len(sys.argv) > 1 else "suz564"
+# ONE ARM. refresh_plots.sh passes the same comma-separated list to both plotters because the
+# TRAINING figure overlays arms; the held-out figure is per arm, so take the first and say so.
+# Passing the whole string resolved a chain that does not exist, which silently drew the previous
+# arm's numbers and left the correlation panel empty.
+RID = (sys.argv[1] if len(sys.argv) > 1 else "qip9ta").split(",")[0]
 OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/eval_series_{RID}.png"
 CHAIN = list(plot_three.run_chain(RID))
 S, SER = EC.shipped(), EC.series(CHAIN)

@@ -52,10 +52,11 @@ def derive(rt, a):
             _k, _v = _kv.split("=", 1)
             _d[_k.strip()] = _v.strip()
         _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every",
-                                     "crop_tokens"})
+                                     })
         if _unknown:
             raise SystemExit(f"STOP: --extra-eval {_spec!r} has unknown key(s) {_unknown}. "
-                             f"Known: name, pool, fold, seed_base, budget, every, crop_tokens.")
+                             f"Known: name, pool, fold, seed_base, budget, every. The "
+                             f"crop_tokens key went with --crop-tokens on 2026-11-13.")
         for _req in ("name", "pool", "every"):
             if not _d.get(_req):
                 raise SystemExit(f"STOP: --extra-eval {_spec!r} is missing {_req}=.")
@@ -75,9 +76,6 @@ def derive(rt, a):
             if not os.path.exists(_need):
                 raise SystemExit(f"STOP: --extra-eval {_nm}: {_need} does not exist. A pool is "
                                  f"scored against its OWN fold's results and roles.")
-        if _d.get("crop_tokens") and not os.path.exists(_d["crop_tokens"]):
-            raise SystemExit(f"STOP: --extra-eval {_nm}: crop_tokens {_d['crop_tokens']} does "
-                             f"not exist.")
         try:
             _ev = int(_d["every"])
             _bg = int(_d.get("budget") or 0)
@@ -89,13 +87,13 @@ def derive(rt, a):
             raise SystemExit(f"STOP: --extra-eval {_nm}: every={_ev} must be positive.")
         _EXTRA_EVAL.append(dict(name=_nm, pool=_d["pool"], fold=_ef, seed_base=_sb,
                                 budget=_bg, every=_ev,
-                                crop_tokens=_d.get("crop_tokens", "")))
+                                ))
     if '' and not a.train_eval_pool:
         raise SystemExit("STOP: --eval-pool-crop-tokens without --eval-pool: there is no primary "
                          "eval pass to crop.")
     if '' and not os.path.exists(''):
         raise SystemExit(f"STOP: --eval-pool-crop-tokens {''} does not "
-                         f"exist. Build it with run_logging/build_union_crop_masks.py.")
+                         f"exist. Build it with run_logging/build_crop_pool.py (run_logging/build_crop_pool.py (build_union_crop_masks.py was removed 2026-11-13; the crop pool this project uses is --crop-pool, built by build_crop_pool*.py) was removed 2026-11-13; the crop pool this project uses is --crop-pool, built by build_crop_pool*.py).")
     _TOK_DROP = (-1.0 >= 0.0) or (-1.0 >= 0.0)
     if _TOK_DROP:
         if not (-1.0 >= 0.0 and -1.0 >= 0.0):
@@ -117,7 +115,7 @@ def derive(rt, a):
                          "after whichever flag the reader noticed.")
     if '' and not os.path.exists(''):
         raise SystemExit(f"STOP: --crop-tokens {''} does not exist. Build it with "
-                         f"run_logging/build_union_crop_masks.py.")
+                         f"run_logging/build_crop_pool.py (run_logging/build_crop_pool.py (build_union_crop_masks.py was removed 2026-11-13; the crop pool this project uses is --crop-pool, built by build_crop_pool*.py) was removed 2026-11-13; the crop pool this project uses is --crop-pool, built by build_crop_pool*.py).")
     # THE MASK'S CONTENTS, DIGESTED AT STARTUP -- here and not beside the loader because the
     # resume guard dict is built before the loader runs. The guard recorded
     # basename(a.crop_tokens) first, so rebuilding the mask with a different margin, contact

@@ -320,7 +320,10 @@ if not a.report_only:
                  "--roles", os.path.join(ROOT, ROLES),
                  "--seed-base", str(base),
                  "--labels", os.path.join(ROOT, FOLD, "labels"),
-                 "--pair-iptm-only", "--prefetch", "--pool-mean", "--select-by", "mean"]
+                 "--pair-iptm-only", "--prefetch", "--pool-mean", "--select-by", "mean",
+                 # MERGE-ONLY, AND THE REASON THE DEEP POOL DID NOT HAVE TO BE RE-RUN TWICE.
+                 # One unresolvable pose used to refuse a merge holding 67,325 of 67,425 rows.
+                 "--drop-incomplete-ifaces"]
         if HEAD is not None:
             extra += POSE
         cmd = [PY, "-I", os.path.join(ROOT, "phases", "phase_k_eval_sharded.py"),
@@ -341,7 +344,9 @@ def collect(tag):
     unioning their rows under one head gives that head's metric over the whole training set.
     """
     by = collections.defaultdict(list)
+    want_depth = {}
     for sub in SUBS:
+        _base, _budget = SUBS[sub]
         for f in glob.glob(os.path.join(PASSDIR, tag, sub, "rows_b*_s*.csv")):
             for r in csv.DictReader(open(f)):
                 if r["dockq"] in ("", None):
@@ -351,7 +356,18 @@ def collect(tag):
                     return float(v) if v not in ("", None) else None
                 by[r["iface"]].append((_f("iptm"), _f("iptm_mean"), _f("stored_iptm"),
                                        float(r["dockq"])))
-    return by
+                want_depth[r["iface"]] = _budget * NSAMPLE
+    # AN INTERFACE SHORT OF ITS SUB-POOL'S DEPTH IS DROPPED WHOLE, NOT AVERAGED IN SHORT.
+    #
+    # Selecting over 25 of 75 candidates is an easier problem than selecting over 75, so an
+    # interface kept at partial depth would raise this head's number for a reason that has
+    # nothing to do with the head. 4zto is the measured case: its OST chain mapping failed when
+    # its poses were generated, 50 of its 75 pose jsons are failure records, and it cannot be
+    # scored at depth by anything. Dropping it costs 2 of 1688 interfaces and is reported.
+    short = sorted(i for i, c in by.items() if len(c) != want_depth.get(i))
+    for i in short:
+        del by[i]
+    return by, short
 
 
 def summarise(by, col):
@@ -382,13 +398,19 @@ for hj in sorted(glob.glob(os.path.join(PASSDIR, "*", "head.json"))):
 heads.sort()
 
 TABLE, ships, partial = [], None, []
+DROPPED = {}
 for _, tag, h in heads:
-    by = collect(tag)
+    by, short = collect(tag)
+    DROPPED[tag] = short
     if h["kind"] == "shipped":
         ships = by
     name = "shipped" if h["kind"] == "shipped" else f"epoch {h['epoch']} ({tag})"
-    if len(by) != len(_all):
-        partial.append(f"{name}: {len(by)} of {len(_all)} interfaces")
+    if short:
+        say(f"  {name}: DROPPED {len(short)} interface(s) short of their sub-pool's depth: "
+            f"{', '.join(short[:6])}{' ...' if len(short) > 6 else ''}")
+    if len(by) + len(short) != len(_all):
+        partial.append(f"{name}: {len(by)} scored + {len(short)} dropped of "
+                       f"{len(_all)} interfaces")
         continue
     for pool_label, col in (("max-pooled ipTM", 0), ("mean-pooled ipTM", 1)):
         s = summarise(by, col)
@@ -400,7 +422,7 @@ for _, tag, h in heads:
 # two is not scoring what it claims. It is NOT a baseline for any mean-pooled row -- results.csv
 # holds one ipTM column and it is max-pooled, so no mean-pooled shipped number is derivable from
 # it, which is why the shipped head has to be forwarded at all.
-ctl = summarise(ships, 2) if ships is not None and len(ships) == len(_all) else None
+ctl = summarise(ships, 2) if ships is not None else None
 
 say("")
 say(f"  {'selector':42s} {'n_if':>6} {'mean DockQ':>11} {'frac acc':>9}")

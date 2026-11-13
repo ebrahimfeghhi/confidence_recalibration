@@ -226,7 +226,7 @@ def build_parser():
                          "SPEC is comma-separated key=value with keys: name (required, "
                          "names metric_<name>_ep<N>.json and <name>_eval_shards_ep<N>), "
                          "pool (required), fold, seed_base, budget, every (required), "
-                         "crop_tokens. Example:\n"
+                         "Example:\n"
                          "  --extra-eval 'name=valfull,pool=training/valfull/pool.csv,"
                          "fold=validation/fold,seed_base=400000,budget=30,every=6'\n"
                          "Each pass costs a full sharded evaluation, so every=1 on three "

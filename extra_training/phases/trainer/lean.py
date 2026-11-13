@@ -19,7 +19,7 @@ import re
 CULLED = frozenset({
     "lora_rank", "lora_alpha", "lora_dropout", "lora_targets",
     "l2_sp", "l2_sp_exclude",
-    "crop_margin", "crop_tokens", "crop_contact", "crop_all_poses",
+    "crop_contact", "crop_all_poses",
     "token_keep_union", "token_keep_other",
     "pae_row_frac", "pae_row_mass", "pae_row_floor", "pae_row_log_every",
     "rank_tau", "rank_pairs", "rank_within_weight", "rank_topk_decay", "rank_straddle",
@@ -29,7 +29,7 @@ CULLED = frozenset({
     "epoch_order", "structures_per_step", "drop_pde", "pair_dropout",
     "crop_log", "debug_save_rank_heads", "eval_every", "lr_probe", "probe_steps",
     "rank_rel_scale", "shuffle",
-    "eval_device", "eval_min_free_mib", "eval_pool_crop_tokens",
+    "eval_device", "eval_min_free_mib",
     "allow_unmasked_fallback",
 })
 
@@ -229,9 +229,9 @@ def culled_in(tree):
 #: dead, so a second strip pass removes the branch the first could not.
 LIVE_VALUES = {
     "allow_unmasked_fallback": False, "crop_all_poses": False, "crop_contact": 5.0,
-    "crop_margin": 0.0, "crop_tokens": "", "drop_pde": False,
+    "drop_pde": False,
     "early_stop_min_delta": 0.002, "early_stop_patience": 0, "epoch_order": "shuffle",
-    "eval_device": "", "eval_min_free_mib": 20000, "eval_pool_crop_tokens": "",
+    "eval_device": "", "eval_min_free_mib": 20000,
     "l2_sp": 0.0, "l2_sp_exclude": "", "lora_alpha": 0.0, "lora_dropout": 0.0,
     "lora_rank": 0, "lora_targets": "", "lr_decay_end_epoch": 0.0,
     "lr_decay_shape": "cosine", "lr_decay_start_epoch": 0.0, "lr_final": 0.0,

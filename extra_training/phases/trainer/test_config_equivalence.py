@@ -96,9 +96,11 @@ def main():
     print("\n3  THE REFUSAL COUNT HAS NOT SILENTLY DROPPED")
     src = open(os.path.join(HERE, "config.py")).read()
     n = src.count("SystemExit")
-    # 26, not the original 44: the cropping, LoRA and tau-form refusals went with their flags.
-    # Pinned so a later edit cannot quietly drop one of the refusals that REMAINS.
-    ok(n >= 26, "config.py carries every refusal the minimal surface still needs",
+    # 25, not the original 44: the cropping, LoRA and tau-form refusals went with their flags.
+    # It was 26 until 2026-11-13, when --crop-tokens was deleted and the --extra-eval
+    # "crop_tokens file must exist" refusal went with it -- a flag that cannot be passed needs no
+    # guard. Pinned so a later edit cannot quietly drop one of the refusals that REMAINS.
+    ok(n >= 25, "config.py carries every refusal the minimal surface still needs",
        f"{n} SystemExit")
 
     print()

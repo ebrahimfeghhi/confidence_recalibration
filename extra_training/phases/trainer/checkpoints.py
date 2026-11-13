@@ -26,7 +26,7 @@ _PRE_CROP = {"lora_rank": 0, "lora_alpha": 0.0, "lora_targets": "", "lora_dropou
              # is exactly what the 0 defaults mean, and "cosine" is what it computed.
              "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
              "lr_decay_shape": "cosine", "lr_steps": "",
-             "pair_dropout": -1.0, "crop_tokens": "",
+             "pair_dropout": -1.0,
              "token_keep_union": -1.0, "token_keep_other": -1.0,
              # ABSENCE IS EVIDENCE: a bundle written before --pae-row-frac existed ran the
              # unweighted term, which is exactly what frac 0 means. The mass and floor
@@ -34,7 +34,7 @@ _PRE_CROP = {"lora_rank": 0, "lora_alpha": 0.0, "lora_targets": "", "lora_dropou
              # weighting ON still shows up as drift on the frac field.
              "pae_row_frac": 0.0, "pae_row_mass": 0.8, "pae_row_floor": 10,
          "train_only": "",
-             "crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
+             "crop_contact": 5.0, "pae_scored_pairs": "",
              # ABSENCE IS EVIDENCE, as for the two above: a bundle written before
              # a16911de was written by code that had no such flag and always took the
              # union, so it migrates to True. A resume that switches to pose 0 therefore
@@ -84,7 +84,7 @@ _PRE_CROP = {"lora_rank": 0, "lora_alpha": 0.0, "lora_targets": "", "lora_dropou
 #: the contract honest instead of comparing fields neither side owns.
 ABANDONED = {
     "l2_sp", "l2_sp_exclude", "lora_rank", "lora_alpha", "lora_targets", "lora_dropout",
-    "crop_margin", "crop_tokens", "crop_all_poses", "crop_contact", "token_keep_union",
+    "crop_all_poses", "crop_contact", "token_keep_union",
     "token_keep_other", "pose_perblock", "pose_perblock_tied", "pose_perblock_copy",
     "pose_perblock_share", "frame_direction", "drop_pde", "pae_row_frac", "pae_row_mass",
     "pae_row_floor", "rank_tau", "rank_pairs", "rank_topk_decay", "rank_straddle",

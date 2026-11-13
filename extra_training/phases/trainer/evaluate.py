@@ -495,9 +495,9 @@ def val_loss_checkpoint(rt, epoch, bundle, step):
     _record_val_loss(epoch, step, bundle, mean, len(vals))
     return mean
 
-def eval_checkpoint(rt, step, epoch, train_pool="", crop_tokens="", tag="", fold="",
+def eval_checkpoint(rt, step, epoch, train_pool="", tag="", fold="",
                     seed_base=-1, budget=0):
-    """One sharded evaluation. tag names its outputs; crop_tokens crops its INPUTS.
+    """One sharded evaluation. tag names its outputs. Nothing here crops.
 
     tag EXISTS BECAUSE TWO PASSES CAN SHARE A POOL. A cropped and an uncropped reading of
     valfull are different numbers, and writing both under metric_valfull_ep<N>.json would
@@ -544,8 +544,6 @@ def eval_checkpoint(rt, step, epoch, train_pool="", crop_tokens="", tag="", fold
     # must keep getting the deployment-shaped number.
     if tag:
         _ptag = tag
-    elif _ptag and crop_tokens:
-        _ptag = f"{_ptag}_cropped"
     mj = os.path.join(rt.a.out, (f"metric_{_ptag}_ep%d.json" if train_pool else "metric_ep%d.json")
                       % epoch)
     extra = []
@@ -640,8 +638,6 @@ def eval_checkpoint(rt, step, epoch, train_pool="", crop_tokens="", tag="", fold
     # THE CROP, FORWARDED. phase_k_eval's --crop-tokens takes the same npz --crop-tokens does
     # here, so a cropped reading of a pool is the evaluator's own code path and not a
     # reimplementation. Absent, the pass is uncropped, which is what every pass has been.
-    if crop_tokens:
-        extra = extra + ["--crop-tokens", os.path.abspath(crop_tokens)]
     # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
     # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
     # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one

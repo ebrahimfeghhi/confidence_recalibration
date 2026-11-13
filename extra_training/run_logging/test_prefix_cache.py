@@ -584,8 +584,9 @@ def main():
     # activation computed from different inputs -- a plausible wrong gradient with no error. The
     # arm is uncropped, so this costs nothing and exists because the combination is unreasoned.
     PFC.uninstall()
-    for _kw, _label in (({"crop_margin": 10.0}, "--crop-margin"),
-                        ({"crop_tokens": "/tmp/x.npz"}, "--crop-tokens"),
+    # --crop-margin and --crop-tokens were deleted 2026-11-13, leaving --crop-pool as the one
+    # crop rule; the refusal is now keyed on it.
+    for _kw, _label in (({"crop_pool": "training/crop_final"}, "--crop-pool"),
                         ({"crop_all_poses": True}, "--crop-all-poses")):
         m_cr = _built()
         r, msg = _refuses(

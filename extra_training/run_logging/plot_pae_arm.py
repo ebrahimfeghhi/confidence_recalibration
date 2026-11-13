@@ -32,7 +32,20 @@ EP = plot_three.epoch_table(CHAIN) if hasattr(plot_three, "epoch_table") else No
 if EP is None:
     import csv
     import collections
-    acc = collections.defaultdict(list)
+    # THE NEWEST RUN IN THE CHAIN WINS AN EPOCH; THE CHAIN IS NOT CONCATENATED.
+    #
+    # A resume at an epoch boundary ALWAYS leaves the abandoned run holding a partial next epoch:
+    # we stop it after its checkpoint, but it has already written rows for the epoch it was part
+    # way through. Summing the chain then averages a partial attempt together with the complete
+    # redo of the SAME epoch number. Measured on this chain 2026-11-11: ea9vy2 holds 3,938 rows
+    # for epoch 3 and 7roo28 holds the full 11,541, and the concatenating version reported epoch 3
+    # over 15,479 rows -- a mean of two different attempts, one of them a third of an epoch, drawn
+    # as one point with nothing saying so.
+    #
+    # eval_curve.series already resolves the held-out metrics this way ("newest run winning"), so
+    # this makes the training panel agree with the panels beside it. CHAIN is oldest-first, so the
+    # last run that has rows for an epoch is the one that owns it.
+    per = collections.defaultdict(lambda: collections.defaultdict(list))
     for rid in CHAIN:
         p = f"training/runs/{rid}/trajectory.csv"
         if not os.path.exists(p):
@@ -44,7 +57,11 @@ if EP is None:
             except (KeyError, TypeError, ValueError):
                 continue
             if v == v:
-                acc[e].append(v)
+                per[rid][e].append(v)
+    acc = collections.defaultdict(list)
+    for rid in CHAIN:
+        for e, vs in per.get(rid, {}).items():
+            acc[e] = vs
     # A PARTIAL EPOCH IS DRAWN HOLLOW, not hidden and not drawn solid: the last epoch of a live
     # run is always partial and its mean moves as it fills.
     # PARTIAL EPOCHS ARE DROPPED, NOT DRAWN HOLLOW. At the user's direction. The last epoch of a

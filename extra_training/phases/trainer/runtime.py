@@ -53,7 +53,7 @@ def build_runtime(rt, a):
     if a.prefix_cache_gb > 0:
         import prefix_cache as PFC
         _pfc = PFC.install(rt.model, a.prefix_cache_gb, lean_single=a.lean_single, device=rt.dev,
-                           crop_margin=0.0, crop_tokens='',
+                           crop_pool='',
                            crop_all_poses=False)
     else:
         PFC = None

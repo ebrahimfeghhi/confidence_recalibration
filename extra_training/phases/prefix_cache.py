@@ -394,7 +394,7 @@ def reset_stats():
 
 
 def install(model, cap_gb, *, lean_single, device=None, loud=True,
-            crop_margin=0.0, crop_tokens="", crop_all_poses=False):
+            crop_pool="", crop_all_poses=False):
     """Turn the cache on, after REFUSING everything that would make it unsound.
 
     Every precondition here is a hard stop, not a downgrade. A cache that silently declines to
@@ -421,10 +421,10 @@ def install(model, cap_gb, *, lean_single, device=None, loud=True,
     # because the combination is unreasoned rather than known-bad, and the failure would be a
     # wrong number rather than a crash. Key on the crop's identity and lift this if cropping is
     # ever wanted with the cache.
-    if float(crop_margin) > 0 or crop_tokens or crop_all_poses:
+    if crop_pool or crop_all_poses:
         raise SystemExit(
-            "STOP: --prefix-cache-gb with cropping (--crop-margin "
-            f"{crop_margin}, --crop-tokens {crop_tokens!r}, --crop-all-poses {crop_all_poses}). "
+            "STOP: --prefix-cache-gb with cropping (--crop-pool "
+            f"{crop_pool!r}, --crop-all-poses {crop_all_poses}). "
             "The cache key carries the token COUNT but not WHICH tokens were kept, so a crop that "
             "gives pass A and pass B the same N over different residues would be a cache HIT on "
             "an activation computed from different inputs -- wrong gradients, no error. This "

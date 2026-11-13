@@ -335,10 +335,12 @@ def merge_rows(a):
     if have != list(range(n)):
         raise SystemExit(f"STOP: shards {have} of {n} present; the metric would cover a subset.")
     bad = [(m["shard"], m["n_unmapped"]) for m in metas if m.get("n_unmapped")]
-    if bad:
+    if bad and not a.drop_incomplete_ifaces:
         raise SystemExit(f"STOP: shard(s) {bad} wrote rows but left pose(s) unmapped, so the merge "
                          f"would cover fewer poses than its budget claims. Resolve the chain "
-                         f"mapping or exclude those structures from the pool and re-run them.")
+                         f"mapping, exclude those structures from the pool, or pass "
+                         f"--drop-incomplete-ifaces to report over the interfaces that ARE "
+                         f"complete and have the dropped ones named in the metric.")
     for field in ("budget", "ckpt"):
         vals = {m[field] for m in metas}
         if len(vals) != 1:
@@ -359,6 +361,27 @@ def merge_rows(a):
         print(f"  it DISAGREED with chain_roles on {n_differ} pose(s), across {len(differ)} "
               f"structure(s): " + ", ".join(f"{k}:{v}" for k, v in differ.most_common(8)))
     want_ifaces = {i for v in pool_ref_pairs(a.pool).values() for i, _c1, _c2 in v}
+    if a.drop_incomplete_ifaces:
+        # COUNTED AGAINST THE INTENDED DEPTH, not against the modal one. The intended key set is
+        # interfaces x seeds(budget from --seed-base) x range(--nsample), so budget*nsample is
+        # what a complete interface has; inferring the expected depth from the data would let a
+        # uniformly short run look complete.
+        _exp = a.budget * a.nsample
+        _cnt = collections.Counter(r[0] for r in rows)
+        _drop = sorted(i for i in want_ifaces if _cnt.get(i, 0) != _exp)
+        if _drop:
+            _ds = set(_drop)
+            rows = [r for r in rows if r[0] not in _ds]
+            selfchk = [t for t in selfchk if t[1] not in _ds]
+            want_ifaces = want_ifaces - _ds
+            a.dropped_ifaces = _drop
+            print(f"  DROPPED {len(_drop)} INCOMPLETE interface(s) (--drop-incomplete-ifaces), "
+                  f"each short of {_exp} pose(s): "
+                  + ", ".join(f"{i}:{_cnt.get(i, 0)}" for i in _drop[:8])
+                  + (" ..." if len(_drop) > 8 else ""))
+            print(f"  the metric below covers {len(want_ifaces)} interface(s), NOT the pool's "
+                  f"{len(want_ifaces) + len(_drop)}. A baseline for it must be computed over the "
+                  f"same {len(want_ifaces)}.")
     aggregate(a, rows, selfchk, want_ifaces)
 
 
@@ -398,10 +421,11 @@ def aggregate(a, rows, selfchk, want_ifaces):
     # UNCROPPED value, so every row is expected to differ -- exactly as under --crop-margin. With
     # the condition keyed to crop_margin alone the shipped baseline pass would have hit the hard
     # STOP below and the experiment would have had no baseline at all.
-    _crop_mode = ("--crop-margin %g" % a.crop_margin) if a.crop_margin > 0 else (
-        ("--crop-tokens %s" % os.path.basename(a.crop_tokens)) if a.crop_tokens else (
-            ("--crop-predicted-margin %g" % a.crop_predicted_margin)
-            if a.crop_predicted_margin > 0 else ""))
+    # NO CROP RULE REACHES THE EVALUATOR ANY MORE. --crop-margin, --crop-tokens and
+    # --crop-predicted-margin were all deleted 2026-11-13; --crop-pool is applied by the TRAINER
+    # and never by this file. The self-check is therefore always enforced rather than downgraded
+    # to informational, which is what it was written for.
+    _crop_mode = ""
     _crop_selfcheck_informational = bool(_crop_mode)
     if not a.ckpt and not a.no_self_check:
         if not selfchk:
@@ -576,6 +600,9 @@ def aggregate(a, rows, selfchk, want_ifaces):
     orc = [max(dq for _v, dq, _s, _k in v) for v in byif.values()]
     n = len(sel)
     out = {"n_interfaces": n, "budget": a.budget,
+           **({"dropped_ifaces": a.dropped_ifaces,
+               "n_dropped_ifaces": len(a.dropped_ifaces)}
+              if getattr(a, "dropped_ifaces", None) else {}),
            "mean_dockq": round(statistics.mean(sel), 4),
            "frac_acc": round(sum(1 for d in sel if d >= ACCEPTABLE) / n, 4),
            "oracle_mean_dockq": round(statistics.mean(orc), 4),
@@ -871,10 +898,6 @@ def main():
     # UNCROPPED IS STILL THE DEFAULT, and should stay the default: inference runs on whole
     # structures, so the uncropped number is the one that says whether a head is USEFUL. The
     # cropped number says whether it LEARNED something, which is a different question.
-    ap.add_argument("--crop-margin", type=float, default=0.0,
-                    help="crop each unit to the interface plus this margin in angstroms before "
-                         "scoring, exactly as phase_k_train does. 0 (the default) scores the full "
-                         "structure. Requires label npz files, which --labels locates.")
     ap.add_argument("--crop-contact", type=float, default=5.0,
                     help="heavy-atom distance defining an interface token, matching "
                          "phase_k_train --crop-contact. Read by --crop-margin and "
@@ -883,30 +906,6 @@ def main():
                     help="define the crop from the union over all poses rather than pose 0, "
                          "matching phase_k_train --crop-all-poses. MUST match the arm being "
                          "scored; the arms in this project do not pass it.")
-    ap.add_argument("--crop-tokens", default="",
-                    help="score on a PRECOMPUTED token mask per structure instead of the "
-                         "ground-truth interface crop. The npz is written by "
-                         "run_logging/build_union_crop_masks.py and holds <pdb> -> bool[n_token], "
-                         "the UNION over every candidate pose of that pose's own PREDICTED "
-                         "interface. THE POINT: --crop-margin defines the crop from "
-                         "label_coordinate, so no number it produces is a deployment number "
-                         "(section 9c). This mask is built from ci_coordinate -- what the fold "
-                         "predicted -- so it needs no experimental structure and could be built "
-                         "at inference. Mutually exclusive with --crop-margin: two crop rules at "
-                         "once is a silent mismatch waiting to happen, and the run refuses it.")
-    ap.add_argument("--crop-predicted-margin", type=float, default=0.0,
-                    help="PER-POSE crop from PREDICTED coordinates: for each pose, take its own "
-                         "inter-chain contacts within --crop-contact of ci_coordinate, keep every "
-                         "token within this margin of them, and score that pose on that crop. "
-                         "THE EXPERIMENT: --crop-margin runs the identical rule on "
-                         "label_coordinate, so running both answers whether swapping ground-truth "
-                         "coordinates for predicted ones preserves the gain. Both call "
-                         "BC.crop_tokens_from_coords, so the rule cannot drift between them. "
-                         "Token count varies between poses, hence so does ipTM's d0 -- that is "
-                         "measured here, not designed around. A pose with no inter-chain contact "
-                         "is scored on the FULL structure and counted, which is what the trainer "
-                         "already does for an undefinable crop. Mutually exclusive with "
-                         "--crop-margin and --crop-tokens.")
     ap.add_argument("--pose-split-check", action="store_true",
                     help="score one pose per forward pass with NO crop. Scores must match the "
                          "batched path exactly; this exists because --crop-predicted-margin has "
@@ -1045,6 +1044,18 @@ def main():
     # metric) can only be judged on the UNION, so they run once in --rows-in mode, on CPU.
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
+    ap.add_argument("--drop-incomplete-ifaces", action="store_true",
+                    help="MERGE ONLY. Report over the interfaces that are COMPLETE and drop the "
+                         "ones that are not, naming them in the metric json and on stdout. "
+                         "Without it a single unresolvable pose discards every finished pose in "
+                         "the run: 4zto's OST chain mapping failed when its poses were generated "
+                         "(\"Target chain M is not available in target processed\"), 50 of its 75 "
+                         "pose jsons are failure records, and that refused a merge holding 67,325 "
+                         "of 67,425 deep rows -- an hour of GPU for nothing, twice. An interface "
+                         "is dropped WHOLE rather than counted at partial depth, because a "
+                         "selection over 25 of 75 candidates is a different and easier problem "
+                         "than the one the budget label claims. The baseline must then be computed "
+                         "over the same reduced interface set or the comparison is invalid.")
     ap.add_argument("--rows-out", default="",
                     help="write this shard's per-pose rows here and exit before the aggregate "
                          "checks, which are meaningless on a slice.")
@@ -1054,30 +1065,6 @@ def main():
     a = ap.parse_args()
     # CHECKED FROM argv, BEFORE ANYTHING LOADS. Two crop rules at once is knowable here, and a
     # refusal that waits for the model load arrives minutes later and on a worker.
-    if a.dump_pae and (a.crop_margin > 0 or a.crop_tokens or a.crop_predicted_margin > 0):
-        raise SystemExit("STOP: --dump-pae cannot be combined with a crop. The dump and the "
-                         "per-structure PAE accumulator both assume ONE token layout per "
-                         "structure: _pae_accumulate keys its running sum by pdb, and _dump_pose "
-                         "indexes the PAE with the unit's asym_id. Under --crop-predicted-margin "
-                         "every pose has its own token count, and under --crop-margin/"
-                         "--crop-tokens the CA coordinates come from the full atom array while "
-                         "the indices come from the cropped one. Where the shapes happen to "
-                         "match it does not stop -- it writes the wrong chain pairs.")
-    if a.crop_predicted_margin > 0 and (a.crop_margin > 0 or a.crop_tokens):
-        raise SystemExit("STOP: --crop-predicted-margin cannot be combined with --crop-margin or "
-                         "--crop-tokens. They are three different crop rules and running two at "
-                         "once would label the result with whichever flag the reader noticed.")
-    if a.pose_split_check and (a.crop_margin > 0 or a.crop_tokens or a.crop_predicted_margin > 0):
-        raise SystemExit("STOP: --pose-split-check is the UNCROPPED control for pose splitting. "
-                         "With a crop on it would compare two things at once and prove nothing.")
-    if a.crop_tokens and a.crop_margin > 0:
-        raise SystemExit("STOP: --crop-tokens and --crop-margin both set. They are two different "
-                         "crop rules -- a precomputed label-free mask and a ground-truth "
-                         "interface crop -- and the run would apply one while the log named the "
-                         "other. Pass exactly one.")
-    if a.crop_tokens and not os.path.exists(a.crop_tokens):
-        raise SystemExit(f"STOP: --crop-tokens {a.crop_tokens} does not exist. Build it with "
-                         f"run_logging/build_union_crop_masks.py.")
     if a.dump_pae:
         if not a.pair_iptm_only:
             raise SystemExit("STOP: --dump-pae needs --pair-iptm-only; the PAE probabilities it "
@@ -1356,33 +1343,12 @@ def main():
     _pf_future = None
 
     rows, selfchk, n_nosample = [], [], 0
-    _CROPTOK = {}
-    if a.crop_tokens:
-        _ctz = np.load(a.crop_tokens)
-        # EXCLUDE __pairs AND __meta, NOT JUST __n. build_union_crop_masks writes three entries
-        # per structure -- <pdb>, <pdb>__n, <pdb>__pairs -- plus one __meta for the file. Filtering
-        # only __n left 53 real masks sitting in a dict of 107 entries, so the structure count
-        # printed below read 107, and __pairs (int chain indices) and __meta (a string blob) both
-        # survived .astype(bool) as plausible-looking masks rather than erroring. Nothing looked
-        # them up, because lookups are by pdb id, so the per-structure masks were never wrong --
-        # but any check of coverage against len(_CROPTOK) would have been. Raised in review of
-        # the label-free cropped eval, before the first --crop-tokens pass ever ran.
-        _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
-                    if not (k.endswith("__n") or k.endswith("__pairs") or k == "__meta")}
-        _ctn = {k[:-3]: np.asarray(_ctz[k]) for k in _ctz.files if k.endswith("__n")}
-        _kf = [float(v[1]) / float(v[2]) for v in _ctn.values()] or [float("nan")]
-        print(f"CROP: precomputed LABEL-FREE token masks from {a.crop_tokens} -- "
-              f"{len(_CROPTOK)} structure(s), median kept fraction {float(np.median(_kf)):.4f}, "
-              f"built from {int(np.median([v[0] for v in _ctn.values()]))} pose(s) each (median)")
+    # _CROPTOK AND --crop-tokens ARE GONE. The only crop rule left is --crop-pool's,
+    # which the TRAINER applies; the evaluator is uncropped except for
+    # --crop-predicted-margin, which derives its window from predicted coordinates
+    # and so needs no mask file.
     _n_cropped = _n_nocrop = _tok_full = _tok_kept = 0
     _labels_root = a.labels or os.path.join(a.fold, "labels")
-    if a.crop_margin > 0:
-        print(f"CROPPED SCORING: interface + {a.crop_margin:g} A margin, contact "
-              f"{a.crop_contact:g} A, all_poses={a.crop_all_poses}, labels {_labels_root}")
-    if a.crop_predicted_margin > 0:
-        print(f"CROPPED SCORING, PER POSE, FROM PREDICTED COORDINATES: interface + "
-              f"{a.crop_predicted_margin:g} A margin, contact {a.crop_contact:g} A. One forward "
-              f"pass per pose; token count varies between poses and so does ipTM's d0.")
     if a.pose_split_check:
         print("POSE-SPLIT CHECK: one pose per forward pass, NO crop. These scores must reproduce "
               "the batched path exactly, or every per-pose crop number is measuring the split.")
@@ -1401,106 +1367,26 @@ def main():
         # a failed join just drops the unit. The crop applies to what the HEAD consumes; px stays
         # whole. This also keeps every existing join cache valid, because the join is unchanged.
         _px_full = None
-        if a.crop_tokens:
-            # THE MASK IS LOOKED UP BY PDB AND ITS ABSENCE IS FATAL, never a silent fall-through
-            # to the full structure: a pass where half the units were cropped and half were not
-            # would still write a complete metric and name itself after the crop.
-            _kt = _CROPTOK.get(pdb)
-            if _kt is None:
-                raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb}. The file names "
-                                 f"{len(_CROPTOK)} structure(s); this pool needs {pdb} too. "
-                                 f"Rebuild the mask over this pool.")
-            _zc = np.load(tp)
-            _px_full = np.asarray(_zc["ci_coordinate"])
-            _a2t = np.asarray(_zc["ci_feat_atom_to_token_idx"]).reshape(-1)
-            _ntok = int(np.asarray(_zc["ci_feat_asym_id"]).reshape(-1).shape[0])
-            if _kt.shape[0] != _ntok:
-                raise SystemExit(f"STOP: {pdb}'s mask has {_kt.shape[0]} token(s) but its cached "
-                                 f"trunk has {_ntok}. The mask was built against a different "
-                                 f"cache and slicing with it would scramble the structure.")
-            _lp = os.path.join(_labels_root, pdb, f"free_{sd_}.npz")
-            if not os.path.exists(_lp):
-                raise SystemExit(f"STOP: --crop-tokens still needs the label npz to slice the "
-                                 f"unit's label arrays and {_lp} does not exist. The CROP is "
-                                 f"label-free; the slicing bookkeeping is not.")
-            _lab = np.load(_lp, allow_pickle=True)
-            _inr = (_a2t >= 0) & (_a2t < _ntok)
-            _ka = np.zeros(_a2t.shape[0], dtype=bool)
-            _ka[_inr] = _kt[_a2t[_inr]]
-            feat, s_in, s_tr, z, x, nc = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev, torch)[:6]
-            _n_cropped += 1
-            _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
-        elif a.crop_margin > 0:
-            _lp = os.path.join(_labels_root, pdb, f"free_{sd_}.npz")
-            if not os.path.exists(_lp):
-                raise SystemExit(f"STOP: --crop-margin needs a label npz and {_lp} does not "
-                                 f"exist. Point --labels at the right root, or drop the flag and "
-                                 f"score uncropped.")
-            _zc = np.load(tp)
-            _lab = np.load(_lp, allow_pickle=True)
-            _px_full = np.asarray(_zc["ci_coordinate"])
-            _kt, _ka = BC.interface_crop_tokens(_zc, _lab, a.crop_contact, a.crop_margin,
-                                                all_poses=a.crop_all_poses)
-            if _kt is None:
-                # THE TRAINER'S OWN BEHAVIOUR on an undefinable crop: train on the full structure
-                # rather than guess. Counted and reported, never silent.
-                feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
-                _n_nocrop += 1
-            else:
-                feat, s_in, s_tr, z, x, nc = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev,
-                                                                  torch)[:6]
-                _n_cropped += 1
-                _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
-        elif a.crop_predicted_margin > 0 or a.pose_split_check:
-            # ONE SLICE PER POSE. The crop is defined by THIS pose's predicted coordinates, so
-            # the unit has to be sliced once per pose rather than once per unit. Under
-            # --pose-split-check nothing is cropped and this is purely the split, which is the
-            # control that makes the cropped numbers readable.
+        # THE --crop-tokens AND --crop-margin BRANCHES WERE HERE and are deleted with their
+        # flags. --crop-margin derived the window from label_coordinate, so nothing it produced
+        # was a deployment number; --crop-tokens read a precomputed mask whose builder no longer
+        # exists. The crop the project uses is --crop-pool, applied by the TRAINER, and the
+        # evaluator stays uncropped apart from --crop-predicted-margin below.
+        if a.pose_split_check:
+            # ONE SLICE PER POSE, WITH NOTHING CROPPED. --crop-predicted-margin was deleted
+            # 2026-11-13 along with --crop-tokens and --crop-margin, leaving --crop-pool (applied
+            # by the TRAINER) as the only crop rule; the evaluator is uncropped. What survives
+            # here is the pose SPLIT, which was the control that made the cropped numbers
+            # readable and is still the way to check that splitting a unit per pose changes
+            # nothing on its own.
             _zc = np.load(tp)
             _px_full = np.asarray(_zc["ci_coordinate"])
             _perpose = []
-            if a.crop_predicted_margin > 0:
-                _lp = os.path.join(_labels_root, pdb, f"free_{sd_}.npz")
-                if not os.path.exists(_lp):
-                    raise SystemExit(f"STOP: --crop-predicted-margin needs {_lp} for the unit's "
-                                     f"slicing arrays. The CROP is label-free -- it reads only "
-                                     f"ci_coordinate -- but re-indexing the sliced unit is not.")
-                _lab = np.load(_lp, allow_pickle=True)
-                _pm = np.isfinite(_px_full).all(axis=-1)
-            # LOADED ONCE when nothing is cropped: under --pose-split-check all five slices are
-            # identical, and re-reading the unit per pose put five copies of a 333 MB npz on the
-            # device at once for no change in the result.
-            _u6_shared = RC.load_unit(tp, dev)[:6] if a.crop_predicted_margin <= 0 else None
+            # LOADED ONCE: all five slices are identical here, and re-reading the unit per pose
+            # put five copies of a 333 MB npz on the device at once for no change in the result.
+            _u6_shared = RC.load_unit(tp, dev)[:6]
             for _pi in range(_px_full.shape[0]):
-                _kt = None
-                if a.crop_predicted_margin > 0:
-                    _kt, _ka = BC.crop_tokens_from_coords(
-                        _zc, _lab, _px_full, _pm, a.crop_contact, a.crop_predicted_margin,
-                        poses=[_pi])
-                if _kt is None:
-                    # NO CONTACT AT ALL, or no crop asked for: score the whole structure. Counted
-                    # and printed, never silent -- 1 pose of 7,950 on valfull is a fully
-                    # dissociated decoy, and if that number ever grows the metric is quietly
-                    # becoming an uncropped one.
-                    _u6 = _u6_shared if _u6_shared is not None else RC.load_unit(tp, dev)[:6]
-                    if a.crop_predicted_margin > 0:
-                        _n_nocrop += 1
-                        # NOT NEGLIGIBLE BY COUNT ALONE. Selection is an argmax per interface, so
-                        # a single full-structure pose can be the one that wins. Recorded by
-                        # (pdb, seed, pose) so the aggregate can say whether one was selected.
-                        _fallback_pi.add(int(_pi))
-                else:
-                    _u6 = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev, torch)[:6]
-                    _n_cropped += 1
-                    _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
-                    # THE PREMISE OF THIS MODE, RECORDED -- BY MASK, NOT BY COUNT. Two crops
-                    # of equal size can be completely different token sets, so comparing counts
-                    # would call [0,1,4,5,6,7] and [0,1,2,3,6,7] "the same crop". The digest is
-                    # of the mask bits; the count is kept separately, as a spread diagnostic.
-                    _crop_sizes.setdefault(pdb, []).append(
-                        (int(_kt.sum()),
-                         hashlib.blake2b(np.packbits(_kt).tobytes(), digest_size=8).hexdigest()))
-                _perpose.append((_pi, _u6))
+                _perpose.append((_pi, _u6_shared))
             feat = _perpose[0][1][0]
         else:
             feat, s_in, s_tr, z, x, nc = RC.load_unit(tp, dev)
@@ -1729,50 +1615,10 @@ def main():
     # THE CROP IS REPORTED, NEVER ASSUMED. A --crop-margin that silently cropped nothing would
     # produce an "uncropped" number under a cropped label, which is the whole failure this run is
     # about.
-    if a.crop_margin > 0 or a.crop_tokens or a.crop_predicted_margin > 0:
-        _cm = ("--crop-margin %g" % a.crop_margin) if a.crop_margin > 0 else (
-            "--crop-tokens" if a.crop_tokens
-            else "--crop-predicted-margin %g" % a.crop_predicted_margin)
-        _kf = (_tok_kept / _tok_full) if _tok_full else float("nan")
-        # POSES, NOT UNITS, under the per-pose mode: it crops once per pose, so this counter
-        # reads ~7,950 on valfull where the per-unit modes read 53. Printing "unit(s)" either
-        # way is a misreading waiting to happen.
-        _what = "pose(s)" if a.crop_predicted_margin > 0 else "unit(s)"
-        print(f"\ncrop: {_n_cropped} {_what} cropped, {_n_nocrop} undefinable and scored whole; "
-              f"kept {_tok_kept}/{_tok_full} token(s) ({100*_kf:.1f}%)")
-        if a.crop_predicted_margin > 0 and _crop_sizes:
-            # DOES THE CROP ACTUALLY VARY BETWEEN POSES? Two separate questions, reported
-            # separately: how much the SIZE moves (which is what ipTM's d0 follows) and whether
-            # the token SET is ever literally identical across a structure's poses. Identical
-            # masks are a legitimate outcome, not proof of a broken rule, so this reports and
-            # does not stop -- an earlier version stopped on equal COUNTS, which is not even
-            # the same question.
-            _multi = {k: v for k, v in _crop_sizes.items() if len(v) > 1}
-            _sp = sorted(max(c for c, _ in v) - min(c for c, _ in v) for v in _multi.values())
-            _ident = sum(1 for v in _multi.values() if len({d for _, d in v}) == 1)
-            if _sp:
-                print(f"  per-pose crop, size spread within a structure (max-min tokens): "
-                      f"min {_sp[0]}, median {_sp[len(_sp)//2]}, max {_sp[-1]}")
-                print(f"  structures whose poses got a BIT-IDENTICAL mask: {_ident} of "
-                      f"{len(_multi)}" + ("   <-- the crop is not per-pose in effect"
-                                          if _ident == len(_multi) else ""))
-        if fallback_poses:
-            # SELECTION IS AN ARGMAX, so one full-structure pose among 7,950 can still be the
-            # one that wins an interface. Listed, and written beside the rows so the aggregate
-            # can say whether any of them was selected.
-            print(f"  {len(fallback_poses)} pose(s) scored on the FULL structure (no contact): "
-                  f"{fallback_poses[:10]}")
-            if a.rows_out:
-                with open(a.rows_out + ".fallback.json", "w") as _fh:
-                    json.dump([list(t) for t in fallback_poses], _fh)
-        if n_chain_gone:
-            print(f"  {n_chain_gone} pair(s) had a chain removed by the crop and were NOT "
-                  f"scored:")
-            for _g in chain_gone[:10]:
-                print(f"      {_g}")
-        if _n_cropped == 0:
-            raise SystemExit(f"STOP: {_cm} was passed and NOT ONE unit was cropped. The "
-                             f"metric would be an uncropped number wearing a cropped label.")
+    # THE PER-POSE CROP REPORT WAS HERE, with its kept-token fraction and the crop-size
+    # spread diagnostic. It went with --crop-predicted-margin on 2026-11-13; the evaluator
+    # no longer crops anything, so there is nothing to report.
+
     print(f"\njoin 1: OST's per-pose chain mapping used on {n_ost} pose(s), unresolvable on "
           f"{n_static}")
     if a.rows_out:
