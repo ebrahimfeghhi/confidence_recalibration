@@ -246,6 +246,36 @@ def main():
                          "run_logging/build_itm_labels.py, keyed (seed, sample, asym_x, asym_y) "
                          "-> g_mean, g_max. REQUIRED by --rank-form rel, which regresses on them "
                          "instead of on DockQ.")
+    ap.add_argument("--rel-std-floor", type=float, default=None, metavar="EPS",
+                    help="the clamp on the std each side of --rel-standardize is divided by. "
+                         "Defaults to rank_loss.DEFAULT_REL_STD_FLOOR = 0.02.\n"
+                         "WHY YOU WANT IT NEAR ZERO. Above the floor the standardised loss is "
+                         "exactly 2*(1 - corr), so shrinking the predictions changes nothing -- "
+                         "the division undoes it -- and only the ORDER can improve the loss. "
+                         "That is the whole point of standardising. The floor breaks it: below "
+                         "0.02 the clamp stops normalising, the prediction contributes ~0, and "
+                         "the loss falls to 1.0 -- which BEATS an uncorrelated ordering (2.0) "
+                         "and any anti-correlated one (up to 4.0). So the floor creates exactly "
+                         "the hedge standardising was meant to remove, for a head whose ordering "
+                         "is worse than corr +0.5. At 1e-8 the division is only guarding against "
+                         "0/0 and the invariance holds all the way down.\n"
+                         "ON THE TRUTH SIDE it is harmless either way: a flat-truth interface "
+                         "has a numerator that is zero too, and --rel-sd-weight already gives it "
+                         "a weight of ~0.")
+    ap.add_argument("--rel-sd-weight", action="store_true",
+                    help="MULTIPLY each interface's rel loss and gradient by the GROUND TRUTH's "
+                         "own within-interface std. Intended with --rel-standardize, which "
+                         "divides both sides by their std and so makes every interface count "
+                         "equally -- measured, corr(within-interface std of the true iTM, DockQ "
+                         "range) = +0.745, so the wide-spread interfaces are exactly where a "
+                         "wrong pick is expensive and the narrow ones have frac acceptable "
+                         "median 1.00. This restores that ordering of importance on top of the "
+                         "scale invariance. SD, NOT VARIANCE: the target is already divided by "
+                         "sigma_g, so sigma_g^2 would nearly cancel the standardisation. The "
+                         "weight comes from g, which does not depend on the parameters, so it "
+                         "scales the gradient exactly; it is NOT floored, because a genuinely "
+                         "flat interface should contribute nothing. ALPHA MUST BE RE-MEASURED "
+                         "with --grad-norm-every: scaling the loss scales its gradient.")
     ap.add_argument("--rel-standardize", action="store_true",
                     help="ABLATION. Also divide each interface's centred prediction and label by "
                          "its own std (floored), which makes the loss invariant to shrinking the "
@@ -2674,6 +2704,7 @@ def main():
                   f"L = (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2 per interface over all "
                   f"its seeds, alpha {a.alpha_rank:g}"
                   + (", STANDARDISED by the within-interface std" if a.rel_standardize else "")
+                  + (", WEIGHTED by the true within-interface std" if a.rel_sd_weight else "")
                   + f". Labels {a.rel_labels} ({_mj.get('structures', '?')} structure(s), "
                   f"{_mj.get('rows', '?')} row(s), column "
                   f"{'g_max' if a.rank_pool == 'max' else 'g_mean'}, digest "
@@ -3573,6 +3604,8 @@ def main():
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
+                 "rel_sd_weight": a.rel_sd_weight,
+                 "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                  # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
                  # shape, so a resume that moved any of them silently would be a different
                  # experiment wearing the same run id. FOURTH time a field has been added to this
@@ -3736,6 +3769,7 @@ def main():
                      "pose_perblock_share": False, "pose_perblock_copy": False,
                      "rank_loss": False, "alpha_rank": 1.0,
                      "rank_pool": "max", "rel_labels": "", "rel_standardize": False,
+                     "rel_sd_weight": False, "rel_std_floor": -1.0,
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
@@ -6227,7 +6261,10 @@ def main():
                 # NOT group_coeffs. rel is a regression, not a pairwise family, so none of the
                 # pairwise knobs apply and passing them would make flags look honoured.
                 c, npair, lval = RKL.rel_coeffs(s_by, dq_by,
-                                                standardize=a.rel_standardize)
+                                                standardize=a.rel_standardize,
+                                                sd_weight=a.rel_sd_weight,
+                                                **({} if a.rel_std_floor is None
+                                                   else {"std_floor": a.rel_std_floor}))
                 _rel_stat["groups"] += 1
                 _rel_stat["poses"] += npair
                 # DIAGNOSTIC 1: WITHIN-INTERFACE SPEARMAN of the predicted mean-pooled ipTM
@@ -7977,6 +8014,8 @@ def main():
                                   "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
+                 "rel_sd_weight": a.rel_sd_weight,
+                 "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                                   "rank_form": a.rank_form,
                                   "rank_cross_seed": a.rank_cross_seed,
                                   "rank_structs_per_step": a.rank_structs_per_step,
@@ -8578,6 +8617,23 @@ def main():
                               f"{_med(_rel_stat['sd_g']):.4f}, median ratio "
                               f"{_med(_rel_stat['sd_ratio']):.3f}   "
                               f"[<1 collapsing, >1 exaggerating, ~1 right magnitude]")
+                    # THE SAME MEDIANS, TO A FILE. Until now the print above was the only record
+                    # of the within-interface spread, so reading a 20-epoch curve out of it meant
+                    # grepping a log format that is free to change -- and the quantity the rel loss
+                    # exists to control was the one quantity not in any csv. One row per epoch per
+                    # rank, beside trajectory.csv. Per rank, not reduced: each rank sees its own
+                    # structures, an all-reduce here would be a collective in a print block, and
+                    # three near-identical medians are a cheap consistency check.
+                    _sp = os.path.join(a.out, f"spread.r{rank}.csv")
+                    _new = not os.path.exists(_sp)
+                    with open(_sp, "a") as _fh:
+                        if _new:
+                            _fh.write("epoch,n_ifaces,rho,sd_pred,sd_true,sd_ratio\n")
+                        _fh.write("%d,%d,%.6f,%.6f,%.6f,%.6f\n" % (
+                            ep + 1, len(_rh), _med(_rh),
+                            _med(_rel_stat.get("sd_s") or [float("nan")]),
+                            _med(_rel_stat.get("sd_g") or [float("nan")]),
+                            _med(_rel_stat.get("sd_ratio") or [float("nan")])))
                     for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio"):
                         _rel_stat[_k3] = []
                 # THE LINE NAMES THE OBJECTIVE THAT RAN. It once printed
