@@ -6294,6 +6294,21 @@ def main():
                     _rho = _spearman(_sv, _dv)
                     if _rho is not None:
                         _rel_stat.setdefault("rho", []).append(_rho)
+                    # DIAGNOSTIC 3: THE SELECTION METRIC ITSELF, in sample and for free.
+                    # _sv is this epoch's predicted ipTM for the interface's poses and _dv their
+                    # DockQ, already aligned -- so the pose the head would pick is _sv's argmax
+                    # and its DockQ is what top-1 selection would score. rho says whether the
+                    # ordering is right; this says whether being right there is worth anything,
+                    # which is the quantity the held-out eval reports and the one we are paid on.
+                    #
+                    # IT IS NOT THE HELD-OUT NUMBER AND MUST NOT BE READ AS ONE. These are
+                    # training interfaces, scored on the CROPPED poses this epoch happened to
+                    # forward, under whatever dropout was active. It moves with the held-out
+                    # metric only to the extent the arm generalises -- which is exactly the gap
+                    # worth watching, and why the oracle goes out beside it as the ceiling.
+                    _am = max(range(len(_sv)), key=lambda _j: _sv[_j])
+                    _rel_stat.setdefault("sel_dq", []).append(_dv[_am])
+                    _rel_stat.setdefault("orc_dq", []).append(max(_dv))
                 if len(_gv) == len(_sv) and len(_sv) >= 3:
                     _ms = sum(_sv) / len(_sv)
                     _mg = sum(_gv) / len(_gv)
@@ -8617,6 +8632,16 @@ def main():
                               f"{_med(_rel_stat['sd_g']):.4f}, median ratio "
                               f"{_med(_rel_stat['sd_ratio']):.3f}   "
                               f"[<1 collapsing, >1 exaggerating, ~1 right magnitude]")
+                    if _rel_stat.get("sel_dq"):
+                        _sq = _rel_stat["sel_dq"]
+                        _oq = _rel_stat["orc_dq"]
+                        _mean = sum(_sq) / len(_sq)
+                        _fa = sum(1 for _v in _sq if _v >= 0.23) / len(_sq)
+                        print(f"  [rank {rank}] epoch {ep + 1} IN-SAMPLE SELECTED DockQ: mean "
+                              f"{_mean:.4f}, frac acceptable {_fa:.4f} over {len(_sq)} "
+                              f"interface-group(s)   [oracle mean "
+                              f"{sum(_oq) / len(_oq):.4f}; CROPPED training poses, top-1 of this "
+                              f"epoch's own forward -- not the held-out number]")
                     # THE SAME MEDIANS, TO A FILE. Until now the print above was the only record
                     # of the within-interface spread, so reading a 20-epoch curve out of it meant
                     # grepping a log format that is free to change -- and the quantity the rel loss
@@ -8628,13 +8653,21 @@ def main():
                     _new = not os.path.exists(_sp)
                     with open(_sp, "a") as _fh:
                         if _new:
-                            _fh.write("epoch,n_ifaces,rho,sd_pred,sd_true,sd_ratio\n")
-                        _fh.write("%d,%d,%.6f,%.6f,%.6f,%.6f\n" % (
+                            _fh.write("epoch,n_ifaces,rho,sd_pred,sd_true,sd_ratio,"
+                                      "insample_dq,insample_frac,oracle_dq\n")
+                        _fh.write("%d,%d,%.6f,%.6f,%.6f,%.6f" % (
                             ep + 1, len(_rh), _med(_rh),
                             _med(_rel_stat.get("sd_s") or [float("nan")]),
                             _med(_rel_stat.get("sd_g") or [float("nan")]),
                             _med(_rel_stat.get("sd_ratio") or [float("nan")])))
-                    for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio"):
+                        _sq = _rel_stat.get("sel_dq") or []
+                        _oq = _rel_stat.get("orc_dq") or []
+                        _fh.write(",%.6f,%.6f,%.6f\n" % (
+                            (sum(_sq) / len(_sq)) if _sq else float("nan"),
+                            (sum(1 for _v in _sq if _v >= 0.23) / len(_sq)) if _sq
+                            else float("nan"),
+                            (sum(_oq) / len(_oq)) if _oq else float("nan")))
+                    for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio", "sel_dq", "orc_dq"):
                         _rel_stat[_k3] = []
                 # THE LINE NAMES THE OBJECTIVE THAT RAN. It once printed
                 # "({rank_form}, {rank_pairs}-seed pairs)" for every form, so a rel run -- which

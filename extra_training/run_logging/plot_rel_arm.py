@@ -3,11 +3,20 @@
 
     plot_rel_arm.py RID[,RID2,...] [OUT.png]
 
-Four panels, always the same four, because an arm is judged on all of them together:
+Six panels, always the same six, because an arm is judged on all of them together:
   PAE loss      the term that dominates the gradient
   rel           the ranking term this arm adds
   rho           median within-interface Spearman -- the ranking quality selection actually uses
   score spread  std(predicted) / std(true iTM); 1.0 means the predictions are as spread as truth
+  insample_dq   mean DockQ of the top-1 pose, on the CROPPED training poses of that epoch
+  insample_frac the same selection's fraction at or above DockQ 0.23
+
+THE TWO IN-SAMPLE PANELS ARE NOT THE HELD-OUT METRIC. They are training interfaces, scored on the
+cropped poses the epoch happened to forward and under whatever dropout was on, and they cost
+nothing because the predictions and the DockQ labels are both already in hand at the epoch
+boundary. They are here to show the train/held-out gap as it opens, not to stand in for a val
+number -- an arm that climbs here while the val curve does not is overfitting, and that is the
+whole reason to draw them.
 
 WHERE THE NUMBERS COME FROM, and why none of it lives here: the PAE curve is the ALL-RANKS
 batch_n-weighted mean from epoch_curve.epoch_means (trajectory.csv is rank 0's alone, so averaging
@@ -34,7 +43,9 @@ import epoch_curve as EC
 PANELS = [("pae", "PAE loss", "PAE loss (all ranks)"),
           ("rel", "relative iTM term", "rel loss"),
           ("rho", "within-interface Spearman vs DockQ", "median rho"),
-          ("spread", "score spread  std(pred) / std(true iTM)", "ratio")]
+          ("spread", "score spread  std(pred) / std(true iTM)", "ratio"),
+          ("insample_dq", "IN-SAMPLE selected DockQ (cropped, top-1)", "mean DockQ"),
+          ("insample_frac", "IN-SAMPLE frac acceptable (cropped, top-1)", "frac >= 0.23")]
 COLORS = ["tab:blue", "tab:red", "tab:green", "tab:purple"]
 
 
@@ -64,7 +75,7 @@ def main():
         raise SystemExit(f"STOP: no completed epochs for {rids}")
 
     plt.rcParams.update({"font.size": 11})
-    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+    fig, axes = plt.subplots(2, 3, figsize=(18, 8))
     for (key, title, ylab), ax in zip(PANELS, axes.ravel()):
         for i, r in enumerate(rids):
             series, partial, _chain = data[r]

@@ -120,6 +120,11 @@ LOG_SERIES = {
     "rel": r"\[rank 0\] epoch (\d+) rank-loss \(rel[^)]*\): ([+-][0-9.]+)",
     "rho": r"\[rank 0\] epoch (\d+) WITHIN-INTERFACE SPEARMAN[^:]*: median ([+-][0-9.]+)",
     "spread": r"\[rank 0\] epoch (\d+) SCORE SPREAD:.*?median ratio ([0-9.]+)",
+    # IN SAMPLE, CROPPED, TOP-1 OF THE TRAINING FORWARD. Not the held-out metric and not on the
+    # same axis as one -- see the trainer's own note at the print site.
+    "insample_dq": r"\[rank 0\] epoch (\d+) IN-SAMPLE SELECTED DockQ: mean ([0-9.]+)",
+    "insample_frac": (r"\[rank 0\] epoch (\d+) IN-SAMPLE SELECTED DockQ: mean [0-9.]+, "
+                      r"frac acceptable ([0-9.]+)"),
 }
 
 
