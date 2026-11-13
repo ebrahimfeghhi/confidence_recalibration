@@ -43,9 +43,27 @@ ACCEPTABLE = 0.23
 ap = argparse.ArgumentParser()
 ap.add_argument("--pool", default=POOL)
 ap.add_argument("--out", default="")
+ap.add_argument("--exclude-ifaces", default="",
+                help="comma-separated interface ids to leave out, e.g. 4zto_DF,4zto_EF. THE "
+                     "BASELINE MUST COVER THE SAME INTERFACES AS THE ARM IT IS READ AGAINST. "
+                     "insample_fullset drops an interface whose poses cannot all be scored -- "
+                     "4zto's OST chain mapping failed when its poses were generated -- so a "
+                     "baseline over the full 1688 would be compared against an arm over 1686 and "
+                     "the difference would be read as the arm.")
 a = ap.parse_args()
 
 rows = list(csv.DictReader(open(os.path.join(ROOT, a.pool))))
+_excl = {x.strip() for x in a.exclude_ifaces.split(",") if x.strip()}
+if _excl:
+    _before = len(rows)
+    rows = [r for r in rows
+            if f"{r['pdb']}_{r['chain1']}{r['chain2']}" not in _excl]
+    _gone = _before - len(rows)
+    if _gone != len(_excl):
+        sys.exit(f"STOP: --exclude-ifaces named {len(_excl)} interface(s) but {_gone} matched the "
+                 f"pool. A name that matches nothing means the baseline does not cover what it "
+                 f"was asked to.")
+    print(f"excluded {_gone} interface(s): {sorted(_excl)}")
 ifaces = [f"{r['pdb']}_{r['chain1']}{r['chain2']}" for r in rows]
 structs = sorted({r["pdb"] for r in rows})
 if len(set(ifaces)) != len(ifaces):

@@ -280,7 +280,12 @@ LORA_TARGETS="${LORA_TARGETS:-${LORA_EXCLUDE},${TRAIN_ONLY#*,}}"
 # builder first and the cover-all branch is never reached. That is harmless here -- the cross-seed
 # builder uses every seed of every structure each epoch by construction, which is what cover-all
 # exists to guarantee -- but it is stated because the flag is still being passed.
+# HELD-OUT EVAL CADENCE. The trigger is (ep+1) % EVAL_EVERY == 0, so 2 evaluates the EVEN epochs.
+# Each pass costs ~11 min on the same cards the epoch uses, against an ~11 min epoch, so halving
+# the cadence from 5 to 2 roughly doubles the run's wall clock.
+EVAL_EVERY="${EVAL_EVERY:-5}"
 ALPHA_RANK="${ALPHA_RANK:-}"
+CROP_ALLOW="${CROP_ALLOW:-training/crop_final/ost_usable_crops.json}"
 RANK_S="${RANK_S:-3}"
 REL_LABELS="${REL_LABELS:-training/fold/itm_labels}"
 RANK_LABELS="${RANK_LABELS:-training/fold/results.csv}"
@@ -296,7 +301,14 @@ if [ -n "$ALPHA_RANK" ]; then
   [ -f "$REL_LABELS/manifest.json" ] || {
       say "REFUSING: $REL_LABELS/manifest.json is missing, so the label set cannot be identified"
       exit 4; }
-  RANK_ARGS=(--rank-loss --rank-form rel --alpha-rank "$ALPHA_RANK"
+  # THE CROP ALLOWLIST IS PART OF THE RANKING ARM, not of the PAE one. The PAE term tolerates a
+  # crop whose scored pair is absent (it counts the pose as unmasked); rel's pass A refuses,
+  # which is what killed eqd2jx at step 117 of epoch 1 on 9o4o. 5 structures, 192 of 92,636
+  # crops withheld.
+  [ -f "$CROP_ALLOW" ] || { say "REFUSING: CROP_ALLOW $CROP_ALLOW is missing; build it with the"
+                            say "  OST crop audit before launching a ranking arm"; exit 4; }
+  RANK_ARGS=(--crop-allow "$CROP_ALLOW"
+             --rank-loss --rank-form rel --alpha-rank "$ALPHA_RANK"
              --rank-cross-seed --rank-structs-per-step "$RANK_S"
              --rel-labels "$REL_LABELS" --rank-labels "$RANK_LABELS"
              --rank-pool "$RANK_POOL_STAT")
@@ -315,7 +327,7 @@ ARGS=(--crop-pool "$POOL_DIR"
       --accum "$ACCUM" --nsample "$NSAMPLE"
       --skip-dead-ops --pose-perblock --pose-perblock-copy --frame-direction --lean-single
       --train-eval-pool "$EVAL_POOL" --train-eval-fold validation/fold
-      --train-eval-every 5 --train-eval-budget 30 --train-eval-seed-base 400000
+      --train-eval-every "$EVAL_EVERY" --train-eval-budget 30 --train-eval-seed-base 400000
       --epochs "$EPOCHS" --lr "$LR"
       "${RANK_ARGS[@]+${RANK_ARGS[@]}}")
 

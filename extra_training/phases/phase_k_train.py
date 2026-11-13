@@ -1207,6 +1207,22 @@ def main():
                          "SAME initial weights and reports the loss trend, then exits without "
                          "training. This is how --lr is chosen instead of inherited.")
     ap.add_argument("--probe-steps", type=int, default=30)
+    ap.add_argument("--crop-allow", default="",
+                    help="json of {pdb: [crop index, ...]} restricting which crops of a structure "
+                         "the epoch rotation may use. A structure absent from the file keeps its "
+                         "whole pool.\n"
+                         "WHAT IT IS FOR. --rank-form rel resolves an interface's chains through "
+                         "the PER-POSE OST mapping, because that is what its labels were built "
+                         "against; the crop pool and the launcher's preflight use the STATIC roles "
+                         "join. The two disagree about which copy of a duplicated chain an "
+                         "interface uses -- on 9o4o the static join says asyms (0,3) and OST says "
+                         "(0,2), the crop keeps 3 and drops 2 -- so the crop keeps the interface by "
+                         "the static definition while rel's lookup finds nothing and pass A's "
+                         "completeness guard stops the run. Measured on this pool: 5 structures "
+                         "and 192 of 92,636 crops (0.21%%), none left with zero usable crops.\n"
+                         "THE INDEX VALUES ARE THE ORIGINAL ONES, not a re-numbering, because the "
+                         "rel labels are keyed by crop_index and a compacted index would read "
+                         "another crop's target.")
     ap.add_argument("--grad-norm-every", type=int, default=0, metavar="K",
                     help="EVERY K OPTIMISER STEPS, measure the PAE and ranking gradients "
                          "SEPARATELY at identical weights and append |g_pae|, |g_rank|, their "
@@ -3825,7 +3841,25 @@ def main():
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
+        # rank_form IS INERT WHEN NEITHER SIDE RUNS A RANKING TERM, and comparing it then refuses
+        # a resume over a field that changed nothing.
+        #
+        # Every bundle written before the forms were cut down records rank_form 'linear', because
+        # that was the argparse default and it was saved whether or not --rank-loss was passed.
+        # 'rel' is now the only legal value, so EVERY pre-deletion PAE-only bundle became
+        # unresumable -- vdmheg's epoch 27 among them, which is how this was found. The field
+        # describes the SHAPE of a term that is not in the loss, so when rank_loss is false on
+        # both sides a difference cannot blend two experiments into one curve, which is the thing
+        # this guard exists to prevent.
+        #
+        # NARROW ON PURPOSE: if either side trains a ranking term, rank_form is compared as
+        # before. The alternative -- --resume-override rank_form -- would work once and would
+        # also disarm the guard for that field on the NEXT resume, which is exactly the
+        # disarming the override's own warning describes.
+        _rank_inert = (not bool(_g.get("rank_loss", False))) and (not bool(a.rank_loss))
         for k, v in _mine.items():
+            if k == "rank_form" and _rank_inert:
+                continue
             if k in _g:
                 if _g[k] != v:
                     _bad[k] = (_g[k], v)
@@ -4184,6 +4218,32 @@ def main():
     # {pdb: bincount of the UNCROPPED asym_id}, so n_pair_tokens for a pair (i, j) is
     # counts[i] + counts[j] exactly as (asym == i) | (asym == j) would have summed it.
     _UNCROP_CHAIN_N = {}
+    # VALIDATED AGAINST THE POOL AT LOAD, not trusted. An index past a structure's crop count, or
+    # an empty list, would otherwise surface as an IndexError hundreds of units in or silently
+    # pin every epoch to one crop.
+    _CROP_ALLOW = {}
+    if a.crop_allow:
+        # THE FLAG, NOT THE DICT. _CROPPOOL is filled LAZILY, one structure at a time as units
+        # arrive, so it is empty here even on a --crop-pool run -- the first version tested it and
+        # refused every launch with "has nothing to restrict". The bound check against each
+        # structure's crop count therefore cannot happen here either; it happens in _crop_masks,
+        # where _rows is in hand, on the first unit of each restricted structure.
+        if not a.crop_pool:
+            raise SystemExit("STOP: --crop-allow without --crop-pool has nothing to restrict.")
+        with open(a.crop_allow) as _fh:
+            _raw = json.load(_fh)
+        for _p, _v in _raw.items():
+            _vv = sorted({int(x) for x in _v})
+            if not _vv:
+                raise SystemExit(f"STOP: --crop-allow leaves {_p} with no usable crop.")
+            if _vv[0] < 0:
+                raise SystemExit(f"STOP: --crop-allow gives {_p} a negative index {_vv[0]}.")
+            _CROP_ALLOW[_p] = _vv
+        if is_main:
+            print(f"  --crop-allow: {len(_CROP_ALLOW)} structure(s) restricted from "
+                  f"{os.path.basename(a.crop_allow)}: "
+                  + ", ".join(f"{_p} {len(_v)} crop(s)"
+                              for _p, _v in sorted(_CROP_ALLOW.items())))
 
     def _uncrop_npt(pdb_, pair_):
         """Uncropped scored chain-pair token count, or None when not cropping."""
@@ -4270,7 +4330,18 @@ def main():
             # its own eligible anchors, so a fixed rotation gives the same view distribution as a
             # random one and makes two runs on the same pool reproducible. The crop_index used
             # here MUST be the one the labels were keyed by -- see _rel_labels.
-            _ci = int(_crop_epoch[0]) % len(_rows)
+            # THE ROTATION RUNS OVER THE ALLOWED CROPS, which is the whole pool unless
+            # --crop-allow names this structure. Still epoch % n rather than a draw, so two runs
+            # on the same pool and allowlist see the same sequence.
+            _alw = _CROP_ALLOW.get(pdb_) if _CROP_ALLOW else None
+            if _alw and max(_alw) >= len(_rows):
+                raise SystemExit(f"STOP: --crop-allow gives {pdb_} crop index {max(_alw)} but its "
+                                 f"pool holds {len(_rows)}. The allowlist was built against a "
+                                 f"different crop pool.")
+            if _alw:
+                _ci = int(_alw[int(_crop_epoch[0]) % len(_alw)])
+            else:
+                _ci = int(_crop_epoch[0]) % len(_rows)
             kt_ = np.zeros(ntok_, dtype=bool)
             _idx = _rows[_ci]
             if _idx.size and int(_idx.max()) >= ntok_:
