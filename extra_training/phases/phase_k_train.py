@@ -322,6 +322,19 @@ def main():
                          "the run refuses. REQUIRES --rel-standardize; mutually exclusive with "
                          "--rel-g-weight and --rel-g-sigmoid, which are different per-pose "
                          "weights. ALPHA MUST BE RE-MEASURED with --grad-norm-every.")
+    ap.add_argument("--rank-diag-only", action="store_true",
+                    help="RUN THE PER-POSE SCORING AND ITS DIAGNOSTICS WITHOUT TRAINING ON THEM. "
+                         "Every ranking diagnostic -- within-interface Spearman, score spread, "
+                         "in-sample top-1, the rank of the first acceptable pose, the "
+                         "acceptable-minus-unacceptable score gap -- needs a predicted score per "
+                         "pose, and that scoring only ran when the ranking loss was on. So a "
+                         "PAE-only arm could not be measured on the quantity it is meant to "
+                         "improve. This runs the scoring and leaves the loss alone: _xs_coef is "
+                         "never populated, so no coefficient reaches the pose loop and no term is "
+                         "added. --alpha-rank 0 would also zero the term, but the run's args.json "
+                         "and banner would then say rank_loss: True, which is the wrong record. "
+                         "Needs --rank-cross-seed and --rel-labels; refuses together with "
+                         "--rank-loss, which already does the scoring.")
     ap.add_argument("--rel-standardize", action="store_true",
                     help="ABLATION. Also divide each interface's centred prediction and label by "
                          "its own std (floored), which makes the loss invariant to shrinking the "
@@ -1495,6 +1508,19 @@ def main():
         if not 0.0 < a.rel_balance_accept < 1.0:
             raise SystemExit(f"STOP: --rel-balance-accept {a.rel_balance_accept} is not a DockQ "
                              f"threshold in (0, 1).")
+    if a.rank_diag_only:
+        if a.rank_loss:
+            raise SystemExit("STOP: --rank-diag-only with --rank-loss is contradictory -- the "
+                             "ranking loss already runs the scoring and its diagnostics. Pass "
+                             "one.")
+        if not a.rank_cross_seed:
+            raise SystemExit("STOP: --rank-diag-only needs --rank-cross-seed; the per-pose "
+                             "scoring is built per interface across its seeds and there is no "
+                             "other path to it.")
+        if not a.rel_labels:
+            raise SystemExit("STOP: --rank-diag-only needs --rel-labels. The diagnostics compare "
+                             "the predicted score against the TRUE iTM, and without the label "
+                             "cache there is nothing to compare it to.")
     if a.rel_g_weight and not a.rel_standardize:
         raise SystemExit("STOP: --rel-g-weight needs --rel-standardize. The weight is defined on "
                          "the z-scored error, and the unstandardised path uses a closed-form "
@@ -6211,7 +6237,7 @@ def main():
         """
         _xs_coef.clear()
         _xs_div[0] = 1
-        if not (a.rank_cross_seed and a.rank_loss) or a.loss_only:
+        if not (a.rank_cross_seed and (a.rank_loss or a.rank_diag_only)) or a.loss_only:
             return
         import rank_loss as RKL
         _rng_cpu = torch.get_rng_state()
@@ -6442,6 +6468,41 @@ def main():
                     _am = max(range(len(_sv)), key=lambda _j: _sv[_j])
                     _rel_stat.setdefault("sel_dq", []).append(_dv[_am])
                     _rel_stat.setdefault("orc_dq", []).append(max(_dv))
+                    # DIAGNOSTIC 4: THE THREE READS THAT MOVE BEFORE TOP-1 DOES.
+                    #
+                    # RANK OF THE FIRST ACCEPTABLE POSE. Top-1 is a step function -- it only
+                    # changes when the argmax crosses the threshold -- so an arm can improve for
+                    # several epochs with top-1 flat. The rank of the first acceptable pose is
+                    # the same ordering read continuously: 1 means top-1 succeeded, 40 of 75
+                    # means the acceptable poses are sitting in the middle of the list.
+                    #
+                    # SCORE GAP. Mean predicted score of the acceptable poses minus the mean of
+                    # the unacceptable ones, per list. It is the quantity the balanced loss acts
+                    # on directly, and it is signed: at or below 0 the head prefers the bad poses.
+                    #
+                    # SELECTED DockQ AS A FRACTION OF HEADROOM, with the floor being the mean
+                    # DockQ over ALL of the list's poses -- the expected score of a RANDOM pick --
+                    # and the ceiling the best pose. 0 means "no better than picking blind", 1
+                    # means the oracle. The floor is the random pick and NOT the shipped head
+                    # because shipped's per-list number is not available inside a training run,
+                    # and a floor that is not actually computed here would be a different
+                    # quantity from the one the ceiling table reports.
+                    _ACC = 0.23
+                    _ord = sorted(range(len(_sv)), key=lambda _j: -_sv[_j])
+                    _fr = next((_r + 1 for _r, _j in enumerate(_ord) if _dv[_j] >= _ACC), None)
+                    if _fr is not None:
+                        _rel_stat.setdefault("first_acc_rank", []).append(_fr)
+                    _hi = [_sv[_j] for _j in range(len(_sv)) if _dv[_j] >= _ACC]
+                    _lo = [_sv[_j] for _j in range(len(_sv)) if _dv[_j] < _ACC]
+                    if _hi and _lo:
+                        _rel_stat.setdefault("score_gap", []).append(
+                            sum(_hi) / len(_hi) - sum(_lo) / len(_lo))
+                    _base = sum(_dv) / len(_dv)
+                    _orc = max(_dv)
+                    if _orc - _base > 1e-9:
+                        _rel_stat.setdefault("headroom", []).append(
+                            (_dv[_am] - _base) / (_orc - _base))
+                    _rel_stat.setdefault("acc_top1", []).append(1.0 if _dv[_am] >= _ACC else 0.0)
                 if len(_gv) == len(_sv) and len(_sv) >= 3:
                     _ms = sum(_sv) / len(_sv)
                     _mg = sum(_gv) / len(_gv)
@@ -6469,7 +6530,12 @@ def main():
             _xs_stat["pairs"] += npair
             _xs_stat["loss"] += lval
             for (_sd, _i), _cv in c.items():
-                _xs_coef[(_pdb, _sd, _i, _pair)] = _cv
+                if not a.rank_diag_only:
+                    # THE ONLY ROUTE from a coefficient to the loss: the pose loop reads
+                    # _xs_coef and multiplies by alpha. Leaving it empty under --rank-diag-only
+                    # means the term cannot be added by construction, rather than being
+                    # multiplied by a zero someone could later change.
+                    _xs_coef[(_pdb, _sd, _i, _pair)] = _cv
         _xs_div[0] = max(1, n_groups)
         # PER-STEP, not cumulative. Pass A is REPLICATED -- it fills _xs_coef for the poses of
         # step_units across ALL ranks -- so n_groups is identical on every rank and the skip
@@ -8748,7 +8814,7 @@ def main():
             # ranked above everything still gets pushed up: the loss can fall by widening gaps
             # that were already correct, with the inverted fraction unchanged. The within-seed
             # inversion rate has to be read separately -- see run_logging/rank_rho.py.
-            if a.rank_loss and a.rank_cross_seed and _xs_stat["groups"]:
+            if (a.rank_loss or a.rank_diag_only) and a.rank_cross_seed and _xs_stat["groups"]:
                 # THE LOSS VALUE IS ACCUMULATED IN PASS A, not reconstructed from the
                 # coefficients: rel's value is a sum of squares, so sum_i c_i s_i is not it.
                 # 0 is the floor, not "no alignment".
@@ -8781,6 +8847,20 @@ def main():
                             print(f"    one-sided: "
                                   f"{', '.join(_rel_stat['bal_onesided_ifaces'][:8])}"
                                   + (" ..." if _one > 8 else ""))
+                    if _rel_stat.get("first_acc_rank") or _rel_stat.get("score_gap"):
+                        _fa = _rel_stat.get("first_acc_rank") or []
+                        _sg = _rel_stat.get("score_gap") or []
+                        _hd = _rel_stat.get("headroom") or []
+                        _t1 = _rel_stat.get("acc_top1") or []
+                        print(f"  [rank {rank}] epoch {ep + 1} RANKING READS ({a.rank_pool}"
+                              f"-pooled, the readout this arm uses): top-1 acceptable "
+                              f"{(sum(_t1) / len(_t1) if _t1 else float('nan')):.1%} over "
+                              f"{len(_t1)} list(s); median rank of the first acceptable pose "
+                              f"{_med(_fa) if _fa else float('nan')}; score gap "
+                              f"{(sum(_sg) / len(_sg) if _sg else float('nan')):+.5f} over "
+                              f"{len(_sg)} two-class list(s); selected DockQ at "
+                              f"{(sum(_hd) / len(_hd) if _hd else float('nan')):.1%} of headroom "
+                              f"above a random pick")
                     if _rel_stat.get("sel_dq"):
                         _sq = _rel_stat["sel_dq"]
                         _oq = _rel_stat["orc_dq"]
@@ -8817,7 +8897,8 @@ def main():
                             else float("nan"),
                             (sum(_oq) / len(_oq)) if _oq else float("nan")))
                     for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio", "sel_dq", "orc_dq",
-                                "bal_nacc", "bal_onesided_ifaces"):
+                                "bal_nacc", "bal_onesided_ifaces",
+                                "first_acc_rank", "score_gap", "headroom", "acc_top1"):
                         _rel_stat[_k3] = []
                     _rel_stat["bal_lists"] = 0
                     _rel_stat["bal_onesided"] = 0
