@@ -9087,9 +9087,20 @@ def main():
                 _rank_seen["units"] = 0
             # THE PAE LOSS, SPLIT BY POSE GROUP. OUTSIDE the ranking gate above, which is the
             # whole point: that gate needs --rank-cross-seed and a non-empty pass A, and this
-            # read exists for an arm that runs neither. Per rank and not reduced, like the
-            # spread medians below -- each rank sees its own structures and an all-reduce in a
-            # print block is a collective nothing else here takes.
+            # read exists for an arm that runs neither.
+            #
+            # ALL-REDUCED ACROSS RANKS, and it has to be. The epoch deals 1,173 units x 5 poses
+            # over three ranks, so a rank-local line covers a THIRD of the epoch -- and because
+            # acceptable poses are only ~3.5% of the population, that third swings the acceptable
+            # count 51-80 between epochs. The first four epochs of 7c8koq were read off rank 0
+            # alone and the acceptable mean moved 4.26-4.75 on which poses the shuffle dealt that
+            # rank, not on anything the model did. A diagnostic that moves with the deal is worse
+            # than no diagnostic.
+            #
+            # THE COLLECTIVE IS UNCONDITIONAL once _ps_on, which is a flag and so identical on
+            # every rank. Guarding it on "this rank classified something" would hang the run the
+            # first time a rank's draw held no acceptable pose -- the defect that made _gn_emit's
+            # early return a hang risk.
             #
             # WHAT TO READ: the two means separately, over epochs. The aggregate pae_loss falls
             # whichever group is being fit, so only the DIFFERENCE says whether one is being
@@ -9097,19 +9108,28 @@ def main():
             # over different, unequal populations and a count that moves between epochs changes
             # a mean without any pose's loss changing.
             if _ps_on:
-                _pm_a = ((_rel_stat["ps_acc_sum"] / _rel_stat["ps_acc_n"])
-                         if _rel_stat["ps_acc_n"] else float("nan"))
-                _pm_u = ((_rel_stat["ps_un_sum"] / _rel_stat["ps_un_n"])
-                         if _rel_stat["ps_un_n"] else float("nan"))
-                print(f"  [rank {rank}] epoch {ep + 1} PAE BY POSE GROUP (DockQ "
+                _ps_keys = ("ps_acc_sum", "ps_acc_n", "ps_un_sum", "ps_un_n",
+                            "ps_straddle", "ps_unclass", "ps_batched")
+                if world > 1:
+                    _ps_t = torch.tensor([float(_rel_stat.get(_k) or 0.0) for _k in _ps_keys],
+                                         dtype=torch.float64)
+                    dist.all_reduce(_ps_t, op=dist.ReduceOp.SUM)
+                    _ps_all = {_k: float(_v) for _k, _v in zip(_ps_keys, _ps_t.tolist())}
+                else:
+                    _ps_all = {_k: float(_rel_stat.get(_k) or 0.0) for _k in _ps_keys}
+                _pm_a = ((_ps_all["ps_acc_sum"] / _ps_all["ps_acc_n"])
+                         if _ps_all["ps_acc_n"] else float("nan"))
+                _pm_u = ((_ps_all["ps_un_sum"] / _ps_all["ps_un_n"])
+                         if _ps_all["ps_un_n"] else float("nan"))
+                print(f"  [all {world} rank(s)] epoch {ep + 1} PAE BY POSE GROUP (DockQ "
                       f"{a.pae_split_accept:g}, CROPPED training batches, the loss this arm "
-                      f"trains on): acceptable {_pm_a:.4f} over {_rel_stat['ps_acc_n']} pose(s), "
-                      f"unacceptable {_pm_u:.4f} over {_rel_stat['ps_un_n']} pose(s), "
+                      f"trains on): acceptable {_pm_a:.4f} over {int(_ps_all['ps_acc_n'])} pose(s), "
+                      f"unacceptable {_pm_u:.4f} over {int(_ps_all['ps_un_n'])} pose(s), "
                       f"acceptable minus unacceptable {_pm_a - _pm_u:+.4f}; "
-                      f"{_rel_stat['ps_straddle']} pose(s) STRADDLED the threshold across their "
-                      f"interfaces and are in neither, {_rel_stat['ps_unclass']} unclassified"
-                      + (f" ({_rel_stat['ps_batched']} of them --pose-batch rows, whose pae_loss "
-                         f"is a mean over the batch)" if _rel_stat["ps_batched"] else "")
+                      f"{int(_ps_all['ps_straddle'])} pose(s) STRADDLED the threshold across their "
+                      f"interfaces and are in neither, {int(_ps_all['ps_unclass'])} unclassified"
+                      + (f" ({int(_ps_all['ps_batched'])} of them --pose-batch rows, whose pae_loss "
+                         f"is a mean over the batch)" if _ps_all["ps_batched"] else "")
                       + "   [one group falling while the other does not is the signal]",
                       flush=True)
             # THE SAME MEDIANS, TO A FILE. Until now the print above was the only record
@@ -9155,13 +9175,16 @@ def main():
                         (sum(1 for _v in _sq if _v >= 0.23) / len(_sq)) if _sq
                         else float("nan"),
                         (sum(_oq) / len(_oq)) if _oq else float("nan")))
-                    _na = _rel_stat["ps_acc_n"]
-                    _nu = _rel_stat["ps_un_n"]
-                    _ma = (_rel_stat["ps_acc_sum"] / _na) if _na else float("nan")
-                    _mu = (_rel_stat["ps_un_sum"] / _nu) if _nu else float("nan")
-                    _fh.write(",%.6f,%.6f,%d,%d,%d,%d,%.6f\n" % (
-                        _ma, _mu, _na, _nu,
-                        _rel_stat["ps_straddle"], _rel_stat["ps_unclass"], _ma - _mu))
+                    if _ps_on:
+                        _na = int(_ps_all["ps_acc_n"])
+                        _nu = int(_ps_all["ps_un_n"])
+                        _ma = (_ps_all["ps_acc_sum"] / _na) if _na else float("nan")
+                        _mu = (_ps_all["ps_un_sum"] / _nu) if _nu else float("nan")
+                        _fh.write(",%.6f,%.6f,%d,%d,%d,%d,%.6f\n" % (
+                            _ma, _mu, _na, _nu, int(_ps_all["ps_straddle"]),
+                            int(_ps_all["ps_unclass"]), _ma - _mu))
+                    else:
+                        _fh.write(",,,,,,\n")
                 for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio", "sel_dq", "orc_dq",
                             "bal_nacc", "bal_onesided_ifaces",
                             "first_acc_rank", "score_gap", "headroom", "acc_top1"):

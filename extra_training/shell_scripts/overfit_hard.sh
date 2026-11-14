@@ -63,6 +63,7 @@ done
 PRE=$(newest_rid)
 say "=== overfit on 151 hard lists, 60 epochs, no eval, no dropout ==="
 SUBSET_OK=1 \
+PREFLIGHT=training/overfit_hard/alignment_preflight.json \
 MANIFEST=training/overfit_hard/structures.csv \
 SCORED_PAIRS=training/overfit_hard/pool.csv \
 CARDS=4,5,7 EPOCHS=60 EVAL_EVERY=0 LR=1e-3 \

@@ -63,6 +63,12 @@ MANIFEST="${MANIFEST:-train_val_splits/cache_train_structures_extended.csv}"
 # interfaces, so narrowing it narrows the whole objective -- which is what an overfit test on a
 # subset needs. It was hardcoded, so a subset arm could only be built by editing the launcher.
 SCORED_PAIRS="${SCORED_PAIRS:-training/combined/pool.csv}"
+# THE ALIGNMENT MARKER IS TIED TO A MANIFEST DIGEST, so a run over a different population needs
+# its own. The default covers the 851-structure training manifest; a subset arm must point at a
+# marker built over ITS manifest, or the trainer refuses -- correctly, since the default marker
+# says nothing about those structures. phases/phase_k_alignment_preflight.py builds one in ~90 s
+# on 12 workers for 95 structures.
+PREFLIGHT="${PREFLIGHT:-training/alignment_preflight_sharded.json}"
 SKIP="${SKIP:-4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m}"
 CARDS="${CARDS:-4,5,7}"
 EPOCHS="${EPOCHS:-50}"
@@ -439,10 +445,17 @@ killed 3pdv7i, where the pool used static and the RANKING loss used the per-pose
 Held-out eval every 5 epochs on valfull83, UNCROPPED, so every historical number stays \
 comparable. 50 epochs."
 
+if [ "${AUTOPLOT:-1}" = "1" ]; then
+  nohup ./shell_scripts/autoplot.sh > training/runs/autoplot_$(date +%H%M%S).log 2>&1 &
+  say "autoplot armed (pid $!) -- it will attach to this run and redraw every epoch"
+else
+  say "AUTOPLOT=0: no per-epoch figure will be drawn for this run"
+fi
+
 say "LAUNCH"
 LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   --numa-map 0:0,1:0,2:1 --note "$NOTE" -- "${ARGS[@]}" \
-  --alignment-preflight training/alignment_preflight_sharded.json \
+  --alignment-preflight "$PREFLIGHT" \
   --manifest-selection "$MANIFEST" --manifest-skip "$SKIP" \
   --fold training/fold --indices training/prep/all857_indices.csv \
   --pae-scored-pairs "$SCORED_PAIRS" \
