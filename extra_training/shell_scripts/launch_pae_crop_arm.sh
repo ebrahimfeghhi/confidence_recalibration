@@ -345,6 +345,9 @@ REL_BALANCE_ACCEPT="${REL_BALANCE_ACCEPT:-}"
 # PAE_SPLIT_ACCEPT turns on the per-epoch PAE-loss-by-group diagnostic at that DockQ threshold.
 EXTRA_EVAL="${EXTRA_EVAL:-}"
 PAE_SPLIT_ACCEPT="${PAE_SPLIT_ACCEPT:-}"
+# PAE_BALANCE_ACCEPT reweights the PAE loss itself so each list's acceptable poses carry half of
+# it. Unlike PAE_SPLIT_ACCEPT, which only reports, this CHANGES THE OBJECTIVE.
+PAE_BALANCE_ACCEPT="${PAE_BALANCE_ACCEPT:-}"
 RANK_DIAG_ONLY="${RANK_DIAG_ONLY:-}"
 # OFF BY DEFAULT. The gradient split costs one extra backward per pose on a measured step, and
 # the real arm does not need it: beta is estimated once by the one-epoch diagnostic
@@ -394,6 +397,10 @@ ARGS=(--crop-pool "$POOL_DIR"
       "${RANK_ARGS[@]+${RANK_ARGS[@]}}")
 
 say "argv the trainer would receive:"
+[ -n "$PAE_SPLIT_ACCEPT" ] && ARGS+=(--pae-split-accept "$PAE_SPLIT_ACCEPT")
+[ -n "$PAE_BALANCE_ACCEPT" ] && ARGS+=(--pae-balance-accept "$PAE_BALANCE_ACCEPT")
+[ -n "$RANK_DIAG_ONLY" ] && ARGS+=(--rank-diag-only)
+
 if [ -n "$EXTRA_EVAL" ]; then
   _IFS_SAVE="$IFS"; IFS=';'
   for _spec in $EXTRA_EVAL; do
@@ -459,8 +466,6 @@ LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   --manifest-selection "$MANIFEST" --manifest-skip "$SKIP" \
   --fold training/fold --indices training/prep/all857_indices.csv \
   --pae-scored-pairs "$SCORED_PAIRS" \
-  ${PAE_SPLIT_ACCEPT:+--pae-split-accept "$PAE_SPLIT_ACCEPT"} \
-  ${RANK_DIAG_ONLY:+--rank-diag-only} \
   --pae-scored-roles training/fold/chain_roles_all.csv \
   --lean-readouts --train-only "$TRAIN_ONLY" --expect-trainable 113 \
   --warmup-steps 20 --seed 0 --clip-norm 25.0 \

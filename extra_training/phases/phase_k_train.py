@@ -338,6 +338,27 @@ def main():
                          "PAE-only. NEEDS --pae-scored-pairs (there is no interface to classify "
                          "without it) and DockQ labels (--rank-labels, else <fold>/results.csv); "
                          "both are refused at STARTUP.")
+    ap.add_argument("--pae-balance-accept", type=float, default=0.0, metavar="DOCKQ",
+                    help="REWEIGHT THE PAE LOSS so each list's acceptable poses carry half of it. "
+                         "Within one interface, an acceptable pose (DockQ >= DOCKQ) gets weight "
+                         "0.5/n_acceptable and an unacceptable one 0.5/n_unacceptable, so in a "
+                         "2-of-75 list that is 0.25 against 0.00685 -- a 36x ratio where the plain "
+                         "mean gives the two good poses 2.7 percent of the gradient between them. "
+                         "0 (default) is off.\n"
+                         "A POSE IN SEVERAL LISTS TAKES THE MEAN OF ITS PER-LIST WEIGHTS. The PAE "
+                         "loss is ONE number per pose covering all its interfaces, and 82 percent "
+                         "of these structures carry more than one, so a pose can be acceptable in "
+                         "AB and not in AC; 0.25 and 0.00685 average to 0.128, which still "
+                         "outweighs a pose that is bad in both. The consequence, stated because it "
+                         "is real: 'each group carries half the list' then holds EXACTLY only for "
+                         "lists with no straddlers.\n"
+                         "THE WEIGHTS ARE NORMALISED BY THEIR POOL MEAN, computed once at startup "
+                         "over every (pose, interface) in --pae-scored-pairs, so the objective "
+                         "keeps the scale an unweighted arm has and the learning rate still means "
+                         "what it meant. Without that the loss shrinks ~100x and the arm is a "
+                         "learning-rate experiment wearing a weighting costume.\n"
+                         "Needs --pae-scored-pairs and DockQ labels. Pairs with "
+                         "--pae-split-accept, which then reports the same groups it weights.")
     ap.add_argument("--rank-diag-only", action="store_true",
                     help="RUN THE PER-POSE SCORING AND ITS DIAGNOSTICS WITHOUT TRAINING ON THEM. "
                          "Every ranking diagnostic -- within-interface Spearman, score spread, "
@@ -1547,6 +1568,14 @@ def main():
                 f"STOP: --pae-split-accept {a.pae_split_accept:g} needs DockQ labels to put each "
                 f"pose in a group, and there are none at {_ps_lab0}. Pass --rank-labels, or drop "
                 f"the flag.")
+    if a.pae_balance_accept:
+        if not 0.0 < a.pae_balance_accept < 1.0:
+            raise SystemExit(f"STOP: --pae-balance-accept {a.pae_balance_accept} is not a DockQ "
+                             f"threshold in (0, 1).")
+        if not a.pae_scored_pairs:
+            raise SystemExit("STOP: --pae-balance-accept needs --pae-scored-pairs. The weights "
+                             "are per INTERFACE, and without the pool there are no interfaces to "
+                             "count acceptable poses within.")
     if a.rank_diag_only:
         if a.rank_loss:
             raise SystemExit("STOP: --rank-diag-only with --rank-loss is contradictory -- the "
@@ -2996,7 +3025,8 @@ def main():
     # its child argv explicitly and does not forward the parent's flags, so this never reaches the
     # measurement subprocess -- which reads the VALIDATION fold and has no training-fold
     # results.csv to load. That is the class of bug this file has already paid for five times.
-    _ps_on = float(a.pae_split_accept) > 0.0
+    _pb_on = float(a.pae_balance_accept) > 0.0
+    _ps_on = float(a.pae_split_accept) > 0.0 or _pb_on
     if _ps_on:
         _ps_src = "the ranking labels already loaded"
         if not _rank_lab:
@@ -3087,6 +3117,107 @@ def main():
                 st["ps_un_n"] += 1
         except (Exception, SystemExit):                      # noqa: BLE001
             st["ps_unclass"] += 1
+
+    # ---- --pae-balance-accept: per-interface class counts and the pool-mean normaliser --------
+    _pb_cnt, _pb_norm = {}, 1.0
+    if _pb_on:
+        # COUNTED OVER THE WHOLE LIST, NOT OVER AN EPOCH'S DRAW. The weight 0.5/n_acceptable is a
+        # property of the interface, so n must be every scored pose of that interface -- counting
+        # within a step would make a pose's weight depend on which other poses happened to be
+        # dealt with it.
+        _pb_thr = float(a.pae_balance_accept)
+        for _ifc, _per in _rank_lab.items():
+            # _rank_lab is keyed (pdb, seed, asym pair) -> {sample: dockq}; the weight is per
+            # INTERFACE, so the seeds of one interface pool together.
+            _key = (_ifc[0], _ifc[2])
+            _a0, _u0 = _pb_cnt.get(_key, (0, 0))
+            for _dq in _per.values():
+                try:
+                    _f = float(_dq)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(_f):
+                    continue
+                if _f >= _pb_thr:
+                    _a0 += 1
+                else:
+                    _u0 += 1
+            _pb_cnt[_key] = (_a0, _u0)
+        # THE NORMALISER IS THE MEAN WEIGHT OVER EVERY (POSE, INTERFACE) IN THE POOL, computed
+        # once from the labels so it is a constant of the run and not of a batch. Without it the
+        # weights -- 0.25 down to 0.00685 -- shrink the objective by ~100x and the arm becomes a
+        # learning-rate experiment wearing a weighting costume.
+        _wsum, _wn = 0.0, 0
+        for (_p0, _pr0), (_a0, _u0) in _pb_cnt.items():
+            if _a0:
+                _wsum += (0.5 / _a0) * _a0
+                _wn += _a0
+            if _u0:
+                _wsum += (0.5 / _u0) * _u0
+                _wn += _u0
+        _pb_norm = (_wsum / _wn) if _wn else 1.0
+        print(f"  --pae-balance-accept {_pb_thr:g}: {len(_pb_cnt)} interface(s) counted, mean "
+              f"per-(pose,interface) weight {_pb_norm:.6g}; every pose weight is divided by it "
+              f"so the objective keeps an unweighted arm's scale", flush=True)
+        if not _pb_cnt:
+            raise SystemExit("STOP: --pae-balance-accept counted no interface. The DockQ labels "
+                             "cover none of --pae-scored-pairs, so every weight would be the "
+                             "same and the flag would do nothing while claiming to.")
+
+    def _pae_balance_weight(pdb, lab_p, lab, arm_seed, i, samp_hint, nb):
+        """This pose's PAE weight: the MEAN of its per-interface weights, normalised. 1.0 on doubt.
+
+        THE SAME TWO-STEP LOOKUP as _pae_split_tally -- _pose_pairs for the interfaces this pose
+        actually scores, _rel_dqkey for the static pair that indexes _rank_lab, and the SAMPLE
+        index rather than the pose index. That join has been wrong twice in this file.
+
+        A WEIGHT OF 1.0 WHEN THE CLASS CANNOT BE ESTABLISHED, which is the opposite of the
+        diagnostic's "exclude and count". A diagnostic can drop a pose; the objective cannot --
+        dropping it would silently stop training on it. 1.0 is the unweighted behaviour, i.e. the
+        pose is treated exactly as it would be with the flag off, and the count is reported so a
+        run where that happens often is visible rather than quietly half-unweighted.
+
+        UNDER --pose-batch > 1 THE ROW IS A MEAN over nb poses with different DockQ, so there is
+        no single weight that is correct; 1.0 again, counted.
+        """
+        if not _pb_on:
+            return 1.0
+        try:
+            if int(nb) != 1:
+                _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
+                return 1.0
+            samp = samp_hint
+            if samp is None:
+                _sv = lab.get("sample_index") if hasattr(lab, "get") else None
+                if _sv is None:
+                    _sv = lab["sample_index"]
+                samp = int(np.asarray(_sv).reshape(-1)[i])
+            samp = int(samp)
+            _ws = []
+            for _ifc, _x, _y in _pose_pairs(pdb, lab_p, samp):
+                _dk = _rel_dqkey.get(_ifc)
+                if _dk is None:
+                    continue
+                _m = _rank_lab.get(_rank_key(pdb, arm_seed, _dk))
+                _dq = _m.get(samp) if _m else None
+                if _dq is None or not math.isfinite(float(_dq)):
+                    continue
+                _a0, _u0 = _pb_cnt.get((pdb, _dk), (0, 0))
+                if float(_dq) >= float(a.pae_balance_accept):
+                    if _a0:
+                        _ws.append(0.5 / _a0)
+                elif _u0:
+                    _ws.append(0.5 / _u0)
+            if not _ws:
+                _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
+                return 1.0
+            _w = (sum(_ws) / len(_ws)) / _pb_norm
+            _rel_stat["pb_wsum"] = _rel_stat.get("pb_wsum", 0.0) + _w
+            _rel_stat["pb_wn"] = _rel_stat.get("pb_wn", 0) + 1
+            return _w
+        except (Exception, SystemExit):                      # noqa: BLE001
+            _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
+            return 1.0
 
     def _check_eval_pool():
         """Stat the training-eval pool now, not at the first epoch boundary.
@@ -6237,7 +6368,9 @@ def main():
                         _probe["rows"].append((pdb, arm_seed, i, float(_vp.norm()),
                                                float(_vr.norm()), _c, float(_cabs)))
                     _probe["poses"] += 1
-                _obj = cum / _step_poses_g[0]
+                _pb_w = (_pae_balance_weight(pdb, lab_p, lab, arm_seed, i, _samp_i, nb)
+                         if _pb_on else 1.0)
+                _obj = (cum * _pb_w) / _step_poses_g[0] if _pb_on else cum / _step_poses_g[0]
                 # THE RANKING TERM, as c_i * s_i. Its gradient is the exact gradient of the unit's
                 # pairwise loss contribution, because dL/dtheta = sum_i (dL/ds_i)(ds_i/dtheta) and
                 # c_i IS dL/ds_i. Divided by units-per-step so the term is a mean over units, the
@@ -9107,6 +9240,23 @@ def main():
             # sacrificed for the other. The counts are printed beside them because the means are
             # over different, unequal populations and a count that moves between epochs changes
             # a mean without any pose's loss changing.
+            if _pb_on:
+                _pbw = _rel_stat.get("pb_wsum", 0.0)
+                _pbn = _rel_stat.get("pb_wn", 0)
+                _pbu = _rel_stat.get("pb_unweighted", 0)
+                if world > 1:
+                    _pbt = torch.tensor([_pbw, float(_pbn), float(_pbu)], dtype=torch.float64)
+                    dist.all_reduce(_pbt, op=dist.ReduceOp.SUM)
+                    _pbw, _pbn, _pbu = float(_pbt[0]), int(_pbt[1]), int(_pbt[2])
+                print(f"  [all {world} rank(s)] epoch {ep + 1} PAE BALANCE (DockQ "
+                      f"{a.pae_balance_accept:g}): {_pbn} pose(s) weighted, mean normalised "
+                      f"weight {(_pbw / _pbn) if _pbn else float('nan'):.4f} (1.0 would be no "
+                      f"reweighting on average), {_pbu} pose(s) left at 1.0 for want of a class"
+                      + ("   [a large unweighted count means the flag is half off]"
+                         if _pbu > 0.02 * max(1, _pbn) else ""), flush=True)
+                _rel_stat["pb_wsum"] = 0.0
+                _rel_stat["pb_wn"] = 0
+                _rel_stat["pb_unweighted"] = 0
             if _ps_on:
                 _ps_keys = ("ps_acc_sum", "ps_acc_n", "ps_un_sum", "ps_un_n",
                             "ps_straddle", "ps_unclass", "ps_batched")

@@ -61,13 +61,15 @@ done
 [ "$($PY -I run_logging/cards_busy.py 2>&1 | tail -1)" = "0" ] || { say "ABORT: cards still busy after 3 h"; exit 3; }
 
 PRE=$(newest_rid)
-say "=== overfit on 151 hard lists, 60 epochs, no eval, no dropout ==="
+say "=== overfit on 151 hard lists, 60 epochs, no eval, no dropout"
+say "    ${PAE_BALANCE:+CLASS-BALANCED PAE loss at DockQ 0.23}${PAE_BALANCE:-unweighted PAE loss (the control)} ==="
 SUBSET_OK=1 \
 PREFLIGHT=training/overfit_hard/alignment_preflight.json \
 MANIFEST=training/overfit_hard/structures.csv \
 SCORED_PAIRS=training/overfit_hard/pool.csv \
 CARDS=4,5,7 EPOCHS=60 EVAL_EVERY=0 LR=1e-3 \
 PAE_SPLIT_ACCEPT=0.23 \
+${PAE_BALANCE:+PAE_BALANCE_ACCEPT=0.23} \
 EXTRA_EVAL="name=hard15,pool=training/overfit_hard/pool_b15.csv,fold=training/fold,seed_base=500000,budget=15,every=5;name=hard1,pool=training/overfit_hard/pool_b1.csv,fold=training/fold,seed_base=500000,budget=1,every=5" \
 PREFETCH_WORKERS=16 TRUNK_MEMMAP=1 EPOCH_BALANCE=1 DRY=0 \
     nohup ./shell_scripts/launch_pae_crop_arm.sh > training/runs/overfit_hard_launch.log 2>&1 &
