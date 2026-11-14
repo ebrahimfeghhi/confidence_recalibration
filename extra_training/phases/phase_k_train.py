@@ -2542,7 +2542,10 @@ def main():
             raise SystemExit(
                 f"STOP: --rank-form rel has no OST chain mapping for {pdb}/{sd} sample {samp} "
                 f"({why or 'the mapping resolved no scored interface'}). Falling back to the "
-                f"static pair is the exact mismatch this resolution exists to prevent.")
+                f"static pair is the exact mismatch this resolution exists to prevent. "
+                f"RECOVERY: if that pose's ost_json is a FAILURE record, "
+                f"`python -I run_logging/rescue_ost_mapping.py --pdb {pdb} --verify` re-runs the "
+                f"fixed scorer on CPU and writes OST's own mapping beside it.")
         _ost_cache[key] = sorted(got)
         return _ost_cache[key]
 

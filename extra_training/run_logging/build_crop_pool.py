@@ -55,7 +55,16 @@ from phase_k_eval import pool_ref_pairs as _PKE_pool_ref_pairs     # noqa: E402
 import phase_j_build_cache as BC                                   # noqa: E402
 from protenix.model.loss import PAELoss                            # noqa: E402
 
+# THE SEED RANGE IS A SETTING, NOT A CONSTANT. It was hardcoded to the TRAINING fold's
+# 500000-500014, so pointing this at validation/fold -- whose seeds start at 400000 -- matched no
+# unit, found no OST chain pair and wrote zero structures while exiting 0. A silent empty output
+# is the worst shape of failure here, because the next stage just selects from nothing.
 SEEDS = list(range(500000, 500015))
+
+
+def _set_seeds(lo, n):
+    global SEEDS
+    SEEDS = list(range(int(lo), int(lo) + int(n)))
 
 
 def one_structure(pdb, pairs, dq, pl, a):
@@ -177,23 +186,50 @@ def main():
     ap.add_argument("--results", default="training/fold/results.csv")
     ap.add_argument("--manifest", default="train_val_splits/cache_train_structures_extended.csv")
     ap.add_argument("--skip", default="4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m")
+    ap.add_argument("--seed-base", type=int, default=500000,
+                    help="first seed of the fold's contiguous range. 500000 for training/fold, "
+                         "400000 for validation/fold.")
+    ap.add_argument("--n-seeds", type=int, default=15,
+                    help="how many seeds from --seed-base. 15 for the training fold's deep "
+                         "structures, 30 for valfull83.")
     ap.add_argument("--crops", type=int, default=1000)
     ap.add_argument("--crop-size", type=int, default=256)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--shard", type=int, default=0)
+    ap.add_argument("--only", default="",
+                    help="comma-separated pdb ids: build ONLY these. Escalation is per structure "
+                         "-- when 82 of 83 pass at 256 and one does not, rebuilding the whole set "
+                         "at 384 costs ~20 CPU-minutes to answer a question about one structure, "
+                         "and leaves 82 redundant pools on disk that a later selection could "
+                         "silently prefer. Applied after --skip and before the shard split, so "
+                         "--only with --workers behaves the way an unrestricted run does.")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", default="training/crop_pool_256")
     ap.add_argument("--skip-existing", action="store_true",
                     help="skip a structure whose npz is already written, so a build can be "
                          "re-sharded without redoing finished work")
     a = ap.parse_args()
+    _set_seeds(a.seed_base, a.n_seeds)
+    print(f"seeds: {SEEDS[0]}..{SEEDS[-1]} ({len(SEEDS)})", flush=True)
     os.chdir(ROOT)
     torch.set_num_threads(int(os.environ.get("CROP_THREADS", "4")))
     os.makedirs(a.out, exist_ok=True)
 
     skip = set(x for x in a.skip.split(",") if x)
+    only = set(x.strip() for x in a.only.split(",") if x.strip())
     want = [r["pdb"] for r in csv.DictReader(open(a.manifest)) if r["pdb"] not in skip]
+    if only:
+        # NAMED BUT ABSENT IS A STOP, NOT A SMALLER RUN. Asking for a structure the manifest does
+        # not carry means the caller is working from a different population than this build is,
+        # and an empty output that exits 0 is the failure mode this whole file's comments are
+        # about.
+        _missing = sorted(only - set(want))
+        if _missing:
+            raise SystemExit(f"STOP: --only names {len(_missing)} structure(s) not in "
+                             f"{a.manifest} (or excluded by --skip): {_missing}")
+        want = [p_ for p_ in want if p_ in only]
+        print(f"--only: {len(want)} structure(s): {', '.join(sorted(want))}", flush=True)
     # THE PAIRS MUST BE THE ONES TRAINING SCORES, WHICH ARE OST'S, NOT chain_roles'.
     #
     # THIS IS THE BUG THAT KILLED 3pdv7i 21 MINUTES INTO EPOCH 1. interface_chain_pairs reads
@@ -211,19 +247,45 @@ def main():
     # every pair ANY pose might ask for, so the union is what gets validated -- each distinct
     # (iface, asym pair) becomes its own row, and `valid = usable.all(0)` then requires all of
     # them to survive.
+    # AN UNMAPPED POSE IS NAMED, NOT SWALLOWED. `(_got or [])` on its own meant a pose whose OST
+    # mapping cannot be read contributed nothing and said nothing. Two distinct losses hid behind
+    # that: a structure where EVERY pose is in that state leaves `_seen` empty, falls out of
+    # pairs_by_pdb and is dropped from the pool with no line of log at all; and a structure where
+    # only SOME poses are unreadable gets a union built from the rest, so the crop is certified
+    # against fewer pairs than the poses will actually ask for once they become readable -- which
+    # is the 9o4o failure above in slow motion.
+    #
+    # 4zto is NOT an example of the first: it is named in `--skip`, so this build excludes it
+    # deliberately and visibly. Now that its 50 failure records have been rescued
+    # (run_logging/rescue_ost_mapping.py) and all 75 of its poses resolve, that skip entry is a
+    # candidate for removal -- a decision about the pool, not something this comment should make.
+    #
+    # The pairs this union builds are still only the ones that resolved, because a guessed pair is
+    # worse than a missing one; what changes is that the gap is reported with the pose names and
+    # the recovery command.
     _refs = _PKE_pool_ref_pairs(a.pool)
     pairs_by_pdb = {}
+    _unmapped, _allbad = [], []
     for _pdb in sorted(set(r["pdb"] for r in csv.DictReader(open(a.manifest)))):
         _seen = set()
+        _nbad = _nseen = 0
         for _seed in SEEDS:
             try:
                 _ud = BC.seed_dir(a.fold, _pdb, int(_seed))
             except Exception:                                    # noqa: BLE001
                 continue
             for _samp in range(5):
-                _got, _ = ost_chain_pairs(_ud, _pdb, _samp, _refs.get(_pdb) or [])
+                _got, _why = ost_chain_pairs(_ud, _pdb, _samp, _refs.get(_pdb) or [])
+                _nseen += 1
+                if not _got:
+                    _nbad += 1
+                    if len(_unmapped) < 40:
+                        _unmapped.append(f"{_pdb}/{os.path.basename(_ud)} sample {_samp}: "
+                                         f"{_why or 'mapping resolved no scored interface'}")
                 for _i, _x, _y in (_got or []):
                     _seen.add((_i, min(_x, _y), max(_x, _y)))
+        if _nbad:
+            _allbad.append((_pdb, _nbad, _nseen, bool(_seen)))
         if _seen:
             pairs_by_pdb[_pdb] = sorted(_seen)
     _nst, _ = interface_chain_pairs(a.pool, a.roles)
@@ -231,6 +293,20 @@ def main():
                 if {(i, min(x, y), max(x, y)) for i, x, y in (_nst.get(_p) or [])} != set(_v))
     print(f"  chain pairs from the PER-POSE OST join: {len(pairs_by_pdb)} structure(s); "
           f"{_diff} differ from the static chain_roles join", flush=True)
+    if _allbad:
+        _gone = [t for t in _allbad if not t[3]]
+        print(f"  OST MAPPING UNREADABLE on {sum(t[1] for t in _allbad)} pose(s) across "
+              f"{len(_allbad)} structure(s); {len(_gone)} structure(s) have NO mappable pose at all "
+              f"and are therefore ABSENT from this crop pool: "
+              f"{', '.join(t[0] for t in _gone) or '(none)'}", flush=True)
+        for _p, _nb, _ns, _any in _allbad:
+            print(f"    {_p}: {_nb} of {_ns} pose(s)"
+                  f"{'' if _any else '  <-- structure dropped'}")
+        for _u in _unmapped:
+            print(f"      {_u}")
+        print(f"  RECOVERY: python -I run_logging/rescue_ost_mapping.py --pdb <pdb> --verify "
+              f"re-runs the fixed scorer on those poses (CPU only) and writes the mapping beside "
+              f"the failure record; then rebuild this pool.", flush=True)
     dq = collections.defaultdict(dict)
     for r in csv.DictReader(open(a.results)):
         if r.get("arm") != "free":

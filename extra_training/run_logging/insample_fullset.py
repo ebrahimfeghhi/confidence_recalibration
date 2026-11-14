@@ -210,27 +210,48 @@ for sub in SUB_ORDER:
 # whose mapping cannot be read, BEFORE a card is touched. It reports rather than stops, because
 # the drop is a legitimate outcome and refusing would make the whole pool unscorable over two
 # interfaces; the point is that it is known at the start instead of discovered at the end.
-_ost_bad = {}
+# A FAILURE RECORD WITH A RESCUE FILE BESIDE IT IS NOT A LOST POSE. run_logging/
+# rescue_ost_mapping.py re-runs the FIXED scorer on such a pose and writes OST's own answer to
+# ost_json/<sample>.json.rescue, which phase_k_eval reads when and only when the original carries
+# no mapping. So the two states are counted separately: a rescued pose scores normally and must
+# NOT be announced as a drop, or the gate would send the reader looking for a loss that is not
+# there. The glob stays `*.json`, which the `.json.rescue` suffix deliberately does not match.
+_ost_bad, _ost_fixed = {}, {}
 for _p in structs:
-    _n_fail = _n_seen = 0
+    _n_fail = _n_seen = _n_resc = 0
     for _dir in sorted(glob.glob(os.path.join(ROOT, FOLD, "poses", _p, "*"))):
         for _j in sorted(glob.glob(os.path.join(_dir, "ost_json", "*.json"))):
             _n_seen += 1
             try:
                 with open(_j) as _fh:
-                    if '"status": "FAILURE"' in _fh.read(400):
-                        _n_fail += 1
+                    _hit = '"status": "FAILURE"' in _fh.read(400)
             except OSError:
+                _hit = True
+            if not _hit:
+                continue
+            if os.path.exists(_j + ".rescue"):
+                _n_resc += 1
+            else:
                 _n_fail += 1
+    if _n_resc:
+        _ost_fixed[_p] = (_n_resc, _n_seen)
     if _n_fail:
         _ost_bad[_p] = (_n_fail, _n_seen)
+if _ost_fixed:
+    say(f"  OST MAPPING RESCUED on {len(_ost_fixed)} structure(s) -- the failure record stays on "
+        f"disk, the mapping comes from the re-run beside it, and these interfaces SCORE:")
+    for _p, (_r, _n) in sorted(_ost_fixed.items()):
+        _ifs = sorted(i for i in _all if i.startswith(_p + "_"))
+        say(f"    {_p}: {_r} of {_n} pose json(s) rescued -- {', '.join(_ifs)}")
 if _ost_bad:
     say(f"  OST MAPPING UNREADABLE on {len(_ost_bad)} structure(s) -- their interfaces will be "
-        f"DROPPED by --drop-incomplete-ifaces, and the metric will cover the rest:")
+        f"DROPPED by --drop-incomplete-ifaces, and the metric will cover the rest. Try "
+        f"`python -I run_logging/rescue_ost_mapping.py --pdb <pdb> --verify` first: it is CPU-only "
+        f"and recovers the mapping wherever the pose cif and the reference are both on disk:")
     for _p, (_f, _n) in sorted(_ost_bad.items()):
         _ifs = sorted(i for i in _all if i.startswith(_p + "_"))
         say(f"    {_p}: {_f} of {_n} pose json(s) are failure records -- {', '.join(_ifs)}")
-else:
+if not _ost_bad and not _ost_fixed:
     say("  OST mapping readable for every structure")
 
 say("  GATES PASSED: partition exact, roles complete, every intended unit has a trunk and a score")

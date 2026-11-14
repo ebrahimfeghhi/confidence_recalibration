@@ -31,8 +31,15 @@ import phase_j_build_cache as BC                                    # noqa: E402
 import phase_k_eval as PKE                                          # noqa: E402
 
 
-def ost_pairs_union(fold, pdb, refs):
-    """{(iface, lo, hi)} over every pose -- one crop is shared by all of them."""
+def ost_pairs_union(fold, pdb, refs, unmapped=None):
+    """{(iface, lo, hi)} over every pose -- one crop is shared by all of them.
+
+    AN UNMAPPED POSE IS APPENDED TO `unmapped`, NOT SWALLOWED. `(got or [])` alone meant a pose
+    whose OST mapping cannot be read contributed nothing and said nothing, so a structure with no
+    mappable pose returned an EMPTY union -- and an empty union passes every check below for the
+    reason that there is nothing to check. That is a gate reporting OK about a structure it never
+    looked at. The caller names them.
+    """
     seen = set()
     for seed in C.SEEDS:
         try:
@@ -40,7 +47,10 @@ def ost_pairs_union(fold, pdb, refs):
         except Exception:                                           # noqa: BLE001
             continue
         for samp in range(5):
-            got, _ = PKE.ost_chain_pairs(ud, pdb, samp, refs)
+            got, why = PKE.ost_chain_pairs(ud, pdb, samp, refs)
+            if not got and unmapped is not None:
+                unmapped.append(f"{pdb}/{os.path.basename(ud)} sample {samp}: "
+                                f"{why or 'mapping resolved no scored interface'}")
             for i, x, y in (got or []):
                 seen.add((i, min(x, y), max(x, y)))
     return sorted(seen)
@@ -71,6 +81,12 @@ def main():
         files = files[:a.limit]
 
     bad, checked, crops_checked = [], 0, 0
+    # A PARTIALLY UNMAPPED STRUCTURE NARROWS THE UNION, WHICH IS THE QUIET VERSION OF THE FAILURE
+    # THIS GATE EXISTS FOR. "no OST pair for any pose" below catches the all-unmapped case, but if
+    # 50 of 75 poses are unreadable the union is built from the other 25 -- and a crop certified
+    # against that smaller union can be missing a pair the unreadable poses would have asked for,
+    # the moment they become readable. So every unmapped pose is named in the output.
+    unmapped = []
     for fn in files:
         pdb = fn[:-4]
         got = None
@@ -83,7 +99,7 @@ def main():
             continue
         asym = got[0].reshape(-1).long()
         hf = got[1].reshape(-1).bool()
-        pairs = (ost_pairs_union(a.fold, pdb, refs_by_pdb.get(pdb) or [])
+        pairs = (ost_pairs_union(a.fold, pdb, refs_by_pdb.get(pdb) or [], unmapped)
                  if a.join == "ost" else static_pairs.get(pdb, []))
         if not pairs:
             bad.append((pdb, -1, "no OST pair for any pose"))
@@ -117,6 +133,17 @@ def main():
 
     print(f"checked {checked} structure(s), {crops_checked} crop(s) against the "
           f"{a.join.upper()} chain-pair join")
+    if unmapped:
+        _pdbs = sorted({u.split("/")[0] for u in unmapped})
+        print(f"OST MAPPING UNREADABLE on {len(unmapped)} pose(s) across {len(_pdbs)} "
+              f"structure(s) -- the union below was built WITHOUT them, so it may be short of a "
+              f"pair those poses need: {', '.join(_pdbs)}")
+        for u in unmapped[:40]:
+            print(f"    {u}")
+        if len(unmapped) > 40:
+            print(f"    ... and {len(unmapped) - 40} more")
+        print("RECOVERY: python -I run_logging/rescue_ost_mapping.py --pdb <pdb> --verify "
+              "(CPU only), then re-run this gate.")
     if bad:
         print(f"REFUSING: {len(bad)} crop/pair combination(s) would score None and stop the run:")
         for pdb, ci, why in bad[:20]:

@@ -125,20 +125,58 @@ def ost_chain_pairs(unit_dir, pdb, k, refs):
     Model chains are lettered A, B, C... in asym_id order by write_job_cif, so a letter's position in
     the alphabet IS its asym index.
     """
-    f = os.path.join(unit_dir, "ost_json", f"{k}.json")
-    if not os.path.exists(f):
-        return None, f"no {os.path.basename(f)}"
-    with open(f) as fh:
-        j = json.load(fh)
-    # THE INDEX IS ASSERTED, NOT ASSUMED. ost_json/<k>.json is paired with _sample_<k>.cif by
-    # filename only; reading the wrong pose's mapping would reintroduce exactly the defect this
-    # function exists to fix, and silently.
-    mdl = str(j.get("model", ""))
-    if not mdl.endswith(f"_sample_{k}.cif"):
-        return None, f"{os.path.basename(f)} describes {os.path.basename(mdl)}, not sample {k}"
-    cm = j.get("chain_mapping")
-    if not isinstance(cm, dict):
-        return None, f"{os.path.basename(f)} has no chain_mapping"
+    # THE RESCUE FILE IS TRIED SECOND, AND IS HELD TO THE SAME CHECKS.
+    #
+    # WHY IT EXISTS. 4zto's folds of 2026-11-05 ran against the pre-2eb1f2fd scorer, whose `-c`
+    # retry built its chain map from gemmi's AUTH names and sent OST "M:M I:I Q:Q" for a reference
+    # whose processed chains are D/E/F. OST refused the whole call, so 50 of 4zto's 75 pose jsons
+    # are {"status": "FAILURE", ...} records with no mapping in them. The scorer was fixed the same
+    # day -- the last five seeds, folded 2026-11-06, resolved normally -- so the mapping is not
+    # lost, only unrecorded: re-running the FIXED scorer on the same pose cif and the same reference
+    # recovers it. run_logging/rescue_ost_mapping.py does that and writes the result to
+    # ost_json/<k>.json.rescue, leaving the failure record on disk untouched as provenance.
+    #
+    # WHY THIS IS NOT THE chain_roles FALLBACK IN DISGUISE. chain_roles is a STATIC table, one
+    # assignment per structure, and it cannot be right for chemically identical chains. A rescue
+    # json is OST's own per-pose decision, produced by the same binary and the same flags that wrote
+    # every other mapping in this fold -- the authoritative route, just run late. Measured on
+    # 4zto's 25 poses that DID resolve: re-running reproduces the stored chain_mapping on 25 of 25
+    # and byte-identical `dockq` lists on 25 of 25.
+    #
+    # The order matters: a real mapping always wins. The rescue file is consulted only when the
+    # original carries none, so re-running cannot overwrite a recorded decision.
+    tried = []
+    for cand in (f"{k}.json", f"{k}.json.rescue"):
+        f = os.path.join(unit_dir, "ost_json", cand)
+        if not os.path.exists(f):
+            tried.append(f"no {cand}")
+            continue
+        try:
+            with open(f) as fh:
+                j = json.load(fh)
+        except (OSError, ValueError) as _e:
+            # A TRUNCATED JSON IS A REFUSAL, NOT A TRACEBACK. This used to raise out of the
+            # function, which on the sharded path surfaces as a ValueError buried in shard<i>.log
+            # with no pose named, and on the training path kills the run outright.
+            tried.append(f"{cand} unreadable ({type(_e).__name__})")
+            continue
+        if not isinstance(j, dict):
+            tried.append(f"{cand} is not a json object")
+            continue
+        # THE INDEX IS ASSERTED, NOT ASSUMED. ost_json/<k>.json is paired with _sample_<k>.cif by
+        # filename only; reading the wrong pose's mapping would reintroduce exactly the defect this
+        # function exists to fix, and silently.
+        mdl = str(j.get("model", ""))
+        if not mdl.endswith(f"_sample_{k}.cif"):
+            tried.append(f"{cand} describes {os.path.basename(mdl)}, not sample {k}")
+            continue
+        cm = j.get("chain_mapping")
+        if not isinstance(cm, dict):
+            tried.append(f"{cand} has no chain_mapping")
+            continue
+        break
+    else:
+        return None, "; ".join(tried)
 
     # A REFERENCE CHAIN OST DID NOT MAP IS RESOLVED BY ELIMINATION, OR NOT AT ALL.
     #
@@ -1764,7 +1802,11 @@ def main():
             raise SystemExit(f"STOP: {len(unmapped)} pose(s) in this shard have no usable OST chain "
                              f"mapping and none forced by elimination. The rows that DID resolve "
                              f"are on disk and the meta names the ones that did not; the aggregate "
-                             f"will refuse this shard until they are resolved or excluded.")
+                             f"will refuse this shard until they are resolved or excluded. "
+                             f"RECOVERY: where the ost_json is a FAILURE record, "
+                             f"`python -I run_logging/rescue_ost_mapping.py --pdb <pdb> --verify` "
+                             f"re-runs the fixed scorer on CPU and writes OST's own mapping beside "
+                             f"it; --drop-unmapped-poses drops them by name instead.")
         return
     if unmapped and not a.allow_roles_fallback:
         for u in unmapped[:10]:
@@ -1775,7 +1817,10 @@ def main():
             f"for chemically identical chains, and with --ckpt the shipped-head self-check does not "
             f"run, so a wrong chain pair here would mis-score silently. Pass "
             f"--allow-roles-fallback only if you have established the static table is right for "
-            f"these structures, and say why.")
+            f"these structures, and say why. RECOVERY FIRST: where the ost_json is a FAILURE "
+            f"record the mapping is recoverable without that assumption -- "
+            f"`python -I run_logging/rescue_ost_mapping.py --pdb <pdb> --verify` re-runs the fixed "
+            f"scorer on CPU and writes OST's own per-pose answer beside the failure record.")
     if unmapped:
         print(f"  FELL BACK to chain_roles on {len(unmapped)} pose(s) because "
               f"--allow-roles-fallback was given; the static table is wrong for chemically "
