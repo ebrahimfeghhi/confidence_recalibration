@@ -329,6 +329,11 @@ REL_G_WEIGHT="${REL_G_WEIGHT:-}"
 # bimodal (p25 0.220, p50 0.670), so a midpoint in the valley asks "is this pose good at all"
 # where the raw score spends its contrast separating two poses that are both fine.
 REL_G_SIGMOID="${REL_G_SIGMOID:-}"
+# REL_BALANCE_ACCEPT splits each list at this DockQ and gives the acceptable poses half the
+# list's loss between them -- 0.25 each in a 2-of-75 list, against 2.7% of the gradient for the
+# pair under an unweighted mean. Per list, so nothing depends on how many hard lists the epoch
+# dealt. 0.23 is the threshold used everywhere else here.
+REL_BALANCE_ACCEPT="${REL_BALANCE_ACCEPT:-}"
 # OFF BY DEFAULT. The gradient split costs one extra backward per pose on a measured step, and
 # the real arm does not need it: beta is estimated once by the one-epoch diagnostic
 # (shell_scripts/queue_rank_gradprobe_1ep.sh, which sets K=1) and then held fixed. A 50-epoch arm
@@ -356,6 +361,7 @@ if [ -n "$ALPHA_RANK" ]; then
   [ -n "$REL_STD_FLOOR" ] && RANK_ARGS+=(--rel-std-floor "$REL_STD_FLOOR")
   [ -n "$REL_G_WEIGHT" ] && RANK_ARGS+=(--rel-g-weight "$REL_G_WEIGHT")
   [ -n "$REL_G_SIGMOID" ] && RANK_ARGS+=(--rel-g-sigmoid "$REL_G_SIGMOID")
+  [ -n "$REL_BALANCE_ACCEPT" ] && RANK_ARGS+=(--rel-balance-accept "$REL_BALANCE_ACCEPT")
   # THE FLAG AND ITS VALUE TOGETHER, OR NEITHER. The first version of this line expanded to a
   # BARE NUMBER with the flag name dropped, so K=1 would have appended "1" as a positional
   # argument and argparse would have refused the whole launch. Appended conditionally instead,

@@ -305,6 +305,23 @@ def main():
                          "valley and asks whether the pose is good at all. REQUIRES "
                          "--rel-standardize and is mutually exclusive with --rel-g-weight. ALPHA "
                          "MUST BE RE-MEASURED with --grad-norm-every.")
+    ap.add_argument("--rel-balance-accept", type=float, default=0.0, metavar="DOCKQ",
+                    help="PER-LIST CLASS BALANCE. Keep every pose, split each interface's poses "
+                         "into acceptable (DockQ >= DOCKQ) and not, and scale the per-pose "
+                         "weights so each GROUP carries half that interface's loss: "
+                         "0.5/n_acceptable each for the acceptable poses, 0.5/n_unacceptable "
+                         "each for the rest. 0 (default) is off; 0.23 is the acceptable "
+                         "threshold used everywhere else in this project. In a 2-of-75 list that "
+                         "is 0.25 per good pose against 0.00685 per bad one, where the "
+                         "unweighted mean hands the two good poses 2.7% of the gradient between "
+                         "them -- and 151 of the 1,688 training interfaces are that shape. "
+                         "BALANCED PER LIST, NOT ACROSS THE SET, so a 1-of-75 list and a "
+                         "40-of-75 list are each half-and-half and nothing depends on which "
+                         "lists the epoch dealt. THE SPLIT IS DockQ while the regression target "
+                         "is the true iTM, so the DockQ cache must cover the group exactly or "
+                         "the run refuses. REQUIRES --rel-standardize; mutually exclusive with "
+                         "--rel-g-weight and --rel-g-sigmoid, which are different per-pose "
+                         "weights. ALPHA MUST BE RE-MEASURED with --grad-norm-every.")
     ap.add_argument("--rel-standardize", action="store_true",
                     help="ABLATION. Also divide each interface's centred prediction and label by "
                          "its own std (floored), which makes the loss invariant to shrinking the "
@@ -1466,6 +1483,18 @@ def main():
                              "--rel-g-weight does: the weight is defined on the z-scored error "
                              "and the unstandardised path uses a closed-form gradient.")
         _G_SIG = (_m, _w)
+    if a.rel_balance_accept:
+        if not a.rel_standardize:
+            raise SystemExit("STOP: --rel-balance-accept needs --rel-standardize, for the same "
+                             "reason the other per-pose weights do: the weight is defined on the "
+                             "z-scored error and the unstandardised path uses a closed-form "
+                             "gradient a per-pose weight would invalidate.")
+        if a.rel_g_weight or a.rel_g_sigmoid:
+            raise SystemExit("STOP: --rel-balance-accept, --rel-g-weight and --rel-g-sigmoid are "
+                             "three different per-pose weights; pass one.")
+        if not 0.0 < a.rel_balance_accept < 1.0:
+            raise SystemExit(f"STOP: --rel-balance-accept {a.rel_balance_accept} is not a DockQ "
+                             f"threshold in (0, 1).")
     if a.rel_g_weight and not a.rel_standardize:
         raise SystemExit("STOP: --rel-g-weight needs --rel-standardize. The weight is defined on "
                          "the z-scored error, and the unstandardised path uses a closed-form "
@@ -2765,6 +2794,9 @@ def main():
                   + (f", PER-POSE WEIGHTED by g^{a.rel_g_weight:g}" if a.rel_g_weight else "")
                   + (f", PER-POSE WEIGHTED by sigmoid((g-{_G_SIG[0]:g})/{_G_SIG[1]:g})"
                      if _G_SIG else "")
+                  + (f", CLASS-BALANCED per list at DockQ {a.rel_balance_accept:g} "
+                     f"(acceptable poses carry half the list's loss)"
+                     if a.rel_balance_accept else "")
                   + f". Labels {a.rel_labels} ({_mj.get('structures', '?')} structure(s), "
                   f"{_mj.get('rows', '?')} row(s), column "
                   f"{'g_max' if a.rank_pool == 'max' else 'g_mean'}, digest "
@@ -6320,6 +6352,28 @@ def main():
             # which sent any third form to the LINEAR loss while every log line and the saved
             # guard still said otherwise -- a run that looks right and is the wrong experiment.
             # rank_loss.group_coeffs raises on an unknown form, so a typo fails loudly instead.
+            _acc_by = None
+            if a.rank_form == "rel" and a.rel_balance_accept:
+                # DockQ PER POSE, keyed (seed, pose) exactly like s_by. _rank_lab is keyed by the
+                # STATIC asym pair (_rel_dqkey) and indexed by the SAMPLE, while s_by is keyed by
+                # the pose -- the same two-step lookup the Spearman diagnostic does below, which
+                # is why this is hoisted rather than duplicated.
+                _acc_by = {}
+                _dk0 = _rel_dqkey.get(_pair)
+                for (_sd0, _i0) in s_by:
+                    _l0 = _rank_lab.get(_rank_key(_pdb, _sd0, _dk0)) if _dk0 is not None else None
+                    _sx0 = allsamp.get((_pdb, _sd0, int(_i0)))
+                    if _l0 is None or _sx0 is None or _sx0 not in _l0:
+                        # EXACT COVERAGE, FOR THE SAME REASON THE iTM CACHE DEMANDS IT: a pose
+                        # whose DockQ is unknown cannot be put in either class, and guessing it
+                        # into the majority class would quietly change every weight in the list.
+                        raise SystemExit(
+                            f"STOP: --rel-balance-accept needs a DockQ for every pose, but "
+                            f"{_pdb} interface {_pair} pose {_i0} (seed {_sd0}) has none. The "
+                            f"classification sets every weight in the list, so a missing label "
+                            f"is not a partial-data case. Check --rank-labels covers this "
+                            f"manifest-selection.")
+                    _acc_by[(_sd0, _i0)] = float(_l0[_sx0]) >= a.rel_balance_accept
             if a.rank_form == "rel":
                 # NOT group_coeffs. rel is a regression, not a pairwise family, so none of the
                 # pairwise knobs apply and passing them would make flags look honoured.
@@ -6328,6 +6382,7 @@ def main():
                                                 sd_weight=a.rel_sd_weight,
                                                 g_weight=a.rel_g_weight,
                                                 g_sigmoid=_G_SIG,
+                                                accept_by=_acc_by,
                                                 **({} if a.rel_std_floor is None
                                                    else {"std_floor": a.rel_std_floor}))
                 _rel_stat["groups"] += 1

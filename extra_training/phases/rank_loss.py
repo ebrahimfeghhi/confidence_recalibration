@@ -435,7 +435,7 @@ def _wmean(w, err):
 
 
 def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_FLOOR,
-               sd_weight=False, g_weight=0.0, g_sigmoid=None):
+               sd_weight=False, g_weight=0.0, g_sigmoid=None, accept_by=None):
     """Mean-centred regression coefficients for ONE interface's poses.
 
     s_by_key / g_by_key: {(seed, sample): float}. Returns ({key: dL/ds}, n_poses, loss).
@@ -477,7 +477,34 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
         sc_ = sl - sl.mean()
         sc_ = sc_ / sc_.std(unbiased=False).clamp_min(std_floor)
         gc_ = gc / gc.std(unbiased=False).clamp_min(std_floor)
-        if g_sigmoid is not None:
+        if accept_by is not None:
+            # CLASS BALANCE WITHIN THE LIST. Every pose is kept, but the acceptable ones as a
+            # GROUP carry half the interface's loss and the unacceptable ones the other half:
+            # w_i = 0.5 / n_acceptable for an acceptable pose, 0.5 / n_unacceptable otherwise.
+            # In a 2-of-75 list that is 0.25 each for the two good poses against 0.00685 each for
+            # the 73 bad ones -- a 36x ratio, where an unweighted mean gives the two good poses
+            # 2.7% of the gradient between them.
+            #
+            # PER LIST, NOT ACROSS THE SET. Each interface is balanced against itself, so a list
+            # with one acceptable pose and a list with forty are both half-and-half, and the
+            # arithmetic never depends on how many hard lists the epoch happened to deal.
+            #
+            # THE SPLIT IS DockQ, NOT THE REGRESSION TARGET. The loss regresses the true iTM, but
+            # "acceptable" is a DockQ statement, so the caller passes the classification and this
+            # function does not guess it from g.
+            _acc = [bool(accept_by[k]) for k in keys]
+            _na = sum(_acc)
+            _nu = len(_acc) - _na
+            if _na and _nu:
+                _w = torch.tensor([(0.5 / _na) if x else (0.5 / _nu) for x in _acc],
+                                  dtype=torch.float64)
+            else:
+                # ALL ONE CLASS: there is no balance to strike, and 0.5/0 is not a weight. A
+                # uniform mean is the honest limit, and it is what the unweighted loss would have
+                # done with this list anyway.
+                _w = torch.ones(len(_acc), dtype=torch.float64)
+            L = _wmean(_w, (sc_ - gc_) ** 2)
+        elif g_sigmoid is not None:
             # A SOFT THRESHOLD ON THE RAW GROUND TRUTH, w_i = sigmoid((g_i - mid) / width),
             # instead of the raw score itself. Same weighted-mean reduction, same two passes.
             #
@@ -519,7 +546,7 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
         c = sl.grad.detach().clone()
         loss = float(L.detach())
     else:
-        if g_weight > 0.0 or g_sigmoid is not None:
+        if g_weight > 0.0 or g_sigmoid is not None or accept_by is not None:
             # REFUSED RATHER THAN APPROXIMATED. The closed form below is the gradient of the
             # UNWEIGHTED mean; a per-pose weight changes it everywhere, and the standardised path
             # above is the only one that differentiates what it reports.
@@ -565,7 +592,7 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
 
 def rel_loss_value(s_by_key, g_by_key, standardize=False,
                    std_floor=DEFAULT_REL_STD_FLOOR, sd_weight=False, g_weight=0.0,
-                   g_sigmoid=None):
+                   g_sigmoid=None, accept_by=None):
     """The loss value alone, for logging. Same arithmetic as rel_coeffs."""
     return rel_coeffs(s_by_key, g_by_key, standardize, std_floor, sd_weight, g_weight,
-                      g_sigmoid)[2]
+                      g_sigmoid, accept_by)[2]
