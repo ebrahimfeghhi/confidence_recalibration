@@ -322,6 +322,22 @@ def main():
                          "the run refuses. REQUIRES --rel-standardize; mutually exclusive with "
                          "--rel-g-weight and --rel-g-sigmoid, which are different per-pose "
                          "weights. ALPHA MUST BE RE-MEASURED with --grad-norm-every.")
+    ap.add_argument("--pae-split-accept", type=float, default=0.0, metavar="DOCKQ",
+                    help="DIAGNOSTIC ONLY: report the per-epoch PAE loss SPLIT BY POSE GROUP on "
+                         "the cropped training batches. Each pose's scored interfaces are looked "
+                         "up in the DockQ labels; a pose whose interfaces are ALL acceptable "
+                         "(DockQ >= DOCKQ) goes in one group, all unacceptable in the other, and "
+                         "the plain per-pose mean of the labelled pae_loss is printed for each "
+                         "with its pose count and their difference. 0 (default) is off; 0.23 is "
+                         "the acceptable threshold used everywhere else in this project. WHAT IT "
+                         "ANSWERS: whether both groups are being fit or one is being sacrificed "
+                         "-- acceptable-pose PAE falling while unacceptable-pose PAE does not (or "
+                         "the reverse) is the signal, and the aggregate pae_loss in "
+                         "trajectory.csv cannot show it. TAKES NO GRADIENT and is NOT gated on "
+                         "--rank-loss or --rank-cross-seed, because the arm it exists for is "
+                         "PAE-only. NEEDS --pae-scored-pairs (there is no interface to classify "
+                         "without it) and DockQ labels (--rank-labels, else <fold>/results.csv); "
+                         "both are refused at STARTUP.")
     ap.add_argument("--rank-diag-only", action="store_true",
                     help="RUN THE PER-POSE SCORING AND ITS DIAGNOSTICS WITHOUT TRAINING ON THEM. "
                          "Every ranking diagnostic -- within-interface Spearman, score spread, "
@@ -1508,6 +1524,29 @@ def main():
         if not 0.0 < a.rel_balance_accept < 1.0:
             raise SystemExit(f"STOP: --rel-balance-accept {a.rel_balance_accept} is not a DockQ "
                              f"threshold in (0, 1).")
+    if a.pae_split_accept:
+        # REFUSED EARLY, BEFORE ANY HARDWARE, like the other threshold flags. The split itself is
+        # written so that nothing about it can raise mid-epoch -- a diagnostic that kills a
+        # training run on pose 40,000 is worse than no diagnostic -- so every reason it could not
+        # work has to surface here instead.
+        if not 0.0 < a.pae_split_accept < 1.0:
+            raise SystemExit(f"STOP: --pae-split-accept {a.pae_split_accept} is not a DockQ "
+                             f"threshold in (0, 1).")
+        if not a.pae_scored_pairs:
+            raise SystemExit("STOP: --pae-split-accept needs --pae-scored-pairs. The split is by "
+                             "the DockQ of the interfaces a pose SCORES, and with no scored pair "
+                             "there is no interface to look a DockQ up for -- every pose would "
+                             "land in the unclassified bucket and the two means would be empty.")
+        # THE LABEL SOURCE IS STATTED HERE, BEFORE ANY HARDWARE, and not where it is loaded: the
+        # load sits past init_process_group, so refusing there would already have taken a card
+        # and, under torchrun, left the other ranks in a barrier until --dist-timeout-min. A
+        # missing file is a stat, so it costs nothing to say so first.
+        _ps_lab0 = a.rank_labels or os.path.join(a.fold, "results.csv")
+        if not os.path.exists(_ps_lab0):
+            raise SystemExit(
+                f"STOP: --pae-split-accept {a.pae_split_accept:g} needs DockQ labels to put each "
+                f"pose in a group, and there are none at {_ps_lab0}. Pass --rank-labels, or drop "
+                f"the flag.")
     if a.rank_diag_only:
         if a.rank_loss:
             raise SystemExit("STOP: --rank-diag-only with --rank-loss is contradictory -- the "
@@ -2499,7 +2538,13 @@ def main():
     # and a structure recurs every epoch, so reading it once per process is right; loading all 368
     # at startup would be wasted on a rank that never sees most of them.
     _rel_cache = {}
-    _rel_stat = {"groups": 0, "poses": 0, "short_groups": 0, "csum": 0.0, "missing_files": 0}
+    _rel_stat = {"groups": 0, "poses": 0, "short_groups": 0, "csum": 0.0, "missing_files": 0,
+                 # --pae-split-accept LIVES IN THIS DICT so it is reset at the same epoch
+                 # boundary as every other per-epoch accumulator here. A module-level or
+                 # per-unit accumulator would have carried epoch 1's poses into epoch 2's mean
+                 # and the curve would have looked like a slowly flattening loss.
+                 "ps_acc_sum": 0.0, "ps_acc_n": 0, "ps_un_sum": 0.0, "ps_un_n": 0,
+                 "ps_straddle": 0, "ps_unclass": 0, "ps_batched": 0}
 
     # THE SAME MODULE phase_k_eval USES, so the per-pose chain join is literally the evaluator's
     # and cannot drift from it.
@@ -2936,6 +2981,112 @@ def main():
         if is_main:
             print(f"  ranking label coverage: all {len(expected)} (pdb, seed, interface) group(s) "
                   f"hold {a.nsample} finite DockQ value(s)")
+
+    # DockQ FOR --pae-split-accept, LOADED EVEN WITH THE RANKING LOSS OFF. This cannot ride on
+    # the `elif a.rank_loss` block above, and it must not be gated on a.rank_cross_seed the way
+    # the ranking diagnostics are: the arm this split exists for trains PAE alone, so either gate
+    # would have made the flag inert on the only path that passes it -- a flag that does nothing
+    # on the path actually taken is how a run gets written up as the wrong experiment.
+    #
+    # THE REFUSAL IS AT STARTUP. Everything below is written so the classification can never
+    # raise, which means the absence of a label SOURCE has to be caught here or it would surface
+    # as every pose silently unclassified.
+    #
+    # NO --loss-only INHERITANCE HAZARD, checked rather than assumed: val_loss_checkpoint builds
+    # its child argv explicitly and does not forward the parent's flags, so this never reaches the
+    # measurement subprocess -- which reads the VALIDATION fold and has no training-fold
+    # results.csv to load. That is the class of bug this file has already paid for five times.
+    _ps_on = float(a.pae_split_accept) > 0.0
+    if _ps_on:
+        _ps_src = "the ranking labels already loaded"
+        if not _rank_lab:
+            import rank_loss as RKL_ps
+            _ps_p = a.rank_labels or os.path.join(a.fold, "results.csv")
+            # SAID TWICE ON PURPOSE. The pre-hardware block already statted this path; repeating
+            # it keeps the message right if the file goes away in between, and means the load
+            # below never has to reason about a missing file.
+            if not os.path.exists(_ps_p):
+                raise SystemExit(
+                    f"STOP: --pae-split-accept {a.pae_split_accept:g} needs DockQ labels to put "
+                    f"each pose in a group, and there are none at {_ps_p}. Pass --rank-labels, "
+                    f"or drop the flag.")
+            _rank_lab, _ps_bad = RKL_ps.load_labels(_ps_p, _rel_roles_p)
+            if not _rank_lab:
+                raise SystemExit(
+                    f"STOP: --pae-split-accept found no usable (pdb, seed, interface) -> DockQ "
+                    f"group in {_ps_p}, so no pose could be classified.")
+            _ps_src = f"{_ps_p}" + (f", {_ps_bad} unparsed row(s)" if _ps_bad else "")
+        print(f"PAE LOSS SPLIT BY POSE GROUP at DockQ {a.pae_split_accept:g}: per-epoch plain "
+              f"per-pose mean of the labelled pae_loss for the all-acceptable poses and for the "
+              f"all-unacceptable ones, on the CROPPED training batches, from "
+              f"{len(_rank_lab)} labelled (pdb, seed, interface) group(s) ({_ps_src}). "
+              f"DIAGNOSTIC: it takes no gradient, changes no loss, and cannot fail the run.")
+
+    def _pae_split_tally(pdb, lab_p, lab, arm_seed, i, samp_hint, nb, v):
+        """Add ONE pose's labelled PAE loss to its DockQ group. Never raises.
+
+        THE POSE INDEX IS NOT THE SAMPLE INDEX, and _rank_lab is indexed by the SAMPLE. This file
+        has paid for that confusion twice already -- the rel target regressed pose 1 onto pose 4's
+        true iTM, and --emit-iptm-rows wrote `i` while 73.8% of its rows carried another sample's
+        DockQ and the aggregate moved by only 0.0009, which is exactly how little a wrong join
+        shows. So the sample index is the label's own `sample_index`, and when the PAE mask has
+        already resolved it for this pose (`_samp_i`) that one value is reused rather than read a
+        second time: two resolutions of the same thing is the shape of the original bug.
+
+        WHICH INTERFACES THE POSE SCORES comes from _pose_pairs -- the per-pose OST join -- not
+        from _scored_asym's static pairs: the two disagree on 1,095 of 18,400 (structure, seed,
+        pose) checks, so the static set can name an interface this pose does not score at all.
+        DockQ is then looked up through _rel_dqkey, the STATIC pair that indexes _rank_lab, which
+        is the same two-step the --rel-balance-accept site makes for the same reason.
+
+        EXCLUSIONS ARE COUNTED, NEVER FOLDED INTO A GROUP. 82% of these structures carry more than
+        one interface, so a pose can be acceptable on one and not on another; putting a straddler
+        in either group would let a mean move because the membership moved rather than because the
+        loss did, which is the one thing this read is for. A missing or non-finite DockQ, an
+        unresolvable sample index and a batched row are unclassified: under --pose-batch > 1 the
+        row's pae_loss is a MEAN over nb poses with different DockQ, so there is no per-pose value
+        to attribute, and counting it under one pose's class would quietly average the groups
+        together.
+
+        NOTHING HERE RAISES -- not even the SystemExit _pose_pairs throws for an unreadable OST
+        mapping, which is why the except names it. This is a diagnostic, and the opposite choice
+        in --rel-balance-accept is right only because there the classification sets a WEIGHT and a
+        wrong weight trains the head.
+        """
+        st = _rel_stat
+        try:
+            if int(nb) != 1:
+                st["ps_batched"] += 1
+                st["ps_unclass"] += 1
+                return
+            samp = samp_hint
+            if samp is None:
+                _sv = lab.get("sample_index") if hasattr(lab, "get") else None
+                if _sv is None:
+                    _sv = lab["sample_index"]
+                samp = int(np.asarray(_sv).reshape(-1)[i])
+            samp = int(samp)
+            _cls, _bad = set(), False
+            for _ifc, _x, _y in _pose_pairs(pdb, lab_p, samp):
+                _dk = _rel_dqkey.get(_ifc)
+                _m = _rank_lab.get(_rank_key(pdb, arm_seed, _dk)) if _dk is not None else None
+                _dq = _m.get(samp) if _m else None
+                if _dq is None or not math.isfinite(float(_dq)):
+                    _bad = True
+                    break
+                _cls.add(float(_dq) >= float(a.pae_split_accept))
+            if _bad or not _cls:
+                st["ps_unclass"] += 1
+            elif len(_cls) > 1:
+                st["ps_straddle"] += 1
+            elif True in _cls:
+                st["ps_acc_sum"] += float(v)
+                st["ps_acc_n"] += 1
+            else:
+                st["ps_un_sum"] += float(v)
+                st["ps_un_n"] += 1
+        except (Exception, SystemExit):                      # noqa: BLE001
+            st["ps_unclass"] += 1
 
     def _check_eval_pool():
         """Stat the training-eval pool now, not at the first epoch boundary.
@@ -5939,6 +6090,14 @@ def main():
                                  f"finite. Training on it would destroy the head.")
             out = {k: (float(met[k]) if k in met else 0.0) for k in TERMS}
             out["loss"] = float(met["loss"])
+            # THE PAE SPLIT IS TALLIED HERE, from the SAME number that is reported and
+            # differentiated. Reading pae_loss anywhere else -- recomputing it, or taking it from
+            # the batch means below -- would make the split describe a quantity the run does not
+            # train on, which is the failure the pass A comment warns about. _samp_i is passed in
+            # because the PAE mask has already resolved this pose's sample index under rel; the
+            # tally re-reads it only when nothing else has.
+            if _ps_on:
+                _pae_split_tally(pdb, lab_p, lab, arm_seed, i, _samp_i, nb, out["pae_loss"])
             out["pose"] = i
             # HOW MANY POSES THIS ROW STANDS FOR. One at --pose-batch 1; nb above it. The
             # accumulator, the batch means and the step boundary all count POSES, and without
@@ -8814,14 +8973,24 @@ def main():
             # ranked above everything still gets pushed up: the loss can fall by widening gaps
             # that were already correct, with the inverted fraction unchanged. The within-seed
             # inversion rate has to be read separately -- see run_logging/rank_rho.py.
+            # DEFINED ONCE, ABOVE BOTH READERS. The ranking prints and the spread.r<rank>.csv
+            # writer used to be one block, so the median helper lived inside the ranking gate;
+            # the csv writer now sits outside it (--pae-split-accept must write a row on a
+            # PAE-only arm, where that gate never opens), and leaving the def behind would have
+            # raised NameError there on the first epoch of exactly that arm.
+            def _med(v):
+                w = sorted(v)
+                return w[len(w) // 2] if w else float("nan")
+            # WHETHER THE RANKING COLUMNS HAVE ANYTHING IN THEM, carried out of the gate as a
+            # flag rather than re-tested below: the gate reads _xs_stat["groups"], and the block
+            # it guards RESETS that counter to 0, so re-testing it after the hoist would have
+            # written a row of nan ranking columns on every ranking epoch.
+            _sp_rank_due = False
             if (a.rank_loss or a.rank_diag_only) and a.rank_cross_seed and _xs_stat["groups"]:
                 # THE LOSS VALUE IS ACCUMULATED IN PASS A, not reconstructed from the
                 # coefficients: rel's value is a sum of squares, so sum_i c_i s_i is not it.
                 # 0 is the floor, not "no alignment".
                 if a.rank_form == "rel" and _rel_stat.get("rho"):
-                    def _med(v):
-                        w = sorted(v)
-                        return w[len(w) // 2] if w else float("nan")
                     _rh = _rel_stat["rho"]
                     print(f"  [rank {rank}] epoch {ep + 1} WITHIN-INTERFACE SPEARMAN "
                           f"(predicted mean ipTM vs DockQ): median {_med(_rh):+.4f} over "
@@ -8871,37 +9040,7 @@ def main():
                               f"interface-group(s)   [oracle mean "
                               f"{sum(_oq) / len(_oq):.4f}; CROPPED training poses, top-1 of this "
                               f"epoch's own forward -- not the held-out number]")
-                    # THE SAME MEDIANS, TO A FILE. Until now the print above was the only record
-                    # of the within-interface spread, so reading a 20-epoch curve out of it meant
-                    # grepping a log format that is free to change -- and the quantity the rel loss
-                    # exists to control was the one quantity not in any csv. One row per epoch per
-                    # rank, beside trajectory.csv. Per rank, not reduced: each rank sees its own
-                    # structures, an all-reduce here would be a collective in a print block, and
-                    # three near-identical medians are a cheap consistency check.
-                    _sp = os.path.join(a.out, f"spread.r{rank}.csv")
-                    _new = not os.path.exists(_sp)
-                    with open(_sp, "a") as _fh:
-                        if _new:
-                            _fh.write("epoch,n_ifaces,rho,sd_pred,sd_true,sd_ratio,"
-                                      "insample_dq,insample_frac,oracle_dq\n")
-                        _fh.write("%d,%d,%.6f,%.6f,%.6f,%.6f" % (
-                            ep + 1, len(_rh), _med(_rh),
-                            _med(_rel_stat.get("sd_s") or [float("nan")]),
-                            _med(_rel_stat.get("sd_g") or [float("nan")]),
-                            _med(_rel_stat.get("sd_ratio") or [float("nan")])))
-                        _sq = _rel_stat.get("sel_dq") or []
-                        _oq = _rel_stat.get("orc_dq") or []
-                        _fh.write(",%.6f,%.6f,%.6f\n" % (
-                            (sum(_sq) / len(_sq)) if _sq else float("nan"),
-                            (sum(1 for _v in _sq if _v >= 0.23) / len(_sq)) if _sq
-                            else float("nan"),
-                            (sum(_oq) / len(_oq)) if _oq else float("nan")))
-                    for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio", "sel_dq", "orc_dq",
-                                "bal_nacc", "bal_onesided_ifaces",
-                                "first_acc_rank", "score_gap", "headroom", "acc_top1"):
-                        _rel_stat[_k3] = []
-                    _rel_stat["bal_lists"] = 0
-                    _rel_stat["bal_onesided"] = 0
+                    _sp_rank_due = True
                 # THE LINE NAMES THE OBJECTIVE THAT RAN. It once printed
                 # "({rank_form}, {rank_pairs}-seed pairs)" for every form, so a rel run -- which
                 # forms no pairs at all -- was logged as "(rel, cross-seed pairs)". This is the
@@ -8946,6 +9085,95 @@ def main():
                       f"NOT an inversion rate)", flush=True)
                 _rank_seen["loss"] = 0.0
                 _rank_seen["units"] = 0
+            # THE PAE LOSS, SPLIT BY POSE GROUP. OUTSIDE the ranking gate above, which is the
+            # whole point: that gate needs --rank-cross-seed and a non-empty pass A, and this
+            # read exists for an arm that runs neither. Per rank and not reduced, like the
+            # spread medians below -- each rank sees its own structures and an all-reduce in a
+            # print block is a collective nothing else here takes.
+            #
+            # WHAT TO READ: the two means separately, over epochs. The aggregate pae_loss falls
+            # whichever group is being fit, so only the DIFFERENCE says whether one is being
+            # sacrificed for the other. The counts are printed beside them because the means are
+            # over different, unequal populations and a count that moves between epochs changes
+            # a mean without any pose's loss changing.
+            if _ps_on:
+                _pm_a = ((_rel_stat["ps_acc_sum"] / _rel_stat["ps_acc_n"])
+                         if _rel_stat["ps_acc_n"] else float("nan"))
+                _pm_u = ((_rel_stat["ps_un_sum"] / _rel_stat["ps_un_n"])
+                         if _rel_stat["ps_un_n"] else float("nan"))
+                print(f"  [rank {rank}] epoch {ep + 1} PAE BY POSE GROUP (DockQ "
+                      f"{a.pae_split_accept:g}, CROPPED training batches, the loss this arm "
+                      f"trains on): acceptable {_pm_a:.4f} over {_rel_stat['ps_acc_n']} pose(s), "
+                      f"unacceptable {_pm_u:.4f} over {_rel_stat['ps_un_n']} pose(s), "
+                      f"acceptable minus unacceptable {_pm_a - _pm_u:+.4f}; "
+                      f"{_rel_stat['ps_straddle']} pose(s) STRADDLED the threshold across their "
+                      f"interfaces and are in neither, {_rel_stat['ps_unclass']} unclassified"
+                      + (f" ({_rel_stat['ps_batched']} of them --pose-batch rows, whose pae_loss "
+                         f"is a mean over the batch)" if _rel_stat["ps_batched"] else "")
+                      + "   [one group falling while the other does not is the signal]",
+                      flush=True)
+            # THE SAME MEDIANS, TO A FILE. Until now the print above was the only record
+            # of the within-interface spread, so reading a 20-epoch curve out of it meant
+            # grepping a log format that is free to change -- and the quantity the rel loss
+            # exists to control was the one quantity not in any csv. One row per epoch per
+            # rank, beside trajectory.csv. Per rank, not reduced: each rank sees its own
+            # structures, an all-reduce here would be a collective in a print block, and
+            # three near-identical medians are a cheap consistency check.
+            #
+            # ONE WRITER, NOT TWO. The pae-split columns are appended to THIS row rather than
+            # written to a file of their own, the way insample_dq was appended: a second writer
+            # would mean two header lines and two rows per epoch in the same file whenever both
+            # reads were on, and nothing downstream could tell which row carried which. So the
+            # ranking columns go out as nan when the ranking block did not run, which is what a
+            # PAE-only arm produces, and the header stays fixed for the life of the file.
+            #
+            # A RESUMED RUN GETS A RAGGED TAIL -- the header was written when the file was
+            # created and is not rewritten, so rows appended after this change carry seven more
+            # fields than that header names. That is what appending insample_dq already did
+            # (training/runs/nad5rc/spread.r0.csv still holds 6-field rows under a 9-field
+            # header), and it is the deliberate trade: rewriting a header in place means
+            # rewriting the file, and nothing reads these columns positionally.
+            if _sp_rank_due or _ps_on:
+                _rh = _rel_stat.get("rho") or []
+                _sp = os.path.join(a.out, f"spread.r{rank}.csv")
+                _new = not os.path.exists(_sp)
+                with open(_sp, "a") as _fh:
+                    if _new:
+                        _fh.write("epoch,n_ifaces,rho,sd_pred,sd_true,sd_ratio,"
+                                  "insample_dq,insample_frac,oracle_dq,"
+                                  "pae_acc,pae_unacc,n_pae_acc,n_pae_unacc,"
+                                  "n_pae_straddle,n_pae_unclassified,pae_acc_minus_unacc\n")
+                    _fh.write("%d,%d,%.6f,%.6f,%.6f,%.6f" % (
+                        ep + 1, len(_rh), _med(_rh or [float("nan")]),
+                        _med(_rel_stat.get("sd_s") or [float("nan")]),
+                        _med(_rel_stat.get("sd_g") or [float("nan")]),
+                        _med(_rel_stat.get("sd_ratio") or [float("nan")])))
+                    _sq = _rel_stat.get("sel_dq") or []
+                    _oq = _rel_stat.get("orc_dq") or []
+                    _fh.write(",%.6f,%.6f,%.6f" % (
+                        (sum(_sq) / len(_sq)) if _sq else float("nan"),
+                        (sum(1 for _v in _sq if _v >= 0.23) / len(_sq)) if _sq
+                        else float("nan"),
+                        (sum(_oq) / len(_oq)) if _oq else float("nan")))
+                    _na = _rel_stat["ps_acc_n"]
+                    _nu = _rel_stat["ps_un_n"]
+                    _ma = (_rel_stat["ps_acc_sum"] / _na) if _na else float("nan")
+                    _mu = (_rel_stat["ps_un_sum"] / _nu) if _nu else float("nan")
+                    _fh.write(",%.6f,%.6f,%d,%d,%d,%d,%.6f\n" % (
+                        _ma, _mu, _na, _nu,
+                        _rel_stat["ps_straddle"], _rel_stat["ps_unclass"], _ma - _mu))
+                for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio", "sel_dq", "orc_dq",
+                            "bal_nacc", "bal_onesided_ifaces",
+                            "first_acc_rank", "score_gap", "headroom", "acc_top1"):
+                    _rel_stat[_k3] = []
+                _rel_stat["bal_lists"] = 0
+                _rel_stat["bal_onesided"] = 0
+                # RESET WITH THE REST, at the same boundary, or epoch 2's mean would be epochs
+                # 1 and 2 pooled -- a curve that cannot help but look like it is flattening.
+                _rel_stat["ps_acc_sum"] = 0.0
+                _rel_stat["ps_un_sum"] = 0.0
+                for _k4 in ("ps_acc_n", "ps_un_n", "ps_straddle", "ps_unclass", "ps_batched"):
+                    _rel_stat[_k4] = 0
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
                   f"residual {(_ep_s - _acc)/60:.1f}m "
                   f"(exclusive buckets only; gpu_* overlap pose_total, "
