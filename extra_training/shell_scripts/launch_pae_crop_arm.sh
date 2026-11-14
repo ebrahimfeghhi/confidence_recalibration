@@ -59,6 +59,10 @@ say() { echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 
 POOL_DIR="${POOL_DIR:-training/crop_final}"
 MANIFEST="${MANIFEST:-train_val_splits/cache_train_structures_extended.csv}"
+# THE SCORED-PAIR POOL. Both the PAE mask and the ranking term are restricted to these
+# interfaces, so narrowing it narrows the whole objective -- which is what an overfit test on a
+# subset needs. It was hardcoded, so a subset arm could only be built by editing the launcher.
+SCORED_PAIRS="${SCORED_PAIRS:-training/combined/pool.csv}"
 SKIP="${SKIP:-4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m}"
 CARDS="${CARDS:-4,5,7}"
 EPOCHS="${EPOCHS:-50}"
@@ -164,19 +168,35 @@ say "  core budget: $_THREADS crop thread(s) across 3 ranks, ceiling 64"
 [ -d "$POOL_DIR" ] || { say "REFUSING: $POOL_DIR is not a directory"; exit 2; }
 
 # POPULATION, AS A SET NOT A COUNT.
-$PY -I - "$POOL_DIR" "$MANIFEST" "$SKIP" <<'PYG' || exit 3
+$PY -I - "$POOL_DIR" "$MANIFEST" "$SKIP" "${SUBSET_OK:-}" <<'PYG' || exit 3
 import csv, os, sys
-pool_dir, manifest, skip_s = sys.argv[1:4]
+pool_dir, manifest, skip_s, subset_ok = (sys.argv[1:5] + [""])[:4]
 skip = set(x for x in skip_s.split(",") if x)
 man = [r["pdb"] for r in csv.DictReader(open(manifest))]
 want = set(p for p in man if p not in skip)
 pool = set(f[:-4] for f in os.listdir(pool_dir) if f.endswith(".npz"))
 print(f"  manifest {len(man)} rows, SKIP removes {len(skip & set(man))} -> trainable {len(want)}")
 print(f"  crop pool {len(pool)}   want == pool: {'YES' if want == pool else 'NO'}")
+# COVERAGE IS THE REAL REQUIREMENT -- every structure we intend to train on must have a crop.
+# Crops the manifest does not name are harmless. But equality also caught the case this gate was
+# written for: a manifest silently shrunk, training on a subset while the logs say otherwise. So a
+# STRICT SUBSET is allowed only with SUBSET_OK=1, which makes a deliberate subset arm possible and
+# an accidental one still refuse.
 missing = want - pool
 if missing:
     print(f"  REFUSING: {len(missing)} structure(s) absent from the pool: {sorted(missing)[:6]}")
-sys.exit(0 if want == pool else 1)
+    sys.exit(1)
+if want != pool:
+    extra = len(pool - want)
+    if not subset_ok:
+        print(f"  REFUSING: the manifest is a STRICT SUBSET of the crop pool -- {len(want)} of "
+              f"{len(pool)} structures, {extra} crop(s) unused. If that is deliberate, pass "
+              f"SUBSET_OK=1 and the run will say so in its banner; if it is not, the manifest is "
+              f"not the one you think it is.")
+        sys.exit(1)
+    print(f"  SUBSET_OK: training on {len(want)} of {len(pool)} crop-pool structures by request "
+          f"({extra} crop(s) unused). THIS ARM IS NOT COMPARABLE with a full-population arm.")
+sys.exit(0)
 PYG
 
 say "CPU gate: wiring"
@@ -404,7 +424,7 @@ LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   --alignment-preflight training/alignment_preflight_sharded.json \
   --manifest-selection "$MANIFEST" --manifest-skip "$SKIP" \
   --fold training/fold --indices training/prep/all857_indices.csv \
-  --pae-scored-pairs training/combined/pool.csv \
+  --pae-scored-pairs "$SCORED_PAIRS" \
   --pae-scored-roles training/fold/chain_roles_all.csv \
   --lean-readouts --train-only "$TRAIN_ONLY" --expect-trainable 113 \
   --warmup-steps 20 --seed 0 --clip-norm 25.0 \
