@@ -290,6 +290,21 @@ RANK_S="${RANK_S:-3}"
 REL_LABELS="${REL_LABELS:-training/fold/itm_labels}"
 RANK_LABELS="${RANK_LABELS:-training/fold/results.csv}"
 RANK_POOL_STAT="${RANK_POOL_STAT:-mean}"
+# THE CORRELATION FORM. REL_STANDARDIZE divides both sides by their own std, which makes the loss
+# exactly 2*(1 - corr) and so removes the reward for shrinking the predicted spread -- the plain
+# rel loss is a squared error, and a squared error is minimised by hedging toward the mean
+# whenever the target is only partly predictable, which is what compressed the val ipTM spread.
+# REL_SD_WEIGHT then multiplies each interface by its TRUE std, restoring the importance that
+# standardising equalises away (corr(within-interface std of true iTM, DockQ range) = +0.745).
+# REL_STD_FLOOR near zero keeps the invariance all the way down: at the 0.02 default the clamp
+# engages and a collapsed prediction scores 1.0, which BEATS an uncorrelated ordering at 2.0.
+REL_STANDARDIZE="${REL_STANDARDIZE:-}"
+REL_SD_WEIGHT="${REL_SD_WEIGHT:-}"
+REL_STD_FLOOR="${REL_STD_FLOOR:-}"
+# REL_G_WEIGHT weights each POSE's error by its raw true iTM to the power given, so misplacing a
+# pose the truth rates highly costs more than misplacing a bad one. It is a weighted mean, not a
+# weighted sum, so the loss keeps its scale; 1 is the linear form, 2 the sharper one.
+REL_G_WEIGHT="${REL_G_WEIGHT:-}"
 # OFF BY DEFAULT. The gradient split costs one extra backward per pose on a measured step, and
 # the real arm does not need it: beta is estimated once by the one-epoch diagnostic
 # (shell_scripts/queue_rank_gradprobe_1ep.sh, which sets K=1) and then held fixed. A 50-epoch arm
@@ -312,6 +327,10 @@ if [ -n "$ALPHA_RANK" ]; then
              --rank-cross-seed --rank-structs-per-step "$RANK_S"
              --rel-labels "$REL_LABELS" --rank-labels "$RANK_LABELS"
              --rank-pool "$RANK_POOL_STAT")
+  [ -n "$REL_STANDARDIZE" ] && RANK_ARGS+=(--rel-standardize)
+  [ -n "$REL_SD_WEIGHT" ] && RANK_ARGS+=(--rel-sd-weight)
+  [ -n "$REL_STD_FLOOR" ] && RANK_ARGS+=(--rel-std-floor "$REL_STD_FLOOR")
+  [ -n "$REL_G_WEIGHT" ] && RANK_ARGS+=(--rel-g-weight "$REL_G_WEIGHT")
   # THE FLAG AND ITS VALUE TOGETHER, OR NEITHER. The first version of this line expanded to a
   # BARE NUMBER with the flag name dropped, so K=1 would have appended "1" as a positional
   # argument and argparse would have refused the whole launch. Appended conditionally instead,
