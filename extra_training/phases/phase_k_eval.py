@@ -981,6 +981,24 @@ def main():
                          "it automatically. Not accepting it is what made arm wd656y exit 1 after "
                          "its first epoch: the flag was forwarded to a parser that did not know it.")
     # --------------------------------------------------------------------------------------
+    # THE READOUT SITE (phases/pose_readout.py), the fifth injection, SAME STORY AS --pose-inblock
+    # BELOW: the trainer's --pose-readout adds pose_readout_d / pose_readout_d_wo_onehot (and
+    # pose_readout_frame_dir with --frame-direction) to the confidence head, _head_ckpt_tensors
+    # saves EVERY head tensor, so those keys are in the checkpoint -- and without these flags the
+    # key-set guard below refuses every such checkpoint and the arm trains to completion with no
+    # held-out or extra-eval number at all.
+    ap.add_argument("--pose-readout", action="store_true",
+                    help="the checkpoint was trained with phase_k_train --pose-readout, so the "
+                         "head carries pose_readout_* tensors the stock model does not. Requires "
+                         "--pose-perblock (or --pose-inblock): the hook READS that wrapper's "
+                         "per-forward pose geometry. phase_k_train passes this automatically.")
+    ap.add_argument("--pose-readout-prenorm", action="store_true",
+                    help="the injection went into pae_ln's INPUT, not its output. SAME TENSOR "
+                         "COUNT either way, so the state-dict guard cannot catch this one: omit "
+                         "it and the checkpoint loads cleanly and is scored with the pose added "
+                         "AFTER the layernorm instead of before it -- a different function, "
+                         "silently. Same trap as --pose-perblock-share.")
+    # --------------------------------------------------------------------------------------
     # IN-BLOCK POSE INJECTION, the pathway that had no scoring counterpart at all.
     #
     # phase_k_train --pose-inblock registers pose_inblock_d / pose_inblock_d_wo_onehot (and two
@@ -1320,6 +1338,16 @@ def main():
     elif a.pose_perblock_share or a.pose_perblock_copy:
         raise SystemExit("STOP: --pose-perblock-share/-copy without --pose-perblock changes "
                          "nothing, and scoring would silently use one-depth injection.")
+    # LAST, AND IN THE TRAINER'S ORDER (phase_k_train.py:2212): pose_readout.install refuses
+    # unless a stack injection has already published the geometry it reads. copy_distance is NOT
+    # forwarded and must not be: every head tensor comes from the checkpoint a few lines below, so
+    # the initialisation is overwritten and only the SITE (prenorm) changes what is scored.
+    if a.pose_readout:
+        import pose_readout
+        pose_readout.install(model, prenorm=a.pose_readout_prenorm)
+    elif a.pose_readout_prenorm:
+        raise SystemExit("STOP: --pose-readout-prenorm without --pose-readout. It moves the "
+                         "fifth site, it does not install it; the trainer refuses this too.")
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu")
         have = dict(model.named_parameters())
@@ -1355,10 +1383,11 @@ def main():
                   f"{len(sd)}.\n"
                   f"  Pass the same pathway flags the run trained with -- --frame-direction, "
                   f"--pose-perblock, --pose-perblock-tied, --pose-perblock-share, "
-                  f"--pose-inblock, --pose-inblock-pae -- or the "
+                  f"--pose-inblock, --pose-inblock-pae, --pose-readout -- or the "
                   f"pathway is scored as though it were absent. NOTE "
-                  f"--pose-perblock-share adds NO tensors, so this guard cannot catch its "
-                  f"absence: the load succeeds and the score is simply wrong.")
+                  f"--pose-perblock-share and --pose-readout-prenorm add NO tensors, so this "
+                  f"guard cannot catch their absence: the load succeeds and the score is simply "
+                  f"wrong.")
         with torch.no_grad():
             for k, v in sd.items():
                 have[k].data.copy_(v.to(have[k].device))

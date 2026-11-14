@@ -789,6 +789,17 @@ def main():
                          "tensors are pose_readout_d, pose_readout_d_wo_onehot and "
                          "pose_readout_frame_dir; a --train-only must match `pose_readout` to "
                          "reach them.")
+    ap.add_argument("--pose-readout-prenorm", action="store_true",
+                    help="MOVE --pose-readout's injection to BEFORE pae_ln instead of after it. "
+                         "The readout is linear_no_bias_pae(pae_ln(z_pair)); the default site adds "
+                         "the pose term to the LN's OUTPUT, straight into the normalised features "
+                         "the linear layer reads. This adds it to z_pair and lets the LN "
+                         "renormalise the sum, so the injection can change the DIRECTION of the "
+                         "pair feature but not its magnitude -- the LN divides that back out. "
+                         "That is the point: the post-LN site can bias the readout up or down "
+                         "wholesale, and this one cannot. Same three zero-init matrices, same "
+                         "shapes, so step 0 is bit-identical either way; only the hook differs. "
+                         "Requires --pose-readout.")
     ap.add_argument("--pose-readout-copy-distance", action="store_true",
                     help="Start --pose-readout's two DISTANCE arms at block 0's pretrained "
                          "linear_no_bias_d/_wo_onehot instead of zero. STEP 0 IS THEN NOT "
@@ -2195,11 +2206,15 @@ def main():
         raise SystemExit("STOP: --pose-perblock-tied/-share/-copy without --pose-perblock does "
                          "nothing. They select how A shares its weights, not whether A is "
                          "installed.")
+    if a.pose_readout_prenorm and not a.pose_readout:
+        raise SystemExit("STOP: --pose-readout-prenorm moves --pose-readout's injection site; it "
+                         "does nothing on its own. Pass --pose-readout too, or drop it.")
     if a.pose_readout:
         # AFTER both stack injections, because it refuses unless one of them is installed: it
         # reads their per-forward geometry rather than recomputing cdist and the one-hot.
         import pose_readout
-        _prd = pose_readout.install(model, copy_distance=a.pose_readout_copy_distance)
+        _prd = pose_readout.install(model, copy_distance=a.pose_readout_copy_distance,
+                                    prenorm=a.pose_readout_prenorm)
     elif a.pose_readout_copy_distance:
         raise SystemExit("STOP: --pose-readout-copy-distance without --pose-readout. It selects "
                          "how the fifth site is initialised, not whether it exists.")
@@ -4045,6 +4060,7 @@ def main():
                  "rel_standardize": a.rel_standardize,
                  "rel_sd_weight": a.rel_sd_weight,
                  "rel_g_weight": a.rel_g_weight,
+                 "pose_readout_prenorm": a.pose_readout_prenorm,
                  "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                  # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
@@ -4212,6 +4228,7 @@ def main():
                      "rank_pool": "max", "rel_labels": "", "rel_standardize": False,
                      "rel_sd_weight": False, "rel_std_floor": -1.0,
                      "rel_g_weight": 0.0, "rel_g_sigmoid": "",
+                     "pose_readout_prenorm": False,
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
@@ -7467,6 +7484,16 @@ def main():
             cmd += ["--pose-inblock", "--pose-inblock-block", str(a.pose_inblock_block)]
             if a.pose_inblock_pae:
                 cmd.append("--pose-inblock-pae")
+        # THE READOUT SITE, SAME CLASS AGAIN. --pose-readout ADDS three head tensors, so a child
+        # without it fails the resume guard's parameter-set comparison and the held-out point is
+        # simply absent; --pose-readout-prenorm adds none and would NOT fail loudly -- the child
+        # would measure the pose added after pae_ln while the parent trained it added before.
+        # --pose-readout-copy-distance is an initialisation the bundle overwrites, so it is not
+        # forwarded, exactly as on the eval_checkpoint path.
+        if a.pose_readout:
+            cmd.append("--pose-readout")
+            if a.pose_readout_prenorm:
+                cmd.append("--pose-readout-prenorm")
         # FORWARDED WHENEVER THE PARENT HAS IT, not only alongside --lean-single. lean_readouts
         # replaces memory_efficient_forward rather than adding or removing tensors, so its absence
         # in the child was invisible to both the key-set guard and the resume guard -- the child
@@ -7952,6 +7979,17 @@ def main():
                              "--pose-inblock-block", str(a.pose_inblock_block)]
             if a.pose_inblock_pae:
                 extra = extra + ["--pose-inblock-pae"]
+        # AND THE READOUT SITE. --pose-readout ADDS three head tensors, so without this the
+        # evaluator's key-set guard refuses every checkpoint of such an arm and the run produces
+        # no eval number at all. --pose-readout-prenorm adds NO tensors and only moves the site,
+        # so nothing would catch its absence: the load would succeed and the evaluator would score
+        # the pose added AFTER pae_ln while the trainer trained it added BEFORE. Not forwarded:
+        # --pose-readout-copy-distance, which only chooses an initialisation the checkpoint
+        # overwrites.
+        if a.pose_readout:
+            extra = extra + ["--pose-readout"]
+            if a.pose_readout_prenorm:
+                extra = extra + ["--pose-readout-prenorm"]
         # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
         #
         # --join-cache is the big one. The pose->sample join is a function of the trunk's own
@@ -8561,6 +8599,7 @@ def main():
                  "rel_standardize": a.rel_standardize,
                  "rel_sd_weight": a.rel_sd_weight,
                  "rel_g_weight": a.rel_g_weight,
+                 "pose_readout_prenorm": a.pose_readout_prenorm,
                  "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                                   "rank_form": a.rank_form,

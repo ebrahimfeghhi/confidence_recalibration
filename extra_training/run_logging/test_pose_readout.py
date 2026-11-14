@@ -166,6 +166,82 @@ def main():
     check("no pose in flight -> readout unchanged",
           bool(torch.equal(m.confidence_head.readout(z), base)))
 
+    # ---- 7. prenorm=True: THE OTHER SITE -------------------------------------------------
+    # The whole claim of --pose-readout-prenorm is that it injects into pae_ln's INPUT, which is
+    # a DIFFERENT function from injecting into its output -- so the tests that matter are that it
+    # still fires (a forward PRE-hook has to return the replacement args tuple, and returning the
+    # wrong shape silently does nothing), that it is not gradient-dead, and that it is NOT the
+    # same number as the post-LN site at the same weights.
+    _clear()
+    m4 = _Model()
+    m4.confidence_head._pose_perblock_installed = True
+    m4.confidence_head._pose_direction_installed = True
+    base4 = m4.confidence_head.readout(z).clone()
+    info4 = pose_readout.install(m4, loud=False, prenorm=True)
+    check("prenorm installs the same three tensors", info4["orientation"] is True
+          and info4["tensors"] == ["pose_readout_d", "pose_readout_d_wo_onehot",
+                                   "pose_readout_frame_dir"])
+    check("prenorm registers the PRE-hook, not the post-hook",
+          m4.confidence_head._pose_readout_prenorm is True
+          and len(m4.confidence_head.pae_ln._forward_pre_hooks) == 1
+          and len(m4.confidence_head.pae_ln._forward_hooks) == 0)
+    _publish(oh, d, dr)
+    got4 = m4.confidence_head.readout(z)
+    check("prenorm zero-init is BIT-identical", bool(torch.equal(base4, got4)),
+          f"max|d| {float((got4 - base4).abs().max()):.3e}")
+    m4.confidence_head.readout(z).square().mean().backward()
+    for nm in ("pose_readout_d", "pose_readout_d_wo_onehot", "pose_readout_frame_dir"):
+        g = getattr(m4.confidence_head, nm).weight.grad
+        check(f"prenorm: {nm} has a NON-ZERO gradient at zero init",
+              g is not None and bool(g.abs().max() > 0),
+              f"max|g| {float(g.abs().max()):.3e}" if g is not None else "grad is None")
+
+    # copy_distance pre-norm: the hook must FIRE (output moves) and must not agree with the
+    # post-LN site, which is the only evidence that `prenorm` selects a different operator.
+    _clear()
+    m5, m6 = _Model(), _Model()
+    m6.load_state_dict(m5.state_dict())
+    for mm in (m5, m6):
+        mm.confidence_head._pose_perblock_installed = True
+    base5 = m5.confidence_head.readout(z).clone()
+    pose_readout.install(m5, copy_distance=True, loud=False, prenorm=True)
+    pose_readout.install(m6, copy_distance=True, loud=False, prenorm=False)
+    _publish(oh, d)
+    got5 = m5.confidence_head.readout(z)
+    got6 = m6.confidence_head.readout(z)
+    check("prenorm copy_distance CHANGES the readout (the pre-hook fires)",
+          not torch.equal(base5, got5),
+          f"max|d| {float((got5 - base5).abs().max()):.3e}")
+    check("prenorm is a DIFFERENT site from post-LN at identical weights",
+          not torch.allclose(got5, got6, atol=1e-5),
+          f"max|pre - post| {float((got5 - got6).abs().max()):.3e}")
+    # AND THE POINT OF THE SITE: the LN divides the magnitude back out, so however large the
+    # injection grows, what linear_no_bias_pae reads stays unit-scaled. Post-LN it does not.
+    with torch.no_grad():
+        for mm in (m5, m6):
+            mm.confidence_head.pose_readout_d.weight.mul_(50.0)
+            mm.confidence_head.pose_readout_d_wo_onehot.weight.mul_(50.0)
+    n_pre = float(m5.confidence_head.pae_ln(z).std())
+    _hpre = m5.confidence_head.pae_ln._forward_pre_hooks
+    check("prenorm: pae_ln's OUTPUT stays unit-scaled however big the injection",
+          abs(n_pre - 1.0) < 0.2 and len(_hpre) == 1, f"std {n_pre:.3f}")
+    n_post = float(m6.confidence_head.pae_ln(z).std())
+    check("post-LN: the same injection scales the readout input without limit",
+          n_post > 5.0, f"std {n_post:.3f}")
+
+    # the shape guard, pre-norm side
+    _publish(oh_small, d_small)
+    try:
+        m5.confidence_head.readout(z)
+        check("prenorm shape guard fires on mismatched geometry", False, "it broadcast silently")
+    except RuntimeError as e:
+        check("prenorm shape guard fires on mismatched geometry",
+              "--pose-readout-prenorm" in str(e) and "was not written" in str(e))
+
+    _clear()
+    check("prenorm: no pose in flight -> readout unchanged",
+          bool(torch.equal(m5.confidence_head.readout(z), base5)))
+
     print()
     if fails:
         print(f"FAILED {len(fails)}: " + ", ".join(fails))

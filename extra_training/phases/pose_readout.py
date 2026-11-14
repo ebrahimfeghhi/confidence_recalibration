@@ -1,5 +1,5 @@
-"""THE FIFTH POSE INJECTION SITE: after pae_ln, upstream of the PAE readout, usable ALONGSIDE
---pose-perblock.
+"""THE FIFTH POSE INJECTION SITE: at pae_ln, upstream of the PAE readout, usable ALONGSIDE
+--pose-perblock. Either AFTER the layernorm (the default) or BEFORE it (prenorm=True).
 
 WHY THIS MODULE EXISTS AT ALL. The readout injection already existed as --pose-inblock-pae, but
 the trainer refuses it two ways (phase_k_train.py:1884 and :1896): --pose-inblock excludes
@@ -86,7 +86,7 @@ def _zero_linear(in_features, out_features, ref):
     return m
 
 
-def install(model, copy_distance=False, loud=True):
+def install(model, copy_distance=False, loud=True, prenorm=False):
     head = model.confidence_head
     if getattr(head, "_pose_readout_installed", False):
         raise RuntimeError("STOP: pose_readout.install ran twice; the hook would fire twice and "
@@ -143,7 +143,50 @@ def install(model, copy_distance=False, loud=True):
             out = out + head.pose_readout_frame_dir(dr).to(out.dtype)
         return out
 
-    head._pose_readout_hook = head.pae_ln.register_forward_hook(_hook)
+    def _pre_hook(_mod, inp):
+        """The SAME injection, into pae_ln's INPUT instead of its output.
+
+        WHY IT IS A DIFFERENT SITE AND NOT A COSMETIC MOVE. The readout is
+        linear_no_bias_pae(pae_ln(z_pair)). Adding after the LN puts the pose term straight into
+        the normalised features the linear layer reads, at whatever scale the arm learns. Adding
+        BEFORE it puts the term into z_pair and then lets the LN renormalise the sum, so the
+        injection can only change the DIRECTION of the pair feature, not its overall magnitude --
+        the LN divides the magnitude back out. That is a real constraint, not a detail: it makes
+        the injection unable to simply bias the readout up or down, which is exactly the failure
+        mode the post-LN site has.
+
+        STILL ZERO-INIT, so step 0 is bit-identical either way, and the arms are the same modules
+        with the same shapes -- only the hook differs.
+        """
+        if not inp:
+            return inp
+        z = inp[0]
+        oh, dd, dr = _geometry()
+        if oh is None:
+            return inp
+        if z.shape[:-1] != oh.shape[:-1]:
+            raise RuntimeError(
+                f"STOP: --pose-readout-prenorm: pae_ln's INPUT is {tuple(z.shape)} but the pose "
+                f"geometry is {tuple(oh.shape)}. The hook is firing on a call it was not written "
+                f"for, and adding across that mismatch would broadcast silently.")
+        z = z + head.pose_readout_d(oh).to(z.dtype)
+        z = z + head.pose_readout_d_wo_onehot(dd.unsqueeze(-1)).to(z.dtype)
+        if has_dir and dr is not None:
+            if dr.shape[:-1] != oh.shape[:-1]:
+                raise RuntimeError(
+                    f"STOP: --pose-readout-prenorm: orientation is {tuple(dr.shape)} against "
+                    f"geometry {tuple(oh.shape)}; one pose's directions would pair with "
+                    f"another's bins.")
+            z = z + head.pose_readout_frame_dir(dr).to(z.dtype)
+        return (z,) + tuple(inp[1:])
+
+    # ONE SITE OR THE OTHER, NEVER BOTH. Registering both hooks would add the pose twice through
+    # the same three matrices, and the two contributions are not even on the same scale.
+    if prenorm:
+        head._pose_readout_hook = head.pae_ln.register_forward_pre_hook(_pre_hook)
+    else:
+        head._pose_readout_hook = head.pae_ln.register_forward_hook(_hook)
+    head._pose_readout_prenorm = bool(prenorm)
     head._pose_readout_installed = True
     head._pose_readout_copy_distance = bool(copy_distance)
 
@@ -152,14 +195,19 @@ def install(model, copy_distance=False, loud=True):
         names.append("pose_readout_frame_dir")
     n_new = sum(p.numel() for n in names for p in getattr(head, n).parameters())
     if loud:
-        print(f"POSE READOUT (5th site): injected after pae_ln, upstream of linear_no_bias_pae, "
+        # THE SITE IS NAMED FROM `prenorm`, NOT HARDCODED. This line said "after pae_ln" in both
+        # modes, so a prenorm arm's run.log asserted the post-LN site -- and run.log is how these
+        # arms are read back weeks later.
+        _site = ("BEFORE pae_ln, into z_pair with the layernorm downstream" if prenorm
+                 else "after pae_ln")
+        print(f"POSE READOUT (5th site): injected {_site}, upstream of linear_no_bias_pae, "
               f"with the one-hot and raw-distance terms"
               + (" and the orientation term" if has_dir else " (no orientation: --frame-direction "
                                                              "not installed)")
               + f". {n_new:,} new parameter(s) across {len(names)} tensor(s). Geometry is READ from "
               f"the installed stack injection's per-forward cache, not recomputed. A --train-only "
               f"must match `pose_readout` to reach these.")
-        if copy_distance:
+        if copy_distance and not prenorm:
             print("  COPY-DISTANCE IS ON, AND IT IS NOT NEUTRAL: pose_readout_d and "
                   "pose_readout_d_wo_onehot start at block 0's PRETRAINED weights, so step 0 is "
                   "NOT bit-identical to the un-injected head. Those weights were fitted to add "
@@ -167,6 +215,15 @@ def install(model, copy_distance=False, loud=True):
                   "adds AFTER pae_ln, so an unnormalised pretrained-scale term lands on a "
                   "normalised one with nothing downstream to rescale it. Shapes permit the copy, "
                   "semantics do not match. The orientation arm stays zero.")
+        elif copy_distance:
+            print("  COPY-DISTANCE IS ON AT THE PRE-NORM SITE, which is the one place in this "
+                  "module where the copy is semantically right: block 0's injection was fitted to "
+                  "add into z_pair with a normalisation downstream, and pae_ln is exactly that. "
+                  "So the pretrained scale lands in the space it was fitted for, and this matches "
+                  "--pose-perblock-copy's own initialisation rather than fighting it. Step 0 is "
+                  "NOT bit-identical to the un-injected head -- the injection starts active, by "
+                  "request. The orientation arm stays zero, as it does at every other site, "
+                  "because no pretrained orientation matrix exists to copy.")
         else:
             print("  ZERO-INIT and verified exactly zero, so step 0 is bit-identical to the "
                   "un-injected head.")
