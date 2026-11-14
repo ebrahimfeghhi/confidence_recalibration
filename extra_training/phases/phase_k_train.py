@@ -6374,6 +6374,19 @@ def main():
                             f"is not a partial-data case. Check --rank-labels covers this "
                             f"manifest-selection.")
                     _acc_by[(_sd0, _i0)] = float(_l0[_sx0]) >= a.rel_balance_accept
+                _na0 = sum(1 for _v0 in _acc_by.values() if _v0)
+                if _na0 == 0 or _na0 == len(_acc_by):
+                    # THE FALLBACK IS A SYMPTOM, NOT A FEATURE. rel_coeffs falls back to a
+                    # uniform mean when a list has only one class, silently and correctly -- 0.5/0
+                    # is not a weight. But on a pool selected to have BOTH classes in every list,
+                    # a one-sided list cannot be real: it means the DockQ lookup returned the
+                    # wrong rows, or the threshold is not the one the pool was built with. Counted
+                    # and named per epoch so that shows up instead of hiding inside a loss value.
+                    _rel_stat["bal_onesided"] = _rel_stat.get("bal_onesided", 0) + 1
+                    _rel_stat.setdefault("bal_onesided_ifaces", []).append(
+                        f"{_pdb}_{_pair}({'all-acc' if _na0 else 'none-acc'},n={len(_acc_by)})")
+                _rel_stat["bal_lists"] = _rel_stat.get("bal_lists", 0) + 1
+                _rel_stat.setdefault("bal_nacc", []).append(_na0)
             if a.rank_form == "rel":
                 # NOT group_coeffs. rel is a regression, not a pairwise family, so none of the
                 # pairwise knobs apply and passing them would make flags look honoured.
@@ -8754,6 +8767,20 @@ def main():
                               f"{_med(_rel_stat['sd_g']):.4f}, median ratio "
                               f"{_med(_rel_stat['sd_ratio']):.3f}   "
                               f"[<1 collapsing, >1 exaggerating, ~1 right magnitude]")
+                    if _rel_stat.get("bal_lists"):
+                        _nb = _rel_stat.get("bal_nacc") or [0]
+                        _one = _rel_stat.get("bal_onesided", 0)
+                        print(f"  [rank {rank}] epoch {ep + 1} CLASS BALANCE: "
+                              f"{_rel_stat['bal_lists']} list(s) weighted at DockQ "
+                              f"{a.rel_balance_accept:g}, median {_med(_nb)} acceptable; "
+                              f"{_one} fell back to a uniform mean for having only ONE class"
+                              + ("   [EXPECTED 0 on a pool where every list has both -- a "
+                                 "non-zero count means the DockQ lookup is wrong, not that the "
+                                 "data is odd]" if _one else ""))
+                        if _one:
+                            print(f"    one-sided: "
+                                  f"{', '.join(_rel_stat['bal_onesided_ifaces'][:8])}"
+                                  + (" ..." if _one > 8 else ""))
                     if _rel_stat.get("sel_dq"):
                         _sq = _rel_stat["sel_dq"]
                         _oq = _rel_stat["orc_dq"]
@@ -8789,8 +8816,11 @@ def main():
                             (sum(1 for _v in _sq if _v >= 0.23) / len(_sq)) if _sq
                             else float("nan"),
                             (sum(_oq) / len(_oq)) if _oq else float("nan")))
-                    for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio", "sel_dq", "orc_dq"):
+                    for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio", "sel_dq", "orc_dq",
+                                "bal_nacc", "bal_onesided_ifaces"):
                         _rel_stat[_k3] = []
+                    _rel_stat["bal_lists"] = 0
+                    _rel_stat["bal_onesided"] = 0
                 # THE LINE NAMES THE OBJECTIVE THAT RAN. It once printed
                 # "({rank_form}, {rank_pairs}-seed pairs)" for every form, so a rel run -- which
                 # forms no pairs at all -- was logged as "(rel, cross-seed pairs)". This is the
