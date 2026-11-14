@@ -417,7 +417,8 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean", n_pair_tokens=None
     return t[keep].mean()
 
 
-def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_FLOOR):
+def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_FLOOR,
+               sd_weight=False, g_weight=0.0):
     """Mean-centred regression coefficients for ONE interface's poses.
 
     s_by_key / g_by_key: {(seed, sample): float}. Returns ({key: dL/ds}, n_poses, loss).
@@ -459,11 +460,35 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
         sc_ = sl - sl.mean()
         sc_ = sc_ / sc_.std(unbiased=False).clamp_min(std_floor)
         gc_ = gc / gc.std(unbiased=False).clamp_min(std_floor)
-        L = ((sc_ - gc_) ** 2).mean()
+        if g_weight > 0.0:
+            # PER-POSE WEIGHT BY THE RAW GROUND TRUTH, so misplacing a pose the truth rates highly
+            # costs more than misplacing a bad one. The two-pass standardisation is untouched: the
+            # weight enters only the final reduction, as a weighted mean -- sum(w * err^2) / sum(w)
+            # rather than mean(err^2) -- which keeps the loss on the same scale as the unweighted
+            # form instead of inflating it by the average weight.
+            #
+            # THE RAW g, NOT THE Z-SCORED ONE. The z-scored target is centred, so half its values
+            # are negative and using it as a weight would SUBTRACT the error on below-average
+            # poses -- rewarding getting them wrong. iTM is already on [0, 1], which is the scale
+            # that makes "how good is this pose" a weight at all.
+            #
+            # IT DOES NOT DEPEND ON THE PARAMETERS, so it changes the gradient by exactly the
+            # factor it changes the loss by, and the shift-invariance that gives this term its
+            # zero-sum gradient survives: the weights multiply a per-pose error whose argument is
+            # still the CENTRED prediction.
+            _w = g.clamp_min(0.0) ** g_weight
+            L = (_w * (sc_ - gc_) ** 2).sum() / _w.sum().clamp_min(1e-12)
+        else:
+            L = ((sc_ - gc_) ** 2).mean()
         L.backward()
         c = sl.grad.detach().clone()
         loss = float(L.detach())
     else:
+        if g_weight > 0.0:
+            # REFUSED RATHER THAN APPROXIMATED. The closed form below is the gradient of the
+            # UNWEIGHTED mean; a per-pose weight changes it everywhere, and the standardised path
+            # above is the only one that differentiates what it reports.
+            raise ValueError("g_weight requires standardize=True")
         r = (s - s.mean()) - gc
         loss = float((r ** 2).mean())
         c = (2.0 / P) * r
@@ -474,10 +499,36 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
     # its gradient is orthogonal to the all-ones direction -- and subtracting the mean removes
     # only float error.
     c = c - c.mean()
+    if sd_weight:
+        # WEIGHT THE INTERFACE BY HOW MUCH ITS TRUTH ACTUALLY VARIES.
+        #
+        # standardize=True divides both sides by their own std, which makes every interface count
+        # the same. That is wrong in a measured way: corr(within-interface std of the true iTM,
+        # DockQ range) = +0.745, so wide-spread interfaces are exactly the ones where picking the
+        # wrong pose is expensive, and the narrow ones have frac acceptable median 1.00 -- there
+        # is nothing to win there. This multiplies the standardised loss and its gradient by the
+        # GROUND TRUTH's own std, restoring that ordering of importance.
+        #
+        # SD, NOT VARIANCE. The target was already divided by sigma_g, so weighting by sigma_g^2
+        # would very nearly cancel the standardisation and land back on the unstandardised loss.
+        # sigma_g restores importance while keeping the scale-invariance that is the point of
+        # standardising.
+        #
+        # THE WEIGHT COMES FROM g, WHICH DOES NOT DEPEND ON THE PARAMETERS, so it multiplies the
+        # gradient exactly and the closed form stays valid. Weighting by the PREDICTION's std
+        # would add a second d(sigma)/ds_i term -- the very defect the standardize path above
+        # exists to avoid -- and is deliberately not offered.
+        #
+        # NOT FLOORED. std_floor exists to stop a DIVISION blowing up; here the std multiplies,
+        # so a genuinely flat interface should contribute nothing and flooring it would invent a
+        # weight for an interface with no ordering to learn.
+        _w = float(gc.std(unbiased=False))
+        c = c * _w
+        loss = loss * _w
     return {k: float(v) for k, v in zip(keys, c)}, P, loss
 
 
 def rel_loss_value(s_by_key, g_by_key, standardize=False,
-                   std_floor=DEFAULT_REL_STD_FLOOR):
+                   std_floor=DEFAULT_REL_STD_FLOOR, sd_weight=False, g_weight=0.0):
     """The loss value alone, for logging. Same arithmetic as rel_coeffs."""
-    return rel_coeffs(s_by_key, g_by_key, standardize, std_floor)[2]
+    return rel_coeffs(s_by_key, g_by_key, standardize, std_floor, sd_weight, g_weight)[2]

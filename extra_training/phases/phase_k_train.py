@@ -276,6 +276,22 @@ def main():
                          "scales the gradient exactly; it is NOT floored, because a genuinely "
                          "flat interface should contribute nothing. ALPHA MUST BE RE-MEASURED "
                          "with --grad-norm-every: scaling the loss scales its gradient.")
+    ap.add_argument("--rel-g-weight", type=float, default=0.0, metavar="POW",
+                    help="PER-POSE WEIGHT BY THE RAW GROUND TRUTH SCORE, as g^POW. 0 (default) "
+                         "is off; 1.0 weights each pose by its true iTM, 2.0 by its square if "
+                         "the linear form is too gentle. The two-pass standardisation is "
+                         "unchanged -- the prediction is still z-scored by its own mean and std "
+                         "over the interface and the label by its own -- and the weight enters "
+                         "ONLY the final reduction, as sum(w * err^2) / sum(w) instead of "
+                         "mean(err^2), so the loss stays on the scale it had before and does not "
+                         "inflate by the average weight. The point is that misplacing a pose the "
+                         "truth rates highly should cost more than misplacing a bad one, while "
+                         "the shift and scale invariance of the standardised form is kept. THE "
+                         "RAW g, NOT THE Z-SCORED ONE: the z-scored target is centred, so half "
+                         "its values are negative and it would SUBTRACT the error on "
+                         "below-average poses. REQUIRES --rel-standardize, and composes with "
+                         "--rel-sd-weight, which stays applied on top. ALPHA MUST BE "
+                         "RE-MEASURED with --grad-norm-every.")
     ap.add_argument("--rel-standardize", action="store_true",
                     help="ABLATION. Also divide each interface's centred prediction and label by "
                          "its own std (floored), which makes the loss invariant to shrinking the "
@@ -1419,6 +1435,13 @@ def main():
     # actually fired would otherwise look exactly like one that did.
     if a.pae_entropy > 0.0:
         globals()["TERMS"] = TERMS + ("pae_entropy",)
+    if a.rel_g_weight and not a.rel_standardize:
+        raise SystemExit("STOP: --rel-g-weight needs --rel-standardize. The weight is defined on "
+                         "the z-scored error, and the unstandardised path uses a closed-form "
+                         "gradient that a per-pose weight would invalidate.")
+    if a.rel_g_weight < 0.0:
+        raise SystemExit(f"STOP: --rel-g-weight {a.rel_g_weight} is negative; a negative power "
+                         f"makes the WORST poses dominate.")
     if a.allow_stale_labels and not a.pae_entropy > 0.0:
         raise SystemExit(
             "STOP: --allow-stale-labels is only sound with --pae-entropy, where the gradient is a "
@@ -2705,6 +2728,7 @@ def main():
                   f"its seeds, alpha {a.alpha_rank:g}"
                   + (", STANDARDISED by the within-interface std" if a.rel_standardize else "")
                   + (", WEIGHTED by the true within-interface std" if a.rel_sd_weight else "")
+                  + (f", PER-POSE WEIGHTED by g^{a.rel_g_weight:g}" if a.rel_g_weight else "")
                   + f". Labels {a.rel_labels} ({_mj.get('structures', '?')} structure(s), "
                   f"{_mj.get('rows', '?')} row(s), column "
                   f"{'g_max' if a.rank_pool == 'max' else 'g_mean'}, digest "
@@ -3605,6 +3629,7 @@ def main():
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
                  "rel_sd_weight": a.rel_sd_weight,
+                 "rel_g_weight": a.rel_g_weight,
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                  # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
                  # shape, so a resume that moved any of them silently would be a different
@@ -3770,6 +3795,7 @@ def main():
                      "rank_loss": False, "alpha_rank": 1.0,
                      "rank_pool": "max", "rel_labels": "", "rel_standardize": False,
                      "rel_sd_weight": False, "rel_std_floor": -1.0,
+                     "rel_g_weight": 0.0,
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
@@ -6263,6 +6289,7 @@ def main():
                 c, npair, lval = RKL.rel_coeffs(s_by, dq_by,
                                                 standardize=a.rel_standardize,
                                                 sd_weight=a.rel_sd_weight,
+                                                g_weight=a.rel_g_weight,
                                                 **({} if a.rel_std_floor is None
                                                    else {"std_floor": a.rel_std_floor}))
                 _rel_stat["groups"] += 1
@@ -8030,6 +8057,7 @@ def main():
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
                  "rel_sd_weight": a.rel_sd_weight,
+                 "rel_g_weight": a.rel_g_weight,
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                                   "rank_form": a.rank_form,
                                   "rank_cross_seed": a.rank_cross_seed,
