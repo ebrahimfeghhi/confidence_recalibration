@@ -686,7 +686,7 @@ def _crop_one_pose(z, lab, pose_i, contact=5.0, margin=15.0):
     return interface_crop_tokens(z, _One(), contact, margin, all_poses=True)
 
 
-def slice_cached_unit(z, lab, keep_tok, keep_atom, dev, torch):
+def slice_cached_unit(z, lab, keep_tok, keep_atom, dev, torch, zt_src=None):
     """Everything a cropped training unit needs, sliced and re-indexed. One implementation.
 
     Returns (feat_head, s_inputs, s_trunk, z_trunk, poses, n_cycle, feat_loss, label_full_coords,
@@ -737,7 +737,19 @@ def slice_cached_unit(z, lab, keep_tok, keep_atom, dev, torch):
     }
     s_inputs = T(np.asarray(z["ci_s_inputs"])[kt]).float()
     s_trunk = T(np.asarray(z["ci_s_trunk_f32"])[kt]).float()
-    zt_u16 = np.asarray(z["z_trunk"])[np.ix_(kt, kt)]
+    # READ ONLY THE ROWS THE CROP KEEPS, when a mapping is offered.
+    #
+    # np.asarray(z["z_trunk"]) materialises the WHOLE pair representation -- 1,650 x 1,650 x c_z
+    # is ~100 MB -- and then keeps a 256 x 256 corner, throwing away 97% of what it just read.
+    # That is the single largest cost in the cropped path: cpucrop_slice measures 117 min of
+    # thread time per rank per epoch. A memmap makes np.ix_ touch only the kept ROWS, so a
+    # 256-of-1,650 crop reads ~15% of the bytes instead of 100%.
+    #
+    # zt_src IS THE MAPPING, OR None. Passing it rather than reading a flag keeps this function
+    # ignorant of argparse, and None reproduces the historical path exactly.
+    _zt = z["z_trunk"] if zt_src is None else zt_src
+    zt_u16 = np.asarray(_zt[np.ix_(kt, kt)]) if zt_src is not None \
+        else np.asarray(_zt)[np.ix_(kt, kt)]
     z_trunk = torch.from_numpy(np.ascontiguousarray(zt_u16)).to(dev).view(torch.bfloat16)
     poses = T(np.asarray(z["ci_coordinate"])[:, ka, :]).float()
 

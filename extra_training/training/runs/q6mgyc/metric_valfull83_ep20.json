@@ -1,0 +1,18 @@
+{
+ "n_interfaces": 141,
+ "budget": 30,
+ "mean_dockq": 0.5842,
+ "frac_acc": 0.7305,
+ "oracle_mean_dockq": 0.7338,
+ "oracle_frac_acc": 0.9007,
+ "ckpt": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/q6mgyc/head_ep20_step2900.pt",
+ "select_by": "max",
+ "headroom": 0.1496,
+ "seed_base": 400000,
+ "seed_manifest": "/home/ebrahim/confidence_recalibration/extra_training/training/valfull83/seed_manifest.json",
+ "seed_manifest_digest": "",
+ "mean_dockq_select_mean": 0.5863,
+ "frac_acc_select_mean": 0.7234,
+ "baseline_mean_dockq": 0.5813,
+ "baseline_frac_acc": 0.7234
+}

@@ -255,69 +255,25 @@ def iptm(pae_logits, feat, configs, pair):
     if cpi.dim() == 3:
         cpi = cpi[0]
     i, j = pair
+    # PROTENIX COMPACTS ASYM IDS, SO THE PAIR MUST BE COMPACTED TOO.
+    # calculate_chain_based_ptm remaps asym ids to 0..N-1 whenever `len(unique) != max+1` --
+    # which is exactly when a crop has removed a whole chain -- and sizes chain_pair_iptm to the
+    # compacted count. `pair` is in UNCROPPED model asym indices. Indexing a compacted matrix
+    # with them is out of range when the dropped chain precedes a scored one, and, worse, IN
+    # range and pointing at a different chain pair otherwise: a plausible number, no error.
+    # phase_k_eval._cpi_index has replicated this on the eval side all along; this is the same
+    # mapping, built the same way. It is the identity when the ids are already contiguous, so it
+    # applies unconditionally and the cropped and uncropped paths read the same code.
+    _u = torch.unique(feat["asym_id"].reshape(-1).long())
+    _remap = {int(o): n for n, o in enumerate(_u.tolist())}
+    if i not in _remap or j not in _remap:
+        # The chain is not in this (possibly cropped) structure at all. None is correct and the
+        # caller's completeness guard will refuse rather than train on a silent gap.
+        return None
+    i, j = _remap[i], _remap[j]
     if i >= cpi.shape[0] or j >= cpi.shape[1]:
         return None
     return cpi[i, j]
-
-
-def pair_terms(s_vals, dq_vals, weight_by_gap=True, dq_tol=1e-6):
-    """(loss, coeffs, n_pairs) for one interface's poses.
-
-    s_vals/dq_vals are plain floats. The loss is rebuilt on a LEAF TENSOR and differentiated by
-    autograd rather than by the closed form n*(dq_i - mean dq)/sum|ddq|. The closed form is right
-    only when NO pair is dropped, and equal-DockQ pairs are dropped; autograd stays correct either
-    way and costs microseconds on a 5-element vector.
-
-    A pose pair whose DockQ values are equal carries NO ordering information and is dropped: asking
-    the head to separate two equally-good poses is noise with a gradient.
-    """
-    n = len(s_vals)
-    s = torch.tensor(s_vals, dtype=torch.float64, requires_grad=True)
-    num, den, npair = s.new_zeros(()), 0.0, 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = dq_vals[i] - dq_vals[j]
-            if abs(d) <= dq_tol:
-                continue
-            # LINEAR. With the gap as the weight, w * sign(d) collapses to d itself.
-            w = abs(d) if weight_by_gap else 1.0
-            num = num - (s[i] - s[j]) * (d if weight_by_gap else (1.0 if d > 0 else -1.0))
-            den += w
-            npair += 1
-    if npair == 0:
-        return 0.0, [0.0] * n, 0
-    loss = num / den
-    loss.backward()
-    return float(loss.detach()), [float(g) for g in s.grad], npair
-
-
-def coeffs(dq_vals, weight_by_gap=True, dq_tol=1e-6):
-    """(c, n_pairs) where c_i = dL/ds_i -- FROM THE LABELS ALONE, no scores needed.
-
-    THIS IS THE WHOLE REASON THE TRAINER NEEDS NO SECOND FORWARD PASS. The loss is linear in the
-    scores, L = sum_i c_i s_i, so its derivative contains no score:
-
-        c_i = - sum_{j: (i,j) valid} (dq_i - dq_j) / sum_{(i,j) valid} |dq_i - dq_j|
-
-    Verified: pair_terms returns byte-identical coefficients for score vectors as different as
-    [0.70, 0.69, 0.69, 0.69, 0.66], [0.1, 0.9, 0.5, 0.2, 0.7] and all-zeros.
-
-    Computed by handing pair_terms a dummy score vector rather than by writing the closed form out
-    again. The closed form above is right only when NO pair is dropped, and equal-DockQ pairs ARE
-    dropped; routing through the same autograd path that computes the loss keeps the two
-    definitions from drifting apart, and costs microseconds on five elements.
-    """
-    _, c, npair = pair_terms([0.0] * len(dq_vals), dq_vals,
-                             weight_by_gap=weight_by_gap, dq_tol=dq_tol)
-    return c, npair
-
-
-def value(s_vals, c):
-    """The loss itself, L = sum_i c_i s_i. For logging; no second evaluation of anything."""
-    return float(sum(a * b for a, b in zip(c, s_vals)))
-
-
-DEFAULT_TAU = 0.0305
 """Median |ipTM gap| over CROSS-SEED pairs of the full training set.
 
 training/fold/results.csv, 497 structures, 1,028 interfaces, 1,056,035 pairs after dropping DockQ
@@ -325,9 +281,6 @@ ties. Reproduce with `python -I run_logging/measure_tau.py`. For reference the 2
 overfit30 subset gives 0.0426 and val10 gives 0.0313; the training number is the one to use,
 because tau shapes the training gradient and taking it from val would let the eval set in.
 """
-
-
-DEFAULT_SOFTMAX_TAU = 0.05
 """Softmax temperature for the EXPECTED-DockQ form. NOT the same quantity as DEFAULT_TAU.
 
 DEFAULT_TAU is a margin scale in ipTM units -- the measured median cross-seed gap -- and it sets
@@ -337,217 +290,6 @@ they are not interchangeable: 0.0305 here would be a far sharper selection than 
 the softplus would be a 1.6x wider margin. The flag is shared, so the banner prints which meaning
 is in force.
 """
-
-
-def expected_dockq(s_vals, dq_vals, tau=DEFAULT_SOFTMAX_TAU):
-    """(loss, coeffs, n_poses) for the EXPECTED-DockQ form.
-
-        p = softmax(s / tau)          over EVERY pose in the group
-        L = - sum_i p_i * dq_i        the expected DockQ of the pose the model would select
-
-    WHY THIS EXISTS. Every other form in this file is pairwise, and a pairwise loss spends its
-    gradient in proportion to how many pairs a pose appears in -- which is the same for a pose
-    ranked 1st and a pose ranked 90th. Deployment takes the argmax and nothing else, so ordering
-    the bottom of the list is work that cannot pay. The softmax is a differentiable stand-in for
-    that argmax: as tau falls it concentrates on the current leaders, and in the limit L is the
-    DockQ of the selected pose.
-
-    THERE ARE NO PAIRS. The returned count is POSES, not pairs. `weight_by_gap` and
-    `pairs` has nothing to act on here -- the softmax is over the whole group by
-    construction, which is what "all poses competing for selection" means -- so group_coeffs
-    ignores both for this form and says so in the log rather than appearing to honour them.
-
-    THE FLOOR IS NOT ZERO. L is in [-max(dq), -min(dq)], so a perfect model scores -max(dq) for
-    that group, not 0. The softplus log line's "0 is the FLOOR" claim is false for this form and
-    is suppressed.
-
-    THE GRADIENT, closed form:
-        dL/ds_i = -(p_i / tau) * (dq_i - sum_j p_j dq_j)
-    A pose is pushed up when its DockQ beats the current expected DockQ, down when it does not,
-    and the push is scaled by p_i -- so a pose with no chance of being selected gets no gradient.
-    test_rank_loss.py checks this against autograd.
-    """
-    if tau <= 0:
-        raise ValueError(f"tau must be positive, got {tau!r}")
-    n = len(s_vals)
-    if n != len(dq_vals):
-        raise ValueError(f"length mismatch: {n} scores, {len(dq_vals)} labels")
-    if n == 0:
-        return 0.0, [], 0
-    z = [float(s) / tau for s in s_vals]
-    zmax = max(z)                      # shift before exp; at tau 0.02 a score of 0.9 is z = 45
-    ex = [math.exp(v - zmax) for v in z]
-    tot = sum(ex)
-    p = [v / tot for v in ex]
-    ebar = sum(pi * float(d) for pi, d in zip(p, dq_vals))
-    loss = -ebar
-    c = [-(pi / tau) * (float(d) - ebar) for pi, d in zip(p, dq_vals)]
-    return loss, c, n
-
-
-def pair_terms_softplus(s_vals, dq_vals, tau=DEFAULT_TAU, weight_by_gap=True, dq_tol=1e-6):
-    """(loss, coeffs, n_pairs) for the SCALED LOGISTIC form.
-
-        m_ij = sign(dq_i - dq_j) * (s_i - s_j)              signed margin; > 0 means right order
-        L    = (2 tau / W) * sum_ij w_ij softplus(-m_ij / tau)
-        W    = sum_ij w_ij,     w_ij = |dq_i - dq_j|  (or 1 when weight_by_gap is False)
-
-    and so the gradient weight on a pair is sigmoid(-m_ij / tau): ~1 when badly inverted, 1/2 at a
-    tie, decaying to 0 once correct by a few tau.
-
-    THE 2*tau PREFACTOR MAKES THE TIE GRADIENT MATCH THE LINEAR LOSS. Differentiating,
-
-        dL/ds_i = -(2/W) sum_j w_ij sign(dq_i - dq_j) sigmoid(-m_ij / tau)
-
-    and with w_ij = |dq_i - dq_j| the product w*sign collapses to (dq_i - dq_j), so at m = 0 where
-    sigmoid is 1/2 this is -(1/W) sum_j (dq_i - dq_j) -- exactly pair_terms' coefficient. Without
-    the prefactor the whole gradient would carry a spurious 1/tau, about 33x at the default tau,
-    and a form change would be inseparable from a learning-rate change. test_rank_loss.py asserts
-    this agreement.
-
-    SAME LEAF-TENSOR AUTOGRAD as pair_terms, for the same reason: the closed form above is right
-    only when no pair is dropped, and DockQ ties ARE dropped. Routing both forms through autograd
-    keeps the loss and its derivative from drifting apart.
-
-    UNLIKE pair_terms' COEFFICIENTS, THESE DEPEND ON s_vals. That is the point -- it is what lets
-    the loss stop pushing a pair it has already ordered -- and it is why this form needs pass A.
-    """
-    if tau <= 0:
-        raise ValueError(f"tau must be positive, got {tau!r}")
-    n = len(s_vals)
-    s = torch.tensor(s_vals, dtype=torch.float64, requires_grad=True)
-    num, den, npair = s.new_zeros(()), 0.0, 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            d = dq_vals[i] - dq_vals[j]
-            if abs(d) <= dq_tol:
-                continue
-            w = abs(d) if weight_by_gap else 1.0
-            m = (s[i] - s[j]) * (1.0 if d > 0 else -1.0)
-            num = num + w * torch.nn.functional.softplus(-m / tau)
-            den += w
-            npair += 1
-    if npair == 0:
-        return 0.0, [0.0] * n, 0
-    loss = (2.0 * tau / den) * num
-    loss.backward()
-    return float(loss.detach()), [float(g) for g in s.grad], npair
-
-
-def coeffs_softplus(s_vals, dq_vals, tau=DEFAULT_TAU, weight_by_gap=True, dq_tol=1e-6):
-    """(c, n_pairs) where c_i = dL/ds_i for the softplus form. REQUIRES the current scores.
-
-    The linear `coeffs` takes labels only; this one cannot, and the asymmetry is the whole design
-    argument. A gradient that ignores the current scores is a gradient that is constant in them,
-    which is a loss that is linear in them, which is a loss with no stopping point. Needing s_vals
-    here is the price of having somewhere to stop.
-    """
-    _, c, npair = pair_terms_softplus(s_vals, dq_vals, tau=tau,
-                                      weight_by_gap=weight_by_gap, dq_tol=dq_tol)
-    return c, npair
-
-
-PAIR_FAMILIES = ("cross", "within", "all")
-
-
-def pair_included(ki, kj, pairs):
-    """Does the pair of group keys (seed, sample) belong to the `pairs` family?
-
-    THE FAMILY IS PART OF THE OBJECTIVE, NOT A FILTER ON ONE. Cross-seed and within-seed pairs
-    sit at different ipTM scales -- over the 497-structure training set after the DockQ-tie filter,
-    median |gap| is 0.0305 cross-seed against 0.0036 within-seed, 8.5x; on overfit30, 0.0426
-    against 0.0137. Reproduce with `measure_tau.py --pairs {cross,within}` against the pool being
-    TRAINED on, never against val.
-
-    ONE TAU CAN SERVE BOTH, which an earlier version of this note denied. At tau 0.0305 an
-    overfit30-median within-seed pair weights 0.376 correct against 0.624 inverted (1.66x), and
-    even at the full training set's tighter 0.0036 it is 0.467 / 0.533 with both directions
-    pushing toward the better-DockQ pose. A wide tau costs saturation, not gradient. What the
-    within-seed family actually lacks is SHARE -- 7.9% of pairs, 7.0% of pairwise gradient mass --
-    which `within_weight` addresses directly and measurably. Reach for a second tau only to change
-    the correct/inverted RATIO, not to make within-seed pairs count for more.
-    """
-    if pairs not in PAIR_FAMILIES:
-        raise ValueError(f"unknown pair family {pairs!r}, expected one of {PAIR_FAMILIES}")
-    if pairs == "all":
-        return True
-    same_seed = (ki[0] == kj[0])
-    return (not same_seed) if pairs == "cross" else same_seed
-
-
-def pair_straddles(di, dj, thresh):
-    """Does this pair cross the acceptability threshold -- exactly one pose above it?
-
-    thresh <= 0 turns the restriction OFF and every pair passes, which is the default and what
-    every run before this flag did.
-
-    WHY RESTRICT TO THESE PAIRS. The reported criterion is the FRACTION of interfaces whose
-    selected pose clears DockQ 0.23, and that number changes only when selection moves a pose
-    from one side of 0.23 to the other. A pair of two acceptable poses, or of two unacceptable
-    ones, can be reordered freely without moving the fraction at all. Ordering every straddling
-    pair correctly is exactly equivalent to never selecting an unacceptable pose when an
-    acceptable one is present in the group, which is the whole of the headroom that the fraction
-    metric can see.
-
-    WHAT IT COSTS. Mean DockQ is NOT invariant to the pairs this drops: promoting 0.61 over 0.38
-    raises mean DockQ and leaves the fraction untouched, and this filter discards that gradient.
-    So the arm optimises the fraction and treats mean DockQ as a free variable, which is a real
-    change of objective and not merely a sparser estimate of the same one. The two numbers are
-    reported side by side for that reason.
-
-    THE THRESHOLD IS A DockQ THRESHOLD, applied to the LABELS, never to the scores. It therefore
-    partitions pairs by a fixed property of the data: the set of included pairs does not move as
-    the model trains, so unlike rank_decay_weights this does not make the objective a function of
-    the model's current ordering and cannot oscillate.
-    """
-    if not thresh or thresh <= 0:
-        return True
-    # >=, NOT >, because the reported metric is `1.0 if best_dockq >= 0.23 else 0.0`
-    # (rank_rho.py). DockQ is stored to 3-4 decimals and 26 rows sit at exactly 0.2300, so a pose
-    # on the line is "acceptable" to the criterion; a `>` here would call it unacceptable and the
-    # filter would be optimising a threshold the scoreboard does not use. Worth 116 of 143,680
-    # pairs -- immaterial to any result, but there is no reason for the two to disagree.
-    return (di >= thresh) != (dj >= thresh)
-
-
-def rank_decay_weights(sv, k):
-    """v(r) = exp(-(r-1)/k) over the group's CURRENT ipTM order, r = 1 for the top pose.
-
-    Returns a list aligned with sv, or None when k <= 0 (decay off).
-
-    WHY IT EXISTS. Selection is argmax ipTM over the group, and the selected pose changes only
-    when some pose's ipTM crosses the current top's -- so the pairs (top, j) are the entire
-    selection-relevant subspace. Measured on valfull at the shipped head, those pairs are 1.33%
-    of all pairs and carry 1.56% of the loss's weight, while ordering them all correctly is
-    equivalent to the top pose being the best pose, i.e. the FULL oracle (0.5831 -> 0.6926 DockQ
-    on 92 interfaces). The objective therefore spends ~98% of its weight on orderings deployment
-    never consults.
-
-    WHY A DECAY RATHER THAN A SPIKE ON RANK 1. The weight would then be a step function of the
-    scores: whenever the argmax flips, the objective's identity changes discontinuously and the
-    run can oscillate -- demote A, B becomes top, demote B, A returns. With k = 2 a rank-1/rank-2
-    swap moves their weights 1.00 <-> 0.61 instead of 1.00 <-> 0. k -> 0 recovers the pure star,
-    k -> inf recovers the unweighted objective, so k interpolates between them.
-
-    THE PAIR WEIGHT USES max(), NOT the product -- see group_coeffs. A product would annihilate
-    the (rank 1, deep pose) pairs, and those are exactly the ones carrying the headroom: the
-    best-DockQ pose sits at a median rank of 68 of 150.
-
-    STOP-GRADIENT BY CONSTRUCTION. The ranks come from the detached float scores, so the weight
-    is treated as a constant and the loss is not the exact gradient of any fixed objective. That
-    is deliberate and is the same choice every ranking method of this family makes; it is
-    recorded here so it is not mistaken for an oversight.
-    """
-    if k is None or k <= 0:
-        return None
-    order = sorted(range(len(sv)), key=lambda i: -sv[i])
-    v = [0.0] * len(sv)
-    for r, i in enumerate(order):
-        v[i] = math.exp(-r / float(k))
-    return v
-
-
-DEFAULT_SPEARMAN_TAU = 0.05
 """Soft-rank temperature, in the units of the quantity being ranked.
 
 0.05 is ABAG-Rank's own training value (configs/losses/one_minus_rho.yaml), and it is applied here
@@ -556,8 +298,6 @@ that one is a margin scale for the softplus loss, measured as the median cross-s
 the two numbers answer different questions. Reusing it here would couple a temperature to a
 measurement that has nothing to do with rank saturation.
 """
-
-DEFAULT_REL_SCALE = 0.07
 """Relevance gate: a group's loss is scaled by clamp(std(DockQ) / 0.07, 0, 1).
 
 Upstream's, and the reason it exists is that a complex whose poses are all equally good carries no
@@ -568,321 +308,6 @@ and read the logged mean weight before concluding anything about the term's effe
 
 Set rel_scale=0.0 to disable the gate.
 """
-
-
-def group_coeffs(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
-                 weight_by_gap=True, dq_tol=1e-6, pairs="cross", within_weight=1.0,
-                 rank_decay_k=0.0, straddle=0.0,
-                 spearman_tau=DEFAULT_SPEARMAN_TAU, dist_weight=0.1,
-                 rel_scale=DEFAULT_REL_SCALE):
-    """Coefficients for ONE interface over poses drawn from SEVERAL SEEDS.
-
-    s_by_key / dq_by_key are {(seed, sample): float} over the whole group -- after pass A's
-    all_gather, every rank holds the same dicts and so computes the same coefficients.
-
-    Returns ({(seed, sample): c_i}, n_pairs, loss).
-
-    CROSS-SEED BY DEFAULT; `pairs` selects the family -- see pair_included. Deployment takes the
-    argmax over ALL poses of an interface regardless of seed, so cross-seed ordering is the
-    objective and within-seed ordering is a proxy for it, and the five earliest arms trained the
-    within-seed proxy alone without beating shipped. Those arms ran the LINEAR form with no tau at
-    all, so they do not test a within-seed softplus; "within" exists to make that a separable
-    experiment rather than an assumption.
-
-    `within_weight` SCALES WITHIN-SEED PAIRS UNDER pairs="all", in both the numerator and the
-    normaliser W, so the result stays a weighted mean and the coefficients still sum to zero.
-    It exists because within-seed pairs are under-REPRESENTED, not under-GRADIENTED: at tau
-    0.0305 a median within-seed pair on overfit30 (gap 0.0137) already gets 0.376 if correctly
-    ordered against 0.624 if inverted, which is real discrimination. The deficit is share --
-    6.7% of the pairwise gradient mass -- and share is what this fixes. A multiplier is a better
-    knob for that than a second tau: it is monotone in the quantity being targeted, so it can be
-    set from a measurement, while tau changes the shape of the weighting and its effect on mass
-    share is not monotone. Measured on overfit30 at tau 0.0305, within-seed mass share goes
-    6.7% -> 17.6% -> 36.0% -> 58.0% at L = 1, 3, 8, 20, while mass reaching inverted pairs falls
-    only 82.7% -> 80.2% at L=8.
-
-    NOTE THE SEED COUNT MOVES THE BASELINE. Within-seed pairs are 10*C(5,2) of C(50,2) = 8.2% of
-    an interface at the 10 training seeds, but only 2.7% at the 30 seeds the held-out evaluation
-    uses. L is calibrated against the TRAINING shape.
-
-    PAIRS ARE DROPPED, NOT ZEROED, when excluded -- they leave the normaliser W as well as the
-    numerator, so the loss stays a mean over the pairs it actually uses.
-    """
-    keys = sorted(set(s_by_key) & set(dq_by_key))
-    if len(keys) < 2:
-        return {}, 0, 0.0
-    sv = [float(s_by_key[k]) for k in keys]
-    dv = [float(dq_by_key[k]) for k in keys]
-
-    n = len(keys)
-    # EXPECTED-DockQ IS PAIR-FREE and so leaves before the pair loop. It needs no DockQ-tie
-    # dropping (a tie is two poses with equal utility, which the expectation handles), and it
-    # cannot honour `pairs` or weight_by_gap -- see expected_dockq. Differentiated by
-    # autograd here, like the other forms, so the value and its gradient cannot drift apart;
-    # the closed form is checked against this in the tests.
-    if form == "expected":
-        if tau <= 0:
-            raise ValueError(f"tau must be positive, got {tau!r}")
-        s = torch.tensor(sv, dtype=torch.float64, requires_grad=True)
-        d = torch.tensor(dv, dtype=torch.float64)
-        loss = -(torch.softmax(s / tau, dim=0) * d).sum()
-        loss.backward()
-        return ({k: float(g) for k, g in zip(keys, s.grad)}, n, float(loss.detach()))
-
-    if form in ("spearman", "distance", "spearman_distance"):
-        # ABAG-RANK'S TWO GROUP TERMS, APPLIED WITHIN EACH SEED.
-        #
-        # Both are group-level rather than pairwise, so `pairs`, `within_weight`, `weight_by_gap`,
-        # `rank_decay_k` and `straddle` DO NOT APPLY and are deliberately not consulted -- a
-        # pairwise filter has no meaning for a loss defined on a whole ordering. The trainer
-        # refuses those flags alongside these forms rather than letting them look honoured.
-        #
-        # ONE SEED IS ONE GROUP. The keys are (seed, sample), so partitioning on key[0] gives the
-        # --nsample samples of a single seed, which is the grouping asked for. Each seed's
-        # coefficients are summed into the same output dict, so a step holding several seeds of an
-        # interface contributes several independent groups rather than one pooled ordering.
-        #
-        # Partitioned HERE rather than in the trainer so that pass A, its completeness assertion,
-        # the all_gather and the group divisor are reused exactly as the cross-seed forms left
-        # them; the trainer cannot tell the difference.
-        by_seed = {}
-        for _ix, _k in enumerate(keys):
-            by_seed.setdefault(_k[0], []).append(_ix)
-        out, tot_l, tot_n = {}, 0.0, 0
-        for _sd, _idxs in sorted(by_seed.items()):
-            if len(_idxs) < 2:
-                continue
-            _ss = [sv[i] for i in _idxs]
-            _dd = [dv[i] for i in _idxs]
-            _acc = [0.0] * len(_idxs)
-            if form in ("spearman", "spearman_distance"):
-                _l, _c, _n = pair_terms_spearman(_ss, _dd, tau=spearman_tau,
-                                                 rel_scale=rel_scale)
-                tot_l += _l
-                tot_n += _n
-                _acc = [a + b for a, b in zip(_acc, _c)]
-            if form in ("distance", "spearman_distance"):
-                _l, _c, _n = pair_terms_distance(_ss, _dd, rel_scale=rel_scale)
-                # dist_weight APPLIES ONLY WHEN COMBINING. It is a RELATIVE weight against the
-                # ranking term's 1.0 -- ABAG-Rank's own split -- so applying it to the term on its
-                # own would make `--rank-form distance` quietly 10x smaller than the flag reads,
-                # with --alpha-rank then scaling an already-scaled term. Caught by the combined-
-                # form test, which expected the two single forms to add up and found they did not.
-                _w = dist_weight if form == "spearman_distance" else 1.0
-                tot_l += _w * _l
-                if form == "distance":
-                    tot_n += _n
-                _acc = [a + _w * b for a, b in zip(_acc, _c)]
-            for _ix, _cv in zip(_idxs, _acc):
-                out[keys[_ix]] = out.get(keys[_ix], 0.0) + _cv
-        if not tot_n:
-            return {}, 0, 0.0
-        return out, tot_n, float(tot_l)
-
-    if tau <= 0 and form == "softplus":
-        raise ValueError(f"tau must be positive, got {tau!r}")
-    s = torch.tensor(sv, dtype=torch.float64, requires_grad=True)
-    _vdec = rank_decay_weights(sv, rank_decay_k)
-    num, den, npair = s.new_zeros(()), 0.0, 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            if not pair_included(keys[i], keys[j], pairs):
-                continue
-            d = dv[i] - dv[j]
-            if abs(d) <= dq_tol:
-                continue
-            if not pair_straddles(dv[i], dv[j], straddle):
-                continue
-            w = abs(d) if weight_by_gap else 1.0
-            if keys[i][0] == keys[j][0]:
-                w *= within_weight
-            if _vdec is not None:
-                w *= max(_vdec[i], _vdec[j])
-            if form == "softplus":
-                m = (s[i] - s[j]) * (1.0 if d > 0 else -1.0)
-                num = num + w * torch.nn.functional.softplus(-m / tau)
-            elif form == "linear":
-                # w, NOT d. The old form folded the gap weighting straight into the numerator as
-                # `d`, which equalled sign(d)*w only while w was exactly |d|. within_weight and
-                # the rank decay break that: they entered `den` but not here, so each knob became
-                # a uniform GAIN on the ranking term rather than a reweighting -- measured as
-                # every coefficient scaled by one constant, 0.239x at L=8, i.e. the opposite of
-                # the "L cannot act as a second alpha_rank" property the flag promises.
-                num = num - (s[i] - s[j]) * (1.0 if d > 0 else -1.0) * w
-            else:
-                raise ValueError(f"unknown form {form!r}")
-            den += w
-            npair += 1
-    # den == 0 WITH npair > 0 BECAME REACHABLE WITH THE NEW KNOBS. It used to be impossible:
-    # w was |dDockQ| and every counted pair had |dDockQ| > dq_tol, so npair > 0 implied den > 0.
-    # within_weight=0 (the natural way to write "drop the within-seed family") and a tiny
-    # rank_decay_k (whose weights underflow to exactly 0.0 away from the top pose) both break it.
-    # Unguarded, this path divided by zero: group_coeffs returned inf/nan COEFFICIENTS -- which
-    # the pass-A non-finite check does not see, because it tests the scores, not the coefficients
-    # -- while group_loss raised ZeroDivisionError. The two implementations must never disagree,
-    # so both now report the group as carrying no weighted pair.
-    if npair == 0 or den <= 0.0:
-        return {}, 0, 0.0
-    loss = (2.0 * tau / den) * num if form == "softplus" else num / den
-    loss.backward()
-    return ({k: float(g) for k, g in zip(keys, s.grad)}, npair, float(loss.detach()))
-
-
-def group_loss(s_by_key, dq_by_key, form="softplus", tau=DEFAULT_TAU,
-               weight_by_gap=True, dq_tol=1e-6, pairs="cross", within_weight=1.0,
-               rank_decay_k=0.0, straddle=0.0):
-    """The loss VALUE for one interface, in plain floats. No autograd, no graph.
-
-    Same objective and same normalisation as group_coeffs -- asserted equal in test_rank_loss.py --
-    but it returns only (loss, n_pairs) and never the coefficients.
-
-    WHY A SECOND PATH EXISTS. The held-out diagnostic needs the value for every interface at every
-    epoch: 18 interfaces x ~1,225 cross-seed pairs x 2 (trained and shipped) is ~44,000 terms per
-    epoch, and routing those through a traced leaf tensor to then discard the gradient made
-    recomputing a 50-epoch history take minutes. Training still uses group_coeffs, because there
-    the gradient IS the point and the autograd path is what keeps the loss and its derivative from
-    drifting apart.
-    """
-    keys = sorted(set(s_by_key) & set(dq_by_key))
-    if len(keys) < 2:
-        return 0.0, 0
-    # PAIR-FREE FORM, value only. Same closed form the trainer differentiates through autograd.
-    if form == "expected":
-        _l, _c, _n = expected_dockq([s_by_key[k] for k in keys], [dq_by_key[k] for k in keys],
-                                   tau=tau)
-        return _l, _n
-    if tau <= 0 and form == "softplus":
-        raise ValueError(f"tau must be positive, got {tau!r}")
-    _vdec = rank_decay_weights([float(s_by_key[k]) for k in keys], rank_decay_k)
-    _ix = {k: i for i, k in enumerate(keys)}
-    num, den, npair = 0.0, 0.0, 0
-    for i in range(len(keys)):
-        ki = keys[i]
-        si, di = float(s_by_key[ki]), float(dq_by_key[ki])
-        for j in range(i + 1, len(keys)):
-            kj = keys[j]
-            if not pair_included(ki, kj, pairs):
-                continue
-            d = di - float(dq_by_key[kj])
-            if abs(d) <= dq_tol:
-                continue
-            if not pair_straddles(di, float(dq_by_key[kj]), straddle):
-                continue
-            w = abs(d) if weight_by_gap else 1.0
-            if ki[0] == kj[0]:
-                w *= within_weight
-            if _vdec is not None:
-                w *= max(_vdec[_ix[ki]], _vdec[_ix[kj]])
-            if form == "softplus":
-                x = -((si - float(s_by_key[kj])) * (1.0 if d > 0 else -1.0)) / tau
-                # log1p(exp(x)) without overflowing for large x, which happens at a badly
-                # inverted pair: at x = 700 math.exp overflows and the honest answer is x.
-                num += w * (x + math.log1p(math.exp(-x)) if x > 0 else math.log1p(math.exp(x)))
-            elif form == "linear":
-                # w, NOT d -- see group_coeffs. The two paths shared the bug identically, which
-                # is exactly why their agreement test could not see it.
-                num -= (si - float(s_by_key[kj])) * (1.0 if d > 0 else -1.0) * w
-            else:
-                raise ValueError(f"unknown form {form!r}")
-            den += w
-            npair += 1
-    # den == 0 with npair > 0 -- see group_coeffs. Both paths must answer identically, and
-    # before this guard group_coeffs returned inf coefficients here while this one raised.
-    if npair == 0 or den <= 0.0:
-        return 0.0, 0
-    return ((2.0 * tau / den) * num if form == "softplus" else num / den), npair
-
-
-def _relevance(dq_vals, rel_scale):
-    """clamp(std(dq) / rel_scale, 0, 1); 1.0 when the gate is off.
-
-    UNBIASED std (ddof=1), matching torch's default, which is what upstream's .std() computes. The
-    biased version is smaller on 5 samples by a factor sqrt(4/5), which would gate ~11% harder at
-    exactly the group size this path uses.
-    """
-    if not rel_scale:
-        return 1.0
-    n = len(dq_vals)
-    if n < 2:
-        return 0.0
-    m = sum(dq_vals) / n
-    var = sum((x - m) ** 2 for x in dq_vals) / (n - 1)
-    return min(max(var ** 0.5 / rel_scale, 0.0), 1.0)
-
-
-def pair_terms_spearman(s_vals, dq_vals, tau=DEFAULT_SPEARMAN_TAU,
-                        rel_scale=DEFAULT_REL_SCALE):
-    """(loss, coeffs, n_pairs) for one group: 1 - soft Spearman, ABAG-Rank's ranking term.
-
-    SCORE-DEPENDENT, unlike `coeffs`. The soft rank is a sum of sigmoids over score gaps, so the
-    coefficients move as the scores do and CANNOT be precomputed from labels. A caller therefore
-    needs the whole group's scores before the first backward -- the same two-pass requirement the
-    softplus form has.
-
-    The soft rank is sum_j sigmoid((x_i - x_j)/tau): how confidently i beats each other pose,
-    summed. At tau 0.05 a gap of 0.05 in ipTM reads as roughly one rank of separation and gaps far
-    below it read as a coin flip, which is what makes this differentiable where a sort is not.
-
-    TIES ARE KEPT, unlike the linear loss. There a tie is noise -- it asks the head to separate two
-    equally good poses. Here an equal pair simply contributes equal target ranks, which is
-    information: it says do not order these two. Dropping them would also leave the rank denominator
-    n(n^2-1) inconsistent with the number of items actually ranked.
-    """
-    n = len(s_vals)
-    if n < 2:
-        return 0.0, [0.0] * n, 0
-    w = _relevance(dq_vals, rel_scale)
-    if w <= 0.0:
-        return 0.0, [0.0] * n, 0
-    s = torch.tensor(s_vals, dtype=torch.float64, requires_grad=True)
-    t = torch.tensor(dq_vals, dtype=torch.float64)
-    rs = torch.sigmoid((s.unsqueeze(-1) - s.unsqueeze(-2)) / tau).sum(-1)
-    rt = torch.sigmoid((t.unsqueeze(-1) - t.unsqueeze(-2)) / tau).sum(-1)
-    mse = (rs - rt).pow(2).sum()
-    rho = 1.0 - 6.0 * mse / (n * (n ** 2 - 1))
-    # CLAMPED like upstream. Note a clamped rho has zero gradient, so a perfectly ordered or
-    # perfectly reversed group stops contributing -- which is correct for the former and a known
-    # dead spot for the latter.
-    loss = w * (1.0 - rho.clamp(-1.0 + 1e-6, 1.0 - 1e-6))
-    loss.backward()
-    return float(loss.detach()), [float(g) for g in s.grad], n * (n - 1) // 2
-
-
-def pair_terms_distance(s_vals, dq_vals, rel_scale=DEFAULT_REL_SCALE):
-    """(loss, coeffs, n_pairs) for one group: ABAG-Rank's distance-preservation term.
-
-        L = sum_{i<j} ( |s_i - s_j| - |dq_i - dq_j| )^2
-
-    Stronger than an ordering: it pins the SPACING. Two poses 0.3 apart in DockQ are penalised for
-    being 0.02 apart in ipTM even when their order is right.
-
-    SUMMED over unique pairs, not averaged, which is upstream's convention -- averaging over all
-    n^2 entries counts the zero diagonal and makes the term ~n/2 times weaker. Be aware the sum
-    scales with the pair count, so a within-seed group of 5 (10 pairs) produces a term about 4.5x
-    smaller than ABAG-Rank's group of 10 (45 pairs) for the same per-pair error. --rank-dist-weight
-    is the knob to compensate; it is not automatic, because silently rescaling would make this run
-    incomparable to upstream's published weighting.
-
-    ASSUMES THE SCORE AND THE LABEL SHARE A SCALE. Both are 0..1 here (predicted ipTM against
-    DockQ), which is the space upstream uses. It would be meaningless on a raw PAE in Angstroms:
-    unlike the ranking term this loss is not scale-invariant, so a score in different units makes
-    every target gap wrong rather than merely rescaled.
-    """
-    n = len(s_vals)
-    if n < 2:
-        return 0.0, [0.0] * n, 0
-    w = _relevance(dq_vals, rel_scale)
-    if w <= 0.0:
-        return 0.0, [0.0] * n, 0
-    s = torch.tensor(s_vals, dtype=torch.float64, requires_grad=True)
-    total, npair = s.new_zeros(()), 0
-    for i in range(n):
-        for j in range(i + 1, n):
-            total = total + ((s[i] - s[j]).abs() - abs(dq_vals[i] - dq_vals[j])) ** 2
-            npair += 1
-    loss = w * total
-    loss.backward()
-    return float(loss.detach()), [float(g) for g in s.grad], npair
 
 
 # ---------------------------------------------------------------------------------------------
@@ -928,7 +353,7 @@ def pair_terms_distance(s_vals, dq_vals, rel_scale=DEFAULT_REL_SCALE):
 DEFAULT_REL_STD_FLOOR = 0.02
 
 
-def iptm_pooled(pae_logits, feat, configs, pair, pool="mean"):
+def iptm_pooled(pae_logits, feat, configs, pair, pool="mean", n_pair_tokens=None):
     """chain_pair ipTM for ONE pose and pair, pooled over anchor rows by `pool`.
 
     pool="max" is shipped ipTM and reproduces iptm() exactly. pool="mean" averages the anchor
@@ -943,6 +368,18 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean"):
     amount set by crop size rather than by pose quality.
     """
     if pool == "max":
+        # THE MAX PATH CANNOT PIN d0. iptm() delegates to Protenix's calculate_chain_based_ptm,
+        # which derives d0 from the asym_id it is handed -- the CROPPED one. Patching vendor code
+        # to accept an override is not worth it for a path this arm does not train on
+        # (rank_pool=mean), so it refuses instead of silently scoring with a different kernel than
+        # the target. Raised in external review.
+        if n_pair_tokens:
+            raise SystemExit(
+                "STOP: --rank-pool max cannot be used with a cropped run. iptm() computes d0 "
+                "inside Protenix's calculate_chain_based_ptm from the cropped asym_id, so the "
+                "predicted score would use a different TM kernel than the rel target, which pins "
+                "d0 at the uncropped chain-pair count. Use --rank-pool mean, or extend "
+                "pae_row_weight to cover the max pooling.")
         return iptm(pae_logits, feat, configs, pair)
     if pool != "mean":
         raise ValueError(f"pool must be 'mean' or 'max', got {pool!r}")
@@ -963,7 +400,14 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean"):
           & ((arow == i) | (arow == j)).unsqueeze(1))
     if int(tm.sum()) == 0:
         return None
-    t, cnt = rw.row_t(pae_logits, live, tm, n_pair_tokens=int(tok.sum()),
+    # d0 COMES FROM THE UNCROPPED PAIR WHEN ONE IS GIVEN. feat's asym_id is the
+    # CROPPED token set under --crop-pool, so int(tok.sum()) is the cropped chain-pair
+    # length and calculate_normalization would shrink d0 with the crop -- while the rel
+    # TARGET pins d0 at the uncropped count. Prediction and target would then use
+    # different kernels: at a 600 -> 256 pair-token crop, w(10 A) moves 0.423 -> 0.259.
+    # Caught in external review before any cropped run started.
+    _npt = int(n_pair_tokens) if n_pair_tokens else int(tok.sum())
+    t, cnt = rw.row_t(pae_logits, live, tm, n_pair_tokens=_npt,
                       min_bin=bp["min_bin"], max_bin=bp["max_bin"])
     if t is None:
         return None
@@ -973,7 +417,25 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean"):
     return t[keep].mean()
 
 
-def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_FLOOR):
+def _wmean(w, err):
+    """sum(w * err) / sum(w), or an exact zero when the interface carries no weight.
+
+    A clamped denominator was the first version and it is subtly wrong: with sum(w) below the
+    clamp the result is the true weighted mean SCALED by sum(w)/clamp -- a small number that
+    reads like a small loss rather than like an interface nothing can be learned from. Review
+    found it: all-zero labels at POW=2 gave 5.0e-6 where the weighted mean is ~1.0.
+
+    Returning a zero that is still attached to the graph keeps the gradient defined (it is zero,
+    which is the right answer when no pose carries weight) without special-casing the caller.
+    """
+    tot = w.sum()
+    if float(tot) <= 1e-12:
+        return (w * err).sum() * 0.0
+    return (w * err).sum() / tot
+
+
+def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_FLOOR,
+               sd_weight=False, g_weight=0.0, g_sigmoid=None, accept_by=None):
     """Mean-centred regression coefficients for ONE interface's poses.
 
     s_by_key / g_by_key: {(seed, sample): float}. Returns ({key: dL/ds}, n_poses, loss).
@@ -1015,11 +477,80 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
         sc_ = sl - sl.mean()
         sc_ = sc_ / sc_.std(unbiased=False).clamp_min(std_floor)
         gc_ = gc / gc.std(unbiased=False).clamp_min(std_floor)
-        L = ((sc_ - gc_) ** 2).mean()
+        if accept_by is not None:
+            # CLASS BALANCE WITHIN THE LIST. Every pose is kept, but the acceptable ones as a
+            # GROUP carry half the interface's loss and the unacceptable ones the other half:
+            # w_i = 0.5 / n_acceptable for an acceptable pose, 0.5 / n_unacceptable otherwise.
+            # In a 2-of-75 list that is 0.25 each for the two good poses against 0.00685 each for
+            # the 73 bad ones -- a 36x ratio, where an unweighted mean gives the two good poses
+            # 2.7% of the gradient between them.
+            #
+            # PER LIST, NOT ACROSS THE SET. Each interface is balanced against itself, so a list
+            # with one acceptable pose and a list with forty are both half-and-half, and the
+            # arithmetic never depends on how many hard lists the epoch happened to deal.
+            #
+            # THE SPLIT IS DockQ, NOT THE REGRESSION TARGET. The loss regresses the true iTM, but
+            # "acceptable" is a DockQ statement, so the caller passes the classification and this
+            # function does not guess it from g.
+            _acc = [bool(accept_by[k]) for k in keys]
+            _na = sum(_acc)
+            _nu = len(_acc) - _na
+            if _na and _nu:
+                _w = torch.tensor([(0.5 / _na) if x else (0.5 / _nu) for x in _acc],
+                                  dtype=torch.float64)
+            else:
+                # ALL ONE CLASS: there is no balance to strike, and 0.5/0 is not a weight. A
+                # uniform mean is the honest limit, and it is what the unweighted loss would have
+                # done with this list anyway.
+                _w = torch.ones(len(_acc), dtype=torch.float64)
+            L = _wmean(_w, (sc_ - gc_) ** 2)
+        elif g_sigmoid is not None:
+            # A SOFT THRESHOLD ON THE RAW GROUND TRUTH, w_i = sigmoid((g_i - mid) / width),
+            # instead of the raw score itself. Same weighted-mean reduction, same two passes.
+            #
+            # WHY A THRESHOLD BEATS THE RAW SCORE HERE. The true iTM over this training set is
+            # BIMODAL, not spread: measured over 1,117,590 poses, p10 0.086, p25 0.220, p50 0.670,
+            # p90 0.853. Weighting by g itself therefore spends most of its contrast separating
+            # 0.67 from 0.85 -- two poses that are both fine -- while a threshold at 0.23 lands in
+            # the valley between the modes and asks the question that matters: is this pose good
+            # at all. Measured weight spread p90/p10 is 5.2x against 9.9x for raw g, but it is
+            # spent where the distribution actually splits.
+            #
+            # THE MIDPOINT IS THE DockQ ACCEPTABLE THRESHOLD, 0.23, carried over to the iTM axis
+            # deliberately: it is where this label's own distribution separates, which is the
+            # property that justifies it here, not the coincidence of the number.
+            _mid, _wid = g_sigmoid
+            _w = torch.sigmoid((g - _mid) / _wid)
+            L = _wmean(_w, (sc_ - gc_) ** 2)
+        elif g_weight > 0.0:
+            # PER-POSE WEIGHT BY THE RAW GROUND TRUTH, so misplacing a pose the truth rates highly
+            # costs more than misplacing a bad one. The two-pass standardisation is untouched: the
+            # weight enters only the final reduction, as a weighted mean -- sum(w * err^2) / sum(w)
+            # rather than mean(err^2) -- which keeps the loss on the same scale as the unweighted
+            # form instead of inflating it by the average weight.
+            #
+            # THE RAW g, NOT THE Z-SCORED ONE. The z-scored target is centred, so half its values
+            # are negative and using it as a weight would SUBTRACT the error on below-average
+            # poses -- rewarding getting them wrong. iTM is already on [0, 1], which is the scale
+            # that makes "how good is this pose" a weight at all.
+            #
+            # IT DOES NOT DEPEND ON THE PARAMETERS, so it changes the gradient by exactly the
+            # factor it changes the loss by, and the shift-invariance that gives this term its
+            # zero-sum gradient survives: the weights multiply a per-pose error whose argument is
+            # still the CENTRED prediction.
+            _w = g.clamp_min(0.0) ** g_weight
+            L = _wmean(_w, (sc_ - gc_) ** 2)
+        else:
+            L = ((sc_ - gc_) ** 2).mean()
         L.backward()
         c = sl.grad.detach().clone()
         loss = float(L.detach())
     else:
+        if g_weight > 0.0 or g_sigmoid is not None or accept_by is not None:
+            # REFUSED RATHER THAN APPROXIMATED. The closed form below is the gradient of the
+            # UNWEIGHTED mean; a per-pose weight changes it everywhere, and the standardised path
+            # above is the only one that differentiates what it reports.
+            raise ValueError("a per-pose g weight requires standardize=True")
         r = (s - s.mean()) - gc
         loss = float((r ** 2).mean())
         c = (2.0 / P) * r
@@ -1030,10 +561,38 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
     # its gradient is orthogonal to the all-ones direction -- and subtracting the mean removes
     # only float error.
     c = c - c.mean()
+    if sd_weight:
+        # WEIGHT THE INTERFACE BY HOW MUCH ITS TRUTH ACTUALLY VARIES.
+        #
+        # standardize=True divides both sides by their own std, which makes every interface count
+        # the same. That is wrong in a measured way: corr(within-interface std of the true iTM,
+        # DockQ range) = +0.745, so wide-spread interfaces are exactly the ones where picking the
+        # wrong pose is expensive, and the narrow ones have frac acceptable median 1.00 -- there
+        # is nothing to win there. This multiplies the standardised loss and its gradient by the
+        # GROUND TRUTH's own std, restoring that ordering of importance.
+        #
+        # SD, NOT VARIANCE. The target was already divided by sigma_g, so weighting by sigma_g^2
+        # would very nearly cancel the standardisation and land back on the unstandardised loss.
+        # sigma_g restores importance while keeping the scale-invariance that is the point of
+        # standardising.
+        #
+        # THE WEIGHT COMES FROM g, WHICH DOES NOT DEPEND ON THE PARAMETERS, so it multiplies the
+        # gradient exactly and the closed form stays valid. Weighting by the PREDICTION's std
+        # would add a second d(sigma)/ds_i term -- the very defect the standardize path above
+        # exists to avoid -- and is deliberately not offered.
+        #
+        # NOT FLOORED. std_floor exists to stop a DIVISION blowing up; here the std multiplies,
+        # so a genuinely flat interface should contribute nothing and flooring it would invent a
+        # weight for an interface with no ordering to learn.
+        _w = float(gc.std(unbiased=False))
+        c = c * _w
+        loss = loss * _w
     return {k: float(v) for k, v in zip(keys, c)}, P, loss
 
 
 def rel_loss_value(s_by_key, g_by_key, standardize=False,
-                   std_floor=DEFAULT_REL_STD_FLOOR):
+                   std_floor=DEFAULT_REL_STD_FLOOR, sd_weight=False, g_weight=0.0,
+                   g_sigmoid=None, accept_by=None):
     """The loss value alone, for logging. Same arithmetic as rel_coeffs."""
-    return rel_coeffs(s_by_key, g_by_key, standardize, std_floor)[2]
+    return rel_coeffs(s_by_key, g_by_key, standardize, std_floor, sd_weight, g_weight,
+                      g_sigmoid, accept_by)[2]

@@ -43,7 +43,7 @@ import re
 # own-objective xsloss_* that v4 introduced. v4 made the held-out loss the twin of the training
 # curve and in doing so made it incomparable between arms training different functions; both
 # columns exist so neither question has to borrow the other's number.
-CACHE = "rank_rho_b{b}_v6.csv"
+CACHE = "rank_rho_b{b}_v7.csv"
 
 
 def run_rank_form(d):
@@ -75,61 +75,31 @@ def run_rank_form(d):
     if tau is None or float(tau) <= 0:
         tau = None
     return form, (float(tau) if tau is not None else None)
-def run_rank_objective(d):
-    """Every setting that defines WHAT the run minimises, as kwargs for rank_loss.group_loss.
-
-    THE HELD-OUT LOSS IS COMPUTED WITH THESE, not with hardcoded cross-seed defaults, so
-    xsloss_trained is always the twin of the training curve and the gap between them is
-    generalisation rather than a change of function.
-
-    BACKWARD COMPATIBLE BY CONSTRUCTION: the defaults here are exactly what every pre-knob run
-    trained (cross-seed pairs, within-seed weight 1, no rank decay), so those runs' numbers are
-    bit-identical to what the hardcoded version produced. Only arms that actually set the new
-    flags move, and those were being measured against the wrong function.
-    """
-    import json
-    import rank_loss as _RKL   # imported here, as elsewhere in this module
-    form, tau = run_rank_form(d)
-    try:
-        with open(os.path.join(d, "args.json")) as fh:
-            a = json.load(fh)
-    except (OSError, ValueError):
-        a = {}
-    return dict(form=form,
-                tau=tau if tau is not None else
-                    (_RKL.DEFAULT_SOFTMAX_TAU if form == "expected" else _RKL.DEFAULT_TAU),
-                pairs=a.get("rank_pairs") or "cross",
-                within_weight=float(a.get("rank_within_weight") or 1.0),
-                rank_decay_k=float(a.get("rank_topk_decay") or 0.0),
-                straddle=float(a.get("rank_straddle") or 0.0),
-                weight_by_gap=bool(a.get("rank_weight_by_gap", True)))
+# run_rank_objective WAS HERE and is deleted with the forms it described. It returned
+# group_loss kwargs -- form, tau, pairs, within_weight, rank_decay_k, straddle, weight_by_gap --
+# read from a run's args.json so the held-out loss was always the twin of the training curve.
+# Six of those seven arguments no longer exist. run_rank_form survives because plot_three still
+# names the objective in its banner.
 
 
 COLS = ("rho_trained", "rho_shipped", "n_ifaces", "inv_trained", "inv_shipped",
-        "spread", "tie_trained", "tie_shipped", "rankloss_trained", "rankloss_shipped",
-        "top1_trained", "top1_shipped", "dockq_mean", "dockq_sem", "frac_mean", "frac_sem",
-        "rho_sem", "top1_sem",
-        # THE OBJECTIVE 4y3ve6 ACTUALLY TRAINS. Distinct from rankloss_* above, which is the OLD
-        # within-seed LINEAR loss and is kept only so historical arms stay comparable. See the
-        # module docstring.
-        "xsloss_trained", "xsloss_shipped", "xsloss_sem",
-        # THE SAME LOSS AT THE CANONICAL SETTINGS -- cross-seed softplus at DEFAULT_TAU, no
-        # within-seed weight, no rank decay -- FOR EVERY ARM REGARDLESS OF WHAT IT TRAINED.
-        # xsloss_* above is each run's OWN objective, which is what makes it the twin of the
-        # training curve; that same property makes it INCOMPARABLE ACROSS ARMS that train
-        # different functions. Both are needed and they answer different questions:
-        #   xsloss_*       vs the training curve  -> generalisation
-        #   xscanon_*      vs another arm         -> which arm orders held-out poses better
-        # For a cross-seed arm at DEFAULT_TAU the two are identical by construction.
-        "xscanon_trained", "xscanon_shipped",
-        # THE EXPECTED-DockQ OBJECTIVE, held out, at THIS RUN's OWN softmax temperature.
-        # NEGATIVE: it is -E[DockQ of the selected pose], floor -max(DockQ) per group, so it is
-        # NOT on the same scale as xsloss_* above and the two must never share an axis. Computed
-        # for every run, including pairwise ones, so any two arms can be compared on it -- but
-        # only at EQUAL tau: the metric itself depends on tau, so exloss from a tau 0.02 arm and
-        # a tau 0.10 arm are different quantities. Cross-arm selection comparisons belong to
-        # dockq_mean and frac_mean, which depend on no hyperparameter at all.
-        "exloss_trained", "exloss_shipped", "exloss_sem", "exloss_tau")
+        "spread", "tie_trained", "tie_shipped", "top1_trained", "top1_shipped",
+        "dockq_mean", "dockq_sem", "frac_mean", "frac_sem", "rho_sem", "top1_sem")
+# TEN LOSS COLUMNS WERE DELETED WITH THE FORMS THAT DEFINED THEM.
+#
+# rankloss_trained/shipped were the within-seed LINEAR covariance; the held-out ranking loss
+# columns were each run's own pairwise objective, its canonical cross-seed softplus twin, and the
+# expected-DockQ form with its temperature. --rank-form now admits only rel, so every one of
+# those measured a function no arm can train. They are not recomputed as rel: this module reads a
+# shipped-head score too, and a mean-centred regression against the true iTM needs --rel-labels,
+# which is an argument this tool does not take.
+#
+# WHAT SURVIVES IS OBJECTIVE-INDEPENDENT -- within-interface Spearman, inversion and tie rates,
+# score spread, top-1 hit rate, selected DockQ and frac acceptable. Those answer "did selection
+# get better", which is the question the losses were only ever a proxy for.
+#
+# THE CACHE VERSION IS BUMPED FOR IT. A v6 file has 27 columns in a fixed order and `load`
+# returns rows positionally, so reading one as v7 would silently shift every field left.
 
 
 def _rows(d, ep, budget):
@@ -221,24 +191,9 @@ def _one(d, ep, budget):
     import rank_loss as _RKL
     tr, sh = [], []
     inv_t = inv_s = tie_t = tie_s = 0.0
-    rl_t, rl_s, rl_n = 0.0, 0.0, 0
     top_t, top_s = [], []
     sel_dq, sel_ok = [], []
     # PER-INTERFACE held-out loss under the RUN'S OWN objective, trained and shipped.
-    xs_t, xs_s = [], []
-    xc_t, xc_s = [], []
-    ex_t, ex_s = [], []
-    # THE TEMPERATURE THE HELD-OUT EXPECTED METRIC USES. This run's own --rank-tau when it
-    # trained the expected form; otherwise DEFAULT_SOFTMAX_TAU, so a pairwise arm still gets a
-    # comparable number at the canonical 0.05.
-    _rf, _rt = run_rank_form(d)
-    _ex_tau = _rt if (_rf == "expected" and _rt is not None) else _RKL.DEFAULT_SOFTMAX_TAU
-    # THE RUN'S OWN OBJECTIVE for the held-out pairwise loss. The expected form is handled
-    # separately below and is pair-free, so it keeps its own path.
-    _obj = run_rank_objective(d)
-    if _obj["form"] == "expected":
-        _obj = dict(form="softplus", tau=_RKL.DEFAULT_TAU, pairs="cross",
-                    within_weight=1.0, rank_decay_k=0.0, weight_by_gap=True)
     tot = 0
     spreads = []
     for ifc, v in byif.items():
@@ -267,28 +222,6 @@ def _one(d, ep, budget):
         for _it, _dq, _sit, _sd in v:
             _k = (_sd, _n_in_sd[_sd]); _n_in_sd[_sd] += 1
             _sb[_k] = _it; _ss[_k] = _sit; _db[_k] = _dq
-        # group_loss, NOT group_coeffs: the value is all this needs, and the autograd path made a
-        # 50-epoch recompute take minutes for a gradient immediately discarded.
-        # test_rank_loss.py asserts the two agree to 1e-9 so the diagnostic cannot drift from the
-        # objective.
-        _lv_t, _np_t = _RKL.group_loss(_sb, _db, **_obj)
-        _lv_s, _np_s = _RKL.group_loss(_ss, _db, **_obj)
-        # The canonical yardstick, identical settings for every arm.
-        _cv_t, _cn_t = _RKL.group_loss(_sb, _db, form="softplus", tau=_RKL.DEFAULT_TAU,
-                                       pairs="cross")
-        _cv_s, _cn_s = _RKL.group_loss(_ss, _db, form="softplus", tau=_RKL.DEFAULT_TAU,
-                                       pairs="cross")
-        if _cn_t and _cn_s:
-            xc_t.append(_cv_t); xc_s.append(_cv_s)
-        if _np_t and _np_s:
-            xs_t.append(_lv_t); xs_s.append(_lv_s)
-        # THE EXPECTED-DockQ OBJECTIVE, held out, at this run's own temperature. Pair-free, so no
-        # pairs="cross" and no gap weighting -- the softmax runs over every pose of the
-        # interface, which is the same population argmax selects from.
-        _ev_t, _en_t = _RKL.group_loss(_sb, _db, form="expected", tau=_ex_tau)
-        _ev_s, _en_s = _RKL.group_loss(_ss, _db, form="expected", tau=_ex_tau)
-        if _en_t and _en_s:
-            ex_t.append(_ev_t); ex_s.append(_ev_s)
         # WITHIN-SEED, which needs the seed back. byif threw it away, so regroup here.
         g = collections.defaultdict(list)
         for _it, _dq, _sit, _sd in v:
@@ -308,14 +241,6 @@ def _one(d, ep, budget):
             top_t.append(_t_hit / _n_grp)
             top_s.append(_s_hit / _n_grp)
         for q in g.values():
-            # THE HELD-OUT RANK LOSS, same function the trainer differentiates.
-            if len(q) > 1:
-                _d = [x[1] for x in q]
-                if len(set(_d)) > 1:
-                    _lt, _, _n1 = _RKL.pair_terms([x[0] for x in q], _d)
-                    _ls, _, _n2 = _RKL.pair_terms([x[2] for x in q], _d)
-                    if _n1:
-                        rl_t += _lt; rl_s += _ls; rl_n += 1
             if len(q) > 1:
                 _m = sum(x[0] for x in q) / len(q)
                 spreads.append((sum((x[0] - _m) ** 2 for x in q) / len(q)) ** 0.5)
@@ -354,31 +279,18 @@ def _one(d, ep, budget):
     # others are exact.
     _, rho_e = _ms(tr)
     _, top_e = _ms(top_t)
-    # MEAN OVER INTERFACES, matching how training normalises per interface-group and then means
-    # over groups. The softplus loss is NON-NEGATIVE with 0 as its floor (every pair ordered),
-    # unlike rankloss_* which is a covariance and can be negative -- so the two columns are not
-    # on the same scale and must never be plotted on one axis.
-    xs_m, xs_e = _ms(xs_t)
-    xs_sm, _ = _ms(xs_s)
-    ex_m, ex_e = _ms(ex_t)
-    ex_sm, _ = _ms(ex_s)
     # IN COLS ORDER, DELIBERATELY. This used to return its own order and `load` permuted it with
     # positional literals -- (r[1], r[2], r[0], r[3], ...) -- truncated at r[17], with a writer
     # that unpacked exactly eighteen names. Adding xsloss_* then produced a cache whose header had
     # 22 fields and whose rows had 19, which parsed without error and surfaced later as an
     # IndexError at the plot. Returning in COLS order removes the permutation, and the writer now
     # iterates COLS, so a new column is added in ONE place.
-    assert len(COLS) == 27, f"COLS changed to {len(COLS)}; update this return"
+    assert len(COLS) == 16, f"COLS changed to {len(COLS)}; update this return"
     return (sum(tr) / len(tr), sum(sh) / len(sh), len(tr),
             inv_t / tot, inv_s / tot, sum(spreads) / max(1, len(spreads)),
             tie_t / tot, tie_s / tot,
-            rl_t / max(1, rl_n), rl_s / max(1, rl_n),
             sum(top_t) / max(1, len(top_t)), sum(top_s) / max(1, len(top_s)),
-            dq_m, dq_e, fr_m, fr_e, rho_e, top_e,
-            xs_m, xs_sm, xs_e,
-            (sum(xc_t) / len(xc_t)) if xc_t else float("nan"),
-            (sum(xc_s) / len(xc_s)) if xc_s else float("nan"),
-            ex_m, ex_sm, ex_e, _ex_tau)
+            dq_m, dq_e, fr_m, fr_e, rho_e, top_e)
 
 
 def load(root, runs, budget):

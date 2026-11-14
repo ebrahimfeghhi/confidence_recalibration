@@ -1,0 +1,162 @@
+#!/usr/bin/env python
+"""ONE definition of "this arm's per-epoch training curve", for every plotter to share.
+
+WHY THIS MODULE EXISTS. trajectory.csv is written by RANK 0 ONLY, and its bare `pae_loss` column is
+one pose's value. Averaging those rows equally therefore gives a rank-local per-pose mean -- over
+the third of the structures rank 0 happened to walk, unbiased but far noisier than the real thing,
+and NOT the run's global PAE. The trainer already reduces `batch_<term>` across every rank for each
+optimiser step and records how many poses contributed in `batch_n` (phase_k_train.py:3939), so the
+batch_n-weighted mean over `step_taken == 1` rows is the global per-pose mean.
+
+This defect has now been diagnosed THREE times in this repository -- in plot_train_insample.py,
+then again in plot_uncropped_progress.py, then again in plot_rel_arm.py, whose figure was sent to
+the user before anyone noticed. Each time it was fixed in one file and the fix was not propagated.
+Hence a shared helper plus run_logging/test_epoch_curve.py, which fails if any plot_*.py builds an
+epoch mean out of a per-pose column again.
+
+Rows for steps that were NOT taken are excluded rather than averaged in: a step that failed or was
+skipped has no gradient behind it, and its batch value describes work that never updated the model.
+The rank-0 fallback is kept only for runs predating the batch columns and every return value says
+which source it came from, so a noisier curve can never be silently read as the global one.
+"""
+import collections
+import csv
+import glob
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+#: columns that exist per POSE in trajectory.csv and must never be epoch-averaged directly
+PER_POSE = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss", "loss",
+            "pae_loss_unweighted")
+
+
+def run_chain(rid):
+    """Every run in the arm, oldest first, resolved from args.json's recorded --resume."""
+    import plot_three
+    return list(plot_three.run_chain(rid))
+
+
+def epoch_means(rid, term="pae_loss", chain=True):
+    """{epoch: (mean, n_poses, source)} for one arm. source is "all-ranks" or "rank0-fallback".
+
+    A LATER RUN WINS on any epoch both wrote: a resume re-runs the epoch it was interrupted in, so
+    the parent's partial rows for that epoch must not be averaged in with the full ones.
+    """
+    rids = run_chain(rid) if chain else [rid]
+    out = {}
+    for r_ in rids:
+        p = os.path.join(ROOT, "training", "runs", r_, "trajectory.csv")
+        if not os.path.exists(p):
+            continue
+        agg, fb = collections.defaultdict(list), collections.defaultdict(list)
+        with open(p) as fh:
+            for row in csv.DictReader(fh):
+                try:
+                    ep = int(row["epoch"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                try:
+                    fb[ep].append(float(row[term]))
+                except (KeyError, TypeError, ValueError):
+                    pass
+                if (row.get("step_taken") or "").strip() != "1":
+                    continue
+                try:
+                    v, n = float(row["batch_" + term]), float(row["batch_n"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if n > 0:
+                    agg[ep].append((v, n))
+        for ep in set(agg) | set(fb):
+            b = agg.get(ep) or []
+            if b:
+                tot = sum(n for _v, n in b)
+                out[ep] = (sum(v * n for v, n in b) / tot, int(tot), "all-ranks")
+            elif fb.get(ep):
+                out[ep] = (sum(fb[ep]) / len(fb[ep]), len(fb[ep]), "rank0-fallback")
+    return out
+
+
+def pose_rows(rid, chain=True):
+    """Every rank's PER-POSE rows for an arm -> (rows, n_ranks, complete).
+
+    Per-pose questions -- a pdb filter, a per-structure histogram -- cannot be answered from the
+    cross-rank batch columns, because those are per-step scalars with the individual poses already
+    summed away. They need the pose rows, and trajectory.csv holds rank 0's alone.
+
+    phase_k_train now writes trajectory_rank<N>.csv on EVERY rank, so this returns all of them
+    when they exist. `complete` is False for runs that predate that, where only rank 0's poses
+    were ever written down and no reader can recover the rest: callers must say so rather than
+    present a third of the run as the whole of it.
+    """
+    rids = run_chain(rid) if chain else [rid]
+    rows, nrank, complete = [], 0, True
+    for r_ in rids:
+        d = os.path.join(ROOT, "training", "runs", r_)
+        per = sorted(glob.glob(os.path.join(d, "trajectory_rank*.csv")))
+        if per:
+            nrank = max(nrank, len(per))
+            for f in per:
+                with open(f) as fh:
+                    rows.extend(csv.DictReader(fh))
+        else:
+            f = os.path.join(d, "trajectory.csv")
+            if os.path.exists(f):
+                complete = False
+                nrank = max(nrank, 1)
+                with open(f) as fh:
+                    rows.extend(csv.DictReader(fh))
+    return rows, nrank, complete
+
+
+#: the per-epoch scalars rank 0 prints to run.log. They are NOT in trajectory.csv -- rel is per
+#: interface-group and rho/spread are computed over a held-out probe -- so they are parsed here,
+#: once, rather than by each plotter with its own regex.
+LOG_SERIES = {
+    "rel": r"\[rank 0\] epoch (\d+) rank-loss \(rel[^)]*\): ([+-][0-9.]+)",
+    "rho": r"\[rank 0\] epoch (\d+) WITHIN-INTERFACE SPEARMAN[^:]*: median ([+-][0-9.]+)",
+    "spread": r"\[rank 0\] epoch (\d+) SCORE SPREAD:.*?median ratio ([0-9.]+)",
+    # IN SAMPLE, CROPPED, TOP-1 OF THE TRAINING FORWARD. Not the held-out metric and not on the
+    # same axis as one -- see the trainer's own note at the print site.
+    "insample_dq": r"\[rank 0\] epoch (\d+) IN-SAMPLE SELECTED DockQ: mean ([0-9.]+)",
+    "insample_frac": (r"\[rank 0\] epoch (\d+) IN-SAMPLE SELECTED DockQ: mean [0-9.]+, "
+                      r"frac acceptable ([0-9.]+)"),
+}
+
+
+def log_series(rid, chain=True):
+    """{name: {epoch: value}} for every LOG_SERIES key, newest run in the chain winning."""
+    out = {k: {} for k in LOG_SERIES}
+    for r_ in (run_chain(rid) if chain else [rid]):
+        f = os.path.join(ROOT, "training", "runs", r_, "run.log")
+        if not os.path.exists(f):
+            continue
+        t = open(f, errors="replace").read()
+        for k, pat in LOG_SERIES.items():
+            for m in re.finditer(pat, t):
+                out[k][int(m.group(1))] = float(m.group(2))
+    return out
+
+
+def partial_epochs(means, frac=0.98):
+    """Epochs whose pose count is short of the arm's full epoch -- draw these hollow."""
+    if not means:
+        return set()
+    full = max(n for _m, n, _s in means.values())
+    return {e for e, (_m, n, _s) in means.items() if n < frac * full}
+
+
+if __name__ == "__main__":
+    _rid = sys.argv[1] if len(sys.argv) > 1 else "5dgrsu"
+    _term = sys.argv[2] if len(sys.argv) > 2 else "pae_loss"
+    m = epoch_means(_rid, _term)
+    _part = partial_epochs(m)
+    print(f"{_rid} chain {run_chain(_rid)}  term {_term}")
+    print(f"{'ep':>3} {'mean':>10} {'poses':>8}  source")
+    for e in sorted(m):
+        mu, n, src = m[e]
+        print(f"{e:>3} {mu:>10.4f} {n:>8} {src}" + ("  PARTIAL" if e in _part else ""))

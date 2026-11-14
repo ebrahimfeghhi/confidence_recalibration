@@ -1,111 +1,117 @@
 #!/bin/bash
-# BLOCK UNTIL SOMETHING IS WRONG, then print the diagnosis and exit. Exiting is the point: the
-# harness notifies on completion, so a clean exit IS the alert. It must never exit for a benign
-# reason, or the alert means nothing.
+# IS THE RUN ACTUALLY ALIVE. Checks every 5 minutes and says so only when the answer changes or is
+# no, so a quiet log means healthy.
 #
-# NO PATTERN MATCHING ON PROCESSES. pgrep -f / pkill -f match the shell running them and
-# self-killed this session twice on 2026-10-18, so liveness is read from the CARDS (via
-# nvidia-smi compute-apps, holders excluded by explicit pid) and from the trajectory advancing.
+#     ./shell_scripts/health_watch.sh <rid>
+#
+# WHY THIS EXISTS. Three runs died today and in each case the next thing reported was progress: a
+# stale step count read off a trajectory.csv that had stopped being written. eqd2jx was dead for
+# 21 minutes before anyone noticed, and its own per-epoch plotter did not catch it because that
+# only trips after 30 minutes of silence. A run that has exited looks exactly like a run between
+# writes unless something checks for the exit.
+#
+# WHAT IT CHECKS, cheapest first:
+#   1. a STOP or a traceback in run.log      -- a refusal, which is the common failure here
+#   2. run.log's mtime                       -- silence past STALL_S means gone or wedged
+#   3. the step counter moving               -- a process that is up but making no progress
+#   4. status.json                           -- the launcher's own verdict once it exists
+#
+# LIVENESS IS NOT A PID CHECK. Deriving the pids means matching a pattern against the process
+# table, and `pgrep -f` / `pkill -f` match the shell that runs them -- that has self-killed this
+# session twice. The log's mtime answers the same question without naming a process.
+#
+# IT NEVER TOUCHES THE RUN: reads two files and prints. Exits 0 when the run finishes its epochs,
+# 3 when it has died.
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
-RID="${1:?usage: health_watch.sh <run_id>}"
-HOLDERS="2860931 2861781 2862274"
-UUIDS="3919dad8 79b76a53 f53b08f3"
-POLL="${POLL:-120}"
-STALL_LIMIT="${STALL_LIMIT:-5}"   # consecutive polls with no new pose = 10 min stalled
-QUOTA_FLAG_GB="${QUOTA_FLAG_GB:-2765}"
-# FROM THE RUN'S OWN args.json so the target cannot disagree with what is running.
-WANT_EPOCHS="${WANT_EPOCHS:-$(/home/ebrahim/Protenix/.venv/bin/python -I -c "
-import json,sys
-try: print(int(float(json.load(open('training/runs/$RID/args.json'))['epochs'])))
-except Exception: print(0)
-")}"
-[ "${WANT_EPOCHS:-0}" -gt 0 ] || { echo "REFUSING: cannot read an epoch count for $RID"; exit 1; }
-last=-1; stalls=0
+PY=/home/ebrahim/Protenix/.venv/bin/python
 
-note () { echo "[$(TZ=America/New_York date '+%-I:%M %p %Z')] $*"; }
+RID="${1:?usage: health_watch.sh <rid>}"
+EVERY="${EVERY:-300}"
+STALL_S="${STALL_S:-900}"
+D="training/runs/$RID"
+[ -d "$D" ] || { echo "no such run: $D"; exit 2; }
 
-note "watching $RID every ${POLL}s: poses advancing, ranks on cards, holders, RAM, disk"
+TOTAL=$($PY -I -c "
+import json
+a = json.load(open('$D/args.json')); a = a.get('args', a)
+print(int(float(a.get('epochs') or 0)))" 2>/dev/null || echo 0)
+# EVAL_EVERY, NOT EVERY: EVERY is this script's own poll interval, and the first version of this
+# line overwrote it with the run's eval cadence -- so `sleep "$EVERY"` would have polled every 2
+# seconds instead of every 300.
+EVAL_CADENCE=$($PY -I -c "
+import json
+a = json.load(open('$D/args.json')); a = a.get('args', a)
+print(int(a.get('train_eval_every') or 0))" 2>/dev/null || echo 0)
+EVAL_GRACE="${EVAL_GRACE:-2100}"
+
+ts() { TZ=America/New_York date '+%-I:%M %p %Z'; }
+echo "health_watch $RID: poll ${EVERY}s, stall ${STALL_S}s, to epoch ${TOTAL:-?}, eval cadence ${EVAL_CADENCE:-?}"
+
+LAST_STEP=-1
+LAST_EP=-1
+QUIET=0
 while :; do
-  sleep $POLL
-
-  # 1. the trajectory must advance. The most direct evidence of progress there is.
-  now=$(awk -F, 'NR>1{n++} END{print n+0}' "training/runs/$RID/trajectory.csv" 2>/dev/null)
-
-  # AN EVAL IS NOT A STALL. Every rank parks at a barrier while the evaluator shards over the
-  # cards, so poses stop advancing for the whole pass -- and the in-sample pass takes ~33 min
-  # against a 10 min stall limit. This alarmed at 1:11 AM on egw5wq's epoch-10 in-sample eval and
-  # was a FALSE POSITIVE. While an eval is in flight the stall counter is held, not incremented.
-  evaling=0
-  if tail -40 "training/runs/$RID/run.log" 2>/dev/null | grep -qE "evaluating epoch [0-9]+ |extra eval "; then
-    _ee=$(tail -40 "training/runs/$RID/run.log" | grep -oE "evaluating epoch [0-9]+" | tail -1 | grep -oE "[0-9]+")
-    if [ -n "${_ee:-}" ] && [ ! -f "training/runs/$RID/metric_insample_ep${_ee}.json" ]; then
-      evaling=1
+    # 1. AN EXPLICIT REFUSAL. Checked first because it is the one with a reason attached, and the
+    #    reason is what makes the difference between "relaunch it" and "fix it first".
+    if grep -qE "^STOP:|Traceback \(most recent call last\)" "$D/run.log" 2>/dev/null; then
+        echo "[$(ts)] DEAD: $RID refused or raised"
+        grep -E "^STOP:|Error" "$D/run.log" 2>/dev/null \
+            | grep -vE "error_file|errors.html|elastic" | head -2 | sed 's/^/    /'
+        exit 3
     fi
-  fi
-  if [ "$evaling" = 1 ]; then
-    last=$now
-    continue
-  fi
 
-  if [ "${now:-0}" -le "$last" ]; then
-    stalls=$((stalls+1))
-    if [ "$stalls" -ge "$STALL_LIMIT" ]; then
-      note "ALERT $RID STALLED: $now pose(s), unchanged for $((stalls*POLL/60)) min"
-      tail -6 "training/runs/$RID/run.log" 2>/dev/null | cut -c1-170
-      exit 0
+    EP=$(ls "$D"/head_ep*.pt 2>/dev/null | sed -E 's/.*head_ep([0-9]+)_.*/\1/' | sort -n | tail -1)
+    EP="${EP:-0}"
+    if [ "${TOTAL:-0}" -gt 0 ] && [ "$EP" -ge "$TOTAL" ]; then
+        echo "[$(ts)] FINISHED: $RID reached epoch $EP of $TOTAL"
+        exit 0
     fi
-  else
-    stalls=0
-  fi
-  last=$now
 
-  # 2. a fatal line in the log. Checked even while poses advance, since rank 0 can die last.
-  if grep -qE "Traceback|OutOfMemoryError|^STOP:|CUDA error" "training/runs/$RID/run.log" 2>/dev/null
-  then
-    note "ALERT $RID has a fatal line in its log at $now pose(s)"
-    grep -nE "Traceback|OutOfMemoryError|^STOP:|CUDA error" "training/runs/$RID/run.log" \
-      | head -3 | cut -c1-170
-    exit 0
-  fi
+    MT=$(stat -c %Y "$D/run.log" 2>/dev/null || echo 0)
+    NOW=$(date +%s)
+    SILENT=$((NOW - MT))
+    if [ "$SILENT" -gt "$STALL_S" ]; then
+        echo "[$(ts)] DEAD: $RID has not written run.log in $((SILENT / 60)) min (epoch $EP)"
+        tail -3 "$D/run.log" 2>/dev/null | sed 's/^/    /'
+        exit 3
+    fi
 
-  # 3. the three ranks must still hold the three cards. Holders excluded by explicit pid.
-  live=0
-  for u in $UUIDS; do
-    for p in $(nvidia-smi --query-compute-apps=gpu_uuid,pid --format=csv,noheader \
-               | grep "$u" | cut -d, -f2 | tr -d ' '); do
-      keep=1; for h in $HOLDERS; do [ "$p" = "$h" ] && keep=0; done
-      [ "$keep" = 1 ] && live=$((live+1))
-    done
-  done
-  if [ "$live" -lt 3 ]; then
-    note "ALERT $RID has only $live trainer process(es) on cards 4/5/7 at $now pose(s)"
-    tail -6 "training/runs/$RID/run.log" 2>/dev/null | cut -c1-170
-    exit 0
-  fi
+    # 2b. THE EVAL ACTUALLY RAN. A held-out pass is a subprocess on the same cards; it can fail
+    #     on its own (a missing shard, a busy card, an OOM) while the trainer carries on to the
+    #     next epoch perfectly healthily. The run then looks fine and simply stops producing the
+    #     numbers it exists to produce -- which is the failure that matters most here, and the
+    #     one nothing else checks. Grace is generous because the pass itself takes ~11 min.
+    if [ "${EVAL_CADENCE:-0}" -gt 0 ] && [ "$EP" -gt 0 ] \
+            && [ $((EP % EVAL_CADENCE)) -eq 0 ]; then
+        MJ="$D/metric_valfull83_ep${EP}.json"
+        if [ ! -s "$MJ" ]; then
+            CK=$(ls "$D"/head_ep${EP}_*.pt 2>/dev/null | head -1)
+            CKT=$(stat -c %Y "$CK" 2>/dev/null || echo "$NOW")
+            if [ $((NOW - CKT)) -gt "$EVAL_GRACE" ]; then
+                echo "[$(ts)] WARN: epoch $EP finished $(( (NOW - CKT) / 60 )) min ago and wrote no"
+                echo "    metric_valfull83_ep${EP}.json -- the held-out eval did not run or failed"
+                ls "$D"/valfull_eval_shards_ep${EP}/*.log 2>/dev/null | head -2 | sed 's/^/    /'
+            fi
+        fi
+    fi
 
-  # 4. the standing box conditions the user asked to be flagged.
-  for h in $HOLDERS; do
-    [ -d "/proc/$h" ] || { note "ALERT GPU holder $h is GONE -- the card can be taken"; exit 0; }
-  done
-  mem=$(awk '/MemAvailable/{printf "%d", $2/1048576}' /proc/meminfo)
-  [ "$mem" -lt 250 ] && { note "ALERT MemAvailable ${mem} GB, under the 250 GB floor"; exit 0; }
-  # DISK IS A QUOTA, NOT df. /home is shared and its percentage says nothing about this account's
-  # 3,072 GiB hard limit, which has NO grace period -- a write past it fails outright. df on /home
-  # read 60-something percent while the quota was at 2,511 GiB, so this check was blind to the
-  # thing it existed to catch. The flag level is the owner's: 2,765 GiB used.
-  used=$(quota -u ebrahim 2>/dev/null | awk '$1 ~ /^\/dev\// {printf "%d", $2/1048576}')
-  if [ -n "${used:-}" ] && [ "$used" -gt "$QUOTA_FLAG_GB" ]; then
-    note "ALERT quota at ${used} GiB, over the ${QUOTA_FLAG_GB} GiB flag (3072 GiB hard limit, no grace)"
-    exit 0
-  fi
-
-  # 5. and stop watching when the run has done what it was asked to.
-  # THE EPOCH TARGET IS THE RUN'S, NOT A CONSTANT. This said 60 because the first arm watched ran
-  # 60 epochs; against a 10-epoch arm it would never report completion and the watcher would sit
-  # on a finished run looking healthy. Read from the run's own args.json, so it cannot drift.
-  eps=$(grep -cE "^\s*\[rank 0\] epoch [0-9]+ took" "training/runs/$RID/run.log" 2>/dev/null)
-  if [ "${eps:-0}" -ge "$WANT_EPOCHS" ]; then
-    note "$RID finished all $WANT_EPOCHS epoch(s)"; exit 0
-  fi
+    STEP=$(awk -F, 'NR>1{print $2}' "$D/trajectory.csv" 2>/dev/null | sort -n | tail -1)
+    STEP="${STEP:-0}"
+    # 3. UP BUT NOT MOVING. The step counter is the only thing that distinguishes a process that
+    #    is working from one that is holding a lock or wedged in a collective. Two consecutive
+    #    quiet checks rather than one, because a long eval or a checkpoint write legitimately
+    #    pauses it for a few minutes.
+    if [ "$STEP" = "$LAST_STEP" ] && [ "$EP" = "$LAST_EP" ]; then
+        QUIET=$((QUIET + 1))
+        if [ "$QUIET" -ge 2 ]; then
+            echo "[$(ts)] WARN: $RID still on step $STEP, epoch $EP after $((QUIET * EVERY / 60)) min"
+            QUIET=0
+        fi
+    else
+        QUIET=0
+    fi
+    LAST_STEP="$STEP"
+    LAST_EP="$EP"
+    sleep "$EVERY"
 done

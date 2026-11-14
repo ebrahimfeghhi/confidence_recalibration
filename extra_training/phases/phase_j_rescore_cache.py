@@ -410,6 +410,24 @@ def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle, want_pae=Fa
                 input_feature_dict=feat, s_inputs=s_inputs, s_trunk=s, z_trunk=z, pair_mask=None,
                 x_pred_coords=x, triangle_multiplicative=configs.triangle_multiplicative,
                 triangle_attention=configs.triangle_attention, inplace_safe=False, chunk_size=None)
+        # PROTENIX OFFLOADS pae TO CPU ABOVE 2,000 TOKENS AND THIS PATH HAS TO UNDO IT.
+        #
+        # confidence.py:231-236 moves pae_pred and pde_pred to the CPU when z_trunk's token count
+        # exceeds PROTENIX_CONF_OFFLOAD_TOKENS (default 2000) and the model is in eval mode, to
+        # keep 50 samples of a [N_tok, N_tok, 64] map off the GPU. calculate_chain_based_ptm then
+        # indexes that CPU tensor with chain masks built from feat, which are on the GPU, and
+        # torch refuses: "indices should be either on cpu or on the same device as the indexed
+        # tensor (cpu)". Measured 2026-11-12 on 9q5m, 2,354 tokens -- the largest structure in the
+        # training pool and the only one over the threshold. It killed all three shards of a
+        # 71,370-pose in-sample pass about 2,000 units in, an hour of GPU for no metric.
+        #
+        # MOVING IT BACK IS THE FIX, NOT RAISING THE THRESHOLD, because the threshold is a caller's
+        # memory policy and this is a device-agreement bug in the reduction that follows. We score
+        # one unit at a time on a 97 GB card, so the map fits; the alternative -- running the pTM
+        # reduction on the CPU instead -- is the same arithmetic hundreds of times slower.
+        _fdev = feat["asym_id"].device
+        if pae.device != _fdev:
+            pae = pae.to(_fdev)
         # fp32 for the softmax and the pTM sum: the bins are weighted and summed over N_token^2, and
         # bf16 accumulation there is not what the reference path does.
         pae_prob = torch.softmax(pae.float(), dim=-1)

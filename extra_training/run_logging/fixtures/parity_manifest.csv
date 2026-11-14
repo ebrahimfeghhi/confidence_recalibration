@@ -1,0 +1,2 @@
+cluster,pdb,instance,ab_cluster,agclusters,tokens,n_chains,resolution,method,msa_ok,seeds
+64,8yvm,pdb_00008yvm_F_E,3385,P30,1004,4,3.02,EM,1,500000-500014

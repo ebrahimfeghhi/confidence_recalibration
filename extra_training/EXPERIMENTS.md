@@ -36,7 +36,7 @@ Oracle ceiling: DockQ 0.6926, frac 0.8587 → **headroom 0.1096**.
 
 ![arms overlay](figures/arms_overlay.png)
 
-*Regenerated 2026-11-07 2:41 PM EST. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
+*Regenerated 2026-11-14 1:14 PM EST. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
 
 Shipped on `valfull` (92 interfaces, budget 30): DockQ **0.5830**, frac **0.7391**, rho **0.2218**.
 
@@ -51,6 +51,65 @@ Shipped on `valfull` (92 interfaces, budget 30): DockQ **0.5830**, frac **0.7391
 - **3. full head + L2-SP 0.001** (`tv6hue`, 20 epochs): paired ΔDockQ mean **-0.0106**; rho 0.2318 (best 0.2519) vs shipped 0.2218; train PAE 2.7005 → 2.6095; val PAE 2.8207 → 2.7444, min 2.7174 at epoch 5.
 
 <!-- AUTO:END -->
+
+## Current arm: `privsp` — PAE-only, cropped
+
+Launched 1:40 PM EST 2026-11-11 on cards 4/5/7. Outside the AUTO block above, which is
+regenerated and would overwrite this.
+
+| | |
+|---|---|
+| crop | our own 256-token pool, `training/crop_final` |
+| loss | **PAE alone** (`--pae-only`); pLDDT, PDE and resolved stubbed out |
+| ranking loss | **none**, so no pass A — one forward per pose instead of two |
+| batch | `--accum 240 --nsample 5` → 16 units/rank/step, 48 units over 43–48 distinct structures |
+| epoch builder | `--epoch-cover-all`, every unit once, all 846 structures |
+| schedule | 50 epochs, held-out eval every 5, **uncropped** |
+| lr / clip | 1e-3 / 25.0 — **ours, not Protenix's** (which ships clip 10), so this stays comparable to `87ja6a` and `9gsbdq` |
+| pace | ~18 min/epoch → ~15 h for 50 |
+
+This is our crop with a PAE-only objective. It is **not** a stock-Protenix baseline.
+
+**Why it cannot hit the bug that killed `3pdv7i`.** That arm died because the crop pool was
+validated against the static `chain_roles` join while the *ranking* loss scored the per-pose OST
+join; the two disagree on 90 of 846 structures. This arm has no ranking loss, and its PAE term is
+masked to scored chain pairs through `chain_roles` — the same static join the pool was validated
+against. `check_crop_pairs.py --join static` asserts it over all 94,630 crops before launch.
+
+**Epoch 1:** train PAE **2.9720** over **19.6 min**, 2,308 units, **145 optimiser steps**;
+grad_norm mean 1.150, median 0.890, max 4.949 (clip 25 never engaged); 0 nonfinite; 0 faults;
+2,880 of 2,980 units cropped to exactly 256 tokens, the rest being structures already smaller
+than the crop. Epoch 2: 25.3 min, same 2,308 units and 145 steps.
+
+145 is exactly the planned `ceil(2308 / 16)`, and the checkpoints agree — `head_ep1_step145.pt`
+then `head_ep2_step290.pt`. The trainer's own line says 144 because `2308 / 16 = 144.25`: 144 full
+steps plus one short final step holding the remaining 4 units.
+
+*(An earlier version of this section reported 186 steps for epoch 1. That was a cumulative count
+taken while epoch 2 was already 41 steps in — 145 + 41 — not a different training set. Flagged in
+review.)*
+
+Do not read that against the uncropped arm's epoch-1 3.0144 — different loss set, batch and token
+counts. It is not evidence about cropping.
+
+**The arm is CPU-bound.** 186 steps in ~18 min is 6.75 s/step at 80 poses/rank → 0.084 s/pose,
+against the measured fixed floor `C0 = 0.081 s` in `t(N) = C0 + K2·N² + K3·N³`. GPU utilisation
+sampled 5× over 10 s read `0 0 0 / 0 0 0 / 0 0 0 / 73 92 63 / 82 87 0`. At 256 tokens the GPU
+work per pose has collapsed and what remains is per-pose CPU cost — trunk `np.load`, crop, slice —
+which does not shrink with the crop. **A smaller crop would buy almost nothing.**
+
+**What would make this arm interesting.** First held-out eval is epoch 5. Cropped training has
+improved a *training* metric without improving held-out selection four times now (sections 13/14
+of `paper_results.md`, and `9gsbdq` epochs 20→25). A falling PAE loss here is not evidence;
+held-out mean DockQ against shipped **0.5735** / max-pooled **0.5813** is.
+
+Plot: `run_logging/plot_pae_arm.py privsp` — three panels (train PAE, held-out mean DockQ,
+held-out frac-acceptable). `plot_rel_arm.py` is the wrong instrument for this arm: three of its
+four panels are ranking-loss quantities and stay empty.
+
+**Previous arm.** `9gsbdq` (uncropped rel+PAE, resumed from `87ja6a` ep20) was stopped at epoch
+29, 10%% into epoch 30. Checkpointed through 29 with `resume_ep29.pt`, so it is resumable. Its
+epoch-30 held-out eval — the first read since epoch 25's decline — was not taken.
 
 ## The three experiments
 

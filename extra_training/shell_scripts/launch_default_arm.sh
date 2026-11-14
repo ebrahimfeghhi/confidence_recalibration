@@ -119,7 +119,33 @@ RELLAB="${RELLAB:-training/fold/itm_labels_extended}"
 # at the price of a train/eval mismatch, and that trade was declined in favour of excluding.
 OVERSIZED="9dzf,9dzg,7m7i,9b9j,9e7x,9q5v,9q7b,8vba,9bbn,7cn2"
 SKIP="${SKIP:-9mx1,4zto,9q5m,$OVERSIZED}"
+# WHETHER THE CALLER SET IT, captured before the default is applied, so INBLOCK can choose a
+# different default without overriding an explicit choice.
+CKPT_THRESH_SET="${CKPT_THRESH+yes}"
 CKPT_THRESH="${CKPT_THRESH:-0}"
+# ACTIVATION CHECKPOINTING IS LARGELY POINTLESS ONCE THE STACK IS FROZEN, so an INBLOCK arm takes
+# a different default. DECIDED HERE, not at the INBLOCK block further down, because ARGS is built
+# at :276 and would already hold the old value by then -- INBLOCK is read early for this reason
+# alone and is re-defaulted to the same value below.
+#
+# --ckpt-token-threshold means "units AT OR BELOW this many tokens run with checkpointing OFF".
+# The default 0 DISABLES the rule, so every unit uses --blocks-per-ckpt 1. mqird6 was launched with
+# 855 and its epoch-6 log reads "3900 unit(s) UNCHECKPOINTED, 700 checkpointed" -- so the unfrozen
+# arm already ran 85% of its units uncheckpointed, and an INBLOCK arm left at the default would
+# checkpoint MORE than the arm it is meant to beat.
+#
+# Checkpointing buys not storing activations at the price of a second forward. With blocks 0-2 and
+# block 3's two tri-muls frozen the backward begins after tri_mul_in, so the only activations
+# needing storage are block 3's tri_att_start, tri_att_end and pair_transition plus the injections.
+# Paying a whole extra forward to avoid storing that is the wrong trade.
+#
+# 99999 means every unit, the largest in the manifest being 1,650 tokens. UNMEASURED: mqird6 peaks
+# at 81.30 GB of 95.6 GB WITH a full backward, and whether the frozen graph fits uncheckpointed at
+# 1,650 tokens is exactly what gate 3 of inblock_gpu_smoke.sh measures on 7cn2. If it does not fit,
+# pass CKPT_THRESH=855 and the size rule returns.
+if [ "${INBLOCK:-0}" = "1" ] && [ -z "$CKPT_THRESH_SET" ]; then
+  CKPT_THRESH=99999
+fi
 # NOEVAL=1 DROPS THE HELD-OUT EVALUATION. The owner asked for training only on 2026-11-06; the
 # eval-free config existed only in resume_noeval_to_10.sh, which needs a bundle, so a fresh
 # relaunch after an OOM silently brought eval back. A fresh launch must be able to honour it.
@@ -252,9 +278,52 @@ if [ "$DRY" = "1" ]; then
   say "DRY RUN: cards_busy reports '$B' and MemAvailable $(awk '/MemAvailable/{printf "%.0f", $2/1048576}' /proc/meminfo) GB -- not gated on a dry run"
   B=0
 fi
-[ "${B:-1}" != "0" ] && { say "REFUSING: cards_busy reports '$B', not 0."; exit 1; }
+# PER-CARD, NOT GLOBAL. This used to refuse unless cards_busy reported 0 anywhere on the box.
+# That is the right rule for "do not start a long arm while something else is training" and the
+# wrong one for independent jobs on separate cards: the three gates of the GPU smoke, one per
+# card, deadlocked each other because the first to start made the gate false for the other two.
+# The property that actually matters is whether THE CARDS THIS RUN ASKED FOR are free.
+#
+# The 3-card ceiling is kept, and enforced here rather than trusted to the caller.
+#
+# cards_busy's box-wide count is still printed: "something else is training" is worth knowing even
+# when it is no longer a refusal.
+CARD_GATE_MIB="${CARD_GATE_MIB:-80000}"
+# A DRY RUN MUST NOT REQUIRE FREE CARDS -- the same rule the box-wide check above already had, and
+# which I dropped when replacing it. Capturing an arm's argv with DRY=1 while another job holds a
+# card is exactly when a dry run is most useful, and refusing there made it useless at that moment.
+_n_cards=$(echo "$CARDS" | tr ',' '\n' | grep -c .)
+if [ "$DRY" = "1" ]; then
+  say "DRY RUN: per-card gate skipped ($_n_cards card(s) requested: $CARDS)"
+  _n_cards=0
+fi
+if [ "$_n_cards" -gt 3 ]; then
+  say "REFUSING: $_n_cards cards requested ($CARDS); the standing limit is 3."
+  exit 1
+fi
+_busy_ours=""
+for _c in $([ "$DRY" = "1" ] || echo "$CARDS" | tr ',' ' '); do
+  # DIGITS, NOT MERELY NON-EMPTY. `nvidia-smi -i 99` prints "No devices were found" to STDOUT and
+  # exits 6, so an emptiness test passes, the numeric comparison below errors, `[` returns
+  # non-zero, and the card is treated as FREE -- a bad index would have sailed through the gate.
+  _free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i "$_c" 2>/dev/null)
+  case "$_free" in
+    ''|*[!0-9]*)
+      say "REFUSING: GPU $_c did not report a numeric free-memory value (got '${_free:-<empty>}')."
+      say "  Is $_c a valid index on this box?"
+      exit 1;;
+  esac
+  if [ "$_free" -lt "$CARD_GATE_MIB" ]; then
+    _busy_ours="$_busy_ours $_c(${_free}MiB)"
+  fi
+done
+if [ -n "$_busy_ours" ]; then
+  say "REFUSING: requested card(s) not free:$_busy_ours (need ${CARD_GATE_MIB} MiB each)."
+  say "  cards_busy reports '$B' box-wide."
+  exit 1
+fi
 M=$(awk '/MemAvailable/{printf "%.0f", $2/1048576}' /proc/meminfo)
-say "gate 5: cards_busy 0, MemAvailable ${M} GB"
+say "gate 5: cards $CARDS each >= ${CARD_GATE_MIB} MiB free (box-wide cards_busy '$B'), MemAvailable ${M} GB"
 [ "${M:-0}" -lt 250 ] && { say "REFUSING: MemAvailable under the 250 GB floor."; exit 1; }
 
 ARGS=(--rank-loss --rank-form rel --rel-labels "$RELLAB"
@@ -267,7 +336,7 @@ ARGS=(--rank-loss --rank-form rel --rel-labels "$RELLAB"
       --pae-scored-pairs "$POOL" --pae-scored-roles training/fold/chain_roles_all.csv
       --pae-only --lean-readouts --minimal-items
       --alignment-preflight "$MARKER"
-      --epochs "$EPOCHS" --lr 0.01 --warmup-steps 20 --seed 0 --accum 30 --nsample 5
+      --epochs "$EPOCHS" --lr "${LR:-0.01}" --warmup-steps 20 --seed 0 --accum 30 --nsample 5
       --alpha-confidence 1.0 --alpha-pae 1.0 --clip-norm 25.0
       --prefetch-units 2 --prefetch-workers 4
       --blocks-per-ckpt 1 --ckpt-token-threshold "$CKPT_THRESH"
@@ -311,6 +380,70 @@ fi
 # NUMERICALLY IDENTICAL: run_logging/test_lean_single.py gates z bit-identical with the track on and
 # off, and gates that the single track's parameters got NO gradient even when it ran -- which is why
 # dropping them from the optimiser is a no-op and not a capacity cut. UNTESTED ON A GPU.
+# INBLOCK=1 INJECTS THE POSE INSIDE THE LAST PAIRFORMER BLOCK and freezes everything the injection
+# is supposed to make unnecessary. It sets --train-only itself, overriding FREEZE_PAT, because the
+# freeze and the injection placement are ONE design and splitting them across two switches is how
+# they would get combined wrongly.
+#
+# WHAT IS TRAINABLE UNDER IT: block 3's tri_att_start, tri_att_end and pair_transition, plus the two
+# (or four) injection projections. NOT blocks 0-2 and NOT block 3's tri_mul_out / tri_mul_in.
+#
+# THE PLACEMENT IS LOAD-BEARING. The injection goes AFTER tri_mul_in and BEFORE tri_att_start.
+# Autograd starts building at the first op whose parameters or inputs require grad, so injecting at
+# the block's INPUT instead -- which is where --pose-perblock injects -- makes the z entering
+# tri_mul_out require grad, brings both frozen tri-muls back into the backward, and evaporates the
+# saving SILENTLY. run_logging/test_pose_inblock_graph.py asserts the boundary with a negative
+# control that reproduces exactly that failure and checks the test can see it.
+#
+# BOTH INJECTIONS ARE ZERO-INIT AND VERIFIED EXACTLY ZERO, so step 0 is bit-identical to the
+# un-injected head. This is still a DIFFERENT ARM -- a capacity change on top of a freeze -- and
+# needs its own control. UNTESTED ON A GPU.
+INBLOCK="${INBLOCK:-0}"
+# INBLOCK_PAE=1 adds the second injection, after pae_ln in the readout. Separate because it adds an
+# UNNORMALISED quantity to a normalised one and nothing downstream rescales it.
+INBLOCK_PAE="${INBLOCK_PAE:-1}"
+# INBLOCK_READOUT=1 also leaves linear_no_bias_pae and pae_ln TRAINABLE. They sit ABOVE the stack,
+# so unfreezing them adds no backward depth at all -- their gradient needs only their input and
+# their output gradient.
+#
+# ON BY DEFAULT, changed from 0 after review. The second injection is added AFTER pae_ln, so it
+# hands an unnormalised quantity to linear_no_bias_pae; with the readout frozen, nothing
+# downstream can adapt its scale and the injection's whole influence is fixed by its
+# initialisation and the optimiser. The cost is 16,896 parameters -- linear_no_bias_pae's 64x256
+# weight plus pae_ln's two 256-vectors -- which is a small price for letting the layer that
+# consumes the injection learn to consume it. Set INBLOCK_READOUT=0 to run the frozen-readout
+# ABLATION, which is a legitimate arm -- it just should not be the default reading of the
+# two-injection design.
+INBLOCK_READOUT="${INBLOCK_READOUT:-1}"
+if [ "$INBLOCK" = "1" ]; then
+  # REFUSED FIRST, BEFORE ANYTHING IS APPENDED. Both switches set --train-only, and argparse lets
+  # the second win silently -- so the run would freeze whatever the loser's pattern said and the
+  # banner would describe the winner's.
+  if [ "$FREEZE_BLOCKS" = "1" ]; then
+    say "REFUSING: INBLOCK=1 and FREEZE_BLOCKS=1 both set --train-only. The second occurrence wins"
+    say "  silently, so the arm would not be the one either switch describes. Pick one."
+    exit 1
+  fi
+  # tri_att_end IS DELIBERATELY ABSENT. It is in the shipped checkpoint as a constant bit pattern
+  # that emits exactly zero, so it is a fixed point of gradient descent: zero output, zero
+  # gradient, it can never move. Measured on GPU (run vhhpyf, --grad-probe over 150 poses): all
+  # eight of its tensors accumulated exactly 0.000e+00 in BOTH the PAE and the rank terms, while
+  # every other trainable tensor was healthy. Training it is 330,240 parameters of optimiser
+  # state and all-reduce traffic buying nothing, and it made the arm's advertised capacity
+  # (1,484,800) overstate the real one (1,154,560) by 22%.
+  INBLOCK_PAT='pairformer_stack\.blocks\.3\.tri_att_start\.,pairformer_stack\.blocks\.3\.pair_transition\.,^pose_inblock_'
+  if [ "$INBLOCK_READOUT" = "1" ]; then
+    INBLOCK_PAT="$INBLOCK_PAT"',^linear_no_bias_pae\.,^pae_ln\.'
+  fi
+  ARGS+=(--pose-inblock --train-only "$INBLOCK_PAT")
+  [ "$INBLOCK_PAE" = "1" ] && ARGS+=(--pose-inblock-pae)
+  say "INBLOCK=1: the pose is injected inside the LAST pairformer block, after tri_mul_in and"
+  say "  before tri_att_start$([ "$INBLOCK_PAE" = "1" ] && echo ", and after pae_ln in the readout")."
+  say "  --train-only '$INBLOCK_PAT'"
+  say "  Blocks 0-2 AND block 3's two tri-muls are FROZEN. Check the trainer's own '--train-only"
+  say "  ...: N of 248 head tensor(s)' line and the 'POSE IN-BLOCK:' line before walking away."
+  say "  This is a DIFFERENT ARM and needs its own control. Expected 1.5-1.7x and UNVALIDATED."
+fi
 if [ "${LEAN_SINGLE:-0}" = "1" ]; then
   ARGS+=(--lean-single)
   say "LEAN_SINGLE=1: the pairformer's single track is NOT COMPUTED and 10.55M of 19.75M head"
@@ -346,13 +479,28 @@ fi
 # own per-epoch IN-SAMPLE lines -- WITHIN-INTERFACE SPEARMAN (predicted mean ipTM vs DockQ) and
 # SCORE SPREAD against std(true iTM) -- which need no eval and must never be read as generalisation.
 if [ "$NOEVAL" != "1" ]; then
-  ARGS+=(--eval-pool training/valfull/pool.csv --eval-pool-fold validation/fold
+  # EVAL_POOL SELECTS THE HELD-OUT SET. training/valfull83 is the WHOLE validation fold -- both
+  # waves, 83 structures / 141 interfaces -- and carries its own chain_roles.csv and
+  # seed_manifest.json, which the trainer prefers over the fold's 53-structure ones.
+  # training/valfull (53 / 92) is what every number in paper_results.md section 3-4 was measured
+  # on, so it stays available for comparison.
+  ARGS+=(--eval-pool "${EVAL_POOL:-training/valfull/pool.csv}" --eval-pool-fold validation/fold
          --eval-pool-seed-base 400000 --eval-pool-budget 30 --eval-pool-every 1)
 else
   say "NOEVAL=1: no --eval-pool. IN-SAMPLE diagnostics only; no held-out number from this run."
 fi
 
-NOTE="$EPOCHS EPOCH(S), --rank-form rel at --alpha-rank 75 plus the PAE term, FULLY UNCROPPED, over the 841-structure trained population: 851 declared less the three documented skips and less the TEN structures measured not to fit uncropped on a 95 GiB card. 6,903 units in 230 cross-seed steps of 30. The exclusion is from peak_GB = 2.02 + 2.896e-05 * tokens^2, fitted on --mem-log run tvqobh and confirmed by a 1,364-token unit landing 0.29 GB off a prediction made before it arrived; the budget is 90.4 GB per pose, the ceiling 1,747 tokens, and the cut is at 1,655 for a 10% margin. This is what killed tztukd and kfthfe at the same step 158 under thresholds 855 and 0 -- the threshold was never the cause. THE RANKS ARE NOW BALANCED: a step is dealt round-robin across its structures via lr_schedule.deal_round_robin instead of shuffled globally, so each rank gets 5 seeds of each of the step's 2 structures rather than a random 10 of 30. Per-step tokens^2 imbalance falls from a median of 17.2% to 0.0% (90 of 230 steps over 20% to 13, those 13 being the all-shallow steps where no assignment can balance). --ckpt-token-threshold 855 turns checkpointing OFF at or below 855 tokens; 855 was measured on a population under token dropout where it meant ~427 effective tokens, so --mem-log is ON to read the unchecked peaks rather than assume them. rel regresses on the true iTM after mean-centring, so it uses every pose of an interface regardless of seed and has no pair family or tau."
+# THE POPULATION IS COUNTED, NOT ASSERTED. This line used to hardcode "841 ... less the TEN
+# structures", which stopped being true the moment SKIP changed and would have written a false
+# record of what the run trained on -- the one thing a run note exists to prevent.
+NPOP=$($PY -I - <<EOF
+import csv
+skip = {x.strip().lower() for x in "$SKIP".split(",") if x.strip()}
+rows = [r["pdb"].strip().lower() for r in csv.DictReader(open("$MANIFEST"))]
+print(f"{len([p for p in rows if p not in skip])} of {len(rows)} declared, less {len(skip)} skipped: {','.join(sorted(skip))}")
+EOF
+)
+NOTE="$EPOCHS EPOCH(S), --rank-form rel at --alpha-rank 75 plus the PAE term, FULLY UNCROPPED, over $NPOP. 6,903 units in 230 cross-seed steps of 30. THE EXCLUSION IS NOW MEASURED, NOT PREDICTED. peak_GB = 2.02 + 2.896e-05 * tokens^2 was fitted on the FULL-BACKWARD arm (tvqobh) and does not transfer to the frozen graph: it put 2,289 tokens at 154 GB, and the frozen graph peaks at 60. Measured on one card, checkpointing OFF, expandable_segments, full pass A and pass B: 1,650 tok (4rdq) peak 54.57 GB, 1,822 (9q5v) 66.15 GB, 2,004 (7m7i) 79.64 GB -- all fitting on a 94.97 GB card -- and 2,289 (9dzf/9dzg) OOM, short by about 10 GB. So the cut is between 2,004 and 2,289 and only 9dzf/9dzg are excluded. CAVEAT ON THAT: those are SINGLE-RANK, 2-seed probes. The arm runs 3 ranks over 30-unit steps with the prefix cache live, and tztukd and kfthfe both died at step 158 rather than step 1, so the failure mode is STEP COMPOSITION rather than single-pose capacity. 2,004 tokens at 79.64 GB is 84% of the card. This is what killed tztukd and kfthfe at the same step 158 under thresholds 855 and 0 -- the threshold was never the cause. THE RANKS ARE NOW BALANCED: a step is dealt round-robin across its structures via lr_schedule.deal_round_robin instead of shuffled globally, so each rank gets 5 seeds of each of the step's 2 structures rather than a random 10 of 30. Per-step tokens^2 imbalance falls from a median of 17.2% to 0.0% (90 of 230 steps over 20% to 13, those 13 being the all-shallow steps where no assignment can balance). --ckpt-token-threshold 855 turns checkpointing OFF at or below 855 tokens; 855 was measured on a population under token dropout where it meant ~427 effective tokens, so --mem-log is ON to read the unchecked peaks rather than assume them. rel regresses on the true iTM after mean-centring, so it uses every pose of an interface regardless of seed and has no pair family or tau."
 
 # THE RUN RECORD MUST SAY WHAT THE RUN IS. Under MEMLOG this is a memory diagnostic of a few
 # dozen steps, not the arm, and the arm's note ("THE FIRST REAL RUN ON THIS DATA") would be a
@@ -370,6 +518,22 @@ if [ "${TRUNK_MEMMAP:-0}" = "1" ]; then
 fi
 if $PY -I -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$TRUNK_CACHE_GB" 2>/dev/null; then
   NOTE="$NOTE --trunk-cache-gb $TRUNK_CACHE_GB holds a step's uncropped trunks as host numpy arrays so pass A and pass B read each unit once instead of twice, warmed on the prefetch workers. It changes epoch time and nothing else."
+fi
+# THE SAME RULE AS MEMLOG AND FREEZE_BLOCKS: this is a different experiment, not this one run faster.
+if [ "$INBLOCK" = "1" ]; then
+  NOTE="$NOTE IN-BLOCK POSE INJECTION: the pose enters pairformer block 3 AFTER tri_mul_in and BEFORE tri_att_start, with both the 39-bin one-hot distance term and the raw-distance term$([ "$INBLOCK_PAE" = "1" ] && echo ", and again after pae_ln in the PAE readout"). Blocks 0-2 and block 3's tri_mul_out/tri_mul_in are FROZEN via --train-only '$INBLOCK_PAT'; trainable is block 3's tri_att_start, tri_att_end and pair_transition plus the injections$([ "$INBLOCK_READOUT" = "1" ] && echo " and the PAE readout"). THE PLACEMENT IS THE POINT: autograd starts at the first op whose parameters or inputs require grad, so injecting at the block INPUT -- where --pose-perblock injects -- would put both frozen tri-muls back into the backward and lose the saving silently; run_logging/test_pose_inblock_graph.py asserts the boundary with a negative control that reproduces exactly that failure. Both injections are ZERO-INIT and verified exactly zero, so step 0 is bit-identical to the un-injected head. THIS IS A CAPACITY CHANGE ON TOP OF A FREEZE AND A DIFFERENT ARM -- it is NOT comparable against mqird6 and needs its own held-out control. The readout injection is added AFTER the layer norm, so an unnormalised quantity is added to a normalised one and nothing downstream rescales it. UNTESTED on a GPU."
+fi
+# EXTRA PASSES RAW TRAINER ARGS THROUGH, word-split on purpose so EXTRA="--grad-probe --save-init
+# /tmp/h.pt" works. It exists because the GPU smoke needs --save-init and --grad-probe, and the
+# alternative was a second launcher that reconstructs this one's argv by hand -- which is how the
+# --src-cifs mistake happened. Appended LAST, so an EXTRA that repeats a flag wins, and the banner
+# prints it so the run.log records what was actually added.
+if [ -n "${EXTRA:-}" ]; then
+  # shellcheck disable=SC2206
+  ARGS+=($EXTRA)
+  say "LR: ${LR:-0.01} (base, before --lr-steps)"
+say "EXTRA: appended $EXTRA"
+  NOTE="$NOTE EXTRA ARGS: $EXTRA."
 fi
 if [ "$DRY" = "1" ]; then
   say "DRY RUN"

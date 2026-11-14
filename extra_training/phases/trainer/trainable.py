@@ -1,0 +1,139 @@
+"""`trainer/trainable.py` -- Derive the trainable tensor set from the module tree, then apply --train-only.
+
+EXTRACTED VERBATIM from `phases/phase_k_train.py` lines 2906-3059 (source `d34baebc`).
+Statements and comments are the original; only the names this closed over inside
+main() became parameters. test_trainable_equivalence.py compares it line for line,
+so a change to the live trainer fails the test instead of drifting silently.
+"""
+
+import torch
+import torch.distributed as dist
+
+
+def select_trainable(rt, a, model):
+    prefixes, trainable = rt.head_param_names(model)
+    # LoRA REPLACES THE TRAINABLE SET, it does not add to it. Applied to the confidence head only
+    # -- head_param_names already established that module is the honest boundary -- and after the
+    # head is built so the adapters inherit its device and dtype.
+    if a.train_only:
+        import re as _re
+        _pats = [t.strip() for t in a.train_only.split(",") if t.strip()]
+        _pfx = prefixes[0]
+        _rel = {n: n[len(_pfx) + 1:] for n in trainable}
+        _kept = [n for n in trainable if any(_re.search(_p, _rel[n]) for _p in _pats)]
+        if not _kept:
+            raise SystemExit(
+                f"STOP: --train-only matched no parameter, so the optimiser would be empty and "
+                f"the run would report success while training nothing.\n"
+                f"  patterns: {_pats}\n"
+                f"  head has {len(trainable)} tensor(s), e.g. "
+                f"{[_rel[n] for n in trainable[:6]]}")
+        _before = sum(p.numel() for n, p in model.named_parameters() if n in set(trainable))
+        trainable = _kept
+        _after = sum(p.numel() for n, p in model.named_parameters() if n in set(trainable))
+        print(f"--train-only {_pats}: {len(_kept)} of {len(_rel)} head tensor(s), "
+              f"{_after:,} of {_before:,} parameters ({100.0*_after/max(1,_before):.3f}% of the "
+              f"head). Everything else is FROZEN.")
+        for n in _kept:
+            print(f"    {_rel[n]:46} {tuple(dict(model.named_parameters())[n].shape)}")
+
+    # A LoRA BUNDLE HOLDS ADAPTERS, NOT HEAD TENSORS, and the held-out monitor spawns itself
+    # without --lora-rank -- the running trainer builds that command from its in-memory arguments,
+    # so adding the flag there cannot reach a trainer already running. Its trainable set was
+    # therefore the 248 plain head tensors, none of which a rank-8 bundle contains, and every
+    # measurement died on
+    #     STOP: the bundle is missing 248 trainable tensor(s)
+    # Arm m8rote trained three epochs and produced ZERO held-out points before this was caught --
+    # the same failure as ggfhj5 epoch 1, which was --train-only instead of LoRA.
+    #
+    # So under --loss-only, inherit the bundle's own LoRA configuration. The guard already records
+    # all four fields for exactly this reason ("resuming one as the other fails on the
+    # missing-tensor check"). Only when this run named no rank of its own, so an explicit
+    # --lora-rank still wins and a non-LoRA bundle is untouched.
+    # THE SAME CLASS OF BUG, FOURTH INSTANCE. --train-only, then LoRA, then the evaluator's
+    # --pose-perblock-share, each broke because a setting the trainer passes was not also inherited
+    # or forwarded. The ranking fields are in the guard because they change the objective, so a
+    # --loss-only monitor that does not name them is refused on a rank-loss bundle -- and the
+    # monitor CANNOT name them, because a running trainer keeps sending the argument list its own
+    # loaded code built. So inherit them here instead. The ranking term is skipped under
+    # --loss-only anyway (there is no backward to add it to), so this only quiets the guard.
+    if a.loss_only and a.resume and not a.rank_loss:
+        try:
+            _gr = (torch.load(a.resume, map_location="cpu", weights_only=False).get("guard")
+                   or {})
+        except Exception as _e:                              # noqa: BLE001
+            _gr = {}
+            print(f"  (could not read {a.resume} for its ranking config: {type(_e).__name__})")
+        if _gr.get("rank_loss"):
+            a.rank_loss = True
+            a.alpha_rank = float(_gr.get("alpha_rank") or 0.0)
+            if rt.is_main:
+                print(f"  --loss-only: inheriting the bundle's ranking configuration "
+                      f"(alpha_rank {a.alpha_rank:g}, "
+                      f"weight_by_gap={True}) so the guard matches; the ranking "
+                      f"term itself does not run -- a measurement takes no step.")
+
+    # The --loss-only LoRA inheritance block was here. It read a bundle's guard and set
+    # a.lora_* so the adapters would match on resume; LoRA is not carried by this copy, so
+    # nothing reads those values and the block only existed to populate them.
+    lora_report = None
+    # THE DEAD HEAD PARAMETERS COME OUT LAST, so --train-only and LoRA cannot put them back.
+    #
+    # WHY IT IS SAFE RATHER THAN MERELY CHEAP. Nothing reads these tensors' outputs, so autograd
+    # produces no gradient for them -- which _apply_step then turns into an explicit zeros tensor
+    # ("a rank with no gradient for a parameter still has to contribute a tensor, or the
+    # collective's shapes do not line up"). So today they are all-reduced as zeros, AdamW allocates
+    # exp_avg and exp_avg_sq for them, and with weight_decay=0.0 their update is exactly zero. They
+    # are therefore bit-identical whether they are in the optimiser or not; removing them removes
+    # ~84 MB of moment state and ~42 MB of the 79 MB flat collective buffer per step and NOTHING
+    # else. Verified on CPU by run_logging/test_lean_single.py, which checks the single pathway's
+    # parameters get .grad is None with the track ON as well as off.
+    #
+    # AND THE REPORTED NUMBER BECOMES HONEST. Every --pae-only arm in this project has printed
+    # "258 trainable tensor(s), 19.8M of 464.5M parameters (4.3%)" while 158 of those tensors
+    # received no gradient. The --grad-probe path already said so out loud and nothing acted on it.
+    if rt._dead_head:
+        _dead_abs = {f"{prefixes[0]}.{n}" for n in rt._dead_head}
+        _before_n, _before_p = len(trainable), sum(
+            p.numel() for n, p in model.named_parameters() if n in set(trainable))
+        trainable = [n for n in trainable if n not in _dead_abs]
+        if not trainable:
+            raise SystemExit(
+                "STOP: --lean-single left the trainable set EMPTY. Every tensor --train-only or "
+                "LoRA selected is one nothing reads under --pae-only, so the run would report "
+                "success while training nothing. Widen --train-only or drop --lean-single.")
+        _after_p = sum(p.numel() for n, p in model.named_parameters() if n in set(trainable))
+        print(f"--lean-single: {_before_n - len(trainable)} of {_before_n} trainable tensor(s) "
+              f"dropped from the optimiser as provably gradient-free "
+              f"({(_before_p - _after_p)/1e6:.3f}M of {_before_p/1e6:.3f}M parameters, "
+              f"{100.0 * (_before_p - _after_p) / max(1, _before_p):.2f}%). The remaining "
+              f"{len(trainable)} tensor(s) / {_after_p/1e6:.3f}M parameters are the EFFECTIVE "
+              f"capacity -- which is what the line below now prints.")
+    head_ids = {id(p) for n, p in model.named_parameters() if n in set(trainable)}
+    n_head = sum(p.numel() for n, p in model.named_parameters() if n in set(trainable))
+    n_all = sum(p.numel() for _n, p in model.named_parameters())
+    print(f"trainable: {len(trainable)} tensor(s), {n_head/1e6:.1f}M of {n_all/1e6:.1f}M parameters "
+          f"({n_head/n_all:.1%}), under {prefixes}")
+    for n, p in model.named_parameters():
+        p.requires_grad_(id(p) in head_ids)
+
+    # ---- DEAD OPERATION ELIMINATION ------------------------------------------------------------
+    # INSTALLED HERE, AND HERE FOR THE SAME REASON THE PREFIX CACHE IS: its central refusal is "a
+    # module I would stub is TRAINABLE", read from requires_grad on the tensors, and requires_grad
+    # is not final until the line above has applied --train-only, LoRA and --lean-single. Any
+    # earlier and it would be checking a flag's intent instead of the model's state.
+    #
+    # BEFORE THE PREFIX CACHE, though either order is correct -- the husks leave named_parameters()
+    # and named_modules() unchanged and move no value, so the cache's prefix set, its dropout scan
+    # and its digest are identical either way. This order only means a dead_ops refusal happens
+    # before the cache turns on, and that the cache's log line describes the tree that will run.
+    # phases/dead_ops.py's docstring states the full order.
+    _dops = None
+
+    # EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT. Inside main() these were simply
+    # still in scope for everything below; here the hand-off has to be explicit. Written
+    # out by name rather than with vars() so the set is visible and a rename fails loudly.
+    for _n in ('_after', '_after_p', '_before', '_before_n', '_before_p', '_dead_abs', '_dops', '_gr', '_kept', '_n', '_p', '_pats', '_pfx', '_re', '_rel', 'head_ids', 'lora_report', 'n', 'n_all', 'n_head', 'p', 'prefixes', 'select_trainable', 't', 'trainable'):
+        if _n in locals():
+            setattr(rt, _n, locals()[_n])
+    return prefixes, trainable, _dops

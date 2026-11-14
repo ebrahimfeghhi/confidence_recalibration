@@ -986,12 +986,56 @@ that shell. So 2.5 buys no context over 0 and only loses coverage.
 
 ### AND THE CONFIDENCE HEAD HAS NEVER HAD DROPOUT
 
-`ConfidenceHead` builds its 4-block pairformer with `dropout=0.0`, overriding Protenix's own 0.25
-default for pair stacks. All four pair-rep sites call
+`ConfidenceHead` builds its 4-block pairformer with `dropout=0.0`. All four pair-rep sites call
 `dropout_add_rowwise(z, update, self.p_drop, self.training)` and the head trains in train mode, so
 the plumbing is live and only the rate is zero: **every arm in this project has trained 19.8M
 parameters with no dropout and no masking of any kind.** Dropout is also skipped entirely on the
 `inplace_safe=True` branch, which does a bare `z +=`.
+
+**WHERE THE 0.25 COMES FROM, AND WHO DEPARTS FROM WHOM.** Checked against the AF3 supplement
+(`41586_2024_7487_MOESM1_ESM.pdf`) rather than inferred:
+
+- AF3 **Algorithm 31** (Confidence head, p33) line 4 is
+  `{si}, {zij} += PairformerStack({si}, {zij}, Nblock)` with `Nblock = 4` -- the confidence head
+  invokes **the same Algorithm 17** as the trunk, just four blocks of it.
+- AF3 **Algorithm 17** (Pairformer stack, p24) hard-codes the rates into the algorithm box:
+  `DropoutRowwise 0.25` on TriangleMultiplicationOutgoing, TriangleMultiplicationIncoming and
+  TriangleAttentionStartingNode, and **`DropoutColumnwise 0.25`** on TriangleAttentionEndingNode.
+- AF3 **section 5.5 Dropout** (p35) names three dropout sites -- MsaModule (Alg 8), Pairformer
+  stack (Alg 17), template embedder (Alg 16). The confidence head is not listed separately
+  because it is not a separate site: it *is* Alg 17.
+
+So **AF3 does train its confidence-head pairformer at 0.25**, and Protenix is the one that departs:
+`configs/configs_base.py:347` sets `confidence_head.pairformer_dropout: 0.0` explicitly, against
+its own `0.25` for the trunk at line 314 and the `dropout: float = 0.25` signature defaults in
+`pairformer.py` (lines 75, 253, 988). Turning on `--pair-dropout 0.25` therefore moves TOWARD the
+AF3 recipe and AWAY from Protenix's shipped config -- both halves of that sentence matter when
+reporting an arm that uses it.
+
+**WHAT THE AXIS NAMES ACTUALLY MEAN -- MEASURED, NOT INFERRED.** Ran `dropout_add_rowwise` on a
+6x6x4 tensor of ones at p=0.5 and read the survival mask: **columns of the [i,j] grid come out
+fully 0 or fully 1, rows do not.** The kernel sets `shape[-3] = 1` (`fused_ops.py:220`), so the
+mask is shared along `i` and a dropped `j` is dropped for every `i`. The name refers to the mask
+being *shared along rows*, not to rows being dropped -- the same convention as openfold's
+`DropoutRowwise`, which also uses `batch_dim = -3`. Do not reason about this from the name.
+
+**NO FIDELITY GAP AT THE ENDING-NODE SITE -- I CLAIMED ONE AND IT WAS WRONG.** I read the four
+`dropout_add_rowwise` calls and concluded Protenix applied rowwise dropout where AF3 specifies
+columnwise. It does not. `pairformer.py` wraps the ending-node site in a transpose:
+
+```python
+z = z.transpose(-2, -3).contiguous()
+z = dropout_add_rowwise(z, self.tri_att_end(z, mask=pair_mask.transpose(-1, -2), ...),
+                        self.p_drop, self.training)
+z = z.transpose(-2, -3).contiguous()
+```
+
+`dropout_add_rowwise` shares the mask along dim -3, which in TRANSPOSED coordinates is the
+original `j`. So the mask is constant along original `j` and varies along original `i` -- columnwise
+in original coordinates, exactly AF3 Algorithm 17. The transpose is the mechanism and reading the
+dropout call without it is how I got this wrong; Codex caught it on issue 15. Protenix is faithful
+at all four sites. The unused `DropoutColumnwise` at `protenix/model/triangular/layers.py:650` is
+not evidence of a gap -- the transpose makes it unnecessary.
 
 ---
 
@@ -1302,3 +1346,427 @@ head never saw those structures -- so there both margins are legitimate inferenc
 the monotone sequence in tokens kept (0.571 -> 0.744 -> 1.000 uncropped) is the thing to read: a
 metric that moves monotonically with crop size is showing a crop-size effect, and the middle point
 is what separates that from a context effect.
+
+---
+
+## 20. PROTENIX'S OWN INTERFACE CROP DOES NOT DAMAGE THE iTM LABEL -- but a quarter of its crops are unusable
+
+**The question.** Cropping is attractive for speed: the measured cost exponent on `87ja6a` is 2.0-2.5
+in tokens, so a crop keeping ~57% of tokens is worth roughly 2x on the epoch. The risk is specific
+to this project's loss: `--rank-form rel` trains the head to reproduce each pose's TRUE iTM, and
+that iTM is an average over the interface's cross-chain pairs. Crop the structure and the average
+runs over a subset. If the subset stops ordering a structure's poses the way the full one does,
+no speedup is worth it.
+
+**What was measured, on the label alone -- no model, no GPU.** For every training interface:
+
+    rho_full    = Spearman(true iTM over ALL cross-chain pairs, DockQ)  across its poses
+    rho_crop(c) = Spearman(true iTM over the pairs crop c keeps,  DockQ)  across the same poses
+    regret(c)   = oracle_dockq - DockQ(the pose crop c's label picks)
+
+`protenix.utils.cropping.get_spatial_crop_index(..., interface_crop=True)` is called **unchanged**
+-- the same function the shipped pipeline trains with, same random interface anchor, same
+k-nearest token set. **One crop per structure is applied to every one of its poses**, so an iTM gap
+between two poses can never measure the crop instead of the poses.
+
+**d0 IS PINNED at the uncropped scored chain-pair token count.** Shrinking it with the crop would
+steepen the TM kernel -- scoring the same error worse -- for a task cropping does not make easier,
+and pinning it means cropped and uncropped iTM differ by exactly ONE thing, which pairs are
+averaged. The metric is therefore a FIXED-KERNEL DIAGNOSTIC, not Protenix-on-cropped-input ipTM.
+
+### 886 interfaces x 1000 crops each, crop_size 256
+
+| | mean | median | sd | p10 | p90 |
+|---|---|---|---|---|---|
+| rho delta (cropped - uncropped) | **+0.0307** | +0.0098 | 0.1332 | -0.0846 | +0.1801 |
+| DockQ regret delta | **-0.0066** | +0.0000 | 0.0781 | -0.0407 | +0.0302 |
+| usable crop rate | **0.724** | | | 0.506 | |
+| interface tokens kept (15 A) | 0.652 | | | 0.479 | |
+
+DockQ regret: **uncropped 0.0621, cropped 0.0555**, crop-to-crop sd 0.0320.
+
+**Among usable crops the label survives and is mildly BETTER ordered.** rho rises, regret falls.
+That is the far-pair dilution argument confirmed on the label: the pairs a crop discards are
+largely ones that barely differ between a good pose and a bad one, so dropping them concentrates
+the contrast. The median regret delta is exactly 0.0000, so for most interfaces the selected pose
+does not change at all and the mean is carried by a minority that improve.
+
+**THE BINDING CONSTRAINT IS THE USABLE RATE, NOT THE QUALITY. 27.6% of crops leave the interface
+with no surviving scored cross-chain row at all** -- the random anchor lands such that one side of
+the interface is gone. The p10 interface is only 50.6% usable, and 9% of interfaces are under 50%.
+A single random Protenix crop is not a usable training sample about a quarter of the time.
+
+**Everything in the table above is CONDITIONAL ON A USABLE CROP** and must not be read as the
+behaviour of one random crop. Three policies close the gap at different prices: resample until
+valid (~1.38x the crop construction, and biases anchors toward this interface), fall back to
+uncropped (reintroduces the long structures the crop existed to remove, which are the expensive
+ones), or skip the update (loses ~28% of gradient steps). That choice is unmade.
+
+**Why the anchor misses.** `get_interface_token`'s contact test is
+`chain_id[None,:] != chain_id[:,None]` -- ANY two distinct chains. An antibody heavy-chain token
+qualifies by packing against the light chain, so on an antibody-antigen complex a large share of
+eligible anchors sit on the internal H-L interface and crop away from the epitope.
+
+**Scope.** 886 interfaces over ~440 structures, not all 846: 416 structures have a single cached
+trunk seed (trunks are ~205 MB against a hard quota) and a Spearman over 5 poses is degenerate, so
+`--min-poses 25` excludes them.
+
+**Provenance.** Four defects were found in this code by external review before these numbers were
+trusted, three of which changed results: frame rows whose own token the crop removed were still
+being pooled (reproduced at 0.078 absolute against a sliced reference, 0 after); `has_frame` was
+applied twice to already-frame-filtered bins (latent here, all-True on this fold, and the same
+pattern is in `itm_ceiling.py`); degenerate crops scored a confident 0.0 through denominator
+clamping; and `pick_pose` implemented the evaluator's tie rule backward (measured impact: 1 of 886
+interfaces has any tied crop, 0 of 886 uncropped selections, so no aggregate moved).
+`run_logging/test_crop_itm_rank.py` gates all of it, including full-mask iTM reproducing the
+cached `itm_labels` `g_mean` on real pose keys to 4.77e-07. 11/11.
+
+    CROP_THREADS=4 python -I run_logging/crop_itm_rank.py --crops 1000 --workers 16 --shard $s \
+        --out training/runs/crop_itm4/rank.csv
+    python -I run_logging/plot_crop_itm_rank.py training/runs/crop_itm_rank.csv \
+        figures/crop_itm_rank.png
+    python -I run_logging/test_crop_itm_rank.py
+
+---
+
+## 21. RESTRICTING THE CROP ANCHOR TO THE SCORED PAIR FIXES PROTENIX'S CROP ENTIRELY -- and makes the label better
+
+Section 20 found that 27.6% of Protenix's interface crops leave the scored interface with no
+surviving cross-chain row. The cause is `get_interface_token`'s contact test,
+`chain_id[None,:] != chain_id[:,None]`: ANY two distinct chains count, so an antibody heavy-chain
+token qualifies as an anchor by packing against the LIGHT chain, and the resulting crop centres
+away from the epitope.
+
+**The fix, proposed by the owner:** a token may anchor a crop only if it lies within 15 A of a
+token on the OTHER member of a scored pair. **Only the anchor is restricted** -- the k-nearest
+selection still runs over the whole assembly, same crop size, same `arange * 1e-3` tie-break, so
+third chains can still supply context. The vendored Protenix implementation is untouched.
+
+**CROPS ARE SAMPLED ONCE PER STRUCTURE** and shared by every pose AND every scored interface,
+which is what a training step does. This is not cosmetic: 358 of the 434 analysed structures
+(82%) carry more than one scored interface, usually heavy-antigen and light-antigen both
+supervised. A crop serving one and not the others forces a second forward pass per structure and
+gives back the speedup cropping exists for, so `joint_usable_rate` -- every interface usable on
+the same crop -- is the number that decides viability, not the per-interface rate.
+
+### A/B, 886 paired interfaces x 1000 crops, crop_size 256, d0 pinned uncropped
+
+| | Protenix anchor | pair-restricted | change |
+|---|---|---|---|
+| usable crop rate | 0.7234 | **0.9872** | +0.2639 |
+| **JOINT usable (all interfaces)** | 0.6961 | **0.9669** | +0.2708 |
+| interface kept, 15 A | 0.6251 | **0.8954** | +0.2703 |
+| rho cropped (vs 0.6429 uncropped) | 0.6736 | **0.6951** | +0.0215 |
+| regret cropped (vs 0.0621 uncropped) | 0.0560 | **0.0505** | -0.0055 |
+| rho delta | +0.0306 | **+0.0522** | +0.0215 |
+| regret delta | -0.0061 | **-0.0116** | -0.0055 |
+| tokens kept | 255.46 | 255.46 | 0.000 |
+
+    interfaces with joint usable == 1.000:   20.0%  ->  72.2%
+    interfaces with joint usable  < 0.50:    15.2%  ->   0.7%
+
+**Unusable crops fall from 27.7% to 1.3%**, and the 15.2% of interfaces where MORE THAN HALF of
+Protenix's crops were unusable essentially vanishes, to 0.7%.
+
+**The label also gets better, not merely more available.** Against the same uncropped baseline the
+pair-anchored crop reaches rho 0.6951 and regret 0.0505 -- roughly DOUBLE the improvement the
+unmodified crop managed on both. That is the dilution effect operating as predicted: anchoring at
+the epitope keeps 89.5% of the interface instead of 62.5%, so what the crop discards is almost
+entirely far pairs that barely differ between a good pose and a bad one.
+
+**Token count is identical at 255.46**, so none of this costs speed. The crop is the same size; it
+is merely placed where the supervision is.
+
+**WHAT THIS DOES NOT SHOW.** It is a statement about the LABEL, not about a trained head. It says
+a cropped head would be trained against a target that still orders poses correctly -- slightly
+better than uncropped, in fact -- and that one crop per structure suffices 96.7% of the time. It
+does not show that training on crops produces a better head; sections 13 and 14 found cropped
+training improved rho without improving selection, three times. The remaining 3.3% of crops that
+miss an interface still need a policy: resample, fall back to uncropped, or skip the update.
+
+**Label coordinates are used to build the crop**, which is legitimate for a TRAINING crop --
+Protenix does the same, and evaluates uncropped -- but it is not a deployable inference-time crop.
+
+    CROP_THREADS=4 python -I run_logging/crop_itm_rank.py --crops 1000 --workers 8 --shard $s \
+        [--anchor-pair-only] --out training/runs/crop_ab_{protenix,pair}/rank.csv
+
+---
+
+## 22. CROP SIZE: retention and label quality pull in OPPOSITE directions, and 256-scaling-to-512 is the sweet spot
+
+Section 21 left 10.5% of the interface being clipped on average under a 256-token crop, and
+section 21's own size breakdown showed why: retention tracks STRUCTURE size at Spearman **-0.754**
+-- a fixed 256-token ball cannot reach across a big complex no matter where it is centred. The
+interface's own size matters much less (-0.393), so this is not "big epitopes get clipped", it is
+"big structures get clipped".
+
+The owner proposed scaling the crop up for large structures, capped at 512. Measured at 256, 384
+and 512 with the pair-restricted anchor throughout, 886 paired interfaces x 1000 crops each.
+
+### Retention and joint coverage rise with crop size, as expected
+
+| structure size | n | ret 256 | ret 384 | ret 512 | joint 256 | joint 384 | joint 512 |
+|---|---|---|---|---|---|---|---|
+| <450 tok | 200 | 0.990 | 1.000 | 1.000 | 0.999 | 1.000 | 1.000 |
+| 450-600 | 205 | 0.954 | 0.997 | 1.000 | 0.997 | 1.000 | 1.000 |
+| 600-800 | 265 | 0.870 | 0.977 | 0.999 | 0.984 | 0.999 | 1.000 |
+| 800-1100 | 113 | 0.822 | 0.944 | 0.986 | 0.942 | 0.985 | 0.999 |
+| >1100 | 103 | 0.739 | 0.881 | 0.948 | 0.830 | 0.956 | 0.995 |
+| **ALL** | 886 | **0.895** | **0.972** | **0.992** | **0.967** | **0.993** | **0.999** |
+
+### BUT THE LABEL BENEFIT DECAYS MONOTONICALLY WITH CROP SIZE
+
+| crop size | rho delta | regret delta |
+|---|---|---|
+| 256 | **+0.0522** | **-0.0116** |
+| 384 | +0.0265 | -0.0070 |
+| 512 | +0.0125 | -0.0040 |
+
+This is the dilution mechanism being self-consistent rather than a surprise: the gain comes from
+DISCARDING far pairs that barely differ between a good pose and a bad one, so the more tokens a
+crop keeps the closer it is to uncropped and the smaller the gain. A 512 crop scores like a
+slightly-cropped structure because that is what it is.
+
+**So retention and label quality pull in opposite directions, and the right policy is the
+SMALLEST crop that keeps joint coverage high -- not the largest that fits.** That inverts the
+intuition the retention table alone would give.
+
+### Policies, composed per structure from the three measured sizes
+
+| policy | retention | joint | regret delta | speedup |
+|---|---|---|---|---|
+| fixed 256 | 0.895 | 0.967 | -0.0116 | **3.56x** |
+| **256; 512 if >800 tok** | 0.941 | **0.993** | **-0.0109** | **3.00x** |
+| 256; 384 if >600; 512 if >1000 | 0.969 | 0.998 | -0.0100 | 2.86x |
+| 256; 384 if >600; 512 if >800 | 0.973 | 0.998 | -0.0100 | 2.74x |
+| fixed 384 | 0.972 | 0.993 | -0.0070 | 2.58x |
+| fixed 512 | **0.992** | **0.999** | -0.0040 | 1.93x |
+
+**256 scaling to 512 above 800 tokens is the standout.** Joint coverage 0.967 -> 0.993 and
+retention 0.895 -> 0.941, while keeping -0.0109 of the -0.0116 regret benefit, for 3.56x -> 3.00x.
+Nearly all the coverage, almost none of the label quality, 16% of the speed.
+
+**Fixed 512 is the trap** the retention table would have led to: the best coverage, but it gives
+back two thirds of the label gain AND half the speedup.
+
+Speedups are from the measured per-pose cost `c0 + k2*N^2 + k3*N^3` (c0 = 0.081 s,
+k2 = 4.072e-07, k3 = 3.394e-10) fitted on 87ja6a epoch 12, applied over the 846-structure token
+distribution. c0 does not shrink with the crop, which is why 256 is 3.56x and not 5x.
+
+**SAME CAVEAT AS SECTION 21.** This is a statement about the LABEL. Sections 13 and 14 found
+cropped training improved rho without improving selection, three times. Nothing here shows a
+cropped head selects better; it shows the target it would be trained against is sound.
+
+    for cs in 256 384 512; do CROP_THREADS=4 python -I run_logging/crop_itm_rank.py \
+        --crops 1000 --workers 8 --shard $s --anchor-pair-only --crop-size $cs \
+        --out training/runs/crop_cs$cs/rank.csv; done
+
+---
+
+## 23. THE THREE-TIER CROP POLICY IS A WASH AGAINST 256->512@800. The extra tier is not worth wiring
+
+Evaluated at the owner's request, via Codex: `N<=800 -> 256`, `800<N<=1100 -> 384`, `N>1100 -> 512`,
+keyed on the FULL uncropped assembly token count.
+
+**COMPOSED, NOT RESAMPLED, AND THAT IS EXACT HERE.** Sections 21-22 measured every interface at all
+three sizes with the same pair-restricted anchor, the same one-crop-per-structure protocol and d0
+pinned uncropped. A policy that assigns ONE size per STRUCTURE is a row selection over those runs,
+because the key (full token count) is a structure property identical across runs and the crop is
+shared by all of a structure's interfaces. `run_logging/crop_policy_eval.py` refuses a policy that
+would vary size within a structure rather than quietly averaging two regimes.
+
+### 886 paired interfaces over 434 structures, 1000 crops each
+
+| policy | ret 15A | usable | joint | rho d | reg d | reg p90 | worse% | speedup |
+|---|---|---|---|---|---|---|---|---|
+| fixed 256 | 0.895 | 0.9872 | 0.9669 | +0.0522 | -0.0116 | 0.0738 | 20.6 | **3.56x** |
+| **256; 512 if N>800** | 0.941 | 0.9972 | **0.9934** | +0.0537 | **-0.0109** | 0.0711 | 18.0 | 3.00x |
+| **THREE-TIER at 800, 1100** | 0.935 | 0.9965 | 0.9917 | +0.0533 | -0.0114 | 0.0713 | 18.8 | **3.18x** |
+| 256; 384 if N>600; 512 if N>1000 | 0.969 | 0.9991 | 0.9977 | +0.0533 | -0.0100 | 0.0694 | 16.7 | 2.86x |
+| fixed 384 | 0.972 | 0.9975 | 0.9929 | +0.0265 | -0.0070 | 0.0700 | 13.0 | 2.58x |
+| fixed 512 | 0.992 | 0.9998 | 0.9993 | +0.0125 | -0.0040 | 0.0679 | 6.7 | 1.93x |
+
+**THREE-TIER minus 256->512@800:** joint -0.0017, interface kept -0.0054, regret delta -0.0005,
+rho delta -0.0004, speedup **+0.18x**. Every difference is in the fourth decimal except the speed.
+
+The only bin that differs is 800-1100 tokens (n=113), which gets 384 instead of 512: retention
+0.986 -> 0.944 and joint 0.9989 -> 0.9853. **So the third tier buys 0.18x of speed by giving back
+about a seventh of the joint-coverage gain, in one bin covering 13% of interfaces.** That is a
+wash, and a wash is not worth an extra branch in the crop code and an extra threshold to defend.
+
+### THE REMAINING FAILURES ARE NOT A SIZE PROBLEM
+
+Worst cases under the three-tier policy, by joint coverage:
+
+    6vx4_AI/CI/AH   N= 703  crop 256   joint 0.677   3 scored interfaces
+    9kod_CF/CE/BE   N=1004  crop 384   joint 0.770   3 scored interfaces
+
+Both sit BELOW their tier's threshold, so a larger crop would not have been triggered. Holding
+structure size fixed at 450-800 tokens and splitting by interface count:
+
+| interfaces in structure | n | joint usable (crop 256) |
+|---|---|---|
+| 1 | 31 | 1.0000 |
+| 2 | 362 | 0.9923 |
+| **3** | **21** | **0.9127** |
+| 4 | 56 | 0.9943 |
+
+**Three-interface structures are the hard case, not large ones.** Two interfaces are heavy-antigen
+and light-antigen on a shared face, which one ball covers; a third is typically a second antigen
+copy or a second Fv elsewhere in the assembly, which no single 256-token ball reaches. Four
+behaves like two because it is usually two independent Fv-antigen pairs each internally shared.
+
+So the residual 2.5% of interfaces under joint 0.90 is a TOPOLOGY problem, and scaling crop size
+is the wrong lever for it. The policy options are the same three as before -- resample, fall back
+to uncropped, skip the update -- applied to ~1-3% of structures rather than 28%.
+
+### End-to-end time, and what the fit does and does not cover
+
+    measured uncropped epoch 94.3 min over 11,500 poses/rank
+    C0 = 0.081 s/pose is the NON-scaling part -- trunk H2D, optimiser step, collective, unit setup
+      = 15.5 min of the 94.3 min epoch, and it is ALREADY INSIDE every speedup above
+
+    fixed 256              epoch 26.5 min    5 epochs + one held-out eval  145.1 min
+    256; 512 if N>800      epoch 31.4 min                                  169.7 min
+    THREE-TIER             epoch 29.6 min                                  160.7 min
+    uncropped              epoch 94.3 min                                  484.0 min
+
+The earlier worry that these speedups ignore fixed costs was wrong in one direction: C0 is fitted
+from per-pose wall deltas and therefore already absorbs trunk H2D and the step. What the fit does
+NOT model is the held-out eval (12.5 min every 5 epochs, which does not shrink with a TRAINING
+crop) and any per-epoch cost outside poses, so epoch figures remain an upper bound on the saving.
+
+**RECOMMENDATION: take 256 -> 512 at N>800.** It is simpler, it is better on every quality axis,
+and it costs 0.18x of speed against the three-tier version.
+
+    python -I run_logging/crop_policy_eval.py
+
+---
+
+## 24. THE CROP POOL IS BUILT. 96.7% of structures need only 256, and NOTHING falls through to uncropped
+
+Sections 21-23 established that the pair-restricted anchor fixes Protenix's crop and that the
+label survives cropping. This is the pool a cropped arm would actually train on.
+
+### How it is built
+
+Crops are **enumerated, not sampled**. The crop is `topk(distance to anchor)` and therefore
+DETERMINISTIC given its anchor, so the number of distinct crops a structure can ever have is
+exactly its number of eligible anchors -- median 116, min 19, max 414 across the manifest.
+Sampling 1000 times just redraws the same ~116 crops nine times over; the first smoke test
+returned 38 unique masks from 50 draws. Enumerating gives every structure its true maximum
+diversity and is cheaper for having no redundancy.
+
+**THE ELIGIBLE-ANCHOR SET DOES NOT GROW WITH CROP SIZE.** It is fixed by the 15 A pair-contact
+rule, so a structure with 74 anchors has 74 crops at 256 and 74 at 768 -- the same 74 anchors.
+What a larger size provides is a DIFFERENT mask from each of those anchors, so the candidate pool
+is `anchors x sizes`, which is why escalation can add crops at all.
+
+### The selection rule, at the owner's direction
+
+    collect every crop at 256 whose DockQ regret is within 0.05 of the uncropped selection
+    if fewer than 40:  add 384's passing crops, then 512, then 768
+    if still fewer than 40:  run the structure uncropped
+
+Applied uniformly, including to the 412 single-seed structures whose regret comes from 5 poses and
+is noisy. Special-casing them was considered and rejected: the noise costs a few crops from a pool
+that is usually over a hundred, and anything it pushes under the floor is caught by escalation.
+ALL passing crops are kept, not just 40 -- the floor triggers escalation, it is not a cap.
+
+### Result over 846 structures
+
+| | n | share |
+|---|---|---|
+| **256 alone sufficed** | **818** | **96.7%** |
+| needed escalation | 28 | 3.3% |
+| **fell through to uncropped** | **0** | **0%** |
+
+    selected crops per structure:  min 40   median 109   mean 112   max 269
+
+    rungs used:  256 only            817
+                 256+384              21
+                 256+384+512           5
+                 256+512               1
+                 384 only              1
+                 384+512+768           1
+
+**Nothing is uncroppable.** `9f1i` and `9qqe` had ZERO passing crops at 256 -- section 23's two
+worst structures -- and both were rescued by a larger window. That settles a question section 23
+left open: those WERE coverage failures, and the 15 A retention measure was simply too blunt to
+see it. One structure needed 768 and one skipped 256 entirely.
+
+**The speedup survives.** 96.7% of structures carry only 256-token crops, so the blended cost is
+within a hair of the 3.56x that fixed-256 gives.
+
+**Every structure has at least 40 crops**, so a 40-epoch arm draws a fresh view every epoch, and
+the median structure has 109 for a longer run.
+
+### Why the bad crops were bad -- still unexplained
+
+Crops that worsen regret by >0.05 keep 0.800 of the interface against 0.883 for good ones, and
+their smaller surviving side is 42.3 tokens against 48.6. Real differences, but far too small to
+be the mechanism: the 25 majority-bad structures retain **87.6%** of their interface. Their
+uncropped regret is normal (0.053 vs 0.057) so selection is not already broken, and the
+narrow-margin hypothesis fails too -- DockQ gap between the best and second-best pose correlates
+with bad-crop fraction at only +0.162. Best predictors are interface retention (-0.456) and
+structure size (+0.420), which together leave most of the variance unexplained. Recorded as open.
+
+    python -I run_logging/build_crop_pool.py --crops 1000 --crop-size <N> --workers 20 \
+        --shard $s --skip-existing --out training/crop_pool_<N>
+    python -I run_logging/select_crop_pool.py --min-crops 40 --regret 0.05 \
+        --out training/crop_final
+
+---
+
+## 25. THE FIRST ARM WHOSE HELD-OUT SELECTION ROSE WHILE TRAINING LOSS FELL
+
+`7roo28` (chain `ea9vy2 -> 7roo28`), 2026-11-11. PAE-only, our 256-token crop pool,
+`--epoch-cover-all --trunk-memmap --epoch-balance`, 50 epochs, lr 1e-3, **plus
+`--pair-dropout 0.25` and `--l2-sp 1e-3`** (exclude `frame_dir_proj,pose_perblock_`). 141
+interfaces, budget 30, `select_by max`. Each pooling against its OWN baseline.
+
+| | ep5 | ep10 | shipped | ep10 vs shipped |
+|---|---|---|---|---|
+| DockQ max-pooled | 0.5845 | **0.5896** | 0.5813 | **+0.0083** |
+| DockQ mean-pooled | 0.5822 | **0.5840** | 0.5735 | **+0.0105** |
+| frac max-pooled | 0.7234 | **0.7305** | 0.7234 | +0.0071 |
+| frac mean-pooled | 0.7305 | 0.7305 | 0.7163 | +0.0142 |
+| rho max-pooled | +0.1878 | +0.1811 | +0.1515 | +0.0296 |
+| rho mean-pooled | +0.1813 | +0.1827 | n/a | -- |
+
+**THE MATCHED CONTROL IS THE POINT.** `rdi25k` is the same recipe with neither term. Over exactly
+this ep5 -> ep10 window it went **0.5851 -> 0.5786** max-pooled and **0.7234 -> 0.7163** frac,
+ending BELOW shipped on both, while its training PAE fell 2.7709 -> 2.6401. `7roo28` went
+**0.5845 -> 0.5896** and **0.7234 -> 0.7305** over the same window with training PAE falling
+2.8615 -> 2.7884. Same pool, same budget, same epochs, same selector: the dissociation that has
+appeared in every previous cropped arm did not appear in the one carrying regularisation.
+
+### WHY THIS IS NOT YET A RESULT
+
+1. **One eval pair.** Epoch 15 and 20 decide it.
+2. **141 interfaces.** +0.0071 frac is ONE interface flipping. The frac column is small-n and
+   must not be quoted on its own.
+3. **rho max-pooled FELL while selected DockQ ROSE** (+0.1878 -> +0.1811). That is the same
+   decoupling of correlation from selection recorded five times before in this project, pointing
+   the other way for once. The two do not have to move together, and reading whichever one is
+   favourable is exactly how that keeps being missed.
+
+### THE ANCHOR IS NOT WHAT DID IT -- MEASURED, NOT ASSUMED
+
+The l2-sp GRADIENT share (added this session; section 17 explains why the loss-value share is the
+wrong statistic) was under the 1% acting threshold every single epoch and FALLING:
+
+| ep | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|
+| median share | 0.97% | 0.93% | 0.91% | 0.83% | 0.81% | 0.77% | 0.70% | 0.70% |
+| median task grad | 0.9639 | 1.0770 | 1.1436 | 1.3040 | 1.3815 | 1.4926 | 1.6766 | 1.7225 |
+
+**0 of 145 steps in any epoch had the penalty exceed the task gradient.** It falls not because the
+penalty weakens -- `||W-W0||` grows throughout -- but because the median task gradient grows
+faster. At lambda 1e-3 this arm is, to a good approximation, **dropout-only**, so dropout is the
+term that plausibly produced the table above.
+
+**THE TWO TERMS ARE CONFOUNDED BY CONSTRUCTION** (one GPU slot instead of two, at the user's
+direction) and no single successor arm separates them. Separating them needs a dropout-only arm
+and an anchor-only arm against this one -- three slots, not one.
+

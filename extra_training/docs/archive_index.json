@@ -1,0 +1,7525 @@
+{
+ "note": "Code with NO STATIC EDGE from the entry points that run today, recorded before it is removed. For a per-run wrapper the COMMAND is the artefact, not the file: run ids, env vars and flags are captured here so the recipe survives the script. Every file remains in git history at the SHA below and can be restored with `git show <sha>:<path>`.",
+ "baseline_sha": "03a95fa1330e83249d33655d96948715a1b96189",
+ "restore": "git show 03a95fa1330e83249d33655d96948715a1b96189:<path>",
+ "graph": "extra_training/phases/trainer/import_graph.py (validated against 12 known-live files)",
+ "counts": {
+  "reachable": 144,
+  "no_static_edge": 328,
+  "total": 472
+ },
+ "files": [
+  {
+   "path": "phases/phase_b2_propose_val_split.py",
+   "lines": 252,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--allow-short",
+    "--compare",
+    "--n-allnew",
+    "--n-mixed",
+    "--out",
+    "--post-cap",
+    "--seed",
+    "--seeds",
+    "--tok-cap"
+   ]
+  },
+  {
+   "path": "phases/phase_b3_pick_second_reps.py",
+   "lines": 149,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--first",
+    "--instances",
+    "--manifest",
+    "--min-tokens",
+    "--out",
+    "--seeds",
+    "--splits"
+   ]
+  },
+  {
+   "path": "phases/phase_b_define_val_clusters.py",
+   "lines": 345,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--draws",
+    "--excluded",
+    "--force",
+    "--frac",
+    "--frac-hi",
+    "--frac-lo",
+    "--max-share",
+    "--n-bins",
+    "--n-val",
+    "--out",
+    "--prune",
+    "--seed",
+    "--select",
+    "--splits"
+   ]
+  },
+  {
+   "path": "phases/phase_c_extract_msa_queries.py",
+   "lines": 462,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--bench-from-jobs",
+    "--excluded",
+    "--min-len",
+    "--no-require-bench",
+    "--out-dir",
+    "--query-fasta",
+    "--require-bench",
+    "--short-out",
+    "--short-vs",
+    "--splits",
+    "--which"
+   ]
+  },
+  {
+   "path": "phases/phase_d_search_uniref.sh",
+   "lines": 491,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "COLABFOLD_KEEP_INTERMEDIATES",
+    "CORES",
+    "COV",
+    "CREATED",
+    "ENVDB_BEFORE",
+    "FROZ",
+    "HAVE",
+    "HERE",
+    "LOG",
+    "MISSING",
+    "MMSEQS_NO_INDEX",
+    "NHITS"
+   ],
+   "flags": [
+    "--apparent-size",
+    "--cpu-list",
+    "--db-load-mode",
+    "--mmseqs",
+    "--remove-tmp-files",
+    "--shuffle",
+    "--threads",
+    "--use-env",
+    "--use-templates"
+   ]
+  },
+  {
+   "path": "phases/phase_e_search_envdb.sh",
+   "lines": 370,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "AFTER",
+    "ALREADY",
+    "BATCHES",
+    "BEFORE",
+    "CFDB",
+    "COLABFOLD_KEEP_INTERMEDIATES",
+    "CORES",
+    "CREATED",
+    "ENVIDX",
+    "ENVINT",
+    "FAILED",
+    "HERE"
+   ],
+   "flags": [
+    "--apparent-size",
+    "--db-load-mode",
+    "--mmseqs",
+    "--threads",
+    "--use-env",
+    "--use-templates"
+   ]
+  },
+  {
+   "path": "phases/phase_f_pair_and_split.py",
+   "lines": 581,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--allow-missing-batches",
+    "--allow-stale-reuse",
+    "--cores",
+    "--ignore-step-rc",
+    "--index-dir",
+    "--input",
+    "--max-seq-mismatch",
+    "--min-pairing-frac",
+    "--min-tagged-frac",
+    "--msa-dir",
+    "--num",
+    "--output",
+    "--seq",
+    "--taxid-dir",
+    "--workers"
+   ]
+  },
+  {
+   "path": "phases/phase_g_build_val_jobs.py",
+   "lines": 544,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--excluded",
+    "--fold-dir",
+    "--instances",
+    "--min-len",
+    "--msa-root",
+    "--no-require-msa",
+    "--out-dir",
+    "--refs-dir",
+    "--reps",
+    "--require-msa",
+    "--seq-index",
+    "--splits",
+    "--val-clusters"
+   ]
+  },
+  {
+   "path": "phases/phase_j0_select_structures.py",
+   "lines": 247,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--cap",
+    "--out",
+    "--prune",
+    "--seq-index",
+    "--split",
+    "--train-clusters",
+    "--val-clusters"
+   ]
+  },
+  {
+   "path": "phases/phase_j_check_contacts.py",
+   "lines": 156,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--cutoff",
+    "--job-cifs",
+    "--limit",
+    "--only",
+    "--out",
+    "--selection",
+    "--splits",
+    "--src-dir"
+   ]
+  },
+  {
+   "path": "phases/phase_j_compare_msa.py",
+   "lines": 225,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--controls",
+    "--file",
+    "--raw",
+    "--rebuilt-root",
+    "--report",
+    "--stored-root"
+   ]
+  },
+  {
+   "path": "phases/phase_j_corrected_jobs.py",
+   "lines": 299,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--allow-missing-msa",
+    "--expect",
+    "--gaps",
+    "--jobs-dir",
+    "--msa-root",
+    "--native-gaps",
+    "--old-msa-root",
+    "--out-dir",
+    "--report",
+    "--seq-to-dir"
+   ]
+  },
+  {
+   "path": "phases/phase_j_corrected_queries.py",
+   "lines": 173,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--controls",
+    "--gaps",
+    "--msa-root",
+    "--native-gaps",
+    "--out-dir",
+    "--refold"
+   ]
+  },
+  {
+   "path": "phases/phase_j_disposition_mismatches.py",
+   "lines": 110,
+   "last_commit": "2026-10-15",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--audit",
+    "--labels",
+    "--out",
+    "--rigid-scores",
+    "--sabdab",
+    "--verdict"
+   ]
+  },
+  {
+   "path": "phases/phase_j_domain_audit.py",
+   "lines": 277,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--domtblout",
+    "--jobs-dir",
+    "--only",
+    "--out",
+    "--src-dir"
+   ]
+  },
+  {
+   "path": "phases/phase_j_drop_superseded_poses.py",
+   "lines": 147,
+   "last_commit": "2026-10-16",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--apply",
+    "--coord-margin",
+    "--coord-tol",
+    "--fold",
+    "--list-out"
+   ]
+  },
+  {
+   "path": "phases/phase_j_drop_superseded_rows.py",
+   "lines": 242,
+   "last_commit": "2026-10-19",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--in-place",
+    "--out",
+    "--quarantine",
+    "--results",
+    "--seed-hi",
+    "--seed-lo"
+   ]
+  },
+  {
+   "path": "phases/phase_j_label_audit.py",
+   "lines": 551,
+   "last_commit": "2026-10-15",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--coverage-hist",
+    "--debug-pdb",
+    "--dispositioned",
+    "--labels",
+    "--limit",
+    "--out",
+    "--roles",
+    "--sabdab",
+    "--same-interface-dockq",
+    "--selection",
+    "--which"
+   ]
+  },
+  {
+   "path": "phases/phase_j_label_audit_selftest.py",
+   "lines": 196,
+   "last_commit": "2026-10-15",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--labels",
+    "--out",
+    "--selection",
+    "--which"
+   ]
+  },
+  {
+   "path": "phases/phase_j_labels_and_audit.sh",
+   "lines": 97,
+   "last_commit": "2026-10-15",
+   "run_ids": [],
+   "env": [
+    "WHICH"
+   ],
+   "flags": [
+    "--coverage-hist",
+    "--dispositioned",
+    "--jobs-dir",
+    "--labels",
+    "--native-gaps",
+    "--out",
+    "--out-dir",
+    "--roles",
+    "--selection",
+    "--skipped",
+    "--src-dir",
+    "--unplaced",
+    "--which"
+   ]
+  },
+  {
+   "path": "phases/phase_j_merge_results.py",
+   "lines": 94,
+   "last_commit": "2026-10-16",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--apply",
+    "--dst",
+    "--src"
+   ]
+  },
+  {
+   "path": "phases/phase_j_queue_now.py",
+   "lines": 127,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--apply",
+    "--deferred",
+    "--fold-dir",
+    "--jobs-dir",
+    "--out",
+    "--refold",
+    "--seeds",
+    "--structures",
+    "--tag"
+   ]
+  },
+  {
+   "path": "phases/phase_j_refold_from_audit.py",
+   "lines": 193,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--accepted",
+    "--audit",
+    "--out",
+    "--skip"
+   ]
+  },
+  {
+   "path": "phases/phase_j_refold_list.py",
+   "lines": 129,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--gaps",
+    "--linkers",
+    "--mb-per-unit",
+    "--native-gaps",
+    "--out",
+    "--seeds"
+   ]
+  },
+  {
+   "path": "phases/phase_j_remap_msa.py",
+   "lines": 257,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--gaps",
+    "--msa-root",
+    "--native-gaps",
+    "--out-root",
+    "--report",
+    "--seq-index"
+   ]
+  },
+  {
+   "path": "phases/phase_j_remap_msa.sh",
+   "lines": 3,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "phases/phase_j_stage_complete.py",
+   "lines": 188,
+   "last_commit": "2026-10-16",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--coord-margin",
+    "--coord-tol",
+    "--dataset",
+    "--fold",
+    "--no-trunk",
+    "--nsample",
+    "--overlap-scoring",
+    "--partial-out",
+    "--pool",
+    "--queue",
+    "--strict-scores",
+    "--verbose"
+   ]
+  },
+  {
+   "path": "phases/phase_j_verify_labels.py",
+   "lines": 108,
+   "last_commit": "2026-10-15",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--fold",
+    "--labels",
+    "--mmcif-dir",
+    "--only",
+    "--out",
+    "--seeds",
+    "--selection",
+    "--skip",
+    "--tol"
+   ]
+  },
+  {
+   "path": "phases/phase_k_derive_preflight_subset.py",
+   "lines": 137,
+   "last_commit": "2026-10-19",
+   "run_ids": [
+    "9mfb4y"
+   ],
+   "env": [],
+   "flags": [
+    "--manifest-skip",
+    "--out",
+    "--parent",
+    "--parent-selection",
+    "--seeds",
+    "--selection"
+   ]
+  },
+  {
+   "path": "phases/phase_k_perblock_check.py",
+   "lines": 197,
+   "last_commit": "2026-10-19",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--c-s",
+    "--c-z",
+    "--n-blocks",
+    "--n-token",
+    "--num-bins"
+   ]
+  },
+  {
+   "path": "phases/phase_k_pick_lr.py",
+   "lines": 121,
+   "last_commit": "2026-10-15",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--accum",
+    "--out",
+    "--trajectory"
+   ]
+  },
+  {
+   "path": "phases/phase_k_resolve_seed_dir_selftest.py",
+   "lines": 101,
+   "last_commit": "2026-10-16",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--coord-margin",
+    "--coord-tol",
+    "--fold",
+    "--pdb",
+    "--scratch",
+    "--seed"
+   ]
+  },
+  {
+   "path": "run_logging/add_orientation_to_bundle.py",
+   "lines": 95,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--blocks",
+    "--c-z",
+    "--frame-direction",
+    "--pose-perblock",
+    "--prefix",
+    "--resume-allow-drift"
+   ]
+  },
+  {
+   "path": "run_logging/argmax_margin.py",
+   "lines": 57,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--budget",
+    "--rank-straddle",
+    "--tau"
+   ]
+  },
+  {
+   "path": "run_logging/audit_chain_roles_identity.py",
+   "lines": 124,
+   "last_commit": "2026-11-06",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--fold",
+    "--limit",
+    "--min-id",
+    "--out",
+    "--pool",
+    "--refs"
+   ]
+  },
+  {
+   "path": "run_logging/audit_chain_survival.py",
+   "lines": 144,
+   "last_commit": "2026-11-01",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--budget",
+    "--contact",
+    "--crop-all-poses",
+    "--gt-all-poses",
+    "--labels",
+    "--margin",
+    "--masks",
+    "--pool",
+    "--seed-base",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "run_logging/audit_mapping_provenance.py",
+   "lines": 110,
+   "last_commit": "2026-11-06",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--fold",
+    "--nsample",
+    "--pdbs",
+    "--pool",
+    "--refs",
+    "--scratch",
+    "--seed"
+   ]
+  },
+  {
+   "path": "run_logging/build_instance_cifs.py",
+   "lines": 133,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--out-dir",
+    "--sabdab-cifs",
+    "--selection",
+    "--splits",
+    "--src-dir",
+    "--verify-only"
+   ]
+  },
+  {
+   "path": "run_logging/build_val30_selection.py",
+   "lines": 102,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--exclude-folded",
+    "--jobs-dir",
+    "--out",
+    "--queue",
+    "--splits",
+    "--suffix"
+   ]
+  },
+  {
+   "path": "run_logging/build_val_queue.py",
+   "lines": 83,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--apply",
+    "--kind",
+    "--nseed",
+    "--out",
+    "--seed0",
+    "--selection",
+    "--tag",
+    "--target"
+   ]
+  },
+  {
+   "path": "run_logging/build_wave1_jobs.py",
+   "lines": 166,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--dry-run",
+    "--jobs-dir",
+    "--msa-index",
+    "--msa-root",
+    "--overwrite",
+    "--pdb-list",
+    "--queue",
+    "--suffix"
+   ]
+  },
+  {
+   "path": "run_logging/build_wave1_pool.py",
+   "lines": 160,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--dry-run",
+    "--jobs-dir",
+    "--out-pool",
+    "--out-roles",
+    "--queue",
+    "--refs-dir",
+    "--splits",
+    "--src-cifs"
+   ]
+  },
+  {
+   "path": "run_logging/build_wave1_queue.py",
+   "lines": 186,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--drop-list",
+    "--out",
+    "--pilot"
+   ]
+  },
+  {
+   "path": "run_logging/check_smoke_rowweight.py",
+   "lines": 95,
+   "last_commit": "2026-10-28",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/compare_entry_as_reference.py",
+   "lines": 262,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--entries",
+    "--out",
+    "--poses",
+    "--scratch",
+    "--selection",
+    "--splits",
+    "--staged-refs",
+    "--tol",
+    "--workers"
+   ]
+  },
+  {
+   "path": "run_logging/compare_forced_chain_map.py",
+   "lines": 163,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--case",
+    "--out-dir",
+    "--refs",
+    "--rewrite-ref",
+    "--timeout"
+   ]
+  },
+  {
+   "path": "run_logging/compare_rows_identical.py",
+   "lines": 110,
+   "last_commit": "2026-11-01",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--cols",
+    "--crop-predicted-margin",
+    "--tol"
+   ]
+  },
+  {
+   "path": "run_logging/compare_rowweight_insample.py",
+   "lines": 223,
+   "last_commit": "2026-10-30",
+   "run_ids": [
+    "45q96x",
+    "nskyne"
+   ],
+   "env": [],
+   "flags": [
+    "--allow-busy",
+    "--arm",
+    "--budget",
+    "--bundle",
+    "--cards",
+    "--ckpt",
+    "--dry-run",
+    "--epochs",
+    "--extra",
+    "--fold",
+    "--frame-direction",
+    "--join-cache",
+    "--out",
+    "--pair-iptm-only",
+    "--pool",
+    "--pool-mean",
+    "--pose-perblock",
+    "--pose-perblock-copy",
+    "--pose-perblock-share",
+    "--pose-perblock-tied"
+   ]
+  },
+  {
+   "path": "run_logging/compare_rowweight_valfull.py",
+   "lines": 206,
+   "last_commit": "2026-10-29",
+   "run_ids": [
+    "45q96x",
+    "nskyne"
+   ],
+   "env": [],
+   "flags": [
+    "--allow-busy",
+    "--budget",
+    "--bundle",
+    "--cards",
+    "--ckpt",
+    "--dry-run",
+    "--epochs",
+    "--extra",
+    "--fold",
+    "--frame-direction",
+    "--join-cache",
+    "--out",
+    "--pair-iptm-only",
+    "--pool",
+    "--pose-perblock",
+    "--pose-perblock-copy",
+    "--pose-perblock-share",
+    "--pose-perblock-tied",
+    "--prefetch",
+    "--report-only"
+   ]
+  },
+  {
+   "path": "run_logging/crop_pose_equivalence.py",
+   "lines": 138,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/crossing_audit.py",
+   "lines": 59,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--budget",
+    "--thresh"
+   ]
+  },
+  {
+   "path": "run_logging/derive_scoreable_pool.py",
+   "lines": 127,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--cutoff",
+    "--pool",
+    "--refs",
+    "--write"
+   ]
+  },
+  {
+   "path": "run_logging/eta.py",
+   "lines": 61,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--total",
+    "--window"
+   ]
+  },
+  {
+   "path": "run_logging/experiments_doc.py",
+   "lines": 178,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "latest"
+   ],
+   "env": [],
+   "flags": [
+    "--out"
+   ]
+  },
+  {
+   "path": "run_logging/extract_instance_cifs.py",
+   "lines": 93,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--apply",
+    "--archive",
+    "--corpus",
+    "--member-dir",
+    "--selection",
+    "--splits"
+   ]
+  },
+  {
+   "path": "run_logging/fallback_selected.py",
+   "lines": 61,
+   "last_commit": "2026-11-01",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--crop-predicted-margin"
+   ]
+  },
+  {
+   "path": "run_logging/gpu_free_sampler.sh",
+   "lines": 18,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [
+    "MARK"
+   ],
+   "flags": [
+    "--format",
+    "--query-gpu"
+   ]
+  },
+  {
+   "path": "run_logging/gt_crop_composition.py",
+   "lines": 144,
+   "last_commit": "2026-11-01",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--contact",
+    "--labels",
+    "--margin",
+    "--out",
+    "--pool",
+    "--roles",
+    "--seed-base",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "run_logging/interface_contacts.py",
+   "lines": 131,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--control",
+    "--cutoff",
+    "--pairs",
+    "--pairs-file",
+    "--pool",
+    "--refs"
+   ]
+  },
+  {
+   "path": "run_logging/measure_softmax_tau.py",
+   "lines": 181,
+   "last_commit": "2026-10-23",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--rank-form",
+    "--restrict-to",
+    "--taus",
+    "--train",
+    "--val"
+   ]
+  },
+  {
+   "path": "run_logging/nskyne_health.py",
+   "lines": 108,
+   "last_commit": "2026-10-29",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--format",
+    "--query-compute-apps"
+   ]
+  },
+  {
+   "path": "run_logging/order_accuracy.py",
+   "lines": 93,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--budget"
+   ]
+  },
+  {
+   "path": "run_logging/pae_mask_locality.py",
+   "lines": 202,
+   "last_commit": "2026-10-31",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--contact",
+    "--crop-margin",
+    "--labels",
+    "--margin",
+    "--pae-scored-pairs",
+    "--pool",
+    "--pose",
+    "--roles",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "run_logging/pair_conflict.py",
+   "lines": 127,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--restrict-to",
+    "--results"
+   ]
+  },
+  {
+   "path": "run_logging/paired_mean.py",
+   "lines": 33,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/pdockq2_ceiling.py",
+   "lines": 296,
+   "last_commit": "2026-10-29",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--fold",
+    "--limit-units",
+    "--out",
+    "--pool",
+    "--report-only",
+    "--roles",
+    "--rows-dir",
+    "--shard",
+    "--workers"
+   ]
+  },
+  {
+   "path": "run_logging/perpose_crop_spread.py",
+   "lines": 197,
+   "last_commit": "2026-11-01",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--budget",
+    "--check-union",
+    "--contact",
+    "--labels",
+    "--margin",
+    "--out",
+    "--pool",
+    "--seed-base",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "run_logging/plot_arms.py",
+   "lines": 579,
+   "last_commit": "2026-10-26",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--budget",
+    "--out",
+    "--rank-pairs",
+    "--rank-straddle",
+    "--rank-tau",
+    "--thresh"
+   ]
+  },
+  {
+   "path": "run_logging/plot_arms_full.py",
+   "lines": 224,
+   "last_commit": "2026-11-08",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--crop-margin"
+   ]
+  },
+  {
+   "path": "run_logging/plot_crop_vs_uncrop.py",
+   "lines": 221,
+   "last_commit": "2026-11-08",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--crop-margin"
+   ]
+  },
+  {
+   "path": "run_logging/plot_gain_location_simple.py",
+   "lines": 54,
+   "last_commit": "2026-10-31",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/plot_head_diagram.py",
+   "lines": 141,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--frame-direction",
+    "--pose-perblock-share"
+   ]
+  },
+  {
+   "path": "run_logging/plot_itm_vs_dockq.py",
+   "lines": 107,
+   "last_commit": "2026-10-29",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/plot_longer_doesnt_help.py",
+   "lines": 61,
+   "last_commit": "2026-10-31",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/plot_overfit30.py",
+   "lines": 128,
+   "last_commit": "2026-11-08",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/plot_pool_iptm_strips.py",
+   "lines": 93,
+   "last_commit": "2026-11-01",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--col",
+    "--ifaces",
+    "--ours",
+    "--out",
+    "--shipped"
+   ]
+  },
+  {
+   "path": "run_logging/plot_rel_bars.py",
+   "lines": 311,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--best",
+    "--only",
+    "--out",
+    "--pool-mean"
+   ]
+  },
+  {
+   "path": "run_logging/plot_rel_heldout.py",
+   "lines": 178,
+   "last_commit": "2026-10-31",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/plot_scatter_ours_vs_shipped.py",
+   "lines": 123,
+   "last_commit": "2026-11-01",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--col",
+    "--label-thresh",
+    "--ours",
+    "--out",
+    "--shipped"
+   ]
+  },
+  {
+   "path": "run_logging/plot_selected_scatter.py",
+   "lines": 104,
+   "last_commit": "2026-10-29",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--label"
+   ]
+  },
+  {
+   "path": "run_logging/plot_train30_vs_full.py",
+   "lines": 123,
+   "last_commit": "2026-11-04",
+   "run_ids": [
+    "fawgtu",
+    "jy6sah"
+   ],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/plot_val_panels.py",
+   "lines": 170,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--budget",
+    "--oracle-dockq",
+    "--oracle-frac",
+    "--out",
+    "--rank-loss",
+    "--root",
+    "--shipped-val-pae",
+    "--title"
+   ]
+  },
+  {
+   "path": "run_logging/plot_val_series.py",
+   "lines": 164,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/pool_baseline.py",
+   "lines": 73,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--labels",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--pae-scored-pairs",
+    "--pool",
+    "--structures",
+    "--thresh"
+   ]
+  },
+  {
+   "path": "run_logging/pool_contact_audit.py",
+   "lines": 108,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--cutoff",
+    "--out",
+    "--refs"
+   ]
+  },
+  {
+   "path": "run_logging/predcrop_compare.py",
+   "lines": 95,
+   "last_commit": "2026-10-31",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/predicted_union_crop.py",
+   "lines": 207,
+   "last_commit": "2026-10-31",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--contact",
+    "--labels",
+    "--margin",
+    "--pool",
+    "--seeds",
+    "--structs",
+    "--trunks",
+    "--verify"
+   ]
+  },
+  {
+   "path": "run_logging/rank_gain_location.py",
+   "lines": 125,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--top"
+   ]
+  },
+  {
+   "path": "run_logging/reconstruct_cross_seed_step.py",
+   "lines": 135,
+   "last_commit": "2026-11-07",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--epoch",
+    "--indices",
+    "--manifest",
+    "--seed",
+    "--skip",
+    "--step",
+    "--structs-per-step",
+    "--verify-against",
+    "--world"
+   ]
+  },
+  {
+   "path": "run_logging/render_findings.py",
+   "lines": 367,
+   "last_commit": "2026-10-23",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--budget",
+    "--grad-probe",
+    "--l2-sp-exclude",
+    "--note",
+    "--out",
+    "--rank-tau",
+    "--resume",
+    "--rid",
+    "--runs",
+    "--train-only"
+   ]
+  },
+  {
+   "path": "run_logging/report.py",
+   "lines": 151,
+   "last_commit": "2026-10-16",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--every",
+    "--list",
+    "--run-id",
+    "--set-artifact",
+    "--watch"
+   ]
+  },
+  {
+   "path": "run_logging/report_cropped_eval.py",
+   "lines": 121,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/run_health.sh",
+   "lines": 75,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [
+    "FLAG",
+    "HOLDERS",
+    "RID",
+    "RUNDIR"
+   ],
+   "flags": [
+    "--format",
+    "--out",
+    "--query-compute-apps",
+    "--query-gpu"
+   ]
+  },
+  {
+   "path": "run_logging/run_index.py",
+   "lines": 215,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--build",
+    "--cols",
+    "--find",
+    "--rank-form",
+    "--show",
+    "--sql",
+    "--train-only"
+   ]
+  },
+  {
+   "path": "run_logging/select_val_seeds.py",
+   "lines": 341,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--compare",
+    "--results",
+    "--seed-hi",
+    "--seed-lo",
+    "--write-manifest"
+   ]
+  },
+  {
+   "path": "run_logging/spread_plot.py",
+   "lines": 111,
+   "last_commit": "2026-10-25",
+   "run_ids": [
+    "spread"
+   ],
+   "env": [],
+   "flags": [
+    "--budget",
+    "--out"
+   ]
+  },
+  {
+   "path": "run_logging/stage_val_refs.py",
+   "lines": 142,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--apply",
+    "--csv",
+    "--instance-cifs",
+    "--out",
+    "--pool",
+    "--relabelled",
+    "--selection"
+   ]
+  },
+  {
+   "path": "run_logging/staged_reclaim.py",
+   "lines": 472,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--expect",
+    "--i-have-verified",
+    "--journal",
+    "--journal-every",
+    "--nsample",
+    "--quarantine",
+    "--results-csv",
+    "--stage",
+    "--targets",
+    "--tolerance",
+    "--trunks",
+    "--verify-cmd"
+   ]
+  },
+  {
+   "path": "run_logging/training_queue_drained.py",
+   "lines": 132,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--csv",
+    "--gpu-only",
+    "--nsample",
+    "--pool",
+    "--poses",
+    "--queue",
+    "--quiet",
+    "--show",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "run_logging/training_signal_report.py",
+   "lines": 242,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--csv",
+    "--flat",
+    "--nsample",
+    "--only",
+    "--out",
+    "--pool",
+    "--queue",
+    "--scoreable",
+    "--seed-manifest",
+    "--seed0",
+    "--seeds"
+   ]
+  },
+  {
+   "path": "run_logging/union_crop_forced_gt.py",
+   "lines": 208,
+   "last_commit": "2026-11-02",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--contact",
+    "--labels",
+    "--margins",
+    "--pool",
+    "--ref-margin",
+    "--roles",
+    "--seeds",
+    "--structs",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "run_logging/union_crop_margin_sweep.py",
+   "lines": 237,
+   "last_commit": "2026-10-31",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--contact",
+    "--labels",
+    "--margins",
+    "--pool",
+    "--ref-margin",
+    "--roles",
+    "--seeds",
+    "--structs",
+    "--trunks",
+    "--verify"
+   ]
+  },
+  {
+   "path": "run_logging/val_pae_watchdog.py",
+   "lines": 194,
+   "last_commit": "2026-10-26",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--cards",
+    "--follow-live",
+    "--format",
+    "--live-window-min",
+    "--need-free-mib",
+    "--once",
+    "--poll",
+    "--query-gpu",
+    "--val-loss-shard-retries"
+   ]
+  },
+  {
+   "path": "run_logging/val_shard_retry_repro.py",
+   "lines": 278,
+   "last_commit": "2026-10-26",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "run_logging/verify_train_trim.py",
+   "lines": 73,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--nsample",
+    "--results",
+    "--show",
+    "--trimmed",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "run_logging/verify_val_manifest.py",
+   "lines": 123,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--labels",
+    "--manifest",
+    "--nsample",
+    "--results",
+    "--show",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "run_logging/wave1_pilot_monitor.py",
+   "lines": 376,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--code",
+    "--fail-frac",
+    "--fold",
+    "--fold-root",
+    "--interval",
+    "--jobs",
+    "--jobs-dir",
+    "--max-hours",
+    "--min-structures",
+    "--nice",
+    "--nsample",
+    "--once",
+    "--only",
+    "--python",
+    "--queue",
+    "--refs",
+    "--report",
+    "--results",
+    "--scorer",
+    "--seed0"
+   ]
+  },
+  {
+   "path": "run_logging/wave1_preflight.py",
+   "lines": 219,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--bio-dir",
+    "--fold-root",
+    "--jobs-dir",
+    "--jobs-dir-corrected",
+    "--max-tokens",
+    "--mmcif-dir",
+    "--msa-index",
+    "--msa-root",
+    "--pdb-list",
+    "--queue",
+    "--show"
+   ]
+  },
+  {
+   "path": "run_logging/winnable_gap.py",
+   "lines": 77,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--budget",
+    "--thresh"
+   ]
+  },
+  {
+   "path": "shell_scripts/arm_val_after_train.sh",
+   "lines": 57,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [
+    "ALIVE",
+    "PIDS",
+    "SESS"
+   ],
+   "flags": [
+    "--fold-only",
+    "--gpu-only"
+   ]
+  },
+  {
+   "path": "shell_scripts/await_msa_server.sh",
+   "lines": 83,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "INTERVAL",
+    "LOCK",
+    "LOG",
+    "MIN_BYTES",
+    "URL"
+   ],
+   "flags": [
+    "--max-time"
+   ]
+  },
+  {
+   "path": "shell_scripts/backfill_val_pae.sh",
+   "lines": 50,
+   "last_commit": "2026-10-20",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "OUT",
+    "RID"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--bio-dir",
+    "--blocks-per-ckpt",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--epochs",
+    "--fold",
+    "--indices",
+    "--labels",
+    "--loss-only",
+    "--manifest-selection",
+    "--minimal-items",
+    "--mmcif-dir",
+    "--nsample"
+   ]
+  },
+  {
+   "path": "shell_scripts/build_extended_train_labels.sh",
+   "lines": 95,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [
+    "JOBS",
+    "LIST",
+    "MIN_MEM_GB"
+   ],
+   "flags": [
+    "--bio-dir",
+    "--fold",
+    "--indices",
+    "--mmcif-dir",
+    "--only",
+    "--out-dir",
+    "--report",
+    "--require-complete",
+    "--unit-seeds"
+   ]
+  },
+  {
+   "path": "shell_scripts/build_uniref_from_mirror.sh",
+   "lines": 135,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "CORES",
+    "LOCK",
+    "LOG",
+    "TAR",
+    "URL"
+   ],
+   "flags": [
+    "--max-time"
+   ]
+  },
+  {
+   "path": "shell_scripts/build_val30_labels.sh",
+   "lines": 70,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [
+    "JOBS",
+    "MANIFEST",
+    "MIN_MEM_GB"
+   ],
+   "flags": [
+    "--bio-dir",
+    "--fold",
+    "--indices",
+    "--labels",
+    "--limit",
+    "--manifest",
+    "--mmcif-dir",
+    "--only",
+    "--out-dir",
+    "--report",
+    "--results",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "shell_scripts/build_valfull_labels.sh",
+   "lines": 32,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [
+    "LAYERNORM_TYPE",
+    "LIST"
+   ],
+   "flags": [
+    "--bio-dir",
+    "--fold",
+    "--indices",
+    "--limit",
+    "--mmcif-dir",
+    "--only",
+    "--out-dir",
+    "--report"
+   ]
+  },
+  {
+   "path": "shell_scripts/chain_compare_after_nskyne.sh",
+   "lines": 24,
+   "last_commit": "2026-10-28",
+   "run_ids": [
+    "nskyne"
+   ],
+   "env": [
+    "BUSY",
+    "CKPT",
+    "DEADLINE",
+    "PY_BIN"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/chain_copy_after_ip8ga4.sh",
+   "lines": 39,
+   "last_commit": "2026-10-25",
+   "run_ids": [
+    "ip8ga4"
+   ],
+   "env": [
+    "BUSY",
+    "DONE",
+    "PY_BIN",
+    "RANKS"
+   ],
+   "flags": [
+    "--epochs"
+   ]
+  },
+  {
+   "path": "shell_scripts/chain_ep50_after_j9pspo.sh",
+   "lines": 31,
+   "last_commit": "",
+   "run_ids": [
+    "j9pspo"
+   ],
+   "env": [
+    "RANKS"
+   ],
+   "flags": [
+    "--epochs"
+   ]
+  },
+  {
+   "path": "shell_scripts/chain_ep80_after_ep70.sh",
+   "lines": 28,
+   "last_commit": "2026-10-29",
+   "run_ids": [
+    "t35ub6"
+   ],
+   "env": [
+    "BUSY",
+    "CKPT",
+    "DEADLINE",
+    "PY_BIN"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/chain_fullhead_after_dntxmn.sh",
+   "lines": 112,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "dntxmn"
+   ],
+   "env": [
+    "ARMRC",
+    "BUSY",
+    "DONE",
+    "JOINRC",
+    "PY_BIN",
+    "RANKS"
+   ],
+   "flags": [
+    "--epochs",
+    "--kill-after",
+    "--signal",
+    "--val-loss-uncropped"
+   ]
+  },
+  {
+   "path": "shell_scripts/chain_health_watch.sh",
+   "lines": 80,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [
+    "ALIVE",
+    "CHAIN_LOG",
+    "CHAIN_PID",
+    "INTERVAL",
+    "MIN_HEADROOM_GB",
+    "MIN_MEM_GB",
+    "NEW",
+    "PROG",
+    "STALL_MIN",
+    "TERM_LINE"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/chain_l2sp_1e2_after_tv6hue.sh",
+   "lines": 65,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "tv6hue"
+   ],
+   "env": [
+    "BUSY",
+    "DONE",
+    "PY_BIN",
+    "RANKS",
+    "WANT"
+   ],
+   "flags": [
+    "--epochs"
+   ]
+  },
+  {
+   "path": "shell_scripts/chain_l2sp_sweep_after_dntxmn.sh",
+   "lines": 65,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "dntxmn"
+   ],
+   "env": [
+    "BUSY",
+    "DONE",
+    "PY_BIN",
+    "RANKS"
+   ],
+   "flags": [
+    "--epochs"
+   ]
+  },
+  {
+   "path": "shell_scripts/chain_lr1e4_after_ep50.sh",
+   "lines": 51,
+   "last_commit": "",
+   "run_ids": [
+    "j8axco"
+   ],
+   "env": [
+    "PARENT",
+    "RANKS",
+    "SRC"
+   ],
+   "flags": [
+    "--frame-direction"
+   ]
+  },
+  {
+   "path": "shell_scripts/chain_orientation_after_ep47.sh",
+   "lines": 54,
+   "last_commit": "",
+   "run_ids": [
+    "tvden2"
+   ],
+   "env": [
+    "DST",
+    "PARENT",
+    "RANKS",
+    "SRC"
+   ],
+   "flags": [
+    "--frame-direction"
+   ]
+  },
+  {
+   "path": "shell_scripts/chain_resume70_after_poolmean.sh",
+   "lines": 30,
+   "last_commit": "2026-10-29",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "DEADLINE",
+    "DONE",
+    "PY_BIN"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/chain_rowweight_after_ep60.sh",
+   "lines": 66,
+   "last_commit": "2026-10-28",
+   "run_ids": [
+    "45q96x"
+   ],
+   "env": [
+    "BUSY",
+    "CKPT",
+    "DEADLINE",
+    "PY_BIN"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/chain_straddle.sh",
+   "lines": 51,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "LAM",
+    "LOG",
+    "RID"
+   ],
+   "flags": [
+    "--grad-probe",
+    "--new-grad",
+    "--new-params",
+    "--old-grad",
+    "--old-lambda",
+    "--old-params"
+   ]
+  },
+  {
+   "path": "shell_scripts/chain_three_arms.sh",
+   "lines": 38,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "LOG"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/chain_val_after_insample.sh",
+   "lines": 29,
+   "last_commit": "2026-10-29",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "DEADLINE",
+    "PY_BIN"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/consolidate_training_scores.sh",
+   "lines": 113,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [
+    "CSV",
+    "FAIL",
+    "FULL",
+    "ISO",
+    "OMP_NUM_THREADS",
+    "OTHER",
+    "SNAP"
+   ],
+   "flags": [
+    "--code",
+    "--csv",
+    "--expect-ifaces",
+    "--expect-rows",
+    "--expect-units",
+    "--jobs",
+    "--manifest",
+    "--nsample",
+    "--out",
+    "--refs",
+    "--replace",
+    "--rows",
+    "--scorer",
+    "--seed0",
+    "--seeds",
+    "--worklist"
+   ]
+  },
+  {
+   "path": "shell_scripts/dedup_then_queue_jy6sah_to200.sh",
+   "lines": 85,
+   "last_commit": "2026-10-19",
+   "run_ids": [
+    "jy6sah"
+   ],
+   "env": [
+    "BUNDLE",
+    "CANCEL",
+    "LAYERNORM_TYPE",
+    "LEFT",
+    "LOG",
+    "WATCH"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--in-place",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note"
+   ]
+  },
+  {
+   "path": "shell_scripts/doc_refresh_loop.sh",
+   "lines": 57,
+   "last_commit": "2026-10-26",
+   "run_ids": [],
+   "env": [
+    "EVERY",
+    "OUT",
+    "PY_BIN",
+    "ROOT"
+   ],
+   "flags": [
+    "--abbrev-ref",
+    "--cached",
+    "--quiet",
+    "--rebase",
+    "--short"
+   ]
+  },
+  {
+   "path": "shell_scripts/ep1_pause_verify_resume.sh",
+   "lines": 95,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "ij24wr"
+   ],
+   "env": [
+    "BUSY",
+    "HOLDERS",
+    "JOINRC",
+    "PARENTS",
+    "PY_BIN",
+    "RANKS",
+    "RID",
+    "STOPPED"
+   ],
+   "flags": [
+    "--compare",
+    "--kill-after",
+    "--signal"
+   ]
+  },
+  {
+   "path": "shell_scripts/epoch_report.sh",
+   "lines": 81,
+   "last_commit": "2026-11-03",
+   "run_ids": [],
+   "env": [
+    "HAS_VAL",
+    "LOG",
+    "OUT",
+    "RID"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/eval_train_pool.sh",
+   "lines": 38,
+   "last_commit": "2026-10-27",
+   "run_ids": [],
+   "env": [
+    "CKPT",
+    "EXTRA",
+    "LAYERNORM_TYPE",
+    "OUT",
+    "RID",
+    "WORK"
+   ],
+   "flags": [
+    "--budget",
+    "--cards",
+    "--ckpt",
+    "--extra",
+    "--fold",
+    "--join-cache",
+    "--out",
+    "--pair-iptm-only",
+    "--pool",
+    "--pose-perblock-copy",
+    "--pose-perblock-share",
+    "--prefetch",
+    "--results",
+    "--roles",
+    "--seed-base",
+    "--work"
+   ]
+  },
+  {
+   "path": "shell_scripts/extend_uncropped_to_10.sh",
+   "lines": 98,
+   "last_commit": "2026-11-06",
+   "run_ids": [],
+   "env": [
+    "ARGS",
+    "BUSY",
+    "CARDS",
+    "DRY",
+    "EPOCHS",
+    "LAYERNORM_TYPE",
+    "MANIFEST",
+    "MARKER",
+    "NOTE",
+    "POOL",
+    "RID"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--allow-short",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--ckpt-token-threshold",
+    "--clip-norm",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--dry-run",
+    "--epochs",
+    "--eval-pool",
+    "--eval-pool-budget",
+    "--eval-pool-every",
+    "--eval-pool-fold",
+    "--eval-pool-seed-base"
+   ]
+  },
+  {
+   "path": "shell_scripts/finish_label_cache.sh",
+   "lines": 57,
+   "last_commit": "2026-10-15",
+   "run_ids": [],
+   "env": [
+    "CUDA_VISIBLE_DEVICES",
+    "LIST",
+    "LOG"
+   ],
+   "flags": [
+    "--fold",
+    "--limit",
+    "--manifest-skip",
+    "--only",
+    "--out",
+    "--out-dir",
+    "--overwrite",
+    "--require-complete"
+   ]
+  },
+  {
+   "path": "shell_scripts/gpu_guard.sh",
+   "lines": 64,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "INTERVAL",
+    "LOG",
+    "OURS"
+   ],
+   "flags": [
+    "--format",
+    "--query-compute-apps",
+    "--query-gpu"
+   ]
+  },
+  {
+   "path": "shell_scripts/gpu_hold.sh",
+   "lines": 58,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "GIB"
+   ],
+   "flags": [
+    "--gib",
+    "--poll",
+    "--stop"
+   ]
+  },
+  {
+   "path": "shell_scripts/greenlight_uncropped.sh",
+   "lines": 109,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "CSV",
+    "LOG",
+    "MARK",
+    "MIN_FREE_MIB",
+    "NEED_STEPS",
+    "PREV_RESERVED_GB",
+    "RID"
+   ],
+   "flags": [
+    "--rank-structs-per-step"
+   ]
+  },
+  {
+   "path": "shell_scripts/gt_crop_composition.sh",
+   "lines": 15,
+   "last_commit": "2026-11-01",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--contact",
+    "--labels",
+    "--margin",
+    "--out",
+    "--pool",
+    "--roles",
+    "--seed-base",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "shell_scripts/handoff_e4tvxe_fast_eval.sh",
+   "lines": 67,
+   "last_commit": "2026-10-19",
+   "run_ids": [
+    "e4tvxe"
+   ],
+   "env": [
+    "LAYERNORM_TYPE",
+    "LOG",
+    "TORCHRUN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--join-cache",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note"
+   ]
+  },
+  {
+   "path": "shell_scripts/handoff_to_noeval.sh",
+   "lines": 74,
+   "last_commit": "",
+   "run_ids": [],
+   "env": [
+    "EPOCHS",
+    "RID"
+   ],
+   "flags": [
+    "--run"
+   ]
+  },
+  {
+   "path": "shell_scripts/handover_readout_then_wsonly.sh",
+   "lines": 134,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "HRONSR_BASELINE",
+    "LAM",
+    "LOG",
+    "MEAN",
+    "USE_PAE"
+   ],
+   "flags": [
+    "--new-grad",
+    "--new-params",
+    "--old-grad",
+    "--old-lambda",
+    "--old-params",
+    "--out"
+   ]
+  },
+  {
+   "path": "shell_scripts/handover_to_full.sh",
+   "lines": 92,
+   "last_commit": "2026-10-24",
+   "run_ids": [
+    "xmz9ge"
+   ],
+   "env": [
+    "BEFORE",
+    "LAM",
+    "LAUNCHER",
+    "LOG",
+    "NEW",
+    "OUT",
+    "PIDS",
+    "RID",
+    "TARGET"
+   ],
+   "flags": [
+    "--l2-sp",
+    "--new-grad",
+    "--new-params",
+    "--old-grad",
+    "--old-lambda",
+    "--old-params",
+    "--out"
+   ]
+  },
+  {
+   "path": "shell_scripts/handover_to_wsonly.sh",
+   "lines": 102,
+   "last_commit": "2026-10-24",
+   "run_ids": [
+    "oe6sru"
+   ],
+   "env": [
+    "BEFORE",
+    "COS",
+    "GTASK",
+    "HRONSR_BASELINE",
+    "LAM",
+    "LOG",
+    "MEAN",
+    "NEW",
+    "OUT",
+    "PIDS",
+    "RID",
+    "TARGET"
+   ],
+   "flags": [
+    "--new-grad",
+    "--new-params",
+    "--old-grad",
+    "--old-lambda",
+    "--old-params",
+    "--out"
+   ]
+  },
+  {
+   "path": "shell_scripts/health.sh",
+   "lines": 57,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "INTERVAL",
+    "LOG",
+    "PXM"
+   ],
+   "flags": [
+    "--format",
+    "--query-compute-apps",
+    "--query-gpu"
+   ]
+  },
+  {
+   "path": "shell_scripts/health_watch.sh",
+   "lines": 111,
+   "last_commit": "2026-11-07",
+   "run_ids": [],
+   "env": [
+    "HOLDERS",
+    "POLL",
+    "QUOTA_FLAG_GB",
+    "RID",
+    "STALL_LIMIT",
+    "UUIDS",
+    "WANT_EPOCHS"
+   ],
+   "flags": [
+    "--format",
+    "--query-compute-apps"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_armB_valfull.sh",
+   "lines": 89,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_cosine30.sh",
+   "lines": 75,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAM",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_e20.sh",
+   "lines": 60,
+   "last_commit": "2026-10-25",
+   "run_ids": [
+    "uhyypy"
+   ],
+   "env": [
+    "BUNDLE",
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_expected_tau002.sh",
+   "lines": 96,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_expected_tau005.sh",
+   "lines": 96,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_expected_tau010.sh",
+   "lines": 96,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_full_train_4metrics.sh",
+   "lines": 80,
+   "last_commit": "2026-10-20",
+   "run_ids": [],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--loss-only",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_fullhead_l2sp_1e3_lrdecay.sh",
+   "lines": 77,
+   "last_commit": "2026-10-27",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--l2-sp-exclude",
+    "--lr-decay-end-epoch",
+    "--lr-decay-shape"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_fullhead_l2sp_1e4_40ep.sh",
+   "lines": 76,
+   "last_commit": "2026-10-28",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--l2-sp-exclude",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_fullhead_overfit30.sh",
+   "lines": 71,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_l2sp_1e3_overfit30.sh",
+   "lines": 72,
+   "last_commit": "2026-10-26",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_l2sp_1e4_overfit30.sh",
+   "lines": 72,
+   "last_commit": "2026-10-26",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_l2sp_overfit30.sh",
+   "lines": 90,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--lora-rank",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_lora_arm.sh",
+   "lines": 78,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--lora-alpha",
+    "--lora-dropout",
+    "--lora-rank",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_lora_overfit30.sh",
+   "lines": 86,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--lora-",
+    "--lora-alpha",
+    "--lora-dropout",
+    "--lora-rank"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_lr_probe.sh",
+   "lines": 54,
+   "last_commit": "2026-10-19",
+   "run_ids": [],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-budget",
+    "--eval-every",
+    "--eval-every-epoch",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_overfit30_lr1e1.sh",
+   "lines": 35,
+   "last_commit": "2026-10-19",
+   "run_ids": [],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note",
+    "--nsample"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_overfit30_lr1e1_val10.sh",
+   "lines": 52,
+   "last_commit": "2026-10-19",
+   "run_ids": [],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_overfit30_lr1e2.sh",
+   "lines": 44,
+   "last_commit": "2026-10-19",
+   "run_ids": [],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--join-cache",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_pae_copy_full.sh",
+   "lines": 56,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_pae_share_full.sh",
+   "lines": 76,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_pose_focused_arm.sh",
+   "lines": 81,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_pose_focused_overfit30.sh",
+   "lines": 96,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_poseshare_l2_overfit30.sh",
+   "lines": 91,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_poseshare_overfit30.sh",
+   "lines": 82,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_poseshare_rank_l2_overfit30.sh",
+   "lines": 86,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_poseshare_rank_overfit30.sh",
+   "lines": 88,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_poseshare_rank_readout.sh",
+   "lines": 88,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_pt3_arm.sh",
+   "lines": 79,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_pt3_full.sh",
+   "lines": 113,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAM_IN_USE",
+    "LAYERNORM_TYPE",
+    "SENTINEL"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_rank_l2sp.sh",
+   "lines": 95,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_rank_only_fullset.sh",
+   "lines": 89,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_rank_only_xs_softplus.sh",
+   "lines": 89,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_rank_perblock_copy.sh",
+   "lines": 92,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_rank_perblock_frame.sh",
+   "lines": 105,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_readout.sh",
+   "lines": 80,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAM",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_rel_itm_beta75.sh",
+   "lines": 101,
+   "last_commit": "2026-10-29",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-every-epoch",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--lr-decay-end-epoch"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_rel_itm_beta75_uncropped.sh",
+   "lines": 145,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-log",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-every-epoch",
+    "--eval-pool",
+    "--eval-pool-",
+    "--eval-pool-budget"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_resume_j583i8_fast.sh",
+   "lines": 74,
+   "last_commit": "2026-10-25",
+   "run_ids": [
+    "j583i8"
+   ],
+   "env": [
+    "BUNDLE",
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_seed500010_fold.sh",
+   "lines": 106,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [
+    "AVAIL",
+    "LAYERNORM_TYPE",
+    "PROTENIX_DUMP_CONF_INPUTS",
+    "QUEUE"
+   ],
+   "flags": [
+    "--claim-dir",
+    "--csv",
+    "--dataset",
+    "--dtype",
+    "--ncycle",
+    "--nsample",
+    "--out",
+    "--overlap-scoring",
+    "--pool",
+    "--queue",
+    "--rank-cross-seed",
+    "--seed0",
+    "--seeds"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_simple_pae.sh",
+   "lines": 89,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_straddle.sh",
+   "lines": 86,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAM",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_tokendrop_90_35.sh",
+   "lines": 275,
+   "last_commit": "2026-11-03",
+   "run_ids": [],
+   "env": [
+    "BUILD_CMD",
+    "LAYERNORM_TYPE",
+    "MASK",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--budget",
+    "--cards",
+    "--ckpt-token-threshold",
+    "--clip-norm",
+    "--contact",
+    "--crop-margin",
+    "--crop-size",
+    "--crop-tokens",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-pool",
+    "--eval-pool-budget"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_tokendrop_dropout_l2.sh",
+   "lines": 213,
+   "last_commit": "2026-11-02",
+   "run_ids": [],
+   "env": [
+    "BUILD_CMD",
+    "LAYERNORM_TYPE",
+    "MASK",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--budget",
+    "--cards",
+    "--ckpt-token-threshold",
+    "--clip-norm",
+    "--contact",
+    "--crop-margin",
+    "--crop-size",
+    "--crop-tokens",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-pool",
+    "--eval-pool-budget"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_uncropped_1epoch.sh",
+   "lines": 159,
+   "last_commit": "2026-11-06",
+   "run_ids": [],
+   "env": [
+    "ARGS",
+    "CARDS",
+    "DRY",
+    "EPOCHS",
+    "LAYERNORM_TYPE",
+    "MANIFEST",
+    "MARKER",
+    "NOTE",
+    "POOL"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--allow-short",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--ckpt-token-threshold",
+    "--clip-norm",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--dry-run",
+    "--epochs",
+    "--eval-pool",
+    "--eval-pool-budget",
+    "--eval-pool-every",
+    "--eval-pool-fold",
+    "--eval-pool-seed-base"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_wave1_val_fold.sh",
+   "lines": 153,
+   "last_commit": "2026-11-05",
+   "run_ids": [],
+   "env": [
+    "ATT",
+    "LAYERNORM_TYPE",
+    "PROTENIX_DUMP_CONF_INPUTS"
+   ],
+   "flags": [
+    "--claim-dir",
+    "--csv",
+    "--dataset",
+    "--dtype",
+    "--fold-only",
+    "--ncycle",
+    "--nsample",
+    "--out",
+    "--overlap-scoring",
+    "--pool",
+    "--queue"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_within_arm.sh",
+   "lines": 90,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "SHARE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_wsonly.sh",
+   "lines": 78,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAM",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/launch_wsonly4y.sh",
+   "lines": 80,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/lib_fetch.sh",
+   "lines": 63,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--max-time",
+    "--no-progress-meter",
+    "--retry",
+    "--retry-delay"
+   ]
+  },
+  {
+   "path": "shell_scripts/measure_shipped_train_pae.sh",
+   "lines": 54,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "OUT"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--epochs",
+    "--fold",
+    "--loss-only",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--minimal-items",
+    "--nsample",
+    "--out",
+    "--pae-only",
+    "--pae-scored-pairs"
+   ]
+  },
+  {
+   "path": "shell_scripts/measure_then_launch.sh",
+   "lines": 57,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "9mfb4y"
+   ],
+   "env": [
+    "CANCEL",
+    "CUDA_VISIBLE_DEVICES",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-budget",
+    "--eval-every-epoch",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note"
+   ]
+  },
+  {
+   "path": "shell_scripts/overnight_status.sh",
+   "lines": 18,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [
+    "MEM"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/perpose_crop_spread.sh",
+   "lines": 25,
+   "last_commit": "2026-11-01",
+   "run_ids": [],
+   "env": [
+    "MARGIN",
+    "OUT"
+   ],
+   "flags": [
+    "--budget",
+    "--contact",
+    "--labels",
+    "--margin",
+    "--out",
+    "--pool",
+    "--seed-base",
+    "--trunks"
+   ]
+  },
+  {
+   "path": "shell_scripts/perpose_eval_at_boundary.sh",
+   "lines": 215,
+   "last_commit": "2026-11-01",
+   "run_ids": [
+    "mieumn",
+    "t4jtjr"
+   ],
+   "env": [
+    "ARCH",
+    "BASE",
+    "BUSY",
+    "CKPT",
+    "CMP",
+    "LAYERNORM_TYPE",
+    "MARGIN",
+    "NEW",
+    "OUT",
+    "REF",
+    "RID",
+    "SENTINEL"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--budget",
+    "--cards",
+    "--ckpt",
+    "--clip-norm",
+    "--crop-margin",
+    "--crop-predicted-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-pool",
+    "--eval-pool-budget",
+    "--eval-pool-every"
+   ]
+  },
+  {
+   "path": "shell_scripts/phase2_envdb.sh",
+   "lines": 89,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "CFDB",
+    "HERE",
+    "LOG",
+    "MODE",
+    "TAR",
+    "URL"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/predcrop_eval_at_boundary.sh",
+   "lines": 121,
+   "last_commit": "2026-10-31",
+   "run_ids": [
+    "erb7nd",
+    "t4jtjr"
+   ],
+   "env": [
+    "ARCH",
+    "BASE",
+    "BUSY",
+    "CKPT",
+    "LAYERNORM_TYPE",
+    "MASK",
+    "OUT",
+    "RID",
+    "SENTINEL"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--budget",
+    "--cards",
+    "--ckpt",
+    "--clip-norm",
+    "--crop-margin",
+    "--crop-size",
+    "--crop-tokens",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-pool",
+    "--eval-pool-budget",
+    "--eval-pool-every",
+    "--eval-pool-fold"
+   ]
+  },
+  {
+   "path": "shell_scripts/predcrop_resume_safetynet.sh",
+   "lines": 71,
+   "last_commit": "2026-10-31",
+   "run_ids": [
+    "erb7nd"
+   ],
+   "env": [
+    "BUSY",
+    "DEADLINE",
+    "LAYERNORM_TYPE",
+    "OPID",
+    "PIDF",
+    "RID",
+    "SENTINEL"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-pool",
+    "--eval-pool-budget",
+    "--eval-pool-every",
+    "--eval-pool-fold",
+    "--eval-pool-seed-base",
+    "--fold",
+    "--frame-direction"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_alignment_trend.sh",
+   "lines": 91,
+   "last_commit": "2026-10-23",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "OUT",
+    "RID"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--grad-probe",
+    "--l2-sp",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_cosine30.sh",
+   "lines": 37,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--l2-sp"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_pt3.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--l2-sp"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_pt3_full.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--l2-sp"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_rank_gradients.sh",
+   "lines": 88,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_rank_gradients_readout.sh",
+   "lines": 88,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_rank_perblock_copy.sh",
+   "lines": 89,
+   "last_commit": "2026-10-23",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_rank_xs_softplus.sh",
+   "lines": 89,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_readout.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--l2-sp"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_rel_parity.sh",
+   "lines": 52,
+   "last_commit": "2026-10-29",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN",
+    "SEED"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_simple_pae.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--l2-sp"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_straddle.sh",
+   "lines": 53,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--l2-sp"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_uncropped_memory.sh",
+   "lines": 150,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-log",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-every-epoch",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_uncropped_memory_ckpt.sh",
+   "lines": 150,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-log",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-every-epoch",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_uncropped_memory_expseg.sh",
+   "lines": 164,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-log",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-every-epoch",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe"
+   ]
+  },
+  {
+   "path": "shell_scripts/probe_wsonly.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--l2-sp"
+   ]
+  },
+  {
+   "path": "shell_scripts/push_findings.sh",
+   "lines": 112,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "ADD",
+    "FILES",
+    "RID",
+    "ROOT"
+   ],
+   "flags": [
+    "--abbrev-ref",
+    "--cached",
+    "--oneline",
+    "--quiet",
+    "--rid",
+    "--short"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_335psh_to100.sh",
+   "lines": 50,
+   "last_commit": "2026-10-19",
+   "run_ids": [
+    "335psh"
+   ],
+   "env": [
+    "LAYERNORM_TYPE",
+    "LOG"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note",
+    "--nsample"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_C_after_anchor.sh",
+   "lines": 62,
+   "last_commit": "2026-10-20",
+   "run_ids": [
+    "2u8tf4"
+   ],
+   "env": [
+    "LAYERNORM_TYPE",
+    "LEFT",
+    "LOG"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--frame-direction",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_cropped_arm.sh",
+   "lines": 60,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "9mfb4y"
+   ],
+   "env": [
+    "CANCEL",
+    "LAYERNORM_TYPE",
+    "LOG"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-budget",
+    "--eval-every-epoch",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_ft3_pilot.sh",
+   "lines": 261,
+   "last_commit": "2026-10-16",
+   "run_ids": [],
+   "env": [
+    "CUDA_VISIBLE_DEVICES",
+    "FREE_GB",
+    "LAYERNORM_TYPE",
+    "LOG",
+    "NEXT",
+    "N_LR",
+    "OUT",
+    "REC",
+    "SUMMARY",
+    "SWEEP",
+    "TORCHRUN",
+    "VERDICT"
+   ],
+   "flags": [
+    "--accum",
+    "--allow-code-drift",
+    "--apply",
+    "--budget",
+    "--cards",
+    "--claim-dir",
+    "--csv",
+    "--dataset",
+    "--dist-backend",
+    "--dst",
+    "--dtype",
+    "--epochs",
+    "--eval-budget",
+    "--eval-device",
+    "--eval-every-epoch",
+    "--fold",
+    "--format",
+    "--grad-check-every",
+    "--labels",
+    "--master"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_fullfold_after_24u342.sh",
+   "lines": 161,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "COMMON",
+    "LAM",
+    "LAYERNORM_TYPE",
+    "LEFT",
+    "LOG",
+    "PARENT",
+    "PRC",
+    "PROBE",
+    "SKIP",
+    "TRAIN_ONLY"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--from-probe",
+    "--from-run"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_fullhead_after_24u34d.sh",
+   "lines": 255,
+   "last_commit": "2026-10-23",
+   "run_ids": [
+    "latest"
+   ],
+   "env": [
+    "ANCH",
+    "BUSY",
+    "GIVEN_LAM",
+    "GIVEN_PROBE",
+    "LAM",
+    "LAYERNORM_TYPE",
+    "LEFT",
+    "LOG",
+    "PRC",
+    "PROBE",
+    "PROBE_ONLY",
+    "TRAIN_ONLY"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--from-probe",
+    "--from-run"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_hhzddi_to150.sh",
+   "lines": 61,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "hhzddi"
+   ],
+   "env": [
+    "BUNDLE",
+    "CANCEL",
+    "LAYERNORM_TYPE",
+    "LOG",
+    "WATCH"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note",
+    "--nsample"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_l2sp_after_lora.sh",
+   "lines": 21,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LOG",
+    "PID"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/queue_lora_after_fullhead.sh",
+   "lines": 22,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LOG",
+    "PID"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/queue_lrdecay_when_free.sh",
+   "lines": 42,
+   "last_commit": "2026-10-27",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "PY_BIN"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/queue_paeonly_fresh.sh",
+   "lines": 51,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "owdyyp"
+   ],
+   "env": [
+    "CANCEL",
+    "LAYERNORM_TYPE",
+    "LOG",
+    "WATCH"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--early-stop-min-delta",
+    "--early-stop-patience",
+    "--epochs",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_pairtrans_after_24u34d.sh",
+   "lines": 148,
+   "last_commit": "2026-10-23",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAM",
+    "LAYERNORM_TYPE",
+    "LEFT",
+    "LOG",
+    "PARENT",
+    "PRC",
+    "PROBE",
+    "TRAIN_ONLY"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--from-probe",
+    "--from-run"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_pose_focused_after_measure.sh",
+   "lines": 14,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "LOG",
+    "PID"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/queue_pykssn_resume.sh",
+   "lines": 50,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "pykssn",
+    "x5a4uj"
+   ],
+   "env": [
+    "CANCEL",
+    "CKPT",
+    "LAYERNORM_TYPE",
+    "LOG",
+    "WATCH"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note",
+    "--nsample"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_rank_l2sp_pae.sh",
+   "lines": 99,
+   "last_commit": "2026-10-23",
+   "run_ids": [
+    "h7msge"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "LEFT",
+    "LOG"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--grad-probe",
+    "--l2-sp",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_within_arms.sh",
+   "lines": 115,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "ARMS",
+    "LOG",
+    "RID"
+   ],
+   "flags": [
+    "--rank-pairs",
+    "--rank-tau",
+    "--rank-topk-decay",
+    "--rank-within-weight"
+   ]
+  },
+  {
+   "path": "shell_scripts/queue_x5a4uj_resume.sh",
+   "lines": 50,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "owdyyp",
+    "x5a4uj"
+   ],
+   "env": [
+    "CANCEL",
+    "CKPT",
+    "LAYERNORM_TYPE",
+    "LOG",
+    "WATCH"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note",
+    "--nsample"
+   ]
+  },
+  {
+   "path": "shell_scripts/quota_guard.sh",
+   "lines": 111,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "ALLOW_KILL",
+    "GUARDED_RE",
+    "INTERVAL",
+    "LOG",
+    "STOP_GB",
+    "STOP_PCT",
+    "WARN_GB",
+    "WARN_PCT"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/rearm_watchdog_after_resume.sh",
+   "lines": 40,
+   "last_commit": "2026-10-31",
+   "run_ids": [],
+   "env": [
+    "DEADLINE",
+    "RID",
+    "SENTINEL"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/rebuild_labels.sh",
+   "lines": 67,
+   "last_commit": "2026-10-15",
+   "run_ids": [],
+   "env": [
+    "LOG",
+    "NCPU",
+    "R_ROOT"
+   ],
+   "flags": [
+    "--n-cpu",
+    "--run"
+   ]
+  },
+  {
+   "path": "shell_scripts/reclaim_checkpoints.sh",
+   "lines": 112,
+   "last_commit": "2026-11-06",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "DRY",
+    "FOLDERS",
+    "GIB",
+    "LEFT",
+    "LIVE",
+    "MAN",
+    "RUNS",
+    "TRACKED"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/reclaim_superseded_trees.sh",
+   "lines": 69,
+   "last_commit": "2026-11-06",
+   "run_ids": [],
+   "env": [
+    "DRY",
+    "TARGETS",
+    "TOTAL",
+    "UNIQ"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/recover_seed_gaps.sh",
+   "lines": 158,
+   "last_commit": "2026-11-06",
+   "run_ids": [],
+   "env": [
+    "EXCL",
+    "EXCLUDE",
+    "FAIL",
+    "MIN_MEM_GB",
+    "SEEDS"
+   ],
+   "flags": [
+    "--csv",
+    "--exclude",
+    "--expect-rows",
+    "--fold",
+    "--limit",
+    "--manifest",
+    "--nsample",
+    "--out",
+    "--plan",
+    "--plan-out",
+    "--refs",
+    "--replace",
+    "--roles",
+    "--route",
+    "--rows",
+    "--rows-out",
+    "--seed",
+    "--seed0",
+    "--seeds",
+    "--skip-existing"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_arm_comparison_plot.sh",
+   "lines": 36,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "BASE",
+    "POSE"
+   ],
+   "flags": [
+    "--budget",
+    "--oracle-dockq",
+    "--oracle-frac",
+    "--out",
+    "--shipped-dockq",
+    "--shipped-frac",
+    "--shipped-train-pae",
+    "--shipped-val-pae"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_five_arm_plot.sh",
+   "lines": 31,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [
+    "FULL",
+    "LORA",
+    "POSE",
+    "SHARE"
+   ],
+   "flags": [
+    "--budget",
+    "--oracle-dockq",
+    "--oracle-frac",
+    "--out",
+    "--shipped-dockq",
+    "--shipped-frac",
+    "--shipped-val-pae"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_four_arm_plot.sh",
+   "lines": 29,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "FULL",
+    "LORA",
+    "POSE",
+    "SHARE"
+   ],
+   "flags": [
+    "--budget",
+    "--oracle-dockq",
+    "--oracle-frac",
+    "--out",
+    "--shipped-dockq",
+    "--shipped-frac",
+    "--shipped-val-pae"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_full_train_plot.sh",
+   "lines": 16,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--out"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_plot.sh",
+   "lines": 21,
+   "last_commit": "2026-10-19",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--ceiling-dockq",
+    "--ceiling-frac",
+    "--oracle-dockq",
+    "--oracle-frac",
+    "--out",
+    "--stock-dockq",
+    "--stock-frac"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_pose_focused_plot.sh",
+   "lines": 41,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "RID"
+   ],
+   "flags": [
+    "--budget",
+    "--loss-only",
+    "--oracle-dockq",
+    "--oracle-frac",
+    "--out",
+    "--prefetch-workers",
+    "--shipped-dockq",
+    "--shipped-frac",
+    "--shipped-train-pae",
+    "--shipped-val-pae"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_six_arm_plot.sh",
+   "lines": 33,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [
+    "FULL",
+    "LORA",
+    "POSE",
+    "SHARE"
+   ],
+   "flags": [
+    "--budget",
+    "--oracle-dockq",
+    "--oracle-frac",
+    "--out",
+    "--shipped-dockq",
+    "--shipped-frac",
+    "--shipped-val-pae"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_three.sh",
+   "lines": 9,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [
+    "RID"
+   ],
+   "flags": [
+    "--budget",
+    "--out"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_three_arm_plot.sh",
+   "lines": 37,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "FULL",
+    "LORA",
+    "POSE"
+   ],
+   "flags": [
+    "--budget",
+    "--oracle-dockq",
+    "--oracle-frac",
+    "--out",
+    "--shipped-dockq",
+    "--shipped-frac",
+    "--shipped-train-pae",
+    "--shipped-val-pae"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_val10_plot.sh",
+   "lines": 10,
+   "last_commit": "2026-10-20",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--out"
+   ]
+  },
+  {
+   "path": "shell_scripts/refresh_val_five.sh",
+   "lines": 9,
+   "last_commit": "2026-10-22",
+   "run_ids": [],
+   "env": [
+    "RANK"
+   ],
+   "flags": [
+    "--out"
+   ]
+  },
+  {
+   "path": "shell_scripts/rescore_training.sh",
+   "lines": 76,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [
+    "AFTER",
+    "BEFORE",
+    "FAIL",
+    "OMP_NUM_THREADS",
+    "THREADS"
+   ],
+   "flags": [
+    "--code",
+    "--csv",
+    "--expect-units",
+    "--jobs",
+    "--nsample",
+    "--refs",
+    "--scorer",
+    "--seed0",
+    "--seeds",
+    "--show",
+    "--worklist"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_24u34d.sh",
+   "lines": 122,
+   "last_commit": "2026-10-23",
+   "run_ids": [],
+   "env": [
+    "ANC",
+    "BUSY",
+    "COPIER",
+    "LAYERNORM_TYPE",
+    "LEFT",
+    "PARENT",
+    "RID"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--l2-sp-exclude"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_anchor_to200_noeval.sh",
+   "lines": 32,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "335psh"
+   ],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note",
+    "--nsample"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_dntxmn_e20.sh",
+   "lines": 60,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "dntxmn"
+   ],
+   "env": [
+    "BUNDLE",
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_egw5wq_ep28_to40.sh",
+   "lines": 258,
+   "last_commit": "2026-11-03",
+   "run_ids": [
+    "57zxgz",
+    "egw5wq"
+   ],
+   "env": [
+    "BUILD_CMD",
+    "LAYERNORM_TYPE",
+    "MASK",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--budget",
+    "--cards",
+    "--ckpt-token-threshold",
+    "--clip-norm",
+    "--contact",
+    "--crop-margin",
+    "--crop-size",
+    "--crop-tokens",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-pool",
+    "--eval-pool-budget"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_ep41_to_50.sh",
+   "lines": 54,
+   "last_commit": "",
+   "run_ids": [
+    "j9pspo"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_ep41_to_60_lr1e3.sh",
+   "lines": 55,
+   "last_commit": "",
+   "run_ids": [
+    "j9pspo"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_ep45.sh",
+   "lines": 47,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "9mfb4y"
+   ],
+   "env": [],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--clip-norm",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-budget",
+    "--eval-every-epoch",
+    "--manifest-skip",
+    "--master",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--nproc",
+    "--nsample",
+    "--out"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_ep48_orientation.sh",
+   "lines": 56,
+   "last_commit": "",
+   "run_ids": [
+    "tvden2"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_ep51_lr1e4.sh",
+   "lines": 56,
+   "last_commit": "",
+   "run_ids": [
+    "j8axco"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--frame-direction",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_fawgtu_ep36.sh",
+   "lines": 54,
+   "last_commit": "",
+   "run_ids": [
+    "fawgtu"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_full_train_from_ep1.sh",
+   "lines": 95,
+   "last_commit": "2026-10-20",
+   "run_ids": [
+    "x3k2m4"
+   ],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--loss-only",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_full_train_from_ep2_nockpt.sh",
+   "lines": 120,
+   "last_commit": "2026-10-20",
+   "run_ids": [
+    "jhgfxy"
+   ],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--loss-only",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_full_train_from_ep6_balanced.sh",
+   "lines": 99,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "2w5to5"
+   ],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_ij24wr.sh",
+   "lines": 63,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "ij24wr"
+   ],
+   "env": [
+    "BUNDLE",
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--compare",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--l2-sp-exclude",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_jer222.sh",
+   "lines": 55,
+   "last_commit": "2026-10-27",
+   "run_ids": [
+    "jer222"
+   ],
+   "env": [
+    "BUNDLE",
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--l2-sp-exclude",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_jy6sah_ep137_to200.sh",
+   "lines": 37,
+   "last_commit": "2026-10-19",
+   "run_ids": [
+    "jy6sah"
+   ],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--in-place",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_ocqtyt_26_to_50.sh",
+   "lines": 67,
+   "last_commit": "2026-10-27",
+   "run_ids": [
+    "ocqtyt"
+   ],
+   "env": [
+    "BUNDLE",
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--bio-dir",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--indices",
+    "--labels",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_ocqtyt_from_ep26.sh",
+   "lines": 72,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "ocqtyt"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--loss-only",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_orange_lr1e2.sh",
+   "lines": 35,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "owdyyp"
+   ],
+   "env": [
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--early-stop-patience",
+    "--epochs",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items",
+    "--note"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_p5yoza.sh",
+   "lines": 50,
+   "last_commit": "2026-10-27",
+   "run_ids": [
+    "p5yoza"
+   ],
+   "env": [
+    "BUNDLE",
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--bio-dir",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--indices",
+    "--labels",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_p5yoza_2card.sh",
+   "lines": 52,
+   "last_commit": "",
+   "run_ids": [
+    "p5yoza"
+   ],
+   "env": [
+    "BUNDLE",
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--bio-dir",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--indices",
+    "--labels",
+    "--manifest-selection"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_pose_focused_from_ep11.sh",
+   "lines": 98,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "ggfhj5"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--manifest-selection",
+    "--manifest-skip",
+    "--max-rss-gb",
+    "--minimal-items"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_rel_itm_ep28.sh",
+   "lines": 107,
+   "last_commit": "2026-10-30",
+   "run_ids": [
+    "o2qczq"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-every-epoch",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--lr-decay-end-epoch"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_rel_itm_ep32.sh",
+   "lines": 107,
+   "last_commit": "2026-10-30",
+   "run_ids": [
+    "t4jtjr"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-every-epoch",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--lr-decay-end-epoch"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_rel_itm_ep33.sh",
+   "lines": 107,
+   "last_commit": "",
+   "run_ids": [
+    "s6szr8"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-every-epoch",
+    "--fold",
+    "--frame-direction",
+    "--grad-probe",
+    "--lr-decay-end-epoch"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_rowweight_ep56_70.sh",
+   "lines": 60,
+   "last_commit": "2026-10-29",
+   "run_ids": [
+    "nskyne"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--fold",
+    "--frame-direction",
+    "--lr-decay-end-epoch",
+    "--lr-decay-shape",
+    "--lr-decay-start-epoch",
+    "--lr-final"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_rowweight_ep67_70.sh",
+   "lines": 65,
+   "last_commit": "2026-10-29",
+   "run_ids": [
+    "d32kqp"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--fold",
+    "--frame-direction",
+    "--lr-decay-end-epoch",
+    "--lr-decay-shape",
+    "--lr-decay-start-epoch",
+    "--lr-final"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_rowweight_ep69_80.sh",
+   "lines": 65,
+   "last_commit": "2026-10-29",
+   "run_ids": [
+    "t35ub6"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--fold",
+    "--frame-direction",
+    "--lr-decay-end-epoch",
+    "--lr-decay-shape",
+    "--lr-decay-start-epoch",
+    "--lr-final"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_rowweight_ep71_80.sh",
+   "lines": 65,
+   "last_commit": "2026-10-29",
+   "run_ids": [
+    "t35ub6"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--fold",
+    "--frame-direction",
+    "--lr-decay-end-epoch",
+    "--lr-decay-shape",
+    "--lr-decay-start-epoch",
+    "--lr-final"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_rowweight_ep71_85.sh",
+   "lines": 65,
+   "last_commit": "",
+   "run_ids": [
+    "2gxc9u"
+   ],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--fold",
+    "--frame-direction",
+    "--lr-decay-end-epoch",
+    "--lr-decay-shape",
+    "--lr-decay-start-epoch",
+    "--lr-final"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_y8pyuq_ep24.sh",
+   "lines": 276,
+   "last_commit": "",
+   "run_ids": [
+    "y8pyuq"
+   ],
+   "env": [
+    "BUILD_CMD",
+    "LAYERNORM_TYPE",
+    "MASK",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--budget",
+    "--cards",
+    "--ckpt-token-threshold",
+    "--clip-norm",
+    "--contact",
+    "--crop-margin",
+    "--crop-size",
+    "--crop-tokens",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-pool",
+    "--eval-pool-budget"
+   ]
+  },
+  {
+   "path": "shell_scripts/resume_zfahpb.sh",
+   "lines": 94,
+   "last_commit": "2026-10-23",
+   "run_ids": [],
+   "env": [
+    "ANC",
+    "BUSY",
+    "COPIER",
+    "LAYERNORM_TYPE",
+    "PARENT",
+    "RID"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--epochs",
+    "--eval-cards",
+    "--fold",
+    "--l2-sp",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/run_solved_cut_preflight.sh",
+   "lines": 12,
+   "last_commit": "2026-10-19",
+   "run_ids": [],
+   "env": [],
+   "flags": [
+    "--manifest-selection",
+    "--manifest-skip",
+    "--out",
+    "--seeds"
+   ]
+  },
+  {
+   "path": "shell_scripts/smoke_mixed_depth.sh",
+   "lines": 88,
+   "last_commit": "2026-11-06",
+   "run_ids": [],
+   "env": [
+    "ARGS",
+    "CARDS",
+    "DRY",
+    "EPOCHS",
+    "LAYERNORM_TYPE",
+    "MANIFEST",
+    "NOTE",
+    "POOL",
+    "UNITS"
+   ],
+   "flags": [
+    "--accum",
+    "--allow-code-drift",
+    "--allow-short",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--alpha-rank",
+    "--blocks-per-ckpt",
+    "--cards",
+    "--ckpt-token-threshold",
+    "--clip-norm",
+    "--crop-size",
+    "--crop-tokens",
+    "--dist-backend",
+    "--dist-timeout-min",
+    "--dry-run",
+    "--epochs",
+    "--expect-manifest",
+    "--fold",
+    "--indices",
+    "--lean-readouts"
+   ]
+  },
+  {
+   "path": "shell_scripts/smoke_rowweight.sh",
+   "lines": 53,
+   "last_commit": "2026-10-28",
+   "run_ids": [],
+   "env": [
+    "LAYERNORM_TYPE",
+    "LOG",
+    "OUT",
+    "PY_BIN"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--blocks-per-ckpt",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--epochs",
+    "--fold",
+    "--frame-direction",
+    "--limit-units",
+    "--lr-decay-end-epoch",
+    "--lr-decay-shape",
+    "--lr-decay-start-epoch",
+    "--lr-final",
+    "--manifest-selection",
+    "--manifest-skip"
+   ]
+  },
+  {
+   "path": "shell_scripts/val30_cpu_chain.sh",
+   "lines": 162,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [
+    "MIN_MEM_GB"
+   ],
+   "flags": [
+    "--apply",
+    "--bio-dir",
+    "--cif-dir",
+    "--file-list",
+    "--jobs-dir",
+    "--n-cpu",
+    "--nseed",
+    "--out",
+    "--out-csv",
+    "--out-dir",
+    "--out-pool",
+    "--out-roles",
+    "--prune",
+    "--queue",
+    "--refs-dir",
+    "--run",
+    "--sabdab-cifs",
+    "--seed0",
+    "--selection",
+    "--skipped"
+   ]
+  },
+  {
+   "path": "shell_scripts/verify_lora_valloss.sh",
+   "lines": 42,
+   "last_commit": "2026-10-21",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "LAYERNORM_TYPE",
+    "OUT"
+   ],
+   "flags": [
+    "--accum",
+    "--alignment-preflight",
+    "--allow-code-drift",
+    "--alpha-confidence",
+    "--alpha-pae",
+    "--bio-dir",
+    "--blocks-per-ckpt",
+    "--clip-norm",
+    "--crop-contact",
+    "--crop-margin",
+    "--crop-size",
+    "--epochs",
+    "--fold",
+    "--indices",
+    "--labels",
+    "--lora-rank",
+    "--loss-only",
+    "--manifest-selection",
+    "--minimal-items",
+    "--mmcif-dir"
+   ]
+  },
+  {
+   "path": "shell_scripts/verify_minidb.sh",
+   "lines": 140,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "COLABFOLD_KEEP_INTERMEDIATES",
+    "CORES",
+    "DEBUG_MINI_DB",
+    "DIFF",
+    "LOG",
+    "MDB",
+    "NTHREADS",
+    "QFA",
+    "ROWS",
+    "SAME",
+    "WITH"
+   ],
+   "flags": [
+    "--apparent-size",
+    "--db-load-mode",
+    "--mmseqs",
+    "--threads",
+    "--use-env",
+    "--use-templates"
+   ]
+  },
+  {
+   "path": "shell_scripts/verify_val_launch.sh",
+   "lines": 76,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch.sh",
+   "lines": 48,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "PIDS",
+    "RID"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_45q96x.sh",
+   "lines": 21,
+   "last_commit": "",
+   "run_ids": [
+    "nskyne"
+   ],
+   "env": [
+    "HAVE",
+    "RANKS"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_dntxmn.sh",
+   "lines": 20,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "dntxmn"
+   ],
+   "env": [
+    "HAVE",
+    "RANKS"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_fawgtu.sh",
+   "lines": 21,
+   "last_commit": "2026-10-28",
+   "run_ids": [
+    "fawgtu"
+   ],
+   "env": [
+    "HAVE",
+    "RANKS"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_ij24wr.sh",
+   "lines": 20,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "ij24wr"
+   ],
+   "env": [
+    "HAVE",
+    "RANKS"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_ip8ga4.sh",
+   "lines": 15,
+   "last_commit": "2026-10-25",
+   "run_ids": [
+    "ip8ga4"
+   ],
+   "env": [
+    "HAVE"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_j583i8.sh",
+   "lines": 15,
+   "last_commit": "2026-10-25",
+   "run_ids": [
+    "j583i8"
+   ],
+   "env": [
+    "HAVE"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_j8axco.sh",
+   "lines": 21,
+   "last_commit": "",
+   "run_ids": [
+    "j8axco"
+   ],
+   "env": [
+    "HAVE",
+    "RANKS"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_nskyne.sh",
+   "lines": 21,
+   "last_commit": "",
+   "run_ids": [
+    "nskyne"
+   ],
+   "env": [
+    "HAVE",
+    "RANKS"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_straddle.sh",
+   "lines": 20,
+   "last_commit": "2026-10-24",
+   "run_ids": [
+    "8fkrsu"
+   ],
+   "env": [
+    "HAVE"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_tv6hue.sh",
+   "lines": 20,
+   "last_commit": "2026-10-26",
+   "run_ids": [
+    "tv6hue"
+   ],
+   "env": [
+    "HAVE",
+    "RANKS"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_tvden2.sh",
+   "lines": 21,
+   "last_commit": "",
+   "run_ids": [
+    "tvden2"
+   ],
+   "env": [
+    "HAVE",
+    "RANKS"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_epoch_uhyypy.sh",
+   "lines": 15,
+   "last_commit": "2026-10-25",
+   "run_ids": [
+    "uhyypy"
+   ],
+   "env": [
+    "HAVE"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_next_epoch.sh",
+   "lines": 46,
+   "last_commit": "2026-10-26",
+   "run_ids": [],
+   "env": [
+    "AGE",
+    "HAVE",
+    "LAST",
+    "LOG",
+    "RID",
+    "STALE"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/wait_rowweight_launch.sh",
+   "lines": 32,
+   "last_commit": "2026-10-28",
+   "run_ids": [],
+   "env": [
+    "BEFORE",
+    "DEADLINE",
+    "RID"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/watch_arm.sh",
+   "lines": 47,
+   "last_commit": "2026-10-24",
+   "run_ids": [],
+   "env": [
+    "LASTP",
+    "RID"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/watch_deferred_then_foldbench.sh",
+   "lines": 217,
+   "last_commit": "2026-10-15",
+   "run_ids": [],
+   "env": [
+    "CHK",
+    "GPUS",
+    "LAYERNORM_TYPE",
+    "LOG",
+    "POLL",
+    "PROTENIX_DUMP_CONF_INPUTS",
+    "STALL_POLLS"
+   ],
+   "flags": [
+    "--claim-dir",
+    "--csv",
+    "--dataset",
+    "--dtype",
+    "--fold",
+    "--ncycle",
+    "--no-trunk",
+    "--nsample",
+    "--out",
+    "--overlap-scoring",
+    "--queue",
+    "--verbose"
+   ]
+  },
+  {
+   "path": "shell_scripts/watch_epochs_refresh.sh",
+   "lines": 63,
+   "last_commit": "2026-10-20",
+   "run_ids": [
+    "2w5to5"
+   ],
+   "env": [
+    "LATEST",
+    "LOG",
+    "STATE"
+   ],
+   "flags": [
+    "--line-buffered"
+   ]
+  },
+  {
+   "path": "shell_scripts/watch_foldbench_then_training.sh",
+   "lines": 215,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "GPUS",
+    "LAYERNORM_TYPE",
+    "LOG",
+    "PROTENIX_DUMP_CONF_INPUTS",
+    "STALL_POLLS",
+    "TOTAL",
+    "TR_TOTAL",
+    "VA_TOTAL"
+   ],
+   "flags": [
+    "--claim-dir",
+    "--csv",
+    "--dataset",
+    "--dtype",
+    "--fold",
+    "--ncycle",
+    "--no-trunk",
+    "--nsample",
+    "--out",
+    "--overlap-scoring",
+    "--queue",
+    "--verbose"
+   ]
+  },
+  {
+   "path": "shell_scripts/watch_fullfold.sh",
+   "lines": 83,
+   "last_commit": "2026-10-23",
+   "run_ids": [],
+   "env": [
+    "LASTP",
+    "LOG",
+    "RID"
+   ],
+   "flags": [
+    "--grad-probe"
+   ]
+  },
+  {
+   "path": "shell_scripts/watch_health.sh",
+   "lines": 91,
+   "last_commit": "2026-10-25",
+   "run_ids": [
+    "health",
+    "shard0"
+   ],
+   "env": [
+    "ALERT",
+    "CHAIN_PID",
+    "CHAIN_UP",
+    "GONE_SINCE",
+    "HOLDERS",
+    "IDLE",
+    "MEM",
+    "NOW",
+    "OUT",
+    "PIDS",
+    "PREV_MTIME",
+    "PREV_RID"
+   ],
+   "flags": [
+    "--out",
+    "--output",
+    "--resume"
+   ]
+  },
+  {
+   "path": "shell_scripts/watch_next_arm.sh",
+   "lines": 25,
+   "last_commit": "2026-10-25",
+   "run_ids": [],
+   "env": [
+    "BEFORE",
+    "CUR"
+   ],
+   "flags": []
+  },
+  {
+   "path": "shell_scripts/watch_rel_arm.sh",
+   "lines": 103,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [
+    "DEADLINE",
+    "DONE",
+    "LAST",
+    "PY_BIN",
+    "RID",
+    "ROW",
+    "STEM"
+   ],
+   "flags": [
+    "--best",
+    "--out",
+    "--resume"
+   ]
+  },
+  {
+   "path": "shell_scripts/watch_train_cache.sh",
+   "lines": 77,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "GPUS",
+    "LAYERNORM_TYPE",
+    "LOG",
+    "PROTENIX_DUMP_CONF_INPUTS",
+    "TOTAL"
+   ],
+   "flags": [
+    "--claim-dir",
+    "--csv",
+    "--dataset",
+    "--dtype",
+    "--ncycle",
+    "--nsample",
+    "--out",
+    "--overlap-scoring",
+    "--queue"
+   ]
+  },
+  {
+   "path": "shell_scripts/watch_train_eval_plot.sh",
+   "lines": 29,
+   "last_commit": "2026-10-21",
+   "run_ids": [
+    "89uwjx",
+    "dapghi",
+    "n3s8gb",
+    "pykssn",
+    "tgfiqx",
+    "x3888d",
+    "x5a4uj"
+   ],
+   "env": [
+    "OUT",
+    "REFS",
+    "SPECS",
+    "STOP"
+   ],
+   "flags": [
+    "--ceiling-dockq",
+    "--ceiling-frac",
+    "--oracle-dockq",
+    "--oracle-frac",
+    "--out",
+    "--quiet",
+    "--stock-dockq",
+    "--stock-frac"
+   ]
+  },
+  {
+   "path": "shell_scripts/watch_train_val_then_foldbench.sh",
+   "lines": 203,
+   "last_commit": "2026-10-14",
+   "run_ids": [],
+   "env": [
+    "CHK",
+    "GPUS",
+    "LAYERNORM_TYPE",
+    "LOG",
+    "POLL",
+    "PROTENIX_DUMP_CONF_INPUTS",
+    "STALL_POLLS"
+   ],
+   "flags": [
+    "--claim-dir",
+    "--csv",
+    "--dataset",
+    "--dtype",
+    "--fold",
+    "--ncycle",
+    "--no-trunk",
+    "--nsample",
+    "--out",
+    "--overlap-scoring",
+    "--queue",
+    "--verbose"
+   ]
+  },
+  {
+   "path": "shell_scripts/watchdog_uncropped.sh",
+   "lines": 110,
+   "last_commit": "2026-10-30",
+   "run_ids": [],
+   "env": [
+    "BUSY",
+    "CMD",
+    "HOLDERS",
+    "LOG",
+    "NEW",
+    "POLL",
+    "RID",
+    "RUNDIR",
+    "SETTLE",
+    "STATE",
+    "TARGET_EPOCHS",
+    "USED"
+   ],
+   "flags": [
+    "--format",
+    "--out",
+    "--query-compute-apps",
+    "--rank-loss",
+    "--resume"
+   ]
+  },
+  {
+   "path": "shell_scripts/wave1_cpu_chain.sh",
+   "lines": 59,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [
+    "MIN_MEM_GB"
+   ],
+   "flags": [
+    "--bio-dir",
+    "--cif-dir",
+    "--file-list",
+    "--jobs-dir",
+    "--n-cpu",
+    "--out-csv",
+    "--out-dir",
+    "--run",
+    "--selection",
+    "--skipped",
+    "--splits",
+    "--src-dir"
+   ]
+  },
+  {
+   "path": "shell_scripts/wave1_reclaim_chain.sh",
+   "lines": 108,
+   "last_commit": "2026-11-04",
+   "run_ids": [],
+   "env": [
+    "ROOT"
+   ],
+   "flags": [
+    "--expect",
+    "--i-have-verified",
+    "--journal",
+    "--manifest",
+    "--stage",
+    "--targets",
+    "--trimmed",
+    "--verify-cmd"
+   ]
+  }
+ ]
+}
