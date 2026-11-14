@@ -334,6 +334,12 @@ REL_G_SIGMOID="${REL_G_SIGMOID:-}"
 # pair under an unweighted mean. Per list, so nothing depends on how many hard lists the epoch
 # dealt. 0.23 is the threshold used everywhere else here.
 REL_BALANCE_ACCEPT="${REL_BALANCE_ACCEPT:-}"
+# EXTRA_EVAL passes beyond the single --eval-pool, semicolon-separated so one env var can carry
+# several --extra-eval SPECs (each SPEC is itself comma-separated, which is why ';' and not ',').
+# PAE_SPLIT_ACCEPT turns on the per-epoch PAE-loss-by-group diagnostic at that DockQ threshold.
+EXTRA_EVAL="${EXTRA_EVAL:-}"
+PAE_SPLIT_ACCEPT="${PAE_SPLIT_ACCEPT:-}"
+RANK_DIAG_ONLY="${RANK_DIAG_ONLY:-}"
 # OFF BY DEFAULT. The gradient split costs one extra backward per pose on a measured step, and
 # the real arm does not need it: beta is estimated once by the one-epoch diagnostic
 # (shell_scripts/queue_rank_gradprobe_1ep.sh, which sets K=1) and then held fixed. A 50-epoch arm
@@ -382,6 +388,15 @@ ARGS=(--crop-pool "$POOL_DIR"
       "${RANK_ARGS[@]+${RANK_ARGS[@]}}")
 
 say "argv the trainer would receive:"
+if [ -n "$EXTRA_EVAL" ]; then
+  _IFS_SAVE="$IFS"; IFS=';'
+  for _spec in $EXTRA_EVAL; do
+    [ -n "$_spec" ] && ARGS+=(--extra-eval "$_spec")
+  done
+  IFS="$_IFS_SAVE"
+  say "EXTRA EVAL passes: $EXTRA_EVAL"
+fi
+
 printf '    %s\n' "${ARGS[@]}"
 if [ -n "$ALPHA_RANK" ]; then
   say "RANKING LOSS ON: rel at alpha $ALPHA_RANK, cross-seed, $RANK_S structure(s)/step,"
@@ -431,6 +446,8 @@ LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   --manifest-selection "$MANIFEST" --manifest-skip "$SKIP" \
   --fold training/fold --indices training/prep/all857_indices.csv \
   --pae-scored-pairs "$SCORED_PAIRS" \
+  ${PAE_SPLIT_ACCEPT:+--pae-split-accept "$PAE_SPLIT_ACCEPT"} \
+  ${RANK_DIAG_ONLY:+--rank-diag-only} \
   --pae-scored-roles training/fold/chain_roles_all.csv \
   --lean-readouts --train-only "$TRAIN_ONLY" --expect-trainable 113 \
   --warmup-steps 20 --seed 0 --clip-norm 25.0 \
