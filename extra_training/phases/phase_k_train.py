@@ -3143,22 +3143,54 @@ def main():
                 else:
                     _u0 += 1
             _pb_cnt[_key] = (_a0, _u0)
-        # THE NORMALISER IS THE MEAN WEIGHT OVER EVERY (POSE, INTERFACE) IN THE POOL, computed
-        # once from the labels so it is a constant of the run and not of a batch. Without it the
-        # weights -- 0.25 down to 0.00685 -- shrink the objective by ~100x and the arm becomes a
-        # learning-rate experiment wearing a weighting costume.
-        _wsum, _wn = 0.0, 0
+        # THE NORMALISER IS PER STRUCTURE, and the mean weight over that structure's own poses.
+        #
+        # WHY PER STRUCTURE AND NOT ONE GLOBAL CONSTANT. Dividing a structure's weights by their
+        # mean makes them sum to its POSE COUNT -- mean = S/n, so S / (S/n) = n -- which is
+        # exactly what an unweighted arm contributes for that structure. The ratios inside the
+        # structure are untouched, because every weight was divided by the same number. A global
+        # constant fixes only the overall average, and it makes a structure's weights depend on
+        # which OTHER structures are in the pool: the same structure would be weighted differently
+        # in this 151-list arm and in a full-set arm, so the two could not be compared. The first
+        # version of this code did that, and averaged over all 1,688 interfaces while the arm
+        # trained on 151 -- 0.0158 against 0.0140, a 13% hot loss.
+        #
+        # COMPUTED FROM THE LABELS, not from the per-pose OST join. A pose's interface set at
+        # runtime comes from _pose_pairs, which disagrees with the static set on 1,095 of 18,400
+        # checks; using it here would mean no normaliser until a structure had been seen. The
+        # labels give every (seed, sample) of every interface, which is the same population to
+        # within those disagreements -- and this is a scale, so a small difference in it is a
+        # small difference in scale, not a wrong weight.
+        _pb_norm = {}
+        _pb_pose_w = {}
         for (_p0, _pr0), (_a0, _u0) in _pb_cnt.items():
-            if _a0:
-                _wsum += (0.5 / _a0) * _a0
-                _wn += _a0
-            if _u0:
-                _wsum += (0.5 / _u0) * _u0
-                _wn += _u0
-        _pb_norm = (_wsum / _wn) if _wn else 1.0
-        print(f"  --pae-balance-accept {_pb_thr:g}: {len(_pb_cnt)} interface(s) counted, mean "
-              f"per-(pose,interface) weight {_pb_norm:.6g}; every pose weight is divided by it "
-              f"so the objective keeps an unweighted arm's scale", flush=True)
+            _per = None
+            for _k0, _v0 in _rank_lab.items():
+                if _k0[0] != _p0 or _k0[2] != _pr0:
+                    continue
+                for _sm0, _dq0 in _v0.items():
+                    try:
+                        _f0 = float(_dq0)
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(_f0):
+                        continue
+                    _w0 = ((0.5 / _a0) if (_f0 >= _pb_thr and _a0)
+                           else ((0.5 / _u0) if _u0 else None))
+                    if _w0 is None:
+                        continue
+                    _pb_pose_w.setdefault((_p0, _k0[1], _sm0), []).append(_w0)
+        for (_p0, _sd0, _sm0), _ws0 in _pb_pose_w.items():
+            _pb_norm.setdefault(_p0, []).append(sum(_ws0) / len(_ws0))
+        _pb_norm = {_p0: (sum(_v0) / len(_v0)) for _p0, _v0 in _pb_norm.items() if _v0}
+        _nv = sorted(_pb_norm.values())
+        print(f"  --pae-balance-accept {_pb_thr:g}: {len(_pb_cnt)} interface(s) over "
+              f"{len(_pb_norm)} structure(s); per-STRUCTURE mean weight "
+              f"{(_nv[len(_nv) // 2] if _nv else float('nan')):.6g} at the median "
+              f"({(_nv[0] if _nv else float('nan')):.6g} to "
+              f"{(_nv[-1] if _nv else float('nan')):.6g}). Each structure's weights are divided "
+              f"by its OWN mean, so they sum to its pose count -- what an unweighted arm "
+              f"contributes -- and the ratios inside it are unchanged", flush=True)
         if not _pb_cnt:
             raise SystemExit("STOP: --pae-balance-accept counted no interface. The DockQ labels "
                              "cover none of --pae-scored-pairs, so every weight would be the "
@@ -3211,7 +3243,14 @@ def main():
             if not _ws:
                 _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
                 return 1.0
-            _w = (sum(_ws) / len(_ws)) / _pb_norm
+            _nrm = _pb_norm.get(pdb)
+            if not _nrm:
+                # NO NORMALISER FOR THIS STRUCTURE means the labels covered none of its poses, so
+                # there is no scale to divide by; 1.0 leaves the pose exactly as an unweighted arm
+                # would have it, and the count makes that visible.
+                _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
+                return 1.0
+            _w = (sum(_ws) / len(_ws)) / _nrm
             _rel_stat["pb_wsum"] = _rel_stat.get("pb_wsum", 0.0) + _w
             _rel_stat["pb_wn"] = _rel_stat.get("pb_wn", 0) + 1
             return _w
