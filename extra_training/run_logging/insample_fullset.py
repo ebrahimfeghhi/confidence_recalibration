@@ -360,7 +360,14 @@ if not a.report_only:
                  "--pair-iptm-only", "--prefetch", "--pool-mean", "--select-by", "mean",
                  # MERGE-ONLY, AND THE REASON THE DEEP POOL DID NOT HAVE TO BE RE-RUN TWICE.
                  # One unresolvable pose used to refuse a merge holding 67,325 of 67,425 rows.
-                 "--drop-incomplete-ifaces"]
+                 "--drop-incomplete-ifaces",
+                 # AND THE SHARD-LEVEL HALF OF THE SAME DECISION. --drop-incomplete-ifaces only
+                 # acts at the MERGE, but the shard itself used to hard-stop on an unmappable
+                 # pose, so all three shards died and the merge never ran -- the gate above named
+                 # 4zto and promised it would be dropped, and it was not. This lets each shard
+                 # write what resolved and name what did not, so the promise the gate makes is
+                 # the behaviour that follows.
+                 "--drop-unmapped-poses"]
         if HEAD is not None:
             extra += POSE
         cmd = [PY, "-I", os.path.join(ROOT, "phases", "phase_k_eval_sharded.py"),

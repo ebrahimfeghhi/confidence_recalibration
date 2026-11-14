@@ -980,6 +980,25 @@ def main():
                     help="write EVERY row that fails the self-check to this csv, so the failure can "
                          "be analysed without re-running the evaluator.")
     ap.add_argument("--limit-units", type=int, default=0)
+    ap.add_argument("--crop-pool", default="",
+                    help="DIRECTORY of per-structure crop pools, the SAME format the trainer's "
+                         "--crop-pool takes (run_logging/select_crop_pool.py). Scores every unit "
+                         "on one crop instead of the whole structure.\n"
+                         "WHICH CROP: --crop-index, default 0, the SAME one for every unit and "
+                         "every epoch. The trainer rotates `epoch %% n` because it wants a "
+                         "different view each epoch; an evaluator must not, or two checkpoints "
+                         "would be scored on different inputs and the comparison between them "
+                         "would be of the crops as much as of the heads.\n"
+                         "THIS IS A PROXY, NOT A DEPLOYMENT NUMBER. The pool is selected so each "
+                         "crop's DockQ regret against the UNCROPPED selection is within a "
+                         "threshold (0.05 on validation/crop_final), which is what makes it "
+                         "usable to rank checkpoints cheaply -- roughly 3x faster, since the cost "
+                         "is quadratic in tokens and these are 256 against a 482-token median. "
+                         "Every number this project reports against shipped is uncropped, and a "
+                         "cropped one is not comparable with them.")
+    ap.add_argument("--crop-index", type=int, default=0,
+                    help="which crop of each structure's pool to use. Fixed across units and "
+                         "checkpoints on purpose; see --crop-pool.")
     ap.add_argument("--join-cache", default="",
                     help="cache the pose->sample join (unit_dir and sample indices) in this json "
                          "and reuse it. The join is derived from the trunk's coordinates and the "
@@ -1044,6 +1063,17 @@ def main():
     # metric) can only be judged on the UNION, so they run once in --rows-in mode, on CPU.
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshards", type=int, default=1)
+    ap.add_argument("--drop-unmapped-poses", action="store_true",
+                    help="IN --rows-out MODE ONLY: write the rows that resolved, record the "
+                         "unmapped poses in the meta, and EXIT 0 instead of refusing. The shard "
+                         "previously hard-stopped, which killed every shard of the pass and left "
+                         "the merge nothing to drop -- 4zto's 50-of-75 failure records took down "
+                         "a 67,425-pose in-sample run three times that way. The interfaces whose "
+                         "poses went missing are then short of their sub-pool's depth and are "
+                         "dropped BY NAME by --drop-incomplete-ifaces at the merge, which is "
+                         "where that decision belongs. It is deliberately inert outside "
+                         "--rows-out: a single-process metric run still refuses, because there "
+                         "no later step would catch the gap.")
     ap.add_argument("--drop-incomplete-ifaces", action="store_true",
                     help="MERGE ONLY. Report over the interfaces that are COMPLETE and drop the "
                          "ones that are not, naming them in the metric json and on stdout. "
@@ -1343,6 +1373,29 @@ def main():
     _pf_future = None
 
     rows, selfchk, n_nosample = [], [], 0
+    _CROPPOOL = {}
+    if a.crop_pool:
+        if not os.path.isdir(a.crop_pool):
+            raise SystemExit(f"STOP: --crop-pool {a.crop_pool} is not a directory.")
+        # ONE FILE PER STRUCTURE, N masks of possibly DIFFERENT lengths -- a pool can mix rungs,
+        # because a structure that found no passing crop at 256 escalates. So the masks are a
+        # list of index arrays, not one rectangular block. Same reader as the trainer's.
+        for _f in sorted(os.listdir(a.crop_pool)):
+            if not _f.endswith(".npz"):
+                continue
+            _z = np.load(os.path.join(a.crop_pool, _f), allow_pickle=True)
+            _ks = sorted((k for k in _z.files if k.startswith("c") and k[1:].isdigit()),
+                         key=lambda k: int(k[1:]))
+            _rows = [np.asarray(r, dtype=np.int64) for k in _ks for r in _z[k]]
+            if _rows:
+                _CROPPOOL[_f[:-4]] = _rows
+        if not _CROPPOOL:
+            raise SystemExit(f"STOP: --crop-pool {a.crop_pool} produced no masks.")
+        _nn = [len(v) for v in _CROPPOOL.values()]
+        print(f"CROP POOL: {len(_CROPPOOL)} structure(s) from {a.crop_pool}, "
+              f"{min(_nn)}..{max(_nn)} crop(s) each, using index {a.crop_index} for all of them "
+              f"-- a PROXY, not comparable with any uncropped number")
+
     # _CROPTOK AND --crop-tokens ARE GONE. The only crop rule left is --crop-pool's,
     # which the TRAINER applies; the evaluator is uncropped except for
     # --crop-predicted-margin, which derives its window from predicted coordinates
@@ -1367,12 +1420,48 @@ def main():
         # a failed join just drops the unit. The crop applies to what the HEAD consumes; px stays
         # whole. This also keeps every existing join cache valid, because the join is unchanged.
         _px_full = None
-        # THE --crop-tokens AND --crop-margin BRANCHES WERE HERE and are deleted with their
-        # flags. --crop-margin derived the window from label_coordinate, so nothing it produced
-        # was a deployment number; --crop-tokens read a precomputed mask whose builder no longer
-        # exists. The crop the project uses is --crop-pool, applied by the TRAINER, and the
-        # evaluator stays uncropped apart from --crop-predicted-margin below.
-        if a.pose_split_check:
+        # --crop-tokens AND --crop-margin WERE HERE and went with their flags: the first read a
+        # mask whose builder no longer exists, the second derived its window from
+        # label_coordinate so nothing it produced was a deployment number. --crop-pool is the one
+        # rule left, and this is the evaluator's half of it.
+        if a.crop_pool:
+            # A MISSING POOL ENTRY IS FATAL, never a quiet fall-through to the whole structure:
+            # a pass where some units were cropped and some were not would still write a complete
+            # metric and name itself after the crop. Same refusal the trainer makes.
+            _rows = _CROPPOOL.get(pdb)
+            if _rows is None:
+                raise SystemExit(f"STOP: --crop-pool has no entry for {pdb}. The pool holds "
+                                 f"{len(_CROPPOOL)} structure(s); this pool needs {pdb} too.")
+            if a.crop_index >= len(_rows) or a.crop_index < 0:
+                raise SystemExit(f"STOP: --crop-index {a.crop_index} but {pdb} has "
+                                 f"{len(_rows)} crop(s).")
+            _zc = np.load(tp)
+            _px_full = np.asarray(_zc["ci_coordinate"])
+            _ntok = int(np.asarray(_zc["ci_feat_asym_id"]).reshape(-1).shape[0])
+            _idx = _rows[a.crop_index]
+            if _idx.size and int(_idx.max()) >= _ntok:
+                raise SystemExit(f"STOP: {pdb} crop {a.crop_index} indexes token "
+                                 f"{int(_idx.max())} but its cached trunk has {_ntok}. The pool "
+                                 f"was built against a different cache and slicing with it would "
+                                 f"scramble the structure.")
+            _kt = np.zeros(_ntok, dtype=bool)
+            _kt[_idx] = True
+            # THE LABEL NPZ IS STILL NEEDED, and that is bookkeeping rather than supervision:
+            # slice_cached_unit re-indexes the unit's cached label arrays alongside the features.
+            # The CROP itself comes from the pool and reads no ground truth.
+            _lp = os.path.join(_labels_root, pdb, f"free_{sd_}.npz")
+            if not os.path.exists(_lp):
+                raise SystemExit(f"STOP: --crop-pool needs the label npz to slice the unit's "
+                                 f"arrays and {_lp} does not exist.")
+            _lab = np.load(_lp, allow_pickle=True)
+            _a2t = np.asarray(_zc["ci_feat_atom_to_token_idx"]).reshape(-1)
+            _inr = (_a2t >= 0) & (_a2t < _ntok)
+            _ka = np.zeros(_a2t.shape[0], dtype=bool)
+            _ka[_inr] = _kt[_a2t[_inr]]
+            feat, s_in, s_tr, z, x, nc = BC.slice_cached_unit(_zc, _lab, _kt, _ka, dev, torch)[:6]
+            _n_cropped += 1
+            _tok_full += int(_kt.shape[0]); _tok_kept += int(_kt.sum())
+        elif a.pose_split_check:
             # ONE SLICE PER POSE, WITH NOTHING CROPPED. --crop-predicted-margin was deleted
             # 2026-11-13 along with --crop-tokens and --crop-margin, leaving --crop-pool (applied
             # by the TRAINER) as the only crop rule; the evaluator is uncropped. What survives
@@ -1615,6 +1704,11 @@ def main():
     # THE CROP IS REPORTED, NEVER ASSUMED. A --crop-margin that silently cropped nothing would
     # produce an "uncropped" number under a cropped label, which is the whole failure this run is
     # about.
+    if a.crop_pool:
+        _kf = (_tok_kept / _tok_full) if _tok_full else float("nan")
+        print(f"\ncrop: {_n_cropped} unit(s) on --crop-pool index {a.crop_index}; kept "
+              f"{_tok_kept}/{_tok_full} token(s) ({100 * _kf:.1f}%). PROXY -- not comparable "
+              f"with an uncropped number.")
     # THE PER-POSE CROP REPORT WAS HERE, with its kept-token fraction and the crop-size
     # spread diagnostic. It went with --crop-predicted-margin on 2026-11-13; the evaluator
     # no longer crops anything, so there is nothing to report.
@@ -1656,6 +1750,14 @@ def main():
                        "n_unmapped": len(unmapped), "unmapped": unmapped[:50],
                        "budget": a.budget, "ckpt": a.ckpt}, fh, indent=1)
         print(f"shard {a.shard}: {len(rows)} row(s) -> {a.rows_out}")
+        if unmapped and a.drop_unmapped_poses:
+            for u in unmapped[:10]:
+                print(f"    {u}")
+            print(f"  --drop-unmapped-poses: {len(unmapped)} pose(s) in this shard have no usable "
+                  f"OST chain mapping and were NOT written. They are named in the meta; their "
+                  f"interfaces will be short of depth and must be dropped by name at the merge.",
+                  flush=True)
+            return
         if unmapped:
             for u in unmapped[:10]:
                 print(f"    {u}")
