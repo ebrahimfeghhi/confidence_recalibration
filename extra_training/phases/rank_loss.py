@@ -417,6 +417,23 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean", n_pair_tokens=None
     return t[keep].mean()
 
 
+def _wmean(w, err):
+    """sum(w * err) / sum(w), or an exact zero when the interface carries no weight.
+
+    A clamped denominator was the first version and it is subtly wrong: with sum(w) below the
+    clamp the result is the true weighted mean SCALED by sum(w)/clamp -- a small number that
+    reads like a small loss rather than like an interface nothing can be learned from. Review
+    found it: all-zero labels at POW=2 gave 5.0e-6 where the weighted mean is ~1.0.
+
+    Returning a zero that is still attached to the graph keeps the gradient defined (it is zero,
+    which is the right answer when no pose carries weight) without special-casing the caller.
+    """
+    tot = w.sum()
+    if float(tot) <= 1e-12:
+        return (w * err).sum() * 0.0
+    return (w * err).sum() / tot
+
+
 def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_FLOOR,
                sd_weight=False, g_weight=0.0, g_sigmoid=None):
     """Mean-centred regression coefficients for ONE interface's poses.
@@ -477,7 +494,7 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
             # property that justifies it here, not the coincidence of the number.
             _mid, _wid = g_sigmoid
             _w = torch.sigmoid((g - _mid) / _wid)
-            L = (_w * (sc_ - gc_) ** 2).sum() / _w.sum().clamp_min(1e-12)
+            L = _wmean(_w, (sc_ - gc_) ** 2)
         elif g_weight > 0.0:
             # PER-POSE WEIGHT BY THE RAW GROUND TRUTH, so misplacing a pose the truth rates highly
             # costs more than misplacing a bad one. The two-pass standardisation is untouched: the
@@ -495,7 +512,7 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
             # zero-sum gradient survives: the weights multiply a per-pose error whose argument is
             # still the CENTRED prediction.
             _w = g.clamp_min(0.0) ** g_weight
-            L = (_w * (sc_ - gc_) ** 2).sum() / _w.sum().clamp_min(1e-12)
+            L = _wmean(_w, (sc_ - gc_) ** 2)
         else:
             L = ((sc_ - gc_) ** 2).mean()
         L.backward()

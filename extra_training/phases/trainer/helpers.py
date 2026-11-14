@@ -1138,6 +1138,19 @@ def _xs_prepare(rt, step_units, ep):
         if rt.a.rank_form == "rel":
             # NOT group_coeffs. rel is a regression, not a pairwise family, so none of the
             # pairwise knobs apply and passing them would make flags look honoured.
+            # EVERY WEIGHT THE ARGS ASK FOR, OR A REFUSAL. This call passed only
+            # standardize, so --rel-sd-weight and the two per-pose weights would have been
+            # recorded in args.json and the banner and then silently not applied -- the same
+            # class of defect as the rank_form dispatch above, which is why that comment is
+            # there. This package is not yet wired into phase_k_train; the refusal is what makes
+            # switching it on safe rather than quietly wrong.
+            for _f in ("rel_sd_weight", "rel_g_weight", "rel_g_sigmoid"):
+                if getattr(rt.a, _f, None):
+                    raise SystemExit(
+                        f"STOP: --{_f.replace('_', '-')} is set, but this trainer package does "
+                        f"not pass it to rel_coeffs, so the run would optimise a different loss "
+                        f"from the one its args.json records. Use phases/phase_k_train.py, or "
+                        f"thread the weight through here first.")
             c, npair, lval = RKL.rel_coeffs(s_by, dq_by,
                                             standardize=rt.a.rel_standardize)
             rt._rel_stat["groups"] += 1
