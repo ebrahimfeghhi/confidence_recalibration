@@ -196,6 +196,43 @@ for sub in SUB_ORDER:
         w.writeheader()
         for r in sub_rows[sub]:
             w.writerow({k: r[k] for k in ("pdb", "chain1", "chain2")})
+# ---- GATE: EVERY STRUCTURE HAS A READABLE OST CHAIN MAPPING -------------------------------
+#
+# 4zto taught this twice, each time after ~40 minutes of GPU. Its chain mapping FAILED when its
+# poses were generated -- ost_json/<sample>.json holds {"status": "FAILURE", "traceback": "Target
+# chain \"M\" is not available in target processed for chain mapping"} instead of a mapping -- so
+# 50 of its 75 pose jsons describe nothing. phase_k_eval refuses such a pose rather than falling
+# back to the static pair, which is correct, but the refusal arrives in a shard two thirds of the
+# way through a pass. --drop-incomplete-ifaces then rescues the OTHER 1,686 interfaces, so the
+# number is still right; what it costs is the time, twice.
+#
+# This reads the pose json headers -- a few hundred small files, ~2 s -- and names the structures
+# whose mapping cannot be read, BEFORE a card is touched. It reports rather than stops, because
+# the drop is a legitimate outcome and refusing would make the whole pool unscorable over two
+# interfaces; the point is that it is known at the start instead of discovered at the end.
+_ost_bad = {}
+for _p in structs:
+    _n_fail = _n_seen = 0
+    for _dir in sorted(glob.glob(os.path.join(ROOT, FOLD, "poses", _p, "*"))):
+        for _j in sorted(glob.glob(os.path.join(_dir, "ost_json", "*.json"))):
+            _n_seen += 1
+            try:
+                with open(_j) as _fh:
+                    if '"status": "FAILURE"' in _fh.read(400):
+                        _n_fail += 1
+            except OSError:
+                _n_fail += 1
+    if _n_fail:
+        _ost_bad[_p] = (_n_fail, _n_seen)
+if _ost_bad:
+    say(f"  OST MAPPING UNREADABLE on {len(_ost_bad)} structure(s) -- their interfaces will be "
+        f"DROPPED by --drop-incomplete-ifaces, and the metric will cover the rest:")
+    for _p, (_f, _n) in sorted(_ost_bad.items()):
+        _ifs = sorted(i for i in _all if i.startswith(_p + "_"))
+        say(f"    {_p}: {_f} of {_n} pose json(s) are failure records -- {', '.join(_ifs)}")
+else:
+    say("  OST mapping readable for every structure")
+
 say("  GATES PASSED: partition exact, roles complete, every intended unit has a trunk and a score")
 
 # ---- THE ONE HEAD THIS INVOCATION SCORES --------------------------------------------------------
@@ -370,20 +407,63 @@ def collect(tag):
     return by, short
 
 
+def _ranks(v):
+    """Average ranks, so ties do not invent an ordering the scores do not have."""
+    order = sorted(range(len(v)), key=lambda i: v[i])
+    r = [0.0] * len(v)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and v[order[j + 1]] == v[order[i]]:
+            j += 1
+        avg = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            r[order[k]] = avg
+        i = j + 1
+    return r
+
+
+def _spearman(a, b):
+    """Spearman rho over one interface's poses, or None where it is undefined."""
+    if len(a) < 3:
+        return None
+    ra, rb = _ranks(a), _ranks(b)
+    ma, mb = sum(ra) / len(ra), sum(rb) / len(rb)
+    da = [x - ma for x in ra]
+    db = [x - mb for x in rb]
+    na = sum(x * x for x in da) ** 0.5
+    nb = sum(x * x for x in db) ** 0.5
+    if na <= 0 or nb <= 0:       # a constant score or a constant DockQ: no ordering to score
+        return None
+    return sum(x * y for x, y in zip(da, db)) / (na * nb)
+
+
 def summarise(by, col):
-    sel, orc = [], []
+    sel, orc, rhos = [], [], []
     for ifc, cand in by.items():
         pick = [c for c in cand if c[col] is not None]
         if not pick:
             return None
         sel.append(max(pick, key=lambda c: c[col])[3])
         orc.append(max(c[3] for c in cand))
+        # WITHIN-INTERFACE RANK CORRELATION, free: the rows that give the argmax give the whole
+        # ordering. Selected DockQ reads ONE pose per interface and discards the other 74
+        # comparisons this pass already paid for; the trainer's own diagnostic measured rho as
+        # far more sensitive (t=7.6 against t=2.7). An interface with fewer than three poses, or
+        # a constant score or DockQ, contributes no rho rather than a zero.
+        _r = _spearman([c[col] for c in pick], [c[3] for c in pick])
+        if _r is not None:
+            rhos.append(_r)
     n = len(sel)
+    _rh = sorted(rhos)
     return {"n_interfaces": n,
             "mean_dockq": round(sum(sel) / n, 4),
             "frac_acc": round(sum(1 for d in sel if d >= ACCEPTABLE) / n, 4),
             "oracle_mean_dockq": round(sum(orc) / n, 4),
-            "oracle_frac_acc": round(sum(1 for d in orc if d >= ACCEPTABLE) / n, 4)}
+            "oracle_frac_acc": round(sum(1 for d in orc if d >= ACCEPTABLE) / n, 4),
+            "n_rho": len(_rh),
+            "median_rho": round(_rh[len(_rh) // 2], 4) if _rh else None,
+            "mean_rho": round(sum(_rh) / len(_rh), 4) if _rh else None}
 
 
 # EVERY HEAD THAT HAS SHARDS ON DISK, SHIPPED FIRST. This is what makes the 4-row comparison a
@@ -425,12 +505,21 @@ for _, tag, h in heads:
 ctl = summarise(ships, 2) if ships is not None else None
 
 say("")
-say(f"  {'selector':42s} {'n_if':>6} {'mean DockQ':>11} {'frac acc':>9}")
+say(f"  {'selector':42s} {'n_if':>6} {'mean DockQ':>11} {'frac acc':>9} "
+    f"{'med rho':>8} {'mean rho':>9} {'n_rho':>6}")
+
+
+def _rowfmt(label, s):
+    _mr = "      --" if s.get("median_rho") is None else f"{s['median_rho']:+8.4f}"
+    _ar = "       --" if s.get("mean_rho") is None else f"{s['mean_rho']:+9.4f}"
+    return (f"  {label:42s} {s['n_interfaces']:6d} {s['mean_dockq']:11.4f} "
+            f"{s['frac_acc']:9.4f} {_mr} {_ar} {s.get('n_rho', 0):6d}")
+
+
 for label, s in TABLE:
-    say(f"  {label:42s} {s['n_interfaces']:6d} {s['mean_dockq']:11.4f} {s['frac_acc']:9.4f}")
+    say(_rowfmt(label, s))
 if ctl:
-    say(f"  {'(control) shipped stored MAX-pooled':42s} {ctl['n_interfaces']:6d} "
-        f"{ctl['mean_dockq']:11.4f} {ctl['frac_acc']:9.4f}")
+    say(_rowfmt("(control) shipped stored MAX-pooled", ctl))
 if TABLE:
     say(f"  {'oracle over the candidates':42s} {TABLE[0][1]['n_interfaces']:6d} "
         f"{TABLE[0][1]['oracle_mean_dockq']:11.4f} {TABLE[0][1]['oracle_frac_acc']:9.4f}")
