@@ -418,7 +418,7 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean", n_pair_tokens=None
 
 
 def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_FLOOR,
-               sd_weight=False, g_weight=0.0):
+               sd_weight=False, g_weight=0.0, g_sigmoid=None):
     """Mean-centred regression coefficients for ONE interface's poses.
 
     s_by_key / g_by_key: {(seed, sample): float}. Returns ({key: dL/ds}, n_poses, loss).
@@ -460,7 +460,25 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
         sc_ = sl - sl.mean()
         sc_ = sc_ / sc_.std(unbiased=False).clamp_min(std_floor)
         gc_ = gc / gc.std(unbiased=False).clamp_min(std_floor)
-        if g_weight > 0.0:
+        if g_sigmoid is not None:
+            # A SOFT THRESHOLD ON THE RAW GROUND TRUTH, w_i = sigmoid((g_i - mid) / width),
+            # instead of the raw score itself. Same weighted-mean reduction, same two passes.
+            #
+            # WHY A THRESHOLD BEATS THE RAW SCORE HERE. The true iTM over this training set is
+            # BIMODAL, not spread: measured over 1,117,590 poses, p10 0.086, p25 0.220, p50 0.670,
+            # p90 0.853. Weighting by g itself therefore spends most of its contrast separating
+            # 0.67 from 0.85 -- two poses that are both fine -- while a threshold at 0.23 lands in
+            # the valley between the modes and asks the question that matters: is this pose good
+            # at all. Measured weight spread p90/p10 is 5.2x against 9.9x for raw g, but it is
+            # spent where the distribution actually splits.
+            #
+            # THE MIDPOINT IS THE DockQ ACCEPTABLE THRESHOLD, 0.23, carried over to the iTM axis
+            # deliberately: it is where this label's own distribution separates, which is the
+            # property that justifies it here, not the coincidence of the number.
+            _mid, _wid = g_sigmoid
+            _w = torch.sigmoid((g - _mid) / _wid)
+            L = (_w * (sc_ - gc_) ** 2).sum() / _w.sum().clamp_min(1e-12)
+        elif g_weight > 0.0:
             # PER-POSE WEIGHT BY THE RAW GROUND TRUTH, so misplacing a pose the truth rates highly
             # costs more than misplacing a bad one. The two-pass standardisation is untouched: the
             # weight enters only the final reduction, as a weighted mean -- sum(w * err^2) / sum(w)
@@ -484,11 +502,11 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
         c = sl.grad.detach().clone()
         loss = float(L.detach())
     else:
-        if g_weight > 0.0:
+        if g_weight > 0.0 or g_sigmoid is not None:
             # REFUSED RATHER THAN APPROXIMATED. The closed form below is the gradient of the
             # UNWEIGHTED mean; a per-pose weight changes it everywhere, and the standardised path
             # above is the only one that differentiates what it reports.
-            raise ValueError("g_weight requires standardize=True")
+            raise ValueError("a per-pose g weight requires standardize=True")
         r = (s - s.mean()) - gc
         loss = float((r ** 2).mean())
         c = (2.0 / P) * r
@@ -529,6 +547,8 @@ def rel_coeffs(s_by_key, g_by_key, standardize=False, std_floor=DEFAULT_REL_STD_
 
 
 def rel_loss_value(s_by_key, g_by_key, standardize=False,
-                   std_floor=DEFAULT_REL_STD_FLOOR, sd_weight=False, g_weight=0.0):
+                   std_floor=DEFAULT_REL_STD_FLOOR, sd_weight=False, g_weight=0.0,
+                   g_sigmoid=None):
     """The loss value alone, for logging. Same arithmetic as rel_coeffs."""
-    return rel_coeffs(s_by_key, g_by_key, standardize, std_floor, sd_weight, g_weight)[2]
+    return rel_coeffs(s_by_key, g_by_key, standardize, std_floor, sd_weight, g_weight,
+                      g_sigmoid)[2]

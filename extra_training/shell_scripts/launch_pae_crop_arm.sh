@@ -305,6 +305,10 @@ REL_STD_FLOOR="${REL_STD_FLOOR:-}"
 # pose the truth rates highly costs more than misplacing a bad one. It is a weighted mean, not a
 # weighted sum, so the loss keeps its scale; 1 is the linear form, 2 the sharper one.
 REL_G_WEIGHT="${REL_G_WEIGHT:-}"
+# REL_G_SIGMOID is the same idea as a SOFT THRESHOLD, MID:WIDTH, e.g. 0.23:0.1. The true iTM is
+# bimodal (p25 0.220, p50 0.670), so a midpoint in the valley asks "is this pose good at all"
+# where the raw score spends its contrast separating two poses that are both fine.
+REL_G_SIGMOID="${REL_G_SIGMOID:-}"
 # OFF BY DEFAULT. The gradient split costs one extra backward per pose on a measured step, and
 # the real arm does not need it: beta is estimated once by the one-epoch diagnostic
 # (shell_scripts/queue_rank_gradprobe_1ep.sh, which sets K=1) and then held fixed. A 50-epoch arm
@@ -331,6 +335,7 @@ if [ -n "$ALPHA_RANK" ]; then
   [ -n "$REL_SD_WEIGHT" ] && RANK_ARGS+=(--rel-sd-weight)
   [ -n "$REL_STD_FLOOR" ] && RANK_ARGS+=(--rel-std-floor "$REL_STD_FLOOR")
   [ -n "$REL_G_WEIGHT" ] && RANK_ARGS+=(--rel-g-weight "$REL_G_WEIGHT")
+  [ -n "$REL_G_SIGMOID" ] && RANK_ARGS+=(--rel-g-sigmoid "$REL_G_SIGMOID")
   # THE FLAG AND ITS VALUE TOGETHER, OR NEITHER. The first version of this line expanded to a
   # BARE NUMBER with the flag name dropped, so K=1 would have appended "1" as a positional
   # argument and argparse would have refused the whole launch. Appended conditionally instead,

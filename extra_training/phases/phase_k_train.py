@@ -292,6 +292,19 @@ def main():
                          "below-average poses. REQUIRES --rel-standardize, and composes with "
                          "--rel-sd-weight, which stays applied on top. ALPHA MUST BE "
                          "RE-MEASURED with --grad-norm-every.")
+    ap.add_argument("--rel-g-sigmoid", default=None, metavar="MID:WIDTH",
+                    help="PER-POSE WEIGHT AS A SOFT THRESHOLD ON THE RAW GROUND TRUTH, "
+                         "w_i = sigmoid((g_i - MID) / WIDTH), in place of --rel-g-weight's g^POW. "
+                         "0.23:0.1 gives ~0.2 at g=0.1, 0.5 at 0.23, ~0.75 at 0.35 and ~1 above "
+                         "0.5. The reduction is the same weighted mean, sum(w * err^2) / sum(w), "
+                         "and the two passes and --rel-sd-weight are unchanged. WHY A THRESHOLD "
+                         "AND NOT THE SCORE: the true iTM here is BIMODAL -- measured over "
+                         "1,117,590 poses, p10 0.086, p25 0.220, p50 0.670, p90 0.853 -- so "
+                         "weighting by g itself spends its contrast separating 0.67 from 0.85, "
+                         "two poses that are both fine, while a midpoint at 0.23 sits in the "
+                         "valley and asks whether the pose is good at all. REQUIRES "
+                         "--rel-standardize and is mutually exclusive with --rel-g-weight. ALPHA "
+                         "MUST BE RE-MEASURED with --grad-norm-every.")
     ap.add_argument("--rel-standardize", action="store_true",
                     help="ABLATION. Also divide each interface's centred prediction and label by "
                          "its own std (floored), which makes the loss invariant to shrinking the "
@@ -1435,6 +1448,24 @@ def main():
     # actually fired would otherwise look exactly like one that did.
     if a.pae_entropy > 0.0:
         globals()["TERMS"] = TERMS + ("pae_entropy",)
+    _G_SIG = None
+    if a.rel_g_sigmoid:
+        try:
+            _m, _w = (float(x) for x in str(a.rel_g_sigmoid).split(":"))
+        except Exception:
+            raise SystemExit(f"STOP: --rel-g-sigmoid {a.rel_g_sigmoid!r} is not MID:WIDTH, "
+                             f"e.g. 0.23:0.1")
+        if not _w > 0.0:
+            raise SystemExit(f"STOP: --rel-g-sigmoid width {_w} must be positive; at 0 the "
+                             f"weight is a hard step with no gradient either side.")
+        if a.rel_g_weight:
+            raise SystemExit("STOP: --rel-g-sigmoid and --rel-g-weight are two different "
+                             "per-pose weights; pass one.")
+        if not a.rel_standardize:
+            raise SystemExit("STOP: --rel-g-sigmoid needs --rel-standardize, for the same reason "
+                             "--rel-g-weight does: the weight is defined on the z-scored error "
+                             "and the unstandardised path uses a closed-form gradient.")
+        _G_SIG = (_m, _w)
     if a.rel_g_weight and not a.rel_standardize:
         raise SystemExit("STOP: --rel-g-weight needs --rel-standardize. The weight is defined on "
                          "the z-scored error, and the unstandardised path uses a closed-form "
@@ -2729,6 +2760,8 @@ def main():
                   + (", STANDARDISED by the within-interface std" if a.rel_standardize else "")
                   + (", WEIGHTED by the true within-interface std" if a.rel_sd_weight else "")
                   + (f", PER-POSE WEIGHTED by g^{a.rel_g_weight:g}" if a.rel_g_weight else "")
+                  + (f", PER-POSE WEIGHTED by sigmoid((g-{_G_SIG[0]:g})/{_G_SIG[1]:g})"
+                     if _G_SIG else "")
                   + f". Labels {a.rel_labels} ({_mj.get('structures', '?')} structure(s), "
                   f"{_mj.get('rows', '?')} row(s), column "
                   f"{'g_max' if a.rank_pool == 'max' else 'g_mean'}, digest "
@@ -3630,6 +3663,7 @@ def main():
                  "rel_standardize": a.rel_standardize,
                  "rel_sd_weight": a.rel_sd_weight,
                  "rel_g_weight": a.rel_g_weight,
+                 "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                  # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
                  # shape, so a resume that moved any of them silently would be a different
@@ -3795,7 +3829,7 @@ def main():
                      "rank_loss": False, "alpha_rank": 1.0,
                      "rank_pool": "max", "rel_labels": "", "rel_standardize": False,
                      "rel_sd_weight": False, "rel_std_floor": -1.0,
-                     "rel_g_weight": 0.0,
+                     "rel_g_weight": 0.0, "rel_g_sigmoid": "",
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
@@ -6290,6 +6324,7 @@ def main():
                                                 standardize=a.rel_standardize,
                                                 sd_weight=a.rel_sd_weight,
                                                 g_weight=a.rel_g_weight,
+                                                g_sigmoid=_G_SIG,
                                                 **({} if a.rel_std_floor is None
                                                    else {"std_floor": a.rel_std_floor}))
                 _rel_stat["groups"] += 1
@@ -8058,6 +8093,7 @@ def main():
                  "rel_standardize": a.rel_standardize,
                  "rel_sd_weight": a.rel_sd_weight,
                  "rel_g_weight": a.rel_g_weight,
+                 "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                                   "rank_form": a.rank_form,
                                   "rank_cross_seed": a.rank_cross_seed,
