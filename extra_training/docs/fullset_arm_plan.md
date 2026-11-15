@@ -78,7 +78,7 @@ losses). One checkpoint only. The full one-hour pass runs on that checkpoint and
 
 | observation | reading | action |
 | --- | --- | --- |
-| epoch-2 val easy bin well below shipped's 96% | the learning rate is too high | stop, lower it, restart |
+| epoch-2 val easy bin well below shipped's 96% | the learning rate is too high | **enforced in the chain**: it stops after the epoch-2 score if the easy bin is more than `EASY_DROP` (default 5) points under shipped |
 | slice improves in the thin bins, val does not | generalisation gap; data is the limit | stop training, carve a better held-out set |
 | slice does not improve in the thin bins | the loss is the limit, not the data | revisit the objective |
 | val beats shipped | the thing we were after | stop, go to test |
@@ -95,6 +95,16 @@ losses). One checkpoint only. The full one-hour pass runs on that checkpoint and
 * **Release dates are documentation only.** `run_logging/fetch_release_dates.py` records that 317
   of 853 training structures are pre-cutoff, but nothing in this arm gates, strata-fies or reports
   on that. The pre/post framing is not measurable from what the arm emits.
+
+## How the chain behaves on its own
+
+`shell_scripts/fullset_chain.sh` trains each segment with `EPOCHS=<stop>` and lets the trainer exit
+at that boundary -- it does not kill a healthy run, because rank 0 writes the resume bundle BEFORE
+the head and a watchdog firing on the bundle would race the head's write. Each segment must end
+with `exit_code=0` in its `status.json` and leave both artefacts, or the chain stops. Scoring fails
+closed: a segment whose scoring fails ends the chain rather than training on to 60 with no
+evidence. The only automatic judgement is the epoch-2 easy-bin gate above; every other decision is
+yours to make from the tables.
 
 ## What this arm cannot answer
 

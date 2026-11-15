@@ -10,6 +10,7 @@ set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
 R=/home/ebrahim/confidence_recalibration/extra_training
+mkdir -p "${SD:-/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad}"
 SD=${SD:-/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad}
 CKPT=${CKPT:?set CKPT to a head_ep*.pt}
 TAG=${TAG:?set TAG, e.g. ep20}

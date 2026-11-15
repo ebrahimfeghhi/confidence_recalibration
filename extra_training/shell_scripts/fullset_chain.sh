@@ -23,6 +23,9 @@ say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 newest_rid(){ ls -td training/runs/*/ | grep -vE "/latest/$" | head -1 | xargs basename; }
 
 STOPS="${STOPS:-1 2 4 7 10 20 30 40 50 60}"
+SD="${SD:-/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad}"
+export SD
+mkdir -p "$SD"
 SLICE_AT="${SLICE_AT:-10 20 30 40 50 60}"
 RID=""
 PREV_EP=0
@@ -65,30 +68,48 @@ for E in $STOPS; do
     RID=$NEW; echo "$RID" > training/runs/fullset_rid
     say "segment running as $RID"
 
-    while [ ! -s "training/runs/$RID/resume_ep${E}.pt" ]; do
-        if ! ps -eo args | grep -F "$RID" | grep -q phase_k_train; then
-            [ -s "training/runs/$RID/resume_ep${E}.pt" ] && break
-            say "ABORT: $RID exited before epoch $E"; tail -5 "training/runs/$RID/run.log"; exit 6
-        fi
-        sleep 60
-    done
-    say "epoch $E reached; stopping the segment"
-    PIDS=$(ps -eo pid,args | grep -F "$RID" | grep -v ugrep | awk '/torchrun|phase_k_train|launch\.py/ {print $1}')
-    for p in $PIDS; do kill "$p" 2>/dev/null; done
-    for i in $(seq 1 60); do
-        A=0; for p in $PIDS; do [ -d "/proc/$p" ] && A=$((A+1)); done
-        [ "$A" -eq 0 ] && break; sleep 5
-    done
-    for p in $PIDS; do [ -d "/proc/$p" ] && kill -9 "$p" 2>/dev/null; done
-    sleep 15
+    # LET IT STOP ITSELF. The segment was launched with EPOCHS=$E, so the trainer exits at that
+    # boundary on its own. Killing it on sight of resume_ep<E>.pt is both unnecessary and a race:
+    # rank 0 writes the resume bundle FIRST and the head after, so a watchdog that fires on the
+    # bundle can kill the process while the head is still being written -- and then refuse the
+    # segment for a head that was moments away. Wait for the exit, then require a clean status
+    # and BOTH artefacts.
+    say "waiting for the segment to finish at epoch $E"
+    while ps -eo args | grep -F "$RID" | grep -q phase_k_train; do sleep 60; done
+    for i in $(seq 1 30); do [ -s "training/runs/$RID/status.json" ] && break; sleep 10; done
+    RC=$($PY -I -c "
+import json,sys
+try: print(json.load(open('training/runs/$RID/status.json')).get('exit_code'))
+except Exception: print('missing')" 2>/dev/null)
+    [ "$RC" = "0" ] || { say "ABORT: segment $E ended with exit_code=$RC"
+        tail -5 "training/runs/$RID/run.log"; exit 6; }
+    [ -s "training/runs/$RID/resume_ep${E}.pt" ] || { say "ABORT: no resume bundle at epoch $E"; exit 7; }
 
     H=$(ls training/runs/$RID/head_ep${E}_step*.pt 2>/dev/null | head -1)
-    [ -s "$H" ] || { say "ABORT: no head at epoch $E"; exit 7; }
+    [ -s "$H" ] || { say "ABORT: no head at epoch $E"; exit 8; }
     SIDES=val
     for s in $SLICE_AT; do [ "$s" = "$E" ] && SIDES=both; done
     say "scoring epoch $E ($SIDES)"
+    # FAIL CLOSED. A chain that scores nothing and trains to 60 anyway has spent the GPU and
+    # produced no evidence, which is the one outcome worth refusing.
     CKPT="$R/$H" TAG="fs_ep$E" SIDES=$SIDES ./shell_scripts/score_checkpoint.sh \
-        || say "WARNING: scoring epoch $E exited $?"
+        || { say "ABORT: scoring epoch $E failed"; exit 9; }
+
+    # THE PROTOCOL'S EPOCH-2 RULE, ENFORCED RATHER THAN WRITTEN DOWN. "Easy bin well below
+    # shipped" is the stop condition; EASY_DROP is how far below counts, in points.
+    if [ "$E" = 2 ]; then
+        $PY -I - <<PYEOF || { say "STOPPING at the epoch-2 check; lower the lr and start again"; exit 10; }
+import re, sys
+t = open("$SD/report_fs_ep2.txt").read()
+m = [l for l in t.splitlines() if l.strip().startswith("5/5")]
+if not m:
+    print("  epoch-2 check: no 5/5 row in the report"); sys.exit(1)
+f = re.findall(r"(\d+)%", m[-1])
+ours, ship = int(f[0]), int(f[1])
+print(f"  epoch-2 check: easy bin {ours}% against shipped {ship}%")
+sys.exit(0 if ours >= ship - int("${EASY_DROP:-5}") else 1)
+PYEOF
+    fi
     PREV_EP=$E
 done
 say "CHAIN COMPLETE over epochs $STOPS"
