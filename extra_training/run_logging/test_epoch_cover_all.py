@@ -11,9 +11,14 @@ import csv                                                          # noqa: E402
 
 import epoch_plan as EP                                             # noqa: E402
 
-MANIFEST = "train_val_splits/cache_train_structures_extended.csv"
-SKIP = set("4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m".split(","))
-WORLD = 3
+# THE MANIFEST THE ARM ACTUALLY USES, not the one the gate was written against. Hardcoded, this
+# gate certified cache_train_structures_extended.csv however the run was configured -- so a green
+# result said nothing about an arm launched on a different manifest, which is exactly what the
+# full-set arm is. The launcher passes its own MANIFEST and SKIP.
+MANIFEST = os.environ.get("MANIFEST") or "train_val_splits/cache_train_structures_extended.csv"
+SKIP = {x.strip() for x in (os.environ.get("SKIP") or
+                            "4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m").split(",") if x.strip()}
+WORLD = int(os.environ.get("WORLD") or 3)
 
 
 def build_flat():
@@ -23,8 +28,14 @@ def build_flat():
         if r["pdb"] in SKIP:
             continue
         sp = (r.get("seeds") or "").strip()
-        seeds = (list(range(int(sp.split("-")[0]), int(sp.split("-")[1]) + 1))
-                 if "-" in sp else [int(sp)] if sp else [500000])
+        if "-" in sp:
+            seeds = list(range(int(sp.split("-")[0]), int(sp.split("-")[1]) + 1))
+        elif "," in sp:
+            seeds = [int(x) for x in sp.split(",") if x.strip()]
+        elif sp:
+            seeds = [int(sp)]
+        else:
+            seeds = [500000]
         depth[r["pdb"]] = len(seeds)
         for sd in seeds:
             flat.append((r["pdb"], f"free_{sd}.npz", None))

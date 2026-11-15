@@ -240,7 +240,9 @@ sys.exit(1 if bad else 0)
 PYG
 
 say "CPU gate: the epoch plan covers every structure, singletons included"
-$PY -I run_logging/test_epoch_cover_all.py || { say "REFUSING: epoch coverage gate failed"; exit 6; }
+MANIFEST="$MANIFEST" SKIP="$SKIP" WORLD="$(printf %s "$CARDS" | tr , "\n" | grep -c .)" \
+    $PY -I run_logging/test_epoch_cover_all.py \
+    || { say "REFUSING: epoch coverage gate failed"; exit 6; }
 
 say "CPU gate: every crop keeps a scorable cross-chain pair under the STATIC join"
 CROP_THREADS="${CROP_THREADS:-3}" $PY -I run_logging/check_crop_pairs.py \
