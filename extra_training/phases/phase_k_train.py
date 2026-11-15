@@ -3152,7 +3152,47 @@ def main():
         # within a step would make a pose's weight depend on which other poses happened to be
         # dealt with it.
         _pb_thr = float(a.pae_balance_accept)
+        # ONLY THE UNITS THIS ARM ACTUALLY TRAINS. _rank_lab is every scored row in results.csv --
+        # for this arm, 31.8% of them are (pdb, seed) pairs the manifest does not declare or the
+        # skip list removes. Counting those made n_good/n_bad a property of the FOLD rather than of
+        # the arm: a structure declaring one seed, with ten seeds of surviving rows, had its
+        # balance computed over fifty poses when five are trained. The weights were then not
+        # 0.5/n_good and 0.5/n_bad over the candidates the loss sees, which is the whole claim.
+        _pb_active = None
+        try:
+            import csv as _csv0
+            _sk0 = {x.strip().lower() for x in (a.manifest_skip or "").split(",") if x.strip()}
+            _pb_active = set()
+            for _r0 in _csv0.DictReader(open(a.manifest_selection)):
+                _p0 = (_r0.get("pdb") or "").strip().lower()
+                if not _p0 or _p0 in _sk0:
+                    continue
+                _sd0 = (_r0.get("seeds") or "").strip()
+                if not _sd0:
+                    _pb_active = None
+                    break
+                for _tok0 in _sd0.split(","):
+                    if "-" in _tok0:
+                        _lo0, _hi0 = _tok0.split("-")
+                        for _v0 in range(int(_lo0), int(_hi0) + 1):
+                            _pb_active.add((_p0, str(_v0)))
+                    else:
+                        _pb_active.add((_p0, str(int(_tok0))))
+        except (OSError, ValueError, KeyError, AttributeError):
+            _pb_active = None
+        if _pb_active is None:
+            print("  --pae-balance-accept: the manifest declares no per-structure seeds, so the "
+                  "counts are over every labelled pose. That is the old behaviour and it is wrong "
+                  "whenever results.csv holds rows this arm does not train.", flush=True)
+        else:
+            _pb_drop = sum(1 for _k0 in _rank_lab
+                           if (_k0[0], str(_k0[1])) not in _pb_active)
+            print(f"  --pae-balance-accept: counting over the {len(_pb_active)} declared "
+                  f"(structure, seed) unit(s); {_pb_drop} label group(s) in the results csv are "
+                  f"outside them and do not contribute to any weight", flush=True)
         for _ifc, _per in _rank_lab.items():
+            if _pb_active is not None and (_ifc[0], str(_ifc[1])) not in _pb_active:
+                continue
             # _rank_lab is keyed (pdb, seed, asym pair) -> {sample: dockq}; the weight is per
             # INTERFACE, so the seeds of one interface pool together.
             _key = (_ifc[0], _ifc[2])
@@ -3193,6 +3233,8 @@ def main():
             _per = None
             for _k0, _v0 in _rank_lab.items():
                 if _k0[0] != _p0 or _k0[2] != _pr0:
+                    continue
+                if _pb_active is not None and (_k0[0], str(_k0[1])) not in _pb_active:
                     continue
                 for _sm0, _dq0 in _v0.items():
                     try:

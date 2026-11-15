@@ -29,14 +29,20 @@ def main():
     ap.add_argument("--total", type=int, default=280)
     ap.add_argument("--quota", default="1:25,2-3:20,4+:20")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--skip", default="4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m",
+                    help="structures the launcher removes from training. An item drawn from one of "
+                         "these is NOT in-sample, and 11 of the first 280 were.")
     a = ap.parse_args()
 
+    skip = {x.strip().lower() for x in a.skip.split(",") if x.strip()}
     have = {}
     cand = collections.defaultdict(lambda: collections.defaultdict(list))
     for r in csv.DictReader(open(a.results)):
         if r.get("arm") not in (None, "free"):
             continue
         p = r["iface"].split("_")[0]
+        if p in skip:
+            continue
         if p not in have:
             have[p] = len(glob.glob(f"{a.trunks}/{p}/free_*.npz"))
         if have[p] < 15:
@@ -73,9 +79,20 @@ def main():
         print(f"  easy, {g} all-good seed(s): {len(easy[g])} available, quota {quota[g]}")
 
     # FILL TO --total IN THE SAME PROPORTION when the thin bins come up short.
+    if len(thin) > a.total:
+        raise SystemExit(f"STOP: {len(thin)} thin item(s) exceed --total {a.total}. The thin bins "
+                         f"are kept whole by design, so raise --total rather than sampling them.")
     short = max(0, a.total - len(thin) - sum(quota.values()))
     tot_q = sum(quota.values())
     take = {g: quota[g] + (short * quota[g] // tot_q if short else 0) for g in quota}
+    # NEVER MORE THAN --total: with thin > 215 the quotas alone overshoot, and --total stopped
+    # being a size and became a suggestion.
+    over = len(thin) + sum(take.values()) - a.total
+    while over > 0:
+        g = max(take, key=lambda x: take[x])
+        cut = min(over, take[g])
+        take[g] -= cut
+        over -= cut
     rem = a.total - len(thin) - sum(take.values())
     if rem > 0:
         big = max(quota, key=lambda g: len(easy[g]))

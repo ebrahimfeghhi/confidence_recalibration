@@ -245,7 +245,7 @@ $PY -I run_logging/test_epoch_cover_all.py || { say "REFUSING: epoch coverage ga
 say "CPU gate: every crop keeps a scorable cross-chain pair under the STATIC join"
 CROP_THREADS="${CROP_THREADS:-3}" $PY -I run_logging/check_crop_pairs.py \
     --pool "$POOL_DIR" --join static --roles training/fold/chain_roles_all.csv \
-    --fold training/fold --scored-pairs training/combined/pool.csv \
+    --fold training/fold --scored-pairs "$SCORED_PAIRS" \
     || { say "REFUSING: a selected crop leaves a scored pair unscorable"; exit 5; }
 
 # ONLY WHEN LoRA IS ON, and it must run BEFORE the launch rather than be a file nobody calls. The
