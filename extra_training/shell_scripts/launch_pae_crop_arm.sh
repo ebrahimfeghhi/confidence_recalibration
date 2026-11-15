@@ -348,6 +348,21 @@ PAE_SPLIT_ACCEPT="${PAE_SPLIT_ACCEPT:-}"
 # PAE_BALANCE_ACCEPT reweights the PAE loss itself so each list's acceptable poses carry half of
 # it. Unlike PAE_SPLIT_ACCEPT, which only reports, this CHANGES THE OBJECTIVE.
 PAE_BALANCE_ACCEPT="${PAE_BALANCE_ACCEPT:-}"
+# POSE_READOUT adds the fifth injection site at pae_ln; PRENORM moves it to the LN's INPUT, where
+# block 0's pretrained weights were fitted to live, which is why COPY_DISTANCE pairs with it.
+POSE_READOUT="${POSE_READOUT:-}"
+# THE TRAINABLE-TENSOR COUNT IS AN ASSERTION, not a setting: the trainer refuses if the count it
+# finds differs, which is what catches a --train-only that silently stopped matching. 113 is the
+# count without --pose-readout; that site adds pose_readout_d and pose_readout_d_wo_onehot, plus
+# pose_readout_frame_dir when --frame-direction is on, so 116 with orientation. If the number is
+# wrong the trainer says the one it found -- use that rather than guessing again.
+EXPECT_TRAINABLE="${EXPECT_TRAINABLE:-113}"
+POSE_READOUT_PRENORM="${POSE_READOUT_PRENORM:-}"
+POSE_READOUT_COPY_DISTANCE="${POSE_READOUT_COPY_DISTANCE:-}"
+POSE_READOUT_POST_ZERO="${POSE_READOUT_POST_ZERO:-}"
+# A STAIRCASE lr, EPOCH:LR[,EPOCH:LR]. The arms so far dropped the rate by stopping and
+# resuming with a new --lr; passing the schedule means one run instead of two.
+LR_STEPS="${LR_STEPS:-}"
 RANK_DIAG_ONLY="${RANK_DIAG_ONLY:-}"
 # OFF BY DEFAULT. The gradient split costs one extra backward per pose on a measured step, and
 # the real arm does not need it: beta is estimated once by the one-epoch diagnostic
@@ -397,6 +412,11 @@ ARGS=(--crop-pool "$POOL_DIR"
       "${RANK_ARGS[@]+${RANK_ARGS[@]}}")
 
 say "argv the trainer would receive:"
+[ -n "$POSE_READOUT" ] && ARGS+=(--pose-readout)
+[ -n "$POSE_READOUT_PRENORM" ] && ARGS+=(--pose-readout-prenorm)
+[ -n "$POSE_READOUT_COPY_DISTANCE" ] && ARGS+=(--pose-readout-copy-distance)
+[ -n "$POSE_READOUT_POST_ZERO" ] && ARGS+=(--pose-readout-post-zero)
+[ -n "$LR_STEPS" ] && ARGS+=(--lr-steps "$LR_STEPS")
 [ -n "$PAE_SPLIT_ACCEPT" ] && ARGS+=(--pae-split-accept "$PAE_SPLIT_ACCEPT")
 [ -n "$PAE_BALANCE_ACCEPT" ] && ARGS+=(--pae-balance-accept "$PAE_BALANCE_ACCEPT")
 [ -n "$RANK_DIAG_ONLY" ] && ARGS+=(--rank-diag-only)
@@ -467,7 +487,7 @@ LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
   --fold training/fold --indices training/prep/all857_indices.csv \
   --pae-scored-pairs "$SCORED_PAIRS" \
   --pae-scored-roles training/fold/chain_roles_all.csv \
-  --lean-readouts --train-only "$TRAIN_ONLY" --expect-trainable 113 \
+  --lean-readouts --train-only "$TRAIN_ONLY" --expect-trainable "$EXPECT_TRAINABLE" \
   --warmup-steps 20 --seed 0 --clip-norm 25.0 \
   --blocks-per-ckpt 1 --ckpt-token-threshold 1250 --mem-log \
   --prefetch-units 2 --prefetch-workers "$PREFETCH_WORKERS" \

@@ -800,6 +800,12 @@ def main():
                          "wholesale, and this one cannot. Same three zero-init matrices, same "
                          "shapes, so step 0 is bit-identical either way; only the hook differs. "
                          "Requires --pose-readout.")
+    ap.add_argument("--pose-readout-post-zero", action="store_true",
+                    help="with --pose-readout-prenorm, ALSO inject after pae_ln, through a SECOND "
+                         "set of zero-init matrices. The pre-norm site can only turn the pair "
+                         "feature, because the layernorm divides its magnitude back out; the "
+                         "post-norm site can scale the readout. Two sites, two independent sets of "
+                         "weights, so neither is the other at a different scale.")
     ap.add_argument("--pose-readout-copy-distance", action="store_true",
                     help="Start --pose-readout's two DISTANCE arms at block 0's pretrained "
                          "linear_no_bias_d/_wo_onehot instead of zero. STEP 0 IS THEN NOT "
@@ -2206,6 +2212,10 @@ def main():
         raise SystemExit("STOP: --pose-perblock-tied/-share/-copy without --pose-perblock does "
                          "nothing. They select how A shares its weights, not whether A is "
                          "installed.")
+    if a.pose_readout_post_zero and not (a.pose_readout and a.pose_readout_prenorm):
+        raise SystemExit("STOP: --pose-readout-post-zero adds a SECOND site on top of the pre-norm "
+                         "one; it needs --pose-readout --pose-readout-prenorm. Without prenorm the "
+                         "post-LN site is just the default --pose-readout arm.")
     if a.pose_readout_prenorm and not a.pose_readout:
         raise SystemExit("STOP: --pose-readout-prenorm moves --pose-readout's injection site; it "
                          "does nothing on its own. Pass --pose-readout too, or drop it.")
@@ -2214,7 +2224,8 @@ def main():
         # reads their per-forward geometry rather than recomputing cdist and the one-hot.
         import pose_readout
         _prd = pose_readout.install(model, copy_distance=a.pose_readout_copy_distance,
-                                    prenorm=a.pose_readout_prenorm)
+                                    prenorm=a.pose_readout_prenorm,
+                                    post_zero=a.pose_readout_post_zero)
     elif a.pose_readout_copy_distance:
         raise SystemExit("STOP: --pose-readout-copy-distance without --pose-readout. It selects "
                          "how the fifth site is initialised, not whether it exists.")
@@ -4061,6 +4072,7 @@ def main():
                  "rel_sd_weight": a.rel_sd_weight,
                  "rel_g_weight": a.rel_g_weight,
                  "pose_readout_prenorm": a.pose_readout_prenorm,
+                 "pose_readout_post_zero": a.pose_readout_post_zero,
                  "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                  # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
@@ -7494,6 +7506,10 @@ def main():
             cmd.append("--pose-readout")
             if a.pose_readout_prenorm:
                 cmd.append("--pose-readout-prenorm")
+            # THE SECOND SITE ADDS TENSORS, so an eval without it fails the checkpoint load --
+            # the same way the evaluator failed on --pose-readout itself before 7d9d4d10.
+            if a.pose_readout_post_zero:
+                cmd.append("--pose-readout-post-zero")
         # FORWARDED WHENEVER THE PARENT HAS IT, not only alongside --lean-single. lean_readouts
         # replaces memory_efficient_forward rather than adding or removing tensors, so its absence
         # in the child was invisible to both the key-set guard and the resume guard -- the child
@@ -7990,6 +8006,8 @@ def main():
             extra = extra + ["--pose-readout"]
             if a.pose_readout_prenorm:
                 extra = extra + ["--pose-readout-prenorm"]
+            if a.pose_readout_post_zero:
+                extra = extra + ["--pose-readout-post-zero"]
         # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
         #
         # --join-cache is the big one. The pose->sample join is a function of the trunk's own
@@ -8600,6 +8618,7 @@ def main():
                  "rel_sd_weight": a.rel_sd_weight,
                  "rel_g_weight": a.rel_g_weight,
                  "pose_readout_prenorm": a.pose_readout_prenorm,
+                 "pose_readout_post_zero": a.pose_readout_post_zero,
                  "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                                   "rank_form": a.rank_form,

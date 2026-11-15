@@ -1008,6 +1008,9 @@ def main():
     # model does not have. The arm could train to completion and have no held-out DockQ at all.
     # Found by review before any in-block arm was launched, which is the only reason it was not
     # discovered as a dead eval shard after an epoch of GPU time.
+    ap.add_argument("--pose-readout-post-zero", action="store_true",
+                    help="the arm's second, post-layernorm injection site. The checkpoint carries "
+                         "pose_readout_post_* tensors, so an eval without this flag fails the load.")
     ap.add_argument("--pose-inblock", action="store_true",
                     help="the checkpoint was trained with phase_k_train --pose-inblock, so the "
                          "head carries pose_inblock_d* tensors the stock model does not. Installs "
@@ -1344,7 +1347,10 @@ def main():
     # the initialisation is overwritten and only the SITE (prenorm) changes what is scored.
     if a.pose_readout:
         import pose_readout
-        pose_readout.install(model, prenorm=a.pose_readout_prenorm)
+        pose_readout.install(model, prenorm=a.pose_readout_prenorm,
+                             post_zero=a.pose_readout_post_zero)
+    elif a.pose_readout_post_zero:
+        raise SystemExit("STOP: --pose-readout-post-zero without --pose-readout.")
     elif a.pose_readout_prenorm:
         raise SystemExit("STOP: --pose-readout-prenorm without --pose-readout. It moves the "
                          "fifth site, it does not install it; the trainer refuses this too.")

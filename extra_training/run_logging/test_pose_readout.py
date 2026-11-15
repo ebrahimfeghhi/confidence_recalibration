@@ -242,6 +242,50 @@ def main():
     check("prenorm: no pose in flight -> readout unchanged",
           bool(torch.equal(m5.confidence_head.readout(z), base5)))
 
+    # ---------------------------------------------------------------- the TWO-SITE arm
+    # Pre-norm copy-init AND a second, zero-init site after the layernorm. The second set of
+    # matrices has to be its own: sharing them would add the pose twice through one weight.
+    _clear()
+    m7, m8 = _Model(), _Model()
+    m8.load_state_dict(m7.state_dict())
+    for mm in (m7, m8):
+        mm.confidence_head._pose_perblock_installed = True
+    pose_readout.install(m7, copy_distance=True, loud=False, prenorm=True, post_zero=True)
+    pose_readout.install(m8, copy_distance=True, loud=False, prenorm=True)
+    h7 = m7.confidence_head
+    check("two-site: the post matrices exist and are separate objects",
+          hasattr(h7, "pose_readout_post_d")
+          and h7.pose_readout_post_d is not h7.pose_readout_d)
+    check("two-site: the post matrices are EXACTLY zero at install",
+          float(h7.pose_readout_post_d.weight.abs().max()) == 0.0
+          and float(h7.pose_readout_post_d_wo_onehot.weight.abs().max()) == 0.0)
+    check("two-site: both hooks are registered on pae_ln",
+          len(h7.pae_ln._forward_pre_hooks) == 1 and len(h7.pae_ln._forward_hooks) == 1)
+    _publish(oh, d)
+    got7, got8 = h7.readout(z), m8.confidence_head.readout(z)
+    # AT INSTALL the zero post site adds nothing, so the two-site arm must equal the prenorm arm.
+    check("two-site: at step 0 it is exactly the prenorm arm (the post site is zero)",
+          bool(torch.equal(got7, got8)))
+    # AND IT IS NOT DEAD: give the post matrices weight and the output must move.
+    with torch.no_grad():
+        h7.pose_readout_post_d.weight.normal_(0.0, 0.05)
+    got7b = h7.readout(z)
+    check("two-site: the post site is live once it has weight",
+          not torch.equal(got7, got7b),
+          f"max|d| {float((got7b - got7).abs().max()):.3e}")
+    # the post site is gradient-reachable too
+    h7.pose_readout_post_d.weight.grad = None
+    h7.readout(z).sum().backward()
+    g7 = h7.pose_readout_post_d.weight.grad
+    check("two-site: the post site receives gradient",
+          g7 is not None and bool(g7.abs().max() > 0))
+    try:
+        m9 = _Model(); m9.confidence_head._pose_perblock_installed = True
+        pose_readout.install(m9, loud=False, prenorm=False, post_zero=True)
+        check("two-site: post_zero without prenorm is refused", False, "it installed")
+    except RuntimeError as e:
+        check("two-site: post_zero without prenorm is refused", "SECOND" in str(e))
+
     print()
     if fails:
         print(f"FAILED {len(fails)}: " + ", ".join(fails))

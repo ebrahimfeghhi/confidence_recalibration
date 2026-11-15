@@ -40,6 +40,8 @@ MLPs: at W = 0 the output is zero but dL/dW = g (x) x^T with x the non-zero geom
 step moves them. A zero-init multi-layer branch would be gradient-dead; this one is not. The test
 asserts it rather than leaving it to the reader.
 """
+import functools
+
 import torch
 
 from protenix.model.modules.primitives import LinearNoBias
@@ -86,7 +88,7 @@ def _zero_linear(in_features, out_features, ref):
     return m
 
 
-def install(model, copy_distance=False, loud=True, prenorm=False):
+def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=False):
     head = model.confidence_head
     if getattr(head, "_pose_readout_installed", False):
         raise RuntimeError("STOP: pose_readout.install ran twice; the hook would fire twice and "
@@ -118,7 +120,17 @@ def install(model, copy_distance=False, loud=True, prenorm=False):
         # this project to copy from -- frame_dir_proj is itself zero at install.
         head.add_module("pose_readout_frame_dir", _zero_linear(3, head.c_z, ref))
 
-    def _hook(_mod, _inp, out):
+    if post_zero:
+        if not prenorm:
+            raise RuntimeError("STOP: --pose-readout-post-zero adds a SECOND, zero-init site after "
+                               "pae_ln on top of the pre-norm one. Without --pose-readout-prenorm "
+                               "there is no second site -- that is just the default post-LN arm.")
+        head.add_module("pose_readout_post_d", _zero_linear(head.num_bins, head.c_z, ref))
+        head.add_module("pose_readout_post_d_wo_onehot", _zero_linear(1, head.c_z, ref))
+        if has_dir:
+            head.add_module("pose_readout_post_frame_dir", _zero_linear(3, head.c_z, ref))
+
+    def _hook(_mod, _inp, out, pfx=""):
         oh, dd, dr = _geometry()
         if oh is None:
             # NOT AN ERROR. phase_k_eval builds its own model without this installed, and pae_ln is
@@ -133,14 +145,14 @@ def install(model, copy_distance=False, loud=True, prenorm=False):
         # ADDED ONE TERM AT A TIME, NOT FUSED. `out = out + A` frees A before B is allocated, so
         # the peak is two pair tensors either way; pose_inblock.py:378-388 records the measurement
         # where fusing these made allocated-at-OOM WORSE (90.85 -> 91.63 GiB).
-        out = out + head.pose_readout_d(oh).to(out.dtype)
-        out = out + head.pose_readout_d_wo_onehot(dd.unsqueeze(-1)).to(out.dtype)
+        out = out + getattr(head, f"pose_readout_{pfx}d")(oh).to(out.dtype)
+        out = out + getattr(head, f"pose_readout_{pfx}d_wo_onehot")(dd.unsqueeze(-1)).to(out.dtype)
         if has_dir and dr is not None:
             if dr.shape[:-1] != oh.shape[:-1]:
                 raise RuntimeError(
                     f"STOP: --pose-readout: orientation is {tuple(dr.shape)} against geometry "
                     f"{tuple(oh.shape)}; one pose's directions would pair with another's bins.")
-            out = out + head.pose_readout_frame_dir(dr).to(out.dtype)
+            out = out + getattr(head, f"pose_readout_{pfx}frame_dir")(dr).to(out.dtype)
         return out
 
     def _pre_hook(_mod, inp):
@@ -180,19 +192,30 @@ def install(model, copy_distance=False, loud=True, prenorm=False):
             z = z + head.pose_readout_frame_dir(dr).to(z.dtype)
         return (z,) + tuple(inp[1:])
 
-    # ONE SITE OR THE OTHER, NEVER BOTH. Registering both hooks would add the pose twice through
-    # the same three matrices, and the two contributions are not even on the same scale.
+    # ONE SITE, OR BOTH WITH SEPARATE MATRICES. Registering both hooks over the SAME three
+    # matrices would add the pose twice through one set of weights, at two scales that are not
+    # comparable -- that is what the single-site rule was protecting against. --pose-readout-post-zero
+    # asks for a genuine second site, so it gets its own zero-init matrices and the pre-norm site
+    # keeps its copy-initialised ones; the two learn independently.
     if prenorm:
         head._pose_readout_hook = head.pae_ln.register_forward_pre_hook(_pre_hook)
+        if post_zero:
+            head._pose_readout_hook_post = head.pae_ln.register_forward_hook(
+                functools.partial(_hook, pfx="post_"))
     else:
         head._pose_readout_hook = head.pae_ln.register_forward_hook(_hook)
     head._pose_readout_prenorm = bool(prenorm)
     head._pose_readout_installed = True
     head._pose_readout_copy_distance = bool(copy_distance)
+    head._pose_readout_post_zero = bool(post_zero)
 
     names = ["pose_readout_d", "pose_readout_d_wo_onehot"]
     if has_dir:
         names.append("pose_readout_frame_dir")
+    if post_zero:
+        names += ["pose_readout_post_d", "pose_readout_post_d_wo_onehot"]
+        if has_dir:
+            names.append("pose_readout_post_frame_dir")
     n_new = sum(p.numel() for n in names for p in getattr(head, n).parameters())
     if loud:
         # THE SITE IS NAMED FROM `prenorm`, NOT HARDCODED. This line said "after pae_ln" in both
@@ -228,4 +251,4 @@ def install(model, copy_distance=False, loud=True, prenorm=False):
             print("  ZERO-INIT and verified exactly zero, so step 0 is bit-identical to the "
                   "un-injected head.")
     return {"params": n_new, "tensors": names, "orientation": has_dir,
-            "copy_distance": bool(copy_distance)}
+            "copy_distance": bool(copy_distance), "post_zero": bool(post_zero)}
