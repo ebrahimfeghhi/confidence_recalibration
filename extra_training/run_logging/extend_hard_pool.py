@@ -23,6 +23,7 @@ import shutil
 
 ACC = 0.23
 MAX_FRAC = 0.10
+SEEDS = ()      # set from --seeds in main()
 
 
 def main():
@@ -33,8 +34,16 @@ def main():
     ap.add_argument("--pool", default="training/fold/pool.csv")
     ap.add_argument("--trunks", default="training/fold/trunks")
     ap.add_argument("--roles-all", default="training/fold/chain_roles_all.csv")
+    ap.add_argument("--structures-src", default="train_val_splits/cache_train_structures.csv",
+                    help="where a manifest row for a structure new to this pool is copied from")
+    ap.add_argument("--seeds", default="500000-500014",
+                    help="the seed span the re-folded structures now carry")
     ap.add_argument("--apply", action="store_true")
     a = ap.parse_args()
+
+    global SEEDS
+    _lo, _hi = (int(x) for x in a.seeds.split("-"))
+    SEEDS = tuple(range(_lo, _hi + 1))
 
     want = [l.strip() for l in open(a.list) if l.strip() and l[0] != "#"]
     have = {p: {os.path.basename(g).split("free_")[1][:-4]
@@ -73,29 +82,60 @@ def main():
         if ok and iface in new:
             print(f"    + {iface}: {k} of {n} acceptable ({f:.1%})")
     if not new:
-        print("nothing to add")
-        return
+        print("nothing NEW qualifies; the seed span still has to be written")
     if not a.apply:
         print("dry run; pass --apply")
         return
 
     # pool.csv and structures.csv grow; the eval pools are untouched.
-    for name in ("pool.csv", "structures.csv"):
-        shutil.copy2(os.path.join(a.out, name), os.path.join(a.out, name + ".before_extend"))
+    for name in ("pool.csv", "structures.csv", "chain_roles.csv"):
+        src = os.path.join(a.out, name)
+        if os.path.exists(src):
+            shutil.copy2(src, src + ".before_extend")
     with open(os.path.join(a.out, "pool.csv"), "a", newline="") as fh:
         w = csv.writer(fh)
         for iface in new:
             pdb, pair = iface.split("_")
             w.writerow([pdb, pair[0], pair[1]])
+
+    # ---- structures.csv. THE MANIFEST IS DECLARED, NOT DISCOVERED (phase_k_train.py:3769): the
+    # `seeds` column is what the trainer expands into units, so a re-folded structure whose row
+    # still says 500000 contributes exactly one seed however many trunks exist on disk. Updating
+    # that column IS the step that makes the re-fold reach training; without it the whole fold is
+    # a no-op. And `pdb` is column 1, not column 0 -- column 0 is `cluster`.
     sfile = os.path.join(a.out, "structures.csv")
-    rows = list(csv.reader(open(sfile)))
-    head, body = rows[0], rows[1:]
-    known = {r[0] for r in body}
+    with open(sfile) as fh:
+        rdr = csv.DictReader(fh)
+        head = rdr.fieldnames
+        body = list(rdr)
+    assert head[1] == "pdb" and "seeds" in head, f"unexpected manifest schema: {head}"
+    seed_lo, seed_hi = min(SEEDS), max(SEEDS)
+    span = f"{seed_lo}-{seed_hi}"
+    touched = 0
+    known = {r["pdb"] for r in body}
+    for r in body:
+        if r["pdb"] in have:
+            # EVERY re-folded structure, not only the ones that gained an interface: the 18 that
+            # were already in the pool are precisely the ones whose hard poses were unreachable.
+            if r["seeds"] != span:
+                r["seeds"] = span
+                touched += 1
     add = sorted({i.split("_")[0] for i in new} - known)
-    with open(sfile, "a", newline="") as fh:
-        w = csv.writer(fh)
-        for p in add:
-            w.writerow([p] + [""] * (len(head) - 1))
+    src = {r["pdb"]: r for r in csv.DictReader(open(a.structures_src))} if add else {}
+    for p in add:
+        if p not in src:
+            raise SystemExit(f"STOP: {p} is not in {a.structures_src}, so its manifest row cannot "
+                             f"be built. Refusing to write a row with empty columns.")
+        row = {k: src[p].get(k, "") for k in head}
+        row["pdb"] = p
+        row["seeds"] = span
+        body.append(row)
+    with open(sfile, "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=head)
+        w.writeheader()
+        w.writerows(body)
+    print(f"  structures.csv: {touched} row(s) moved to seeds {span}, {len(add)} row(s) added")
+
     # the new interfaces get their own eval pool, at the same budget as hard15
     with open(os.path.join(a.out, "pool_new15.csv"), "w", newline="") as fh:
         w = csv.writer(fh)
@@ -103,19 +143,23 @@ def main():
         for iface in new:
             pdb, pair = iface.split("_")
             w.writerow([pdb, pair[0], pair[1]])
-    # chain roles for the structures that are new to this pool
-    roles = {r["pdb"]: r for r in csv.DictReader(open(a.roles_all))} if os.path.exists(a.roles_all) else {}
+
+    # ---- chain roles. ONE ROW PER CHAIN, not per structure: keying a dict on pdb keeps only the
+    # last chain and the pool-local file silently loses the rest.
     rfile = os.path.join(a.out, "chain_roles.csv")
-    if os.path.exists(rfile) and roles:
-        cur_roles = list(csv.DictReader(open(rfile)))
-        fields = cur_roles[0].keys() if cur_roles else None
-        missing = [p for p in add if p in roles]
-        if missing and fields:
+    if os.path.exists(rfile) and os.path.exists(a.roles_all) and add:
+        with open(rfile) as fh:
+            rdr = csv.DictReader(fh)
+            rfields = rdr.fieldnames
+            have_rows = {(r["pdb"], r.get("chain", "")) for r in rdr}
+        extra = [r for r in csv.DictReader(open(a.roles_all))
+                 if r["pdb"] in add and (r["pdb"], r.get("chain", "")) not in have_rows]
+        if extra:
             with open(rfile, "a", newline="") as fh:
-                w = csv.DictWriter(fh, fieldnames=list(fields))
-                for p in missing:
-                    w.writerow({k: roles[p].get(k, "") for k in fields})
-            print(f"  chain_roles.csv += {len(missing)} structure(s)")
+                w = csv.DictWriter(fh, fieldnames=rfields)
+                for r in extra:
+                    w.writerow({k: r.get(k, "") for k in rfields})
+            print(f"  chain_roles.csv += {len(extra)} chain row(s) over {len(add)} structure(s)")
     print(f"added {len(new)} interface(s) over {len(add)} new structure(s); "
           f"pool_new15.csv written for the separate eval")
 

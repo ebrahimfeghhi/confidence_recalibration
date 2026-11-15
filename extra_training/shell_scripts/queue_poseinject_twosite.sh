@@ -60,8 +60,10 @@ PREFETCH_WORKERS=16 TRUNK_MEMMAP=1 EPOCH_BALANCE=1 DRY=${DRY:-0} \
 LPID=$!
 for i in $(seq 1 90); do
     N=$(newest_rid); [ "$N" != "$PRE" ] && { echo "$N" > training/runs/twosite_rid
-        echo "$N" > training/runs/hard150_rid   # the per-epoch plotter follows this
-        say "launched as $N"; break; }
+        # NOT hard150_rid: a watcher follows that file and would draw this arm as the fourth link
+        # of the ambgom->55reqf->ctgfwj resume chain. This one starts from the shipped head.
+        ./shell_scripts/autoplot.sh "$N" >/dev/null 2>&1 || true
+        say "launched as $N; plots on its own series via twosite_rid"; break; }
     [ -d "/proc/$LPID" ] || { say "ABORT: launcher exited before a run appeared"
         grep -E "REFUS|STOP:|not found" training/runs/poseinject_twosite_launch.log | head -5; exit 4; }
     sleep 20

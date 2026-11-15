@@ -4241,10 +4241,19 @@ def main():
                      "rel_sd_weight": False, "rel_std_floor": -1.0,
                      "rel_g_weight": 0.0, "rel_g_sigmoid": "",
                      "pose_readout_prenorm": False,
+                     # BOTH SIDES PLUS THE DEFAULT, IN ONE PATCH. Compared and saved without a
+                     # default here, the field lands in _unknown and the unconditional STOP below
+                     # makes EVERY bundle written before it unresumable -- including ctgfwj's
+                     # epoch-80 pause, which is what this arm resumes from.
+                     "pose_readout_post_zero": False,
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
-                     "rank_form": "linear", "rank_tau": -1.0,
+                     # rank_tau's FLAG AND ITS READER WERE DELETED with the forms that used it
+                     # (see the saved-side comment), so a default for it compared against nothing
+                     # was the one thing keeping test_guard_fields.py red -- which is why the
+                     # half-wired pose_readout_post_zero went in unnoticed.
+                     "rank_form": "linear",
                      "rank_cross_seed": False, "rank_structs_per_step": 2,
                      # A BUNDLE PREDATING THESE THREE RAN CROSS-SEED PAIRS ONLY, AT NATURAL
                      # WEIGHT, WITH NO RANK DECAY -- which is what these defaults say. Their

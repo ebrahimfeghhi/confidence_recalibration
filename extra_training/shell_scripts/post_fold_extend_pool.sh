@@ -40,9 +40,16 @@ LIST=$LIST LO=$LO HI=$HI ./shell_scripts/build_extended_train_labels.sh || {
 $PY -I run_logging/extend_hard_pool.py --list "$LIST" --out "$OH" --apply || {
   say "STOPPING: pool extension refused"; exit 3; }
 
+[ -s "$OH/pool_new15.csv" ] || { say "STOPPING: pool_new15.csv was not written, and the resume names it as an eval pool"; exit 6; }
+
 # ---------------------------------------------------------------- 4. preflight for the union
 say "alignment preflight over the extended manifest"
-$PY -I phases/phase_k_alignment_preflight.py --manifest "$OH/structures.csv" \
+# --manifest-selection, NOT --manifest: the latter is an ambiguous prefix of --manifest-selection
+# and --manifest-skip and argparse exits 2. And the skip list is passed explicitly because the
+# preflight's own default differs from the launcher's AND names 9bbn, one of the 22 -- the trainer
+# compares the two lists and refuses the run when they disagree (phase_k_train.py:3942).
+$PY -I phases/phase_k_alignment_preflight.py --manifest-selection "$OH/structures.csv" \
+    --manifest-skip "4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m" \
     --out "$OH/alignment_preflight.json" --workers 12 || { say "STOPPING: preflight failed"; exit 4; }
 
 # ---------------------------------------------------------------- 5. resume
@@ -58,7 +65,7 @@ EXTRA_EVAL="name=hard15,pool=$OH/pool_b15.csv,fold=training/fold,seed_base=50000
 CARDS=4,5,7 EPOCHS=150 EVAL_EVERY=0 LR=5e-4 \
 PREFETCH_WORKERS=16 TRUNK_MEMMAP=1 EPOCH_BALANCE=1 DRY=0 \
 RESUME="$R/${BUNDLE#./}" \
-RESUME_OVERRIDE=manifest_digest,pae_scored_pairs \
+RESUME_OVERRIDE=manifest_digest \
 RESUME_NOTE="paused at epoch 80 to re-fold 22 degenerate structures at seeds 500001-500014; the interfaces that now qualify as hard (>=1 acceptable, <=10% acceptable over 15 seeds) are added to the TRAINING pool. The hard15 and hard1 eval pools are unchanged so the curve stays one series; the new interfaces are evaluated separately as hardnew15." \
     nohup ./shell_scripts/launch_pae_crop_arm.sh > training/runs/hard150_resume_extended.log 2>&1 &
 LPID=$!
