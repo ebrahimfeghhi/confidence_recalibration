@@ -50,7 +50,11 @@ case "$STAGE" in
         OPEN_RID=$(cat training/runs/fullset_open_rid 2>/dev/null || true)
         B=$(ls -t training/runs/$OPEN_RID/resume_ep2.pt 2>/dev/null | head -1)
         [ -s "$B" ] || { say "ABORT: no epoch-2 bundle from the opening stage"; exit 7; }
-        RES=(RESUME="$PWD/${B#./}" RESUME_OVERRIDE=epochs,train_eval_every \
+        # NO --resume-override. The guard compares neither `epochs` nor `train_eval_every`
+        # (they are saved but not in _mine), and it HARD-STOPS on an override name it does not
+        # have -- so naming them refuses the resume outright. Nothing the guard does compare
+        # changes between the two stages.
+        RES=(RESUME="$PWD/${B#./}" \
              RESUME_NOTE="opening stage ran 2 epochs at EVAL_EVERY=2 for the lr check; this is the same arm continuing to $EP_N at EVAL_EVERY=10.") ;;
   *) say "ABORT: STAGE must be open or main"; exit 8 ;;
 esac

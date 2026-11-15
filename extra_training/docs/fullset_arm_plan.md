@@ -9,16 +9,18 @@ checkpoint has been chosen on val.
 
 ## The fixed training slice
 
-`training/slice280/items.csv` -- 280 items, 178 structures, built once by
+`training/slice280/items.csv` -- 280 items, 180 structures, built once by
 `run_logging/build_train_slice.py --seed 0` and never rebuilt. Every in-sample number comes from
 this file.
 
 * Only items whose structure has **15 loadable seeds** (75 candidates). An item with one loadable
   seed offers 5 candidates and its bin means something else.
-* Thin bins taken whole: **214 survive** the 15-seed filter -- 97 at 1/5, 44 at 2/5, 44 at 3/5,
-  29 at 4/5. That is just under the 215 the specification expected, so the slice is filled to 280
-  with easy items in the 25/20/20 proportion: 25 with one all-good seed, 20 with two or three,
-  21 with four or more.
+* Drawn from the population the arm actually TRAINS: the launcher's skip list is excluded. The
+  first slice was not, and 11 of its 280 items came from skipped structures -- at most 269 were
+  in-sample.
+* Thin bins taken whole: **206 survive** the 15-seed filter -- 94 at 1/5, 42 at 2/5, 42 at 3/5,
+  28 at 4/5. The slice is filled to 280 with easy items in the 25/20/20 proportion, which lands at
+  28 with one all-good seed, 22 with two or three, 24 with four or more.
 * Bins are stored in the file. They are a property of the generator's output and are never
   recomputed per scoring run, or an item could change bin because the selector changed.
 
@@ -40,10 +42,16 @@ this file.
 
 ## Scoring
 
-* The trainer has ONE held-out trigger, `(ep+1) % EVAL_EVERY == 0`, so the two cadences are two
-  stages of the same arm rather than one run: **STAGE=open** runs 2 epochs at `EVAL_EVERY=2`,
-  producing the epoch-2 val point the lr check needs; **STAGE=main** resumes from its epoch-2
-  bundle and runs to 60 at `EVAL_EVERY=10`.
+* The trainer has ONE held-out trigger, `(ep+1) % EVAL_EVERY == 0`, so a chosen set of scoring
+  epochs cannot be configured in one run. `shell_scripts/fullset_chain.sh` trains in SEGMENTS with
+  the in-training eval off and scores the saved head between them: **val after epochs 1, 2, 4, 7,
+  10, then val and the slice every 10 to 60**. A resume costs ~2 min of startup, which is the
+  whole overhead.
+* Heads and resume bundles are written EVERY epoch regardless, so any epoch can be scored later.
+  Once val peaks, backfill the epochs either side of it with `score_checkpoint.sh` rather than
+  guessing the cadence up front.
+* A resume between segments carries NO `--resume-override`: the guard compares neither `epochs`
+  nor `train_eval_every`, and it hard-stops on an override name it does not have.
 * Val and the slice fire on the SAME epochs -- both triggers are `(ep+1) % every == 0`, val first,
   slice second, off the same saved head -- so the side-by-side table compares one checkpoint.
 * Dropout is off: `phase_k_eval` builds its own model and does not accept `--pair-dropout`.
