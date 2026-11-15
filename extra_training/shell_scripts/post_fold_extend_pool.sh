@@ -20,16 +20,20 @@ ARCH=training/fold/archive/stale_labels_degenerate_20261114
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 
 # ---------------------------------------------------------------- 1. stale labels out of the way
+# IDEMPOTENT. On a rerun the labels in place are the REBUILT ones, and moving them over the
+# archive would destroy the provenance of the old poses and force another rebuild. A destination
+# that already exists is never overwritten; it means this step already ran.
 mkdir -p "$ARCH"
-N=0
+N=0; KEPT=0
 while read -r P; do
   for S in $(seq $LO $HI); do
     F=training/fold/labels/$P/free_$S.npz
     [ -f "$F" ] || continue
+    if [ -e "$ARCH/$P/free_$S.npz" ]; then KEPT=$((KEPT+1)); continue; fi
     mkdir -p "$ARCH/$P"; mv "$F" "$ARCH/$P/" && N=$((N+1))
   done
 done < <(grep -v '^#' $LIST | awk 'NF')
-say "archived $N stale label npz -> $ARCH"
+say "archived $N stale label npz -> $ARCH ($KEPT already archived, left alone)"
 
 # ---------------------------------------------------------------- 2. rebuild them
 say "building labels for seeds $LO-$HI"
@@ -40,7 +44,11 @@ LIST=$LIST LO=$LO HI=$HI ./shell_scripts/build_extended_train_labels.sh || {
 $PY -I run_logging/extend_hard_pool.py --list "$LIST" --out "$OH" --apply || {
   say "STOPPING: pool extension refused"; exit 3; }
 
-[ -s "$OH/pool_new15.csv" ] || { say "STOPPING: pool_new15.csv was not written, and the resume names it as an eval pool"; exit 6; }
+# DATA ROWS, NOT -s. The extender always writes the header, and phase_k_eval.aggregate takes a
+# mean over the selected poses with no empty-set guard, so a header-only pool fails the eval.
+NEW_ROWS=0
+[ -f "$OH/pool_new15.csv" ] && NEW_ROWS=$(( $(wc -l < "$OH/pool_new15.csv") - 1 ))
+say "pool_new15.csv has $NEW_ROWS data row(s)"
 
 # ---------------------------------------------------------------- 4. preflight for the union
 say "alignment preflight over the extended manifest"
@@ -53,6 +61,14 @@ $PY -I phases/phase_k_alignment_preflight.py --manifest-selection "$OH/structure
     --out "$OH/alignment_preflight.json" --workers 12 || { say "STOPPING: preflight failed"; exit 4; }
 
 # ---------------------------------------------------------------- 5. resume
+EVALS="name=hard15,pool=$OH/pool_b15.csv,fold=training/fold,seed_base=500000,budget=15,every=5"
+EVALS="$EVALS;name=hard1,pool=$OH/pool_b1.csv,fold=training/fold,seed_base=500000,budget=1,every=5"
+if [ "$NEW_ROWS" -gt 0 ]; then
+  EVALS="$EVALS;name=hardnew15,pool=$OH/pool_new15.csv,fold=training/fold,seed_base=500000,budget=15,every=5"
+  say "third eval pool hardnew15 requested over $NEW_ROWS interface(s)"
+else
+  say "no new interfaces qualified, so no hardnew15 pass -- two eval passes, as before"
+fi
 BUNDLE=$(ls -t training/runs/ctgfwj/resume_ep*.pt | head -1)
 say "=== resuming from $(basename "$BUNDLE") to epoch 150, extended pool ==="
 PRE=$(ls -td training/runs/*/ | head -1 | xargs basename)
@@ -61,7 +77,7 @@ PREFLIGHT=$OH/alignment_preflight.json \
 MANIFEST=$OH/structures.csv \
 SCORED_PAIRS=$OH/pool.csv \
 PAE_SPLIT_ACCEPT=0.23 PAE_BALANCE_ACCEPT=0.23 \
-EXTRA_EVAL="name=hard15,pool=$OH/pool_b15.csv,fold=training/fold,seed_base=500000,budget=15,every=5;name=hard1,pool=$OH/pool_b1.csv,fold=training/fold,seed_base=500000,budget=1,every=5;name=hardnew15,pool=$OH/pool_new15.csv,fold=training/fold,seed_base=500000,budget=15,every=5" \
+EXTRA_EVAL="$EVALS" \
 CARDS=4,5,7 EPOCHS=150 EVAL_EVERY=0 LR=5e-4 \
 PREFETCH_WORKERS=16 TRUNK_MEMMAP=1 EPOCH_BALANCE=1 DRY=0 \
 RESUME="$R/${BUNDLE#./}" \

@@ -44,6 +44,17 @@ for i in $(seq 1 120); do
 done
 [ "$($PY -I run_logging/cards_busy.py 2>&1 | tail -1)" = "0" ] || { say "ABORT: cards busy"; exit 3; }
 
+# THE THIRD EVAL POOL ONLY IF IT HAS DATA ROWS. The extender always writes the header, and
+# phase_k_eval.aggregate means over the selected poses with no empty-set guard.
+NEW_ROWS=0
+[ -f "$OH/pool_new15.csv" ] && NEW_ROWS=$(( $(wc -l < "$OH/pool_new15.csv") - 1 ))
+EVALS="name=hard15,pool=$OH/pool_b15.csv,fold=training/fold,seed_base=500000,budget=15,every=5"
+EVALS="$EVALS;name=hard1,pool=$OH/pool_b1.csv,fold=training/fold,seed_base=500000,budget=1,every=5"
+if [ "$NEW_ROWS" -gt 0 ]; then
+  EVALS="$EVALS;name=hardnew15,pool=$OH/pool_new15.csv,fold=training/fold,seed_base=500000,budget=15,every=5"
+fi
+say "eval pools: $(( NEW_ROWS > 0 ? 3 : 2 )), hardnew15 over $NEW_ROWS interface(s)"
+
 PRE=$(newest_rid)
 say "=== two-site pose injection, 150 epochs, lr 1e-3 -> 5e-4 at epoch 50 ==="
 SUBSET_OK=1 \
@@ -53,7 +64,7 @@ SCORED_PAIRS=$OH/pool.csv \
 PAE_SPLIT_ACCEPT=0.23 PAE_BALANCE_ACCEPT=0.23 \
 POSE_READOUT=1 POSE_READOUT_PRENORM=1 POSE_READOUT_COPY_DISTANCE=1 POSE_READOUT_POST_ZERO=1 \
 EXPECT_TRAINABLE=119 \
-EXTRA_EVAL="name=hard15,pool=$OH/pool_b15.csv,fold=training/fold,seed_base=500000,budget=15,every=5;name=hard1,pool=$OH/pool_b1.csv,fold=training/fold,seed_base=500000,budget=1,every=5;name=hardnew15,pool=$OH/pool_new15.csv,fold=training/fold,seed_base=500000,budget=15,every=5" \
+EXTRA_EVAL="$EVALS" \
 CARDS=4,5,7 EPOCHS=150 EVAL_EVERY=0 LR=1e-3 LR_STEPS=50:5e-4 \
 PREFETCH_WORKERS=16 TRUNK_MEMMAP=1 EPOCH_BALANCE=1 DRY=${DRY:-0} \
     nohup ./shell_scripts/launch_pae_crop_arm.sh > training/runs/poseinject_twosite_launch.log 2>&1 &
