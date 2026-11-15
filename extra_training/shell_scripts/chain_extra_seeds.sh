@@ -49,8 +49,9 @@ for i,t in enumerate(o):
 # the wave-1 behaviour: a structure with zero rows at this seed is missing, nothing finer.
 complete(){
   if [ "${STRICT_IFACE:-0}" = "1" ]; then
-    $PY -I run_logging/seed_completeness.py --csv "$TG/results.csv" --structures "$LIST" \
-        --seed "$1" --ref-seed "${REF_SEED:-500000}" --nsample "${NSAMPLE:-5}"
+    $PY -I run_logging/seed_coverage.py --results "$TG/results.csv" --pool "${POOL:-$TG/pool.csv}" \
+        --structures "$LIST" --seed "$1" --nsample "${NSAMPLE:-5}" \
+        --exclude "${EXCLUDE:-docs/unrecoverable_interfaces.csv}"
     return $?
   fi
   SEED=$1 $PY -I - <<'EOF'
@@ -101,10 +102,17 @@ recover_seed(){
   local SEED=$1
   local SC="$TG/.consolidate"
   mkdir -p "$SC"
-  local T
+  local T PLAN=""
+  local SKIP_ARG=() PLAN_ARG=()
   if [ "${STRICT_IFACE:-0}" = "1" ]; then
-    T=$($PY -I run_logging/seed_completeness.py --csv "$TG/results.csv" --structures "$LIST" \
-          --seed "$SEED" --ref-seed "${REF_SEED:-500000}" --nsample "${NSAMPLE:-5}" --mode targets)
+    $PY -I run_logging/seed_coverage.py --results "$TG/results.csv" --pool "${POOL:-$TG/pool.csv}" \
+        --structures "$LIST" --seed "$SEED" --nsample "${NSAMPLE:-5}" \
+        --exclude "${EXCLUDE:-docs/unrecoverable_interfaces.csv}" \
+        --targets-out "$SC/targets_$SEED.txt" --plan-out "$SC/plan_$SEED.csv" --quiet || true
+    T=$(cat "$SC/targets_$SEED.txt" 2>/dev/null)
+    PLAN="$SC/plan_$SEED.csv"
+    SKIP_ARG=(--skip-existing "$TG/results.csv")
+    PLAN_ARG=(--plan "$PLAN")
   else
   T=$(SEED=$SEED $PY -I - <<'EOF'
 import csv, collections, os
@@ -130,7 +138,8 @@ EOF
   local N; N=$(echo "$T" | tr ',' '
 ' | wc -l)
   say "  seed $SEED: $N interface(s) unscored by the fold; running the isolated route"
-  $PY -I phases/phase_j_rescore_unmapped.py --targets "$T"     --fold "$TG" --refs training/refs --roles "$TG/chain_roles_all.csv"     --seed0 "$SEED" --seeds 1 --nsample 5 --route isolated     --rows-out "$SC/rows_$SEED.csv" || { say "  sweep exit $?"; return 1; }
+  $PY -I phases/phase_j_rescore_unmapped.py --targets "$T"     --fold "$TG" --refs training/refs --roles "$TG/chain_roles_all.csv"     --seed0 "$SEED" --seeds 1 --nsample "${NSAMPLE:-5}" --route isolated \
+    "${SKIP_ARG[@]}" --rows-out "$SC/rows_$SEED.csv" || { say "  sweep exit $?"; return 1; }
   [ -s "$SC/rows_$SEED.csv" ] || { say "  sweep produced no rows"; return 1; }
   local R; R=$(($(wc -l < "$SC/rows_$SEED.csv") - 1))
   # THE MANIFEST NAMES WHICH INTERFACES MAY BE ADDED, which the merge requires with --replace.
@@ -140,7 +149,8 @@ EOF
   # --out MUST SIT BESIDE THE CSV. os.replace is atomic only within one filesystem and raises
   # EXDEV across devices; pointing it at the session scratchpad failed exactly that way AFTER
   # every check had passed.
-  $PY -I phases/phase_l_merge_recovered.py --csv "$TG/results.csv"     --rows "iso=$SC/rows_$SEED.csv" --manifest "$SC/manifest_$SEED.csv"     --expect-rows "$R" --expect-ifaces "$I" --seeds 1 --seed0 "$SEED" --nsample 5     --out "$SC/merged_$SEED.csv" --replace || { say "  merge exit $?"; return 1; }
+  $PY -I phases/phase_l_merge_recovered.py --csv "$TG/results.csv"     --rows "iso=$SC/rows_$SEED.csv" --manifest "$SC/manifest_$SEED.csv"     --expect-rows "$R" --expect-ifaces "$I" --seeds 1 --seed0 "$SEED" --nsample "${NSAMPLE:-5}" \
+    "${PLAN_ARG[@]}" --out "$SC/merged_$SEED.csv" --replace || { say "  merge exit $?"; return 1; }
   say "  seed $SEED: merged $R recovered row(s) over $I interface(s)"
 }
 
