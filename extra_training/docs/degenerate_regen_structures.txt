@@ -1,0 +1,26 @@
+# The 22 degenerate structures carrying the 25 MIXED interfaces (>=1 acceptable, >=1 unacceptable,
+# DockQ range >= 0.05) that the DockQ-SD<0.05 prune left with one trunk. Seeds 500001-500014 are
+# re-folded for these; seed 500000 is untouched because its trunk and its scores still match.
+# Frozen 2026-11-14. Derived in the same session that archived their orphaned rows.
+10fj
+5e7f
+5wk3
+6gv4
+6jhs
+6lyn
+7uds
+8cz5
+8dcn
+8dv6
+8pnu
+8pnv
+8y3k
+8zre
+9bbn
+9clp
+9d72
+9g13
+9i5n
+9nw6
+9pkv
+9ulp

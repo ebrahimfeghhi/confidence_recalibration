@@ -24,7 +24,8 @@ cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
 R=/home/ebrahim/confidence_recalibration
 TG=/home/ebrahim/confidence_recalibration/extra_training/training/fold
-LIST=docs/extra_seed_structures.txt
+LIST="${LIST:-docs/extra_seed_structures.txt}"
+export LIST   # the python heredocs below read it; they used to hard-code the wave-1 path
 SEEDS="${SEEDS:-500011 500012 500013 500014}"
 WAIT_FOR="${WAIT_FOR:-500010}"
 MIN_HEADROOM_GB="${MIN_HEADROOM_GB:-200}"
@@ -46,14 +47,28 @@ for i,t in enumerate(o):
 complete(){ SEED=$1 $PY -I - <<'EOF'
 import csv, collections, os, sys
 seed = os.environ["SEED"]
-want = [l.strip() for l in open("docs/extra_seed_structures.txt") if l.strip() and l[0] != "#"]
+want = [l.strip() for l in open(os.environ["LIST"]) if l.strip() and l[0] != "#"]
 got = collections.Counter()
 with open("training/fold/results.csv") as fh:
     for r in csv.DictReader(fh):
         if r["seed"] == seed:
             got[r["iface"].split("_")[0]] += 1
 miss = [p for p in want if got[p] == 0]
-print(f"  seed {seed}: {len(want)-len(miss)} of {len(want)} structure(s) scored")
+# STRICT_IFACE=1 ASKS PER INTERFACE, NOT PER STRUCTURE. got[p]==0 cannot see a structure that got
+# some of its interfaces and not the rest, which is every multi-interface complex -- 9bbn has 8.
+# Off by default so the wave-1 chain's behaviour is unchanged.
+if os.environ.get("STRICT_IFACE") == "1":
+    import csv as _csv
+    need = collections.Counter()
+    for r in _csv.DictReader(open("training/fold/pool.csv")):
+        if r["pdb"] in set(want):
+            need[r["pdb"]] += 1
+    nsample = int(os.environ.get("NSAMPLE", "5"))
+    miss = [p for p in want if got[p] < need[p] * nsample]
+    print(f"  seed {seed}: {len(want)-len(miss)} of {len(want)} structure(s) complete "
+          f"(per interface x {nsample} sample(s))")
+else:
+    print(f"  seed {seed}: {len(want)-len(miss)} of {len(want)} structure(s) scored")
 sys.exit(1 if miss else 0)
 EOF
 }
@@ -81,12 +96,19 @@ recover_seed(){
   local T; T=$(SEED=$SEED $PY -I - <<'EOF'
 import csv, collections, os
 seed = os.environ["SEED"]
-want = [l.strip() for l in open("docs/extra_seed_structures.txt") if l.strip() and l[0] != "#"]
+want = [l.strip() for l in open(os.environ["LIST"]) if l.strip() and l[0] != "#"]
 got = collections.Counter()
 for r in csv.DictReader(open("training/fold/results.csv")):
     if r["seed"] == seed:
         got[r["iface"].split("_")[0]] += 1
 miss = {p for p in want if got[p] == 0}
+if os.environ.get("STRICT_IFACE") == "1":
+    need = collections.Counter()
+    for r in csv.DictReader(open("training/fold/pool.csv")):
+        if r["pdb"] in set(want):
+            need[r["pdb"]] += 1
+    nsample = int(os.environ.get("NSAMPLE", "5"))
+    miss = {p for p in want if got[p] < need[p] * nsample}
 # THE POOL NAMES THE INTERFACES, and only sorted single-letter pairs are addressable by the sweep.
 out = []
 for r in csv.DictReader(open("training/fold/pool.csv")):
@@ -115,6 +137,9 @@ EOF
   say "  seed $SEED: merged $R recovered row(s) over $I interface(s)"
 }
 
+if [ "$WAIT_FOR" = none ]; then
+  say "WAIT_FOR=none: not gating on a previous seed (this list was never in the wave-1 fold)"
+else
 say "waiting for seed $WAIT_FOR to be complete before starting"
 while ! complete "$WAIT_FOR" >/dev/null 2>&1; do
   S=$(tmux ls 2>/dev/null | grep -cE 'w1fold|w1val' || true)
@@ -130,6 +155,7 @@ while ! complete "$WAIT_FOR" >/dev/null 2>&1; do
 done
 complete "$WAIT_FOR"
 say "seed $WAIT_FOR complete"
+fi
 
 for SEED in $SEEDS; do
   H=$(headroom); M=$(awk '/MemAvailable/{printf "%.0f", $2/1048576}' /proc/meminfo)
@@ -144,7 +170,8 @@ for SEED in $SEEDS; do
   fi
   if complete "$SEED" >/dev/null 2>&1; then say "seed $SEED already complete, skipping"; continue; fi
 
-  Q=$TG/queue_seed$SEED.tsv
+  TAG_RUN="${TAG_RUN:-}"   # names the queue and log files, so two waves cannot collide
+  Q=$TG/queue_seed${SEED}${TAG_RUN}.tsv
   grep -v '^#' $LIST | awk -v s=$SEED 'NF{printf "free\t%s\t*\tfree\t%s\n", $1, s}' > "$Q"
   say "queue: $(wc -l < "$Q") unit(s) -> $Q"
 
@@ -155,7 +182,7 @@ for SEED in $SEEDS; do
       LAYERNORM_TYPE=openfold TRUNK_DUMP_DIR=$TG/trunks PROTENIX_DUMP_TRUNK_BF16=1 \
       PROTENIX_DUMP_CONF_INPUTS=1 $PY $R/run_model/folder.py --queue $Q --out $TG/poses \
       --csv $TG/results.csv --claim-dir $TG/claims --pool $TG/pool.csv --dataset sabdab_train \
-      --ncycle 10 --nsample 5 --dtype bf16 --overlap-scoring >> $TG/w1fold_seed${SEED}_c$c.log 2>&1"
+      --ncycle 10 --nsample 5 --dtype bf16 --overlap-scoring >> $TG/w1fold_seed${SEED}${TAG_RUN}_c$c.log 2>&1"
   done
   sleep 45
   UP=$(tmux ls 2>/dev/null | grep -c w1fold || true)
@@ -177,7 +204,7 @@ for SEED in $SEEDS; do
       if complete "$SEED" >/dev/null 2>&1; then say "seed $SEED complete after recovery"; break; fi
       say "STOPPING: seed $SEED is still incomplete after the recovery sweep."
       complete "$SEED" || true
-      tail -4 $TG/w1fold_seed${SEED}_c4.log
+      tail -4 $TG/w1fold_seed${SEED}${TAG_RUN}_c4.log
       exit 1
     fi
   done
