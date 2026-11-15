@@ -48,7 +48,12 @@ def summarise(by, bins, col):
         per[iface] = (top[2] >= ACC, top[2])
     grp = collections.defaultdict(list)
     for iface, v in per.items():
-        grp[bins.get(iface, bin_of(by[iface]))].append(v)
+        b = bins.get(iface, bin_of(by[iface]))
+        grp[b].append(v)
+        # THE SLICE SPLITS 5/5 THREE WAYS AND VAL DOES NOT, so without this the easy bin -- the one
+        # val can actually resolve -- has no row in common between the two tables.
+        if b.startswith("5/5 ("):
+            grp["5/5"].append(v)
     return per, grp
 
 
@@ -58,7 +63,12 @@ def main():
     ap.add_argument("--val-work", help="shard dir for val")
     ap.add_argument("--slice-items", default="training/slice280/items.csv")
     ap.add_argument("--label", default="")
+    ap.add_argument("--expect-slice", type=int, default=280)
+    ap.add_argument("--expect-val", type=int, default=141)
+    ap.add_argument("--expect-cands", default="slice=75,val=150",
+                    help="candidates per item each side must have, or the table is over a subset")
     a = ap.parse_args()
+    want = dict(kv.split("=") for kv in a.expect_cands.split(","))
 
     bins = {r["iface"]: r["bin"] for r in csv.DictReader(open(a.slice_items))} \
         if os.path.exists(a.slice_items) else {}
@@ -68,6 +78,20 @@ def main():
         if not work or not glob.glob(os.path.join(work, "rows_*.csv")):
             continue
         by = read_rows(work)
+        # A TABLE OVER A SUBSET IS WORSE THAN NO TABLE. A pass that lost a shard still leaves
+        # rows_*.csv behind, and every rate below would read as if the whole set had been scored.
+        side = "slice" if "SLICE" in name else "val"
+        exp_n = a.expect_slice if side == "slice" else a.expect_val
+        if exp_n and len(by) != exp_n:
+            raise SystemExit(f"STOP: {name} has {len(by)} item(s), expected {exp_n}. "
+                             f"The pass is incomplete; the table would be over a subset.")
+        exp_c = int(want.get(side, 0))
+        if exp_c:
+            bad = {i: len(v) for i, v in by.items() if len(v) != exp_c}
+            if bad:
+                ex = list(bad.items())[:4]
+                raise SystemExit(f"STOP: {len(bad)} {name} item(s) do not have {exp_c} "
+                                 f"candidate(s), e.g. {ex}")
         ours, g_ours = summarise(by, bins, "ours")
         ship, g_ship = summarise(by, bins, "shipped")
         gained = [i for i in ours if ours[i][0] and not ship[i][0]]

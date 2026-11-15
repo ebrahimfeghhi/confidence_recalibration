@@ -19,8 +19,11 @@
 # every candidate in one class, so they all take the same 0.5/n and the normaliser makes that
 # exactly uniform -- the undefined case resolves to unweighted, which is what was asked for.
 #
-# EVAL CADENCE: one val point after epoch 2 as an early check that the easy bin has not collapsed,
-# then val AND the fixed 280-item training slice every 10 epochs.
+# EVAL CADENCE, AND WHY IT IS TWO STAGES. The trainer has ONE held-out trigger,
+# (ep+1) %% EVAL_EVERY == 0, so "a val point at epoch 2 and then every 10" is not expressible in a
+# single run: with EVAL_EVERY=10 the first val point is epoch 10, and the lr check the protocol
+# opens with could never fire. STAGE=open runs 2 epochs at EVAL_EVERY=2 to produce exactly that
+# point; STAGE=main resumes from its epoch-2 bundle and runs to EPOCHS at EVAL_EVERY=10.
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
@@ -40,23 +43,43 @@ for i in $(seq 1 120); do
 done
 [ "$($PY -I run_logging/cards_busy.py 2>&1 | tail -1)" = "0" ] || { say "ABORT: cards busy"; exit 5; }
 
+STAGE=${STAGE:-open}
+case "$STAGE" in
+  open) EP_N=2;  EV=2;  RES=() ;;
+  main) EP_N=${EPOCHS:-60}; EV=10
+        OPEN_RID=$(cat training/runs/fullset_open_rid 2>/dev/null || true)
+        B=$(ls -t training/runs/$OPEN_RID/resume_ep2.pt 2>/dev/null | head -1)
+        [ -s "$B" ] || { say "ABORT: no epoch-2 bundle from the opening stage"; exit 7; }
+        RES=(RESUME="$PWD/${B#./}" RESUME_OVERRIDE=epochs,train_eval_every \
+             RESUME_NOTE="opening stage ran 2 epochs at EVAL_EVERY=2 for the lr check; this is the same arm continuing to $EP_N at EVAL_EVERY=10.") ;;
+  *) say "ABORT: STAGE must be open or main"; exit 8 ;;
+esac
+
+# THE SLICE NEEDS ITS OWN ROLES FILE. The in-training extra-eval resolves <pool dir>/chain_roles.csv
+# and falls back to training/fold/chain_roles.csv, which names 501 structures and misses 46 of the
+# slice's 178 -- the pass would STOP at the first scoring epoch, rank 0 would exit inside the eval
+# block, and ranks 1 and 2 would sit on the next barrier until the 4-hour dist timeout.
+[ -s "$SLICE/chain_roles.csv" ] || { say "ABORT: $SLICE/chain_roles.csv is missing"; exit 9; }
+
 PRE=$(newest_rid)
-say "=== full training set, shipped init, constant lr 1e-3, pair dropout 0.25 ==="
+say "=== stage $STAGE: full training set, shipped init, lr 1e-3, dropout 0.25, $EP_N epoch(s), eval every $EV ==="
 PREFLIGHT=$FS/alignment_preflight.json \
 MANIFEST=$FS/structures.csv \
 SCORED_PAIRS=$FS/pool.csv \
 PAE_SPLIT_ACCEPT=0.23 PAE_BALANCE_ACCEPT=0.23 \
-EXTRA_EVAL="name=slice280,pool=$SLICE/pool.csv,fold=training/fold,seed_base=500000,budget=15,every=10" \
+EXTRA_EVAL="name=slice280,pool=$SLICE/pool.csv,fold=training/fold,seed_base=500000,budget=15,every=$EV" \
 EVAL_POOL=training/valfull83/pool.csv \
-CARDS=4,5,7 EPOCHS=${EPOCHS:-60} EVAL_EVERY=10 LR=1e-3 PAIR_DROPOUT=0.25 \
+CARDS=4,5,7 EPOCHS=$EP_N EVAL_EVERY=$EV LR=1e-3 PAIR_DROPOUT=0.25 \
 PREFETCH_WORKERS=16 TRUNK_MEMMAP=1 EPOCH_BALANCE=1 DRY=${DRY:-0} \
-    nohup ./shell_scripts/launch_pae_crop_arm.sh > training/runs/fullset_launch.log 2>&1 &
+    env "${RES[@]}" nohup ./shell_scripts/launch_pae_crop_arm.sh > training/runs/fullset_${STAGE}_launch.log 2>&1 &
 LPID=$!
 for i in $(seq 1 90); do
     N=$(newest_rid)
-    [ "$N" != "$PRE" ] && { echo "$N" > training/runs/fullset_rid; say "launched as $N"; break; }
+    [ "$N" != "$PRE" ] && { echo "$N" > training/runs/fullset_rid
+        [ "$STAGE" = open ] && echo "$N" > training/runs/fullset_open_rid
+        say "launched as $N"; break; }
     [ -d "/proc/$LPID" ] || { say "ABORT: launcher exited before a run appeared"
-        grep -E "REFUS|STOP:|not found" training/runs/fullset_launch.log | head -5; exit 6; }
+        grep -E "REFUS|STOP:|not found" training/runs/fullset_${STAGE}_launch.log | head -5; exit 6; }
     sleep 20
 done
 say "DONE"

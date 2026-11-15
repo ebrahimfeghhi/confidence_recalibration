@@ -14,9 +14,16 @@ SD=${SD:-/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4
 CKPT=${CKPT:?set CKPT to a head_ep*.pt}
 TAG=${TAG:?set TAG, e.g. ep20}
 SIDES=${SIDES:-both}          # both | val | slice
+# RE-SCORING COSTS A FULL PASS PER SIDE. The run already wrote its own shards under
+# training/runs/<rid>/{valfull83,slice280}_eval_shards_ep<N>/ at every scoring epoch; point
+# run_logging/score_report.py at those instead of running this script, unless the checkpoint was
+# never scored in-training (the epoch-2 head of a stage that ended before its trigger, say).
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 
-COMMON="--pose-perblock --pose-perblock-copy --frame-direction --drop-unmapped-poses"
+# NO --drop-unmapped-poses HERE. The in-training eval does not forward it, so with it the two
+# harnesses measure different candidate sets: a pose OST cannot map is silently dropped in one and
+# a hard stop in the other. Loud in both.
+COMMON="--pose-perblock --pose-perblock-copy --frame-direction"
 
 if [ "$SIDES" = both ] || [ "$SIDES" = slice ]; then
   say "$TAG: scoring the 280-item training slice (15 seeds)"
@@ -26,7 +33,8 @@ if [ "$SIDES" = both ] || [ "$SIDES" = slice ]; then
   LAYERNORM_TYPE=openfold $PY -I phases/phase_k_eval_sharded.py \
       --cards 4,5,7 --ckpt "$CKPT" --budget 15 \
       --work "$SD/slice280_$TAG" --out "$SD/slice280_$TAG.json" \
-      --extra "$EXTRA" > "$SD/slice280_$TAG.log" 2>&1 || say "slice pass exit $?"
+      --extra "$EXTRA" > "$SD/slice280_$TAG.log" 2>&1 \
+      || { say "ABORT: slice pass exit $?"; tail -3 "$SD/slice280_$TAG.log"; exit 2; }
 fi
 
 if [ "$SIDES" = both ] || [ "$SIDES" = val ]; then
@@ -38,7 +46,8 @@ if [ "$SIDES" = both ] || [ "$SIDES" = val ]; then
   LAYERNORM_TYPE=openfold $PY -I phases/phase_k_eval_sharded.py \
       --cards 4,5,7 --ckpt "$CKPT" --budget 30 \
       --work "$SD/val30_$TAG" --out "$SD/val30_$TAG.json" \
-      --extra "$EXTRA" > "$SD/val30_$TAG.log" 2>&1 || say "val pass exit $?"
+      --extra "$EXTRA" > "$SD/val30_$TAG.log" 2>&1 \
+      || { say "ABORT: val pass exit $?"; tail -3 "$SD/val30_$TAG.log"; exit 3; }
 fi
 
 $PY -I run_logging/score_report.py --slice-work "$SD/slice280_$TAG" \
