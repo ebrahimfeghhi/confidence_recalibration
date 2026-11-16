@@ -95,41 +95,56 @@ l_r = RKL.zsoftmax_loss_value(right, lab)
 l_w = RKL.zsoftmax_loss_value(wrong, lab)
 check("good candidates on top -> small loss; at the back -> large", l_r < 0.5 < l_w,
       f"{l_r:.4f} vs {l_w:.4f}")
-# WHAT THE ATTAINABLE MINIMUM ACTUALLY IS, and what it is NOT.
+# WHAT THIS FILE WILL AND WILL NOT CLAIM ABOUT THE LOSS SURFACE.
 #
-# An earlier version of this test asserted a floor of 0.209 at k=3 of n=50 and 0.262 at k=37 of
-# 150, read off the configuration where every acceptable candidate is tied at the top. That is the
-# minimum of a RESTRICTED FAMILY, not the minimum: the numerator needs only ONE acceptable
-# candidate to carry the softmax mass, so putting one of them out as an extreme outlier and
-# leaving the rest in the pack does far better -- 0.0364 at 3/50 and 0.00052 at 37/150. Caught in
-# external review. The real statement is that the floor is set by n, not by k, and at 150
-# candidates it is ~0.0005, which is zero for any practical purpose.
+# Two earlier versions of this block overclaimed, each caught in external review, and the second
+# correction is the reason the claims are now this narrow:
 #
-# SO A PLATEAU IS NOT CONVERGENCE, and the retracted claim had it backwards. Two reasons:
-#   - the all-tied configuration is a SYMMETRIC STATIONARY POINT. Gradient descent started from a
-#     symmetric initialisation stays there -- measured: 4,000 Adam steps from an all-equal start
-#     sit at 0.208977 for k=3 of 50 while 0.036423 is reachable. A run parked at that value is
-#     stuck in the symmetry, not finished.
-#   - m and d are DETACHED, so the loss is recomputed against a moving normalisation. A flat
-#     reported loss is consistent with nonzero coefficients throughout, which is the other half
-#     of why loss alone cannot diagnose this. Read the gradient norm and the score spread instead;
-#     both are in the epoch line.
-def at(scores, k):
-    return RKL.zsoftmax_loss_value({i: scores[i] for i in range(len(scores))},
-                                   {i: (i < k) for i in range(len(scores))})
+#   1. It first asserted a FLOOR of 0.209 at k=3 of n=50 and 0.262 at k=37 of 150, read off the
+#      configuration where every acceptable candidate is tied at the top. Wrong: the numerator
+#      needs only ONE acceptable candidate to carry the softmax mass, and one outlier with the
+#      rest left in the pack reaches 0.0364 and 0.00052.
+#   2. It then called those outlier values the minimum, and the tied value a STATIONARY POINT.
+#      Both unsupported. Nudging a second acceptable candidate up from 0.100 to 0.101 lowers the
+#      3/50 value 0.03642296 -> 0.03641640, so it is not a minimum; and sum|dL/ds| at the tied
+#      configuration is 1.588, not zero, so it is not stationary under the implemented update.
+#
+# A TEST THAT ONLY EVALUATES THE LOSS CANNOT ESTABLISH EITHER PROPERTY, which is the lesson. What
+# follows is confined to what evaluating the function does establish: comparisons between named
+# configurations, and the norm the term would actually hand over at them. No minimum is claimed,
+# and no statement is made about how the floor depends on k or n.
+def ev(sc, k):
+    """(loss, sum|dL/ds|) at an explicit score vector."""
+    s = {i: sc[i] for i in range(len(sc))}
+    c, _n, L = RKL.zsoftmax_coeffs(s, {i: (i < k) for i in range(len(sc))})
+    return L, (sum(abs(v) for v in c.values()) if c else 0.0)
 
 
 _tied = {(3, 50): 0.20898, (37, 150): 0.26251}
 _one = {(3, 50): 0.036423, (37, 150): 0.000520}
-check("ONE acceptable candidate carrying the mass beats every acceptable candidate tied",
-      all(at([0.9] + [0.1] * (n - 1), k) < _tied[(k, n)] / 4 for k, n in _tied),
-      ", ".join(f"{k}/{n}: {at([0.9] + [0.1] * (n - 1), k):.6f} vs tied {_tied[(k, n)]:.5f}"
+check("one acceptable candidate carrying the mass beats the whole acceptable class tied",
+      all(ev([0.9] + [0.1] * (n - 1), k)[0] < _tied[(k, n)] / 4 for k, n in _tied),
+      ", ".join(f"{k}/{n}: {ev([0.9] + [0.1] * (n - 1), k)[0]:.6f} vs tied {_tied[(k, n)]:.5f}"
                 for k, n in _tied))
-check("and it matches the measured minimum, so the floor is set by n and not by k",
-      all(abs(at([0.9] + [0.1] * (n - 1), k) - v) < 1e-5 for (k, n), v in _one.items()))
-check("the all-tied value is still a stationary point, which is why a plateau there is a trap",
-      all(abs(at([1.0] * k + [0.0] * (n - k), k) - v) < 2e-3 for (k, n), v in _tied.items()),
-      ", ".join(f"{k}/{n}: {at([1.0] * k + [0.0] * (n - k), k):.5f}" for k, n in _tied))
+# AND THAT VALUE IS NOT THE MINIMUM EITHER, asserted so no future reading of this file can take it
+# for one. A single candidate moved by 0.001 improves it.
+_b = [0.9] + [0.1] * 49
+_n2 = list(_b)
+_n2[1] = 0.101
+check("and even THAT is not a minimum -- a 0.001 nudge on a second acceptable score improves it",
+      ev(_n2, 3)[0] < ev(_b, 3)[0],
+      f"{ev(_b, 3)[0]:.8f} -> {ev(_n2, 3)[0]:.8f}")
+# THE PLATEAU IS REAL BUT IT IS NOT STATIONARITY. The standardised loss is invariant to how far
+# the tied classes are separated, while the gradient norm falls as 1/separation. So an optimiser
+# that preserves the within-class ties walks along a flat loss with a LIVE gradient, which is why
+# the epoch line reports the spread and the norm and not the loss alone.
+_L1, _g1 = ev([1.0] * 3 + [0.0] * 47, 3)
+_L2, _g2 = ev([1000.0] * 3 + [0.0] * 47, 3)
+check("the tied configuration is a symmetry-preserving PLATEAU: the loss is invariant to "
+      "separation", abs(_L1 - _L2) < 1e-12, f"{_L1:.8f} at 1x, {_L2:.8f} at 1000x")
+check("but the gradient there is NOT zero, so it is no stationary point of this update",
+      _g1 > 1.0 and abs(_g2 - _g1 / 1000.0) < 1e-6,
+      f"sum|dL/ds| {_g1:.5f} at 1x, {_g2:.5f} at 1000x -- falls as 1/separation")
 
 # ---- invariances the z-score buys ------------------------------------------------------------
 base = {i: rng.gauss(0.5, 0.1) for i in range(30)}
