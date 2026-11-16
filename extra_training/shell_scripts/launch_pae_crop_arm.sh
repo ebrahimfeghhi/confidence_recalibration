@@ -371,12 +371,24 @@ RANK_DIAG_ONLY="${RANK_DIAG_ONLY:-}"
 # (shell_scripts/queue_rank_gradprobe_1ep.sh, which sets K=1) and then held fixed. A 50-epoch arm
 # carrying the probe would pay for 7,750 measurements of a number it is not going to act on.
 GRAD_PROBE_EVERY="${GRAD_PROBE_EVERY:-0}"
+# WHICH RANKING OBJECTIVE. rel regresses the true iTM and needs the iTM label cache; zsoftmax
+# takes -log of the softmax mass on the acceptable candidates and needs only DockQ, which
+# RANK_LABELS already supplies. Defaulted to rel so every existing caller is unchanged.
+RANK_FORM="${RANK_FORM:-rel}"
+RANK_ACCEPT="${RANK_ACCEPT:-0.23}"
+case "$RANK_FORM" in rel|zsoftmax) ;; *)
+  say "REFUSING: RANK_FORM $RANK_FORM is not rel or zsoftmax"; exit 4 ;; esac
 RANK_ARGS=()
 if [ -n "$ALPHA_RANK" ]; then
-  [ -d "$REL_LABELS" ] || { say "REFUSING: REL_LABELS $REL_LABELS is not a directory"; exit 4; }
-  [ -f "$REL_LABELS/manifest.json" ] || {
-      say "REFUSING: $REL_LABELS/manifest.json is missing, so the label set cannot be identified"
-      exit 4; }
+  # THE iTM CACHE IS CHECKED ONLY FOR THE FORM THAT READS IT. Demanding it under zsoftmax would
+  # gate the launch on an artefact the objective never opens, and the trainer makes the same
+  # distinction -- --crop-pool stopped requiring --rel-labels for a form with no iTM target.
+  if [ "$RANK_FORM" = "rel" ]; then
+    [ -d "$REL_LABELS" ] || { say "REFUSING: REL_LABELS $REL_LABELS is not a directory"; exit 4; }
+    [ -f "$REL_LABELS/manifest.json" ] || {
+        say "REFUSING: $REL_LABELS/manifest.json is missing, so the label set cannot be identified"
+        exit 4; }
+  fi
   # THE CROP ALLOWLIST IS PART OF THE RANKING ARM, not of the PAE one. The PAE term tolerates a
   # crop whose scored pair is absent (it counts the pose as unmasked); rel's pass A refuses,
   # which is what killed eqd2jx at step 117 of epoch 1 on 9o4o. 5 structures, 192 of 92,636
@@ -384,10 +396,17 @@ if [ -n "$ALPHA_RANK" ]; then
   [ -f "$CROP_ALLOW" ] || { say "REFUSING: CROP_ALLOW $CROP_ALLOW is missing; build it with the"
                             say "  OST crop audit before launching a ranking arm"; exit 4; }
   RANK_ARGS=(--crop-allow "$CROP_ALLOW"
-             --rank-loss --rank-form rel --alpha-rank "$ALPHA_RANK"
+             --rank-loss --rank-form "$RANK_FORM" --alpha-rank "$ALPHA_RANK"
              --rank-cross-seed --rank-structs-per-step "$RANK_S"
-             --rel-labels "$REL_LABELS" --rank-labels "$RANK_LABELS"
+             --rank-labels "$RANK_LABELS"
              --rank-pool "$RANK_POOL_STAT")
+  # --rel-labels ONLY FOR rel. Passing it under zsoftmax would be inert, and an inert flag in a
+  # recorded argv is how a run gets written up as the wrong experiment.
+  if [ "$RANK_FORM" = "rel" ]; then
+    RANK_ARGS+=(--rel-labels "$REL_LABELS")
+  else
+    RANK_ARGS+=(--rank-accept "$RANK_ACCEPT")
+  fi
   [ -n "$REL_STANDARDIZE" ] && RANK_ARGS+=(--rel-standardize)
   [ -n "$REL_SD_WEIGHT" ] && RANK_ARGS+=(--rel-sd-weight)
   [ -n "$REL_STD_FLOOR" ] && RANK_ARGS+=(--rel-std-floor "$REL_STD_FLOOR")
@@ -434,9 +453,14 @@ fi
 
 printf '    %s\n' "${ARGS[@]}"
 if [ -n "$ALPHA_RANK" ]; then
-  say "RANKING LOSS ON: rel at alpha $ALPHA_RANK, cross-seed, $RANK_S structure(s)/step,"
-  say "  labels $REL_LABELS, ipTM pooled by $RANK_POOL_STAT, gradient split logged every"
-  say "  $GRAD_PROBE_EVERY step(s). PAE stays on at --alpha-pae 1.0, so this is PAE + rel."
+  say "RANKING LOSS ON: $RANK_FORM at alpha $ALPHA_RANK, cross-seed, $RANK_S structure(s)/step,"
+  if [ "$RANK_FORM" = "zsoftmax" ]; then
+    say "  DockQ labels $RANK_LABELS classified at $RANK_ACCEPT; NO iTM cache is read,"
+  else
+    say "  iTM labels $REL_LABELS,"
+  fi
+  say "  ipTM pooled by $RANK_POOL_STAT, gradient split logged every"
+  say "  $GRAD_PROBE_EVERY step(s). PAE stays on at --alpha-pae 1.0, so this is PAE + $RANK_FORM."
 else
   say "NOT passed: --rank-loss, --rank-form, --rank-cross-seed, --rel-labels (set ALPHA_RANK to"
   say "  turn the ranking term on)"

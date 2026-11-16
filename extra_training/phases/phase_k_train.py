@@ -2947,7 +2947,35 @@ def main():
         # (pdb, seed, interface) this run will train must carry --nsample finite DockQ values at
         # the expected sample indices.
         _rl_pdbs = {k[0] for k in _rank_lab}
-        _rl_missing = sorted(set(_scored_asym) - _rl_pdbs)
+        # THE STRUCTURES THIS ARM TRAINS, NOT EVERY STRUCTURE THE POOL NAMES. _scored_asym comes
+        # from --pae-scored-pairs, which lists interfaces for the whole fold; --manifest-selection
+        # is what decides which structures are dealt into an epoch. On training/fullset the pool
+        # names 7stz, 9dc3 and 9mx1 and structures.csv does not, so this refused a launch over
+        # three structures that pay no forward at all -- and its own message, "their poses would
+        # pay a forward and contribute no ranking gradient", was false for exactly those three.
+        #
+        # THE GATE ITSELF IS RIGHT AND STAYS. A declared structure with no DockQ really does make
+        # the arm a partial experiment. Narrowing it to the declared set is what makes the refusal
+        # mean that, rather than meaning the pool is broader than the manifest -- which is normal.
+        _rl_declared = None
+        try:
+            import csv as _csvL
+            _skL = {x.strip().lower() for x in (a.manifest_skip or "").split(",") if x.strip()}
+            _rl_declared = {(_r.get("pdb") or "").strip().lower()
+                            for _r in _csvL.DictReader(open(a.manifest_selection))
+                            if (_r.get("pdb") or "").strip()}
+            _rl_declared -= _skL
+            if not _rl_declared:
+                _rl_declared = None
+        except (OSError, ValueError, KeyError, AttributeError, TypeError):
+            _rl_declared = None
+        _rl_scope = set(_scored_asym) if _rl_declared is None else (set(_scored_asym)
+                                                                    & _rl_declared)
+        if _rl_declared is not None and len(_rl_scope) != len(_scored_asym):
+            print(f"  --rank-loss label check scoped to the {len(_rl_scope)} structure(s) this "
+                  f"arm declares, of {len(_scored_asym)} the pool names "
+                  f"({len(set(_scored_asym) - _rl_scope)} pooled but not trained)", flush=True)
+        _rl_missing = sorted(_rl_scope - _rl_pdbs)
         if a.rank_form == "rel":
             # The refusals for this form run EARLY, before any hardware -- see the block beside
             # the LAYERNORM_TYPE check. This is only the report.
