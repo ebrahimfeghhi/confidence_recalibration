@@ -104,6 +104,39 @@ def ref_val():
     return out
 
 
+def _rank(xs):
+    """Ranks with ties averaged, so a tied block cannot order itself by file order."""
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    r = [0.0] * len(xs)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        avg = (i + j) / 2.0 + 1.0
+        for k in range(i, j + 1):
+            r[order[k]] = avg
+        i = j + 1
+    return r
+
+
+def _pearson(a, b):
+    n = len(a)
+    if n < 3:
+        return None
+    ma, mb = sum(a) / n, sum(b) / n
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    if va <= 0 or vb <= 0:
+        return None                      # a flat column has no correlation, not a zero one
+    cov = sum((a[i] - ma) * (b[i] - mb) for i in range(n))
+    return cov / (va ** 0.5 * vb ** 0.5)
+
+
+def _spearman(xs, ys):
+    return _pearson(_rank(xs), _rank(ys))
+
+
 def _bin(cand):
     by_seed = collections.defaultdict(list)
     for sc, ss, d, seed in cand:
@@ -165,6 +198,23 @@ def score_points(work):
                   f"{len(by)} interface(s), candidates per interface {sorted(cand)} "
                   f"-- not a complete 3-shard pass", file=sys.stderr)
             continue
+        # CORRELATION, WITHIN AN ITEM AND POOLED. The job is to rank the candidates of ONE
+        # interface, so the mean per-interface Spearman is the one that matches the task; the
+        # pooled number is mostly between-interface variance (an easy target scores high on
+        # everything) and reads far better than the head deserves. Both are drawn.
+        rh, srh, px, spx, py = [], [], [], [], []
+        for c in by.values():
+            dq = [t[2] for t in c]
+            r1 = _spearman([t[0] for t in c], dq)
+            r2 = _spearman([t[1] for t in c], dq)
+            if r1 is not None:
+                rh.append(r1)
+            if r2 is not None:
+                srh.append(r2)
+            px += [t[0] for t in c]
+            spx += [t[1] for t in c]
+            py += dq
+        pr, spr = _spearman(px, py), _spearman(spx, py)
         o = {i: max(c, key=lambda t: t[0])[2] for i, c in by.items()}
         # MARGIN: score(top pick) - score(best good candidate), over every winnable item. An item
         # the head gets right contributes exactly 0, which is what makes the average go DOWN as it
@@ -183,6 +233,11 @@ def score_points(work):
         n = len(by)
         out[e] = dict(
             n=n,
+            rho=(sum(rh) / len(rh)) if rh else float("nan"),
+            s_rho=(sum(srh) / len(srh)) if srh else float("nan"),
+            n_rho=len(rh),
+            prho=pr if pr is not None else float("nan"),
+            s_prho=spr if spr is not None else float("nan"),
             top1=sum(1 for v in o.values() if v >= ACC) / n,
             q=sum(o.values()) / n,
             s_top1=sum(1 for v in s_.values() if v >= ACC) / n,
@@ -251,8 +306,12 @@ def main():
     # TWO ROWS, ONE PER SIDE. Training on top (the loss split plus the slice's two metrics),
     # held-out underneath. One metric per panel: two y-axes on one panel made the slice's curves
     # look like they crossed, which was an artefact of the scales.
-    fig, axx = plt.subplots(2, 4, figsize=(21, 9))
-    ax = axx.ravel()
+    fig, axx = plt.subplots(2, 5, figsize=(26, 9))
+    # THE HISTORICAL NUMBERING IS KEPT. ax[0..3] is the training row and ax[4..7] the held-out
+    # row, as they were when the grid was 2x4; the correlation pair is appended as ax[8]/ax[9]
+    # so adding a column did not silently renumber every panel below.
+    top, bot = axx[0], axx[1]
+    ax = [top[0], top[1], top[2], top[3], bot[0], bot[1], bot[2], bot[3], top[4], bot[4]]
 
     eps = sorted(gl)
     reps = sorted(ref)
@@ -319,6 +378,10 @@ def main():
             a_.legend(fontsize=8)
     panel(ax[7], val, "margin", "s_margin", "HELD-OUT: margin", "score gap", False, "tab:blue",
           lower_better=True)
+    panel(ax[8], sli, "rho", "s_rho", "TRAIN SLICE: ipTM vs DockQ\n(mean Spearman within an "
+          "interface)", "rho", False, "tab:orange")
+    panel(ax[9], val, "rho", "s_rho", "HELD-OUT: ipTM vs DockQ\n(mean Spearman within an "
+          "interface)", "rho", False, "tab:blue")
 
     for a_ in ax:
         a_.grid(alpha=.3)
