@@ -7,6 +7,11 @@
 # ONE PASS PER SIDE. Each pass emits our score and the shipped score for the same candidate, so
 # the shipped reference row costs no extra GPU.
 set -u
+# PIPEFAIL, BECAUSE THE REPORT IS PIPED INTO tee. score_report.py asserts its candidate count and
+# exits non-zero on a short pass; without this the pipeline took tee's status, the assert went to
+# stderr unnoticed and tee had already truncated the report to zero bytes. Ten reports were
+# silently emptied that way once.
+set -o pipefail
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
 R=/home/ebrahim/confidence_recalibration/extra_training
@@ -24,7 +29,10 @@ say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 # NO --drop-unmapped-poses HERE. The in-training eval does not forward it, so with it the two
 # harnesses measure different candidate sets: a pose OST cannot map is silently dropped in one and
 # a hard stop in the other. Loud in both.
-COMMON="--pose-perblock --pose-perblock-copy --frame-direction"
+# --prefetch: read the next unit's trunk on a background thread while the GPU scores this
+# one. Its own help measures load at 4.7 min of a 26.1 min pass, strictly serial with the
+# forward -- which is what the idle gaps between units were on the epoch-1 and -2 passes.
+COMMON="--pose-perblock --pose-perblock-copy --frame-direction --prefetch"
 
 if [ "$SIDES" = both ] || [ "$SIDES" = slice ]; then
   say "$TAG: scoring the 280-item training slice (15 seeds)"
