@@ -27,14 +27,29 @@ while :; do
         [ -d "$D" ] || continue
         E=$(basename "$D" | sed -E 's/.*_ep([0-9]+)$/\1/')
         OUT="$SD/report_${TAGP}_ep$E.txt"
-        [ -s "$OUT" ] && continue
         [ "$(ls "$D"/rows_*.csv.meta.json 2>/dev/null | wc -l)" -eq 3 ] || continue
         # THE SLICE ONLY IF IT RAN. It is on a ten-epoch cadence, so most epochs are val only and
         # score_report.py takes the val side alone.
         S=training/runs/$RID/slice280_eval_shards_ep$E
         ARGS=(--val-work "$D" --label "${TAGP}_ep$E")
+        SLICE_READY=no
         if [ -d "$S" ] && [ "$(ls "$S"/rows_*.csv.meta.json 2>/dev/null | wc -l)" -eq 3 ]; then
-            ARGS=(--slice-work "$S" "${ARGS[@]}")
+            ARGS=(--slice-work "$S" "${ARGS[@]}"); SLICE_READY=yes
+        fi
+        # A WRITTEN REPORT IS NOT NECESSARILY A FINISHED ONE. The two passes of a slice epoch
+        # finish minutes apart -- val first, then the slice -- so the first tick after val lands
+        # writes a val-only table, and "skip if the file exists" then meant the slice NEVER
+        # reached the report. That is six of sixty epochs silently losing the in-sample side.
+        # Rewrite exactly when the slice has since completed and the table on disk predates it.
+        if [ -s "$OUT" ]; then
+            [ "$SLICE_READY" = yes ] || continue
+            grep -q "^TRAIN SLICE" "$OUT" && continue
+            say "epoch $E: slice finished after the val-only table, rewriting"
+        fi
+        # AND DO NOT WRITE A VAL-ONLY TABLE WHILE A SLICE PASS IS STILL RUNNING, so the common
+        # case costs no rewrite at all: the directory exists as soon as the pass starts.
+        if [ "$SLICE_READY" = no ] && [ -d "$S" ] && [ ! -s "$OUT" ]; then
+            continue
         fi
         if $PY -I run_logging/score_report.py "${ARGS[@]}" > "$OUT.part" 2>"$OUT.err"; then
             mv "$OUT.part" "$OUT"; rm -f "$OUT.err"

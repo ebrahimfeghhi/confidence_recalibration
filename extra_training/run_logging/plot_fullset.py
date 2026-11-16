@@ -141,14 +141,29 @@ def score_points(work):
     out = {}
     for e, w in sorted(work.items()):
         by = collections.defaultdict(list)
-        for f in glob.glob(os.path.join(w, "rows_*.csv")):
+        rows_f = sorted(glob.glob(os.path.join(w, "rows_*.csv")))
+        metas = glob.glob(os.path.join(w, "rows_*.csv.meta.json"))
+        for f in rows_f:
             for r in csv.DictReader(open(f)):
                 try:
                     by[r["iface"]].append((float(r["iptm"]), float(r["stored_iptm"]),
                                            float(r["dockq"]), r["seed"]))
                 except (TypeError, ValueError, KeyError):
                     pass
-        if len(by) < 100:
+        # EVERY SHARD, OR NO POINT. The old gate was `len(by) < 100`, which a directory still
+        # being written can pass: the pass is sharded three ways and each shard writes its
+        # rows_*.csv and then its .meta.json, so a dir read between those is short by a third of
+        # its interfaces -- and a point drawn from two shards is a DIFFERENT subset of the pool,
+        # which moves the mean without looking wrong. Require the meta marker from all three
+        # shards and the same candidate count on every interface, and say out loud what is being
+        # skipped rather than dropping it silently.
+        if not by:
+            continue
+        cand = {len(v) for v in by.values()}
+        if len(rows_f) != 3 or len(metas) != 3 or len(cand) != 1:
+            print(f"  SKIP ep{e}: {len(rows_f)} rows file(s), {len(metas)} meta(s), "
+                  f"{len(by)} interface(s), candidates per interface {sorted(cand)} "
+                  f"-- not a complete 3-shard pass", file=sys.stderr)
             continue
         o = {i: max(c, key=lambda t: t[0])[2] for i, c in by.items()}
         # MARGIN: score(top pick) - score(best good candidate), over every winnable item. An item
