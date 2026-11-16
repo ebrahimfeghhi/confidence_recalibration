@@ -214,6 +214,77 @@ check("an unwired future form still stops instead of borrowing rel's coefficient
       "has no coefficient path" in src)
 check("the epoch line names the objective that ran",
       "z-scored softmax, -log(mass on the acceptable candidates) per interface" in src)
+
+# ---- d0 IS PINNED TO THE UNCROPPED CHAIN PAIR AT EVERY SCORING SITE.
+# Pass A scored with n_pair_tokens=_uncrop_npt(...) while the DIFFERENTIATED score in pass B and
+# the --grad-probe score did not, so under --crop-pool the coefficients described a d0 from the
+# uncropped pair (600-1200 tokens) and the backward moved a score whose d0 came from the cropped
+# one (256). At that ratio w(10 A) moves 0.423 -> 0.259: what was descended was
+# sum_i c_i(s_A) * s_B,i with s_A != s_B, not the gradient of the loss pass A evaluated.
+# AST, NOT A SUBSTRING COUNT, so a new call site cannot be added without a keyword and pass.
+_pooled = [n for n in ast.walk(tree)
+           if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+           and n.func.attr == "iptm_pooled"]
+check("every iptm_pooled call site in the trainer is accounted for",
+      len(_pooled) == 4, f"{len(_pooled)} call site(s)")
+_bad = []
+for _c in _pooled:
+    _kw = {k.arg: k.value for k in _c.keywords if k.arg}
+    _v = _kw.get("n_pair_tokens")
+    if _v is None or not (isinstance(_v, ast.Call) and isinstance(_v.func, ast.Name)
+                          and _v.func.id == "_uncrop_npt"):
+        _bad.append(getattr(_c, "lineno", -1))
+check("every iptm_pooled call pins d0 with n_pair_tokens=_uncrop_npt(...)",
+      not _bad, f"lines missing it: {_bad}" if _bad else f"all {len(_pooled)} sites")
+# AND THE PAIR PASSED TO _uncrop_npt IS THE PAIR BEING SCORED, not some other one: under rel the
+# coefficient key is an interface NAME and the asym pair is resolved per pose by _asym_for, so
+# _uncrop_npt(pdb, <the key>) would index the asym table with a string.
+_mism = []
+for _c in _pooled:
+    _kw = {k.arg: k.value for k in _c.keywords if k.arg}
+    _v = _kw.get("n_pair_tokens")
+    if not isinstance(_v, ast.Call) or len(_v.args) != 2:
+        continue
+    _scored = _c.args[3] if len(_c.args) > 3 else _kw.get("pair")
+    if _scored is None or ast.dump(_scored) != ast.dump(_v.args[1]):
+        _mism.append(getattr(_c, "lineno", -1))
+check("the d0 pair argument is the same expression as the pair being scored",
+      not _mism, f"lines where they differ: {_mism}" if _mism else "all 4 sites agree")
+check("the stale 'POOLED THE SAME WAY AS PASS B' comments now claim d0 too",
+      "POOLED THE SAME WAY AS PASS B. If these differed" not in src
+      and src.count("POOLED THE SAME WAY AS PASS B, AND WITH THE SAME d0") == 2)
+
+# ---- THE RANKING TERM IS A MEAN OVER THE ITEMS IN THE STEP, not over the ones that contributed.
+# zsoftmax skips an item whose candidates are all acceptable or all unacceptable -- ~60% of items
+# -- so dividing by the contributor count made each surviving item's weight swing ~4x step to
+# step. The divisor must come from len(groups), which is built from the ALL-GATHERED `allsc` and
+# is therefore identical on every rank; a rank-local count would make the three ranks' gradients
+# fail to sum to one step's contribution.
+_prep = next((n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_xs_prepare"), None)
+check("_xs_prepare is still the function that sets the divisor", _prep is not None)
+_divs = []
+if _prep is not None:
+    for _n in ast.walk(_prep):
+        if isinstance(_n, ast.Assign) and len(_n.targets) == 1:
+            _t = _n.targets[0]
+            if (isinstance(_t, ast.Subscript) and isinstance(_t.value, ast.Name)
+                    and _t.value.id == "_xs_div"):
+                _divs.append(ast.unparse(_n.value))
+check("the divisor is max(1, <the step's item count>) and nothing else",
+      _divs == ["1", "max(1, n_items)"], f"assignments: {_divs}")
+check("the item count is len(groups), which is built from the all-gathered scores",
+      "n_items = len(groups)" in src
+      and "groups.setdefault((_pdb, _pair), {})[(_sd, _i)] = _v" in src)
+check("the contributing count is still what the step-skip gate reads",
+      '_xs_stat["last_groups"] = n_groups' in src
+      and '_xs_stat.get("last_groups", 1) == 0' in src)
+check("both counts are accumulated, reported and reset per epoch",
+      '_xs_stat["items"] += n_items' in src
+      and "_xs_stat['items']" in src
+      and 'for _k in ("groups", "items", "pairs", "steps", "skipped"):' in src)
+check("the magnitude change is recorded where alpha_rank would be retuned",
+      "PREVIOUSLY MEASURED PARITY ALPHA IS THEREFORE STALE" in src)
 assert isinstance(tree, ast.Module)
 
 print()

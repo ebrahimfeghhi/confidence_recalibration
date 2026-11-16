@@ -2620,8 +2620,9 @@ def main():
     # CROSS-SEED STATE. _xs_coef holds dL/ds for every pose of the CURRENT step, keyed
     # (pdb, seed, sample, pair) -- a pose's coefficient depends on every other pose of its
     # interface, which is why it cannot be built per unit the way the linear one is. _xs_div is the
-    # number of interface-groups in the step, so the term is a mean over groups; it is a one-element
-    # list because pass A writes it and the pose loop reads it from a different frame.
+    # number of interface-groups the step HOLDS -- not the number that produced coefficients -- so
+    # the term is a mean over the step's items and a skipped item contributes zero to it; it is a
+    # one-element list because pass A writes it and the pose loop reads it from a different frame.
     # RELATIVE-iTM LABEL CACHE, loaded lazily per structure and kept. One <pdb>.npz is a few KB
     # and a structure recurs every epoch, so reading it once per process is right; loading all 368
     # at startup would be wasted on a rank that never sees most of them.
@@ -2824,8 +2825,10 @@ def main():
         _rel_cache[pdb] = d
         return d
 
+    # groups: items that PRODUCED coefficients. items: items the step held at all, which is the
+    # ranking term's divisor -- the two differ by every skipped item and both are reported.
     _xs_coef, _xs_div, _xs_stat = {}, [1], {"groups": 0, "pairs": 0, "loss": 0.0, "steps": 0,
-                                             "last_groups": 0, "skipped": 0}
+                                             "last_groups": 0, "skipped": 0, "items": 0}
     # THE CURRENT STEP'S EXPECTED POSE COUNT. accum_local is a constant only when every
     # step holds the same number of units, which --rank-cross-seed breaks: S structures x
     # their seeds need not divide `world`, so the short rank rotates and the quota varies
@@ -6268,8 +6271,11 @@ def main():
                 else:
                     _items = [(_p, _p) for _p in sorted(_scored_asym.get(pdb) or ())]
                 for _k_, _p in _items:
-                    # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
-                    # describe one quantity and the backward would move another.
+                    # POOLED THE SAME WAY AS PASS B, AND WITH THE SAME d0. Both halves matter:
+                    # if the pooling or the n_pair_tokens differed, the coefficients would
+                    # describe one quantity and the backward would move another. Pass B passed no
+                    # n_pair_tokens until the external review caught it; all four iptm_pooled
+                    # call sites in this file now pin d0 to the UNCROPPED chain-pair size.
                     _v = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
                                          pool=a.rank_pool,
                                          n_pair_tokens=_uncrop_npt(pdb, _p))
@@ -6319,8 +6325,9 @@ def main():
                                      f"({_si.shape[0]} entries).")
                 _samp = int(_si[i])
                 for _p in sorted(_scored_asym.get(pdb) or ()):
-                    # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
-                    # describe one quantity and the backward would move another.
+                    # POOLED THE SAME WAY AS PASS B, AND WITH THE SAME d0 -- see the pass A
+                    # comment above. Emitted rows that used a different kernel from the trained
+                    # score would describe a statistic the run does not optimise.
                     _v = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
                                          pool=a.rank_pool,
                                          n_pair_tokens=_uncrop_npt(pdb, _p))
@@ -6450,7 +6457,8 @@ def main():
             # TWO SOURCES OF c_i, AND ONLY ONE IS ACTIVE. Per-unit (_rank_c, from the labels
             # alone) for the within-seed linear form; per-step (_xs_coef, from pass A) for
             # --rank-cross-seed, where a pose's coefficient depends on every other pose of its
-            # interface and the divisor is interface-groups per step rather than units.
+            # interface and the divisor is interface-groups per step rather than units -- every
+            # group the step holds, so a skipped one is a zero in the mean.
             if a.rank_cross_seed:
                 _cs_pairs = sorted({_k[3] for _k in _xs_coef
                                     if _k[0] == pdb and _k[1] == _xs_sd and _k[2] == i})
@@ -6530,10 +6538,16 @@ def main():
                         # MAX-pooled, while training's backward uses iptm_pooled(pool=rank_pool).
                         # So the first rel probe's headline numbers -- parity alpha 121.7 and
                         # cos(PAE,rel) +0.2043 -- described the max-pooled score and NOT the
-                        # objective being trained. Caught in external review; the parity must be
-                        # re-measured.
+                        # objective being trained. Caught in external review. The pooling is
+                        # fixed, and so is d0: this now passes n_pair_tokens like every other
+                        # call site, so the probe measures the same score the backward moves.
+                        # ANY PARITY ALPHA MEASURED BEFORE THIS IS STALE on two counts -- the
+                        # d0 fix here and the step-item divisor in _xs_prepare -- so it has to be
+                        # re-measured with --grad-probe on this code.
+                        _pp_ = _asym_for(_p)
                         _sp_ = RKL_probe.iptm_pooled(pred["pae"], feat_head, configs,
-                                                     _asym_for(_p), pool=a.rank_pool)
+                                                     _pp_, pool=a.rank_pool,
+                                                     n_pair_tokens=_uncrop_npt(pdb, _pp_))
                         if _sp_ is None:
                             continue
                         _tm = (a.alpha_rank * _cv / _cs_div) * _sp_
@@ -6588,8 +6602,18 @@ def main():
                     for _p, _cv in _cs_src:
                         if not _cv:
                             continue
+                        # d0 ON THE UNCROPPED CHAIN PAIR, exactly as pass A takes it. This call
+                        # omitted n_pair_tokens, so under --crop-pool it scored with a d0 derived
+                        # from the CROPPED pair (256 tokens out of 600-1200) while the
+                        # coefficients in _xs_coef described the uncropped-d0 score. What was
+                        # descended was then sum_i c_i(s_A) * s_B,i with s_A != s_B -- not the
+                        # gradient of the loss pass A evaluated. _uncrop_npt returns None when
+                        # --crop-pool is off, and iptm_pooled falls back to its own tok.sum()
+                        # there, so an uncropped run is unchanged. Found in external review.
+                        _pr_ = _asym_for(_p)
                         _sr = RKL.iptm_pooled(pred["pae"], feat_head, configs,
-                                              _asym_for(_p), pool=a.rank_pool)
+                                              _pr_, pool=a.rank_pool,
+                                              n_pair_tokens=_uncrop_npt(pdb, _pr_))
                         if _sr is None:
                             continue
                         _obj = _obj + (a.alpha_rank * _cv / _cs_div) * _sr
@@ -7061,12 +7085,34 @@ def main():
                     # means the term cannot be added by construction, rather than being
                     # multiplied by a zero someone could later change.
                     _xs_coef[(_pdb, _sd, _i, _pair)] = _cv
-        _xs_div[0] = max(1, n_groups)
-        # PER-STEP, not cumulative. Pass A is REPLICATED -- it fills _xs_coef for the poses of
-        # step_units across ALL ranks -- so n_groups is identical on every rank and the skip
-        # decision below needs no collective and cannot desynchronise them.
+        # THE DIVISOR IS THE NUMBER OF ITEMS IN THE STEP, NOT THE NUMBER THAT CONTRIBUTED.
+        # It was max(1, n_groups), and n_groups counts only items that produced coefficients.
+        # zsoftmax skips an item whose candidates are all acceptable or all unacceptable, and
+        # that is ~60% of items, so the divisor moved step to step: ~5.9 items per step of which
+        # ~2.4 contributed, i.e. a ~4x swing in each surviving item's weight, and ~5% of steps
+        # with no contributor at all. Dividing by the step's item count makes a skipped item
+        # contribute ZERO to a mean instead of being removed from the denominator -- which is
+        # what the PAE term already does by dividing by _step_poses_g[0], all poses in the step
+        # rather than the ones that happened to produce a loss.
+        #
+        # THIS CHANGES THE TERM'S MAGNITUDE, by ~2.5x on average for zsoftmax (the mean ratio of
+        # items to contributors). ANY PREVIOUSLY MEASURED PARITY ALPHA IS THEREFORE STALE and
+        # must be re-measured with --grad-probe; alpha_rank is deliberately NOT adjusted here to
+        # compensate, because a hidden compensation would make the flag value in args.json mean
+        # something different from run to run.
+        #
+        # IDENTICAL ON EVERY RANK. `groups` is built from `allsc`, which is the all-gathered
+        # union of every rank's pass A scores for step_units, so len(groups) is rank-invariant
+        # for the same reason n_groups was -- no rank-local state enters it, and the skip
+        # decision below still needs no collective.
+        n_items = len(groups)
+        _xs_div[0] = max(1, n_items)
+        # PER-STEP, not cumulative. last_groups stays the CONTRIBUTING count, because the step
+        # skip gate ("this step has no task gradient") is a statement about contributors, not
+        # about items present.
         _xs_stat["last_groups"] = n_groups
         _xs_stat["groups"] += n_groups
+        _xs_stat["items"] += n_items
         _xs_stat["steps"] += 1
 
     def outside_head_grads():
@@ -9471,6 +9517,19 @@ def main():
                 print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({_obj}): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
                       f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s)"
+                      # THE SECOND COUNT IS THE DIVISOR, and it is not the first one. The loss
+                      # mean above is over CONTRIBUTING groups (a skipped item has no loss
+                      # value), while the gradient is divided by every group the step HELD --
+                      # see the _xs_div comment in _xs_prepare. Printing only the contributor
+                      # count hid that these are different numbers. APPENDED, not substituted
+                      # into the leading phrase, because run_logging/spread_from_log.py,
+                      # plot_uncropped_progress.py and plot_train_insample.py all parse
+                      # "over (\d+) interface-group" out of this exact line. AND WITH NO
+                      # COMMA IN IT: plot_uncropped_progress.py's RANK_RE spans from "step(s)"
+                      # to the candidate count with [^,]*, so a comma here would empty its
+                      # ranking panel.
+                      + f" [divisor: the {_xs_stat['items']} group(s) the steps HELD -- a "
+                        f"skipped group is a zero in the mean rather than a smaller denominator]"
                       # THE REASON MUST MATCH THE FORM. Raised in review: this said "no
                       # straddling pair" whatever the objective, which is false under rel -- rel
                       # forms no pairs, and a skipped rel step means the step held no interface
@@ -9499,7 +9558,7 @@ def main():
                          if a.rank_form == "zsoftmax" else "")
                       + ("  (NEGATIVE: this is -expected DockQ, floor -max(DockQ) per group)"
                          if a.rank_form == "expected" else ""), flush=True)
-                for _k in ("groups", "pairs", "steps", "skipped"):
+                for _k in ("groups", "items", "pairs", "steps", "skipped"):
                     _xs_stat[_k] = 0
                 _xs_stat["loss"] = 0.0
             elif a.rank_loss and _rank_seen["units"]:
