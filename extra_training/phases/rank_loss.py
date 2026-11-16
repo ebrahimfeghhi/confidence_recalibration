@@ -671,6 +671,18 @@ def zsoftmax_coeffs(s_by_key, accept_by, stat=None):
         stat.setdefault("zmax", []).append(float(z.detach().abs().max()))
         stat.setdefault("pgood", []).append(float(torch.exp(-L.detach())))
         stat.setdefault("ngood", []).append(ng)
+        # THE SCORE SPREAD AND THE GRADIENT NORM, which are the two reads that diagnose this
+        # objective and the loss value is not. Raised in external review, and both halves matter:
+        #   d -- the coefficients are 1/d times a quantity bounded by 1, so a shrinking spread
+        #        INFLATES the gradient without the loss saying so, and only an exactly zero
+        #        spread is skipped. Every ranking arm in this repo lowered its loss by collapsing
+        #        its score spread, so this is the falsifier for that in one number.
+        #   sum|c| -- m and d are detached, so the loss is recomputed against a moving
+        #        normalisation and can read flat while the coefficients stay large. A plateau in
+        #        the loss with a live gradient norm is the all-tied symmetric stationary point,
+        #        which is a trap and not convergence.
+        stat.setdefault("sd_s", []).append(d)
+        stat.setdefault("cabs", []).append(float(c.abs().sum()))
     return {k: float(v) for k, v in zip(keys, c)}, n, float(L.detach())
 
 

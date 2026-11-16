@@ -95,32 +95,41 @@ l_r = RKL.zsoftmax_loss_value(right, lab)
 l_w = RKL.zsoftmax_loss_value(wrong, lab)
 check("good candidates on top -> small loss; at the back -> large", l_r < 0.5 < l_w,
       f"{l_r:.4f} vs {l_w:.4f}")
-# THE LOSS HAS A FLOOR THAT THE HEAD CANNOT GET UNDER, and it is not zero. d is the item's OWN
-# score std, so pushing the acceptable candidates further out inflates d by the same factor it
-# raises their centred score: with k acceptable candidates of n, the maximally separated
-# two-valued configuration gives z = +sqrt((n-k)/k) and -sqrt(k/(n-k)) NO MATTER HOW BIG the
-# separation is, and therefore a fixed minimum loss.
+# WHAT THE ATTAINABLE MINIMUM ACTUALLY IS, and what it is NOT.
 #
-#     k = 1 of 150  ->  floor 0.0007        k = 3 of 50  ->  floor 0.209
-#     k = 1 of 50   ->  floor 0.038         k = 37 of 150 ->  floor 0.262
+# An earlier version of this test asserted a floor of 0.209 at k=3 of n=50 and 0.262 at k=37 of
+# 150, read off the configuration where every acceptable candidate is tied at the top. That is the
+# minimum of a RESTRICTED FAMILY, not the minimum: the numerator needs only ONE acceptable
+# candidate to carry the softmax mass, so putting one of them out as an extreme outlier and
+# leaving the rest in the pack does far better -- 0.0364 at 3/50 and 0.00052 at 37/150. Caught in
+# external review. The real statement is that the floor is set by n, not by k, and at 150
+# candidates it is ~0.0005, which is zero for any practical purpose.
 #
-# WHY IT MATTERS FOR READING THE RUN. "the loss flattened at 0.2" is the floor on an item with
-# several acceptable candidates, not a failure to converge -- and the floor is LOWER on the hard
-# items (few acceptable) than on the easy ones, which is the opposite of the usual intuition.
-# Asserted here so a future temperature or std floor cannot be added without this changing.
-def floor_of(k, n):
-    s = {i: (1.0 if i < k else 0.0) for i in range(n)}
-    return RKL.zsoftmax_loss_value(s, {i: (i < k) for i in range(n)})
+# SO A PLATEAU IS NOT CONVERGENCE, and the retracted claim had it backwards. Two reasons:
+#   - the all-tied configuration is a SYMMETRIC STATIONARY POINT. Gradient descent started from a
+#     symmetric initialisation stays there -- measured: 4,000 Adam steps from an all-equal start
+#     sit at 0.208977 for k=3 of 50 while 0.036423 is reachable. A run parked at that value is
+#     stuck in the symmetry, not finished.
+#   - m and d are DETACHED, so the loss is recomputed against a moving normalisation. A flat
+#     reported loss is consistent with nonzero coefficients throughout, which is the other half
+#     of why loss alone cannot diagnose this. Read the gradient norm and the score spread instead;
+#     both are in the epoch line.
+def at(scores, k):
+    return RKL.zsoftmax_loss_value({i: scores[i] for i in range(len(scores))},
+                                   {i: (i < k) for i in range(len(scores))})
 
 
-_f = {(1, 150): 0.00069, (1, 50): 0.0380, (3, 50): 0.2093, (37, 150): 0.2622}
-_got = {kn: floor_of(*kn) for kn in _f}
-check("the attainable floor is fixed by k/n, not by how far the head separates them",
-      all(abs(_got[kn] - v) < 2e-3 for kn, v in _f.items()),
-      ", ".join(f"{k}/{n}: {_got[(k, n)]:.4f}" for k, n in _f))
-check("and it does not move when the separation is 1000x larger",
-      abs(RKL.zsoftmax_loss_value({i: (1000.0 if i < 3 else 0.0) for i in range(50)},
-                                  {i: (i < 3) for i in range(50)}) - _got[(3, 50)]) < 1e-9)
+_tied = {(3, 50): 0.20898, (37, 150): 0.26251}
+_one = {(3, 50): 0.036423, (37, 150): 0.000520}
+check("ONE acceptable candidate carrying the mass beats every acceptable candidate tied",
+      all(at([0.9] + [0.1] * (n - 1), k) < _tied[(k, n)] / 4 for k, n in _tied),
+      ", ".join(f"{k}/{n}: {at([0.9] + [0.1] * (n - 1), k):.6f} vs tied {_tied[(k, n)]:.5f}"
+                for k, n in _tied))
+check("and it matches the measured minimum, so the floor is set by n and not by k",
+      all(abs(at([0.9] + [0.1] * (n - 1), k) - v) < 1e-5 for (k, n), v in _one.items()))
+check("the all-tied value is still a stationary point, which is why a plateau there is a trap",
+      all(abs(at([1.0] * k + [0.0] * (n - k), k) - v) < 2e-3 for (k, n), v in _tied.items()),
+      ", ".join(f"{k}/{n}: {at([1.0] * k + [0.0] * (n - k), k):.5f}" for k, n in _tied))
 
 # ---- invariances the z-score buys ------------------------------------------------------------
 base = {i: rng.gauss(0.5, 0.1) for i in range(30)}
