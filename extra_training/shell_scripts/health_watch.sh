@@ -1,117 +1,48 @@
 #!/bin/bash
-# IS THE RUN ACTUALLY ALIVE. Checks every 5 minutes and says so only when the answer changes or is
-# no, so a quiet log means healthy.
+# HEALTH WATCHER, every 10 minutes. Reports; it never launches, kills or resumes anything.
 #
-#     ./shell_scripts/health_watch.sh <rid>
+# WHY IT ONLY REPORTS. The fallback the user asked for -- "if you can't get the run working just
+# resume this one" -- is a decision about which arm the night is spent on, and an automatic
+# resumer would race whoever is mid-relaunch and could put two arms on the same three cards. The
+# supervising session reads this log and acts; the one thing this must never do is act on its own.
 #
-# WHY THIS EXISTS. Three runs died today and in each case the next thing reported was progress: a
-# stale step count read off a trajectory.csv that had stopped being written. eqd2jx was dead for
-# 21 minutes before anyone noticed, and its own per-epoch plotter did not catch it because that
-# only trips after 30 minutes of silence. A run that has exited looks exactly like a run between
-# writes unless something checks for the exit.
-#
-# WHAT IT CHECKS, cheapest first:
-#   1. a STOP or a traceback in run.log      -- a refusal, which is the common failure here
-#   2. run.log's mtime                       -- silence past STALL_S means gone or wedged
-#   3. the step counter moving               -- a process that is up but making no progress
-#   4. status.json                           -- the launcher's own verdict once it exists
-#
-# LIVENESS IS NOT A PID CHECK. Deriving the pids means matching a pattern against the process
-# table, and `pgrep -f` / `pkill -f` match the shell that runs them -- that has self-killed this
-# session twice. The log's mtime answers the same question without naming a process.
-#
-# IT NEVER TOUCHES THE RUN: reads two files and prints. Exits 0 when the run finishes its epochs,
-# 3 when it has died.
+# WHAT "HEALTHY" MEANS HERE, in the order a failure actually shows up:
+#   1. a chain pid alive, or a scoring pass alive between segments
+#   2. the three cards occupied by OUR ranks, not idle
+#   3. run.log moving -- a wedged trainer holds the cards and produces nothing, and the chain's
+#      own wait has no liveness check, so this is the only place that notices
+#   4. the reports being non-empty, which is how the TAG-collision defect would have hidden
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
+SD="${SD:-/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad}"
+say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 
-RID="${1:?usage: health_watch.sh <rid>}"
-EVERY="${EVERY:-300}"
-STALL_S="${STALL_S:-900}"
-D="training/runs/$RID"
-[ -d "$D" ] || { echo "no such run: $D"; exit 2; }
-
-TOTAL=$($PY -I -c "
-import json
-a = json.load(open('$D/args.json')); a = a.get('args', a)
-print(int(float(a.get('epochs') or 0)))" 2>/dev/null || echo 0)
-# EVAL_EVERY, NOT EVERY: EVERY is this script's own poll interval, and the first version of this
-# line overwrote it with the run's eval cadence -- so `sleep "$EVERY"` would have polled every 2
-# seconds instead of every 300.
-EVAL_CADENCE=$($PY -I -c "
-import json
-a = json.load(open('$D/args.json')); a = a.get('args', a)
-print(int(a.get('train_eval_every') or 0))" 2>/dev/null || echo 0)
-EVAL_GRACE="${EVAL_GRACE:-2100}"
-
-ts() { TZ=America/New_York date '+%-I:%M %p %Z'; }
-echo "health_watch $RID: poll ${EVERY}s, stall ${STALL_S}s, to epoch ${TOTAL:-?}, eval cadence ${EVAL_CADENCE:-?}"
-
-LAST_STEP=-1
-LAST_EP=-1
-QUIET=0
 while :; do
-    # 1. AN EXPLICIT REFUSAL. Checked first because it is the one with a reason attached, and the
-    #    reason is what makes the difference between "relaunch it" and "fix it first".
-    if grep -qE "^STOP:|Traceback \(most recent call last\)" "$D/run.log" 2>/dev/null; then
-        echo "[$(ts)] DEAD: $RID refused or raised"
-        grep -E "^STOP:|Error" "$D/run.log" 2>/dev/null \
-            | grep -vE "error_file|errors.html|elastic" | head -2 | sed 's/^/    /'
-        exit 3
-    fi
-
-    EP=$(ls "$D"/head_ep*.pt 2>/dev/null | sed -E 's/.*head_ep([0-9]+)_.*/\1/' | sort -n | tail -1)
-    EP="${EP:-0}"
-    if [ "${TOTAL:-0}" -gt 0 ] && [ "$EP" -ge "$TOTAL" ]; then
-        echo "[$(ts)] FINISHED: $RID reached epoch $EP of $TOTAL"
-        exit 0
-    fi
-
-    MT=$(stat -c %Y "$D/run.log" 2>/dev/null || echo 0)
-    NOW=$(date +%s)
-    SILENT=$((NOW - MT))
-    if [ "$SILENT" -gt "$STALL_S" ]; then
-        echo "[$(ts)] DEAD: $RID has not written run.log in $((SILENT / 60)) min (epoch $EP)"
-        tail -3 "$D/run.log" 2>/dev/null | sed 's/^/    /'
-        exit 3
-    fi
-
-    # 2b. THE EVAL ACTUALLY RAN. A held-out pass is a subprocess on the same cards; it can fail
-    #     on its own (a missing shard, a busy card, an OOM) while the trainer carries on to the
-    #     next epoch perfectly healthily. The run then looks fine and simply stops producing the
-    #     numbers it exists to produce -- which is the failure that matters most here, and the
-    #     one nothing else checks. Grace is generous because the pass itself takes ~11 min.
-    if [ "${EVAL_CADENCE:-0}" -gt 0 ] && [ "$EP" -gt 0 ] \
-            && [ $((EP % EVAL_CADENCE)) -eq 0 ]; then
-        MJ="$D/metric_valfull83_ep${EP}.json"
-        if [ ! -s "$MJ" ]; then
-            CK=$(ls "$D"/head_ep${EP}_*.pt 2>/dev/null | head -1)
-            CKT=$(stat -c %Y "$CK" 2>/dev/null || echo "$NOW")
-            if [ $((NOW - CKT)) -gt "$EVAL_GRACE" ]; then
-                echo "[$(ts)] WARN: epoch $EP finished $(( (NOW - CKT) / 60 )) min ago and wrote no"
-                echo "    metric_valfull83_ep${EP}.json -- the held-out eval did not run or failed"
-                ls "$D"/valfull_eval_shards_ep${EP}/*.log 2>/dev/null | head -2 | sed 's/^/    /'
-            fi
-        fi
-    fi
-
-    STEP=$(awk -F, 'NR>1{print $2}' "$D/trajectory.csv" 2>/dev/null | sort -n | tail -1)
-    STEP="${STEP:-0}"
-    # 3. UP BUT NOT MOVING. The step counter is the only thing that distinguishes a process that
-    #    is working from one that is holding a lock or wedged in a collective. Two consecutive
-    #    quiet checks rather than one, because a long eval or a checkpoint write legitimately
-    #    pauses it for a few minutes.
-    if [ "$STEP" = "$LAST_STEP" ] && [ "$EP" = "$LAST_EP" ]; then
-        QUIET=$((QUIET + 1))
-        if [ "$QUIET" -ge 2 ]; then
-            echo "[$(ts)] WARN: $RID still on step $STEP, epoch $EP after $((QUIET * EVERY / 60)) min"
-            QUIET=0
-        fi
-    else
-        QUIET=0
-    fi
-    LAST_STEP="$STEP"
-    LAST_EP="$EP"
-    sleep "$EVERY"
+    # THE ARM UNDER SUPERVISION, re-read every tick rather than captured once, so a relaunch
+    # under a new chain pid is picked up without restarting this watcher.
+    CH=$(ls -t training/runs/fullset_chain_zsoft*.log 2>/dev/null | head -1)
+    RID=$(grep -oE 'segment running as [a-z0-9]{6}' "$CH" 2>/dev/null | tail -1 | awk '{print $4}')
+    ALIVE=no
+    for p in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
+        grep -qa 'fullset_chain_zsoft' "/proc/$p/cmdline" 2>/dev/null && { ALIVE="yes(pid $p)"; break; }
+    done
+    BUSY=$($PY -I run_logging/cards_busy.py 2>&1 | tail -1)
+    # run.log MOVEMENT, in seconds since last write. The trainer writes a MEM line per pose, so
+    # anything over a few minutes is a wedge rather than a slow step.
+    AGE=na
+    [ -n "${RID:-}" ] && [ -f "training/runs/$RID/run.log" ] && \
+        AGE=$(( $(date +%s) - $(stat -c %Y "training/runs/$RID/run.log") ))
+    EVAL=$(ls /proc 2>/dev/null | grep -E '^[0-9]+$' | while read p; do
+        grep -qa 'phase_k_eval' "/proc/$p/cmdline" 2>/dev/null && echo x; done | wc -l)
+    # EMPTY REPORTS ARE A SILENT FAILURE, so they are checked explicitly rather than inferred.
+    EMPTY=$(find "$SD" -maxdepth 1 -name 'report_fs_ep*.txt' -size 0 2>/dev/null | wc -l)
+    N_REP=$(ls "$SD"/report_fs_ep*.txt 2>/dev/null | wc -l)
+    say "chain=$ALIVE rid=${RID:-none} cards_busy=$BUSY run.log_age=${AGE}s eval_procs=$EVAL reports=$N_REP empty=$EMPTY"
+    [ "$ALIVE" = "no" ] && [ "$EVAL" = "0" ] && say "  ALERT: no chain and no scoring pass -- the arm is DOWN"
+    [ "$BUSY" = "0" ] && [ "$EVAL" = "0" ] && say "  ALERT: all three cards IDLE"
+    [ "$AGE" != "na" ] && [ "$AGE" -gt 1200 ] && [ "$EVAL" = "0" ] && \
+        say "  ALERT: run.log has not moved in ${AGE}s -- trainer may be wedged"
+    [ "$EMPTY" != "0" ] && say "  ALERT: $EMPTY report(s) are EMPTY -- scoring produced no evidence"
+    sleep 600
 done
