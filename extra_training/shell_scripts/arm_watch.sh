@@ -31,7 +31,11 @@ DOWN=0
 say "watching chain pid $CHAIN_PID"
 while :; do
     LOG=$(ls -t $CHAIN_GLOB 2>/dev/null | head -1)
-    RID=$(grep -oE 'segment running as [a-z0-9]{6}' "$LOG" 2>/dev/null | tail -1 | awk '{print $4}')
+    # AN EXPLICIT RID WINS. 'segment running as' is a line only the segmented chain prints, so
+    # against a single-process arm the discovery returned nothing and every field derived from
+    # it read 'none'/'nas' -- a watcher reporting garbage while claiming the run is alive is
+    # the same false-healthy shape as the cmdline-substring check this script replaced.
+    RID="${RID_FIXED:-$(grep -oE 'segment running as [a-z0-9]{6}' "$LOG" 2>/dev/null | tail -1 | awk '{print $4}')}"
     ALIVE=$([ -d "/proc/$CHAIN_PID" ] && echo yes || echo NO)
     BUSY=$($PY -I run_logging/cards_busy.py 2>&1 | tail -1)
     EVAL=0

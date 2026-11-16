@@ -18,6 +18,8 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import eval_dirs as ED                                               # noqa: E402
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt                                     # noqa: E402
@@ -109,13 +111,35 @@ def _bin(cand):
     return max(sum(1 for d in v if d >= ACC) for v in by_seed.values())
 
 
-def score_points(prefix):
-    """epoch -> dict of everything the panels need, from one side's scored shard dirs."""
+def work_dirs(tag, pool_tag, segs):
+    """epoch -> shard directory for one side, from BOTH harnesses.
+
+    TWO PLACES, ONE CURVE. shell_scripts/score_checkpoint.sh writes $SD/<side>_<tag>_ep<N>/ for an
+    epoch scored between segments; the trainer's own --eval-pool trigger writes
+    training/runs/<rid>/<pool>_eval_shards_ep<N>/ for an epoch scored in process. An arm that
+    switches from one to the other mid-flight has its early epochs in the first and the rest in
+    the second, and a reader that knows only one of them silently truncates the curve at the
+    switch. eval_dirs.chain_shard_dirs is the in-run side's own reader, and it RAISES rather than
+    guess when two pools wrote one epoch, which is why the pool tag is named here.
+    """
     out = {}
-    for w in sorted(glob.glob(os.path.join(SD, prefix + "*"))):
+    for w in sorted(glob.glob(os.path.join(SD, tag + "*"))):
         m = re.search(r"ep(\d+)$", w)
-        if not m:
-            continue
+        if m and os.path.isdir(w):
+            out[int(m.group(1))] = w
+    rids = [os.path.basename(d) for d, _ in segs]
+    inrun = ED.chain_shard_dirs(list(reversed(rids)), "training/runs", tag=pool_tag)
+    # THE IN-PROCESS PASS WINS a shared epoch. The two are the same measurement, so a collision is
+    # a re-score rather than a conflict; preferring the in-run one keeps the newer harness
+    # authoritative once an arm has switched to it.
+    out.update(inrun)
+    return out
+
+
+def score_points(work):
+    """epoch -> dict of everything the panels need, from {epoch: shard dir}."""
+    out = {}
+    for e, w in sorted(work.items()):
         by = collections.defaultdict(list)
         for f in glob.glob(os.path.join(w, "rows_*.csv")):
             for r in csv.DictReader(open(f)):
@@ -142,7 +166,7 @@ def score_points(prefix):
         thin = [i for i in by if 1 <= bins[i] <= 4]
         easy = [i for i in by if bins[i] == 5]
         n = len(by)
-        out[int(m.group(1))] = dict(
+        out[e] = dict(
             n=n,
             top1=sum(1 for v in o.values() if v >= ACC) / n,
             q=sum(o.values()) / n,
@@ -197,8 +221,9 @@ def main():
     # TAGP MUST MATCH THE CHAIN. Each arm scores under its own tag so the row dirs cannot
     # accumulate across arms; the plot reads the same namespace the chain wrote.
     tp = os.environ.get("TAGP", "lr4")
-    val = score_points(f"val30_{tp}_ep")
-    sli = score_points(f"slice280_{tp}_ep")
+    segs = chain(head)
+    val = score_points(work_dirs(f"val30_{tp}_ep", "valfull83", segs))
+    sli = score_points(work_dirs(f"slice280_{tp}_ep", "slice280", segs))
     if not gl and not val:
         sys.exit("STOP: no full-set segment has written an epoch yet.")
     # TWO ROWS, ONE PER SIDE. Training on top (the loss split plus the slice's two metrics),
