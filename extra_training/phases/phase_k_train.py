@@ -72,6 +72,16 @@ TERMS = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss", "loss")
 _COMMIT_AT_START = None
 
 
+# FORMS WHOSE UNIT OF COMPARISON IS THE INTERFACE, not a static asym pair. They share all of
+# the per-pose plumbing -- pass A emits one score per interface, the sample index is resolved so
+# the PAE mask and the score describe the same chains, and the DockQ lookup goes through
+# _rel_dqkey -- and differ ONLY in the coefficient they compute from those scores. The constant
+# exists so adding a form cannot half-wire that plumbing: the file's own history records a third
+# form being sent to the LINEAR loss while every log line said otherwise, which is the failure
+# this name prevents rather than documents.
+_RANK_IFACE_FORMS = ("rel", "zsoftmax")
+
+
 def _git_commit():
     """The commit THIS PROCESS loaded its code from, cached at first call during startup."""
     global _COMMIT_AT_START
@@ -380,7 +390,7 @@ def main():
                          "measured, corr(within-interface std of the true iTM, DockQ range) = "
                          "+0.745, so wide-spread interfaces are exactly where a wrong pick is "
                          "expensive, and the narrow ones have frac acceptable median 1.00.")
-    ap.add_argument("--rank-form", choices=("rel",), default="rel",
+    ap.add_argument("--rank-form", choices=("rel", "zsoftmax"), default="rel",
                     help="THE RANKING TERM, and there is exactly one. rel is MEAN-CENTRED "
                          "REGRESSION ON THE TRUE iTM: L = (1/P) sum_i "
                          "[(s_i - mean_s) - (g_i - mean_g)]^2 over an INTERFACE's poses, with g "
@@ -412,6 +422,14 @@ def main():
                          "deleting it removes the only mechanism that ever filtered those "
                          "comparisons out. The choice is kept as a one-value argument rather than "
                          "removed so a bundle's recorded rank_form still compares.")
+    ap.add_argument("--rank-accept", type=float, default=0.23, metavar="DOCKQ",
+                    help="THE ACCEPTABILITY THRESHOLD --rank-form zsoftmax CLASSIFIES WITH. "
+                         "y_i = 1 when the candidate's DockQ is >= this, else 0, and the loss is "
+                         "-log of the softmax mass the head puts on the y=1 candidates. Inert "
+                         "under --rank-form rel, which has its own --rel-balance-accept.\n"
+                         "0.23 IS THE ACCEPTABLE THRESHOLD USED EVERYWHERE ELSE in this repo -- "
+                         "the eval tables, --pae-split-accept and the pool builders all split "
+                         "there -- so the ranking term asks the same question the metric does.")
     ap.add_argument("--rank-cross-seed", action="store_true",
                     help="RANK ACROSS SEEDS, not just within one. Deployment selects argmax of "
                          "ipTM over ALL poses of an interface regardless of seed, so cross-seed "
@@ -1769,7 +1787,11 @@ def main():
         # target: the PAE loss is a per token-pair cross-entropy taken from the cropped unit's own
         # coordinates, so it is self-consistent under any crop and there is nothing to mismatch.
         # Requiring rel labels there would demand an artefact the run never reads.
-        _needs_rel = bool(a.rank_loss) and not a.loss_only
+        # zsoftmax HAS NO iTM TARGET. Its label is the pose's DockQ, a property of the POSE and
+        # not of the token set the forward happened to crop to, so there is nothing here that a
+        # crop could silently mismatch -- the same argument the paragraph above makes for a
+        # PAE-only arm. Demanding cropped iTM labels would require an artefact it never reads.
+        _needs_rel = bool(a.rank_loss) and a.rank_form == "rel" and not a.loss_only
         if _needs_rel and not a.rel_labels:
             raise SystemExit("STOP: --crop-pool needs --rel-labels pointing at labels built on "
                              "the same pool (run_logging/build_itm_labels_cropped.py).")
@@ -1928,12 +1950,23 @@ def main():
     # rest of the ranking-loss setup, which runs after CUDA initialisation -- so a
     # misconfiguration cost a GPU allocation to discover, and the gate could not reach them
     # without a free card. A config error should never need hardware to be caught.
-    if a.rank_loss and a.rank_form == "rel":
+    if a.rank_loss and a.rank_form in _RANK_IFACE_FORMS:
         if not a.rank_cross_seed:
             raise SystemExit(
-                "STOP: --rank-form rel needs --rank-cross-seed. The loss centres on an "
-                "INTERFACE's poses across all its seeds; within one seed it would centre on "
-                f"{a.nsample} poses and remove most of the signal it exists to use.")
+                f"STOP: --rank-form {a.rank_form} needs --rank-cross-seed. The loss is taken over "
+                f"an INTERFACE's poses across all its seeds; within one seed it would see "
+                f"{a.nsample} poses and remove most of the signal it exists to use. For zsoftmax "
+                f"that is not merely weaker: the softmax normalises over the candidates it is "
+                f"GIVEN, so a 5-pose group would ask the head to rank 5 candidates while "
+                f"selection ranks all 150.")
+    if a.rank_loss and a.rank_form == "zsoftmax":
+        # THE THRESHOLD DEFINES THE LABEL, so a nonsensical one is a different experiment rather
+        # than a bad setting. DockQ lives on [0, 1]; outside that every label is the same constant
+        # and the term is identically zero on every item.
+        if not (0.0 < a.rank_accept < 1.0):
+            raise SystemExit(f"STOP: --rank-accept {a.rank_accept:g} is outside (0, 1), so every "
+                             f"candidate falls in one class and the term is inert on every item.")
+    if a.rank_loss and a.rank_form == "rel":
         if not a.rel_labels:
             raise SystemExit("STOP: --rank-form rel needs --rel-labels (see "
                              "run_logging/build_itm_labels.py).")
@@ -2593,6 +2626,14 @@ def main():
     # and a structure recurs every epoch, so reading it once per process is right; loading all 368
     # at startup would be wasted on a rank that never sees most of them.
     _rel_cache = {}
+    # zsoftmax's OWN READS, kept out of _rel_stat so the names cannot be mistaken for rel's.
+    # items: items that produced a coefficient. onesided: items skipped for having one class only
+    # -- EXPECTED and not a fault, which is why it is counted here rather than flagged the way
+    # rel's one-sided lists are. flat: items whose scores had zero spread, where z is 0/0 and the
+    # loss is undefined. zmax: the largest |z| in the item, which is how saturation shows up
+    # before the loss does. pgood: the softmax mass on the acceptable candidates, which is
+    # exp(-L) and the one number saying what the objective achieved on this epoch's own forward.
+    _zs_stat = {}
     _rel_stat = {"groups": 0, "poses": 0, "short_groups": 0, "csum": 0.0, "missing_files": 0,
                  # --pae-split-accept LIVES IN THIS DICT so it is reset at the same epoch
                  # boundary as every other per-epoch accumulator here. A module-level or
@@ -2608,7 +2649,7 @@ def main():
     # because that name is bound inside `if a.pae_scored_pairs:` and this must be safe either way.
     _rel_roles_p = a.pae_scored_roles or os.path.join(a.fold, "chain_roles.csv")
     _rel_refs = (_PKE.pool_ref_pairs(a.pae_scored_pairs)
-                 if (a.rank_form == "rel" and a.pae_scored_pairs) else {})
+                 if (a.rank_form in _RANK_IFACE_FORMS and a.pae_scored_pairs) else {})
     # _roles_p, NOT <fold>/chain_roles.csv. Raised in review and correct: --pae-scored-roles
     # already steered the PAE mask and RKL.load_labels at line 1769, but these two calls still
     # hardcoded the default file. chain_roles.csv names 501 structures and interface_chain_pairs
@@ -2618,14 +2659,14 @@ def main():
     # covers 853 of 853; the point of the flag is that both readers use it.
     _rel_ifaces = {_p: [t[0] for t in _l] for _p, _l in
                    ((_PKE.interface_chain_pairs(a.pae_scored_pairs, _rel_roles_p)[0]).items()
-                    if (a.rank_form == "rel" and a.pae_scored_pairs) else {}.items())}
+                    if (a.rank_form in _RANK_IFACE_FORMS and a.pae_scored_pairs) else {}.items())}
     # IFACE -> STATIC ASYM PAIR, for the DockQ lookup ONLY. _rank_lab is keyed by the asym pair
     # rank_loss.parse_iface derives from chain_roles, while rel keys everything by the interface
     # name. DockQ is a property of the INTERFACE -- results.csv is keyed by its `iface` column --
     # so which asym representation indexes it is an internal detail and the static one is
     # correct here. This is NOT the same question as which pair to SCORE, which is per pose.
     _rel_dqkey = {}
-    if a.rank_form == "rel" and a.pae_scored_pairs:
+    if a.rank_form in _RANK_IFACE_FORMS and a.pae_scored_pairs:
         for _p2, _l2 in _PKE.interface_chain_pairs(
                 a.pae_scored_pairs, _rel_roles_p)[0].items():
             for _ifc2, _x2, _y2 in _l2:
@@ -2930,6 +2971,19 @@ def main():
                   f"this term cannot move an interface's level and its accumulated gradient "
                   f"cancels by construction -- alpha must come from --grad-probe norms, not from "
                   f"loss values.")
+        if a.rank_form == "zsoftmax":
+            print(f"Z-SCORED SOFTMAX LOSS on chain_pair ipTM pooled by {a.rank_pool.upper()}: "
+                  f"z_i = (s_i - mean_s) / std_s over an INTERFACE's candidates across all its "
+                  f"seeds, p = softmax(z) with NO temperature, "
+                  f"L = -log(sum of p over the candidates with DockQ >= {a.rank_accept:g}), "
+                  f"alpha {a.alpha_rank:g}. mean_s and std_s are CONSTANTS -- taken from the "
+                  f"detached scores -- so dz_i/ds_j = delta_ij / std_s and the gradient is the "
+                  f"gradient of exactly this loss. Items whose candidates are ALL acceptable or "
+                  f"ALL unacceptable are skipped: the softmax is over the item's own candidates, "
+                  f"so an all-good item has L = 0 identically and an all-bad one has no "
+                  f"numerator. They keep their PAE loss. The coefficients sum to EXACTLY zero, "
+                  f"so this term cannot move an interface's level -- alpha must come from "
+                  f"--grad-probe norms, not from loss values.")
         print(f"RANKING LOSS on chain_pair_iptm: form {a.rank_form}, alpha {a.alpha_rank:g}, "
               f"{len(_rank_lab)} labelled (pdb, seed, interface) group(s) from {_rl_p}"
               + (f", {_rl_bad} unparsed row(s)" if _rl_bad else ""))
@@ -4123,6 +4177,7 @@ def main():
                  # comparison without being added to the saved bundle below -- so both sides are
                  # edited in the same patch, and test_guard_fields.py asserts they agree.
                  "rank_form": a.rank_form,
+                 "rank_accept": a.rank_accept,
                  "rank_cross_seed": a.rank_cross_seed,
                  "rank_structs_per_step": a.rank_structs_per_step,
                  # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
@@ -4296,6 +4351,12 @@ def main():
                      # was the one thing keeping test_guard_fields.py red -- which is why the
                      # half-wired pose_readout_post_zero went in unnoticed.
                      "rank_form": "linear",
+                     # THE FLAG'S OWN DEFAULT, so a bundle predating it resumes clean. Any value
+                     # is equally inert on such a bundle -- no zsoftmax term ran there, and under
+                     # --rank-form rel the field is not read at all -- so recording the shipped
+                     # default is the honest migration rather than a sentinel that would make
+                     # every earlier bundle, the live full-set chain's among them, unresumable.
+                     "rank_accept": 0.23,
                      "rank_cross_seed": False, "rank_structs_per_step": 2,
                      # A BUNDLE PREDATING THESE THREE RAN CROSS-SEED PAIRS ONLY, AT NATURAL
                      # WEIGHT, WITH NO RANK DECAY -- which is what these defaults say. Their
@@ -6111,7 +6172,7 @@ def main():
             # pass B. Three readers previously resolved it separately, and the first version of
             # the rel wiring had one of them use the pose index instead.
             _samp_i = None
-            if a.rank_form == "rel" and a.rank_loss:
+            if a.rank_form in _RANK_IFACE_FORMS and a.rank_loss:
                 _sv_i = lab.get("sample_index") if hasattr(lab, "get") else None
                 if _sv_i is None:
                     try:
@@ -6173,7 +6234,7 @@ def main():
                 # KEYED BY WHAT IS STABLE ACROSS POSES. For rel the unit of comparison is the
                 # reference interface; its asym pair is resolved PER POSE, so the key is the
                 # iface and the pair is a per-pose detail of how the score is computed.
-                if a.rank_form == "rel":
+                if a.rank_form in _RANK_IFACE_FORMS:
                     _items = [(_ifc, (_x, _y)) for _ifc, _x, _y
                               in _pose_pairs(pdb, lab_p, _samp_a)]
                 else:
@@ -6409,7 +6470,7 @@ def main():
                 # "AttributeError: 'Parameter' object has no attribute 'get'". Found by running
                 # it; the static gate could not see a name collision.
                 _rel_pp = None
-                if a.rank_form == "rel" and _cs_src:
+                if a.rank_form in _RANK_IFACE_FORMS and _cs_src:
                     if _si_b is None:
                         raise SystemExit(
                             f"STOP: pass B has no sample index for {pdb} pose {i}; it is resolved "
@@ -6686,7 +6747,7 @@ def main():
         # ASSERTED PER RANK, BEFORE THE GATHER. Every rank verifies its own units, so the merged
         # set is complete by construction -- there is no need to know the other ranks' units here.
         # Found by review of f01dec8a.
-        if a.rank_form == "rel":
+        if a.rank_form in _RANK_IFACE_FORMS:
             # EXPECTED KEYS ARE (pdb, seed, pose, IFACE) for rel, because that is what pass A
             # emits. Built from the pool's interface names, which every pose must score.
             _exp = {(_pdb, _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1], _i, _ifc)
@@ -6765,6 +6826,13 @@ def main():
                     _g = _gl.get((int(_sd), int(_sx), str(_pair)))
                     if _g is not None:
                         dq_by[(_sd, _i)] = float(_g)
+            elif a.rank_form == "zsoftmax":
+                # NO REGRESSION TARGET AT ALL. The only label this form uses is the BINARY
+                # acceptability of each candidate, built as _acc_by below through _rel_dqkey --
+                # the same two-step lookup rel's class balance uses, and the only one that is
+                # correct when _pair is an interface name. dq_by stays empty on purpose and the
+                # coverage checks that guard it are skipped with it.
+                pass
             else:
                 for (_sd, _i) in s_by:
                     _lab = _rank_lab.get(_rank_key(_pdb, _sd, _pair))
@@ -6781,7 +6849,7 @@ def main():
                     f"for every surviving pose, so this is not a partial-data case. Rebuild the "
                     f"cache with run_logging/build_itm_labels.py and check its manifest covers "
                     f"this manifest-selection.")
-            if len(dq_by) < 2:
+            if a.rank_form != "zsoftmax" and len(dq_by) < 2:
                 _rel_stat["short_groups"] += 1
                 continue
             # THE FORM IS PASSED THROUGH, NOT RE-DERIVED. This read
@@ -6790,7 +6858,13 @@ def main():
             # guard still said otherwise -- a run that looks right and is the wrong experiment.
             # rank_loss.group_coeffs raises on an unknown form, so a typo fails loudly instead.
             _acc_by = None
-            if a.rank_form == "rel" and a.rel_balance_accept:
+            # THE THRESHOLD IS THE FORM'S OWN. rel's class balance reweights a regression and
+            # takes --rel-balance-accept; zsoftmax's labels ARE the classification and take
+            # --rank-accept. One flag for both would make a value set for one form silently
+            # redefine the other's objective.
+            _acc_thr = (a.rank_accept if a.rank_form == "zsoftmax" else a.rel_balance_accept)
+            if _acc_thr and (a.rank_form == "zsoftmax"
+                             or (a.rank_form == "rel" and a.rel_balance_accept)):
                 # DockQ PER POSE, keyed (seed, pose) exactly like s_by. _rank_lab is keyed by the
                 # STATIC asym pair (_rel_dqkey) and indexed by the SAMPLE, while s_by is keyed by
                 # the pose -- the same two-step lookup the Spearman diagnostic does below, which
@@ -6809,10 +6883,11 @@ def main():
                             f"{_pdb} interface {_pair} pose {_i0} (seed {_sd0}) has none. The "
                             f"classification sets every weight in the list, so a missing label "
                             f"is not a partial-data case. Check --rank-labels covers this "
-                            f"manifest-selection.")
-                    _acc_by[(_sd0, _i0)] = float(_l0[_sx0]) >= a.rel_balance_accept
+                            f"manifest-selection. (threshold {_acc_thr:g}, from "
+                            f"{'--rank-accept' if a.rank_form == 'zsoftmax' else '--rel-balance-accept'})")
+                    _acc_by[(_sd0, _i0)] = float(_l0[_sx0]) >= _acc_thr
                 _na0 = sum(1 for _v0 in _acc_by.values() if _v0)
-                if _na0 == 0 or _na0 == len(_acc_by):
+                if (_na0 == 0 or _na0 == len(_acc_by)) and a.rank_form != "zsoftmax":
                     # THE FALLBACK IS A SYMPTOM, NOT A FEATURE. rel_coeffs falls back to a
                     # uniform mean when a list has only one class, silently and correctly -- 0.5/0
                     # is not a weight. But on a pool selected to have BOTH classes in every list,
@@ -6824,7 +6899,17 @@ def main():
                         f"{_pdb}_{_pair}({'all-acc' if _na0 else 'none-acc'},n={len(_acc_by)})")
                 _rel_stat["bal_lists"] = _rel_stat.get("bal_lists", 0) + 1
                 _rel_stat.setdefault("bal_nacc", []).append(_na0)
-            if a.rank_form == "rel":
+            if a.rank_form == "zsoftmax":
+                # ONE ITEM, ONE SOFTMAX, over every candidate the step scored for it. A missing
+                # label is impossible here -- the _acc_by builder above raises on one -- so a
+                # short group means the interface itself had fewer than two poses in the step.
+                if _acc_by is None or len(_acc_by) < 2:
+                    _rel_stat["short_groups"] += 1
+                    continue
+                c, npair, lval = RKL.zsoftmax_coeffs(s_by, _acc_by, stat=_zs_stat)
+                _rel_stat["groups"] += 1
+                _rel_stat["poses"] += npair
+            elif a.rank_form == "rel":
                 # NOT group_coeffs. rel is a regression, not a pairwise family, so none of the
                 # pairwise knobs apply and passing them would make flags look honoured.
                 c, npair, lval = RKL.rel_coeffs(s_by, dq_by,
@@ -6837,18 +6922,28 @@ def main():
                                                    else {"std_floor": a.rel_std_floor}))
                 _rel_stat["groups"] += 1
                 _rel_stat["poses"] += npair
-                # DIAGNOSTIC 1: WITHIN-INTERFACE SPEARMAN of the predicted mean-pooled ipTM
-                # against DockQ -- the arm's actual prediction. The head measured +0.317 at
-                # d32kqp epoch 66 against +0.690 for the TRUE iTM, and this is the quantity that
-                # should move between them. It is far more sensitive than selected DockQ (t=7.6
-                # against t=2.7) because it uses all 50 poses rather than just the argmax.
-                #
-                # DIAGNOSTIC 2: SCORE SPREAD, std of the predicted ipTM over the interface's
-                # poses, against std of the TRUE iTM on the same poses. Below 1 the model is
-                # collapsing its scores, above 1 it is exaggerating pose-to-pose differences, and
-                # ~1 means it has the magnitude right. Every ranking arm in this repo lowered its
-                # loss by margin collapse (x5frz6: within-seed std 0.00593 -> 0.00147 while the
-                # loss fell), so this is the falsifier for that failure mode in one number.
+            else:
+                # UNREACHABLE, AND A STOP RATHER THAN A FALLBACK. This was the group_coeffs call
+                # for the six deleted forms, with tau, weight_by_gap, pairs, within_weight,
+                # rank_decay_k, straddle, spearman_tau, dist_weight and rel_scale all threaded
+                # through it. --rank-form admits rel and zsoftmax, both wired above; if a
+                # future form is added and forgets to wire itself up, this says so instead of
+                # training rel's coefficients under another form's name.
+                raise SystemExit(f"STOP: --rank-form {a.rank_form!r} has no coefficient path. "
+                                 f"rel and zsoftmax are the wired forms; see --rank-form's help.")
+            # DIAGNOSTIC 1: WITHIN-INTERFACE SPEARMAN of the predicted mean-pooled ipTM
+            # against DockQ -- the arm's actual prediction. The head measured +0.317 at
+            # d32kqp epoch 66 against +0.690 for the TRUE iTM, and this is the quantity that
+            # should move between them. It is far more sensitive than selected DockQ (t=7.6
+            # against t=2.7) because it uses all 50 poses rather than just the argmax.
+            #
+            # DIAGNOSTIC 2: SCORE SPREAD, std of the predicted ipTM over the interface's
+            # poses, against std of the TRUE iTM on the same poses. Below 1 the model is
+            # collapsing its scores, above 1 it is exaggerating pose-to-pose differences, and
+            # ~1 means it has the magnitude right. Every ranking arm in this repo lowered its
+            # loss by margin collapse (x5frz6: within-seed std 0.00593 -> 0.00147 while the
+            # loss fell), so this is the falsifier for that failure mode in one number.
+            if a.rank_form in _RANK_IFACE_FORMS:
                 _ks = sorted(s_by)
                 _sv = [float(s_by[_k2]) for _k2 in _ks]
                 _gv = [float(dq_by[_k2]) for _k2 in _ks if _k2 in dq_by]
@@ -6926,15 +7021,6 @@ def main():
                 if npair:
                     _rel_stat["csum"] = max(_rel_stat["csum"],
                                             abs(sum(c.values())))
-            else:
-                # UNREACHABLE, AND A STOP RATHER THAN A FALLBACK. This was the group_coeffs call
-                # for the six deleted forms, with tau, weight_by_gap, pairs, within_weight,
-                # rank_decay_k, straddle, spearman_tau, dist_weight and rel_scale all threaded
-                # through it. --rank-form now admits only rel, so nothing reaches here; if a
-                # future form is added and forgets to wire itself up, this says so instead of
-                # training rel's coefficients under another form's name.
-                raise SystemExit(f"STOP: --rank-form {a.rank_form!r} has no coefficient path. "
-                                 f"rel is the only form; see --rank-form's help.")
             if npair == 0:
                 continue
             n_groups += 1
@@ -7175,7 +7261,7 @@ def main():
                      f"{sorted(_ov['pdbs'])[:4]}" if _ov["pdbs"] else
                      " -- NO structure in this window disagrees, so the fix is UNEXERCISED here "
                      "and the numbers are EXPECTED to match the pre-fix run"))
-        elif a.rank_form == "rel":
+        elif a.rank_form in _RANK_IFACE_FORMS:
             print("\n  PAE MASK OVERRIDE: NOT APPLIED on any pose, which under --rank-form rel "
                   "means the per-pose pairs never reached _set_pae_mask -- the fix is not live.")
         print(f"\n  GRADIENT COVERAGE over {len(names)} trainable tensor(s): "
@@ -8673,6 +8759,7 @@ def main():
                  "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                                   "rank_form": a.rank_form,
+                                  "rank_accept": a.rank_accept,
                                   "rank_cross_seed": a.rank_cross_seed,
                                   "rank_structs_per_step": a.rank_structs_per_step,
                                   # BOTH SIDES IN ONE PATCH, which test_guard_fields.py asserts.
@@ -9271,7 +9358,7 @@ def main():
                 # THE LOSS VALUE IS ACCUMULATED IN PASS A, not reconstructed from the
                 # coefficients: rel's value is a sum of squares, so sum_i c_i s_i is not it.
                 # 0 is the floor, not "no alignment".
-                if a.rank_form == "rel" and _rel_stat.get("rho"):
+                if a.rank_form in _RANK_IFACE_FORMS and _rel_stat.get("rho"):
                     _rh = _rel_stat["rho"]
                     print(f"  [rank {rank}] epoch {ep + 1} WITHIN-INTERFACE SPEARMAN "
                           f"(predicted mean ipTM vs DockQ): median {_med(_rh):+.4f} over "
@@ -9286,9 +9373,12 @@ def main():
                     if _rel_stat.get("bal_lists"):
                         _nb = _rel_stat.get("bal_nacc") or [0]
                         _one = _rel_stat.get("bal_onesided", 0)
-                        print(f"  [rank {rank}] epoch {ep + 1} CLASS BALANCE: "
-                              f"{_rel_stat['bal_lists']} list(s) weighted at DockQ "
-                              f"{a.rel_balance_accept:g}, median {_med(_nb)} acceptable; "
+                        _bthr = (a.rank_accept if a.rank_form == "zsoftmax"
+                                 else a.rel_balance_accept)
+                        print(f"  [rank {rank}] epoch {ep + 1} "
+                              + ("LABELS: " if a.rank_form == "zsoftmax" else "CLASS BALANCE: ")
+                              + f"{_rel_stat['bal_lists']} list(s) classified at DockQ "
+                              f"{_bthr:g}, median {_med(_nb)} acceptable; "
                               f"{_one} fell back to a uniform mean for having only ONE class"
                               + ("   [EXPECTED 0 on a pool where every list has both -- a "
                                  "non-zero count means the DockQ lookup is wrong, not that the "
@@ -9327,7 +9417,23 @@ def main():
                 # forms no pairs at all -- was logged as "(rel, cross-seed pairs)". This is the
                 # one line most likely to be read back months later to establish what an arm
                 # trained on. There is now one objective and it is named in full.
-                _obj = "relative regression on true iTM, mean-centred per interface"
+                _obj = ("z-scored softmax, -log(mass on the acceptable candidates) per interface"
+                        if a.rank_form == "zsoftmax" else
+                        "relative regression on true iTM, mean-centred per interface")
+                if a.rank_form == "zsoftmax" and _zs_stat.get("items"):
+                    _pg = _zs_stat.get("pgood") or [float("nan")]
+                    _zm = _zs_stat.get("zmax") or [float("nan")]
+                    _ngd = _zs_stat.get("ngood") or [0]
+                    print(f"  [rank {rank}] epoch {ep + 1} Z-SOFTMAX: {_zs_stat['items']} item(s) "
+                          f"scored, median acceptable mass {_med(_pg):.4f} "
+                          f"(= exp(-loss); 1.0 is the ceiling), median {_med(_ngd)} acceptable "
+                          f"candidate(s) per item, median max|z| {_med(_zm):.2f}"
+                          + (f"; {_zs_stat['onesided']} item(s) SKIPPED for one class only "
+                             f"(expected -- they keep their PAE loss)"
+                             if _zs_stat.get("onesided") else "")
+                          + (f"; {_zs_stat['flat']} item(s) SKIPPED for ZERO score spread -- the "
+                             f"z-score is undefined there, which is score collapse, not a quirk"
+                             if _zs_stat.get("flat") else ""), flush=True)
                 print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({_obj}): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
                       f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s)"
@@ -9337,7 +9443,7 @@ def main():
                       # with at least two labelled poses to centre over.
                       + ((f" [{_xs_stat['skipped']} step(s) SKIPPED: "
                           + ("no interface with two or more labelled poses to centre over"
-                             if a.rank_form == "rel" else
+                             if a.rank_form in _RANK_IFACE_FORMS else
                              "no straddling pair in either structure")
                           + ", so no task gradient -- not handed to AdamW]")
                          if _xs_stat.get("skipped") else "") + ", "
@@ -9349,11 +9455,14 @@ def main():
                       # POSES FOR rel TOO, not just for expected. rank_loss.rel_coeffs returns
                       # (coeffs, n_poses, loss), so this counter holds a POSE count under rel and
                       # calling it "pair(s)" overstated the group size by the pair-count factor.
-                      + ("pose(s)" if a.rank_form in ("expected", "rel") else "pair(s)")
+                      + ("candidate(s)" if a.rank_form == "zsoftmax" else
+                         "pose(s)" if a.rank_form in ("expected", "rel") else "pair(s)")
                       + ("  (0 is the FLOOR -- every pair ordered)"
                          if a.rank_form == "softplus" else "")
                       + ("  (0 is the FLOOR -- centred prediction equals centred true iTM)"
                          if a.rank_form == "rel" else "")
+                      + ("  (0 is the FLOOR -- all of the softmax mass on acceptable candidates)"
+                         if a.rank_form == "zsoftmax" else "")
                       + ("  (NEGATIVE: this is -expected DockQ, floor -max(DockQ) per group)"
                          if a.rank_form == "expected" else ""), flush=True)
                 for _k in ("groups", "pairs", "steps", "skipped"):
@@ -9483,6 +9592,7 @@ def main():
                             int(_ps_all["ps_unclass"]), _ma - _mu))
                     else:
                         _fh.write(",,,,,,\n")
+                _zs_stat.clear()
                 for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio", "sel_dq", "orc_dq",
                             "bal_nacc", "bal_onesided_ifaces",
                             "first_acc_rank", "score_gap", "headroom", "acc_top1"):

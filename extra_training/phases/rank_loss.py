@@ -596,3 +596,84 @@ def rel_loss_value(s_by_key, g_by_key, standardize=False,
     """The loss value alone, for logging. Same arithmetic as rel_coeffs."""
     return rel_coeffs(s_by_key, g_by_key, standardize, std_floor, sd_weight, g_weight,
                       g_sigmoid, accept_by)[2]
+
+
+def zsoftmax_coeffs(s_by_key, accept_by, stat=None):
+    """Z-SCORED SOFTMAX LOSS for ONE item's candidates. Returns ({key: dL/ds}, n, loss).
+
+        z_i = (s_i - m) / d          m, d = mean and std of THIS item's scores, AS CONSTANTS
+        p   = softmax(z)             over the item's candidates, no temperature
+        L   = -log( sum_i p_i  over the candidates with y_i = 1 )
+
+    y_i = 1 when the candidate's quality is acceptable, which the caller decides and passes in
+    `accept_by`; this function never derives it from a score.
+
+    WHY m AND d ARE CONSTANTS, AND WHY THAT IS NOT AN APPROXIMATION. They are computed from the
+    DETACHED scores, so dz_i/ds_j = delta_ij / d and the gradient is exactly the gradient of the
+    loss as specified. This is deliberately unlike rel_coeffs(standardize=True), which
+    differentiates THROUGH its std -- and whose docstring records what the omitted d(std)/ds term
+    costs when you leave it out of a closed form by accident (~7x, with a sign flip). Here the
+    omission is the objective rather than a slip: the normalisation exists to put every item's
+    scores on a comparable scale, not to be optimised.
+
+    THE TWO PASSES OF THE SPEC ARE BOTH HERE, over the scalars rather than over the model. Pass A
+    in the caller already produced every candidate's score with no grad; one pose per forward
+    means they cannot share a backward graph, so the gradient is delivered as a per-candidate
+    COEFFICIENT dL/ds_i that the training pass multiplies its own differentiable score by. Same
+    mechanism as rel_coeffs, and the reason this returns floats rather than a tensor.
+
+    SKIPPED ITEMS RETURN ({}, 0, 0.0), which the caller turns into "no ranking gradient" while the
+    bin loss is untouched:
+      - every label 0 or every label 1. The softmax is over the item's own candidates, so an
+        all-good item has sum(p) = 1 and L = 0 identically, and an all-bad item has no term in the
+        numerator at all. Neither carries any ordering to learn.
+      - d == 0. Every candidate scored identically, so z is 0/0 and the loss is undefined. It is
+        skipped and COUNTED rather than floored: a std floor would be a different objective from
+        the one specified, and a flat item is a fact about the head worth seeing in the epoch line.
+
+    THE COEFFICIENTS SUM TO ZERO, like rel's, and for the same reason: L depends on s only through
+    the centred z, so a constant shift of every score leaves it unchanged. Asserted, not enforced
+    -- subtracting the mean here would hide the arithmetic error it is meant to catch.
+    """
+    keys = sorted(set(s_by_key) & set(accept_by))
+    n = len(keys)
+    if n < 2:
+        return {}, 0, 0.0
+    y = [bool(accept_by[k]) for k in keys]
+    ng = sum(y)
+    if ng == 0 or ng == n:
+        if stat is not None:
+            stat["onesided"] = stat.get("onesided", 0) + 1
+        return {}, 0, 0.0
+    s = torch.tensor([float(s_by_key[k]) for k in keys], dtype=torch.float64)
+    m = float(s.mean())
+    d = float(s.std(unbiased=False))
+    if not (d > 0.0) or not math.isfinite(d) or not math.isfinite(m):
+        if stat is not None:
+            stat["flat"] = stat.get("flat", 0) + 1
+        return {}, 0, 0.0
+    sl = s.clone().requires_grad_(True)
+    z = (sl - m) / d
+    gm = torch.tensor(y, dtype=torch.bool)
+    # -log(sum_good p) WITHOUT FORMING p. logsumexp(z) - logsumexp(z[good]) is the same number
+    # and does not underflow: with 150 candidates and a 6-sigma spread the good mass can be
+    # ~1e-9, where log(sum(exp(z)/Z)) loses most of its digits.
+    L = torch.logsumexp(z, 0) - torch.logsumexp(z[gm], 0)
+    L.backward()
+    c = sl.grad.detach().clone()
+    _cs = float(c.sum().abs())
+    if _cs > 1e-6:
+        raise ValueError(f"zsoftmax coefficients sum to {_cs:.3e}, not zero. The loss depends on "
+                         f"the scores only through the centred z, so this is an arithmetic error, "
+                         f"not float noise.")
+    if stat is not None:
+        stat["items"] = stat.get("items", 0) + 1
+        stat.setdefault("zmax", []).append(float(z.detach().abs().max()))
+        stat.setdefault("pgood", []).append(float(torch.exp(-L.detach())))
+        stat.setdefault("ngood", []).append(ng)
+    return {k: float(v) for k, v in zip(keys, c)}, n, float(L.detach())
+
+
+def zsoftmax_loss_value(s_by_key, accept_by):
+    """The loss value alone, for logging and for tests. Same arithmetic as zsoftmax_coeffs."""
+    return zsoftmax_coeffs(s_by_key, accept_by)[2]
