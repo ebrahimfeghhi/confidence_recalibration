@@ -328,7 +328,13 @@ def main():
     segs = chain(head)
     rep = os.environ.get("REPORTS", "").strip()
     if rep:
+        # ROWS WIN WHERE THEY EXIST. An arm part-way through a re-score has reports for every
+        # epoch it was ever scored at and rows for only the epochs re-run, so the two sources are
+        # merged rather than chosen between: q and top-1 come from all of them, margin and rho
+        # from the re-scored subset, and the panels draw whichever epochs carry the metric.
         val, sli = report_points(rep, "VAL"), report_points(rep, "TRAIN SLICE")
+        val.update(score_points(work_dirs(f"val30_{tp}_ep", "valfull83", segs)))
+        sli.update(score_points(work_dirs(f"slice280_{tp}_ep", "slice280", segs)))
     else:
         val = score_points(work_dirs(f"val30_{tp}_ep", "valfull83", segs))
         sli = score_points(work_dirs(f"slice280_{tp}_ep", "slice280", segs))
@@ -376,14 +382,16 @@ def main():
         if not e:
             a_.text(.5, .5, "not scored yet", ha="center", va="center",
                     transform=a_.transAxes, color="#666")
-        elif all(pts[x][key] != pts[x][key] for x in e):
+            e = []
+        e = [x for x in e if pts[x][key] == pts[x][key]] or e
+        if all(pts[x][key] != pts[x][key] for x in e):
             # NOT FAKED, ABSENT. A reports-only arm has no per-candidate rows, so margin and rho
             # cannot be computed for it; say that on the panel instead of drawing a flat zero.
             a_.text(.5, .5, "not in the reports\n(no rows preserved)", ha="center", va="center",
                     transform=a_.transAxes, color="#666")
         else:
             y = [pts[x][key] for x in e]
-            b = pts[e[0]][skey]
+            b = next(pts[x][skey] for x in e if pts[x][skey] == pts[x][skey])
             a_.plot(e, y, "-o", color=colour, lw=2, ms=6, label="this arm")
             a_.axhline(b, color="#555", ls="--", lw=1.6,
                        label=f"shipped {b:.1%}" if pct else f"shipped {b:.4f}")
