@@ -32,7 +32,22 @@ say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 # --prefetch: read the next unit's trunk on a background thread while the GPU scores this
 # one. Its own help measures load at 4.7 min of a 26.1 min pass, strictly serial with the
 # forward -- which is what the idle gaps between units were on the epoch-1 and -2 passes.
-COMMON="--pose-perblock --pose-perblock-copy --frame-direction --prefetch"
+# BOTH POOLINGS, ALWAYS. --pool-mean adds an iptm_mean column computed in the same forward, so
+# the mean-pooled reading costs no extra GPU -- but it is default off, so every arm scored before
+# this has rows that CANNOT answer "was the mean better" offline and would need a full re-score.
+# The ranking arms train against --rank-pool mean while every baseline here selects by the max, so
+# that question comes up for each of them. Computing both and choosing later is the cheap order.
+#
+# --pair-iptm-only IS REQUIRED BY --pool-mean (its path already holds the PAE probabilities). It
+# does not move the candidate set, iptm, stored_iptm, the DockQ join or the rows schema, and the
+# in-training eval has passed it on every pass -- phase_k_train.py calls it measured
+# bit-identical. NOT independently re-measured here: the val30_zs_ep{8,10} rows already on disk
+# were scored WITHOUT it, so the next pass over either epoch is a free check of that claim.
+#
+# SELECTION STAYS ON THE MAX. --select-by is not passed, so mean_dockq and every existing column
+# keep the shipped convention and stay comparable to every earlier report; the mean-pooled numbers
+# arrive as an extra column to be read offline, not as a changed headline.
+COMMON="--pose-perblock --pose-perblock-copy --frame-direction --prefetch --pair-iptm-only --pool-mean"
 
 if [ "$SIDES" = both ] || [ "$SIDES" = slice ]; then
   say "$TAG: scoring the 280-item training slice (15 seeds)"

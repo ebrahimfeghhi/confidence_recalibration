@@ -140,7 +140,7 @@ def _spearman(xs, ys):
 
 def _bin(cand):
     by_seed = collections.defaultdict(list)
-    for sc, ss, d, seed in cand:
+    for sc, ss, d, seed, _m in cand:
         by_seed[seed].append(d)
     return max(sum(1 for d in v if d >= ACC) for v in by_seed.values())
 
@@ -180,8 +180,10 @@ def score_points(work):
         for f in rows_f:
             for r in csv.DictReader(open(f)):
                 try:
+                    _m = r.get("iptm_mean")
                     by[r["iface"]].append((float(r["iptm"]), float(r["stored_iptm"]),
-                                           float(r["dockq"]), r["seed"]))
+                                           float(r["dockq"]), r["seed"],
+                                           float(_m) if _m not in (None, "") else None))
                 except (TypeError, ValueError, KeyError):
                     pass
         # EVERY SHARD, OR NO POINT. The old gate was `len(by) < 100`, which a directory still
@@ -216,6 +218,22 @@ def score_points(work):
             spx += [t[1] for t in c]
             py += dq
         pr, spr = _spearman(px, py), _spearman(spx, py)
+        # BOTH POOLINGS WHERE THE COLUMN EXISTS. --pool-mean writes iptm_mean in the same pass,
+        # so a run scored with it can be read as "select by the max ipTM" (the shipped
+        # convention, and what every number in this repo means) AND as "select by the
+        # mean-pooled ipTM" (what the ranking arms actually optimise) with no extra GPU. An arm
+        # scored before that became the default has no column and reports nan here rather than
+        # silently falling back to the max, which would make the two readings look identical.
+        _has_m = all(t[4] is not None for c in by.values() for t in c)
+        if _has_m:
+            om = {i: max(c, key=lambda t: t[4])[2] for i, c in by.items()}
+            rhm = [x for x in (_spearman([t[4] for t in c], [t[2] for t in c])
+                               for c in by.values()) if x is not None]
+            q_m = sum(om.values()) / len(om)
+            t1_m = sum(1 for v in om.values() if v >= ACC) / len(om)
+            rho_m = (sum(rhm) / len(rhm)) if rhm else float("nan")
+        else:
+            q_m = t1_m = rho_m = float("nan")
         o = {i: max(c, key=lambda t: t[0])[2] for i, c in by.items()}
         # MARGIN: score(top pick) - score(best good candidate), over every winnable item. An item
         # the head gets right contributes exactly 0, which is what makes the average go DOWN as it
@@ -234,6 +252,9 @@ def score_points(work):
         n = len(by)
         out[e] = dict(
             n=n,
+            q_mean=q_m,
+            top1_mean=t1_m,
+            rho_mean=rho_m,
             rho=(sum(rh) / len(rh)) if rh else float("nan"),
             s_rho=(sum(srh) / len(srh)) if srh else float("nan"),
             n_rho=len(rh),
@@ -301,7 +322,9 @@ def report_points(d, which):
         t1, q, s1, sq = (float(x) for x in hit.groups())
         out[int(m.group(1))] = dict(n=0, top1=t1 / 100, q=q, s_top1=s1 / 100, s_q=sq,
                                     margin=float("nan"), s_margin=float("nan"),
-                                    rho=float("nan"), s_rho=float("nan"))
+                                    rho=float("nan"), s_rho=float("nan"),
+                                    q_mean=float("nan"), top1_mean=float("nan"),
+                                    rho_mean=float("nan"))
     return out
 
 
