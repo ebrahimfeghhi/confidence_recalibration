@@ -1,0 +1,16 @@
+{
+ "n_interfaces": 280,
+ "budget": 15,
+ "mean_dockq": 0.2589,
+ "frac_acc": 0.3464,
+ "oracle_mean_dockq": 0.552,
+ "oracle_frac_acc": 1.0,
+ "ckpt": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/5iz9hq/head_ep30_step4530.pt",
+ "select_by": "max",
+ "headroom": 0.2931,
+ "seed_base": 500000,
+ "seed_manifest": "",
+ "seed_manifest_digest": "",
+ "baseline_mean_dockq": 0.2501,
+ "baseline_frac_acc": 0.3071
+}
