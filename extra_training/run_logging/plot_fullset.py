@@ -400,7 +400,15 @@ def main():
     ax[4].set_title("TRAIN: good minus bad\n(>0 = good poses fit WORSE)", fontsize=11.5)
     ax[4].set_ylabel("difference in loss")
 
-    def panel(a_, pts, key, skey, title, ylab, pct, colour, lower_better=False):
+    def panel(a_, pts, key, skey, title, ylab, pct, colour, lower_better=False, mkey=None):
+        """mkey DRAWS THE MEAN-POOLED READING BESIDE THE MAX, when the pass computed one.
+
+        The ranking arms optimise --rank-pool mean while every baseline in this repo selects by
+        the max, so for them the two readings are different questions and neither is the obvious
+        headline -- on the 1e-3 zsoftmax arm they disagree about which head is better. Both lines,
+        and the max keeps the solid stroke because it is the shipped convention the dashed shipped
+        line is also drawn in.
+        """
         e = sorted(pts)
         if not e:
             a_.text(.5, .5, "not scored yet", ha="center", va="center",
@@ -421,20 +429,31 @@ def main():
             lo, hi = min(y + [b]), max(y + [b])
             pad = max((hi - lo) * .3, 1e-4)
             a_.set_ylim(lo - pad, hi + pad)
+            if mkey:
+                em = [x for x in sorted(pts) if pts[x][mkey] == pts[x][mkey]]
+                if em:
+                    a_.plot(em, [pts[x][mkey] for x in em], "--^", color=colour, lw=1.4, ms=5,
+                            alpha=.6, label="mean-pooled ipTM")
+                    y = y + [pts[x][mkey] for x in em]
+                    lo, hi = min(y + [b]), max(y + [b])
+                    pad = max((hi - lo) * .3, 1e-4)
+                    a_.set_ylim(lo - pad, hi + pad)
             a_.set_xticks(e)
             a_.legend(fontsize=8)
         a_.set_title(title + ("\n(lower is better, 0 = always right)" if lower_better else ""),
                      fontsize=11.5)
         a_.set_ylabel(ylab)
 
-    panel(ax[1], sli, "q", "s_q", "TRAIN SLICE: mean DockQ", "mean DockQ", False, "tab:orange")
+    panel(ax[1], sli, "q", "s_q", "TRAIN SLICE: mean DockQ", "mean DockQ", False, "tab:orange",
+          mkey="q_mean")
     panel(ax[2], sli, "top1", "s_top1", "TRAIN SLICE: frac acceptable", "frac acceptable", True,
-          "tab:orange")
+          "tab:orange", mkey="top1_mean")
     panel(ax[3], sli, "margin", "s_margin", "TRAIN SLICE: margin", "score gap", False,
           "tab:orange", lower_better=True)
-    panel(ax[5], val, "q", "s_q", "HELD-OUT: mean DockQ", "mean DockQ", False, "tab:blue")
+    panel(ax[5], val, "q", "s_q", "HELD-OUT: mean DockQ", "mean DockQ", False, "tab:blue",
+          mkey="q_mean")
     panel(ax[6], val, "top1", "s_top1", "HELD-OUT: frac acceptable", "frac acceptable", True,
-          "tab:blue")
+          "tab:blue", mkey="top1_mean")
     # THE REFERENCE ARM ON THE SAME AXES. Both arms against shipped is the comparison; the panel
     # limits are set from this arm, so the overlay is clipped rather than allowed to rescale it.
     for a_, j in ((ax[5], 1), (ax[6], 0)):
@@ -446,9 +465,9 @@ def main():
     panel(ax[7], val, "margin", "s_margin", "HELD-OUT: margin", "score gap", False, "tab:blue",
           lower_better=True)
     panel(ax[8], sli, "rho", "s_rho", "TRAIN SLICE: ipTM vs DockQ\n(mean Spearman within an "
-          "interface)", "rho", False, "tab:orange")
+          "interface)", "rho", False, "tab:orange", mkey="rho_mean")
     panel(ax[9], val, "rho", "s_rho", "HELD-OUT: ipTM vs DockQ\n(mean Spearman within an "
-          "interface)", "rho", False, "tab:blue")
+          "interface)", "rho", False, "tab:blue", mkey="rho_mean")
 
     for a_ in ax:
         a_.grid(alpha=.3)
