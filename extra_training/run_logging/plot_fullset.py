@@ -194,8 +194,11 @@ def main():
     gl = group_loss(chain(head))
     ref = group_loss(chain(os.environ.get("REF_RID", "oowhyw")))
     rval = ref_val()
-    val = score_points("val30_fs_ep")
-    sli = score_points("slice280_fs_ep")
+    # TAGP MUST MATCH THE CHAIN. Each arm scores under its own tag so the row dirs cannot
+    # accumulate across arms; the plot reads the same namespace the chain wrote.
+    tp = os.environ.get("TAGP", "lr4")
+    val = score_points(f"val30_{tp}_ep")
+    sli = score_points(f"slice280_{tp}_ep")
     if not gl and not val:
         sys.exit("STOP: no full-set segment has written an epoch yet.")
     # TWO ROWS, ONE PER SIDE. Training on top (the loss split plus the slice's two metrics),

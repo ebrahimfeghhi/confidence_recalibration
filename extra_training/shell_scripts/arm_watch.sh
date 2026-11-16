@@ -20,13 +20,17 @@ set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
 SD="${SD:-/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad}"
-CHAIN_PID="${CHAIN_PID:?pass CHAIN_PID=<pid of fullset_chain_zsoft.sh>}"
+CHAIN_PID="${CHAIN_PID:?pass CHAIN_PID=<pid of the chain script>}"
+# WHICH ARM. The log glob and the report tag both belong to one arm; hardcoding them
+# meant the watcher kept reading the previous arm's log after a new one started.
+CHAIN_GLOB="${CHAIN_GLOB:-training/runs/fullset_chain_lr1e4*.log}"
+TAGP="${TAGP:-lr4}"
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 DOWN=0
 
 say "watching chain pid $CHAIN_PID"
 while :; do
-    LOG=$(ls -t training/runs/fullset_chain_zsoft*.log 2>/dev/null | head -1)
+    LOG=$(ls -t $CHAIN_GLOB 2>/dev/null | head -1)
     RID=$(grep -oE 'segment running as [a-z0-9]{6}' "$LOG" 2>/dev/null | tail -1 | awk '{print $4}')
     ALIVE=$([ -d "/proc/$CHAIN_PID" ] && echo yes || echo NO)
     BUSY=$($PY -I run_logging/cards_busy.py 2>&1 | tail -1)
@@ -37,9 +41,9 @@ while :; do
     AGE=na
     [ -n "${RID:-}" ] && [ -f "training/runs/$RID/run.log" ] && \
         AGE=$(( $(date +%s) - $(stat -c %Y "training/runs/$RID/run.log") ))
-    EMPTY=$(find "$SD" -maxdepth 1 -name 'report_fs_ep*.txt' -size 0 2>/dev/null | wc -l)
-    NREP=$(ls "$SD"/report_fs_ep*.txt 2>/dev/null | wc -l)
-    EP=$(grep -oE '=== fs_ep[0-9]+ ===' "$LOG" 2>/dev/null | tail -1)
+    EMPTY=$(find "$SD" -maxdepth 1 -name "report_${TAGP}_ep*.txt" -size 0 2>/dev/null | wc -l)
+    NREP=$(ls "$SD"/report_${TAGP}_ep*.txt 2>/dev/null | wc -l)
+    EP=$(grep -oE "=== ${TAGP}_ep[0-9]+ ===" "$LOG" 2>/dev/null | tail -1)
     say "chain=$ALIVE rid=${RID:-none} cards=$BUSY run.log_age=${AGE}s eval=$EVAL reports=$NREP empty=$EMPTY last_scored=${EP:-none}"
     if [ "$ALIVE" = "NO" ] && [ "$EVAL" = "0" ]; then
         DOWN=$((DOWN+10)); say "  ALERT: chain gone and no scoring pass -- DOWN for ~${DOWN} min"
@@ -51,6 +55,6 @@ while :; do
     [ "$AGE" != "na" ] && [ "$AGE" -gt 1200 ] && [ "$EVAL" = "0" ] && \
         say "  ALERT: run.log has not moved in ${AGE}s -- trainer may be wedged"
     [ "$EMPTY" != "0" ] && say "  ALERT: $EMPTY report(s) EMPTY -- scoring produced no evidence"
-    grep -q '=== fs_ep60 ===' "$LOG" 2>/dev/null && { say "epoch 60 scored -- COMPLETE"; exit 0; }
+    grep -q "=== ${TAGP}_ep60 ===" "$LOG" 2>/dev/null && { say "epoch 60 scored -- COMPLETE"; exit 0; }
     sleep 600
 done
