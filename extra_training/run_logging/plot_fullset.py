@@ -231,8 +231,15 @@ def main():
     """
     head = os.environ.get("RID") or open("training/runs/fullset_rid").read().strip()
     gl = group_loss(chain(head))
-    ref = group_loss(chain(os.environ.get("REF_RID", "oowhyw")))
-    rval = ref_val()
+    # ONE ARM PER FIGURE when REF_RID is empty. Two arms on one set of axes is the right picture
+    # for "did the change help"; it is the wrong one for reading an arm's own shape, because the
+    # panel limits are set from this arm and the overlay is clipped to them. Both arms keep their
+    # own figure by pointing SD at that arm's preserved work dirs and naming its tag -- the 1e-3
+    # arm's rows are under training/runs/pae_ref_scores, so its figure is drawn from the same
+    # rows_*.csv as this one and not from its reports.
+    _rr = os.environ.get("REF_RID", "oowhyw").strip()
+    ref = group_loss(chain(_rr)) if _rr else {}
+    rval = ref_val() if _rr else {}
     # TAGP MUST MATCH THE CHAIN. Each arm scores under its own tag so the row dirs cannot
     # accumulate across arms; the plot reads the same namespace the chain wrote.
     tp = os.environ.get("TAGP", "lr4")
@@ -316,8 +323,8 @@ def main():
     for a_ in ax:
         a_.grid(alpha=.3)
         a_.set_xlabel("epoch")
-    fig.suptitle(f"FULL-SET ARM -- lr 1e-3, dropout 0.25   "
-                 f"({len(eps)} epoch(s); val at {sorted(val) or 'none'}, "
+    fig.suptitle(os.environ.get("TITLE", "FULL-SET ARM") + "   "
+                 + f"({len(eps)} epoch(s); val at {sorted(val) or 'none'}, "
                  f"slice at {sorted(sli) or 'none'})", fontsize=12.5)
     fig.tight_layout(rect=[0, 0, 1, .92])
     os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)
