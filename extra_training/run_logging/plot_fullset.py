@@ -13,6 +13,7 @@ drawn on the val panel so a point above it is visible immediately.
 import collections
 import csv
 import glob
+import io
 import json
 import os
 import re
@@ -278,6 +279,32 @@ def _unused_val_points():
     return out
 
 
+def report_points(d, which):
+    """epoch -> the four numbers a report_*.txt carries, for an arm with no rows left.
+
+    ROWS ARE THE PREFERRED SOURCE and score_points stays the one that feeds the figure. An arm
+    whose shard dirs were not preserved can still be drawn from its reports, but only for what
+    the report prints: top-1 and mean q against shipped. Margin and the ipTM-vs-DockQ correlation
+    are per-candidate quantities, so they are left absent rather than faked, and their panels say
+    so.
+    """
+    pat = re.compile(r"^" + which + r"\s*\([^)]*\)\s+([0-9.]+)%\s+([0-9.]+)\s+([0-9.]+)%"
+                     r"\s+([0-9.]+)", re.M)
+    out = {}
+    for f in glob.glob(os.path.join(d, "report_*_ep*.txt")):
+        m = re.search(r"_ep(\d+)\.txt$", f)
+        if not m:
+            continue
+        hit = pat.search(io.open(f, encoding="utf-8", errors="ignore").read())
+        if not hit:
+            continue
+        t1, q, s1, sq = (float(x) for x in hit.groups())
+        out[int(m.group(1))] = dict(n=0, top1=t1 / 100, q=q, s_top1=s1 / 100, s_q=sq,
+                                    margin=float("nan"), s_margin=float("nan"),
+                                    rho=float("nan"), s_rho=float("nan"))
+    return out
+
+
 def main():
     """Four panels: the loss split, then quality and top-1 on each side against shipped.
 
@@ -299,8 +326,12 @@ def main():
     # accumulate across arms; the plot reads the same namespace the chain wrote.
     tp = os.environ.get("TAGP", "lr4")
     segs = chain(head)
-    val = score_points(work_dirs(f"val30_{tp}_ep", "valfull83", segs))
-    sli = score_points(work_dirs(f"slice280_{tp}_ep", "slice280", segs))
+    rep = os.environ.get("REPORTS", "").strip()
+    if rep:
+        val, sli = report_points(rep, "VAL"), report_points(rep, "TRAIN SLICE")
+    else:
+        val = score_points(work_dirs(f"val30_{tp}_ep", "valfull83", segs))
+        sli = score_points(work_dirs(f"slice280_{tp}_ep", "slice280", segs))
     if not gl and not val:
         sys.exit("STOP: no full-set segment has written an epoch yet.")
     # TWO ROWS, ONE PER SIDE. Training on top (the loss split plus the slice's two metrics),
@@ -344,6 +375,11 @@ def main():
         e = sorted(pts)
         if not e:
             a_.text(.5, .5, "not scored yet", ha="center", va="center",
+                    transform=a_.transAxes, color="#666")
+        elif all(pts[x][key] != pts[x][key] for x in e):
+            # NOT FAKED, ABSENT. A reports-only arm has no per-candidate rows, so margin and rho
+            # cannot be computed for it; say that on the panel instead of drawing a flat zero.
+            a_.text(.5, .5, "not in the reports\n(no rows preserved)", ha="center", va="center",
                     transform=a_.transAxes, color="#666")
         else:
             y = [pts[x][key] for x in e]
