@@ -47,7 +47,7 @@ say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 # SELECTION STAYS ON THE MAX. --select-by is not passed, so mean_dockq and every existing column
 # keep the shipped convention and stay comparable to every earlier report; the mean-pooled numbers
 # arrive as an extra column to be read offline, not as a changed headline.
-COMMON="--pose-perblock --pose-perblock-copy --frame-direction --prefetch --pair-iptm-only --pool-mean"
+COMMON="--pose-perblock --pose-perblock-copy --frame-direction --prefetch --pair-iptm-only --pool-mean ${POSE_FLAGS:-}"
 
 if [ "$SIDES" = both ] || [ "$SIDES" = slice ]; then
   say "$TAG: scoring the 280-item training slice (15 seeds)"
