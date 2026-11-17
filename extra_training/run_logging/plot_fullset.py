@@ -277,6 +277,44 @@ def score_points(work):
     return out
 
 
+def plain_loss(segs):
+    """epoch -> (rank loss, mean PAE loss), for an arm that logs no pose-group split.
+
+    WHY A SECOND SOURCE. group_loss reads the `PAE BY POSE GROUP` line, which only exists when
+    --pae-split-accept is set; an arm without it has NO training curve on the figure at all, which
+    is how this arm ran thirty epochs with two empty panels. These two series are always available:
+    the ranking term is printed per epoch in run.log, and the PAE loss is a per-step column in
+    trajectory.csv which is averaged over the epoch here.
+
+    NOT THE SAME QUANTITY as group_loss's pair, and not drawn as if it were -- that pair is one
+    loss split by pose quality, which is a generalisation signal; this is two different losses.
+    """
+    rank = re.compile(r"epoch (\d+) rank-loss.*?([+-][0-9.]+) over")
+    out = {}
+    for d, _ in segs:
+        p_ = os.path.join(d, "run.log")
+        if os.path.exists(p_):
+            for line in open(p_, errors="ignore"):
+                m = rank.search(line)
+                if m:
+                    out.setdefault(int(m.group(1)), [float("nan"), float("nan")])[0] = \
+                        abs(float(m.group(2)))
+        t = os.path.join(d, "trajectory.csv")
+        if not os.path.exists(t):
+            continue
+        acc = collections.defaultdict(list)
+        for r in csv.DictReader(open(t)):
+            try:
+                e, v = int(float(r["epoch"])), float(r["pae_loss"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            if v == v:
+                acc[e].append(v)
+        for e, v in acc.items():
+            out.setdefault(e, [float("nan"), float("nan")])[1] = sum(v) / len(v)
+    return {e: tuple(v) for e, v in out.items()}
+
+
 def _unused_val_points():
     out = {}
     for w in sorted(glob.glob(os.path.join(SD, "val30_fs_ep*"))):
@@ -336,6 +374,9 @@ def main():
     """
     head = os.environ.get("RID") or open("training/runs/fullset_rid").read().strip()
     gl = group_loss(chain(head))
+    # FALL BACK RATHER THAN DRAW NOTHING. An arm run without --pae-split-accept emits no pose-group
+    # line, so gl is empty and the two training panels came out blank for the whole run.
+    pl = {} if gl else plain_loss(chain(head))
     # ONE ARM PER FIGURE when REF_RID is empty. Two arms on one set of axes is the right picture
     # for "did the change help"; it is the wrong one for reading an arm's own shape, because the
     # panel limits are set from this arm and the overlay is clipped to them. Both arms keep their
@@ -361,7 +402,7 @@ def main():
     else:
         val = score_points(work_dirs(f"val30_{tp}_ep", "valfull83", segs))
         sli = score_points(work_dirs(f"slice280_{tp}_ep", "slice280", segs))
-    if not gl and not val:
+    if not gl and not pl and not val:
         sys.exit("STOP: no full-set segment has written an epoch yet.")
     # TWO ROWS, ONE PER SIDE. Training on top (the loss split plus the slice's two metrics),
     # held-out underneath. One metric per panel: two y-axes on one panel made the slice's curves
@@ -385,7 +426,15 @@ def main():
         ax[0].plot(eps, [gl[e][1] for e in eps], "-o", color="tab:red", ms=4, label="bad")
     if eps or reps:
         ax[0].legend(fontsize=8)
-    ax[0].set_title("TRAIN: loss by pose group (every epoch)", fontsize=11.5)
+    if pl:
+        pe = sorted(x for x in pl if pl[x][1] == pl[x][1])
+        if pe:
+            ax[0].plot(pe, [pl[x][1] for x in pe], "-o", color="tab:blue", ms=3,
+                       label="PAE loss (mean over the epoch)")
+            ax[0].legend(fontsize=8)
+    ax[0].set_title("TRAIN: loss by pose group (every epoch)" if gl or not pl
+                    else "TRAIN: PAE loss\n(no pose-group split: --pae-split-accept unset)",
+                    fontsize=11.5)
     ax[0].set_ylabel("mean loss per pose")
 
     if reps:
@@ -397,8 +446,15 @@ def main():
         ax[4].axhline(0, color="#555", ls="--", lw=1.4)
     if eps or reps:
         ax[4].legend(fontsize=8)
-    ax[4].set_title("TRAIN: good minus bad\n(>0 = good poses fit WORSE)", fontsize=11.5)
-    ax[4].set_ylabel("difference in loss")
+    if pl:
+        re2 = sorted(x for x in pl if pl[x][0] == pl[x][0])
+        if re2:
+            ax[4].plot(re2, [pl[x][0] for x in re2], "-o", color="tab:purple", ms=3,
+                       label="ranking loss")
+            ax[4].legend(fontsize=8)
+    ax[4].set_title("TRAIN: good minus bad\n(>0 = good poses fit WORSE)" if gl or not pl
+                    else "TRAIN: ranking loss (the rel term)", fontsize=11.5)
+    ax[4].set_ylabel("difference in loss" if gl or not pl else "mean loss per interface group")
 
     def panel(a_, pts, key, skey, title, ylab, pct, colour, lower_better=False, mkey=None):
         """mkey DRAWS THE MEAN-POOLED READING BESIDE THE MAX, when the pass computed one.
