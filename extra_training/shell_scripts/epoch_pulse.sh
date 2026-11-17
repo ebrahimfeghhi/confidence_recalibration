@@ -16,7 +16,7 @@ set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
 PY=/home/ebrahim/Protenix/.venv/bin/python
 SD=${SD:-/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad}
-RID="${RID:-$(cat training/runs/pose5_arm_rid 2>/dev/null)}"
+RID="${RID:-$(cat ${RIDFILE:-training/runs/pose5_arm_rid} 2>/dev/null)}"
 [ -n "$RID" ] || { echo "### no run id"; exit 2; }
 ST="$SD/pulse_$RID.state"
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
@@ -91,12 +91,12 @@ RID_PLOT="$RID" ./shell_scripts/draw_pose5.sh 2>&1 | tail -1 \
 # PUSH ON EVERY NEW EVAL PASS, so the review copy outside this repo is never stale. Only when a
 # val or slice pass actually landed -- a bare new epoch changes the loss curve but not the results
 # table, and a commit per epoch would bury the ones that matter.
-if [ "$VE" != "$OVE" ] || [ "$SE" != "$OSE" ]; then
+if [ "$VE" != "$OVE" ] || [ "$SE" != "$OSE" ] || [ "${ANY_EPOCH:-0}" = 1 ]; then
     $PY -I run_logging/export_pose5_results.py "$RID" >/dev/null 2>&1 \
         && git -C /home/ebrahim/confidence_recalibration add \
                extra_training/docs/pose5_results/jyz3g2_val_slice.csv \
-               extra_training/figures/pose5_rel_lr1e4.png \
-               extra_training/figures/pose5_selection.png >/dev/null 2>&1 \
+               "extra_training/${FIG:-figures/pose5_rel_lr1e4.png}" \
+               "extra_training/${SEL:-figures/pose5_selection.png}" >/dev/null 2>&1 \
         && git -C /home/ebrahim/confidence_recalibration diff --cached --quiet \
         || {
             git -C /home/ebrahim/confidence_recalibration commit -q -m \
