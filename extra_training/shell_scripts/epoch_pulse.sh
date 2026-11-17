@@ -80,7 +80,9 @@ sys.path.insert(0, "run_logging")
 import plot_fullset as P
 rid, e = sys.argv[1], int(sys.argv[2])
 d = P.score_points({e: f"training/runs/{rid}/slice280_eval_shards_ep{e}"})[e]
-print(f"    SLICE ep{e}  max {d['top1']:.1%} / {d['q']:.4f}   shipped {d['s_top1']:.1%} / {d['s_q']:.4f}")
+print(f"    SLICE ep{e}  max  {d['top1']:.1%} / {d['q']:.4f}   shipped {d['s_top1']:.1%} / {d['s_q']:.4f}")
+if d['top1_mean'] == d['top1_mean']:
+    print(f"                mean {d['top1_mean']:.1%} / {d['q_mean']:.4f}   rho max {d['rho']:.4f} mean {d['rho_mean']:.4f}")
 PYEOF
 done
 RID_PLOT="$RID" ./shell_scripts/draw_pose5.sh 2>&1 | tail -1 \
