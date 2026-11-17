@@ -259,6 +259,24 @@ def score_points(work):
             rk.sort()
             return sum(rk) / len(rk), rk[len(rk) // 2], len(rk)
 
+        def _accin(n, key):
+            """Fraction of interfaces with AT LEAST ONE acceptable candidate in the top N.
+
+            The success rate at budget N: submit N models, did any of them land. It is monotone in
+            N and bounded above by the fraction of items that have any acceptable candidate at all
+            (here 127 of 141), which is the ceiling to read it against -- not 100%.
+            """
+            hit = 0
+            for c in by.values():
+                top = sorted(c, key=lambda t: -t[key])[:n]
+                hit += any(t[2] >= ACC for t in top)
+            return hit / len(by)
+
+        acc5, acc10 = _accin(5, 0), _accin(10, 0)
+        s_acc5, s_acc10 = _accin(5, 1), _accin(10, 1)
+        acc5m = _accin(5, 4) if _has_m0 else float("nan")
+        # THE CEILING: items with any acceptable candidate at all. acc5 cannot exceed it.
+        winnable = sum(1 for c in by.values() if any(t[2] >= ACC for t in c)) / len(by)
         q5, q10 = _bestof(5, 0), _bestof(10, 0)
         s_q5, s_q10 = _bestof(5, 1), _bestof(10, 1)
         if _has_m0:
@@ -300,6 +318,8 @@ def score_points(work):
         out[e] = dict(
             n=n,
             q5=q5, q10=q10, s_q5=s_q5, s_q10=s_q10,
+            acc5=acc5, acc10=acc10, s_acc5=s_acc5, s_acc10=s_acc10,
+            acc5_mean=acc5m, winnable=winnable,
             q5_mean=q5m, q10_mean=q10m,
             fa_mean=fa_mean, fa_med=fa_med, n_win_fa=n_win_fa,
             s_fa_mean=s_fa_mean, s_fa_med=s_fa_med,
@@ -425,6 +445,9 @@ def report_points(d, which):
                                     rho_mean=float("nan"),
                                     q5=float("nan"), q10=float("nan"),
                                     s_q5=float("nan"), s_q10=float("nan"),
+                                    acc5=float("nan"), acc10=float("nan"),
+                                    s_acc5=float("nan"), s_acc10=float("nan"),
+                                    acc5_mean=float("nan"), winnable=float("nan"),
                                     q5_mean=float("nan"), q10_mean=float("nan"),
                                     fa_mean=float("nan"), fa_med=float("nan"),
                                     n_win_fa=0, s_fa_mean=float("nan"),

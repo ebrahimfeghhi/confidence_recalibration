@@ -36,12 +36,14 @@ def main():
     # THREE LINES PER PANEL, ONE METRIC PER PANEL. The first version put best-of-5, best-of-10,
     # both poolings of each, and two shipped lines on one axis -- seven lines, unreadable. One
     # metric per panel, ours under each pooling, and shipped once.
-    COLS = (("q5", "q5_mean", "s_q5", "best-of-5 DockQ", False),
-            ("fa_mean", "fa_mean_mp", "s_fa_mean", "rank of the first acceptable pose", True))
-    fig, axx = plt.subplots(2, 2, figsize=(14, 9))
+    COLS = (("q5", "q5_mean", "s_q5", "best-of-5 DockQ", False, False),
+            ("acc5", "acc5_mean", "s_acc5", "frac acceptable in the top 5", False, True),
+            ("fa_mean", "fa_mean_mp", "s_fa_mean", "rank of the first acceptable pose",
+             True, False))
+    fig, axx = plt.subplots(2, 3, figsize=(19, 9))
     for ri, (pts, sname, colour) in enumerate(((sli, "TRAIN SLICE", "tab:orange"),
                                                (val, "HELD-OUT", "tab:blue"))):
-        for ci, (key, mkey, skey, title, lower) in enumerate(COLS):
+        for ci, (key, mkey, skey, title, lower, pct) in enumerate(COLS):
             a_ = axx[ri][ci]
             e = [x for x in sorted(pts) if pts[x][key] == pts[x][key]]
             if not e:
@@ -56,7 +58,14 @@ def main():
                             alpha=.6, label="ours (mean-pooled)")
                 b = pts[e[0]][skey]
                 a_.axhline(b, color="#555", ls="--", lw=1.8,
-                           label=f"shipped {b:.1f}" if lower else f"shipped {b:.4f}")
+                           label=(f"shipped {b:.1f}" if lower else
+                                  f"shipped {b:.1%}" if pct else f"shipped {b:.4f}"))
+                if pct:
+                    # THE CEILING IS NOT 100%: 14 of 141 val interfaces have no acceptable
+                    # candidate at any rank, so this metric cannot exceed the winnable fraction.
+                    w = pts[e[0]]["winnable"]
+                    a_.axhline(w, color="tab:green", ls=":", lw=1.6,
+                               label=f"ceiling (any acceptable) {w:.1%}")
                 a_.set_xticks(e)
                 a_.legend(fontsize=8)
             extra = ""
@@ -65,7 +74,8 @@ def main():
                          f"{pts[e[-1]]['fa_med']:.0f} vs shipped {pts[e[-1]]['s_fa_med']:.0f}"
                          f" -- LOWER IS BETTER")
             a_.set_title(f"{sname}: {title}{extra}", fontsize=11)
-            a_.set_ylabel("rank" if lower else "mean DockQ")
+            a_.set_ylabel("rank" if lower else
+                          "frac acceptable" if pct else "mean DockQ")
             a_.set_xlabel("epoch")
             a_.grid(alpha=.3)
     fig.suptitle(os.environ.get("TITLE", "SELECTION AT BUDGET N") + f"  ({rid})", fontsize=12.5)

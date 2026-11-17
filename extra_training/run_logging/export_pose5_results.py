@@ -19,7 +19,13 @@ import plot_fullset as P                                            # noqa: E402
 
 COLS = ["side", "epoch", "q_max", "top1_max", "rho_max", "q_mean", "top1_mean", "rho_mean",
         "margin", "score_spread", "margin_over_spread",
-        "shipped_q", "shipped_top1", "shipped_rho", "shipped_margin"]
+        "bestof5_max", "bestof5_mean", "bestof10_max",
+        "acc_in5_max", "acc_in5_mean", "acc_in10_max", "winnable_ceiling",
+        "rank_first_acc_mean_max", "rank_first_acc_mean_meanpool", "rank_first_acc_median_max",
+        "n_winnable",
+        "shipped_q", "shipped_top1", "shipped_rho", "shipped_margin",
+        "shipped_bestof5", "shipped_bestof10", "shipped_acc_in5", "shipped_acc_in10",
+        "shipped_rank_first_acc_mean", "shipped_rank_first_acc_median"]
 
 
 def _complete(pat):
@@ -60,8 +66,16 @@ def main():
             rows.append([side, e, f"{d['q']:.4f}", f"{d['top1']:.4f}", f"{d['rho']:.4f}",
                          f"{d['q_mean']:.4f}", f"{d['top1_mean']:.4f}", f"{d['rho_mean']:.4f}",
                          f"{d['margin']:.4f}", f"{sp:.4f}", f"{d['margin'] / sp:.4f}",
+                         f"{d['q5']:.4f}", f"{d['q5_mean']:.4f}", f"{d['q10']:.4f}",
+                         f"{d['acc5']:.4f}", f"{d['acc5_mean']:.4f}", f"{d['acc10']:.4f}",
+                         f"{d['winnable']:.4f}",
+                         f"{d['fa_mean']:.2f}", f"{d['fa_mean_mp']:.2f}", f"{d['fa_med']:.0f}",
+                         d['n_win_fa'],
                          f"{d['s_q']:.4f}", f"{d['s_top1']:.4f}", f"{d['s_rho']:.4f}",
-                         f"{d['s_margin']:.4f}"])
+                         f"{d['s_margin']:.4f}",
+                         f"{d['s_q5']:.4f}", f"{d['s_q10']:.4f}",
+                         f"{d['s_acc5']:.4f}", f"{d['s_acc10']:.4f}",
+                         f"{d['s_fa_mean']:.2f}", f"{d['s_fa_med']:.0f}"])
     with open(out, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(COLS)

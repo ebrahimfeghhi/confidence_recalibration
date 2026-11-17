@@ -51,6 +51,59 @@ normalises the margin by the scale it is measured in.
   objective is supposed to produce. The lr 1e-4 PAE-only arm showed the mirror case: margin fell
   29% while spread fell 39%, so normalising reversed that reading too.
 
+## SELECTION AT BUDGETS ABOVE ONE (figures/pose5_selection.png, columns in the CSV)
+
+The gain is at budget 5 and larger, and absent at budget 1. Held-out, epoch 46, max-pooled:
+
+| metric | ours | shipped | gain |
+|---|---|---|---|
+| frac acceptable in top 1 | 72.3% | 72.3% | +0.0 |
+| frac acceptable in top 5 | **74.5%** | 72.3% | **+2.1** |
+| frac acceptable in top 10 | 74.5% | 74.5% | +0.0 |
+| best-of-5 DockQ | **0.6108** | 0.6014 | **+0.0094** |
+| best-of-10 DockQ | 0.6211 | 0.6170 | +0.0041 |
+| mean rank of first acceptable pose | **13.8** | 14.9 | **-1.1** (lower better) |
+| median rank of first acceptable pose | 1 | 1 | 0 |
+
+In-sample at epoch 40 is the same shape and clearer: top-1 is NEGATIVE (-2.5), top-5 +1.8, top-10
+**+3.2**, and mean-pooled top-5 is 40.4% against shipped's 35.7%.
+
+**The arm moves the tail, not the winner.** It pulls acceptable poses from deep in the ranking up
+into the top handful without changing which single pose wins -- exactly what a rho gain with no
+top-1 gain predicts. Ceilings to read these against: 90.1% of val interfaces have any acceptable
+candidate at all, and the median first-acceptable rank is already 1 for BOTH heads, so most
+winnable items are solved at budget 1 already and all the movement is in the rest.
+
+## THE UNBALANCED PAE LOSS DOES NOT COLLAPSE TO THE MAJORITY CLASS (pae_by_rarity.txt)
+
+This arm runs `pae_balance_accept 0`, so it IS the unbalanced baseline and "is the balancing term
+needed" is directly measurable. Grouping each structure by the fraction of ITS poses that are
+good, per-pose PAE loss at epoch 1 against epoch 47:
+
+| good-pose share | n good | n bad | delta good | delta bad |
+|---|---|---|---|---|
+| 0-10% | 69 | 2160 | **-0.2307** | -0.0141 |
+| 10-25% | 169 | 815 | -0.3977 | -0.3257 |
+| 25-50% | 486 | 742 | -0.4554 | -0.1323 |
+| 50-75% | 900 | 481 | -0.4545 | -0.1476 |
+| 75-100% | 4747 | 197 | -0.6144 | -0.2214 |
+
+**The good-pose loss falls further than the bad-pose loss in every bucket**, including the one
+where good poses are 3% of a structure's poses. The failure mode balancing exists to fix is not
+occurring here.
+
+Three caveats so this is not overread. The bottom bucket's good-pose drop is the SMALLEST of the
+five and the trend is monotone -- the rarer good poses are, the less their loss improves -- so
+there is a mild imbalance, just not a collapse. Good poses sit at a HIGHER absolute loss
+throughout (3.35 against 2.74 in the bottom bucket), improving faster from further behind. And
+n=69 makes that row the noisiest. This has never been A/B'd: it shows the collapse is not
+happening on this arm, not that turning balancing on would not help anyway.
+
+THE UNIT OF THE LOSS IS A STRUCTURE-POSE, THE UNIT OF DockQ IS AN INTERFACE, and 82% of structures
+carry more than one. A pose is good only if ALL its interfaces are >= 0.23, bad only if NONE are,
+and poses straddling the threshold are excluded from both rather than forced into one -- forcing
+them would have misclassified roughly 10% of poses.
+
 ## What to challenge
 
 1. Is `margin_over_spread` the right normalisation, or does dividing by a median max-min just trade

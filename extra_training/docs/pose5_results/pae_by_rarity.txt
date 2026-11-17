@@ -1,0 +1,12 @@
+run jyz3g2: PAE loss per pose, epoch 1 vs epoch 47, grouped at DockQ 0.23
+
+rare-good bucket      n good   n bad    good ep1   good ep47     delta      bad ep1   bad ep47     delta
+0%-10% good               69    2160      3.5789      3.3481   -0.2307       2.7538     2.7396   -0.0141
+10%-25% good             169     815      3.7379      3.3402   -0.3977       3.2039     2.8782   -0.3257
+25%-50% good             486     742      3.7325      3.2771   -0.4554       3.1765     3.0442   -0.1323
+50%-75% good             900     481      3.8004      3.3459   -0.4545       3.2190     3.0714   -0.1476
+75%-100% good           4747     197      3.6744      3.0600   -0.6144       3.1485     2.9272   -0.2214
+
+A COLLAPSE TO THE MAJORITY CLASS looks like: in the bottom bucket the bad-pose delta is clearly
+negative while the good-pose delta is flat or positive. Balancing is cheap insurance if the
+two deltas are similar, and the priority if they are not.
