@@ -44,6 +44,29 @@ lr 1e-4, pair-dropout 0.25, loss = PAE + mean-centred regression on the true iTM
 - `cos` is small and changes sign (median ~+0.15, negative on roughly a third of steps), i.e. the
   two terms are close to orthogonal and sometimes oppose each other.
 
+## THE RUN THIS PRODUCED: `jyz3g2`, launched 10:34 PM EST 2026-11-16
+
+alpha_rank **50**, chosen as the p25 of the complete 152-step distribution (49.9). Percentiles,
+rank 0, all 153 steps: p10 26.5, p25 49.9, **median 92.4**, p75 320.8, p90 931.7. So this is a
+deliberately PAE-dominant choice, not parity: at alpha 50 the rel term is at parity on about a
+quarter of steps and below it on the other three quarters.
+
+Settings, read back from `training/runs/jyz3g2/args.json` rather than from intent:
+
+| | |
+|---|---|
+| `lr` | 1e-4 |
+| `epochs` | 60, val every 2 (`train_eval_every 2`), train slice every 10 (`extra_eval ...every=10`) |
+| `alpha_rank` / `alpha_pae` | 50.0 / 1.0 |
+| `rank_form` | `rel` -- mean-centred regression on the true iTM |
+| `rel_labels` | `training/fold/itm_labels_crop` (cropped, matching `--crop-pool training/crop_final`) |
+| `pair_dropout` | 0.25 |
+| the five sites | `pose_perblock` + `pose_perblock_copy` + `frame_direction`, plus `pose_readout` + `pose_readout_prenorm` + `pose_readout_copy_distance`; **`pose_readout_post_zero` False**, so five sites and not six |
+| trainable | 15 of 261 head tensors, 55,040 of 19,797,070 parameters (0.278%), `expect_trainable 15` as a fail-closed gate |
+
+Expected wall clock about 18 min/epoch -- ~10 min training (the ranking loss means two forwards per
+pose, not one), ~6.5 amortised for val every 2 epochs, ~1.3 for the slice -- so ~18 h for 60 epochs.
+
 ## What we would value an opinion on
 
 1. Which statistic of this column should set a single alpha -- median, geometric mean, an early-step

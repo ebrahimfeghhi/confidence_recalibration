@@ -31,6 +31,13 @@ export ALPHA_RANK="${ALPHA_RANK:?set it from the grad-probe parity measurement}"
 # and the trainer refuses whole-structure labels under --crop-pool, since the head's prediction
 # would average a subset of the interface's pairs while the target covered all of them.
 export REL_LABELS="${REL_LABELS:-training/fold/itm_labels_crop}"
+# THE TRAIN SLICE, EVERY 10 EPOCHS. --extra-eval fires at (ep+1) %% every == 0, so every=10 is
+# epochs 10, 20 ... 60. NOT OPTIONAL TO SET: EXTRA_EVAL defaults to EMPTY in
+# launch_pae_crop_arm.sh:351, so leaving it out gives an arm with no in-sample measurement at all
+# -- and the in-sample curve is how the last three arms were diagnosed as memorising rather than
+# generalising. budget 15, seed_base 500000 and fold training/fold are score_checkpoint.sh's slice
+# arguments.
+export EXTRA_EVAL="${EXTRA_EVAL:-name=slice280,pool=training/slice280/pool.csv,fold=training/fold,seed_base=500000,budget=15,every=10}"
 echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') 5-site pose injection, rel, lr ${LR:-1e-4},"
 echo "    trainable: $TRAIN_ONLY  (expect $EXPECT_TRAINABLE)  alpha_rank $ALPHA_RANK"
 env CARDS="${CARDS:-4,5,7}" EPOCHS="${EPOCHS:-60}" LR="${LR:-1e-4}" PAIR_DROPOUT=0.25 \
