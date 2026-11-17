@@ -30,22 +30,32 @@ for d in training/runs/$RID/valfull83_eval_shards_ep*; do
     N=$(basename "$d" | sed -E 's/.*_ep([0-9]+)$/\1/')
     [ "$N" -gt "$VE" ] && VE="$N"
 done
-OEP=-1; OVE=-1
-[ -f "$ST" ] && read -r OEP OVE < "$ST"
+# THE SLICE IS ITS OWN EVENT. Tracking only (epoch, val epoch) meant a slice pass that finished
+# on a pulse where neither had moved exited 1 and was never reported -- the in-sample point, which
+# is the whole memorisation diagnostic, could be skipped silently.
+SE=0
+for d in training/runs/$RID/slice280_eval_shards_ep*; do
+    [ -d "$d" ] || continue
+    [ "$(ls "$d"/rows_*.csv.meta.json 2>/dev/null | wc -l)" -eq 3 ] || continue
+    N=$(basename "$d" | sed -E 's/.*_ep([0-9]+)$/\1/')
+    [ "$N" -gt "$SE" ] && SE="$N"
+done
+OEP=-1; OVE=-1; OSE=-1
+[ -f "$ST" ] && read -r OEP OVE OSE < "$ST"
 
 AGE=$(( $(date +%s) - $(stat -c %Y "training/runs/$RID/run.log" 2>/dev/null || echo 0) ))
 if [ "$AGE" -gt "${STALL:-3600}" ]; then
     say "STALLED: $RID run.log untouched for ${AGE}s at epoch $EP"
-    echo "$EP $VE" > "$ST"
+    echo "$EP $VE $SE" > "$ST"
     exit 0
 fi
 
-if [ "$EP" = "$OEP" ] && [ "$VE" = "$OVE" ]; then
-    say "nothing new: $RID still at epoch $EP (last val $VE)"
+if [ "$EP" = "$OEP" ] && [ "$VE" = "$OVE" ] && [ "$SE" = "$OSE" ]; then
+    say "nothing new: $RID still at epoch $EP (last val $VE, last slice $SE)"
     exit 1
 fi
 
-say "$RID epoch $EP trained (was $OEP); newest complete val pass $VE (was $OVE)"
+say "$RID epoch $EP trained (was $OEP); newest complete val $VE (was $OVE), slice $SE (was $OSE)"
 if [ "$VE" != "$OVE" ] && [ "$VE" != "0" ]; then
     $PY -I - "$RID" "$VE" <<'PYEOF'
 import sys
@@ -74,4 +84,4 @@ print(f"    SLICE ep{e}  max {d['top1']:.1%} / {d['q']:.4f}   shipped {d['s_top1
 PYEOF
 done
 RID_PLOT="$RID" ./shell_scripts/draw_pose5.sh 2>&1 | tail -1 || say "figure not drawn yet (no epoch loss line)"
-echo "$EP $VE" > "$ST"
+echo "$EP $VE $SE" > "$ST"
