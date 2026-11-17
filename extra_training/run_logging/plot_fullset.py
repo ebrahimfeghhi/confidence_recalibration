@@ -310,7 +310,15 @@ def plain_loss(segs):
                 continue
             if v == v:
                 acc[e].append(v)
+        # DROP THE EPOCH STILL IN FLIGHT. The mean over a partial epoch is taken over whichever
+        # steps have run so far, which is not the same population as a whole epoch -- the live arm
+        # showed a +0.127 "jump" that was 4,560 of 11,475 steps of an unfinished epoch, three
+        # times any real epoch-to-epoch move. Keep only epochs with the modal step count.
+        full = max(collections.Counter(len(v) for v in acc.values()).items(),
+                   key=lambda kv: kv[1])[0] if acc else 0
         for e, v in acc.items():
+            if len(v) < full:
+                continue
             out.setdefault(e, [float("nan"), float("nan")])[1] = sum(v) / len(v)
     return {e: tuple(v) for e, v in out.items()}
 

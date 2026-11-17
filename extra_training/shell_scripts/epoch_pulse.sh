@@ -83,5 +83,24 @@ d = P.score_points({e: f"training/runs/{rid}/slice280_eval_shards_ep{e}"})[e]
 print(f"    SLICE ep{e}  max {d['top1']:.1%} / {d['q']:.4f}   shipped {d['s_top1']:.1%} / {d['s_q']:.4f}")
 PYEOF
 done
-RID_PLOT="$RID" ./shell_scripts/draw_pose5.sh 2>&1 | tail -1 || say "figure not drawn yet (no epoch loss line)"
+RID_PLOT="$RID" ./shell_scripts/draw_pose5.sh 2>&1 | tail -1 \
+    || say "figure not drawn yet (no epoch loss line)"
+
+# PUSH ON EVERY NEW EVAL PASS, so the review copy outside this repo is never stale. Only when a
+# val or slice pass actually landed -- a bare new epoch changes the loss curve but not the results
+# table, and a commit per epoch would bury the ones that matter.
+if [ "$VE" != "$OVE" ] || [ "$SE" != "$OSE" ]; then
+    $PY -I run_logging/export_pose5_results.py "$RID" >/dev/null 2>&1 \
+        && git -C /home/ebrahim/confidence_recalibration add \
+               extra_training/docs/pose5_results/jyz3g2_val_slice.csv \
+               extra_training/figures/pose5_rel_lr1e4.png >/dev/null 2>&1 \
+        && git -C /home/ebrahim/confidence_recalibration diff --cached --quiet \
+        || {
+            git -C /home/ebrahim/confidence_recalibration commit -q -m \
+                "$RID results through val $VE, slice $SE" >/dev/null 2>&1 \
+                && git -C /home/ebrahim/confidence_recalibration push -q >/dev/null 2>&1 \
+                && say "pushed results through val $VE / slice $SE" \
+                || say "push FAILED -- results are on disk, commit by hand"
+        }
+fi
 echo "$EP $VE $SE" > "$ST"
