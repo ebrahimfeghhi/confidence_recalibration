@@ -51,58 +51,63 @@ normalises the margin by the scale it is measured in.
   objective is supposed to produce. The lr 1e-4 PAE-only arm showed the mirror case: margin fell
   29% while spread fell 39%, so normalising reversed that reading too.
 
-## SELECTION AT BUDGETS ABOVE ONE (figures/pose5_selection.png, columns in the CSV)
+## SELECTION AT BUDGETS ABOVE ONE -- EXPLORATORY, NOT ESTABLISHED
 
-The gain is at budget 5 and larger, and absent at budget 1. Held-out, epoch 46, max-pooled:
+**Held-out, epoch 46, max-pooled** (epoch 46 exactly; an earlier version of this table was
+labelled 46 and carried epoch 44's numbers):
 
 | metric | ours | shipped | gain |
 |---|---|---|---|
 | frac acceptable in top 1 | 72.3% | 72.3% | +0.0 |
-| frac acceptable in top 5 | **74.5%** | 72.3% | **+2.1** |
+| frac acceptable in top 5 | 74.5% (105/141) | 72.3% (102/141) | **+3 interfaces** |
 | frac acceptable in top 10 | 74.5% | 74.5% | +0.0 |
-| best-of-5 DockQ | **0.6108** | 0.6014 | **+0.0094** |
-| best-of-10 DockQ | 0.6211 | 0.6170 | +0.0041 |
-| mean rank of first acceptable pose | **13.8** | 14.9 | **-1.1** (lower better) |
-| median rank of first acceptable pose | 1 | 1 | 0 |
+| best-of-5 DockQ | 0.6106 | 0.6014 | +0.0092 |
+| best-of-10 DockQ | 0.6210 | 0.6170 | +0.0040 |
+| mean rank of first acceptable pose | 13.91 | 14.9 | -1.0 (lower better) |
 
-In-sample at epoch 40 is the same shape and clearer: top-1 is NEGATIVE (-2.5), top-5 +1.8, top-10
-**+3.2**, and mean-pooled top-5 is 40.4% against shipped's 35.7%.
+**THIS IS THREE NET INTERFACES AND IT IS NOT SIGNIFICANT.** At epoch 50 the paired breakdown is
+3 gained, 0 lost -- the most favourable possible split -- and exact two-sided McNemar on three
+discordant pairs gives **p = 0.25**, before any correction. The selection surface is larger than
+the six metrics: epochs, two poolings and two budgets were all examined. Interfaces are also not
+independent, since several share a structure, so even that p is optimistic. Persistence across
+later epochs makes it more interesting than a spike, but repeated scoring of the SAME 141
+interfaces is not replication.
 
-**The arm moves the tail, not the winner.** It pulls acceptable poses from deep in the ranking up
-into the top handful without changing which single pose wins -- exactly what a rho gain with no
-top-1 gain predicts. Ceilings to read these against: 90.1% of val interfaces have any acceptable
-candidate at all, and the median first-acceptable rank is already 1 for BOTH heads, so most
-winnable items are solved at budget 1 already and all the movement is in the rest.
+What it needs before it is a result: structure-clustered paired uncertainty on best-of-5 DockQ
+from the per-interface rows, then one preselected metric and checkpoint confirmed on data not
+used to choose them.
 
-## THE UNBALANCED PAE LOSS DOES NOT COLLAPSE TO THE MAJORITY CLASS (pae_by_rarity.txt)
+**"MOVES THE TAIL WITHOUT CHANGING THE WINNER" WAS WRONG AND IS WITHDRAWN.** Measured at epoch 50:
+the head picks a DIFFERENT top-1 pose from shipped on **74 of 141 interfaces**. Top-1 success is
+flat because the gains and losses cancel, not because the winner is unchanged. Note also that
+best-of-5 is shortlist quality scored with true DockQ -- it says a good pose is present in the
+top five, not that an automatic selector would find it.
 
-This arm runs `pae_balance_accept 0`, so it IS the unbalanced baseline and "is the balancing term
-needed" is directly measurable. Grouping each structure by the fraction of ITS poses that are
-good, per-pose PAE loss at epoch 1 against epoch 47:
+## RARE-GOOD PAE: THE IMPROVEMENT IS REAL, THE "NO COLLAPSE" HEADLINE IS WITHDRAWN
 
-| good-pose share | n good | n bad | delta good | delta bad |
-|---|---|---|---|---|
-| 0-10% | 69 | 2160 | **-0.2307** | -0.0141 |
-| 10-25% | 169 | 815 | -0.3977 | -0.3257 |
-| 25-50% | 486 | 742 | -0.4554 | -0.1323 |
-| 50-75% | 900 | 481 | -0.4545 | -0.1476 |
-| 75-100% | 4747 | 197 | -0.6144 | -0.2214 |
+Recomputed across ALL THREE ranks and paired on the exact (pdb, seed, sample) key between two
+complete epochs. The earlier version read `trajectory.csv`, which is byte-identical to
+`trajectory_rank0.csv` because the trainer writes it from rank 0 alone, and averaged each epoch
+over whatever poses it contained, so a composition change could have passed as a loss change.
+Paired: 34,245 of 34,425 poses, 180 dropped on each side.
 
-**The good-pose loss falls further than the bad-pose loss in every bucket**, including the one
-where good poses are 3% of a structure's poses. The failure mode balancing exists to fix is not
-occurring here.
+| good-pose share | good poses | **structs** | ep1 | ep50 | delta | **relative** | bad delta | bad rel |
+|---|---|---|---|---|---|---|---|---|
+| 0-10% | 182 | **55** | 3.6807 | 3.4652 | -0.2155 | **-5.9%** | -0.0525 | -1.9% |
+| 10-25% | 574 | 46 | 3.7445 | 3.2738 | -0.4707 | -12.6% | -0.1883 | -6.0% |
+| 25-50% | 1453 | 52 | 3.8029 | 3.3070 | -0.4959 | -13.0% | -0.0837 | -2.6% |
+| 50-75% | 2747 | 59 | 3.8207 | 3.3561 | -0.4646 | -12.2% | -0.1953 | -6.2% |
+| 75-100% | 14145 | 380 | 3.6801 | 3.0838 | -0.5963 | **-16.2%** | -0.1482 | -4.6% |
 
-Three caveats so this is not overread. The bottom bucket's good-pose drop is the SMALLEST of the
-five and the trend is monotone -- the rarer good poses are, the less their loss improves -- so
-there is a mild imbalance, just not a collapse. Good poses sit at a HIGHER absolute loss
-throughout (3.35 against 2.74 in the bottom bucket), improving faster from further behind. And
-n=69 makes that row the noisiest. This has never been A/B'd: it shows the collapse is not
-happening on this arm, not that turning balancing on would not help anyway.
+**What this supports: rare-good PAE loss does improve.** Good poses beat bad poses in every
+bucket, including where good poses are under 10% of a structure's poses.
 
-THE UNIT OF THE LOSS IS A STRUCTURE-POSE, THE UNIT OF DockQ IS AN INTERFACE, and 82% of structures
-carry more than one. A pose is good only if ALL its interfaces are >= 0.23, bad only if NONE are,
-and poses straddling the threshold are excluded from both rather than forced into one -- forcing
-them would have misclassified roughly 10% of poses.
+**What it does NOT support, and the earlier README claimed:** that balancing is unnecessary, or
+that the imbalance is mild. In RELATIVE terms the rare bucket improves **2.7x less** than the
+most-common bucket, -5.9% against -16.2%, and that is the comparison that matters across buckets
+with different absolute levels. The independent unit in the rare bucket is **55 structures**, not
+182 poses. Excluding mixed-interface poses narrows the claim further. And none of this is an A/B
+of the balancing term, which has never been run.
 
 ## What to challenge
 
