@@ -349,10 +349,10 @@ REL_BALANCE_ACCEPT="${REL_BALANCE_ACCEPT:-}"
 # several --extra-eval SPECs (each SPEC is itself comma-separated, which is why ';' and not ',').
 # PAE_SPLIT_ACCEPT turns on the per-epoch PAE-loss-by-group diagnostic at that DockQ threshold.
 EXTRA_EVAL="${EXTRA_EVAL:-}"
-PAE_SPLIT_ACCEPT="${PAE_SPLIT_ACCEPT:-}"
+PAE_SPLIT_ACCEPT="${PAE_SPLIT_ACCEPT:-0.23}"
 # PAE_BALANCE_ACCEPT reweights the PAE loss itself so each list's acceptable poses carry half of
 # it. Unlike PAE_SPLIT_ACCEPT, which only reports, this CHANGES THE OBJECTIVE.
-PAE_BALANCE_ACCEPT="${PAE_BALANCE_ACCEPT:-}"
+PAE_BALANCE_ACCEPT="${PAE_BALANCE_ACCEPT:-0.23}"
 # POSE_READOUT adds the fifth injection site at pae_ln; PRENORM moves it to the LN's INPUT, where
 # block 0's pretrained weights were fitted to live, which is why COPY_DISTANCE pairs with it.
 POSE_READOUT="${POSE_READOUT:-}"
