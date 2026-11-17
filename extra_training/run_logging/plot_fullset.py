@@ -224,6 +224,53 @@ def score_points(work):
         # mean-pooled ipTM" (what the ranking arms actually optimise) with no extra GPU. An arm
         # scored before that became the default has no column and reports nan here rather than
         # silently falling back to the max, which would make the two readings look identical.
+        _has_m0 = all(t[4] is not None for c in by.values() for t in c)
+        # BEST-OF-N, the "if you could submit N models" quantity: rank the candidates by the
+        # head's score, take the N highest, and keep the BEST DockQ among them. NOT the mean of
+        # the N picks -- a submission is scored on its best model, and averaging the five would
+        # fall as N grows, which is the opposite of what the metric is for. N=1 is the top-1
+        # column already reported.
+        def _bestof(n, key):
+            tot = 0.0
+            for c in by.values():
+                top = sorted(c, key=lambda t: -t[key])[:n]
+                tot += max(t[2] for t in top)
+            return tot / len(by)
+
+        def _first_acc(key):
+            """1-based rank of the first acceptable candidate, over WINNABLE items only.
+
+            UNDEFINED WHERE NOTHING IS ACCEPTABLE, and an item with no good candidate must not be
+            scored as rank 150 or dropped silently -- both would move the average for reasons
+            that have nothing to do with ranking. The median is carried beside the mean because
+            the distribution is heavy-tailed: most items are rank 1 and a few are in the hundreds,
+            so the mean tracks the tail and the median tracks the typical case.
+            """
+            rk = []
+            for c in by.values():
+                if not any(t[2] >= ACC for t in c):
+                    continue
+                for i, t in enumerate(sorted(c, key=lambda t: -t[key]), 1):
+                    if t[2] >= ACC:
+                        rk.append(i)
+                        break
+            if not rk:
+                return float("nan"), float("nan"), 0
+            rk.sort()
+            return sum(rk) / len(rk), rk[len(rk) // 2], len(rk)
+
+        q5, q10 = _bestof(5, 0), _bestof(10, 0)
+        s_q5, s_q10 = _bestof(5, 1), _bestof(10, 1)
+        if _has_m0:
+            q5m, q10m = _bestof(5, 4), _bestof(10, 4)
+        else:
+            q5m = q10m = float("nan")
+        fa_mean, fa_med, n_win_fa = _first_acc(0)
+        s_fa_mean, s_fa_med, _ = _first_acc(1)
+        if _has_m0:
+            fam_mean, fam_med, _ = _first_acc(4)
+        else:
+            fam_mean = fam_med = float("nan")
         _has_m = all(t[4] is not None for c in by.values() for t in c)
         if _has_m:
             om = {i: max(c, key=lambda t: t[4])[2] for i, c in by.items()}
@@ -252,6 +299,11 @@ def score_points(work):
         n = len(by)
         out[e] = dict(
             n=n,
+            q5=q5, q10=q10, s_q5=s_q5, s_q10=s_q10,
+            q5_mean=q5m, q10_mean=q10m,
+            fa_mean=fa_mean, fa_med=fa_med, n_win_fa=n_win_fa,
+            s_fa_mean=s_fa_mean, s_fa_med=s_fa_med,
+            fa_mean_mp=fam_mean, fa_med_mp=fam_med,
             q_mean=q_m,
             top1_mean=t1_m,
             rho_mean=rho_m,
@@ -370,7 +422,14 @@ def report_points(d, which):
                                     margin=float("nan"), s_margin=float("nan"),
                                     rho=float("nan"), s_rho=float("nan"),
                                     q_mean=float("nan"), top1_mean=float("nan"),
-                                    rho_mean=float("nan"))
+                                    rho_mean=float("nan"),
+                                    q5=float("nan"), q10=float("nan"),
+                                    s_q5=float("nan"), s_q10=float("nan"),
+                                    q5_mean=float("nan"), q10_mean=float("nan"),
+                                    fa_mean=float("nan"), fa_med=float("nan"),
+                                    n_win_fa=0, s_fa_mean=float("nan"),
+                                    s_fa_med=float("nan"),
+                                    fa_mean_mp=float("nan"), fa_med_mp=float("nan"))
     return out
 
 

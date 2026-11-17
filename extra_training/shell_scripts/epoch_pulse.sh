@@ -95,7 +95,8 @@ if [ "$VE" != "$OVE" ] || [ "$SE" != "$OSE" ]; then
     $PY -I run_logging/export_pose5_results.py "$RID" >/dev/null 2>&1 \
         && git -C /home/ebrahim/confidence_recalibration add \
                extra_training/docs/pose5_results/jyz3g2_val_slice.csv \
-               extra_training/figures/pose5_rel_lr1e4.png >/dev/null 2>&1 \
+               extra_training/figures/pose5_rel_lr1e4.png \
+               extra_training/figures/pose5_selection.png >/dev/null 2>&1 \
         && git -C /home/ebrahim/confidence_recalibration diff --cached --quiet \
         || {
             git -C /home/ebrahim/confidence_recalibration commit -q -m \
