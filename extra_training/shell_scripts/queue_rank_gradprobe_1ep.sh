@@ -69,6 +69,14 @@ say "  cards=$CARDS  DRY=$DRY"
 # THE CARDS ARE NOT TAKEN BY THIS SCRIPT WITHOUT A FREE GATE. launch_pae_crop_arm.sh runs
 # cards_busy itself and refuses occupied cards, so a queued copy of this cannot displace a live
 # arm by being run at the wrong moment.
+for _v in REL_STANDARDIZE REL_SD_WEIGHT REL_STD_FLOOR REL_G_WEIGHT REL_G_SIGMOID; do
+    # SET ONLY WHEN NON-EMPTY: launch_pae_crop_arm.sh tests `[ -n "$VAR" ]`, so exporting an empty
+    # one is harmless, but exporting nothing keeps the probe's environment identical to a run that
+    # never mentioned the flag.
+    eval "_val=\${$_v:-}"
+    [ -n "$_val" ] && export "$_v=$_val"
+done
+
 CARDS="$CARDS" \
 EPOCHS=1 \
 LR="$LR" \
@@ -77,11 +85,6 @@ ALPHA_RANK="$ALPHA_RANK" \
 RANK_S="$RANK_S" \
 GRAD_PROBE_EVERY="$GRAD_PROBE_EVERY" \
 REL_LABELS="$REL_LABELS" \
-${REL_STANDARDIZE:+REL_STANDARDIZE="$REL_STANDARDIZE"} \
-${REL_SD_WEIGHT:+REL_SD_WEIGHT="$REL_SD_WEIGHT"} \
-${REL_STD_FLOOR:+REL_STD_FLOOR="$REL_STD_FLOOR"} \
-${REL_G_WEIGHT:+REL_G_WEIGHT="$REL_G_WEIGHT"} \
-${REL_G_SIGMOID:+REL_G_SIGMOID="$REL_G_SIGMOID"} \
 PREFETCH_WORKERS=16 \
 TRUNK_MEMMAP=1 \
 EPOCH_BALANCE=1 \
