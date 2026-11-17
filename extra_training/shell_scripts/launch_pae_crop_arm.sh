@@ -263,7 +263,10 @@ fi
 # COPIED FROM 87ja6a's args.json, NOT RETYPED. The bare negative lookahead alone gives 19 tensors
 # and 0.3M parameters; the comma-separated list re-includes the pairformer blocks. Launched
 # truncated once -- 19 tensors against 102 -- and stopped before the first optimiser step.
-TRAIN_ONLY='^(?!pairformer_stack\.),blocks\.0\.pair_transition\.,blocks\.1\.tri_mul_out\.,blocks\.1\.tri_mul_in\.,blocks\.2\.tri_mul_out\.,blocks\.2\.tri_mul_in\.,blocks\.2\.pair_transition\.,blocks\.3\.tri_mul_out\.,blocks\.3\.tri_mul_in\.,blocks\.3\.tri_att_start\.,blocks\.3\.pair_transition\.'
+# OVERRIDABLE, DEFAULT UNCHANGED. An arm that freezes everything but the pose injection
+# sites needs a different set, and retyping this regex into a second launcher is how a
+# truncated --train-only got launched once. Pass TRAIN_ONLY to replace it; unset is this.
+TRAIN_ONLY="${TRAIN_ONLY:-^(?!pairformer_stack\.),blocks\.0\.pair_transition\.,blocks\.1\.tri_mul_out\.,blocks\.1\.tri_mul_in\.,blocks\.2\.tri_mul_out\.,blocks\.2\.tri_mul_in\.,blocks\.2\.pair_transition\.,blocks\.3\.tri_mul_out\.,blocks\.3\.tri_mul_in\.,blocks\.3\.tri_att_start\.,blocks\.3\.pair_transition\.}"
 
 # THE POSE PATHWAY IS EXCLUDED FROM THE ADAPTERS AND KEPT DENSE, all twelve tensors of it. The
 # first attempt reused $TRAIN_ONLY unchanged and got this wrong in two ways that an adversarial
