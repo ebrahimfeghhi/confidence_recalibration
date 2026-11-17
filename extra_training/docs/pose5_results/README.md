@@ -34,10 +34,14 @@ normalises the margin by the scale it is measured in.
 - **mean-pooled q is above shipped and climbing**: 0.5710 -> 0.5875 against 0.5819, and mean-pooled
   top-1 reached parity (72.3%) at epochs 28 and 30. Max-pooled q sits essentially at shipped
   (0.5809-0.5819) with top-1 at parity throughout.
-- **No memorisation.** The slice went 28.6% (ep10) -> 27.9% (ep20), i.e. in-sample DOWN and still
-  below shipped's 30.7%. The three previous arms all climbed in-sample over the same span — the
-  1e-3 PAE-only arm went 28.6% -> 35.4% -> 49.6% by epoch 50 while its held-out q fell from 0.5873
-  to 0.5591.
+- **No memorisation through epoch 30.** The slice went 28.6% -> 27.9% -> 28.6% at epochs 10, 20
+  and 30 — flat, and below shipped's 30.7% at every point. The three previous arms all climbed
+  in-sample over the same span: the 1e-3 PAE-only arm went 28.6% -> 35.4% -> 34.6% -> 49.6% by
+  epoch 50 while its held-out q fell from 0.5873 to 0.5591.
+- **In-sample rho DOES rise while in-sample top-1 does not**: 0.0476 -> 0.0587 -> 0.0831 at epochs
+  10, 20, 30 against shipped's 0.0819. So the head is learning the training set's ordering without
+  converting it into more acceptable in-sample picks — the same disconnect the held-out side shows,
+  which argues the ceiling is in the conversion and not in how much the head has learned.
 - **MARGIN RISES, AND THAT IS SCALE, NOT RANKING.** Raw margin goes 0.0143 -> 0.0244 then flattens
   at 0.0239 — worse than its own start, but better than shipped's 0.0347 at every epoch. Over the
   same span the score spread nearly doubles, 0.1142 -> 0.2119, and margin is in ipTM units, so it
