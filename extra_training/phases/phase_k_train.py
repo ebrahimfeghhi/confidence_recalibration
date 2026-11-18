@@ -54,6 +54,10 @@ import time
 
 import numpy as np
 
+# THE DEPTHS THE MANIFEST ACTUALLY DECLARED, for args.json. --seeds is only a fallback,
+# so a reader who sees "500000-500009" there and infers the training set is wrong by
+# however many structures declared their own deeper range.
+_REALISED_SEED_DEPTHS = None
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, "/home/ebrahim/Protenix")
 sys.path.insert(0, os.path.join(ROOT, "phases"))
@@ -1086,7 +1090,11 @@ def main():
                          "row order. It was added believing otherwise; prefer `tokens`.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--seeds", default="500000-500009",
-                    help="the seed range the manifest expects per structure, inclusive.")
+                    help="FALLBACK seed range, used only for --manifest-selection rows that do "
+                         "not declare their own `seeds` column. It is NOT what the run trained "
+                         "on when the selection csv declares per-structure depths -- read "
+                         "`realised_seed_depths` in args.json, or the `manifest: per-structure "
+                         "seed depths` line in run.log, for that.")
     ap.add_argument("--manifest-selection",
                     default=f"{ROOT}/train_val_splits/cache_train_structures.csv",
                     help="THE FROZEN POPULATION. The manifest is this times --seeds, not whatever "
@@ -3937,6 +3945,7 @@ def main():
     if _seed_col:
         _depths = collections.Counter(len(_seed_col.get(p) or range(lo_s, hi_s + 1))
                                       for p in sel_pdbs if p not in skip)
+        globals()["_REALISED_SEED_DEPTHS"] = dict(sorted(_depths.items()))
         print(f"manifest: per-structure seed depths from {a.manifest_selection}: "
               f"{dict(sorted(_depths.items()))} "
               f"({len(_seed_col)} of {len(sel_pdbs)} row(s) declare `seeds`)")
@@ -10029,7 +10038,12 @@ def main():
           f"({_full} full + {_part} partial per epoch); no step cap, the epoch loop decides")
     print(f"  lr schedule: {_sched}")
     print(f"trajectory -> {traj_p}")
-    json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
+    _args_rec = dict(vars(a))
+    # REALISED, NOT REQUESTED. `seeds` above is the fallback range; this is the per-structure
+    # depth histogram the manifest actually declared ({depth: n_structures}), so args.json and
+    # run.log cannot disagree about what the run trained on.
+    _args_rec["realised_seed_depths"] = _REALISED_SEED_DEPTHS
+    json.dump(_args_rec, open(os.path.join(a.out, "args.json"), "w"), indent=1)
     train_loop(steps_cap, a.lr, "train", write_traj=is_main,
                from_epoch=start_epoch, from_step=start_step)
     # --grad-probe STOPS HERE. The return inside train_loop only exits train_loop; main() then
