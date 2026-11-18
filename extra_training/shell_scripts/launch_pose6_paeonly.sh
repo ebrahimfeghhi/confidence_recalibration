@@ -16,7 +16,7 @@
 # fail-closed gate, so a wrong count stops the run before the first step rather than training a
 # different architecture than intended.
 set -u
-cd /home/ebrahim/confidence_recalibration/extra_training
+cd /home/ebrahim/confidence_recalibration/extra_training || exit 1
 echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') 6-site PAE-only, lr ${LR:-1e-3}, ${EPOCHS:-20} epochs"
 env TRAIN_ONLY="${TRAIN_ONLY:-frame_dir_proj,pose_perblock_,linear_no_bias_d,pose_readout_}" \
     POSE_READOUT=1 POSE_READOUT_PRENORM=1 POSE_READOUT_COPY_DISTANCE=1 \
