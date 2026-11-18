@@ -17,6 +17,7 @@ cd /home/ebrahim/confidence_recalibration/extra_training || exit 1
 PY=/home/ebrahim/Protenix/.venv/bin/python
 SD=${SD:-/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad}
 EPOCHS=${EPOCHS:-20}
+mkdir -p "$SD" || { echo "STOP: cannot create $SD"; exit 1; }
 say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 
 # wait_for <rid-file> <label> -- the previous arm must exist and be done
@@ -60,14 +61,19 @@ wait_cards(){
     done
 }
 
-# launch_arm <launcher> <ridfile> <label> <ntrain> <gate-ref-head>
+# launch_arm <launcher> <ridfile> <label> <ntrain> <gate-ref-head> <rank>
+# $6 is the rank and is read inside the assertion below; it is a positional, not a local.
 launch_arm(){
     local sh=$1 ridfile=$2 lab=$3 ntrain=$4 ref=$5 log seen rid
     log=training/runs/$(basename "$ridfile" _rid)_launch.log
     seen=$SD/$(basename "$ridfile")_dirs_before.txt
     ls -d training/runs/*/ 2>/dev/null | grep -vE "/latest/$" | xargs -r -n1 basename \
         | sort > "$seen"
-    say "launching $lab via $sh (gate ref: ${ref:-newest on disk})"
+    [ -n "$ref" ] && [ -f "$ref" ] || {
+        say "NOT LAUNCHING ($lab): no gate reference head. test_lora_targets.py would fall back"
+        say "  to the newest head on disk, which may be a different architecture, and pass."
+        exit 8; }
+    say "launching $lab via $sh (gate ref: $ref)"
     LORA_GATE_REF="$ref" EPOCHS="$EPOCHS" EXPECT_TRAINABLE="$ntrain" DRY=0 \
         nohup "./$sh" > "$log" 2>&1 &
     local lp=$!
@@ -104,8 +110,13 @@ for k in want:
     print(f"    {k} = {a.get(k)!r}")
 print(f"    lora_targets = {a.get('lora_targets')!r}")
 print(f"    train_only   = {a.get('train_only')!r}")
+print(f"    lora_keep    = {a.get('lora_keep_trainable')!r}")
+print(f"    lora_alpha   = {a.get('lora_alpha')!r}  (unset => 2*rank)")
 if "pae_ln" not in (a.get("train_only") or ""):
     bad["train_only"] = (a.get("train_only"), "must contain pae_ln")
+for _p in ("pose_readout_", "pae_ln"):
+    if _p not in (a.get("lora_keep_trainable") or ""):
+        bad["lora_keep_trainable"] = (a.get("lora_keep_trainable"), f"must contain {_p}")
 if "pair_transition" not in (a.get("lora_targets") or ""):
     bad["lora_targets"] = (a.get("lora_targets"), "must target a pair transition")
 if bad:
@@ -127,11 +138,11 @@ wait_for training/runs/pose6_paeln_rid "Arm B"
 B="$PREV_RID"
 wait_cards
 launch_arm shell_scripts/launch_pose6_paeln_lora4.sh training/runs/pose6_lora4_rid \
-    "Arm C (rank 4)" 26 "$(ls -t training/runs/$B/head_ep*.pt 2>/dev/null | head -1)" 4
+    "Arm C (rank 4)" 20 "$(ls -t training/runs/$B/head_ep*.pt 2>/dev/null | head -1)" 4
 
 wait_for training/runs/pose6_lora4_rid "Arm C"
 C="$PREV_RID"
 wait_cards
 launch_arm shell_scripts/launch_pose6_paeln_lora8.sh training/runs/pose6_lora8_rid \
-    "Arm D (rank 8)" 26 "$(ls -t training/runs/$C/head_ep*.pt 2>/dev/null | head -1)" 8
+    "Arm D (rank 8)" 20 "$(ls -t training/runs/$C/head_ep*.pt 2>/dev/null | head -1)" 8
 say "ARM C AND ARM D BOTH LAUNCHED"

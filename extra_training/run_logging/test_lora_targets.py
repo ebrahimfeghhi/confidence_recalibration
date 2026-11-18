@@ -15,7 +15,8 @@ WHAT IT CHECKS, all against the patterns read from the launcher itself:
   3. no adapter on ANY pose tensor -- they are meant to be dense, not dense+adapter;
   4. every pose tensor present in the reference head matches --lora-keep-trainable;
   5. every LIVE module the target patterns name IS adapted, and the set is non-empty;
-  6. rank 8 fits every module that is adapted, so nothing is silently skipped for rank-too-high.
+  6. the declared rank fits every adapted module, so nothing is silently skipped;
+  7. pae_ln and the readout tensors are in --lora-keep-trainable, not adapted and not frozen.
 """
 import os
 import re
@@ -116,11 +117,17 @@ check("every pose tensor matches --lora-keep-trainable",
       [n for n in POSE if not any(re.search(k, n) for k in KEEP)],
       f"  (all {len(POSE)})")
 _want = [n for n in ADAPTABLE
-         if any(re.search(t, n) for t in TARGETS) and not any(f"pairformer_stack.{op}." in n + "." for op in DEAD_OPS)]
-check("every LIVE module the targets name IS adapted",
-      [n for n in _want if n not in set(adapted)],
+         if any(re.search(t, n) for t in TARGETS)
+         and not any(f"pairformer_stack.{op}." in n + "." for op in DEAD_OPS)]
+check("every LIVE module the targets name SURVIVES the rank filter",
+      [f"{n}{ADAPTABLE[n]}" for n in _want if RANK > min(ADAPTABLE[n])],
       f"  ({len(_want)} named by the pattern)")
 check("the target pattern is not truncated to nothing", [] if adapted else ["nothing adapted"])
+_MUST_KEEP = [n for n in REL
+              if n.startswith(("pae_ln.", "pose_readout_"))]
+check("pae_ln and every readout tensor match --lora-keep-trainable",
+      [n for n in _MUST_KEEP if not any(re.search(k, n) for k in KEEP)],
+      f"  ({len(_MUST_KEEP)} such tensor(s) in the reference head)")
 check(f"rank {RANK} fits every adapted module",
       [f"{n}{ADAPTABLE[n]}" for n in adapted if RANK > min(ADAPTABLE[n])])
 

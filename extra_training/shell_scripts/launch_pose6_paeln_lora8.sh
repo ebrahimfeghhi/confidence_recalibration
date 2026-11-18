@@ -5,10 +5,16 @@
 # nothing else. Block 3 is the FINAL pair transition and it is ALIVE (max|w| 1.72); block 1's is
 # measured dead -- output exactly 0.0 -- so adapters there would never see a gradient.
 #
-# 26 TRAINABLE, NOT 20. apply_lora freezes the whole head and sets trainable to the ADAPTER names
-# alone, so everything that must stay dense has to be named in --lora-keep-trainable. Block 3's
-# pair transition carries three adaptable 2-D weights (linear_no_bias_a, _b, linear_no_bias), so
-# 3 adapters = 6 tensors, plus the 20 dense from Arm B = 26.
+# --expect-trainable IS 20, NOT 26, AND THAT IS NOT THE FINAL COUNT. The gate at
+# phase_k_train.py:3613 lives inside the `if a.train_only:` block and compares against the
+# --train-only match count ONLY; LoRA does not touch `trainable` until :3676, AFTER it, and there
+# is no second check. So the value to pass is Arm B's 20. Every previous LoRA arm here did the
+# same -- 3ywika, dmekx9 and yn34zs all record expect_trainable 113 with lora_rank 8.
+#
+# THE OPTIMISER ENDS UP WITH 26. Block 3's pair transition carries three adaptable 2-D weights
+# (linear_no_bias_a, _b, linear_no_bias), so 3 adapters = 6 tensors, plus the 20 held dense by
+# --lora-keep-trainable. Those 6 are ungated, which is why 26 in the gate was a startup failure:
+# "STOP: --expect-trainable 26 but --train-only left 20 trainable tensor(s)".
 #
 # LORA_KEEP IS NOT THE DEFAULT. The launcher's default predates the readout sites and omits
 # pose_readout_ and pae_ln; under LoRA that means those 8 tensors would be adapted or frozen
@@ -23,7 +29,7 @@ env TRAIN_ONLY="${TRAIN_ONLY:-frame_dir_proj,pose_perblock_,linear_no_bias_d,pos
     LORA_TARGETS='blocks\.3\.pair_transition\.' \
     LORA_KEEP='frame_dir_proj,pose_perblock_,^linear_no_bias_d,pose_readout_,pae_ln' \
     LORA_GATE_REF="${LORA_GATE_REF:-}" \
-    EXPECT_TRAINABLE="${EXPECT_TRAINABLE:-26}" \
+    EXPECT_TRAINABLE="${EXPECT_TRAINABLE:-20}" \
     PAE_SPLIT_ACCEPT=0.23 PAE_BALANCE_ACCEPT=0 \
     CARDS="${CARDS:-4,5,7}" EPOCHS="${EPOCHS:-20}" EVAL_EVERY="${EVAL_EVERY:-10}" \
     LR="${LR:-1e-3}" PAIR_DROPOUT=0.25 \
