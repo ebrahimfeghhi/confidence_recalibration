@@ -4433,14 +4433,25 @@ def main():
         # also disarm the guard for that field on the NEXT resume, which is exactly the
         # disarming the override's own warning describes.
         _rank_inert = (not bool(_g.get("rank_loss", False))) and (not bool(a.rank_loss))
+        # UNSET IS UNSET, however it was spelled when the bundle was written. The guard normalises
+        # the CURRENT value of these two -- `a.rel_g_sigmoid or ""` and `-1.0 if rel_std_floor is
+        # None` -- but compared it against the bundle's raw None, so an older bundle reported
+        # "rel_g_sigmoid: bundle None vs this run ''" and refused a resume over a difference that
+        # does not exist. Normalise BOTH sides instead of waiving it: a waiver would also hide a
+        # real change to the same field on the next resume that reused the command line.
+        _UNSET_AS = {"rel_g_sigmoid": "", "rel_std_floor": -1.0}
+
+        def _norm(k, x):
+            return _UNSET_AS[k] if (k in _UNSET_AS and x is None) else x
+
         for k, v in _mine.items():
             if k == "rank_form" and _rank_inert:
                 continue
             if k in _g:
-                if _g[k] != v:
+                if _norm(k, _g[k]) != _norm(k, v):
                     _bad[k] = (_g[k], v)
             elif k in _fallback:
-                if _fallback[k] != v:
+                if _norm(k, _fallback[k]) != _norm(k, v):
                     _bad[k] = (_fallback[k], v)
                 else:
                     _from_args.append(k)
@@ -4465,11 +4476,26 @@ def main():
             # unverified field is not a verified one.
             print(f"  resume guard: {len(_unknown)} field(s) in neither the bundle nor "
                   f"{os.path.basename(_side)}, so NOT compared: {', '.join(sorted(_unknown))}")
+            # AN UNRECORDED FIELD CAN BE WAIVED BY NAME, like a differing one. Older bundles
+            # predate fields the guard has since grown -- Arm B's epoch-10 bundle has no `world`
+            # -- and refusing outright forces a from-scratch rerun of epochs the checkpoint
+            # already holds. Naming the field in --resume-override says "I assert this is
+            # unchanged"; an UNNAMED unrecorded field is still refused, so the waiver stays as
+            # narrow as the one for a field that differs.
+            _ovr_early = {f.strip() for f in a.resume_override.split(",") if f.strip()}
             for k in _unknown:
-                if k != "manifest_digest":
-                    raise SystemExit(
-                        f"STOP: {k} is recorded nowhere for this bundle, so a resume cannot show "
-                        f"the setting is unchanged. Relaunch from scratch instead.")
+                if k == "manifest_digest" or k in _ovr_early or a.resume_allow_drift:
+                    continue
+                raise SystemExit(
+                    f"STOP: {k} is recorded nowhere for this bundle, so a resume cannot show "
+                    f"the setting is unchanged.\n"
+                    f"  Name it in --resume-override to assert it is unchanged, or relaunch "
+                    f"from scratch.")
+            _waived = sorted(k for k in _unknown if k in _ovr_early)
+            if _waived:
+                print(f"  resume guard: {len(_waived)} unrecorded field(s) WAIVED by "
+                      f"--resume-override: {', '.join(_waived)} -- asserted unchanged, not "
+                      f"verified")
             print(f"    manifest_digest is a hash of the unit list; manifest_skip "
                   f"({_g.get('manifest_skip')!r}) and the selection file determine that list and "
                   f"manifest_skip is compared, so the population is checked by its inputs.")
@@ -4478,7 +4504,7 @@ def main():
         # to change only the lr can also silently change the crop. --resume-override names the
         # fields, so an unnamed difference is still refused.
         _ovr = {f.strip() for f in a.resume_override.split(",") if f.strip()}
-        _unknown_ovr = sorted(_ovr - set(_mine))
+        _unknown_ovr = sorted(_ovr - set(_mine) - set(_unknown))
         if _unknown_ovr:
             raise SystemExit(
                 f"STOP: --resume-override names {len(_unknown_ovr)} field(s) the guard does not "
@@ -4489,7 +4515,7 @@ def main():
         # A STALE OVERRIDE IS ALSO AN ERROR. A name left on the command line after the setting it
         # covered went back to matching still disarms the guard for that field on the NEXT resume
         # that reuses the line, and nothing would say so.
-        _stale = sorted(_ovr - set(_bad))
+        _stale = sorted(_ovr - set(_bad) - set(_unknown))
         if _stale and not a.resume_allow_drift:
             raise SystemExit(
                 f"STOP: --resume-override names {len(_stale)} field(s) that do not differ from the "

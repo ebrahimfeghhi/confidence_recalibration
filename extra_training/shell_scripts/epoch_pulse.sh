@@ -92,9 +92,10 @@ RID_PLOT="$RID" ./shell_scripts/draw_pose5.sh 2>&1 | tail -1 \
 # val or slice pass actually landed -- a bare new epoch changes the loss curve but not the results
 # table, and a commit per epoch would bury the ones that matter.
 if [ "$VE" != "$OVE" ] || [ "$SE" != "$OSE" ] || [ "${ANY_EPOCH:-0}" = 1 ]; then
-    $PY -I run_logging/export_pose5_results.py "$RID" >/dev/null 2>&1 \
+    CSV="${CSV:-docs/pose5_results/${RID}_val_slice.csv}"
+    $PY -I run_logging/export_pose5_results.py "$RID" "$CSV" >/dev/null 2>&1 \
         && git -C /home/ebrahim/confidence_recalibration add \
-               extra_training/docs/pose5_results/jyz3g2_val_slice.csv \
+               "extra_training/$CSV" \
                "extra_training/${FIG:-figures/pose5_rel_lr1e4.png}" \
                "extra_training/${SEL:-figures/pose5_selection.png}" >/dev/null 2>&1 \
         && git -C /home/ebrahim/confidence_recalibration diff --cached --quiet \

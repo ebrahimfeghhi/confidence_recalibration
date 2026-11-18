@@ -72,6 +72,18 @@ def group_loss(segs):
     """
     pat = re.compile(r"epoch (\d+) PAE BY POSE GROUP.*?acceptable ([0-9.]+) over \d+ pose\(s\), "
                      r"unacceptable ([0-9.]+)")
+    # A PARENT CONTRIBUTES ONLY THE EPOCHS ITS CHILD BUILT ON. A fork resumed from resume_ep10.pt
+    # shares epochs 1-10 with its parent and then DIVERGES, so the parent's own 11-20 belong to a
+    # different branch. Drawn without this cut they appear under the child's label -- the decay
+    # fork showed a full 11-20 curve minutes after starting, which was the flat-lr parent's data
+    # -- and the collision guard below would then hard-STOP every later call, once the child
+    # wrote its own epoch 11 with a different value.
+    cut = {}
+    for i, (d, a) in enumerate(segs):
+        m_ = re.search(r"resume_ep(\d+)\.pt", (a.get("resume") or ""))
+        if m_ and i + 1 < len(segs):
+            cut[segs[i + 1][0]] = int(m_.group(1))
+
     got, owner = {}, {}
     for d, _ in segs:
         p = os.path.join(d, "run.log")
@@ -82,6 +94,8 @@ def group_loss(segs):
             if not m:
                 continue
             e, v = int(m.group(1)), (float(m.group(2)), float(m.group(3)))
+            if d in cut and e > cut[d]:
+                continue
             if e in got and owner[e] != d and got[e] != v:
                 sys.exit(f"STOP: epoch {e} claimed by both {owner[e]} and {d} "
                          f"({got[e]} vs {v}). These are not one arm.")

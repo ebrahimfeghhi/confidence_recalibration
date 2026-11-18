@@ -76,6 +76,14 @@ ACCUM="${ACCUM:-240}"
 NSAMPLE="${NSAMPLE:-5}"
 EVAL_POOL="${EVAL_POOL:-training/valfull83/pool.csv}"
 LR="${LR:-1e-3}"
+# THE DECAY SCHEDULE, unset by default so this launcher reproduces its own history exactly: with
+# LR_FINAL empty the trainer takes its "hold lr flat" branch, which is what every arm so far ran.
+# All four are guard fields on resume (phase_k_train.py:4240), so changing them on a resume needs
+# them named in RESUME_OVERRIDE -- naming one that does NOT differ is itself an error there.
+LR_FINAL="${LR_FINAL:-}"
+LR_DECAY_START="${LR_DECAY_START:-}"
+LR_DECAY_END="${LR_DECAY_END:-}"
+LR_DECAY_SHAPE="${LR_DECAY_SHAPE:-}"
 DRY="${DRY:-1}"
 # RESUME AND WORKER COUNT, so a mid-run parameter change does not mean losing the epochs already
 # done. --prefetch-workers is NOT in the resume guard (checked), so changing it across a resume is
@@ -441,6 +449,18 @@ say "argv the trainer would receive:"
 [ -n "$POSE_READOUT_COPY_DISTANCE" ] && ARGS+=(--pose-readout-copy-distance)
 [ -n "$POSE_READOUT_POST_ZERO" ] && ARGS+=(--pose-readout-post-zero)
 [ -n "$LR_STEPS" ] && ARGS+=(--lr-steps "$LR_STEPS")
+[ -n "$LR_FINAL" ] && ARGS+=(--lr-final "$LR_FINAL")
+[ -n "$LR_DECAY_START" ] && ARGS+=(--lr-decay-start-epoch "$LR_DECAY_START")
+[ -n "$LR_DECAY_END" ] && ARGS+=(--lr-decay-end-epoch "$LR_DECAY_END")
+[ -n "$LR_DECAY_SHAPE" ] && ARGS+=(--lr-decay-shape "$LR_DECAY_SHAPE")
+# A HALF-SPECIFIED DECAY IS A SILENT FLAT RUN: lr_at_step holds the lr flat whenever lr_final<=0,
+# so a window without a final lr trains at 1e-3 throughout while the command line reads as though
+# it decayed. Refuse rather than let the arm look like something it is not.
+if [ -n "$LR_DECAY_START$LR_DECAY_END" ] && [ -z "$LR_FINAL" ]; then
+  echo "REFUSING: LR_DECAY_START/END given without LR_FINAL -- the trainer holds the lr FLAT when"
+  echo "  lr_final <= 0, so this would be a constant-lr run wearing a decay command line."
+  exit 2
+fi
 [ -n "$PAE_SPLIT_ACCEPT" ] && ARGS+=(--pae-split-accept "$PAE_SPLIT_ACCEPT")
 [ -n "$PAE_BALANCE_ACCEPT" ] && ARGS+=(--pae-balance-accept "$PAE_BALANCE_ACCEPT")
 [ -n "$RANK_DIAG_ONLY" ] && ARGS+=(--rank-diag-only)

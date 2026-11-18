@@ -52,7 +52,11 @@ def _spread(d):
 
 def main():
     rid = sys.argv[1] if len(sys.argv) > 1 else open("training/runs/pose5_arm_rid").read().strip()
-    out = sys.argv[2] if len(sys.argv) > 2 else "docs/pose5_results/jyz3g2_val_slice.csv"
+    # PER-RUN BY DEFAULT. This used to default to one fixed filename, so every arm's pulse
+    # overwrote the previous arm's CSV -- Arm B's table was replaced by Arm C's, which was
+    # replaced by Arm D's, and the only copies left were whatever git happened to have committed.
+    # An explicit second argument still wins, so any existing caller keeps its exact behaviour.
+    out = sys.argv[2] if len(sys.argv) > 2 else f"docs/pose5_results/{rid}_val_slice.csv"
     sides = (("val", f"training/runs/{rid}/valfull83_eval_shards_ep*"),
              ("slice", f"training/runs/{rid}/slice280_eval_shards_ep*"))
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
