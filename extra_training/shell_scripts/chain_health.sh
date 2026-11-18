@@ -37,17 +37,21 @@ for spec in "Arm A:training/runs/pose6_paeonly_rid:queue_pose6_paeonly.sh:20" \
     ep=${ep:-0}
     if [ -f "training/runs/$rid/run.log" ]; then
         age=$(( now - $(stat -c %Y "training/runs/$rid/run.log") ))
+        [ "$age" -lt 0 ] && age=0      # written after `now` was sampled: fresher than fresh
     else
-        age=-1
+        age=""                          # absent, which is not the same as old
     fi
     if [ "$ep" -ge "$want" ] 2>/dev/null; then
         st="done"
-    elif [ "$age" -ge 0 ] && [ "$age" -lt "$STALL" ]; then
+    elif [ -z "$age" ]; then
+        st="NO run.log"; bad=1
+    elif [ "$age" -lt "$STALL" ]; then
         st="training"
     else
         st="STALLED (${age}s)"; bad=1
     fi
-    printf '%-22s %-8s %-10s %-22s %s\n' "$lab" "$rid" "$ep/$want" "${age}s" "$st"
+    printf '%-22s %-8s %-10s %-22s %s\n' "$lab" "$rid" "$ep/$want" \
+        "$([ -n "$age" ] && echo "${age}s" || echo none)" "$st"
 done
 
 C=$($PY -I run_logging/cards_busy.py 2>/dev/null | tail -1)
