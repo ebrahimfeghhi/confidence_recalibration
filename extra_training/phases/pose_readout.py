@@ -88,6 +88,33 @@ def _zero_linear(in_features, out_features, ref):
     return m
 
 
+def _add_mlp(head, pfx, z):
+    """Add this readout site's second layer of the nonlinear branch, or return z unchanged.
+
+    THE SITE IS DERIVED FROM `pfx`, NOT FROM WHICH HOOK IS CALLING. "" is the pre-norm site and
+    "post_" is the post-norm one -- which is only true because pose_mlp refuses to install unless
+    BOTH --pose-readout-prenorm and --pose-readout-post-zero are on. In the default post-LN-only
+    arm "" would mean the post-norm site instead, so pose_mlp's refusal is what keeps this mapping
+    honest; the assertion below is the same statement from this side, so a future mode that
+    loosens that refusal fails here instead of silently injecting site 4's weights at site 5.
+
+    `h` IS READ FROM THE CACHE HERE, unlike in the blocks, and that is safe for exactly one
+    reason: the readout is not checkpointed. It runs after the stack but still inside
+    memory_efficient_forward, so the cache is live and no recomputation ever re-enters this hook.
+    """
+    if not getattr(head, "_pose_mlp_installed", False):
+        return z
+    import pose_mlp
+    if not head._pose_readout_prenorm:
+        raise RuntimeError(
+            "STOP: pose_mlp is installed on a readout arm that is NOT pre-norm, so this hook's "
+            "site index is ambiguous: there are 5 sites, not 6, and one of pose_mlp's second "
+            "layers would never be called. pose_mlp.install refuses this combination; reaching "
+            "here means that refusal was loosened without fixing this mapping.")
+    k = pose_mlp.site_postnorm(head) if pfx == "post_" else pose_mlp.site_prenorm(head)
+    return pose_mlp.add_site(head, k, z, pose_mlp.hidden())
+
+
 def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=False):
     head = model.confidence_head
     if getattr(head, "_pose_readout_installed", False):
@@ -153,6 +180,7 @@ def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=Fals
                     f"STOP: --pose-readout: orientation is {tuple(dr.shape)} against geometry "
                     f"{tuple(oh.shape)}; one pose's directions would pair with another's bins.")
             out = out + getattr(head, f"pose_readout_{pfx}frame_dir")(dr).to(out.dtype)
+        out = _add_mlp(head, pfx, out)
         return out
 
     def _pre_hook(_mod, inp):
@@ -190,6 +218,7 @@ def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=Fals
                     f"geometry {tuple(oh.shape)}; one pose's directions would pair with "
                     f"another's bins.")
             z = z + head.pose_readout_frame_dir(dr).to(z.dtype)
+        z = _add_mlp(head, "", z)
         return (z,) + tuple(inp[1:])
 
     # ONE SITE, OR BOTH WITH SEPARATE MATRICES. Registering both hooks over the SAME three

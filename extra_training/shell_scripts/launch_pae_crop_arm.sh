@@ -80,6 +80,7 @@ LR="${LR:-1e-3}"
 # LR_FINAL empty the trainer takes its "hold lr flat" branch, which is what every arm so far ran.
 # All four are guard fields on resume (phase_k_train.py:4240), so changing them on a resume needs
 # them named in RESUME_OVERRIDE -- naming one that does NOT differ is itself an error there.
+SAVE_INIT="${SAVE_INIT:-}"
 LR_FINAL="${LR_FINAL:-}"
 LR_DECAY_START="${LR_DECAY_START:-}"
 LR_DECAY_END="${LR_DECAY_END:-}"
@@ -373,6 +374,15 @@ EXPECT_TRAINABLE="${EXPECT_TRAINABLE:-113}"
 POSE_READOUT_PRENORM="${POSE_READOUT_PRENORM:-}"
 POSE_READOUT_COPY_DISTANCE="${POSE_READOUT_COPY_DISTANCE:-}"
 POSE_READOUT_POST_ZERO="${POSE_READOUT_POST_ZERO:-}"
+# THE NONLINEAR BRANCH AT ALL SIX SITES (phases/pose_mlp.py). Needs the five flags that own
+# those sites -- --frame-direction and --pose-perblock are unconditional above, so in
+# practice POSE_READOUT, POSE_READOUT_PRENORM and POSE_READOUT_POST_ZERO must all be set too;
+# pose_mlp.install refuses rather than running at four sites. IT ALSO NEEDS TRAIN_ONLY TO
+# NAME IT: the 15 new tensors match none of the six-site arm's existing patterns, so pass
+# TRAIN_ONLY=...,pose_mlp and raise EXPECT_TRAINABLE by 15 (18 -> 33 for the six-site
+# selection). The trainer refuses a POSE_MLP whose --train-only misses it, so a forgotten
+# pattern stops the run instead of training a linear head under a nonlinear name.
+POSE_MLP="${POSE_MLP:-}"
 # A STAIRCASE lr, EPOCH:LR[,EPOCH:LR]. The arms so far dropped the rate by stopping and
 # resuming with a new --lr; passing the schedule means one run instead of two.
 LR_STEPS="${LR_STEPS:-}"
@@ -448,7 +458,14 @@ say "argv the trainer would receive:"
 [ -n "$POSE_READOUT_PRENORM" ] && ARGS+=(--pose-readout-prenorm)
 [ -n "$POSE_READOUT_COPY_DISTANCE" ] && ARGS+=(--pose-readout-copy-distance)
 [ -n "$POSE_READOUT_POST_ZERO" ] && ARGS+=(--pose-readout-post-zero)
+[ -n "$POSE_MLP" ] && ARGS+=(--pose-mlp)
 [ -n "$LR_STEPS" ] && ARGS+=(--lr-steps "$LR_STEPS")
+# THE INITIAL HEAD, so "did this tensor actually receive a gradient?" can be answered by
+# comparing a later checkpoint against it. --grad-check-every already asserts that nothing
+# OUTSIDE the head gets a gradient; it does not assert that everything INSIDE --train-only does,
+# and an unfreeze that silently selected a tensor nothing reads would look identical to one that
+# worked. A tensor that moved had a gradient; one that did not move did not.
+[ -n "$SAVE_INIT" ] && ARGS+=(--save-init "$SAVE_INIT")
 [ -n "$LR_FINAL" ] && ARGS+=(--lr-final "$LR_FINAL")
 [ -n "$LR_DECAY_START" ] && ARGS+=(--lr-decay-start-epoch "$LR_DECAY_START")
 [ -n "$LR_DECAY_END" ] && ARGS+=(--lr-decay-end-epoch "$LR_DECAY_END")

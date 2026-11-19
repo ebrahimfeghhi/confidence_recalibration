@@ -828,6 +828,26 @@ def main():
                          "feature, because the layernorm divides its magnitude back out; the "
                          "post-norm site can scale the readout. Two sites, two independent sets of "
                          "weights, so neither is the other at a different scale.")
+    ap.add_argument("--pose-mlp", action="store_true",
+                    help="ADD A NONLINEAR BRANCH to the pose path at ALL SIX injection sites: a "
+                         "two-layer MLP whose FIRST layer is shared across the sites and whose "
+                         "SECOND layer is separate per site (phases/pose_mlp.py). Every pose term "
+                         "in the head today is a LINEAR map added into z_pair -- the one-hot "
+                         "binned distance, the raw distance, the frame-relative unit direction -- "
+                         "so the head can represent 'far' and 'pointing that way' and CANNOT "
+                         "represent their interaction, while PAE is a direction times a length. "
+                         "Layer 1 is ReLU(W_onehot(one_hot) + W_cont([d_CB/50, dir(i,j), "
+                         "dir(j,i), d_CA/50])) at width 64, default PyTorch init, computed ONCE "
+                         "per pose; layer 2 is six Linear(64 -> c_z) with weight AND bias at "
+                         "exactly zero. 52,992 new parameters at 39 bins and c_z 128. STEP 0 IS "
+                         "BIT-IDENTICAL -- every second layer is zero -- but it adds 15 trainable "
+                         "tensors, so an existing resume bundle CANNOT be loaded and the "
+                         "evaluator must be given --pose-mlp too (this passes it). REQUIRES "
+                         "--frame-direction (the direction and its length), --pose-perblock (the "
+                         "one-hot and the raw distance), --pose-readout, "
+                         "--pose-readout-prenorm and --pose-readout-post-zero: those are the six "
+                         "sites, and pose_mlp refuses rather than quietly running at four. A "
+                         "--train-only must match `pose_mlp` to reach the new tensors.")
     ap.add_argument("--pose-readout-copy-distance", action="store_true",
                     help="Start --pose-readout's two DISTANCE arms at block 0's pretrained "
                          "linear_no_bias_d/_wo_onehot instead of zero. STEP 0 IS THEN NOT "
@@ -1452,9 +1472,14 @@ def main():
                          "than restarting -- a weights-only warm start throws both away. Training "
                          "picks up at epoch N+1, which reproduces the right data order because the "
                          "per-epoch reshuffle is random.Random(seed + ep) and depends on nothing "
-                         "else. REFUSES a bundle whose world size, seed, accum or nsample differ "
-                         "from this run's: all four change which poses land in which batch, so the "
-                         "optimiser state would belong to a different problem.")
+                         "else. A bundle whose world size, seed, accum or nsample differ from this "
+                         "run's is ALLOWED with a loud warning and a recorded resume_drift entry "
+                         "-- all four change which poses land in which batch, so the restored "
+                         "moments describe a different problem, which the reader of the result "
+                         "needs to know and is not a reason to refuse the run. REFUSES only what "
+                         "cannot be reconstructed: a weights-only head_*.pt, a bundle with no "
+                         "AdamW moments, a missing trainable tensor, or moments whose count or "
+                         "shapes do not match this run's trainable set.")
     ap.add_argument("--minimal-items", action="store_true",
                     help="ACCEPTED AND IGNORED -- this is now the only path, and --alignment-preflight is required whether or not it is passed. Kept so the launch scripts that pass it keep working. MEASURED "
                          "2026-10-17 by recording every key access during a real "
@@ -1476,22 +1501,34 @@ def main():
                          "it: that check is the one failure that would pair a pose with another "
                          "molecule's label, and skipping it silently is not a trade worth making.")
     ap.add_argument("--resume-allow-drift", action="store_true",
-                    help="BLANKET override: accept EVERY setting that differs from the bundle. "
-                         "Prefer --resume-override, which names the fields and so still refuses "
-                         "the difference you did not expect. Both record identically.")
+                    help="LEGACY, and now almost always a no-op: setting differences are allowed "
+                         "with a loud warning whether or not it is passed. It still suppresses "
+                         "the refusal under --resume-strict. Kept so every launch script and "
+                         "every running trainer's --loss-only child keeps working.")
+    ap.add_argument("--resume-strict", action="store_true",
+                    help="RESTORE THE OLD REFUSAL: stop if any guard field differs from the "
+                         "bundle and is not named in --resume-override. Off by default, because "
+                         "the default refusal cost four launches to accept one correct resume of "
+                         "Arm B's epoch-10 bundle -- the weights and AdamW moments were intact "
+                         "every time. Pass this when a chain of bundles must read as ONE run and "
+                         "a fork is a reason to abort.")
     ap.add_argument("--resume-override", default="",
-                    help="comma-separated GUARD FIELDS this resume may change, e.g. "
-                         "'lr,warmup_steps'. A difference in any field NOT named here is still "
-                         "refused, which is the whole point: a blanket --resume-allow-drift also "
-                         "accepts the change you did not intend. Naming a field that does not "
-                         "actually differ is an error too -- a stale override silently weakens "
-                         "the guard on the next resume that reuses the command line.")
+                    help="comma-separated GUARD FIELDS this resume is KNOWN to change, e.g. "
+                         "'lr,warmup_steps'. It no longer PERMITS anything -- an unnamed "
+                         "difference is allowed too, with a louder warning and a line in "
+                         "resume_drift -- it ACKNOWLEDGES: a named field is recorded as "
+                         "deliberate and an unnamed one as unexpected. Under --resume-strict it "
+                         "recovers its old meaning and permits the fields it names. Naming a "
+                         "field that does not differ, or one the guard does not have, is a "
+                         "warning rather than an error.")
     ap.add_argument("--resume-note", default="",
                     help="why this resume deviates, recorded beside the accepted fields in "
-                         "resume_drift.json and carried forward in every bundle this run writes. "
-                         "Required when --resume-override or --resume-allow-drift accepts "
-                         "anything: an unexplained deviation is the one a later reader cannot "
-                         "tell from a mistake.")
+                         "resume_drift.json, in the run's args.json and in every metric_*.json "
+                         "the run writes, and carried forward in every bundle. NOT required -- it "
+                         "used to be, and a refusal over a missing sentence is a refusal while "
+                         "the weights and moments are fine -- but its absence is itself recorded "
+                         "as '(none given)', because an unexplained deviation is the one a later "
+                         "reader cannot tell from a mistake.")
     ap.add_argument("--crop-pool", default="",
                     help="DIRECTORY of per-structure crop POOLS from "
                          "run_logging/select_crop_pool.py. Each <pdb>.npz holds N token masks and "
@@ -2270,6 +2307,12 @@ def main():
     elif a.pose_readout_copy_distance:
         raise SystemExit("STOP: --pose-readout-copy-distance without --pose-readout. It selects "
                          "how the fifth site is initialised, not whether it exists.")
+    # LAST OF THE FOUR POSE MODULES, because it reads what the other three publish and injects at
+    # the sites they own. Its install() re-checks every one of those prerequisites and names the
+    # missing flag, so the order here is the only thing this line has to get right.
+    if a.pose_mlp:
+        import pose_mlp
+        _pml = pose_mlp.install(model)
     loss_fn = ProtenixLoss(configs)
     if a.drop_pde:
         # A STUB IN PLACE OF THE MODULE, because a zero weight would still run it.
@@ -3626,6 +3669,21 @@ def main():
                 f"this.\n  patterns: {_pats}\n  kept e.g. {[_rel[n] for n in _kept[:6]]}")
         for n in _kept:
             print(f"    {_rel[n]:46} {tuple(dict(model.named_parameters())[n].shape)}")
+        # THE NONLINEAR BRANCH MUST BE IN THE SELECTION, and --expect-trainable cannot catch its
+        # absence. The six-site arm's pattern is
+        # 'frame_dir_proj,pose_perblock_,linear_no_bias_d,pose_readout_' at --expect-trainable 18;
+        # none of those four regexes matches a pose_mlp_* name, so adding --pose-mlp to that arm
+        # WITHOUT widening the pattern leaves the count at exactly 18, every guard silent, and
+        # 52,992 parameters created and frozen at their initialisation -- a run that reports a
+        # nonlinear branch and trains a linear head. That is this file's most-repeated failure
+        # (--train-only, LoRA, the evaluator's flags, --pose-perblock-copy's own warning), so it
+        # is a refusal here rather than a sentence in --pose-mlp's help text.
+        if a.pose_mlp and not any("pose_mlp" in _rel[n] for n in _kept):
+            raise SystemExit(
+                f"STOP: --pose-mlp installs 15 trainable tensor(s) and --train-only {_pats} "
+                f"matches none of them, so they would be created and never trained -- and "
+                f"--expect-trainable cannot see it, because the count is unchanged. Add "
+                f"`pose_mlp` to --train-only (and raise --expect-trainable by 15).")
 
     # A LoRA BUNDLE HOLDS ADAPTERS, NOT HEAD TENSORS, and the held-out monitor spawns itself
     # without --lora-rank -- the running trainer builds that command from its in-memory arguments,
@@ -4169,10 +4227,31 @@ def main():
     # and quietly corrupt the averaged step.
     start_epoch, start_step = 0, 0
     _drift_history = []
+    # THIS RUN'S OWN DEVIATION FROM ITS BUNDLE, or None when it is a clean continuation. It is set
+    # in the resume block below and read twice afterwards -- by the args.json writer at the end of
+    # main() and by eval_checkpoint -- because a drift that lives only in run.log lives nowhere: the
+    # log is ~25k lines and the reader of a result opens args.json and metric_*.json, not the log.
+    _resume_drift = None
     if a.resume:
         if not os.path.exists(a.resume):
             raise SystemExit(f"STOP: no resume bundle at {a.resume}")
         _b = torch.load(a.resume, map_location="cpu", weights_only=False)
+        # IS THIS A RESUME BUNDLE AT ALL? Say so here, not three hundred lines later as a bare
+        # KeyError: 'epoch'. Pointing --resume at head_ep10_step1450.pt -- a weights-only
+        # checkpoint, which is what every save-every write produces and what sits in the same
+        # directory under a very similar name -- cost a launch on Arm B, because the traceback named
+        # a dict key instead of naming the file as the wrong kind of file. A weights-only head can
+        # NOT be resumed: it carries no AdamW moments and no step counter, so the warmup position
+        # and the per-parameter adaptive scales would restart from zero while the log said RESUMED.
+        if not isinstance(_b, dict) or "head" not in _b or "epoch" not in _b or "step" not in _b:
+            _keys = (sorted(_b.keys())[:6] if isinstance(_b, dict) else type(_b).__name__)
+            raise SystemExit(
+                f"STOP: {a.resume} is not a resume bundle.\n"
+                f"  A resume bundle carries 'head', 'opt', 'epoch' and 'step'; this file's top "
+                f"level holds {_keys}.\n"
+                f"  head_ep<N>_step<M>.pt and head_final.pt are WEIGHTS ONLY -- no AdamW moments, "
+                f"no step counter -- so they cannot be resumed from.\n"
+                f"  Resume from resume_ep<N>.pt in the same directory.")
         _g = _b.get("guard", {})
         # INHERITED ON EVERY RESUME, NOT ONLY A DRIFTING ONE. A clean continuation of a run that
         # was itself a fork is still a fork's descendant, and a chain that dropped its history at
@@ -4200,6 +4279,15 @@ def main():
                  # different per-rank stream while restoring AdamW as if nothing had.
                  "epoch_balance": bool(a.epoch_balance),
                  "manifest_digest": _manifest_digest, "crop_size": a.crop_size,
+                 # SAVED SINCE THE BEGINNING AND NEVER COMPARED, which is the inert half of the
+                 # half-wiring this file keeps rediscovering from the other side. The skip list
+                 # removes structures from the training population, so moving it moves which poses
+                 # land in which batch -- the loudest class of drift -- and the warning cannot
+                 # report a field nothing compares. manifest_digest is a hash of the resulting
+                 # unit list and so normally catches it, but the digest is absent from every
+                 # bundle written before it was saved, which is exactly when this one is the only
+                 # evidence left.
+                 "manifest_skip": a.manifest_skip,
                  "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
@@ -4300,6 +4388,11 @@ def main():
                  "pose_perblock_tied": a.pose_perblock_tied,
                  "pose_perblock_share": a.pose_perblock_share,
                  "pose_perblock_copy": a.pose_perblock_copy,
+                 # SAME REASON AGAIN, AND THE LARGEST OF THEM: --pose-mlp adds 15 trainable
+                 # tensors, so a bundle written without it is missing all 15 and the _missing
+                 # check below refuses it anyway. Compared here so the refusal names the setting
+                 # rather than listing absent tensors.
+                 "pose_mlp": a.pose_mlp,
                  # THE PARAMETER SET ITSELF. A bundle written at rank 8 holds 282 adapter
                  # tensors and one written without LoRA holds 248 head tensors; resuming one as
                  # the other fails on the missing-tensor check with a message about tensors
@@ -4383,6 +4476,11 @@ def main():
                      # makes EVERY bundle written before it unresumable -- including ctgfwj's
                      # epoch-80 pause, which is what this arm resumes from.
                      "pose_readout_post_zero": False,
+                     # A BUNDLE PREDATING THE FLAG HAD NO NONLINEAR BRANCH, which is what False
+                     # says. Defaulted on BOTH sides in the same patch, for the reason the
+                     # comment above gives: a field compared and saved without a default here
+                     # lands in _unknown and makes every earlier bundle unresumable.
+                     "pose_mlp": False,
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
@@ -4439,6 +4537,12 @@ def main():
         # "rel_g_sigmoid: bundle None vs this run ''" and refused a resume over a difference that
         # does not exist. Normalise BOTH sides instead of waiving it: a waiver would also hide a
         # real change to the same field on the next resume that reused the command line.
+        #
+        # THE LIST IS COMPLETE, AUDITED RATHER THAN GUESSED: exactly three flags in this file take
+        # `default=None` (--rank-labels, --rel-std-floor, --rel-g-sigmoid) and --rank-labels is not
+        # a guard field, so these two are the only fields whose "unset" has two spellings. Anything
+        # added with `default=None` AND compared above belongs here in the same patch, or it
+        # reproduces the Arm B refusal: "rel_g_sigmoid: bundle None vs this run ''".
         _UNSET_AS = {"rel_g_sigmoid": "", "rel_std_floor": -1.0}
 
         def _norm(k, x):
@@ -4457,7 +4561,12 @@ def main():
                     _from_args.append(k)
             elif k in _PRE_CROP:
                 _migrated.append(k)
-                if _PRE_CROP[k] != v:
+                # THROUGH _norm ON THIS SIDE TOO. rel_std_floor's migration default is -1.0 and
+                # _mine encodes unset as -1.0, so they agree today -- but a default written as
+                # None here (the natural way to spell "unset") would have compared raw against a
+                # normalised current value and reported drift that does not exist, which is the
+                # same bug as the bundle side above, one dict over.
+                if _norm(k, _PRE_CROP[k]) != _norm(k, v):
                     _bad[k] = (f"{_PRE_CROP[k]} (pre-crop default)", v)
             else:
                 _unknown.append(k)
@@ -4468,6 +4577,27 @@ def main():
         if _from_args:
             print(f"  resume guard: {len(_from_args)} field(s) absent from the bundle and matched "
                   f"against {os.path.basename(_side)} instead: {', '.join(sorted(_from_args))}")
+        # THE GUARD RECORDS; IT DOES NOT REFUSE. Everything from here to the optimiser load is a
+        # WARNING, and the only hard stops left are the ones where the state cannot be
+        # reconstructed at all: not a resume bundle (above), a missing trainable tensor, missing or
+        # mismatched AdamW moments (below).
+        #
+        # WHY IT CHANGED. Resuming Arm B's epoch-10 bundle to add a cosine decay took FOUR failed
+        # launches, none of which found a real problem: `world` recorded in neither the bundle nor
+        # args.json was a hard STOP telling the user to relaunch from scratch; rel_g_sigmoid and
+        # rel_std_floor compared "unset" against "unset" and refused over two flags a PAE-only arm
+        # never reads; and naming `world` in --resume-override then became a "stale override"
+        # error on the next attempt because the real bundle DID record it. The weights and the
+        # moments were intact every time. A guard that costs four launches to accept a correct
+        # resume is not protecting the result -- it is spending GPU hours to be obeyed.
+        #
+        # WHAT REPLACES THE REFUSAL. A changed lr, loss weight or rank setting makes this run a
+        # FORK of the bundle, which is a fact the reader of the result needs and not a reason to
+        # stop the run. So it is printed loudly, grouped by severity, AND stamped where results
+        # are actually read: resume_drift.json, the run's args.json, and every metric_*.json the
+        # run writes. run.log is ~25k lines; a warning that only lands there is a warning nobody
+        # will see.
+        _ovr = {f.strip() for f in a.resume_override.split(",") if f.strip()}
         if _unknown:
             # manifest_digest is the only field in neither place. It is a hash of the unit list,
             # which is determined by the selection file and the skip list -- and manifest_skip IS
@@ -4476,56 +4606,87 @@ def main():
             # unverified field is not a verified one.
             print(f"  resume guard: {len(_unknown)} field(s) in neither the bundle nor "
                   f"{os.path.basename(_side)}, so NOT compared: {', '.join(sorted(_unknown))}")
-            # AN UNRECORDED FIELD CAN BE WAIVED BY NAME, like a differing one. Older bundles
-            # predate fields the guard has since grown -- Arm B's epoch-10 bundle has no `world`
-            # -- and refusing outright forces a from-scratch rerun of epochs the checkpoint
-            # already holds. Naming the field in --resume-override says "I assert this is
-            # unchanged"; an UNNAMED unrecorded field is still refused, so the waiver stays as
-            # narrow as the one for a field that differs.
-            _ovr_early = {f.strip() for f in a.resume_override.split(",") if f.strip()}
-            for k in _unknown:
-                if k == "manifest_digest" or k in _ovr_early or a.resume_allow_drift:
-                    continue
-                raise SystemExit(
-                    f"STOP: {k} is recorded nowhere for this bundle, so a resume cannot show "
-                    f"the setting is unchanged.\n"
-                    f"  Name it in --resume-override to assert it is unchanged, or relaunch "
-                    f"from scratch.")
-            _waived = sorted(k for k in _unknown if k in _ovr_early)
-            if _waived:
-                print(f"  resume guard: {len(_waived)} unrecorded field(s) WAIVED by "
-                      f"--resume-override: {', '.join(_waived)} -- asserted unchanged, not "
-                      f"verified")
+            # AN UNRECORDED FIELD IS NOT A MISMATCH AND NEVER WAS. The guard grew fields faster
+            # than the bundles in flight could record them -- Arm B's epoch-10 bundle has no
+            # `world` -- and the old hard STOP demanded either --resume-override world or a
+            # from-scratch rerun of ten epochs the checkpoint already holds. It fired on the
+            # ABSENCE of evidence, which is not evidence of a changed setting. It is now a line
+            # in the warning and in the recorded drift, where a later reader can see exactly
+            # which settings this resume could not verify.
+            print(f"    they are UNVERIFIED, not refused: the bundle predates them, so this "
+                  f"resume cannot show they are unchanged. Recorded under "
+                  f"resume_drift.not_compared.")
             print(f"    manifest_digest is a hash of the unit list; manifest_skip "
                   f"({_g.get('manifest_skip')!r}) and the selection file determine that list and "
                   f"manifest_skip is compared, so the population is checked by its inputs.")
-        # NAMED OVERRIDES, NOT A BLANKET ONE. --resume-allow-drift accepts every difference,
-        # including the one you did not know you had made -- which is how a resume that was meant
-        # to change only the lr can also silently change the crop. --resume-override names the
-        # fields, so an unnamed difference is still refused.
-        _ovr = {f.strip() for f in a.resume_override.split(",") if f.strip()}
         _unknown_ovr = sorted(_ovr - set(_mine) - set(_unknown))
         if _unknown_ovr:
-            raise SystemExit(
-                f"STOP: --resume-override names {len(_unknown_ovr)} field(s) the guard does not "
-                f"have: {_unknown_ovr}.\n"
-                f"  A typo here protects nothing -- the field it was meant to allow stays refused "
-                f"and the one it mistyped is not a field at all.\n"
-                f"  The guard's fields are: {', '.join(sorted(_mine))}")
-        # A STALE OVERRIDE IS ALSO AN ERROR. A name left on the command line after the setting it
-        # covered went back to matching still disarms the guard for that field on the NEXT resume
-        # that reuses the line, and nothing would say so.
+            print(f"  WARNING: --resume-override names {len(_unknown_ovr)} field(s) the guard "
+                  f"does not have: {_unknown_ovr} -- a typo, and it protects nothing. "
+                  f"The guard's fields are: {', '.join(sorted(_mine))}")
+        # A STALE OVERRIDE IS A WARNING, NOT AN ERROR. It used to be a SystemExit, on the reasoning
+        # that a name left on the command line disarms the guard for that field on the next resume.
+        # It fired on Arm B's fourth launch for the opposite reason: `world` had to be named to get
+        # past the unrecorded-field stop on one bundle, and the NEXT bundle recorded it, so the
+        # same command line became an error. That is the guard's own inconsistency, not the user's
+        # mistake -- and with nothing refused by name any more, a stale name disarms nothing.
         _stale = sorted(_ovr - set(_bad) - set(_unknown))
-        if _stale and not a.resume_allow_drift:
-            raise SystemExit(
-                f"STOP: --resume-override names {len(_stale)} field(s) that do not differ from the "
-                f"bundle: {_stale}.\n"
-                f"  Drop them. Left in place they disarm the guard for those fields on the next "
-                f"resume that reuses this command line.")
+        if _stale:
+            print(f"  note: --resume-override names {len(_stale)} field(s) that do not differ "
+                  f"from the bundle: {_stale}. Harmless; they can be dropped.")
+        # TWO SEVERITIES, BECAUSE THE TWO FAIL DIFFERENTLY. A changed lr or alpha is an ordinary
+        # fork: both runs are well-defined and the curve simply has a kink in it. A changed world,
+        # accum, seed, manifest or crop changes WHICH POSES LAND IN WHICH BATCH, so the restored
+        # AdamW moments -- exp_avg and exp_avg_sq accumulated over a different sampling -- describe
+        # a different problem than the one about to be trained. Same for anything that moves the
+        # trainable tensor set (lean_single, train_only, the LoRA and pose-injection flags): the
+        # moments are keyed by position in the param group, so a changed set means moments landing
+        # on different tensors. That last class is also checked numerically below and hard-fails
+        # there; it is named here so the warning says WHICH SETTING did it.
+        # manifest_selection IS DELIBERATELY NOT IN THIS SET: nothing compares it, and a name here
+        # for a field the guard does not check would be the same inert half-guard the comparison
+        # dict's comments describe five times over. manifest_digest hashes the unit list the
+        # selection produces, and manifest_skip is compared beside it.
+        _DRIFT_POPULATION = {"world", "accum", "seed", "nsample", "manifest_digest",
+                             "manifest_skip", "crop_size",
+                             # THE CROSS-SEED PACKING IS STEP SHAPE, not just objective: the
+                             # builder puts S structures x their seeds in one step, so moving
+                             # either field changes what a step IS, which the comparison dict's
+                             # own comment calls out ("changes the objective or the step shape").
+                             "rank_cross_seed", "rank_structs_per_step",
+                             # THE EPOCH BUILDERS BELONG HERE BY THE SAME ARGUMENT the comparison
+                             # dict above makes for them: --epoch-cover-all changes which
+                             # structures train at all, --pose-batch the poses per forward, and
+                             # --epoch-balance which units a rank walks.
+                             "epoch_cover_all", "pose_batch", "epoch_balance",
+                             # THE CROP DEFINITION DECIDES WHICH TOKENS AND PAIRS the loss
+                             # averages over, which is the same class of change as a different
+                             # manifest, not a schedule knob.
+                             "crop_contact", "crop_all_poses", "pae_scored_pairs",
+                             "token_keep_union", "token_keep_other",
+                             # THE PARAMETER SET. Each of these adds, drops or renames trainable
+                             # tensors, so the saved moments can land on the wrong ones.
+                             "lean_single", "train_only", "lora_rank", "lora_alpha",
+                             "lora_targets", "lora_dropout", "lora_keep_trainable",
+                             "frame_direction", "pose_inblock", "pose_inblock_pae",
+                             "pose_inblock_block", "pose_perblock", "pose_perblock_tied",
+                             "pose_perblock_share", "pose_perblock_copy",
+                             "pose_readout_prenorm", "pose_readout_post_zero",
+                             # THE BIGGEST OF THE PARAMETER-SET FLAGS: 15 tensors, and its second
+                             # layers sit at six different sites, so moments landing on the wrong
+                             # one would be moments for a different site.
+                             "pose_mlp"}
+        _hot = {k: v for k, v in _bad.items() if k in _DRIFT_POPULATION}
+        _warm = {k: v for k, v in _bad.items() if k not in _DRIFT_POPULATION}
         _unnamed = {k: v for k, v in _bad.items() if k not in _ovr}
-        if _unnamed and not a.resume_allow_drift:
+        # THE OLD STRICTNESS, STILL AVAILABLE, NOW OPT-IN. --resume-strict restores the refusal of
+        # an unnamed difference for anyone who wants a resume to be a continuation or nothing --
+        # which is a legitimate thing to want for a chain of bundles meant to read as one run.
+        # It is NOT the default, because the default cost four launches, and --resume-allow-drift
+        # is NOT the default path either: drift is allowed on its own, loudly and on the record.
+        if _unnamed and a.resume_strict and not a.resume_allow_drift:
             raise SystemExit(
-                "STOP: this resume bundle was written under different settings:\n"
+                "STOP (--resume-strict): this resume bundle was written under different settings:\n"
                 + "".join(f"  {k}: bundle {b!r} vs this run {m!r}\n"
                           for k, (b, m) in _unnamed.items())
                 + "  Changes to world/seed/accum/nsample/manifest_digest/crop_size move which poses\n"
@@ -4534,60 +4695,91 @@ def main():
                   "  the schedule, so continuing would blend two experiments into one curve.\n"
                   "  Match the settings, relaunch from scratch, or accept these deliberately with\n"
                   f"    --resume-override {','.join(sorted(_unnamed))} --resume-note '<why>'\n"
-                  "  (--resume-allow-drift accepts everything at once, including what you did not\n"
-                  "  intend). Either way it is recorded in resume_drift.json and carried forward in\n"
-                  "  every bundle this run writes.")
-        # AN UNEXPLAINED DEVIATION IS THE ONE A LATER READER CANNOT TELL FROM A MISTAKE --
-        # EXCEPT UNDER --loss-only, WHICH IS NOT A DEVIATION AT ALL. A measurement does not
-        # continue the bundle's schedule; it reads the bundle's weights, writes no checkpoint and
-        # takes no step, so there is nothing for a later reader to mistake. The same reasoning
-        # already exempts it from the epoch-count refusal below.
-        #
-        # THIS WAS LEARNED THE EXPENSIVE WAY, on the live run. The epoch-7 held-out pass died
-        # with "accepts 5 changed setting(s) (lr, manifest_digest, pae_scored_pairs,
-        # warmup_steps, world) and --resume-note is empty" -- a held-out fold legitimately
-        # differs from the training bundle in all five. Passing the note from the subprocess
-        # command does NOT fix it: the trainer that spawns that subprocess has its own code
-        # loaded in memory and keeps sending the old argument list, while the subprocess reads
-        # this file fresh from disk. Any mandatory flag added here breaks every RUNNING trainer's
-        # monitor the moment the file is saved. A measurement must never be able to do that.
-        if _bad and not a.resume_note.strip() and not a.loss_only:
-            raise SystemExit(
-                f"STOP: this resume accepts {len(_bad)} changed setting(s) "
-                f"({', '.join(sorted(_bad))}) and --resume-note is empty.\n"
-                f"  Say why in one line. It is written to resume_drift.json and travels in every "
-                f"bundle this run writes, which is what lets the next reader tell a deliberate "
-                f"fork from a mismatch nobody noticed.")
+                  "  or drop --resume-strict, which allows them with a warning on the record.")
+        # THE BANNER IS FOR DRIFT THAT WAS MEASURED, NOT FOR DRIFT THAT COULD NOT BE. An unverified
+        # field is reported in the three lines above and stops there: manifest_digest is unrecorded
+        # on EVERY bundle written before it was saved, so banner-shouting "THIS RUN IS A FORK" at a
+        # pristine continuation -- and stamping resume_drift into its args.json and every
+        # metric_*.json -- would make the stamp mean nothing by the time a real fork carried it.
+        # The unverified list still travels inside the record whenever there IS drift.
         if _bad:
-            _via = "--resume-allow-drift" if (a.resume_allow_drift and _unnamed) \
-                else "--resume-override"
-            print(f"ACCEPTING RESUME DRIFT ({_via}); this run is a FORK of the bundle, "
-                  f"not a continuation of it:")
-            for k, (b, m) in _bad.items():
-                print(f"  {k}: bundle {b!r} -> this run {m!r}"
-                      + ("" if k in _ovr else "   <- NOT NAMED, accepted by the blanket flag"))
-            print(f"  why: {a.resume_note.strip()}")
+            # A MEASUREMENT IS NOT A FORK, so it gets one line rather than the banner and stamps
+            # nothing. --loss-only reads the bundle's weights, takes no step and writes no
+            # checkpoint; the held-out monitor legitimately differs from the training bundle in
+            # the fold, the selection, the seed range, the lr and the epoch count, and it runs
+            # once per epoch for the life of the run. Banner-shouting at every one of those would
+            # train the reader to ignore the banner, which is the only thing it has going for it.
+            if a.loss_only:
+                print(f"  --loss-only: {len(_bad)} setting(s) differ from the bundle "
+                      f"({', '.join(sorted(_bad))}) and {len(_unknown)} are unrecorded. A "
+                      f"measurement does not continue the bundle's schedule, so this is not a "
+                      f"fork and nothing is stamped.")
+            else:
+                _note = a.resume_note.strip()
+                print("\n" + "=" * 78)
+                print("RESUME DRIFT ALLOWED -- THIS RUN IS A FORK OF THE BUNDLE, NOT A "
+                      "CONTINUATION OF IT")
+                print(f"  bundle   {os.path.abspath(a.resume)}")
+                print(f"  written  epoch {int(_b['epoch'])}, step {int(_b['step'])}, commit "
+                      f"{str(_g.get('commit', '?'))[:8]}, {_g.get('written', '?')}")
+                if _hot:
+                    print(f"  *** {len(_hot)} BATCH-COMPOSITION / PARAMETER-SET field(s) changed. "
+                          f"THE RESTORED ADAMW MOMENTS DESCRIBE A DIFFERENT PROBLEM:")
+                    for k, (b, m) in sorted(_hot.items()):
+                        print(f"  ***   {k}: bundle {b!r} -> this run {m!r}")
+                    print(f"  *** exp_avg and exp_avg_sq were accumulated over a different "
+                          f"sampling of the data. The run will train, and the first steps will "
+                          f"be scaled by moments that do not belong to them.")
+                if _warm:
+                    print(f"  {len(_warm)} schedule/objective field(s) changed -- an ordinary "
+                          f"fork; the curve has a kink at this epoch:")
+                    for k, (b, m) in sorted(_warm.items()):
+                        print(f"      {k}: bundle {b!r} -> this run {m!r}")
+                if _unknown:
+                    print(f"  {len(_unknown)} field(s) UNVERIFIED (recorded in neither the bundle "
+                          f"nor its args.json): {', '.join(sorted(_unknown))}")
+                # AN UNEXPLAINED DEVIATION IS THE ONE A LATER READER CANNOT TELL FROM A MISTAKE.
+                # It used to be a hard STOP when --resume-note was empty, which is a refusal over
+                # a missing sentence while the weights and moments are perfectly fine. Now the
+                # missing explanation is itself recorded, in the file the reader opens: "(none
+                # given)" beside the fields is the same information, and it does not cost a
+                # launch.
+                print(f"  why: {_note if _note else '(none given -- pass --resume-note next time)'}")
+                print("=" * 78 + "\n", flush=True)
+        if _bad and not a.loss_only:
             # CARRIED FORWARD, NOT JUST PRINTED. A fork of a fork must still be readable as one,
             # so this run's deviation is appended to whatever history the bundle already carried
             # and the whole chain goes into every bundle this run writes.
-            _drift_history.append({
+            _resume_drift = {
                 "from_bundle": os.path.abspath(a.resume),
                 "bundle_commit": _g.get("commit", "?"),
                 "bundle_written": _g.get("written", "?"),
                 "bundle_epoch": int(_b["epoch"]), "bundle_step": int(_b["step"]),
                 "accepted_at": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-                "via": _via,
+                "via": ("--resume-allow-drift" if (a.resume_allow_drift and _unnamed)
+                        else "--resume-override" if _ovr else "allowed with a warning"),
                 "note": a.resume_note.strip(),
                 "fields": {k: {"bundle": b, "this_run": m} for k, (b, m) in _bad.items()},
+                # THE SEVERITY TRAVELS WITH THE FIELDS. A reader opening metric_valfull_ep14.json
+                # a month from now must be able to tell "the lr changed here" from "the moments
+                # belong to a different sampling" without reconstructing this file's reasoning.
+                "batch_composition": sorted(_hot),
+                "schedule_objective": sorted(_warm),
+                "not_compared": sorted(_unknown),
                 "named": sorted(_ovr & set(_bad)),
                 "unnamed": sorted(_unnamed),
-            })
+                # HOW DEEP THE CHAIN IS. A fork of a fork of a fork is a different claim than a
+                # single deliberate schedule change, and the count says which this is.
+                "prior_forks": len(_drift_history),
+            }
+            _drift_history.append(_resume_drift)
             if is_main:
                 _dp = os.path.join(a.out, "resume_drift.json")
                 try:
                     with open(_dp, "w") as _fh:
                         json.dump(_drift_history, _fh, indent=1, default=str)
-                    print(f"  recorded -> {_dp}")
+                    print(f"  drift recorded -> {_dp}, the run's args.json (resume_drift) and "
+                          f"every metric_*.json this run writes")
                 except Exception as _e:
                     print(f"  (could not write {_dp}: {type(_e).__name__}: {_e})")
         # NOT UNDER --loss-only. A measurement does not continue the bundle's schedule, it reads
@@ -4636,6 +4828,61 @@ def main():
         # its moments are dead weight -- and after inheriting a 3-tensor set above, the live param
         # group still holds 248, so load_state_dict would raise on the size mismatch.
         if not a.loss_only:
+            # THE ONE THING THAT IS NOT A JUDGMENT CALL. Every setting difference above is now
+            # allowed with a warning, because a fork is a fact about the result and not a broken
+            # run. This is different: AdamW's state_dict is keyed by the parameter's INDEX in its
+            # param group, so loading moments saved for one tensor set onto another puts exp_avg
+            # and exp_avg_sq on the WRONG TENSORS. torch does not check this -- load_state_dict
+            # casts each saved moment to its target's dtype and device and accepts a shape
+            # mismatch silently in the cases that do not happen to broadcast -- and nothing
+            # afterwards would reveal it: the loss keeps falling, just adapted by the wrong
+            # second moments. --lean-single alone drops 158 tensors from the group and many of
+            # the survivors share shapes, which is exactly the case where no error is raised.
+            #
+            # So the count and every moment's shape are checked HERE, before the load, and a
+            # mismatch is a hard STOP. A resume that cannot restore the optimiser is not a fork of
+            # the bundle; it is a weights-only warm start wearing a resume's name.
+            _os_sd = _b["opt"] if isinstance(_b.get("opt"), dict) else {}
+            _os_state = _os_sd.get("state") or {}
+            _os_params = [i for _gp in (_os_sd.get("param_groups") or [])
+                          for i in (_gp.get("params") or [])]
+            _live = [_p for _gp in opt.param_groups for _p in _gp["params"]]
+            if not _os_state:
+                raise SystemExit(
+                    f"STOP: {a.resume} carries no AdamW moments (opt.state is "
+                    f"{'absent' if 'opt' not in _b else 'empty'}), so the adaptive scales and the "
+                    f"warmup position cannot be restored.\n"
+                    f"  Resuming anyway would restart exp_avg and exp_avg_sq from zero while the "
+                    f"log said RESUMED -- a weights-only warm start, which is the one thing a "
+                    f"resume exists not to be.")
+            if len(_os_params) != len(_live):
+                raise SystemExit(
+                    f"STOP: {a.resume} saved AdamW state for {len(_os_params)} parameter(s) and "
+                    f"this run's optimiser holds {len(_live)}.\n"
+                    f"  AdamW state is keyed by position in the param group, so the saved moments "
+                    f"would land on different tensors. This is NOT waivable: the settings that "
+                    f"change the trainable set are --lean-single, --train-only, --lora-*, "
+                    f"--frame-direction, --pose-inblock* and --pose-perblock*; the drift warning "
+                    f"above names whichever of them moved.")
+            _shape_bad = []
+            for _i, _p in enumerate(_live):
+                _st = _os_state.get(_i, _os_state.get(str(_i)))
+                if not isinstance(_st, dict):
+                    continue
+                for _mk in ("exp_avg", "exp_avg_sq"):
+                    _mt = _st.get(_mk)
+                    if _mt is not None and tuple(_mt.shape) != tuple(_p.shape):
+                        _shape_bad.append((_i, _mk, tuple(_mt.shape), tuple(_p.shape)))
+            if _shape_bad:
+                raise SystemExit(
+                    f"STOP: {len(_shape_bad)} saved AdamW moment(s) do not match the shape of the "
+                    f"parameter they would be restored onto, e.g.\n"
+                    + "".join(f"  param {_i} {_mk}: bundle {_bs} vs this run {_ms}\n"
+                              for _i, _mk, _bs, _ms in _shape_bad[:4])
+                    + f"  The counts agree ({len(_live)}), so the param group holds the same "
+                      f"NUMBER of tensors in a different order or at different widths -- "
+                      f"restoring these would adapt each parameter by another parameter's "
+                      f"second moment. Match the architecture flags to the bundle's.")
             opt.load_state_dict(_b["opt"])
         start_epoch, start_step = int(_b["epoch"]), int(_b["step"])
         if a.loss_only:
@@ -4689,6 +4936,21 @@ def main():
                 for n in sorted(_drop):
                     print(f"    excluded  {n[len(_pfx_sp) + 1:]}")
         _l2sp_params = [(n, pp) for n, pp in model.named_parameters() if n in _tset_sp]
+        # L2-SP ANCHORS THE NONLINEAR BRANCH AT ZERO, WHICH IS A PENALTY TOWARD "OFF". The anchor
+        # is snapshotted from the initial weights, and --pose-mlp's six second layers ARE exactly
+        # zero there, so with the branch inside the anchor the penalty pulls the whole thing back
+        # toward contributing nothing, at the full lambda, for the length of the run. The arm
+        # would report a six-site nonlinear branch while the objective fights it. Said out loud
+        # rather than refused, because the same is true of frame_dir_proj and of every zero-init
+        # readout arm this project has run, so a refusal would be a new rule applied to one flag;
+        # --l2-sp-exclude pose_mlp is the fix when it is not what was meant.
+        if a.pose_mlp and is_main and any("pose_mlp" in n for n, _ in _l2sp_params):
+            print("  NOTE --l2-sp WITH --pose-mlp: the branch's six second layers are anchored at "
+                  "their initial value, which is EXACTLY ZERO, so the penalty pulls the nonlinear "
+                  "branch back toward off for the whole run. Pass --l2-sp-exclude pose_mlp_out "
+                  "(or pose_mlp) if the branch is meant to be free to grow. Layer 1 is anchored "
+                  "at its random init, which is a shrink toward a random projection rather than "
+                  "toward zero.")
         if a.resume:
             # THE ANCHOR BELONGS TO THE LINEAGE, NOT THE DIRECTORY. A resume writes to a FRESH
             # directory and launch.py refuses a non-empty one, so there is no window in which to
@@ -7756,6 +8018,12 @@ def main():
             # the same way the evaluator failed on --pose-readout itself before 7d9d4d10.
             if a.pose_readout_post_zero:
                 cmd.append("--pose-readout-post-zero")
+        # AND THE NONLINEAR BRANCH, THE SAME CLASS ONE MORE TIME. --pose-mlp adds 15 head tensors,
+        # so a child without it fails the resume guard's parameter-set comparison and the held-out
+        # point is simply absent -- the failure that cost arm m8rote three epochs. Passed after
+        # the readout flags because pose_mlp.install refuses unless they are present.
+        if a.pose_mlp:
+            cmd.append("--pose-mlp")
         # FORWARDED WHENEVER THE PARENT HAS IT, not only alongside --lean-single. lean_readouts
         # replaces memory_efficient_forward rather than adding or removing tensors, so its absence
         # in the child was invisible to both the key-set guard and the resume guard -- the child
@@ -8254,6 +8522,11 @@ def main():
                 extra = extra + ["--pose-readout-prenorm"]
             if a.pose_readout_post_zero:
                 extra = extra + ["--pose-readout-post-zero"]
+        # AND THE NONLINEAR BRANCH: 15 extra head tensors in every checkpoint of such an arm, so
+        # without this the evaluator's exact key-set guard refuses all of them and the arm trains
+        # to completion with no eval number at all.
+        if a.pose_mlp:
+            extra = extra + ["--pose-mlp"]
         # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
         #
         # --join-cache is the big one. The pose->sample join is a function of the trunk's own
@@ -8349,6 +8622,19 @@ def main():
                              f"checkpoint cannot be scored and a training curve without it is not "
                              f"interpretable:\n  " + "\n  ".join(tail))
         m = json.load(open(mj))
+        # AND THE DRIFT TRAVELS WITH THE NUMBER. A metric_*.json is the unit this project actually
+        # compares across arms, and a number produced after a resume that changed the lr, the loss
+        # weights or the sampling is not the same measurement as one produced by a clean
+        # continuation. The warning in run.log cannot help here: the reader of a bar chart never
+        # opens the log of the run behind the bar. Written back into the file the evaluator just
+        # produced so that the drift cannot be separated from the metric it qualifies.
+        if _resume_drift is not None:
+            try:
+                m["resume_drift"] = _resume_drift
+                with open(mj, "w") as _mfh:
+                    json.dump(m, _mfh, indent=1, default=str)
+            except Exception as _e:
+                print(f"  (could not stamp resume_drift into {mj}: {type(_e).__name__}: {_e})")
         if train_pool:
             print(f"  epoch {epoch} TRAIN: mean_dockq {m['mean_dockq']:.4f}  "
                   f"frac_acc {m['frac_acc']:.4f}  oracle {m['oracle_mean_dockq']:.4f} / "
@@ -8793,6 +9079,18 @@ def main():
                                   "train_only": a.train_only,
                                   "world": world, "seed": a.seed, "accum": a.accum,
                                   "epoch_cover_all": bool(a.epoch_cover_all),
+                                  # SIXTH HALF-WIRING, found by run_logging/test_guard_fields.py
+                                  # while this patch was being verified, not by reading the diff.
+                                  # Both are in the comparison dict above with comments saying
+                                  # they change the step shape and which units a rank walks, and
+                                  # neither was written into the bundle -- so a bundle moved away
+                                  # from its args.json recorded neither and fell through to the
+                                  # _PRE_CROP defaults (1, False), reporting a pose-batched or
+                                  # balanced run as an unbatched unbalanced one. They are now in
+                                  # the loudest severity group of the drift warning, which is
+                                  # worth nothing if the bundle does not record them.
+                                  "pose_batch": int(a.pose_batch),
+                                  "epoch_balance": bool(a.epoch_balance),
                                   "nsample": a.nsample, "lr": a.lr,
                                   "lr_final": a.lr_final,
                                   # ALSO HALF-WIRED, and this one decides the lr at every step of
@@ -8865,6 +9163,12 @@ def main():
                  "rel_g_weight": a.rel_g_weight,
                  "pose_readout_prenorm": a.pose_readout_prenorm,
                  "pose_readout_post_zero": a.pose_readout_post_zero,
+                 # SAVED AS WELL AS COMPARED AND DEFAULTED, all three in one patch. The comment
+                 # eleven lines up names what happens otherwise: a bundle moved away from its
+                 # args.json records no value for the field, lands in _unknown, and hits the hard
+                 # stop that runs BEFORE --resume-override is consulted. test_guard_fields.py's
+                 # watched set does not cover this prefix, so this one is on the reader.
+                 "pose_mlp": a.pose_mlp,
                  "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
                  "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                                   "rank_form": a.rank_form,
@@ -10069,7 +10373,15 @@ def main():
     # depth histogram the manifest actually declared ({depth: n_structures}), so args.json and
     # run.log cannot disagree about what the run trained on.
     _args_rec["realised_seed_depths"] = _REALISED_SEED_DEPTHS
-    json.dump(_args_rec, open(os.path.join(a.out, "args.json"), "w"), indent=1)
+    # THE ACCEPTED DRIFT GOES WHERE THE RESULT IS READ. args.json is the file every reader opens to
+    # find out what a run was -- plot_arm_bars.py, the arm tables, a human three weeks later -- and
+    # a resume that changed the lr, the loss or the sampling is part of what the run WAS. Printed
+    # to run.log it is one block in ~25k lines, scrolled past before the first epoch ends; here it
+    # sits beside the flags themselves, and because args.json records the CURRENT values, the
+    # bundle's values would otherwise be unrecoverable from this file at all.
+    if _resume_drift is not None:
+        _args_rec["resume_drift"] = _resume_drift
+    json.dump(_args_rec, open(os.path.join(a.out, "args.json"), "w"), indent=1, default=str)
     train_loop(steps_cap, a.lr, "train", write_traj=is_main,
                from_epoch=start_epoch, from_step=start_step)
     # --grad-probe STOPS HERE. The return inside train_loop only exits train_loop; main() then

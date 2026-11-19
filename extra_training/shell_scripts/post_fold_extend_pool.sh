@@ -56,7 +56,7 @@ say "alignment preflight over the extended manifest"
 # and --manifest-skip and argparse exits 2. And the skip list is passed explicitly because the
 # preflight's own default differs from the launcher's AND names 9bbn, one of the 22 -- the trainer
 # compares the two lists and refuses the run when they disagree (phase_k_train.py:3942).
-$PY -I phases/phase_k_alignment_preflight.py --manifest-selection "$OH/structures.csv" \
+LAYERNORM_TYPE=openfold $PY -I phases/phase_k_alignment_preflight.py --manifest-selection "$OH/structures.csv" \
     --manifest-skip "4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m" \
     --out "$OH/alignment_preflight.json" --workers 12 || { say "STOPPING: preflight failed"; exit 4; }
 

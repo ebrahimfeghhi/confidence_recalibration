@@ -47,6 +47,15 @@ def main():
     if t.get("budget") != f1.get("budget"):
         print(f"FAIL  budget differs: floor {f1.get('budget')} vs test {t.get('budget')}")
         return 1
+    # AND THE BUDGET MODE, because a mixed pass carries the DEEPEST structure's depth as its
+    # budget: a uniform budget-15 json and a mixed one whose deepest structure has 15 seeds agree
+    # on the line above while covering different candidate sets per interface.
+    if {x.get("budget_mode") for x in (f1, f2, t)} != {None} and \
+            len({x.get("budget_mode") for x in (f1, f2, t)}) != 1:
+        print(f"FAIL  budget_mode differs: "
+              + " / ".join(str(x.get("budget_mode")) for x in (f1, f2, t)))
+        print("      A pooled mixed-depth number and a uniform one are not the same metric.")
+        return 1
 
     keys = sorted(k for k in f1
                   if isinstance(f1[k], (int, float)) and not isinstance(f1[k], bool)

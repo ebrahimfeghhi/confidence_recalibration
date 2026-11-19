@@ -21,12 +21,23 @@ say(){ echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') $*"; }
 while :; do
     # THE ARM UNDER SUPERVISION, re-read every tick rather than captured once, so a relaunch
     # under a new chain pid is picked up without restarting this watcher.
-    CH=$(ls -t training/runs/fullset_chain_zsoft*.log 2>/dev/null | head -1)
-    RID=$(grep -oE 'segment running as [a-z0-9]{6}' "$CH" 2>/dev/null | tail -1 | awk '{print $4}')
+    # THE RID COMES FROM THE ARGUMENT, OR FROM THE LIVE POINTER -- NOT from a chain log.
+    # This used to re-derive the rid from the newest fullset_chain_zsoft*.log, a chain that has
+    # not run since 2026-11-16. Every watcher started since then reported on that dead run: the
+    # health file for an arm read `rid=2tr3sj run.log_age=220834s` while the arm it was launched
+    # for was training normally. All three ALERT conditions were therefore evaluated against a
+    # run that ended days ago, so SILENCE FROM THIS LOG MEANT NOTHING. A watcher that cannot
+    # fire is worse than no watcher, because it is trusted.
+    RID="${1:-}"
+    [ -n "$RID" ] || RID=$(cat training/runs/pose6_norms_rid 2>/dev/null)
     ALIVE=no
-    for p in $(ls /proc 2>/dev/null | grep -E '^[0-9]+$'); do
-        grep -qa 'fullset_chain_zsoft' "/proc/$p/cmdline" 2>/dev/null && { ALIVE="yes(pid $p)"; break; }
-    done
+    # LIVENESS FROM THE RUN'S OWN LOG, not from a cmdline scan: the arm's pid belongs to torchrun
+    # ranks whose argv this watcher has no reliable handle on, and a /proc pattern scan is exactly
+    # what is banned in this project for matching the shell that runs it.
+    if [ -n "$RID" ] && [ -f "training/runs/$RID/run.log" ]; then
+        _age=$(( $(date +%s) - $(stat -c %Y "training/runs/$RID/run.log") ))
+        [ "$_age" -lt 1800 ] && ALIVE="yes(log ${_age}s old)"
+    fi
     BUSY=$($PY -I run_logging/cards_busy.py 2>&1 | tail -1)
     # run.log MOVEMENT, in seconds since last write. The trainer writes a MEM line per pose, so
     # anything over a few minutes is a wedge rather than a slow step.

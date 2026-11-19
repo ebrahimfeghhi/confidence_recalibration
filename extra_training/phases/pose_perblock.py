@@ -80,6 +80,28 @@ def _add_dir(head, i, z, d):
     return z
 
 
+def _add_mlp(head, i, z, h):
+    """Add THIS depth's own second layer of the nonlinear branch to z, or return z unchanged.
+
+    `h` IS PASSED IN, NOT READ FROM pose_mlp._CALL, for exactly the reason `d` is in _add_dir
+    above -- and here it matters more. Under activation checkpointing this block's forward is
+    RE-RUN during backward, by which time the outer wrapper's `finally` has cleared the cache, so
+    a block that re-read the global would see None or a LATER pose's hidden tensor. On top of
+    that, `h` is not geometry: it is an activation of the branch's trainable first layer, and it
+    is the ONLY path by which that layer receives a gradient. Capturing it in _prep_blocks puts it
+    in the closure the checkpoint graph holds, so the recomputation sees the same tensor the
+    original forward saw and the gradient reaches layer 1 from all four depths.
+
+    RETURNS z UNCHANGED ONLY WHEN pose_mlp IS NOT INSTALLED. If it is, a missing `h` raises from
+    pose_mlp.add_site rather than quietly dropping the branch for the rest of the stack.
+    """
+    if not getattr(head, "_pose_mlp_installed", False):
+        return z
+    import pose_mlp
+    # ADD, THEN DROP, as everywhere else here: the delta is not held live across the block.
+    return pose_mlp.add_site(head, i, z, h)
+
+
 def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
             loud=True):
     """Add the per-block projections and route the pose embedding into every block but the first.
@@ -280,6 +302,12 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
         # is cleared by the outer forward's `finally`, which is why it cannot be read later.
         import pose_direction as _pd
         dr = _pd._CALL.get("dir")
+        # THE NONLINEAR BRANCH'S HIDDEN TENSOR, captured on the same contract and for a stronger
+        # reason: unlike oh/dd/dr it is not geometry but an activation of trainable weights, so
+        # the capture is what carries layer 1's gradient out of the checkpointed region. pose_mlp
+        # builds it at the pre-stack site, which runs before this.
+        import pose_mlp as _pm
+        hh = _pm._CALL.get("h")
         if oh is None:
             raise _NoPose(
                 "STOP: the pair stack was prepared without the pose embedding set. A is installed "
@@ -294,6 +322,7 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
                     z = z + head.linear_no_bias_d(oh).to(z.dtype)
                     z = z + head.linear_no_bias_d_wo_onehot(dd.unsqueeze(-1)).to(z.dtype)
                     z = _add_dir(head, i, z, dr)
+                    z = _add_mlp(head, i, z, hh)
                     return fn(s, z)
                 if head._pose_perblock_copy:
                     # THIS DEPTH's OWN COPY, both terms. Identical to the share branch at step 0
@@ -303,6 +332,7 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
                     z = z + head.pose_perblock_linear_no_bias_d_wo_onehot[i - 1](
                         dd.unsqueeze(-1)).to(z.dtype)
                     z = _add_dir(head, i, z, dr)
+                    z = _add_mlp(head, i, z, hh)
                     return fn(s, z)
                 proj = (head.pose_perblock_proj[0] if head._pose_perblock_tied
                         else head.pose_perblock_proj[i - 1])
@@ -312,6 +342,7 @@ def install(model, tied=False, share_pretrained=False, copy_pretrained=False,
                 # pathway C, where it was 5.5 GiB at the 3,400-token crop cap.
                 z = z + proj(oh).to(z.dtype)
                 z = _add_dir(head, i, z, dr)
+                z = _add_mlp(head, i, z, hh)
                 return fn(s, z)
             return run
 

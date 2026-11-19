@@ -182,6 +182,17 @@ def load(root, runs, budget, full_steps=0):
             if jb is None:
                 m.rejected.append((jp, "no budget recorded"))
                 continue
+            # A MIXED-BUDGET JSON IS REJECTED HERE, however well its `budget` matches. A
+            # --mixed-budget pass labels itself with the DEEPEST structure's depth, so a
+            # whole-training-pool number sits in this file as budget 15 while 741 of its 1,688
+            # interfaces chose among 5 candidates instead of 75. Taking its pooled mean_dockq as
+            # a budget-15 point would plot it on the same curve as the uniform slice -- the exact
+            # substitution the budget equality check below exists to prevent, wearing a matching
+            # label. Its per-depth numbers live in the json's `strata` block.
+            if j.get("budget_mode"):
+                m.rejected.append((jp, f"budget_mode {j['budget_mode']} -- pooled over mixed "
+                                       f"depths, not a budget {int(jb)} number"))
+                continue
             if int(jb) != int(budget):
                 # REJECTED, NOT WARNED. A different budget is a different pool depth, and taking
                 # its number while the shipped-head column stays at this budget is exactly the

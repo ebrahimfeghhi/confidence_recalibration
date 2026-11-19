@@ -1,9 +1,13 @@
 #!/usr/bin/env python
 """Bar plots: the four six-site arms side by side at epochs 10 and 20.
 
-ONE METRIC PER FIGURE, four panels each: pooling (max / mean) x pool (held-out / train slice).
-Within a panel, one cluster per arm and one bar per epoch, with the SHIPPED head drawn as a
-dashed line.
+ONE FIGURE PER POOL -- all of held-out in one, all of the train slice in the other -- with the
+three metrics across the columns and the two ipTM poolings down the rows. Within a panel, one
+cluster per arm and one bar per epoch, with the SHIPPED head drawn as a dashed line.
+
+THE TWO EPOCHS ARE TWO SHADES OF ONE COLOUR, not two different colours. An earlier version used
+blue and orange here while the loss-curve figure uses colour for the ARM, so the same two colours
+meant two different things across figures; a light/dark pair reads as "same thing, two times".
 
 EVERY NUMBER IS RECOMPUTED FROM THE PER-CANDIDATE ROWS, not copied from a log or a json. The
 metric jsons carry q and top-1 but no rho, and they carry only the headline pooling, so reading
@@ -46,7 +50,8 @@ METRICS = [
     ("top1", "top1", "top1_mean", "s_top1", "frac acceptable at top 1", True),
     ("rho",  "rho",  "rho_mean",  "s_rho",  "within-interface Spearman (ipTM vs DockQ)", False),
 ]
-COL = {10: "tab:blue", 20: "tab:orange"}
+# light = earlier epoch, dark = later epoch.
+COL = {10: "#9ecae1", 20: "#08519c"}
 
 
 def load():
@@ -76,7 +81,7 @@ def load():
     return out
 
 
-def bars(ax, data, key, ship_key, ylab, pct, title):
+def bars(ax, data, tag, key, ship_key, ylab, pct, title):
     xs, labs, nmiss = [], [], []
     w = 0.38
     vals = []
@@ -84,7 +89,7 @@ def bars(ax, data, key, ship_key, ylab, pct, title):
     for i, (lab, _rid, per) in enumerate(data):
         labs.append(lab)
         for j, e in enumerate(EPOCHS):
-            p = per.get(title_tag, {}).get(e)
+            p = per.get(tag, {}).get(e)
             x = i + (j - 0.5) * w
             if p is None or p.get(key) != p.get(key):      # absent or NaN
                 nmiss.append((x, lab, e))
@@ -132,34 +137,32 @@ def main():
     if not data:
         print("STOP: no arm had readable rows")
         return 1
-    for name, kmax, kmean, kship, ylab, pct in METRICS:
-        fig, ax = plt.subplots(2, 2, figsize=(12.0, 8.0))
-        for r, (pool_key, pool_lab) in enumerate([(kmax, "max-pooled ipTM (shipped convention)"),
-                                                  (kmean, "mean-pooled ipTM (what these arms "
-                                                          "optimise)")]):
-            for c, (tag, side_lab) in enumerate(SIDES):
-                global title_tag
-                title_tag = tag
-                bars(ax[r][c], data, pool_key, kship, ylab, pct,
-                     f"{side_lab}\n{pool_lab}")
+    for tag, side_lab in SIDES:
+        fig, ax = plt.subplots(2, 3, figsize=(15.5, 8.4))
+        for c, (name, kmax, kmean, kship, ylab, pct) in enumerate(METRICS):
+            for r, (pool_key, pool_lab) in enumerate(
+                    [(kmax, "max-pooled ipTM (shipped convention)"),
+                     (kmean, "mean-pooled ipTM (what these arms optimise)")]):
+                bars(ax[r][c], data, tag, pool_key, kship, ylab, pct,
+                     f"{ylab}\n{pool_lab}")
         # ONE LEGEND FOR THE FIGURE. Per-axes legends sat on top of Arm D, which is the one arm
         # with a missing bar and therefore the one that most needed to be readable.
         h, l = ax[0][0].get_legend_handles_labels()
         seen, hh, ll = set(), [], []
         for a, b in zip(h, l):
             if b.startswith("shipped"):      # its value differs per panel; say so generically
-                b = "shipped head (dashed, per-panel value in the axis)"
+                b = "shipped head (dashed, per-panel value on the axis)"
             if b in seen:
                 continue
             seen.add(b)
             hh.append(a)
             ll.append(b)
-        fig.legend(hh, ll, loc="upper right", fontsize=8, ncol=3,
+        fig.legend(hh, ll, loc="upper right", fontsize=8.5, ncol=3,
                    bbox_to_anchor=(0.995, 0.995), framealpha=0.9)
-        fig.suptitle(f"{ylab.upper()} -- four six-site arms at epochs 10 and 20",
-                     fontsize=11, x=0.30)
+        fig.suptitle(f"{side_lab}  --  four six-site arms at epochs 10 and 20",
+                     fontsize=12, x=0.30)
         fig.tight_layout(rect=(0, 0, 1, 0.945))
-        out = f"figures/arms_bar_{name}.png"
+        out = f"figures/arms_bar_{'val' if tag.startswith('val') else 'train'}.png"
         fig.savefig(out, dpi=135)
         plt.close(fig)
         print(f"wrote {out}")

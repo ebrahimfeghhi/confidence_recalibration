@@ -118,20 +118,41 @@ def compare_guard(mine, bundle_guard, fallback, migrations=None):
     _mine = mine
     _g, _fallback = bundle_guard or {}, fallback or {}
     _PRE_CROP_LOCAL = _PRE_CROP if migrations is None else migrations
+    # UNSET IS UNSET, however it was spelled when the bundle was written. phase_k_train encodes
+    # unset as "" and -1.0 on the CURRENT side (`a.rel_g_sigmoid or ""`, `-1.0 if ... is None`) and
+    # the bundle may hold a raw None, so comparing them raw reported "rel_g_sigmoid: bundle None vs
+    # this run ''" -- a fork over a difference that does not exist. This copy did not have the
+    # normalisation the live guard grew, which is why test_checkpoints_equivalence reported 8 of
+    # the most recent 12 real bundles as forks of the runs that in fact continued from them.
+    _UNSET_AS = {"rel_g_sigmoid": "", "rel_std_floor": -1.0}
+
+    def _norm(k, x):
+        return _UNSET_AS[k] if (k in _UNSET_AS and x is None) else x
+
+    # rank_form IS INERT WHEN NEITHER SIDE RUNS A RANKING TERM. 'linear' was the argparse default
+    # and was saved whether or not --rank-loss was passed, so every pre-deletion PAE-only bundle
+    # records a form that is no longer legal for a term that is not in the loss.
+    _rank_inert = (not bool(_g.get("rank_loss", False))) and (not bool(_mine.get("rank_loss")))
     _bad, _from_args, _unknown, _migrated = {}, [], [], []
     for k, v in _mine.items():
+        if k == "rank_form" and _rank_inert:
+            continue
         if k in _g:
-            if _g[k] != v:
+            if _norm(k, _g[k]) != _norm(k, v):
                 _bad[k] = (_g[k], v)
         elif k in _fallback:
-            if _fallback[k] != v:
+            if _norm(k, _fallback[k]) != _norm(k, v):
                 _bad[k] = (_fallback[k], v)
             else:
                 _from_args.append(k)
-        elif k in _PRE_CROP:
+        elif k in _PRE_CROP_LOCAL:
+            # `migrations` WAS ACCEPTED AND IGNORED: the branch tested and read the module-level
+            # _PRE_CROP, so passing a migration table did nothing and a caller's table would have
+            # been silently replaced by this file's. Every existing caller passes None, which is
+            # why no test saw it.
             _migrated.append(k)
-            if _PRE_CROP[k] != v:
-                _bad[k] = (f"{_PRE_CROP[k]} (pre-crop default)", v)
+            if _norm(k, _PRE_CROP_LOCAL[k]) != _norm(k, v):
+                _bad[k] = (f"{_PRE_CROP_LOCAL[k]} (pre-crop default)", v)
         else:
             _unknown.append(k)
     return _bad, _from_args, _unknown, _migrated

@@ -49,6 +49,87 @@ sys.path.insert(0, os.path.join(ROOT, "phases"))
 print = functools.partial(print, flush=True)
 ACCEPTABLE = 0.23
 
+# ---- THE FLAG-VS-CHECKPOINT CONSISTENCY GUARD
+#
+# WHAT IT PREVENTS, PAID FOR ONCE IN GPU TIME. 2026-11-18: the shipped head was scored on val
+# through a copy of shell_scripts/score_checkpoint.sh, whose COMMON hardcodes
+# --pose-perblock --pose-perblock-copy --frame-direction. The pass printed "using the SHIPPED head
+# (no --ckpt)" and then installed three pose-injection pathways on top of it -- --pose-perblock-copy
+# copies block 0's pretrained injection into blocks 1-3, which IS a different model -- so what came
+# out was shipped-PLUS-injections labelled "shipped". Twelve minutes on three cards, and the only
+# thing that caught it was the self-check at the MERGE, after every forward pass had been paid for.
+#
+# SO IT IS CHECKED FROM argv, BEFORE ANYTHING LOADS. A shipped pass is defined by having no
+# checkpoint, and the shipped head is stock Protenix: it carries no pose_perblock_proj, no
+# frame_dir_proj, no pose_readout_* and no pose_inblock_*. Every flag that installs one of those
+# pathways is therefore inconsistent with an empty --ckpt by construction -- knowable from the
+# command line, with nothing to wait for the model or the data for.
+#
+# THE LIST IS DERIVED FROM THE PARSER, NOT TYPED. Every dest declared under pose_/frame_ counts as
+# architecture-installing unless it is named in NOT_ARCHITECTURE below, and "installed" means
+# "differs from this parser's own default". A pathway flag added next month is covered the day it
+# is added, with no second list to keep in step -- and a second list drifting from the first is
+# exactly what produced the bug above.
+NOT_ARCHITECTURE = {
+    # A SCORING MODE, NOT A PATHWAY: one pose per forward pass, same modules, same weights, and
+    # its whole purpose is that the score must not move. Installing nothing, it is legal on a
+    # shipped pass.
+    "pose_split_check",
+}
+
+
+def ckpt_label(a):
+    """What this pass scored, for the metric json: a checkpoint path, "shipped", or an ablation."""
+    if a.ckpt:
+        return a.ckpt
+    inst = getattr(a, "arch_installed", [])
+    if inst and getattr(a, "shipped_with_pathways", False):
+        return "shipped+pathways(" + " ".join(inst) + ")"
+    return "shipped"
+
+
+def arch_flags_installed(a, ap):
+    """The architecture-installing flags this argv turns on, spelled as they were on the command line.
+
+    Ordered and deduplicated so the refusal below names them the way they would be typed back in.
+    """
+    out = []
+    for dest in sorted(vars(a)):
+        if not dest.startswith(("pose_", "frame_")) or dest in NOT_ARCHITECTURE:
+            continue
+        v = getattr(a, dest)
+        if v == ap.get_default(dest):
+            continue
+        flag = "--" + dest.replace("_", "-")
+        out.append(flag if v is True else f"{flag} {v}")
+    return out
+
+
+def refuse_shipped_with_pathways(installed, a, where):
+    """Hard-stop a SHIPPED pass that would install an architecture change. Returns on a clean pass.
+
+    `where` names the moment -- "startup" on a scoring pass, "merge" when the shards' own record is
+    what gives it away -- because the two cost very different amounts and a reader of the refusal
+    should know which one they are looking at.
+    """
+    if a.ckpt or not installed or getattr(a, "shipped_with_pathways", False):
+        return
+    raise SystemExit(
+        f"STOP ({where}): this is a SHIPPED pass -- no --ckpt -- and it installs "
+        f"{len(installed)} architecture flag(s):\n"
+        f"    {' '.join(installed)}\n"
+        f"  The shipped head is stock Protenix and carries none of those tensors, so the metric "
+        f"would be shipped-PLUS-those-pathways reported under the name \"shipped\". That "
+        f"substitution was measured on 2026-11-18 at twelve minutes of three cards: "
+        f"--pose-perblock-copy copies block 0's pretrained injection into blocks 1-3, which is a "
+        f"different model, and its ipTM no longer reproduces results.csv.\n"
+        f"  To score the SHIPPED head: shell_scripts/score_shipped_head.sh, which installs "
+        f"nothing. To score a trained head: pass --ckpt (and let "
+        f"run_logging/pathway_flags.py derive its flags from its own args.json).\n"
+        f"  To measure a pathway on UNTRAINED weights on purpose, pass --shipped-with-pathways "
+        f"--no-self-check; that pass is labelled \"shipped+pathways\" in its json and is NOT the "
+        f"shipped baseline.")
+
 
 def interface_chain_pairs(pool_csv, roles_csv):
     """{pdb: [(iface_id, asym_i, asym_j)]} -- join 1, resolved once up front.
@@ -304,11 +385,79 @@ def intended_seeds(a, pdb):
         _SEED_MANIFEST_META[path] = {"algo": str(man.get("algo") or ""),
                                      "digest": str(man.get("digest") or ""),
                                      "k": man.get("k"),
+                                     "mixed": bool(man.get("mixed")),
+                                     "max_depth": max(len(v) for v in got.values()),
+                                     "min_depth": min(len(v) for v in got.values()),
                                      "seed_range": [lo, hi] if lo is not None else None}
         print(f"intended seed set: {path} (algo {man.get('algo')}, digest {man.get('digest')}, "
               f"k={man.get('k')}, range {lo}-{hi}) over {len(got)} structure(s) -- the TRIMMED "
               f"set, not the contiguous window")
+        if man.get("mixed"):
+            _dh = collections.Counter(len(v) for v in got.values())
+            print(f"  MIXED DEPTH, declared by the manifest: "
+                  + ", ".join(f"{c} structure(s) at {d} seed(s)"
+                              for d, c in sorted(_dh.items(), reverse=True))
+                  + " -- the budget label is the DEEPEST structure, not a depth every structure "
+                    "carries; each one's own depth is enforced below, per structure.")
     got, meta = _SEED_MANIFEST[path], _SEED_MANIFEST_META[path]
+    # ---- MIXED-BUDGET MODE. ADDITIVE, OPT-IN ON BOTH SIDES, AND IT WEAKENS NOTHING.
+    #
+    # WHAT IT IS FOR. The training fold's seed depth is NOT uniform: of the 1,688 interfaces in
+    # training/combined/pool.csv, 947 (459 structures) have 15 trunks on disk and 741 (394
+    # structures) have exactly one, so the whole training set cannot be scored under a single
+    # budget label at all. Scoring it at --budget 15 stopped on 5,516 of 12,795 intended units
+    # with "A metric labelled 'budget 15' must cover 15 seeds for every structure" -- correctly,
+    # because at budget 15 that label WAS a lie. The stopgap was to score the 947 that happen to
+    # be 15-deep and call it the training set.
+    #
+    # WHAT IT CHANGES. Exactly one claim: that every structure carries the SAME depth. The
+    # per-structure intended seed set is still the manifest's, and the coverage contract below
+    # still enforces the full cross product (every interface x every seed the manifest keeps for
+    # ITS structure x every sample) with no duplicates, no extras and no missing keys. Nothing is
+    # dropped, nothing is inferred from the data, and --budget still has to equal the deepest
+    # structure's depth, so the label cannot overclaim either.
+    #
+    # WHY IT IS DOUBLE-LOCKED. The flag alone, or the manifest alone, would both be ways to lose
+    # the uniform assertion by accident -- the trainer passes --seed-manifest automatically for
+    # any pool directory holding a seed_manifest.json (phase_k_train.py:8404), so a mixed manifest
+    # left beside a training pool would otherwise silently redefine what every in-training
+    # held-out number covers. A mixed manifest without the flag is a hard stop naming the flag,
+    # and the flag without a mixed manifest is a hard stop too.
+    _mixed = bool(getattr(a, "mixed_budget", False))
+    if meta["mixed"] and not _mixed:
+        raise SystemExit(f"STOP: --seed-manifest {path} declares mixed:true -- its structures keep "
+                         f"between {meta['min_depth']} and {meta['max_depth']} seeds each -- but "
+                         f"--mixed-budget was not passed. A pass that did not ask for mixed depth "
+                         f"must not get one: every number it prints would be labelled 'budget "
+                         f"{a.budget}' while part of the pool chose among fewer candidates. Pass "
+                         f"--mixed-budget to score it as the mixed-budget measurement it is, or "
+                         f"point --seed-manifest at a uniform-depth manifest.")
+    if _mixed and not meta["mixed"]:
+        raise SystemExit(f"STOP: --mixed-budget was passed but --seed-manifest {path} does not "
+                         f"declare mixed:true (every structure keeps {meta['max_depth']} seed(s)). "
+                         f"The flag would then disable the uniform-depth assertion on a pass that "
+                         f"satisfies it -- which is the one thing the flag must never do. Drop "
+                         f"--mixed-budget.")
+    if _mixed:
+        # THE DEPTH CLAIM IS RE-CHECKED PER CALL, like every other budget-dependent claim here,
+        # because _SEED_MANIFEST_META is cached per PATH and two budgets can share one process.
+        if meta["k"] is not None:
+            raise SystemExit(f"STOP: --seed-manifest {path} declares both mixed:true and "
+                             f"k={meta['k']!r}. k means 'this many seeds for every structure', "
+                             f"which is the claim mixed:true withdraws; one of the two is from a "
+                             f"different pass.")
+        if meta["max_depth"] != a.budget:
+            raise SystemExit(f"STOP: --seed-manifest {path}'s deepest structure keeps "
+                             f"{meta['max_depth']} seed(s) but --budget is {a.budget}. Under "
+                             f"--mixed-budget the budget labels the DEEPEST structure, so this "
+                             f"label would {'over' if a.budget > meta['max_depth'] else 'under'}"
+                             f"claim the candidate set. Pass --budget {meta['max_depth']}.")
+        if pdb not in got:
+            raise SystemExit(f"STOP: --seed-manifest {path} does not name structure {pdb}, so its "
+                             f"intended depth is undefined. Under --mixed-budget the manifest is "
+                             f"the ONLY statement of per-structure depth, so a structure it omits "
+                             f"cannot be scored at all.")
+        return got[pdb]
     # AND ITS OWN k MUST AGREE WITH THE LABEL. Checking only len(seeds) == budget let a manifest
     # declaring k=99 pass at --budget 1 while every structure carried one seed: self-inconsistent,
     # and the inconsistency is the signal that the file is not the one this budget means.
@@ -387,6 +536,19 @@ def merge_rows(a):
         raise SystemExit(f"STOP: the shards were run at budget {metas[0]['budget']} but this merge "
                          f"says --budget {a.budget}; the label would not match the data.")
     a.ckpt = metas[0]["ckpt"]
+    # AND THE SHIPPED CHECK AGAIN, NOW THAT WE KNOW WHAT THE SHARDS ACTUALLY WERE. This is the
+    # only place that knows: the merge is handed --extra but no --ckpt, so until the line above it
+    # cannot tell a shipped pass from a trained one. The flags come from the shards' OWN meta
+    # where they recorded them, and fall back to this invocation's argv for rows written before
+    # that field existed -- which is what the 2026-11-18 shipped-plus-injections rows are.
+    #
+    # IT IS NOT A DUPLICATE OF THE STARTUP CHECK. The startup check protects a pass about to be
+    # run; this one protects a MERGE of rows that may have been scored hours ago, possibly by a
+    # version of the launcher that had no startup check at all, and it is the guard that caught
+    # the mistake in the first place.
+    _shard_inst = sorted({f for m in metas for f in (m.get("pathway_flags") or [])})
+    refuse_shipped_with_pathways(_shard_inst or getattr(a, "arch_installed", []), a, "merge")
+    a.arch_installed = _shard_inst or getattr(a, "arch_installed", [])
     n_ost = sum(m["n_ost"] for m in metas)
     n_differ = sum(m["n_differ"] for m in metas)
     differ = collections.Counter()
@@ -404,9 +566,14 @@ def merge_rows(a):
         # interfaces x seeds(budget from --seed-base) x range(--nsample), so budget*nsample is
         # what a complete interface has; inferring the expected depth from the data would let a
         # uniformly short run look complete.
-        _exp = a.budget * a.nsample
+        # PER STRUCTURE UNDER --mixed-budget, because there the intended depth is per structure
+        # and `a.budget * a.nsample` is only the DEEPEST one's. Left uniform, this would have
+        # declared every 1-seed interface of the training pool incomplete and dropped 741 of
+        # 1,688 of them by name -- the complete ones -- while reporting over the 947 that happen
+        # to be 15-deep, which is the stopgap this flag pair exists to replace.
+        _exp_of = (lambda i: len(intended_seeds(a, i.rsplit("_", 1)[0])) * a.nsample)
         _cnt = collections.Counter(r[0] for r in rows)
-        _drop = sorted(i for i in want_ifaces if _cnt.get(i, 0) != _exp)
+        _drop = sorted(i for i in want_ifaces if _cnt.get(i, 0) != _exp_of(i))
         if _drop:
             _ds = set(_drop)
             rows = [r for r in rows if r[0] not in _ds]
@@ -414,8 +581,8 @@ def merge_rows(a):
             want_ifaces = want_ifaces - _ds
             a.dropped_ifaces = _drop
             print(f"  DROPPED {len(_drop)} INCOMPLETE interface(s) (--drop-incomplete-ifaces), "
-                  f"each short of {_exp} pose(s): "
-                  + ", ".join(f"{i}:{_cnt.get(i, 0)}" for i in _drop[:8])
+                  f"each short of its own structure's depth x {a.nsample} sample(s): "
+                  + ", ".join(f"{i}:{_cnt.get(i, 0)} of {_exp_of(i)}" for i in _drop[:8])
                   + (" ..." if len(_drop) > 8 else ""))
             print(f"  the metric below covers {len(want_ifaces)} interface(s), NOT the pool's "
                   f"{len(want_ifaces) + len(_drop)}. A baseline for it must be computed over the "
@@ -502,10 +669,36 @@ def aggregate(a, rows, selfchk, want_ifaces):
                       f"confirmation in this pass; coverage below still enforces every intended "
                       f"key, and the pose->sample join runs on uncropped coordinates.")
             else:
+                # THE LIKELY CAUSE FIRST, THE JOINS SECOND. Read 2026-11-18 at 21,045 of
+                # 21,150 rows over tolerance: the three joins were all fine and the pass had
+                # installed --pose-perblock --pose-perblock-copy --frame-direction on top of the
+                # shipped weights, so the head being scored was not the shipped head at all. A
+                # message that lists only the joins sends the reader to debug three correct
+                # things. Near-TOTAL disagreement is the signature of a changed model; a broken
+                # join hits one interface, one seed set or a scatter of rows.
+                _inst = getattr(a, "arch_installed", [])
+                _why = ("\n  THE LIKELY CAUSE, named first because it has happened: this pass "
+                        "installed " + str(len(_inst)) + " architecture flag(s) -- "
+                        + " ".join(_inst) + " -- so the head scored was shipped-PLUS-those-"
+                        "pathways and is EXPECTED not to reproduce results.csv. Score the "
+                        "shipped head with no pathway flags (shell_scripts/"
+                        "score_shipped_head.sh), or declare the ablation with "
+                        "--shipped-with-pathways --no-self-check."
+                        if _inst else
+                        "\n  No pathway flag was installed, so the model really is the shipped "
+                        "one and the joins are the remaining suspects. "
+                        + ("Nearly EVERY row disagrees, which is a changed model or a changed "
+                           "input rather than a join: check for a crop, a different pool or a "
+                           "rebuilt fold before the joins. "
+                           if over > 0.9 * len(selfchk) else
+                           "A minority of rows disagree, which is join-shaped: see the "
+                           "per-interface counts above."))
                 raise SystemExit(
-                    f"STOP: the shipped head does not reproduce {over} stored ipTM value(s). "
-                    f"One of the three joins -- interface->chain pair, pose->sample, or "
-                    f"(iface,seed,sample)->DockQ -- is wrong.")
+                    f"STOP: the shipped head does not reproduce {over} of {len(selfchk)} stored "
+                    f"ipTM value(s)." + _why +
+                    f"\n  Otherwise one of the three joins -- interface->chain pair, "
+                    f"pose->sample, or (iface,seed,sample)->DockQ -- is wrong and no number from "
+                    f"this pass means anything.")
         elif _crop_selfcheck_informational:
             # EVERY ROW WITHIN TOLERANCE UNDER A CROP IS ITS OWN ALARM: it means the crop changed
             # nothing the head reads, so the "cropped" number is the uncropped one.
@@ -577,9 +770,21 @@ def aggregate(a, rows, selfchk, want_ifaces):
         if dq is not None:
             n_pose[iface] += 1
     want_depth = max(n_pose.values()) if n_pose else 0
-    print(f"coverage: {len(byif)} interface(s), {want_depth} scored pose(s) each, "
-          f"{len(rows)} row(s) total, {len(have)} of {len(want)} intended key(s), 0 duplicates, "
-          f"0 non-finite")
+    # "EACH" IS A CLAIM TOO, and under --mixed-budget it is false: want_depth is the MAXIMUM, so
+    # this line read "1688 interface(s), 75 scored pose(s) each" over a pool where 741 of them
+    # carry 5. The depth spread is printed instead, which is also the thing a reader of a mixed
+    # pass most needs to see before the metric.
+    if getattr(a, "mixed_budget", False):
+        _cand_hist = collections.Counter(n_pose.values())
+        print(f"coverage: {len(byif)} interface(s), MIXED candidate depth ("
+              + ", ".join(f"{c} iface(s) x {d} pose(s)"
+                          for d, c in sorted(_cand_hist.items(), reverse=True))
+              + f"), {len(rows)} row(s) total, {len(have)} of {len(want)} intended key(s), "
+                f"0 duplicates, 0 non-finite")
+    else:
+        print(f"coverage: {len(byif)} interface(s), {want_depth} scored pose(s) each, "
+              f"{len(rows)} row(s) total, {len(have)} of {len(want)} intended key(s), 0 "
+              f"duplicates, 0 non-finite")
     # THE TIE-BREAK IS EXPLICIT, so the selection cannot depend on row order. `max` returns the
     # FIRST maximal element, and row order differs between a sharded run (shards concatenated,
     # seeds interleaved) and a single-process one (seeds ascending), so two poses with equal ipTM
@@ -645,7 +850,11 @@ def aggregate(a, rows, selfchk, want_ifaces):
            "frac_acc": round(sum(1 for d in sel if d >= ACCEPTABLE) / n, 4),
            "oracle_mean_dockq": round(statistics.mean(orc), 4),
            "oracle_frac_acc": round(sum(1 for d in orc if d >= ACCEPTABLE) / n, 4),
-           "ckpt": a.ckpt or "shipped"}
+           # LABELLED SO AN ABLATION CANNOT BE READ AS THE BASELINE. "shipped" means stock
+           # Protenix weights through the stock pathway and nothing else; a deliberate
+           # --shipped-with-pathways pass says so here, with its flags, because this json is the
+           # unit that reaches the tables and the plots.
+           "ckpt": ckpt_label(a)}
     out["select_by"] = a.select_by
     out["headroom"] = round(out["oracle_mean_dockq"] - out["mean_dockq"], 4)
     # WHICH SEEDS THIS NUMBER COVERS, RECORDED WITH THE NUMBER. budget + seed_base no longer imply
@@ -664,8 +873,12 @@ def aggregate(a, rows, selfchk, want_ifaces):
         out[f"mean_dockq_select_{_an}"] = round(statistics.mean(_alt), 4)
         out[f"frac_acc_select_{_an}"] = round(
             sum(1 for d in _alt if d >= ACCEPTABLE) / len(_alt), 4)
-    print(f"\nMETRIC ({out['ckpt']}, {n} interfaces, budget {a.budget} seeds, "
-          f"selected by {a.select_by.upper()}-pooled ipTM)")
+    # THE HEADLINE SAYS WHICH KIND OF NUMBER IT IS. A mixed pass printing the same "budget 15"
+    # headline as the 947-interface uniform slice is how the two get pasted into one table.
+    print(f"\nMETRIC ({out['ckpt']}, {n} interfaces, "
+          + (f"MIXED budget, deepest {a.budget} seeds -- POOLED OVER MIXED DEPTHS, see the strata "
+             f"below" if getattr(a, "mixed_budget", False) else f"budget {a.budget} seeds")
+          + f", selected by {a.select_by.upper()}-pooled ipTM)")
     print(f"  mean_dockq {out['mean_dockq']:.4f}   frac_acc {out['frac_acc']:.4f}")
     for _k in ("mean_dockq_select_mean", "mean_dockq_select_max"):
         if _k in out:
@@ -713,6 +926,88 @@ def aggregate(a, rows, selfchk, want_ifaces):
         print(f"  baseline   {out['baseline_mean_dockq']:.4f}   "
               f"{out['baseline_frac_acc']:.4f}   (shipped head over THESE {n} interface(s) at "
               f"budget {a.budget}, from results.csv's recorded ipTM at 4dp)")
+
+    # ---- PER-DEPTH STRATA, WHICH IS WHAT A MIXED-BUDGET PASS ACTUALLY MEASURES.
+    #
+    # WHY THE POOLED NUMBER IS NOT ENOUGH. "frac acceptable at top 1" is a different problem at
+    # different depths: on the training pool one interface picks one pose out of 75 and another
+    # picks out of 5, and the shallow one is far more likely to have no acceptable pose to find at
+    # all. Pooling them yields a number that moves when the DEPTH MIX changes and looks exactly
+    # like the 947-interface budget-15 slice number while being a different measurement -- which
+    # is the substitution every guard in this file exists to prevent. So the pass reports one
+    # stratum per depth, each with its own oracle (what a perfect ranker over THOSE candidates
+    # would get) and its own shipped baseline over THE SAME rows, and the pooled line is labelled
+    # as covering mixed depths.
+    #
+    # DERIVED FROM THE MANIFEST, NOT FROM THE ROW COUNTS. The depth of an interface is a property
+    # of the intended set, so it is read back through intended_seeds -- the same function the
+    # coverage contract enforced above. Counting the rows per interface instead would make the
+    # strata agree with the data by construction even when the data is short.
+    if getattr(a, "mixed_budget", False):
+        _depth_of = {i: len(intended_seeds(a, i.rsplit("_", 1)[0])) for i in byif}
+        out["budget_mode"] = "mixed-per-structure"
+        out["budget_max"] = a.budget
+        out["depth_hist"] = {str(d): c for d, c in
+                             sorted(collections.Counter(_depth_of.values()).items(),
+                                    reverse=True)}
+        if len(set(_depth_of.values())) == 1:
+            print("  NOTE: every interface in THIS pass turned out to carry the same depth, so "
+                  "the pooled number above is a uniform-budget number; the mixed labelling is "
+                  "still applied, because the manifest's claim is what the label describes.")
+
+        def _stratum(dqs, odqs, bdqs, d):
+            s = {"n_interfaces": len(dqs), "seeds_per_interface": d,
+                 "candidates_per_interface": d * a.nsample,
+                 "mean_dockq": round(statistics.mean(dqs), 4),
+                 "frac_acc": round(sum(1 for x in dqs if x >= ACCEPTABLE) / len(dqs), 4),
+                 "oracle_mean_dockq": round(statistics.mean(odqs), 4),
+                 "oracle_frac_acc": round(sum(1 for x in odqs if x >= ACCEPTABLE) / len(odqs), 4)}
+            s["headroom"] = round(s["oracle_mean_dockq"] - s["mean_dockq"], 4)
+            if bdqs is not None:
+                s["baseline_mean_dockq"] = round(statistics.mean(bdqs), 4)
+                s["baseline_frac_acc"] = round(
+                    sum(1 for x in bdqs if x >= ACCEPTABLE) / len(bdqs), 4)
+            return s
+
+        out["strata"] = {}
+        print(f"\nPER-DEPTH STRATA ({out['ckpt']}, selected by {a.select_by.upper()}-pooled ipTM; "
+              f"the pooled line above covers all of these together)")
+        print(f"  {'depth':>5} {'cands':>6} {'n':>5}   {'ours q':>7} {'ours top1':>9}   "
+              f"{'ship q':>7} {'ship top1':>9}   {'oracle q':>8} {'oracle top1':>11}")
+        for d in sorted(set(_depth_of.values()), reverse=True):
+            _ifs = [i for i, dd in _depth_of.items() if dd == d]
+            _sel = [_pick(byif[i])[1] for i in _ifs]
+            _orc = [max(dq for _v, dq, _s, _k in byif[i]) for i in _ifs]
+            # THE SAME VERDICT THE POOLED BASELINE REACHED, not a weaker one. Gating on
+            # interface membership alone let a stratum print a ship column computed from a
+            # NARROWER candidate set: with one pose per interface missing its stored ipTM, the
+            # pooled line correctly said "baseline to beat: UNAVAILABLE" while the strata table
+            # printed 0.2416/0.3008 and 0.1884/0.2245 against true values of 0.2417/0.3083 and
+            # 0.1874/0.2313 -- and the closing paragraph then told the reader to compare against
+            # exactly that narrowed column. Found in review. "baseline_mean_dockq" in `out` IS
+            # the pooled verdict: it is set only on the branch where every scored pose carried a
+            # stored ipTM and every interface had one.
+            _bse = ([_pick(b_by[i])[1] for i in _ifs]
+                    if "baseline_mean_dockq" in out and all(i in b_by for i in _ifs) else None)
+            st = _stratum(_sel, _orc, _bse, d)
+            out["strata"][f"depth_{d}"] = st
+            print(f"  {d:>5} {d * a.nsample:>6} {len(_ifs):>5}   "
+                  f"{st['mean_dockq']:>7.4f} {st['frac_acc']:>9.4f}   "
+                  + (f"{st['baseline_mean_dockq']:>7.4f} {st['baseline_frac_acc']:>9.4f}   "
+                     if _bse is not None else f"{'--':>7} {'--':>9}   ")
+                  + f"{st['oracle_mean_dockq']:>8.4f} {st['oracle_frac_acc']:>11.4f}")
+        print("  THE POOLED LINE IS NOT COMPARABLE TO A UNIFORM-BUDGET NUMBER: choosing among "
+              f"{min(set(_depth_of.values())) * a.nsample} candidates and among "
+              f"{a.budget * a.nsample} are different problems, and the pooled value moves with "
+              "the depth mix alone. "
+              + ("Compare it ONLY against the baseline column, which is the shipped head over "
+                 "these same rows, or compare a stratum against another pass at the SAME depth "
+                 "over the SAME interfaces."
+                 if "baseline_mean_dockq" in out else
+                 "AND THERE IS NO BASELINE COLUMN in this pass (see 'baseline to beat: "
+                 "UNAVAILABLE' above), so the only valid comparison left is a stratum against "
+                 "another pass at the SAME depth over the SAME interfaces."))
+
     if a.out:
         with open(a.out, "w") as fh:
             import json
@@ -905,6 +1200,22 @@ def main():
                          "({structures: {pdb: {seeds: [...]}}, seed_range: [lo, hi]}). Without it "
                          "the intended set is the contiguous window from --seed-base, which a "
                          "trimmed fold does not satisfy.")
+    ap.add_argument("--mixed-budget", action="store_true",
+                    help="ALLOW THE --seed-manifest TO KEEP A DIFFERENT NUMBER OF SEEDS PER "
+                         "STRUCTURE, and label the result as the mixed-budget measurement it is. "
+                         "--budget then names the DEEPEST structure rather than every structure, "
+                         "and the metric json carries depth_hist plus one `strata` entry per "
+                         "depth, each with its own oracle and its own shipped baseline over the "
+                         "same rows. REQUIRED FOR THE WHOLE TRAINING SET, which cannot be scored "
+                         "under one budget at all: 947 of its 1,688 interfaces have 15 trunks and "
+                         "741 have one, so --budget 15 stopped on 5,516 of 12,795 intended units. "
+                         "Only works WITH a manifest that itself declares mixed:true; the flag on "
+                         "a uniform manifest, and a mixed manifest without the flag, are both "
+                         "hard stops, so no existing uniform pass can lose its depth assertion by "
+                         "picking up one half of this pair. The POOLED mean_dockq/frac_acc of a "
+                         "mixed pass is NOT comparable to a uniform-budget number -- selecting "
+                         "among 5 candidates and among 75 are different problems -- which is why "
+                         "the per-depth strata are reported beside it.")
     ap.add_argument("--nsample", type=int, default=5,
                     help="poses per unit, as the fold wrote them. Part of the coverage contract: "
                          "the intended key set is interfaces x seeds x THIS, so a budget label "
@@ -1011,6 +1322,16 @@ def main():
     ap.add_argument("--pose-readout-post-zero", action="store_true",
                     help="the arm's second, post-layernorm injection site. The checkpoint carries "
                          "pose_readout_post_* tensors, so an eval without this flag fails the load.")
+    ap.add_argument("--pose-mlp", action="store_true",
+                    help="the checkpoint was trained with phase_k_train --pose-mlp, so the head "
+                         "carries 15 pose_mlp_* tensors the stock model does not -- the shared "
+                         "first layer of the nonlinear pose branch and its six per-site second "
+                         "layers. The key-set guard below refuses every such checkpoint without "
+                         "this flag, so an arm would train to completion with no eval number at "
+                         "all. phase_k_train passes it automatically. Requires the flags that own "
+                         "its six sites: --frame-direction, --pose-perblock, --pose-readout, "
+                         "--pose-readout-prenorm and --pose-readout-post-zero; pose_mlp.install "
+                         "refuses rather than scoring a four-site branch.")
     ap.add_argument("--pose-inblock", action="store_true",
                     help="the checkpoint was trained with phase_k_train --pose-inblock, so the "
                          "head carries pose_inblock_d* tensors the stock model does not. Installs "
@@ -1028,6 +1349,17 @@ def main():
                          "PAE readout (pose_inblock_pae_d*). phase_k_train passes this "
                          "automatically whenever it trained with it.")
     ap.add_argument("--no-self-check", action="store_true")
+    ap.add_argument("--shipped-with-pathways", action="store_true",
+                    help="deliberately score the SHIPPED (untrained) weights THROUGH an installed "
+                         "pose/frame pathway -- an ablation, NOT the shipped baseline. Without it "
+                         "a shipped pass that installs any pathway flag is refused at startup "
+                         "(see refuse_shipped_with_pathways): that combination was run by accident "
+                         "once and cost twelve minutes of three cards before the merge caught it. "
+                         "Requires --no-self-check, because an installed pathway changes the model "
+                         "and its ipTM cannot reproduce results.csv -- which is the post-hoc guard "
+                         "you would otherwise pay the whole pass to hit. The metric json records "
+                         "ckpt \"shipped+pathways\" with the flag list, so no reader can take it "
+                         "for the baseline.")
     ap.add_argument("--allow-roles-fallback", action="store_true",
                     help="use chain_roles.csv when OST's per-pose mapping is unusable. OFF by "
                          "default: that table assigns one model chain per reference chain for the "
@@ -1152,8 +1484,47 @@ def main():
                     help="comma-separated row csvs from --rows-out. Runs the self-check, the "
                          "coverage contract and the metric on their union, on CPU, with no model.")
     a = ap.parse_args()
+    # THE FLAG-VS-CHECKPOINT CHECK FIRST, because it is the cheapest refusal in this file and the
+    # most expensive one to discover late: see refuse_shipped_with_pathways for the twelve GPU
+    # minutes it is paying back.
+    #
+    # NOT ON THE MERGE PATH, and that is not a hole. phase_k_eval_sharded.py hands the merge the
+    # shards' --extra but NO --ckpt (merge_rows restores it from the shard metas), so a TRAINED
+    # head's merge arrives here looking shipped with every pathway flag present -- refusing it
+    # would break every sharded evaluation in the project, including the trainer's own. The merge
+    # is checked inside merge_rows instead, against the shards' own recorded flags, which is the
+    # honest record of what was installed rather than whatever this invocation was handed.
+    _arch_installed = arch_flags_installed(a, ap)
+    # CARRIED ON THE NAMESPACE so the shard meta, the metric label and the self-check's own
+    # explanation all describe the SAME pass rather than three recomputations of it.
+    a.arch_installed = _arch_installed
+    if not a.rows_in:
+        refuse_shipped_with_pathways(_arch_installed, a, "startup")
+    # AND THE ABLATION CANNOT BE HALF-ASKED-FOR. --shipped-with-pathways says the model is
+    # deliberately not the shipped one, so results.csv cannot be reproduced and the self-check
+    # WILL stop the merge -- after the GPU work. Refused here instead.
+    if a.shipped_with_pathways and not a.ckpt and not a.no_self_check:
+        raise SystemExit(
+            "STOP: --shipped-with-pathways needs --no-self-check. The installed pathway changes "
+            "the model, so its recomputed ipTM cannot reproduce results.csv, so the self-check at "
+            "the merge would stop this pass with every forward pass already paid for. Pass both "
+            "flags, or drop --shipped-with-pathways and score the shipped head as shipped.")
     # CHECKED FROM argv, BEFORE ANYTHING LOADS. Two crop rules at once is knowable here, and a
     # refusal that waits for the model load arrives minutes later and on a worker.
+    #
+    # --mixed-budget WITHOUT A MANIFEST IS THE THIRD HALF-OPEN DOOR, and it is checked here
+    # because intended_seeds returns the contiguous window before it ever reads a manifest:
+    # the flag's own double-lock could not see that case. Reproduced in review -- the completed
+    # uniform budget-15 slice pass re-merged with --mixed-budget and no --seed-manifest exited 0
+    # and wrote budget_mode "mixed-per-structure", budget_max 15 and a strata block over a pool
+    # with ONE depth, with seed_manifest "". Every number was right and every label was wrong,
+    # which is the one substitution the mixed labelling exists to prevent.
+    if a.mixed_budget and not a.seed_manifest:
+        raise SystemExit("STOP: --mixed-budget needs --seed-manifest. Without one the intended "
+                         "seed set is the contiguous window from --seed-base, which is a UNIFORM "
+                         "depth -- so the pass would label a uniform measurement 'mixed' in its "
+                         "json and its headline while no manifest recorded what the depths were. "
+                         "Pass the mixed manifest, or drop --mixed-budget.")
     if a.dump_pae:
         if not a.pair_iptm_only:
             raise SystemExit("STOP: --dump-pae needs --pair-iptm-only; the PAE probabilities it "
@@ -1250,9 +1621,21 @@ def main():
     if missing_trunk and not a.allow_partial:
         raise SystemExit(
             f"STOP: {len(missing_trunk)} of {n_intended} intended unit(s) have no "
-            f"trunk under {a.fold}/trunks, e.g. {missing_trunk[:5]}.\n  A metric labelled "
-            f"'budget {a.budget}' must cover {a.budget} seeds for every structure. Lower --budget, "
-            f"or pass --allow-partial to report a number that does NOT mean what its label says.")
+            f"trunk under {a.fold}/trunks, e.g. {missing_trunk[:5]}.\n  "
+            + (f"Under --mixed-budget every structure must still carry EVERY seed its manifest "
+               f"keeps for it; a manifest listing a seed with no trunk is the manifest being "
+               f"wrong about the fold, not a depth to be rounded down silently. Rebuild it from "
+               f"the trunks on disk (run_logging/build_train_seed_manifest.py), "
+               if getattr(a, "mixed_budget", False) else
+               f"A metric labelled 'budget {a.budget}' must cover {a.budget} seeds for every "
+               f"structure. Lower --budget, ")
+            + f"or pass --allow-partial to report a number that does NOT mean what its label "
+              f"says."
+            + ("\n  THE WHOLE TRAINING FOLD IS NOT UNIFORM: 459 of the 853 structures in "
+               "training/combined/pool.csv have 15 trunks and 394 have exactly one, so no single "
+               "--budget covers it. Scoring all of it takes --mixed-budget with the per-structure "
+               "manifest (run_logging/build_train_seed_manifest.py), not a lower uniform budget."
+               if "training/fold" in a.fold and not getattr(a, "mixed_budget", False) else ""))
     if a.limit_units:
         if not a.allow_partial:
             raise SystemExit("STOP: --limit-units subsets the data, so the metric would not be the "
@@ -1267,8 +1650,13 @@ def main():
         # contiguous blocks would hand one shard the large complexes. A stride interleaves them.
         units = units[a.shard::a.nshards]
         print(f"shard {a.shard} of {a.nshards}: {len(units)} unit(s)")
-    print(f"units: {len(units)} of {len(pairs_by_pdb)*a.budget} intended "
-          f"({len(pairs_by_pdb)} structures x {a.budget} seeds)"
+    # n_intended, NOT structures x budget: under --mixed-budget the intended unit count is the SUM
+    # of the per-structure depths (7,279 for the training pool, not 853 x 15 = 12,795), and
+    # printing the product made a complete mixed pass look like it had lost 43% of its units.
+    print(f"units: {len(units)} of {n_intended} intended "
+          + (f"({len(pairs_by_pdb)} structures, MIXED depth, deepest {a.budget} seeds)"
+             if getattr(a, "mixed_budget", False)
+             else f"({len(pairs_by_pdb)} structures x {a.budget} seeds)")
           + ("  [PARTIAL -- --allow-partial]" if a.allow_partial else ""))
 
     # THE MODEL IS LOADED LAST, after everything that can be checked from the filesystem has
@@ -1354,6 +1742,17 @@ def main():
     elif a.pose_readout_prenorm:
         raise SystemExit("STOP: --pose-readout-prenorm without --pose-readout. It moves the "
                          "fifth site, it does not install it; the trainer refuses this too.")
+    # AFTER ALL THREE, AND IN THE TRAINER'S ORDER (phase_k_train.py:2313). pose_mlp reads the
+    # geometry the other modules publish and injects at their sites, so it installs last; its
+    # install() names any missing prerequisite rather than scoring a branch with fewer sites than
+    # the checkpoint was trained with. hidden_dim is NOT a flag: it is fixed in pose_mlp, so the
+    # trainer and the evaluator cannot disagree about it unless the module itself changes between
+    # them. The guard below compares KEY SETS, not shapes -- a changed width would still fail, but
+    # on the parameter copy raising rather than on the guard, so the module constant is what keeps
+    # this honest.
+    if a.pose_mlp:
+        import pose_mlp
+        pose_mlp.install(model)
     if a.ckpt:
         sd = torch.load(a.ckpt, map_location="cpu")
         have = dict(model.named_parameters())
@@ -1400,7 +1799,18 @@ def main():
         print(f"loaded {len(sd)} head tensor(s) from {a.ckpt}, exact match against "
               f"{len(head_names)} head parameter(s)")
     else:
-        print("using the SHIPPED head (no --ckpt)")
+        # AND WHETHER IT IS REALLY THE SHIPPED HEAD. This line said "using the SHIPPED head"
+        # while three pose-injection pathways had just been installed above it and printed their
+        # own cheerful confirmations; the log read as a shipped pass. The startup guard makes the
+        # second branch unreachable without --shipped-with-pathways, and it is printed anyway so
+        # that the log of an ablation can never be mistaken for the log of the baseline.
+        _inst = getattr(a, "arch_installed", [])
+        if _inst:
+            print(f"using the shipped WEIGHTS through {len(_inst)} INSTALLED pathway(s) "
+                  f"({' '.join(_inst)}) -- an ablation (--shipped-with-pathways), NOT the "
+                  f"shipped baseline")
+        else:
+            print("using the SHIPPED head (no --ckpt), with no pathway installed")
 
     # THE POSE->SAMPLE JOIN IS CACHEABLE, and it is the only part of this loop that is. It is a
     # function of the trunk's own coordinates and the pose cifs on disk, so for a fixed validation
@@ -1821,7 +2231,14 @@ def main():
                        "rows": len(rows), "n_ost": n_ost, "n_unresolvable": n_static,
                        "n_differ": n_differ, "differ_pdbs": dict(differ_pdbs),
                        "n_unmapped": len(unmapped), "unmapped": unmapped[:50],
-                       "budget": a.budget, "ckpt": a.ckpt}, fh, indent=1)
+                       "budget": a.budget, "ckpt": a.ckpt,
+                       # WHAT THIS SHARD INSTALLED, RECORDED WITH ITS ROWS. The merge is handed
+                       # the shards' --extra but no --ckpt, so without this field it has to
+                       # believe its own command line about an architecture it never built. A
+                       # shipped pass whose shards installed pose injections is then named by
+                       # the flags themselves rather than guessed at. Empty on every clean pass.
+                       "pathway_flags": getattr(a, "arch_installed", [])},
+                      fh, indent=1)
         print(f"shard {a.shard}: {len(rows)} row(s) -> {a.rows_out}")
         if unmapped and a.drop_unmapped_poses:
             for u in unmapped[:10]:

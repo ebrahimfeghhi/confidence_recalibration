@@ -33,14 +33,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-RID = sys.argv[1] if len(sys.argv) > 1 else sys.exit("usage: plot_pae_split.py <rid> [out.png]")
+RIDS = (sys.argv[1] if len(sys.argv) > 1
+        else sys.exit("usage: plot_pae_split.py <rid>[,<rid2>...] [out.png]")).split(",")
+RID = RIDS[-1]
 OUT = sys.argv[2] if len(sys.argv) > 2 else f"figures/pae_split_{RID}.png"
-SRC = f"training/runs/{RID}/spread.r0.csv"
-if not os.path.exists(SRC):
-    sys.exit(f"STOP: {SRC} does not exist. Is --pae-split-accept set on this run?")
+SRCS = [f"training/runs/{r}/spread.r0.csv" for r in RIDS]
+_have = [p for p in SRCS if os.path.exists(p)]
+if not _have:
+    sys.exit(f"STOP: none of {SRCS} exists. Is --pae-split-accept set on this run?")
 
 rows = []
-with open(SRC) as fh:
+for SRC in _have:
+  with open(SRC) as fh:
     for r in csv.DictReader(fh):
         if r.get("pae_acc") in (None, "", "nan") or r.get("epoch") in (None, ""):
             continue
@@ -52,7 +56,11 @@ with open(SRC) as fh:
             continue        # a row written before these columns existed
 if not rows:
     sys.exit(f"STOP: {SRC} holds no row with a PAE split yet.")
-rows.sort(key=lambda d: d["epoch"])
+# LATER FILE WINS ON A DUPLICATED EPOCH: a resumed run re-reports the epoch it restarted from.
+_by = {}
+for d in rows:
+    _by[d["epoch"]] = d
+rows = [_by[e] for e in sorted(_by)]
 ep = [d["epoch"] for d in rows]
 
 plt.rcParams.update({"font.size": 11})
@@ -72,7 +80,7 @@ ax[1].set_xlabel("epoch"); ax[1].set_ylabel("difference in PAE loss")
 
 for a_ in ax:
     a_.grid(alpha=.3)
-fig.suptitle(f"PAE loss split by pose group -- {RID}   "
+fig.suptitle(f"PAE loss split by pose group -- {' -> '.join(RIDS)}   "
              f"(DockQ 0.23, {len(rows)} epoch(s))", fontsize=13)
 fig.tight_layout(rect=[0, 0, 1, .92])
 os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)

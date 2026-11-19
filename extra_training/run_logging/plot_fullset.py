@@ -207,6 +207,16 @@ def score_points(work):
         # which moves the mean without looking wrong. Require the meta marker from all three
         # shards and the same candidate count on every interface, and say out loud what is being
         # skipped rather than dropping it silently.
+        #
+        # A MIXED-BUDGET DIR IS SKIPPED HERE BY DESIGN, not by oversight. phase_k_eval
+        # --mixed-budget scores the whole training pool with a per-structure depth (947 interfaces
+        # at 75 candidates, 741 at 5), and its rows carry the same schema as any other pass -- so
+        # the only thing stopping it being drawn is the equal-candidate-count gate below, and that
+        # gate is right: every quantity in this figure (top-1, best-of-N, rank of the first
+        # acceptable) is a function of how many candidates the item had, so one point pooling both
+        # depths would move with the depth mix and not with the head. Draw such a pass per depth,
+        # from the `strata` block of its metric json or the per-depth tables score_report.py
+        # --slice-depths prints; do NOT relax this gate to let it through.
         if not by:
             continue
         cand = {len(v) for v in by.values()}
