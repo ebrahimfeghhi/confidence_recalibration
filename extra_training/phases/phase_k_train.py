@@ -1734,6 +1734,20 @@ def main():
                 "STOP: --tm-centered with row weighting or class balance. Both reweight the PAE "
                 "cross-entropy, which this arm does not train, so they would change nothing while "
                 "the launch line claimed they did.")
+        if a.crop_pool:
+            # TWO SEPARATE REASONS, EITHER ONE FATAL. (1) d0: _set_pae_mask counts the chain pair's
+            # tokens over the CROPPED asym_id, and selection reads chain_pair_iptm over the whole
+            # structure, so every block's d0 would be the normalisation of a smaller N_d and the
+            # loss would be a different metric than ipTM -- the same defect --rank-loss fixed by
+            # passing _uncrop_npt, which this path does not do. (2) pass A takes the true error
+            # from BC.minimal_loss_inputs(lab, 0), which is FULL SIZE, against a cropped
+            # prediction: the shapes disagree and pair_errors raises, hundreds of units in.
+            raise SystemExit(
+                "STOP: --tm-centered with --crop-pool. The per-block d0 would come from the "
+                "CROPPED chain-pair token count while selection reads ipTM over the whole "
+                "structure (--rank-loss passes _uncrop_npt for this; --tm-centered does not), "
+                "and pass A's label is full-size against a cropped prediction. Run this arm "
+                "uncropped, or plumb _uncrop_npt into the tm_centered blocks first.")
 
     # CROPPING IS ONLY COHERENT ON THE MINIMAL PATH. The dataset item carries a FULL-SIZE
     # label_dict, so cropping the prediction while the loss reads full-size masks would either
@@ -6862,6 +6876,14 @@ def main():
                             cum = _lv
                             _tm_stat["loss"] += float(_lv.detach())
                             _tm_stat["n"] += 1
+                            # HOW MANY POSES THIS POSE'S MEAN WAS TAKEN OVER. _tm_acc is PER RANK,
+                            # and build_epoch_cross_seed deals a structure's seeds round-robin
+                            # across the ranks, so a structure with 15 seeds x 5 poses in one step
+                            # gives each of 3 ranks 25 of its 75 poses -- the centring is over
+                            # that subset, not over the structure's poses in the training set.
+                            # Reported so the gap between the spec and the shard is a number in
+                            # the log rather than an assumption.
+                            _tm_stat["mpose"] += int(_accB["poses"])
                     _pae_keep["sq"] = None
                 if a.pae_entropy > 0.0:
                     # REPLACE, NOT ADD. `cum` above is the labelled objective; keeping any of it
@@ -7382,6 +7404,58 @@ def main():
         else:
             allsc = dict(local)
             allsamp = dict(local_samp)
+
+        # --tm-centered: THE PER-PAIR MEAN MUST BE OVER THE STRUCTURE'S POSES, NOT THIS RANK'S.
+        #
+        # All of a structure's poses ARE in this step -- that is what --rank-cross-seed guarantees
+        # -- but they are not all on this rank. build_epoch_cross_seed deals the step's units in
+        # CONTIGUOUS slices after shuffling the per-structure lists, so with 2 structures x 15
+        # seeds over 3 ranks a rank can hold 10 units of one structure and none of the other. Left
+        # ungathered, each pose was centred against 25 of its structure's 75 poses and WHICH 25
+        # depended on the shard, so the objective depended on the world size. The ranking loss is
+        # immune to the same dealing only because it gathers its scalars here, which is exactly
+        # what this does for the sums.
+        #
+        # OBJECT COLLECTIVE, LIKE THE TWO ABOVE, AND FOR THE SAME REASON: the per-structure arrays
+        # have different shapes ([N_frame, N_token] per structure), so a tensor collective would
+        # need a shape exchange and padding. At the hard set's median 589 tokens one structure's
+        # sum+count is ~2.8 MB, two structures per step over three ranks -- irrelevant next to the
+        # trunk reads this step already paid for.
+        #
+        # SUMS AND COUNTS ARE ADDITIVE, so merging is addition and no rank needs to know how the
+        # units were dealt. `poses` is summed too, which is what makes the every-pose test
+        # (cnt == poses) refer to the STRUCTURE's pose count rather than a rank's share of it.
+        if a.tm_centered and _tm_acc:
+            if world > 1:
+                _t_tm = time.perf_counter()
+                _loc_tm = {_p: (_v["sum"].detach().cpu().numpy(),
+                                _v["cnt"].detach().cpu().numpy(),
+                                int(_v["poses"]))
+                           for _p, _v in _tm_acc.items()}
+                _bag_tm = [None] * world
+                dist.all_gather_object(_bag_tm, _loc_tm)
+                _tick("tm_gather", _t_tm)
+                _merged = {}
+                for _d in _bag_tm:
+                    for _p, (_s, _c, _n) in (_d or {}).items():
+                        if _p in _merged:
+                            _m = _merged[_p]
+                            _merged[_p] = (_m[0] + _s, _m[1] + _c, _m[2] + _n)
+                        else:
+                            _merged[_p] = (_s.copy(), _c.copy(), _n)
+                for _p, (_s, _c, _n) in _merged.items():
+                    # ONLY THE STRUCTURES THIS RANK WILL ACTUALLY BACKWARD, so a rank holding none
+                    # of a structure does not carry its arrays into pass B for nothing.
+                    if _p not in _tm_acc:
+                        continue
+                    _dev0 = _tm_acc[_p]["sum"].device
+                    _tm_acc[_p] = {
+                        "sum": torch.as_tensor(_s, dtype=torch.float32, device=_dev0),
+                        "cnt": torch.as_tensor(_c, dtype=torch.float32, device=_dev0),
+                        "poses": int(_n)}
+                _tm_stat["gathered"] = _tm_stat.get("gathered", 0) + 1
+            else:
+                _tm_stat["gathered"] = _tm_stat.get("gathered", 0) + 1
 
         # GROUPED BY (pdb, interface), which is what an interface IS. Keyed by (seed, sample)
         # inside the group so group_coeffs can tell cross-seed pairs from within-seed ones.
@@ -10213,16 +10287,42 @@ def main():
             # a small centred loss -- squashing is invisible in the loss and obvious in this number.
             # A value drifting to either end means the term is being satisfied by collapse rather
             # than by ordering.
+            # AND THE n == 0 CASE IS THE ONE THAT MUST NOT BE SILENT. Gating the whole line on
+            # n > 0 hid exactly the failure the nolabel counter exists to surface: every pose
+            # taking `cum = cum * 0.0` is an epoch of training on a zero objective, and with the
+            # line suppressed the only visible number was the pae_loss READOUT, which is computed
+            # either way and looks completely ordinary. --loss-only reaches this legitimately
+            # (pass A returns before filling _tm_acc, so there is no mean and no gradient); a
+            # gradient run reaching it does not.
+            if a.tm_centered and not _tm_stat["n"]:
+                print(f"  [rank {rank}] epoch {ep + 1} CENTRED TM ERROR: NO POSE TOOK A GRADIENT "
+                      f"({_tm_stat['poses']} scored in pass A, {_tm_stat['nolabel']} pose(s) had "
+                      f"no pass-A mean, {_tm_stat['unmasked']} had no scored chain pair). The "
+                      f"objective was 0.0 for the whole epoch"
+                      + ("; expected under --loss-only." if a.loss_only else
+                         " -- THIS ARM TRAINED NOTHING."), flush=True)
             if a.tm_centered and _tm_stat["n"]:
                 print(f"  [rank {rank}] epoch {ep + 1} CENTRED TM ERROR: "
                       f"{_tm_stat['loss'] / _tm_stat['n']:.6f} over {_tm_stat['n']} pose(s) "
-                      f"({_tm_stat['poses']} scored in pass A), mean predicted pair score "
+                      # POSES OF THE STRUCTURE, ACROSS ALL RANKS, now that _xs_prepare gathers the
+                      # sums. Read this number: it should equal the structure's full depth x
+                      # nsample (15 x 5 = 75 on the hard set). If it is about a third of that, the
+                      # gather is not running and each pose is being centred against its own
+                      # rank's share -- which is a different objective and depends on world size.
+                      f"({_tm_stat['poses']} scored in pass A on this rank, each pose centred "
+                      f"against {_tm_stat['mpose'] / _tm_stat['n']:.1f} pose(s) of its structure "
+                      f"across ALL ranks), mean predicted pair score "
                       f"{(_tm_stat['pred_sum'] / _tm_stat['pred_n']) if _tm_stat['pred_n'] else float('nan'):.4f}"
                       + (f"; {_tm_stat['unmasked']} pose(s) had no scored chain pair"
                          if _tm_stat["unmasked"] else "")
                       + (f"; {_tm_stat['nolabel']} pose(s) had no pass-A mean and took NO gradient"
                          if _tm_stat["nolabel"] else ""), flush=True)
-                for _k in ("poses", "loss", "n", "pred_sum", "pred_n", "unmasked", "nolabel"):
+            if a.tm_centered:
+                # RESET UNCONDITIONALLY, outside the n > 0 branch: the counters are per EPOCH, and
+                # resetting them only when a pose trained made the nolabel count of a dead epoch
+                # roll into the next one.
+                for _k in ("poses", "loss", "n", "pred_sum", "pred_n", "unmasked", "nolabel",
+                           "mpose"):
                     _tm_stat[_k] = 0 if _k != "loss" and _k != "pred_sum" else 0.0
             # THE SAME MEDIANS, TO A FILE. Until now the print above was the only record
             # of the within-interface spread, so reading a 20-epoch curve out of it meant
