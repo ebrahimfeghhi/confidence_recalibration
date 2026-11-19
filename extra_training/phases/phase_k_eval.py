@@ -1397,6 +1397,29 @@ def main():
                          "every pass costs a measured 3.6 min per shard for an answer that cannot "
                          "differ. OFF by default: it changes nothing about the metric, but a stale "
                          "cache would, so it is opt-in and keyed on the trunk's mtime and size.")
+    # THE HELD-OUT PAE LOSS, IN THIS PASS'S OWN FORWARD. Off by default.
+    #
+    # WHY IT BELONGS HERE: the DockQ metric and the PAE loss were two passes over the same poses,
+    # and once --val-loss-uncropped is on they see IDENTICAL inputs -- so the second forward was
+    # duplication, ~12 min of three cards per epoch. The confidence head already produces the
+    # 64-bin logits; run_logging/pae_eval_loss.py computes the loss from them before they are
+    # discarded.
+    #
+    # WRITTEN TO A SIDECAR, NOT INTO rows_out. That row tuple is a six-field contract shared by
+    # the sharded and plain paths and has already broken twice when a field was added -- once
+    # raising ValueError on one path and NameError on the other. A separate file keyed by
+    # (pdb, seed, sample) also happens to be exactly the shape run_logging/val_pae_split.py
+    # already reads, so the good/bad split needs no new reader.
+    ap.add_argument("--pae-loss", action="store_true",
+                    help="compute the training PAE loss for every scored pose in this pass, from "
+                         "the logits the confidence head already produced, and write it beside "
+                         "--rows-out. Needs --pair-iptm-only, --pae-scored-pairs and labels.")
+    ap.add_argument("--pae-loss-labels", default="",
+                    help="label root for --pae-loss; defaults to <fold>/labels.")
+    ap.add_argument("--pae-loss-out", default="",
+                    help="sidecar path; defaults to paeloss_<rows-out basename> in the "
+                         "same directory. Deliberately NOT rows_*.pae.csv: that matches the "
+                         "rows_*.csv glob six other readers use.")
     ap.add_argument("--dump-pae", default="",
                     help="write per-pose EXPECTED ALIGNED ERROR (Angstroms) for the ABAG-Rank "
                          "export, into <dir>/<pdb>/<seed>_<sample>.npz. Only the inter-chain pairs "
@@ -1856,6 +1879,37 @@ def main():
     _pf_future = None
 
     rows, selfchk, n_nosample = [], [], 0
+    pae_loss_rows = []           # (pdb, seed, sample, pae_loss) when --pae-loss is on
+    # THE CONTEXT IS BUILT ONCE PER PROCESS. It constructs a ProtenixLoss, stubs the three terms
+    # the arms do not train, and installs the scored-chain-pair mask hook -- all of which must
+    # happen before the first unit, not per unit.
+    _PAE_CTX = None
+    if a.pae_loss:
+        if not a.pair_iptm_only:
+            raise SystemExit("STOP: --pae-loss needs --pair-iptm-only; the full confidence() path "
+                            "discards the 64-bin logits before this could read them.")
+        # THE MASK COMES FROM --pool AND --roles, the pass's OWN pool. The trainer calls these
+        # --pae-scored-pairs and --pae-scored-roles and the first version of this block asked for
+        # those names here, which do not exist in this file -- so the mask would have come from a
+        # missing attribute. They are the same two tables: the pool names the scored interfaces by
+        # reference chain and roles maps reference chain to model chain. Using --pool also makes
+        # the masked pairs exactly the interfaces this pass reports DockQ for, which is the
+        # property that makes the two numbers describe the same thing.
+        if not a.pool or not a.roles:
+            raise SystemExit("STOP: --pae-loss needs --pool and --roles to build the scored "
+                            "chain-pair mask. Unmasked, the loss would average every chain pair "
+                            "including the intra-chain blocks, which is not the quantity the "
+                            "training curve plots.")
+        _pl_labels = a.pae_loss_labels or os.path.join(a.fold, "labels")
+        if not os.path.isdir(_pl_labels):
+            raise SystemExit(f"STOP: --pae-loss found no label root at {_pl_labels}.")
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "..", "run_logging"))
+        import pae_eval_loss as _PEL
+        _PAE_CTX = _PEL.PaeLossCtx(configs, a.pool, a.roles, _pl_labels, torch,
+                                   split_accept=0.23)
+        print(f"PAE LOSS IN THIS PASS: labels {_pl_labels}, mask from {a.pool} + {a.roles}, "
+              f"written to {a.pae_loss_out or (a.rows_out + '.pae.csv')}", flush=True)
     _CROPPOOL = {}
     if a.crop_pool:
         if not os.path.isdir(a.crop_pool):
@@ -1973,7 +2027,13 @@ def main():
             # structures with zero mismatches.
             _fai, _pae = pose_direction.derive_frames(feat)
             pose_direction.set_unit(_fai, feat["has_frame"], _pae, pdb=pdb)
-        _CONF = ((lambda *_a: RC.pair_iptm_only(*_a, want_pae=a.dump_pae, want_mean=a.pool_mean))
+        _pl_fn = _PAE_CTX.unit_fn(pdb, sd_, BC) if _PAE_CTX is not None else None
+        # THE PER-UNIT PAE-LOSS CLOSURE. Built here rather than inside pair_iptm_only because
+        # it needs `ks` -- the coordinate-identity pose->sample join -- which is resolved below,
+        # per unit. _pl_fn is therefore installed AFTER the join for the per-pose path and before
+        # the single call for the unit path; see the two call sites.
+        _CONF = ((lambda *_a, **_k: RC.pair_iptm_only(*_a, want_pae=a.dump_pae,
+                                                      want_mean=a.pool_mean, **_k))
                  if a.pair_iptm_only else RC.confidence)
         if _perpose:
             summ = []
@@ -1984,7 +2044,8 @@ def main():
                     # 0's residues.
                     _fai, _pd = pose_direction.derive_frames(_f)
                     pose_direction.set_unit(_fai, _f["has_frame"], _pd, pdb=pdb)
-                _s = _CONF(model, configs, _f, _si, _st, _z, _x[_pi:_pi + 1], _nc)
+                _s = _CONF(model, configs, _f, _si, _st, _z, _x[_pi:_pi + 1], _nc,
+                           **({"pae_loss_fn": _pl_fn} if _pl_fn is not None else {}))
                 _s = _s if isinstance(_s, (list, tuple)) else [_s]
                 if len(_s) != 1:
                     raise SystemExit(f"STOP: scoring one pose returned {len(_s)} summaries. The "
@@ -1998,7 +2059,8 @@ def main():
             # hour of GPU had already been spent and discarded. The traceback is re-raised
             # unchanged; this only adds the one fact it was missing.
             try:
-                summ = _CONF(model, configs, feat, s_in, s_tr, z, x, nc)
+                summ = _CONF(model, configs, feat, s_in, s_tr, z, x, nc,
+                             **({"pae_loss_fn": _pl_fn} if _pl_fn is not None else {}))
             except Exception as _e_conf:
                 _nt = (int(feat["asym_id"].shape[-1])
                        if hasattr(feat.get("asym_id"), "shape") else "?")
@@ -2042,6 +2104,19 @@ def main():
             for _pi in sorted(_fallback_pi):
                 if _pi < len(ks):
                     fallback_poses.append((pdb, int(sd_), int(ks[_pi])))
+        # THE PAE LOSS RIDES THE SAME CANONICAL JOIN as the dump: `ks` comes from
+        # BC.resolve_seed_dir, which matches poses to samples BY COORDINATE IDENTITY. The loss was
+        # computed per POSE inside the forward (the join did not exist yet); this is where it
+        # becomes a (pdb, seed, sample) fact. Under the per-pose path each summary carries the
+        # whole dict, so the first one is read and the rest are the same object.
+        if _PAE_CTX is not None and summ:
+            _plz = summ[0].get("pae_loss_by_sample")
+            if _plz:
+                for _pi, _lv in _plz.items():
+                    if _pi < len(ks):
+                        pae_loss_rows.append((pdb, int(sd_), int(ks[_pi]), float(_lv)))
+                    else:
+                        _PAE_CTX.n_no_row += 1
         for i, s_i in enumerate(summ):
             # THE PAE DUMP RIDES THE CANONICAL JOIN. `ks` comes from BC.resolve_seed_dir, which
             # matches poses to samples BY COORDINATE IDENTITY -- the only join in this file that is
@@ -2226,6 +2301,27 @@ def main():
                             "" if dq is None else f"{dq:.4f}",
                             "" if sv is None else repr(sv)]
                            + ([("" if vm is None else repr(vm))] if a.pool_mean else []))
+        # THE SIDECAR, WRITTEN UNCONDITIONALLY WITH THE ROWS and before any refusal, for the
+        # same reason the rows are: a coverage refusal after the forward passes threw away a
+        # measured ~50 min of finished GPU work on two of three shards.
+        if _PAE_CTX is not None:
+            # NOT rows_<...>.csv.pae.csv. SIX downstream readers glob "rows_*.csv" --
+            # plot_fullset, arm_table, armB_table, export_pose5_results, margin_and_variance --
+            # and that pattern matches a ".csv.pae.csv" suffix too, so the sidecar was being read
+            # as if it were a rows file (KeyError: 'iface' on the lucky ones, a silently polluted
+            # figure on any reader that skipped bad rows). The prefix keeps it out of that glob.
+            _pl_out = a.pae_loss_out or os.path.join(
+                os.path.dirname(a.rows_out),
+                "paeloss_" + os.path.basename(a.rows_out))
+            with open(_pl_out, "w", newline="") as fh:
+                _w = csv.writer(fh)
+                _w.writerow(["pdb", "seed", "sample", "pae_loss"])
+                for _pq, _ps, _pk, _pv in pae_loss_rows:
+                    # FULL PRECISION. These means are compared across arms at four decimals and
+                    # differences of 0.08 matter; repr() round-trips exactly.
+                    _w.writerow([_pq, _ps, _pk, repr(_pv)])
+            print("  " + _PAE_CTX.report(), flush=True)
+            print(f"  PAE loss sidecar: {len(pae_loss_rows)} row(s) -> {_pl_out}", flush=True)
         with open(a.rows_out + ".meta.json", "w") as fh:
             json.dump({"shard": a.shard, "nshards": a.nshards, "units": len(units),
                        "rows": len(rows), "n_ost": n_ost, "n_unresolvable": n_static,

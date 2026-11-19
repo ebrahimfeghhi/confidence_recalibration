@@ -28,7 +28,16 @@ def build_flat():
         if r["pdb"] in SKIP:
             continue
         sp = (r.get("seeds") or "").strip()
-        if "-" in sp:
+        # SEMICOLONS FIRST, and they are the form the trainer and the preflight both write.
+        # training/valfull83/structures.csv and training/slice280/structures.csv list each
+        # structure's own seeds as "500000;500001;..." because those folds are RAGGED -- 289
+        # structures keep 15 seeds and 199 keep 1, so no flat range describes them. This parser
+        # knew three forms and not that one, so it fell through to int(sp) and died with
+        # "invalid literal for int() with base 10: '500000;500001;...'", refusing a manifest the
+        # trainer itself reads correctly.
+        if ";" in sp:
+            seeds = [int(x) for x in sp.split(";") if x.strip()]
+        elif "-" in sp:
             seeds = list(range(int(sp.split("-")[0]), int(sp.split("-")[1]) + 1))
         elif "," in sp:
             seeds = [int(x) for x in sp.split(",") if x.strip()]
@@ -113,12 +122,27 @@ def main():
     for p, lp, c in flat:
         by.setdefault(p, []).append((lp, c))
     old_cov = {p for p, u in by.items() if len(u) // WORLD > 0}
-    caught = len(allp - old_cov) == len(singles) and len(singles) > 0
-    if not caught:
-        fails.append("control: the old group-of-world builder did NOT drop the singletons, so "
-                     "this gate is not testing what it claims")
-    print(f"  {'PASS' if caught else 'FAIL'}  control: the old builder drops "
-          f"{len(allp - old_cov)} structure(s), which is the bug")
+    # ONLY MEANINGFUL WHEN THE MANIFEST HAS SINGLETONS, which is what this control is about.
+    #
+    # The bug it guards is the old group-of-world builder silently dropping structures with fewer
+    # than `world` seeds. A manifest where EVERY structure has 15 seeds -- training/slice280 is
+    # exactly that, 180 structures at 15 -- contains no such structure, so the old builder drops
+    # nothing and the control cannot demonstrate anything. Asserting it anyway made the whole gate
+    # refuse a perfectly good manifest with "the old builder did NOT drop the singletons", which
+    # reads as a fault in the manifest and is in fact a statement about the manifest having no
+    # singletons to drop. Skipped-and-said rather than silently passed, so a manifest that ought
+    # to have singletons and does not is still visible.
+    if not singles:
+        print("  SKIP  control: this manifest has no singleton structure (every structure has "
+              f">= {WORLD} seeds), so the old builder has nothing to drop and the control cannot "
+              "distinguish the builders")
+    else:
+        caught = len(allp - old_cov) == len(singles)
+        if not caught:
+            fails.append("control: the old group-of-world builder did NOT drop the singletons, so "
+                         "this gate is not testing what it claims")
+        print(f"  {'PASS' if caught else 'FAIL'}  control: the old builder drops "
+              f"{len(allp - old_cov)} structure(s), which is the bug")
 
     # 6. SIZE BALANCE. The point of balance=True is per-rank BYTES, and it must not break any of
     #    the invariants above: same unit count per rank, every structure present, ranks disjoint.

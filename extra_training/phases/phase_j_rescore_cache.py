@@ -378,7 +378,7 @@ def _chain_pair_itm_mean(pae_prob, has_frame, asym_id, token_is_ligand, min_bin,
 
 
 def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle, want_pae=False,
-                   want_mean=False):
+                   want_mean=False, pae_loss_fn=None):
     """chain_pair_iptm and nothing else, for callers that read only that.
 
     WHAT THIS SKIPS AND WHY IT IS SAFE. confidence() computes the whole Protenix summary: the
@@ -452,6 +452,15 @@ def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle, want_pae=Fa
             cim = _chain_pair_itm_mean(
                 pae_prob, has_frame=feat["has_frame"], asym_id=feat["asym_id"],
                 token_is_ligand=token_is_ligand, **bp)
+        # THE PAE LOSS, FROM THE SAME LOGITS AND THE SAME FORWARD. pae_loss_fn is the
+        # per-unit closure from run_logging/pae_eval_loss.py; it knows this unit's label and its
+        # pose-to-sample join and returns {sample_index: loss}. Computed BEFORE tpp so a caller
+        # asking for both pays one softmax, and inside the no_grad block that already wraps this
+        # whole function. The raw LOGITS are passed, not pae_prob and not the angstrom map: the
+        # cross-entropy needs the 64 bin logits.
+        plz = None
+        if pae_loss_fn is not None:
+            plz = pae_loss_fn(pae, feat, x)
         tpp = None
         if want_pae:
             bc = sample_confidence.get_bin_centers(
@@ -466,6 +475,12 @@ def pair_iptm_only(model, configs, feat, s_inputs, s, z, x, n_cycle, want_pae=Fa
     if cim is not None:
         for i in range(n_pose):
             res[i]["chain_pair_itm_mean"] = cim[i] if cim.dim() == 3 else cim
+    # KEYED BY SAMPLE INDEX, NOT BY POSE INDEX, and handed back whole rather than per pose: the
+    # caller holds `ks` and does the attribution, so this function never has to guess which pose
+    # is which sample. That guess is the bug class this project has paid for three times.
+    if plz is not None:
+        for i in range(n_pose):
+            res[i]["pae_loss_by_sample"] = plz
     return res
 
 

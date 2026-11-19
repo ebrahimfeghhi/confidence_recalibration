@@ -57,7 +57,14 @@ cd /home/ebrahim/confidence_recalibration/extra_training || exit 1
 PY=/home/ebrahim/Protenix/.venv/bin/python
 say() { echo "### $(TZ=America/New_York date '+%-I:%M:%S %p %Z') $*"; }
 
-POOL_DIR="${POOL_DIR:-training/crop_final}"
+POOL_DIR="${POOL_DIR-training/crop_final}"   # NO COLON: "" means UNCROPPED, see below
+# --skip-dead-ops STUBS THE TEN MEASURED-DEAD PAIRFORMER MODULES, and that is incompatible with
+# an arm that trains the WHOLE head: the trainer refuses when a module it would stub is still in
+# the optimiser ("STOP: --skip-dead-ops would stub 10 module(s) that --train-only / LoRA has left
+# TRAINABLE"), which is the right refusal -- stubbing a trainable module would train a tensor whose
+# forward never runs. On by default because every selective arm wants it; SKIP_DEAD_OPS="" turns it
+# off for an everything-trainable arm, where the ten modules then compute their zeros honestly.
+SKIP_DEAD_OPS="${SKIP_DEAD_OPS-1}"   # NO COLON: "" is a deliberate off
 MANIFEST="${MANIFEST:-train_val_splits/cache_train_structures_extended.csv}"
 # THE SCORED-PAIR POOL. Both the PAE mask and the ranking term are restricted to these
 # interfaces, so narrowing it narrows the whole objective -- which is what an overfit test on a
@@ -69,7 +76,7 @@ SCORED_PAIRS="${SCORED_PAIRS:-training/combined/pool.csv}"
 # says nothing about those structures. phases/phase_k_alignment_preflight.py builds one in ~90 s
 # on 12 workers for 95 structures.
 PREFLIGHT="${PREFLIGHT:-training/alignment_preflight_sharded.json}"
-SKIP="${SKIP:-4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m}"
+SKIP="${SKIP-4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m}"
 CARDS="${CARDS:-4,5,7}"
 EPOCHS="${EPOCHS:-50}"
 ACCUM="${ACCUM:-240}"
@@ -180,9 +187,15 @@ _THREADS=$(( PREFETCH_WORKERS * 3 ))
   exit 8; }
 say "  core budget: $_THREADS crop thread(s) across 3 ranks, ceiling 64"
 
-[ -d "$POOL_DIR" ] || { say "REFUSING: $POOL_DIR is not a directory"; exit 2; }
+if [ -n "$POOL_DIR" ]; then
+  [ -d "$POOL_DIR" ] || { say "REFUSING: $POOL_DIR is not a directory"; exit 2; }
+else
+  say "UNCROPPED: POOL_DIR is empty, so no --crop-pool is passed and every pose is scored WHOLE."
+  say "  The crop gates below are skipped because there are no crops to check."
+fi
 
 # POPULATION, AS A SET NOT A COUNT.
+if [ -n "$POOL_DIR" ]; then
 $PY -I - "$POOL_DIR" "$MANIFEST" "$SKIP" "${SUBSET_OK:-}" <<'PYG' || exit 3
 import csv, os, sys
 pool_dir, manifest, skip_s, subset_ok = (sys.argv[1:5] + [""])[:4]
@@ -248,16 +261,20 @@ if bad:
 sys.exit(1 if bad else 0)
 PYG
 
+fi
+
 say "CPU gate: the epoch plan covers every structure, singletons included"
 MANIFEST="$MANIFEST" SKIP="$SKIP" WORLD="$(printf %s "$CARDS" | tr , "\n" | grep -c .)" \
     $PY -I run_logging/test_epoch_cover_all.py \
     || { say "REFUSING: epoch coverage gate failed"; exit 6; }
 
-say "CPU gate: every crop keeps a scorable cross-chain pair under the STATIC join"
-CROP_THREADS="${CROP_THREADS:-3}" $PY -I run_logging/check_crop_pairs.py \
-    --pool "$POOL_DIR" --join static --roles training/fold/chain_roles_all.csv \
-    --fold training/fold --scored-pairs "$SCORED_PAIRS" \
-    || { say "REFUSING: a selected crop leaves a scored pair unscorable"; exit 5; }
+if [ -n "$POOL_DIR" ]; then
+  say "CPU gate: every crop keeps a scorable cross-chain pair under the STATIC join"
+  CROP_THREADS="${CROP_THREADS:-3}" $PY -I run_logging/check_crop_pairs.py \
+      --pool "$POOL_DIR" --join static --roles training/fold/chain_roles_all.csv \
+      --fold training/fold --scored-pairs "$SCORED_PAIRS" \
+      || { say "REFUSING: a selected crop leaves a scored pair unscorable"; exit 5; }
+fi
 
 # ONLY WHEN LoRA IS ON, and it must run BEFORE the launch rather than be a file nobody calls. The
 # first version of this gate was written, passed by hand, and never wired in -- so the arm it was
@@ -275,7 +292,7 @@ fi
 # OVERRIDABLE, DEFAULT UNCHANGED. An arm that freezes everything but the pose injection
 # sites needs a different set, and retyping this regex into a second launcher is how a
 # truncated --train-only got launched once. Pass TRAIN_ONLY to replace it; unset is this.
-TRAIN_ONLY="${TRAIN_ONLY:-^(?!pairformer_stack\.),blocks\.0\.pair_transition\.,blocks\.1\.tri_mul_out\.,blocks\.1\.tri_mul_in\.,blocks\.2\.tri_mul_out\.,blocks\.2\.tri_mul_in\.,blocks\.2\.pair_transition\.,blocks\.3\.tri_mul_out\.,blocks\.3\.tri_mul_in\.,blocks\.3\.tri_att_start\.,blocks\.3\.pair_transition\.}"
+TRAIN_ONLY="${TRAIN_ONLY-^(?!pairformer_stack\.),blocks\.0\.pair_transition\.,blocks\.1\.tri_mul_out\.,blocks\.1\.tri_mul_in\.,blocks\.2\.tri_mul_out\.,blocks\.2\.tri_mul_in\.,blocks\.2\.pair_transition\.,blocks\.3\.tri_mul_out\.,blocks\.3\.tri_mul_in\.,blocks\.3\.tri_att_start\.,blocks\.3\.pair_transition\.}"
 
 # THE POSE PATHWAY IS EXCLUDED FROM THE ADAPTERS AND KEPT DENSE, all twelve tensors of it. The
 # first attempt reused $TRAIN_ONLY unchanged and got this wrong in two ways that an adversarial
@@ -362,6 +379,17 @@ PAE_SPLIT_ACCEPT="${PAE_SPLIT_ACCEPT:-0.23}"
 # PAE_BALANCE_ACCEPT reweights the PAE loss itself so each list's acceptable poses carry half of
 # it. Unlike PAE_SPLIT_ACCEPT, which only reports, this CHANGES THE OBJECTIVE.
 PAE_BALANCE_ACCEPT="${PAE_BALANCE_ACCEPT:-0.23}"
+VAL_LOSS_EVERY="${VAL_LOSS_EVERY:-}"
+VAL_LOSS_FOLD="${VAL_LOSS_FOLD:-}"
+VAL_LOSS_LABELS="${VAL_LOSS_LABELS:-}"
+VAL_LOSS_SELECTION="${VAL_LOSS_SELECTION:-}"
+VAL_LOSS_POOL="${VAL_LOSS_POOL:-}"
+VAL_LOSS_PREFLIGHT="${VAL_LOSS_PREFLIGHT:-}"
+VAL_LOSS_SEEDS="${VAL_LOSS_SEEDS:-}"
+VAL_LOSS_PREP="${VAL_LOSS_PREP:-}"
+VAL_LOSS_CARD="${VAL_LOSS_CARD:-}"
+VAL_LOSS_UNCROPPED="${VAL_LOSS_UNCROPPED:-}"
+EVAL_PAE_LOSS="${EVAL_PAE_LOSS:-}"
 # POSE_READOUT adds the fifth injection site at pae_ln; PRENORM moves it to the LN's INPUT, where
 # block 0's pretrained weights were fitted to live, which is why COPY_DISTANCE pairs with it.
 POSE_READOUT="${POSE_READOUT:-}"
@@ -443,11 +471,11 @@ if [ -n "$ALPHA_RANK" ]; then
   fi
 fi
 
-ARGS=(--crop-pool "$POOL_DIR"
+ARGS=(${POOL_DIR:+--crop-pool "$POOL_DIR"}
       --minimal-items --epoch-cover-all ${EPOCH_BALANCE:+--epoch-balance}
       --pae-only --alpha-pae 1.0 --alpha-confidence 1.0
       --accum "$ACCUM" --nsample "$NSAMPLE"
-      --skip-dead-ops --pose-perblock --pose-perblock-copy --frame-direction --lean-single
+      ${SKIP_DEAD_OPS:+--skip-dead-ops} --pose-perblock --pose-perblock-copy --frame-direction --lean-single
       --train-eval-pool "$EVAL_POOL" --train-eval-fold validation/fold
       --train-eval-every "$EVAL_EVERY" --train-eval-budget 30 --train-eval-seed-base 400000
       --epochs "$EPOCHS" --lr "$LR"
@@ -482,6 +510,52 @@ fi
 [ -n "$PAE_BALANCE_ACCEPT" ] && ARGS+=(--pae-balance-accept "$PAE_BALANCE_ACCEPT")
 [ -n "$RANK_DIAG_ONLY" ] && ARGS+=(--rank-diag-only)
 
+# THE HELD-OUT PAE MONITOR. Off unless VAL_LOSS_EVERY is set.
+#
+# WHY IT IS WORTH WIRING UP rather than running a separate pass per epoch: the trainer already
+# knows how to shell out a --loss-only child, and it passes the arm's OWN pose flags and crop
+# geometry into that child itself -- which is the step that went wrong when this was done by hand
+# and measured a head without its pose pathway.
+#
+# THE SELECTION MUST BE A RECTANGLE. phase_k_train checks that EVERY structure in the selection
+# has a label for EVERY seed in VAL_LOSS_SEEDS, and refuses at launch otherwise. val83 is ragged
+# -- 83 structures, 30 seeds each drawn per-structure from 400000-400099, and NO seed is shared by
+# all 83 -- so the full set cannot be passed here. training/valfull83/structures_rect.csv is the
+# largest rectangle inside it, 30 structures x seeds 400000-400025, and run_logging/valrect.py
+# rebuilds it from what is on disk rather than from a remembered range.
+#
+# UNCROPPED BY REQUEST. The flag's own help warns that this makes the number incomparable to a
+# CROPPED arm's val PAE and puts a seam in the curve -- both accepted here, because every held-out
+# PAE number in this comparison (shipped 3.0991/2.4336, Arm E, Arm G, alpha 250) was measured
+# uncropped on the full structure, and matching them is the point.
+[ -n "$VAL_LOSS_EVERY" ] && ARGS+=(--val-loss-every "$VAL_LOSS_EVERY")
+[ -n "$VAL_LOSS_FOLD" ] && ARGS+=(--val-loss-fold "$VAL_LOSS_FOLD")
+[ -n "$VAL_LOSS_LABELS" ] && ARGS+=(--val-loss-labels "$VAL_LOSS_LABELS")
+[ -n "$VAL_LOSS_SELECTION" ] && ARGS+=(--val-loss-selection "$VAL_LOSS_SELECTION")
+[ -n "$VAL_LOSS_POOL" ] && ARGS+=(--val-loss-pool "$VAL_LOSS_POOL")
+[ -n "$VAL_LOSS_PREFLIGHT" ] && ARGS+=(--val-loss-preflight "$VAL_LOSS_PREFLIGHT")
+[ -n "$VAL_LOSS_SEEDS" ] && ARGS+=(--val-loss-seeds "$VAL_LOSS_SEEDS")
+[ -n "$VAL_LOSS_PREP" ] && ARGS+=(--val-loss-prep "$VAL_LOSS_PREP")
+[ -n "$VAL_LOSS_CARD" ] && ARGS+=(--val-loss-card "$VAL_LOSS_CARD")
+[ -n "$VAL_LOSS_UNCROPPED" ] && ARGS+=(--val-loss-uncropped)
+# THE FOURTH METRIC, IN THE EVAL'S OWN FORWARD. Every eval pass then reports PAE loss beside
+# mean DockQ, frac acceptable and rho, at no extra forward -- see --eval-pae-loss in phase_k_train.
+[ -n "$EVAL_PAE_LOSS" ] && ARGS+=(--eval-pae-loss)
+# A HALF-SPECIFIED MONITOR IS A RUN THAT DIES AT LAUNCH, which is better than one that dies at the
+# first epoch boundary, but better still is saying which piece is missing here.
+if [ -n "$VAL_LOSS_EVERY" ]; then
+  for _v in VAL_LOSS_FOLD VAL_LOSS_SELECTION VAL_LOSS_POOL VAL_LOSS_PREFLIGHT VAL_LOSS_SEEDS; do
+    if [ -z "${!_v}" ]; then
+      echo "REFUSING: VAL_LOSS_EVERY is set but $_v is empty; the held-out pass would have"
+      echo "  nothing to measure. See the block above this check."
+      exit 2
+    fi
+  done
+  say "HELD-OUT PAE MONITOR: every $VAL_LOSS_EVERY epoch(s), selection $VAL_LOSS_SELECTION,"
+  say "  seeds $VAL_LOSS_SEEDS, ${VAL_LOSS_UNCROPPED:+UNCROPPED}${VAL_LOSS_UNCROPPED:-cropped as the arm}"   # NO COLON: "" is a deliberate empty value
+
+fi
+
 if [ -n "$EXTRA_EVAL" ]; then
   _IFS_SAVE="$IFS"; IFS=';'
   for _spec in $EXTRA_EVAL; do
@@ -491,7 +565,8 @@ if [ -n "$EXTRA_EVAL" ]; then
   say "EXTRA EVAL passes: $EXTRA_EVAL"
 fi
 
-printf '    %s\n' "${ARGS[@]}"
+printf '    %s\n' "${ARGS[@]}"   # NO COLON: "" is a deliberate empty value
+
 if [ -n "$ALPHA_RANK" ]; then
   say "RANKING LOSS ON: $RANK_FORM at alpha $ALPHA_RANK, cross-seed, $RANK_S structure(s)/step,"
   if [ "$RANK_FORM" = "zsoftmax" ]; then

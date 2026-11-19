@@ -61,6 +61,9 @@ _REALISED_SEED_DEPTHS = None
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, "/home/ebrahim/Protenix")
 sys.path.insert(0, os.path.join(ROOT, "phases"))
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import label_index as _LI   # the only sanctioned row<->pose-id map
+import phase_k_preflight_cover as _PFC   # which STRUCTURES an alignment marker vouches for
 print = functools.partial(print, flush=True)
 
 TERMS = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss", "loss")
@@ -1462,6 +1465,37 @@ def main():
                     help="when the evaluation must share the training card, how much VRAM has to be "
                          "free for it to run. The eval loads a second 464M-parameter model; "
                          "measured at ~16 GB, so 20 GB is the floor.")
+    ap.add_argument("--tm-centered", action="store_true",
+                    help="REPLACE the PAE cross-entropy with the PER-PAIR CENTRED TM ERROR. For "
+                         "every pose and every scored cross-chain pair, on the SAME mask the PAE "
+                         "loss uses: s_pred = sum_bins p_bin * f(bin_center), s_true = f(true "
+                         "aligned error), f(e) = 1/(1 + (e/d0)^2), d0 the ipTM normalisation for "
+                         "that chain pair's token count. The signed error e = s_pred - s_true is "
+                         "centred per pair over the STRUCTURE's poses and the loss is mean(c^2). "
+                         "WHY: measured on the hard 280, every arm improves frac acceptable at "
+                         "TOP-5 (Arm G +8.6 points) while top-1 barely moves, and on the 81 "
+                         "contestable val interfaces +2.5 points survives -- so the head learns a "
+                         "per-structure LEVEL it is not rewarded for and is weak on the "
+                         "within-structure ORDERING selection actually reads. Centring removes "
+                         "the level from the objective entirely. The transform is IMPORTED from "
+                         "sample_confidence, never reimplemented: s_pred is bit-identical to its "
+                         "token_token_ptm. NEEDS --rank-cross-seed (the mean is over a "
+                         "structure's poses across all its seeds) and --pae-scored-pairs (no mask "
+                         "means no cross-chain pairs). The PAE cross-entropy is still COMPUTED as "
+                         "a readout so trajectory.csv and the training plot stay comparable with "
+                         "every other arm; it simply takes no gradient, exactly as --pae-entropy "
+                         "already does.")
+    ap.add_argument("--eval-pae-loss", action="store_true",
+                    help="have every eval pass ALSO report the training PAE loss, computed in "
+                         "that pass's own forward from the 64-bin logits the confidence head "
+                         "already produces. This is the fourth metric beside mean DockQ, frac "
+                         "acceptable and rho, and it costs no extra forward: the DockQ pass and "
+                         "the held-out PAE pass see identical inputs, so running them separately "
+                         "was ~12 min of three cards per epoch of pure duplication. The loss is "
+                         "the PLAIN per-pose mean masked to the pool's scored chain pairs -- no "
+                         "row weighting and no class balance, which are TRAINING choices and "
+                         "would make a balanced arm's number incomparable with every arm "
+                         "measured before it. Written to a sidecar beside each shard's rows.")
     ap.add_argument("--eval-budget", type=int, default=100,
                     help="seeds per interface for the epoch-end metric. 100 is the full budget and "
                          "the one the 0.5775 / 0.7283 baseline is quoted at; a pass is ~73 min, measured.")
@@ -1682,6 +1716,24 @@ def main():
             "function of pred['pae'] alone and the label is never read. Under any labelled "
             "objective a stale label IS the training signal, and accepting one would train "
             "against coordinates from a different bioassembly while reporting an ordinary loss.")
+    if a.tm_centered:
+        # THE SAME TWO REQUIREMENTS rel HAS, AND FOR THE SAME REASONS. Checked here, before CUDA
+        # is touched, because a misconfiguration should not cost a GPU allocation to discover.
+        if not a.rank_cross_seed:
+            raise SystemExit(
+                "STOP: --tm-centered needs --rank-cross-seed. The per-pair mean is taken over a "
+                "STRUCTURE's poses across all its seeds; within one seed it would be a mean over "
+                f"{a.nsample} poses, which removes most of what the centring exists to use.")
+        if not a.pae_scored_pairs:
+            raise SystemExit(
+                "STOP: --tm-centered needs --pae-scored-pairs. The loss is defined on the scored "
+                "CROSS-CHAIN pairs; with no mask there is nothing to score and the term would "
+                "silently average the intra-chain blocks too.")
+        if float(a.pae_row_frac) > 0.0 or float(a.pae_balance_accept) > 0.0:
+            raise SystemExit(
+                "STOP: --tm-centered with row weighting or class balance. Both reweight the PAE "
+                "cross-entropy, which this arm does not train, so they would change nothing while "
+                "the launch line claimed they did.")
 
     # CROPPING IS ONLY COHERENT ON THE MINIMAL PATH. The dataset item carries a FULL-SIZE
     # label_dict, so cropping the prediction while the loss reads full-size masks would either
@@ -2478,6 +2530,13 @@ def main():
                                       else pm)
             if _pae_keep["stash"]:
                 _pae_keep["bins"], _pae_keep["pm"] = bins, pm
+            # --tm-centered NEEDS THE TRUE ERROR, and this is the only place it is computed.
+            # calculate_label does the frame alignment; recomputing it in the pose loop would be a
+            # second alignment of the same pose and a second chance for the two to disagree. sq is
+            # the alignment error SQUARED, which is what the TM transform wants: f(sqrt(sq)) is
+            # 1/(1 + sq/d0^2) with no square root taken.
+            if a.tm_centered:
+                _pae_keep["sq"] = sq
             return sq, bins, pm
 
         loss_fn.pae_loss.calculate_label = _masked_calc
@@ -2880,6 +2939,21 @@ def main():
     # ranking term's divisor -- the two differ by every skipped item and both are reported.
     _xs_coef, _xs_div, _xs_stat = {}, [1], {"groups": 0, "pairs": 0, "loss": 0.0, "steps": 0,
                                              "last_groups": 0, "skipped": 0, "items": 0}
+    # --tm-centered STATE, FILLED BY PASS A AND READ BY PASS B, keyed by pdb alone.
+    #
+    # WHY pdb AND NOT (pdb, seed): the centring is per PAIR over the STRUCTURE's poses, and
+    # --rank-cross-seed puts every seed of a structure in the same step, so one entry serves all of
+    # them. That is the whole reason the flag requires cross-seed grouping.
+    #
+    # WHAT IS STORED: sum of the signed per-pair errors, the count of poses contributing to each
+    # pair, and the number of poses seen -- so pass B can form e_mean = sum/count and the
+    # every-pose mask (count == n_poses). A pair masked out for one pose would otherwise have its
+    # mean taken over a different population than the poses it is subtracted from.
+    #
+    # CLEARED AT THE STEP BOUNDARY, like _xs_coef: the tensors are [N_frame, N_token] per structure
+    # and holding them past their step would grow without bound across an epoch.
+    _tm_acc, _tm_stat = {}, {"poses": 0, "loss": 0.0, "n": 0, "pred_sum": 0.0, "pred_n": 0,
+                             "unmasked": 0, "nolabel": 0, "mpose": 0}
     # THE CURRENT STEP'S EXPECTED POSE COUNT. accum_local is a constant only when every
     # step holds the same number of units, which --rank-cross-seed breaks: S structures x
     # their seeds need not divide `world`, so the short rank rotates and the quota varies
@@ -3251,12 +3325,12 @@ def main():
                 st["ps_batched"] += 1
                 st["ps_unclass"] += 1
                 return
+            # ROW -> SAMPLE THROUGH THE ONE SANCTIONED FUNCTION. run_logging/label_index.py
+            # explains why row position is not pose id (99.2% of labels are permuted) and what
+            # open-coding this cost; this call is value-identical to the arithmetic it replaces.
             samp = samp_hint
             if samp is None:
-                _sv = lab.get("sample_index") if hasattr(lab, "get") else None
-                if _sv is None:
-                    _sv = lab["sample_index"]
-                samp = int(np.asarray(_sv).reshape(-1)[i])
+                samp = _LI.sample_of_row(lab, i)
             samp = int(samp)
             _cls, _bad = set(), False
             for _ifc, _x, _y in _pose_pairs(pdb, lab_p, samp):
@@ -3422,12 +3496,12 @@ def main():
             if int(nb) != 1:
                 _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
                 return 1.0
+            # ROW -> SAMPLE THROUGH THE ONE SANCTIONED FUNCTION. run_logging/label_index.py
+            # explains why row position is not pose id (99.2% of labels are permuted) and what
+            # open-coding this cost; this call is value-identical to the arithmetic it replaces.
             samp = samp_hint
             if samp is None:
-                _sv = lab.get("sample_index") if hasattr(lab, "get") else None
-                if _sv is None:
-                    _sv = lab["sample_index"]
-                samp = int(np.asarray(_sv).reshape(-1)[i])
+                samp = _LI.sample_of_row(lab, i)
             samp = int(samp)
             _ws = []
             for _ifc, _x, _y in _pose_pairs(pdb, lab_p, samp):
@@ -3732,6 +3806,22 @@ def main():
             a.lora_alpha = float(_g.get("lora_alpha") or 0.0)
             a.lora_targets = _g.get("lora_targets") or ""
             a.lora_dropout = float(_g.get("lora_dropout") or 0.0)
+            # AND THE KEEP-SET, which was the one LoRA field this block did not inherit.
+            # apply_lora freezes the whole head and `trainable` then becomes the adapter names
+            # alone, so WITHOUT this the measurement subprocess restores only the adapters and
+            # every --lora-keep-trainable tensor -- on the pose arms that is the entire pose
+            # pathway plus pae_ln, 53 tensors -- stays at its freshly-built value: shipped
+            # weights, or zero for the zero-init readout terms. The number that comes back is
+            # then approximately the SHIPPED head's held-out loss, reported as this arm's, every
+            # epoch, looking plausibly flat. It cannot be caught downstream because the child
+            # passes --resume-allow-drift, which turns the guard's keep-set mismatch from a
+            # refusal into accepted drift. Twelfth instance of the inheritance class this file
+            # keeps counting.
+            a.lora_keep_trainable = _g.get("lora_keep_trainable") or ""
+            if _g.get("lora_keep_trainable") and not a.lora_keep_trainable:
+                raise SystemExit(
+                    "STOP: the bundle declares --lora-keep-trainable but it did not survive "
+                    "inheritance, so the dense tensors would be measured at their init.")
             if is_main:
                 print(f"  --loss-only: inheriting the bundle's LoRA configuration "
                       f"(rank {a.lora_rank}, alpha {a.lora_alpha:g}, dropout {a.lora_dropout:g}) "
@@ -4108,8 +4198,9 @@ def main():
         #
         # The `checked` list the preflight now also writes is a strictly tighter check and is used
         # when present -- it covers the case of a run whose selection differs but whose structures
-        # happen to be covered.
-        _pf_checked = set(_pf.get("checked") or [])
+        # happen to be covered. Reading it, and recomputing the set for an older marker that has
+        # none, lives in phase_k_preflight_cover.marker_cover; that file explains why the marker's
+        # claim is per-structure and what makes the recomputation evidence rather than assertion.
         _run_pdbs = {p for p, _lp, _c in flat}
 
         def _skipset(txt):
@@ -4135,28 +4226,65 @@ def main():
             bool(_pf.get("complete"))
             and (_pf.get("manifest_selection") or "") == (a.manifest_selection or "")
             and _run_skip >= _pf_skip)
-        _subset_ok = _same_population or (bool(_pf_checked) and _run_pdbs <= _pf_checked)
+        # A COMPLETE MARKER VOUCHES FOR A SET OF STRUCTURES, AND THAT SET CAN BE PROVEN FROM DISK.
+        #
+        # The two tests above both fail for a perfectly safe case: a DIFFERENT selection file whose
+        # structures are all inside the marker's. _same_population compares the selection PATH, and
+        # the `checked` name list is something older markers simply do not carry
+        # (training/full_train/alignment_preflight.json has only counts: n_structures 488,
+        # complete true, mismatches []). So a manifest listing the same 488 structures with
+        # different per-structure SEED lists was refused four times on 2026-11-19, even though atom
+        # order -- the only thing this preflight checks, and it checks it from ONE trunk per
+        # structure -- is a property of the molecule and says nothing about which seeds produced
+        # its poses. The digest therefore claimed MORE than the preflight checked (per-seed) while
+        # authorising LESS than it proved (per-structure), and the gap was paid at every launch.
+        #
+        # THE CLAIM IS NOW READ AS PER-STRUCTURE. phase_k_preflight_cover.marker_cover returns the
+        # structures a marker vouches for: its `checked` names when it has them, otherwise the
+        # population recomputed from the selection csv the marker names -- accepted ONLY if that
+        # recomputation reproduces the digest the marker carries. That reproduction is what makes
+        # this evidence rather than trusting a path string: a selection csv rewritten since the
+        # marker was written hashes differently, marker_cover returns None, and the run is refused
+        # exactly as before.
+        #
+        # NOT A LOOSENING, and deliberately not a no-op. The run is accepted only when EVERY
+        # structure it will touch is in that set; one structure outside it refuses and prints the
+        # names. A marker with any mismatch or missing trunk authorises nothing, and neither does
+        # an incomplete one -- marker_cover refuses those itself, because an incomplete marker
+        # carries the whole population's digest over a slice of the structures.
+        _cover, _cover_how = _PFC.marker_cover(_pf, a.alignment_preflight)
+        _run_lc = {p.strip().lower() for p in _run_pdbs}
+        _cover_clean = not (_pf.get("mismatches") or []) and not (_pf.get("missing_trunks") or [])
+        _uncovered = sorted(_run_lc - _cover) if _cover is not None else sorted(_run_lc)
+        _cover_ok = _cover is not None and not _uncovered and _cover_clean
+        _subset_ok = _same_population or _cover_ok
         if _pf.get("manifest_digest") != _manifest_digest and _subset_ok:
             _why = ((f"it is COMPLETE over the same selection and this run skips "
                      f"{len(_run_skip)} structure(s) against the marker's {len(_pf_skip)} "
                      f"(a superset: {sorted(_run_skip - _pf_skip) or 'identical'}), so every "
                      f"structure this run touches was checked") if _same_population else
-                    f"this run's {len(_run_pdbs)} structure(s) are a SUBSET of the "
-                    f"{len(_pf_checked)} named in its `checked` list")
+                    f"it {_cover_how}, and all {len(_run_lc)} structure(s) this run touches are "
+                    f"inside that set; alignment is a per-structure property, and the seed "
+                    f"lists the two digests disagree about are not what was checked")
             print(f"  alignment preflight: digest differs ({_pf.get('manifest_digest')} vs "
                   f"{_manifest_digest}) but {_why}, so it authorises this run.")
         elif _pf.get("manifest_digest") != _manifest_digest:
             raise SystemExit(
                 f"STOP: the alignment preflight was run over manifest "
-                f"{_pf.get('manifest_digest')}, this run is {_manifest_digest}. It says nothing "
-                f"about the structures this run will train on; re-run it.\n"
-                + (f"  Its selection/skip are {_pf.get('manifest_selection')!r} / "
-                   f"{_pf.get('manifest_skip')!r} against this run's "
-                   f"{a.manifest_selection!r} / {a.manifest_skip!r}, and it records no `checked` "
-                   f"list, so neither subset path applies."
-                   if not _pf_checked else
-                   f"  {len(_run_pdbs - _pf_checked)} of this run's structure(s) are NOT in the "
-                   f"marker's checked list, e.g. {sorted(_run_pdbs - _pf_checked)[:5]}."))
+                f"{_pf.get('manifest_digest')}, this run is {_manifest_digest}, and it does not "
+                f"cover every structure this run will train on; re-run it.\n"
+                f"  Its selection/skip are {_pf.get('manifest_selection')!r} / "
+                f"{_pf.get('manifest_skip')!r} against this run's "
+                f"{a.manifest_selection!r} / {a.manifest_skip!r}.\n"
+                + (f"  The marker vouches for no KNOWN set of structures: it {_cover_how}."
+                   if _cover is None else
+                   f"  It {_cover_how}, and {len(_uncovered)} of this run's structure(s) are NOT "
+                   f"among them, e.g. {_uncovered[:5]}. Run the preflight for those."
+                   if _uncovered else
+                   f"  It {_cover_how} and covers all of them, but records "
+                   f"{len(_pf.get('mismatches') or [])} mismatch(es) and "
+                   f"{len(_pf.get('missing_trunks') or [])} missing trunk(s), so it authorises "
+                   f"nothing."))
         if not _pf.get("ok"):
             raise SystemExit(f"STOP: {a.alignment_preflight} does not record a pass.")
         # THE MARKER MUST COVER THE WHOLE MANIFEST, not just carry its digest. The digest is
@@ -6092,6 +6220,22 @@ def main():
         The stored fingerprint names its trunk by content hash, so the trunk is chosen BY it. Two
         candidates matching is ambiguous and refused rather than resolved arbitrarily.
         """
+        # STALENESS IS NOT CHECKED HERE ANY MORE. It is checked ONCE, per label, in
+        # phase_k_alignment_preflight, which compares cif|bio|trunk and names every label that has
+        # to be rebuilt. Repeating it on every load bought nothing and cost a sha256 of a ~205 MB
+        # trunk per unit; worse, it tied label validity to a hash of the BUILDER'S SOURCE, so an
+        # edit to a comment in phase_j_build_cache.py invalidated every label on disk. The rule for
+        # code changes is now a habit rather than a guard: change how labels are computed, rebuild
+        # the labels.
+        #
+        # WHAT THIS FUNCTION STILL DOES is pick WHICH trunk goes with this label when more than one
+        # candidate exists -- a fold and a fold_regen copy, say. That is selection, not validation,
+        # and getting it wrong pairs a label with another run's permuted trunk (review round 8
+        # reproduced exactly that). With a single candidate there is nothing to choose, so the
+        # common path now returns immediately and hashes nothing.
+        if len(cands) == 1:
+            _trunk_choice[_ck] = cands[0]
+            return cands[0]
         stored = str(np.asarray(np.load(lab_p, allow_pickle=True)["fingerprint"]))
         ok = []
         for tp in cands:
@@ -6199,20 +6343,15 @@ def main():
         # THE FINGERPRINT IS COMPARED, NOT MERELY PRESENT. resolve_trunk already proved one trunk
         # reproduces it; this re-asserts against the trunk actually being used, so the two cannot
         # come apart if resolve_trunk is ever bypassed.
-        _want = _unit_fp(pdb, trunk_p)
-        _got = str(np.asarray(lab["fingerprint"]))
-        if _got != _want:
-            _dw = dict(x.split("=", 1) for x in _want.split("|") if "=" in x)
-            _dg = dict(x.split("=", 1) for x in _got.split("|") if "=" in x)
-            _df = sorted(k for k in set(_dw) | set(_dg) if _dw.get(k) != _dg.get(k))
-            # THE SAME ALLOWANCE AS resolve_trunk, OR THE FLAG DOES NOTHING. This re-assertion
-            # runs per unit after resolve_trunk has already accepted the label, so leaving it
-            # strict would stop the run one call later with a message that names no flag --
-            # exactly the half-wired shape the --lora-keep-trainable guard had.
-            _ok_drift = (_df == ["code"] and a.allow_code_drift) or (
-                a.allow_stale_labels and _df and set(_df) <= {"code", "bio", "cif", "idx"})
-            if not _ok_drift:
-                raise SystemExit(f"STOP: {lab_p} fingerprint differs in {_df}. Rebuild it.")
+        # THE FINGERPRINT COMPARISON IS GONE, on the owner's instruction. A label now pairs
+        # with its pose file BY FILENAME and nothing else. Staleness is handled by rebuilding, not
+        # by refusing at load: the orphan sweep made the pairing 1:1 (7,309 train / 2,490 val,
+        # verified), and the atom-order preflight remains the one check, run once per structure.
+        #
+        # WHAT THIS GAVE UP, STATED ONCE: a label whose pose coordinates changed under the same
+        # filename will no longer be caught. The agreed replacement is that regenerated poses,
+        # bioassemblies and labels go into a NEW versioned directory rather than overwriting in
+        # place, so a run points at one version and cannot mix two.
         _missing_lf = [k for k in BC.LOSS_FEATS if f"lf_{k}" not in lab]
         if _missing_lf:
             raise SystemExit(f"STOP: {lab_p} stores no lf_ array for {_missing_lf}. Falling back to "
@@ -6527,6 +6666,48 @@ def main():
             #
             # THE SAME ipTM FUNCTION AS PASS B, deliberately. If the two disagreed, the coefficient
             # would have been computed for a different function than the one being differentiated.
+            if score_only and a.tm_centered:
+                # --tm-centered PASS A: accumulate the signed per-pair TM error for this pose into
+                # its STRUCTURE's running sum, so pass B can centre against the mean over every
+                # pose of the structure. --rank-cross-seed is what makes that possible in one step.
+                #
+                # THE TRUE ERROR IS COMPUTED HERE, not reused from pass B -- pass B has not run
+                # yet. calculate_label is called directly because pass A deliberately never calls
+                # calculate_losses; the arguments are the seven its own signature names, taken from
+                # the label-derived features rather than the trunk's (feat_cache carries asym_id
+                # and has_frame; frame_atom_index and pae_rep_atom_mask live only in the label).
+                import tm_centered_loss as TMC
+                _tm_lf, _ = BC.minimal_loss_inputs(lab, 0, dev, torch)
+                _sqA, _, _ = loss_fn.pae_loss.calculate_label(
+                    pred_coordinate=x.detach(), true_coordinate=ld["coordinate"],
+                    coordinate_mask=ld["coordinate_mask"],
+                    rep_atom_mask=_tm_lf["pae_rep_atom_mask"],
+                    frame_atom_index=_tm_lf["frame_atom_index"],
+                    has_frame=_tm_lf["has_frame"])
+                _blocks = _pae_keep.get("blocks")
+                if not _blocks:
+                    # COUNTED, NEVER SILENTLY CENTRED ON NOTHING. A pose with no scored chain pair
+                    # contributes no pair to the mean and must also contribute no loss in pass B.
+                    _tm_stat["unmasked"] += 1
+                else:
+                    _eA, _mA = TMC.pair_errors(
+                        pred["pae"].detach(), _sqA, _blocks,
+                        loss_fn.pae_loss.min_bin, loss_fn.pae_loss.max_bin,
+                        loss_fn.pae_loss.no_bins)
+                    _acc = _tm_acc.get(pdb)
+                    if _acc is None:
+                        _tm_acc[pdb] = {"sum": _eA.sum(dim=0).clone(),
+                                        "cnt": (_mA > 0).to(torch.float32).sum(dim=0).clone(),
+                                        "poses": int(_eA.shape[0])}
+                    else:
+                        _acc["sum"] += _eA.sum(dim=0)
+                        _acc["cnt"] += (_mA > 0).to(torch.float32).sum(dim=0)
+                        _acc["poses"] += int(_eA.shape[0])
+                    _tm_stat["poses"] += int(_eA.shape[0])
+                    _tm_stat["pred_sum"] += TMC.mean_pred_score(
+                        pred["pae"].detach(), _blocks, loss_fn.pae_loss.min_bin,
+                        loss_fn.pae_loss.max_bin, loss_fn.pae_loss.no_bins)
+                    _tm_stat["pred_n"] += 1
             if score_only:
                 import rank_loss as RKL
                 # THE POSE INDEX IS NOT THE SAMPLE INDEX, and the external labels are keyed by
@@ -6643,6 +6824,45 @@ def main():
                 _iptm_fh["fh"].flush()
             try:
                 cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
+                if a.tm_centered:
+                    # REPLACE, NOT ADD -- the same contract --pae-entropy has just below. `cum`
+                    # from calculate_losses is the PAE cross-entropy; this arm does not train it,
+                    # and keeping any of it would make the comparison "centred TM error PLUS
+                    # cross-entropy". `met` is left exactly as computed so trajectory.csv and the
+                    # training plot still carry the labelled pae_loss as a READOUT, comparable with
+                    # every other arm; it simply takes no gradient.
+                    import tm_centered_loss as TMC
+                    _sqB = _pae_keep.get("sq")
+                    _blocksB = _pae_keep.get("blocks")
+                    _accB = _tm_acc.get(pdb)
+                    if _sqB is None or not _blocksB or _accB is None:
+                        # NO GRADIENT RATHER THAN A WRONG ONE. Pass A skipped this pose (no scored
+                        # pair, or no label), so there is no mean to centre against. Counted so a
+                        # run where it happens often is visible instead of quietly training on a
+                        # subset.
+                        _tm_stat["nolabel"] += 1
+                        cum = cum * 0.0
+                    else:
+                        _eB, _mB = TMC.pair_errors(
+                            pred["pae"], _sqB, _blocksB,
+                            loss_fn.pae_loss.min_bin, loss_fn.pae_loss.max_bin,
+                            loss_fn.pae_loss.no_bins)
+                        # e_mean = sum/count, AND THE EVERY-POSE MASK. A pair kept for only some of
+                        # the structure's poses would have its mean taken over a different
+                        # population than the poses it is subtracted from, so cnt must equal the
+                        # pose count for the pair to be used at all.
+                        _cnt = _accB["cnt"]
+                        _emean = _accB["sum"] / _cnt.clamp_min(1.0)
+                        _mall = (_cnt >= float(_accB["poses"])).to(torch.float32)
+                        _lv = TMC.centred_loss(_eB, _mB, _emean, _mall)
+                        if _lv is None:
+                            _tm_stat["unmasked"] += 1
+                            cum = cum * 0.0
+                        else:
+                            cum = _lv
+                            _tm_stat["loss"] += float(_lv.detach())
+                            _tm_stat["n"] += 1
+                    _pae_keep["sq"] = None
                 if a.pae_entropy > 0.0:
                     # REPLACE, NOT ADD. `cum` above is the labelled objective; keeping any of it
                     # would make this a semi-supervised arm and the comparison would no longer be
@@ -7058,7 +7278,19 @@ def main():
         """
         _xs_coef.clear()
         _xs_div[0] = 1
-        if not (a.rank_cross_seed and (a.rank_loss or a.rank_diag_only)) or a.loss_only:
+        # --tm-centered STATE IS PER STEP, like _xs_coef, and for the same reason: its entries are
+        # [N_frame, N_token] tensors per structure, so holding them past their step would grow
+        # without bound across an epoch. Cleared here rather than at the end of the step because
+        # this is the one function guaranteed to run before the step's first pose.
+        _tm_acc.clear()   # the counters in _tm_stat are per EPOCH and are not cleared here
+        # AND --tm-centered MUST NOT BE EXCLUDED HERE. This gate asked for a ranking loss, so with
+        # --tm-centered alone pass A returned immediately, _tm_acc stayed empty, every pose took
+        # the "no mean to centre against" branch, and the arm would have trained on a zero
+        # objective while reporting an ordinary PAE readout -- silently, since the readout is
+        # computed either way.
+        if (not (a.rank_cross_seed
+                 and (a.rank_loss or a.rank_diag_only or a.tm_centered))
+                or a.loss_only):
             return
         import rank_loss as RKL
         _rng_cpu = torch.get_rng_state()
@@ -8480,6 +8712,8 @@ def main():
             _sman = os.path.join(_prd, "seed_manifest.json")
             if os.path.exists(_sman):
                 extra += ["--seed-manifest", _sman]
+        if a.eval_pae_loss:
+            extra = extra + ["--pae-loss"]
         # THE EVALUATOR MUST RUN THE SAME FUNCTION WE TRAINED. Without this it builds a head with
         # no frame_dir_proj, and its own guard refuses the checkpoint for holding a tensor the
         # model does not have -- a loud failure rather than a silently different metric, but a
@@ -9971,6 +10205,25 @@ def main():
                          f"is a mean over the batch)" if _ps_all["ps_batched"] else "")
                       + "   [one group falling while the other does not is the signal]",
                       flush=True)
+            # --tm-centered, PER EPOCH: the objective this arm actually descends, and the average
+            # predicted pair score beside it.
+            #
+            # WHY THE PREDICTED SCORE IS REPORTED AT ALL: the loss cannot see it. Centring removes
+            # any per-pair constant, so a head that drives every s_pred to 0 or to 1 can still have
+            # a small centred loss -- squashing is invisible in the loss and obvious in this number.
+            # A value drifting to either end means the term is being satisfied by collapse rather
+            # than by ordering.
+            if a.tm_centered and _tm_stat["n"]:
+                print(f"  [rank {rank}] epoch {ep + 1} CENTRED TM ERROR: "
+                      f"{_tm_stat['loss'] / _tm_stat['n']:.6f} over {_tm_stat['n']} pose(s) "
+                      f"({_tm_stat['poses']} scored in pass A), mean predicted pair score "
+                      f"{(_tm_stat['pred_sum'] / _tm_stat['pred_n']) if _tm_stat['pred_n'] else float('nan'):.4f}"
+                      + (f"; {_tm_stat['unmasked']} pose(s) had no scored chain pair"
+                         if _tm_stat["unmasked"] else "")
+                      + (f"; {_tm_stat['nolabel']} pose(s) had no pass-A mean and took NO gradient"
+                         if _tm_stat["nolabel"] else ""), flush=True)
+                for _k in ("poses", "loss", "n", "pred_sum", "pred_n", "unmasked", "nolabel"):
+                    _tm_stat[_k] = 0 if _k != "loss" and _k != "pred_sum" else 0.0
             # THE SAME MEDIANS, TO A FILE. Until now the print above was the only record
             # of the within-interface spread, so reading a 20-epoch curve out of it meant
             # grepping a log format that is free to change -- and the quantity the rel loss
