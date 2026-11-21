@@ -140,3 +140,106 @@ def centred_loss(e, m, e_mean, m_all):
         return None
     c = (e - e_mean.to(e.device).detach()) * keep
     return (c * c).sum() / keep.sum()
+
+
+def pair_tm_weight(sq, blocks, out_dtype=None, device=None):
+    """w = 1/(1 + e^2/d0^2) per scored pair, d0 from each block's own token count.
+
+    THE WEIGHT --pae-tm-weight APPLIES, LIVING HERE SO A TEST CAN IMPORT IT. The first version of
+    this lived as a closure inside phase_k_train.main(), which made it unimportable, so the CPU
+    gate could only re-type the formula and assert against its own copy -- a test that passes for
+    any implementation, including the bool-cast no-op --pae-row-frac actually shipped. Review
+    caught exactly that. The trainer and run_logging/test_pae_tm_weight.py now call this.
+
+    sq is the alignment error SQUARED, [N_frame, N_token] (no sample dim: the weight is per pose).
+    blocks is the mask builder's list of (block_mask, n_pair_tokens).
+
+    PAIRS IN NO BLOCK GET ZERO, which is correct because the union of the blocks IS the scored-pair
+    mask -- they are built from the same loop -- so a masked pair always falls in exactly one
+    block. A pose with no blocks at all is the caller's business, not this function's.
+    """
+    import torch
+    dt = out_dtype or torch.float32
+    dev = device or sq.device
+    sqf = sq.to(dtype=dt, device=dev)
+    if sqf.dim() != 2:
+        raise ValueError(f"pair_tm_weight wants [N_frame, N_token], got {tuple(sqf.shape)}. The "
+                         f"weight is per pose; a leading sample dim means --pose-batch > 1, which "
+                         f"the flag refuses at startup.")
+    w = torch.zeros(sqf.shape, dtype=dt, device=dev)
+    for blk, npt in blocks:
+        d0 = float(d0_for_pair(npt))
+        w = torch.where(blk.to(dev), 1.0 / (1.0 + sqf / (d0 ** 2)), w)
+    return w
+
+
+def pair_tm_weight_max(true_bins, logits, blocks, out_dtype=None, device=None,
+                       min_bin=0.0, max_bin=32.0, no_bins=64):
+    """w = max(s_true, s_pred) per scored pair -- Arm N's weight.
+
+    THE TWO NUMBERS, both in [0, 1] and both read off the SAME per-bin TM values so they are
+    comparable:
+      s_true  the TM value of the bin the pair's TRUE error falls in. Taken from the one-hot label
+              rather than from the raw error, so it is the bin's value, not the exact error's.
+      s_pred  the head's EXPECTED TM value: each bin's TM value times the probability the head puts
+              on that bin, summed over all 64.
+
+    WHY THE MAX. Arm M weighted by s_true alone, which spends the signal on pairs that are truly
+    close -- often the easy ones the head already gets -- and gives almost nothing to a pair the
+    head is confidently wrong about. Taking the max keeps a pair at full weight in either of the
+    two cases that move ipTM: it really is a contact, OR the head believes it is one and it is not
+    (a confident decoy). Only a pair that is truly wrong AND already predicted wrong falls away,
+    and that is the mass the unweighted objective was being swallowed by.
+
+    NO GRADIENT THROUGH THE WEIGHT. s_pred is a function of the logits, so without detaching, the
+    head could lower the loss by lowering its own weights -- predicting uncertainty everywhere.
+    The caller must be inside no_grad, and this returns a detached tensor either way.
+
+    d0 IS PER BLOCK, from that interface's token count, so the bin values match the ipTM the arm is
+    judged on rather than a lookalike at a different scale.
+    """
+    import torch
+    dt = out_dtype or torch.float32
+    dev = device or logits.device
+    if true_bins.shape[-1] != no_bins:
+        raise ValueError(f"true_bins last dim is {true_bins.shape[-1]}, expected {no_bins}")
+    tb = true_bins.to(dtype=dt, device=dev)
+    lg = logits.to(dtype=dt, device=dev)
+    def _one_pose(x, name):
+        """Collapse leading dims ONLY when they multiply to exactly one pose.
+
+        THE OLD TEST WAS `x.shape[0] == 1`, which asks about the FIRST dim rather than about how
+        many poses are present: [1, S, F, T, 64] with S > 1 passed it and returned pose 0's weight
+        for every pose in the batch. Unreachable with today's call shape -- the head is driven one
+        pose at a time -- but it would be a silent wrong answer rather than a crash the day that
+        changed, which is the worst kind. Raised in review.
+        """
+        if x.dim() == 3:
+            return x
+        lead = 1
+        for d in x.shape[:-3]:
+            lead *= int(d)
+        if lead != 1:
+            raise ValueError(f"{name} holds {lead} poses {tuple(x.shape)}; the weight is per pose. "
+                             f"--pose-batch > 1 is refused at startup for this reason.")
+        return x.reshape(*x.shape[-3:])
+
+    tb = _one_pose(tb, "true_bins")
+    lg = _one_pose(lg, "logits")
+    if tb.dim() != 3 or lg.dim() != 3:
+        raise ValueError(f"wanted [N_frame, N_token, {no_bins}] per pose, got "
+                         f"{tuple(tb.shape)} and {tuple(lg.shape)}. A leading sample dim means "
+                         f"--pose-batch > 1, which the flag refuses at startup.")
+    with torch.no_grad():
+        p = torch.softmax(lg, dim=-1)
+        w = torch.zeros(tb.shape[:2], dtype=dt, device=dev)
+        for blk, npt in blocks:
+            if tuple(blk.shape) != tuple(tb.shape[:2]):
+                raise ValueError(f"block mask {tuple(blk.shape)} does not match the pair grid "
+                                 f"{tuple(tb.shape[:2])}; torch.where would broadcast it silently")
+            d0 = float(d0_for_pair(npt))
+            tmv = per_bin_weight(d0, min_bin, max_bin, no_bins, dev, dt)   # [no_bins]
+            s_true = (tb * tmv).sum(dim=-1)
+            s_pred = (p * tmv).sum(dim=-1)
+            w = torch.where(blk.to(dev), torch.maximum(s_true, s_pred), w)
+    return w.detach()
