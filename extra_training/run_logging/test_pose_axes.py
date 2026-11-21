@@ -31,6 +31,16 @@ WHAT IS UNDER TEST, and why each part is here rather than taken on trust:
      a legacy args.json still yields the flags that rebuild its architecture, and the flags it
      yields are ones phase_k_eval really declares.
 
+  6. THE FOUR DEFECTS AN EXTERNAL REVIEW OF 5caf2961 FOUND, each as the thing that would have
+     caught it: that the resume guard now SEES a zero-vs-pretrained init difference (it is the
+     whole architecture for a projection outside --train-only, since a bundle holds the trainable
+     tensors alone); that a legacy post-LN readout resumes without false drift, which needs the
+     bundle's legacy fields MERGED with its args.json before the axes are derived, because the
+     bundle records pose_readout_prenorm but not pose_readout; that both child-argv builders --
+     run_logging/valpae_flags.py and run_logging/eval_fawgtu_bundles.py's --loss-only stage --
+     emit a command the child resolver accepts and rebuilds the same architecture from; and that
+     phases/phase_k_perblock_check.py's fake head carries every attribute install() reads.
+
 NOT TESTED HERE, AND IT NEEDS A GPU: nothing. Every property above is shape and value algebra on
 small tensors. phases/phase_k_perblock_check.py, which exercises the same module against the real
 ConfidenceHead, CANNOT run on CPU -- Protenix's fused LayerNorm raises "input must be a CUDA
@@ -483,8 +493,11 @@ def main():
     # rather than hand-built dicts, because the bundles are what a resume will actually read.
     import glob
     import json
-    GUARDED = ("pose_block_terms", "pose_block_weights", "pose_readout_sites",
-               "pose_readout_terms")
+    # THE INITS ARE IN THIS TUPLE NOW. They were left out of the guard on the argument that a
+    # resume overwrites every trained tensor, which holds only for a tensor the bundle CARRIES --
+    # and a bundle carries the trainable ones alone. Section 8 is the case that proves it.
+    GUARDED = ("pose_block_terms", "pose_block_init", "pose_block_weights",
+               "pose_readout_sites", "pose_readout_terms", "pose_readout_init")
     src = open(os.path.join(ROOT, "phases", "phase_k_train.py")).read()
     for k in GUARDED:
         want = f'"{k}": a.{k},'
@@ -508,8 +521,12 @@ def main():
             aj = {}
         if not aj:
             continue
-        # THE GUARD's OWN CHAIN: bundle, then args.json, then the migration default.
-        g = dict(g, **PA.backfill(g))
+        # THE GUARD's OWN CHAIN: bundle, then args.json, then the migration default -- and the
+        # backfill is fed BOTH records, bundle first, exactly as the guard now does it. Backfilling
+        # the bundle alone was finding 2: its guard record carries pose_readout_prenorm and
+        # pose_readout_post_zero but not pose_readout itself, so a legacy POST-LN arm derived no
+        # readout site at all.
+        g = dict(g, **PA.backfill(dict(aj, **g)))
         aj_bf = dict(aj, **PA.backfill(aj))
         mine = PA.record(*PA.resolve(aj))
         for k in GUARDED:
@@ -518,6 +535,259 @@ def main():
                 drifted.append((os.path.relpath(b, ROOT), k, was, mine[k]))
     check("no real bundle reads as drift against its own run's flags", not drifted,
           f"{len(bundles)} bundle(s) checked" if not drifted else f"{drifted[:3]}")
+
+    # ------------------------------------------------------------------------------------------
+    print("\n8  THE FOUR DEFECTS FOUND IN REVIEW OF 5caf2961")
+    import ast
+    import json
+    import re
+    import shlex
+    import subprocess
+    import tempfile
+
+    TRAIN_SRC = os.path.join(ROOT, "phases", "phase_k_train.py")
+    tsrc = open(TRAIN_SRC).read()
+
+    def guard_dicts():
+        """(compared, saved) key sets, read out of the trainer the way test_guard_fields.py does."""
+        big = []
+        for n in ast.walk(ast.parse(tsrc)):
+            if isinstance(n, ast.Dict):
+                ks = {k.value for k in n.keys
+                      if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                if len(ks) >= 10:
+                    big.append(ks)
+        saved = next(ks for ks in big if "drift_history" in ks)
+        compared = next(ks for ks in big if "lr_decay_shape" in ks and "drift_history" not in ks)
+        return compared, saved
+
+    COMPARED, SAVED = guard_dicts()
+
+    # 8a  AN INIT CHANGE IS VISIBLE TO THE RESUME GUARD.
+    #
+    # THE DEFECT: the guard compared the terms and the weights mode and deliberately not the
+    # inits, on the reasoning that a resume overwrites every trained tensor's value. A bundle
+    # saves the TRAINABLE tensors only. So for `--pose-block-terms onehot --train-only pae_ln`,
+    # moving --pose-block-init from zero to pretrained left every compared field identical
+    # (pose_perblock_copy is False on both sides: legacy's copy mode meant BOTH distance terms),
+    # left the trainable tensor NAMES identical, and rebuilt the FROZEN projection with different
+    # values -- which, being frozen, are the values the whole run computes with.
+    A = {"pose_block_terms": "onehot", "pose_block_init": "zero"}
+    B = {"pose_block_terms": "onehot", "pose_block_init": "pretrained"}
+    ra, rb = PA.record(*PA.resolve(A)), PA.record(*PA.resolve(B))
+    check("zero vs pretrained differ in NO field the legacy surface records",
+          not [k for k in ra if ra[k] != rb[k] and k in PA.LEGACY_KEYS],
+          "which is why the guard needs the axis key")
+    seen = sorted(k for k in ra if ra[k] != rb[k] and k in COMPARED)
+    check("the resume guard COMPARES the field that differs", seen == ["pose_block_init"],
+          f"compared fields that differ: {seen}")
+    for k in ("pose_block_init", "pose_readout_init"):
+        check(f"{k} is compared AND saved AND defaulted",
+              k in COMPARED and k in SAVED and f'"{k}": "{PA.EMPTY[k]}"' in tsrc,
+              f"compared={k in COMPARED} saved={k in SAVED}")
+    check("and both inits are in the loudest drift group, like the axes they belong to",
+          re.search(r'"pose_block_init",\s*"pose_readout_init"', tsrc) is not None)
+    # THE ARCHITECTURE REALLY DOES DIFFER, so the field is not a formality: same tensor names,
+    # different tensors, and --train-only pae_ln carries neither of them in the bundle.
+    mz, mp = Model(), Model()
+    mp.load_state_dict(mz.state_dict())
+    pose_perblock.install(mz, terms=("onehot",), init="zero", loud=False)
+    pose_perblock.install(mp, terms=("onehot",), init="pretrained", loud=False)
+    check("the two inits build the SAME tensor names", param_names(mz) == param_names(mp),
+          f"{param_names(mz)}")
+    zw = [p for n, p in mz.confidence_head.named_parameters() if n.startswith("pose_")]
+    pw = [p for n, p in mp.confidence_head.named_parameters() if n.startswith("pose_")]
+    check("and DIFFERENT values, so a resume across the change is a different head",
+          all(float(z.abs().max()) == 0.0 for z in zw)
+          and all(torch.equal(p, mp.confidence_head.linear_no_bias_d.weight) for p in pw),
+          f"max|zero| {max(float(z.abs().max()) for z in zw):.3e}, "
+          f"pretrained copies linear_no_bias_d")
+    kept = [n for n, _ in mz.confidence_head.named_parameters() if re.search("pae_ln", n)]
+    check("--train-only pae_ln leaves the projection OUT of the bundle, so the init is final",
+          kept and not any(n.startswith("pose_") for n in kept), f"bundle would hold {kept}")
+    # AND THE FORWARD DIFFERS, which is the whole point: the frozen tensor is in the graph.
+    check("the two heads are DIFFERENT FUNCTIONS at step 0",
+          not torch.equal(run(mz), run(mp)),
+          f"max|d| {float((run(mp) - run(mz)).abs().max()):.3e}")
+
+    # 8b  A LEGACY POST-LN READOUT RESUMES WITHOUT DRIFT.
+    #
+    # THE DEFECT: the bundle's guard record carries pose_readout_prenorm and
+    # pose_readout_post_zero but NOT pose_readout, so for --pose-perblock --pose-readout (the
+    # plain post-LN arm) every readout key the bundle has is False. Backfilling the bundle ALONE
+    # therefore derived "no readout at all" and that inferred empty value won the comparison,
+    # reporting pose_readout_sites and pose_readout_terms as drift on an ordinary resume --
+    # refused outright under --resume-strict.
+    LAUNCH = {"pose_perblock": True, "pose_readout": True}
+    mine = PA.record(*PA.resolve(LAUNCH))
+    aj = {k: dict(LAUNCH, **mine)[k] for k in PA.LEGACY_KEYS}        # a pre-axes args.json
+    # exactly the legacy keys the saved guard dict carries, and no others
+    gkeys = [k for k in PA.LEGACY_KEYS if k in SAVED]
+    bundle_g = {k: dict(LAUNCH, **mine)[k] for k in gkeys}
+    check("the bundle's guard record really does omit pose_readout",
+          "pose_readout" not in bundle_g and "pose_readout_prenorm" in bundle_g,
+          f"it carries {sorted(bundle_g)}")
+    check("backfilling the bundle ALONE still derives no readout site (the defect's cause)",
+          dict(bundle_g, **PA.backfill(bundle_g)).get("pose_readout_sites") == "",
+          "unchanged on purpose: the bundle cannot know, which is why the merge exists")
+    merged = dict(bundle_g, **PA.backfill(dict(aj, **bundle_g)))
+    drift = [(k, merged.get(k, PA.EMPTY[k]), mine[k])
+             for k in GUARDED if merged.get(k, PA.EMPTY[k]) != mine[k]]
+    check("merged with the run's own args.json it derives the post-LN site and NO drift",
+          merged.get("pose_readout_sites") == "post" and not drift, f"{drift}")
+    check("and the trainer's guard feeds backfill both records, bundle first",
+          "_PAX.backfill(dict(_fallback or {}, **_g))" in tsrc)
+    # THE MERGE MUST NOT INVENT ANYTHING for a bundle that records the axes itself: a newer
+    # args.json beside an older bundle has to leave the per-field fallback to do the comparing.
+    newer = dict(bundle_g, pose_block_terms="onehot", pose_block_weights="untied")
+    check("a bundle that already carries axis keys is left alone by the merge",
+          PA.backfill(dict(aj, **newer)) == {})
+
+    # 8c  BOTH CHILD-ARGV BUILDERS PRODUCE A COMMAND THE CHILD RESOLVER ACCEPTS.
+    def as_namespace(toks):
+        """The child's namespace, as argparse would see this flag list."""
+        d, i = {}, 0
+        while i < len(toks):
+            t = toks[i]
+            if not t.startswith("--"):
+                i += 1
+                continue
+            k = t[2:].replace("-", "_")
+            if i + 1 < len(toks) and not toks[i + 1].startswith("--"):
+                d[k], i = toks[i + 1], i + 2
+            else:
+                d[k], i = True, i + 1
+        return d
+
+    # valpae_flags.py: run it for real, on a legacy in-block + readout args.json.
+    CASES = {
+        # THE REFUSAL CASE: the readout site reads the geometry --pose-inblock publishes, so the
+        # flags without it are not merely incomplete, they are unresolvable.
+        "legacy pose_inblock + pose_readout": {
+            "pose_inblock": True, "pose_inblock_pae": True, "pose_inblock_block": 2,
+            "pose_readout": True, "pae_only": True, "nsample": 5, "alpha_pae": 1.0,
+            "train_only": "pae_ln,linear_no_bias_pae"},
+        # THE SILENT CASE: a frozen pretrained copy arm, where a missing init flag builds the
+        # same tensor names with different values.
+        "legacy copy arm, projections frozen": {
+            "pose_perblock": True, "pose_perblock_copy": True, "frame_direction": True,
+            "pose_readout": True, "pose_readout_copy_distance": True,
+            "nsample": 5, "alpha_pae": 1.0, "train_only": "pae_ln"},
+    }
+    with tempfile.TemporaryDirectory() as td:
+        for _i, (label, args_json) in enumerate(CASES.items()):
+            rid = f"case{_i}"          # not hash(label): PYTHONHASHSEED makes that per-process
+            d = os.path.join(td, "training", "runs", rid)
+            os.makedirs(d)
+            json.dump(args_json, open(os.path.join(d, "args.json"), "w"))
+            rc = subprocess.run([sys.executable, "-I",
+                                 os.path.join(ROOT, "run_logging", "valpae_flags.py"), rid],
+                                cwd=td, capture_output=True, text=True)
+            out = os.path.join(d, "valpae_flags.txt")
+            toks = shlex.split(open(out).read()) if rc.returncode == 0 else []
+            ns = as_namespace(toks)
+            ns["frame_direction"] = bool(args_json.get("frame_direction"))
+            want = PA.record(*PA.resolve(args_json))
+            try:
+                got = PA.record(*PA.resolve(ns))
+                ok = all(got[k] == want[k] for k in PA.AXIS_KEYS)
+                why = f"{[ (k, got[k], want[k]) for k in PA.AXIS_KEYS if got[k] != want[k] ]}"
+            except PA.PoseConfigError as e:
+                ok, why = False, "CHILD REFUSES: " + str(e)[:70]
+            check(f"valpae_flags: the --loss-only child accepts and rebuilds {label}",
+                  rc.returncode == 0 and ok, why)
+            check(f"valpae_flags: and it forwards --pose-inblock for {label}",
+                  bool(args_json.get("pose_inblock")) == ("--pose-inblock" in toks),
+                  f"{' '.join(toks)}")
+
+    # eval_fawgtu_bundles.py: the valpae stage is a TRAINER child, so it must not reuse the
+    # evaluator's flags -- the eval target omits the inits because every head tensor comes from
+    # the checkpoint, which is false for a bundle that holds the trainable tensors only.
+    FSRC = open(os.path.join(ROOT, "run_logging", "eval_fawgtu_bundles.py")).read()
+    ftree = ast.parse(FSRC)
+    # OVER THE PARSED NAMES, not the text: a comment in stage_valpae that says "POSE_TRAIN, not
+    # POSE" is not a reference to POSE, and a grep-shaped assertion failed on exactly that.
+    bodies = {n.name: {x.id for x in ast.walk(n) if isinstance(x, ast.Name)}
+              for n in ast.walk(ftree) if isinstance(n, ast.FunctionDef)}
+    check("eval_fawgtu_bundles builds a train-target list as well as an eval one",
+          'target="train"' in FSRC and 'target="eval"' in FSRC)
+    for fn, want in (("stage_valpae", "POSE_TRAIN"), ("stage_train", "POSE"),
+                     ("stage_val", "POSE")):
+        names = {n for n in bodies.get(fn, set()) if n in ("POSE", "POSE_TRAIN")}
+        check(f"{fn} passes {want} to its child", names == {want},
+              f"it references {sorted(names) or 'nothing'}")
+    # AND THE FLAGS IT WOULD BUILD REALLY DO REBUILD A PRETRAINED ARM, checked against a real
+    # args.json on disk rather than a hand-made one.
+    real = os.path.join(ROOT, "training", "runs", "fobq26", "args.json")
+    if os.path.exists(real):
+        RA = json.load(open(real))
+        tr, tnotes = PA.argv(RA, target="train",
+                             defined=PA.eval_long_opts(TRAIN_SRC))
+        ev = PA.argv(RA, target="eval", defined=PA.eval_long_opts())[0]
+        ns = as_namespace(tr)
+        ns["frame_direction"] = bool(RA.get("frame_direction"))
+        got = PA.record(*PA.resolve(ns))
+        want = dict(RA, **PA.backfill(RA))
+        check("the train-target argv rebuilds fobq26's pretrained inits; the eval one omits them",
+              not tnotes
+              and got["pose_block_init"] == want["pose_block_init"] == "pretrained"
+              and got["pose_readout_init"] == want["pose_readout_init"] == "pretrained"
+              and "--pose-block-init" not in ev,
+              f"notes {tnotes}; train {' '.join(tr)}")
+
+    # AND EVERY TRAINER-CHILD BUILDER FORWARDS THE IN-BLOCK PATHWAY, which is not one of the axes
+    # and so is not pose_axes.argv's to emit. Three files build a phase_k_train --loss-only argv
+    # from an args.json or a bundle guard; two of them had never forwarded it, and the third --
+    # recover_val_pae.py -- was found by asking this question of all three rather than of the two
+    # the review named.
+    for f in ("valpae_flags.py", "eval_fawgtu_bundles.py", "recover_val_pae.py"):
+        fs = open(os.path.join(ROOT, "run_logging", f)).read()
+        check(f"{f} builds a train-target argv AND forwards --pose-inblock",
+              'target="train"' in fs and '"--pose-inblock"' in fs
+              and '"--pose-inblock-block"' in fs and '"--pose-inblock-pae"' in fs,
+              "a child without it refuses the bundle, or refuses the command outright when a "
+              "legacy readout site rides on it")
+
+    # 8d  THE PER-BLOCK CHECKER's FIXTURE SATISFIES WHAT THE INSTALLER READS.
+    #
+    # THE DEFECT: install() builds its term table over BOTH distance sources before it looks at
+    # which terms are enabled (pose_perblock.py:208-211), so it reads
+    # linear_no_bias_d_wo_onehot.weight even for terms=("onehot",) -- and the fake head defined
+    # only linear_no_bias_d. The first install raised AttributeError, after the CUDA-dependent
+    # baseline forward. THE FIXTURE was the thing that was wrong: every real head with
+    # linear_no_bias_d has the wo_onehot layer beside it (confidence.py:286-305), shared mode
+    # re-applies exactly that pair and the pretrained init copies from it, so a head without it
+    # cannot represent two of the three modes the checker exists to check.
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location(
+        "_pbc", os.path.join(ROOT, "phases", "phase_k_perblock_check.py"))
+    _pbc = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_pbc)
+    fm = _pbc.FakeModel(n_blocks=4, c_z=16, c_s=8, num_bins=39)
+    # EVERY ATTRIBUTE install() READS, not just the one that broke: a list read out of the
+    # installer's own source, so the next attribute added there fails HERE rather than in a
+    # checker run that needs a GPU to reach the first install.
+    import inspect
+    reads = set(re.findall(r"head\.([A-Za-z_][A-Za-z_0-9]*)",
+                           inspect.getsource(pose_perblock.install)))
+    reads -= {n for n in reads if n.startswith("_pose")} | {"add_module"}
+    # frame_dir_proj is read ONLY when `orient` is in the terms, which pose_axes refuses without
+    # --frame-direction; the checker never asks for it and the fake head has no pose_direction.
+    reads -= {"frame_dir_proj"}
+    missing = sorted(r for r in reads if not hasattr(fm.confidence_head, r))
+    check("the checker's fake head has every attribute install() reads", not missing,
+          f"missing {missing}" if missing else f"{len(reads)} attribute(s): {sorted(reads)}")
+    try:
+        pose_perblock.install(fm, terms=("onehot",), loud=False)
+        check("so install(terms=('onehot',)) on the fake head does not raise", True)
+    except Exception as e:
+        check("so install(terms=('onehot',)) on the fake head does not raise", False,
+              f"{type(e).__name__}: {e}")
+    # AND THE FIXTURE's OWN FORWARD IS BLOCK 0's COMPLETE INJECTION, which is what "shared" and
+    # "pretrained" are defined against.
+    check("and its pre-stack forward adds both of block 0's terms",
+          "linear_no_bias_d_wo_onehot(d.unsqueeze(-1))" in
+          inspect.getsource(_pbc.FakeHead.memory_efficient_forward))
 
     print()
     if FAIL:

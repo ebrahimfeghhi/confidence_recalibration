@@ -52,6 +52,23 @@ def main():
     # only the TRAINABLE tensors out of the bundle, so a pose tensor outside --train-only keeps
     # its initialisation and the init flags are part of the architecture here.
     flags += _PAX.argv(a, target="train")[0]
+    # AND THE IN-BLOCK PATHWAY, WHICH IS NOT ONE OF THE AXES AND WAS IN NEITHER TABLE. It adds
+    # two head tensors (four with --pose-inblock-pae). A child without it usually refuses the
+    # bundle on the missing-trainable-tensor stop and the measurement is simply absent -- but only
+    # when the child's trainable set is a SUPERSET of the bundle's: --train-only goes below, and
+    # if its patterns do not select the in-block tensors then nothing is missing and the child
+    # measures a head WITHOUT the pathway and reports a number. Worse for a LEGACY
+    # pose_inblock + pose_readout arm: the readout site READS the geometry this wrapper publishes,
+    # so pose_axes emits --pose-readout-sites/--pose-readout-terms and the child then refuses the
+    # command outright ("the readout site needs a stack injection to be installed") -- the argv was
+    # unresolvable, not merely incomplete. Copied verbatim from the trainer's own held-out child
+    # builder (phase_k_train.py:8661-8664) rather than retyped, including the block index, which
+    # decides WHERE the two tensors live and is therefore part of the architecture.
+    if a.get("pose_inblock"):
+        flags += ["--pose-inblock", "--pose-inblock-block",
+                  str(a.get("pose_inblock_block", -1))]
+        if a.get("pose_inblock_pae"):
+            flags.append("--pose-inblock-pae")
     for k, f in VALUE_FLAGS:
         if a.get(k) not in (None, "", 0):
             flags += [f, str(a[k])]

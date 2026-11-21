@@ -4754,14 +4754,27 @@ def main():
                  # onehot-only arm does -- so without these a resume could swap one architecture
                  # for the other and the guard would see no difference while the parameter SET
                  # changed underneath the saved AdamW moments. The terms decide which tensors
-                 # exist and the weights mode decides how many; the INITS are deliberately not
-                 # compared, for the same reason pose_readout_copy_distance never was: a resume
-                 # overwrites every trained tensor's value, so an initialisation is not part of
-                 # what the bundle continues.
+                 # exist and the weights mode decides how many.
+                 #
+                 # AND THE INITS, WHICH THIS GUARD LEFT OUT ON A REASON THAT ONLY HALF HOLDS. The
+                 # argument was pose_readout_copy_distance's: a resume overwrites every trained
+                 # tensor's value, so an initialisation is not part of what the bundle continues.
+                 # That is true of a tensor the bundle CARRIES -- and a bundle carries the TRAINABLE
+                 # tensors alone. Under --train-only the frozen ones are never saved and never
+                 # restored, so for them the init is not a starting point, it is the value the whole
+                 # run computes with. `--pose-block-terms onehot --train-only pae_ln` with the init
+                 # moved from zero to pretrained changes every forward of the rest of the run while
+                 # every other field here is identical -- pose_perblock_copy is False on both sides,
+                 # because the legacy copy mode meant BOTH distance terms -- and the missing-tensor
+                 # check below cannot see it either, since nothing is missing. A silently different
+                 # architecture that compares as a continuation, which is the failure class this
+                 # guard exists for. Found in review of 5caf2961.
                  "pose_block_terms": a.pose_block_terms,
+                 "pose_block_init": a.pose_block_init,
                  "pose_block_weights": a.pose_block_weights,
                  "pose_readout_sites": a.pose_readout_sites,
                  "pose_readout_terms": a.pose_readout_terms,
+                 "pose_readout_init": a.pose_readout_init,
                  # SAME REASON AGAIN, AND THE LARGEST OF THEM: --pose-mlp adds 15 trainable
                  # tensors, so a bundle written without it is missing all 15 and the _missing
                  # check below refuses it anyway. Compared here so the refusal names the setting
@@ -4848,6 +4861,18 @@ def main():
                      # arm's bundle against "" here would report drift on every legacy resume.
                      "pose_block_terms": "", "pose_block_weights": "untied",
                      "pose_readout_sites": "", "pose_readout_terms": "",
+                     # THE INITS MIGRATE TO THE PARSER's OWN DEFAULT, and for a bundle carrying the
+                     # legacy mode flags they are DERIVED from them instead -- pose_axes.backfill
+                     # reads pose_perblock_copy and pose_readout_copy_distance -- exactly as the
+                     # four axis fields above are. These constants are reached only by a bundle
+                     # that records no pose flag of any kind, where "zero" is what ran. A bundle
+                     # written between 5caf2961 and this patch carries the four axis keys but no
+                     # init, so backfill declines it and the init is read from the run's own
+                     # args.json beside it, which does record it; only a bundle moved away from
+                     # its args.json falls through to these, and then a pretrained arm reads as
+                     # drift. That is the honest answer rather than a guess from a mode boolean
+                     # that cannot express a pretrained one-hot-only arm at all.
+                     "pose_block_init": "zero", "pose_readout_init": "zero",
                      "rank_loss": False, "alpha_rank": 1.0,
                      "rank_pool": "max", "rel_labels": "", "rel_standardize": False,
                      "rel_sd_weight": False, "rel_std_floor": -1.0,
@@ -4903,8 +4928,25 @@ def main():
         # would report pose_block_terms drift ("" vs "onehot,dist") over a setting that did not
         # change. Applied to the side-by-side args.json too, for a bundle whose own guard predates
         # even the legacy keys.
+        #
+        # DERIVED FROM BOTH RECORDS TOGETHER, because the bundle's guard does not carry every
+        # legacy key: `pose_readout` itself is not among the fields saved below, only
+        # pose_readout_prenorm and pose_readout_post_zero are. For the legacy POST-LN arm
+        # (--pose-perblock --pose-readout, no --pose-readout-prenorm) every readout key the bundle
+        # does carry is False, so backfilling the bundle ALONE derived no readout site at all --
+        # "" -- while the same run's args.json, which does record pose_readout, derives "post".
+        # The inferred empty value then won the comparison below and an ordinary resume of a
+        # perfectly valid arm reported pose_readout_sites and pose_readout_terms as drift, in the
+        # loudest severity group, which --resume-strict refuses outright. Found in review of
+        # 5caf2961.
+        #
+        # args.json FILLS ONLY THE KEYS THE BUNDLE DOES NOT CARRY (`**_g` wins), so the bundle
+        # still speaks for itself wherever it recorded anything, and a bundle moved away from its
+        # args.json behaves exactly as it did before. A record that already carries the axis keys
+        # is returned unchanged by backfill, so a newer args.json beside an older bundle leaves
+        # the per-field fallback below to do the comparing instead of an inference.
         _g = dict(_g or {})
-        _g.update(_PAX.backfill(_g))
+        _g.update(_PAX.backfill(dict(_fallback or {}, **_g)))
         if _fallback:
             _fallback = dict(_fallback)
             _fallback.update(_PAX.backfill(_fallback))
@@ -5071,6 +5113,13 @@ def main():
                              # four mode booleans above are in it.
                              "pose_block_terms", "pose_block_weights",
                              "pose_readout_sites", "pose_readout_terms",
+                             # THE INITS ARE IN THE LOUD GROUP TOO, though they move no tensor in
+                             # or out of the param group. A bundle restores the TRAINABLE tensors
+                             # only, so a frozen projection's init is the value the rest of the
+                             # run computes with: changing it makes this a different head, not a
+                             # kink in one curve, and the numeric moment check below cannot see it
+                             # precisely because the parameter set is unchanged.
+                             "pose_block_init", "pose_readout_init",
                              # THE BIGGEST OF THE PARAMETER-SET FLAGS: 15 tensors, and its second
                              # layers sit at six different sites, so moments landing on the wrong
                              # one would be moments for a different site.
@@ -9740,6 +9789,14 @@ def main():
                                   "pose_block_weights": a.pose_block_weights,
                                   "pose_readout_sites": a.pose_readout_sites,
                                   "pose_readout_terms": a.pose_readout_terms,
+                                  # THE INITS, SAVED IN THE SAME PATCH THAT COMPARES THEM, which
+                                  # is what test_guard_fields.py asserts -- and the only reason
+                                  # the six half-wirings this file records are comments rather
+                                  # than live bugs. A bundle holds the trainable tensors only, so
+                                  # for a frozen projection the init IS the architecture; the
+                                  # comparison side names the arm that proves it.
+                                  "pose_block_init": a.pose_block_init,
+                                  "pose_readout_init": a.pose_readout_init,
                                   "l2_sp": a.l2_sp,
                                   "l2_sp_exclude": a.l2_sp_exclude,
                                   # SAVED AS WELL AS COMPARED. Added to the compared dict only,

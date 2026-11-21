@@ -79,6 +79,31 @@ for _n in _PNOTES:
 if ARGS.get("frame_direction"):
     POSE.append("--frame-direction")
 
+# AND A SECOND LIST FOR THE ONE STAGE THAT IS NOT AN EVALUATOR. Stages 1 and 2 run phase_k_eval,
+# where every head tensor comes from the checkpoint, so an initialisation is overwritten before
+# anything is scored and the `eval` target leaves the init flags out. Stage 3 runs
+# phase_k_train --loss-only, which BUILDS the head and then loads only the TRAINABLE tensors out
+# of the bundle: a projection outside that run's --train-only keeps whatever its init made, so
+# `zero` where the run trained `pretrained` measures a different head and nothing would say so.
+# Stage 3 was reusing POSE, which is exactly the "one builder, four call sites, one of them wrong"
+# shape commit 7d9d4d10 paid for -- the asymmetry is in pose_axes._ARGV_KEYS, so the fix is to ask
+# it for the right target, not to append anything by hand.
+POSE_TRAIN, _TNOTES = _PAX.argv(
+    ARGS, target="train", defined=_PAX.eval_long_opts(
+        os.path.join(ROOT, "phases", "phase_k_train.py")))
+for _n in _TNOTES:
+    raise SystemExit(f"STOP: pose flag derivation for the --loss-only child: {_n}")
+if ARGS.get("frame_direction"):
+    POSE_TRAIN.append("--frame-direction")
+# THE IN-BLOCK PATHWAY IS NOT ONE OF THE AXES and the trainer child needs it for the same reason
+# valpae_flags.py does: it adds head tensors the bundle carries. Copied from the trainer's own
+# held-out child builder (phase_k_train.py:8661-8664).
+if ARGS.get("pose_inblock"):
+    POSE_TRAIN += ["--pose-inblock", "--pose-inblock-block",
+                   str(ARGS.get("pose_inblock_block", -1))]
+    if ARGS.get("pose_inblock_pae"):
+        POSE_TRAIN.append("--pose-inblock-pae")
+
 VALFULL = {"fold": "validation/fold",
            "pool": "training/valfull/pool.csv",
            "selection": "training/valfull/structures.csv",
@@ -225,7 +250,9 @@ def stage_valpae(ep):
            "--clip-norm", str(ARGS.get("clip_norm", 25.0)),
            "--blocks-per-ckpt", str(ARGS.get("blocks_per_ckpt", 0)),
            "--epochs", "1", "--save-every", "0", "--warmup-steps", "0",
-           "--shuffle", "structure"] + POSE
+           # POSE_TRAIN, NOT POSE: this child is phase_k_train, which needs the inits. See the
+           # comment on POSE_TRAIN where it is built.
+           "--shuffle", "structure"] + POSE_TRAIN
     if ARGS.get("pae_only"):
         base.append("--pae-only")
     if ARGS.get("crop_all_poses"):

@@ -33,6 +33,12 @@ import torch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "phase_k_train.py")
+# THE REGION READS pose_axes, so the harness must hand it the same module the trainer does.
+# Without it every case died on NameError: _PAX -- which is what this file did from 5caf2961
+# (the commit that put the backfill into the guard) until the init fields were added to the
+# guard, because the exec namespace below is written out by hand rather than inherited.
+sys.path.insert(0, HERE)
+import pose_axes as _PAX                                                      # noqa: E402
 WORK = tempfile.mkdtemp(prefix="resume_guard_")
 
 LINES = open(SRC).read().splitlines(keepends=True)
@@ -81,7 +87,14 @@ def base_args(**over):
               pae_scored_pairs="", pae_only=True, lean_single=False, pose_inblock=False,
               pose_inblock_pae=False, pose_inblock_block=-1, frame_direction=False,
               pose_perblock=True, pose_perblock_tied=False, pose_perblock_share=False,
-              pose_perblock_copy=False, lora_rank=0, lora_alpha=0.0, lora_targets="",
+              pose_perblock_copy=False,
+              # THE AXES, CONSISTENT WITH THE LEGACY FLAGS ABOVE (plain --pose-perblock is
+              # onehot at zero init, untied) -- Args.__getattr__ returns 0 for anything missing,
+              # and an int 0 compared against the migration default "" or "zero" would report
+              # drift on a field no case is about.
+              pose_block_terms="onehot", pose_block_init="zero", pose_block_weights="untied",
+              pose_readout_sites="", pose_readout_terms="", pose_readout_init="zero",
+              lora_rank=0, lora_alpha=0.0, lora_targets="",
               lora_dropout=0.0, epoch_cover_all=False, pose_batch=1, epoch_balance=False,
               pae_row_frac=0.0, pae_row_mass=0.8, pae_row_floor=10, manifest_skip="")
     kw.update(over)
@@ -116,7 +129,7 @@ def run(label, a, model, opt, trainable, world=3, expect="proceed"):
           "is_main": True, "_manifest_digest": "deadbeef", "prefixes": ["head"],
           "start_epoch": 0, "start_step": 0, "_drift_history": [], "_resume_drift": None,
           "os": os, "json": json, "math": math, "time": time, "torch": torch, "_dt": _dt,
-          "copy": copy, "sys": sys}
+          "copy": copy, "sys": sys, "_PAX": _PAX}
     print("=" * 78)
     print(f"CASE: {label}")
     print("-" * 78)
@@ -302,6 +315,55 @@ def main():
     print(f"  [{'OK' if ok else 'UNEXPECTED'}] measurement proceeds, epoch reset to 0, "
           f"nothing stamped\n")
     results.append(("--loss-only measurement unaffected", ok))
+
+    # 16 A FROZEN PROJECTION's INIT IS PART OF THE ARCHITECTURE, and the guard must say so. A
+    # bundle holds the TRAINABLE tensors only, so a projection outside --train-only keeps whatever
+    # its init built for the whole run: zero and pretrained are two different heads. Every other
+    # field is identical across the change -- pose_perblock_copy is False on both sides, because
+    # the legacy copy mode meant BOTH distance terms -- so before pose_block_init was compared
+    # this resume was reported as a clean continuation. Found in review of 5caf2961.
+    m, o, tr = make_model()
+    a = base_args(pose_block_init="pretrained", train_only="pae_ln")
+    a.resume = write_bundle("init", a, m, o,
+                            guard={"world": 3, "pose_block_terms": "onehot",
+                                   "pose_block_init": "zero", "pose_block_weights": "untied",
+                                   "train_only": "pae_ln"},
+                            args_over={"pose_block_init": "zero", "rel_g_sigmoid": None,
+                                       "rel_std_floor": None})
+    ok, ns = run("--pose-block-init zero -> pretrained on a frozen projection", a, m, o, tr)
+    d = ns["_resume_drift"] or {}
+    ok = ok and d.get("batch_composition") == ["pose_block_init"]
+    print(f"  [{'OK' if ok else 'UNEXPECTED'}] the init change is reported, in the loud group: "
+          f"{d.get('batch_composition')}\n")
+    results.append(("an init change on a frozen projection is reported", ok))
+
+    # 17 AND A LEGACY POST-LN READOUT RESUME IS NOT DRIFT. The bundle's guard carries
+    # pose_readout_prenorm and pose_readout_post_zero but NOT pose_readout, so for
+    # --pose-perblock --pose-readout every readout key it has is False and backfilling the bundle
+    # alone derived NO readout site -- "" against this run's "post", reported in the loudest group
+    # and refused outright under --resume-strict. --resume-strict is ON here: a warning would pass
+    # a weaker test. Found in review of 5caf2961.
+    m, o, tr = make_model()
+    legacy = {"pose_perblock": True, "pose_readout": True}
+    rec = _PAX.record(*_PAX.resolve(legacy))
+    a = base_args(resume_strict=True, **{k: rec[k] for k in _PAX.AXIS_KEYS},
+                  **{k: rec[k] for k in _PAX.LEGACY_KEYS})
+    a.resume = write_bundle("legacyreadout", a, m, o,
+                            guard={"world": 3, "pose_perblock": True,
+                                   "pose_perblock_tied": False, "pose_perblock_share": False,
+                                   "pose_perblock_copy": False,
+                                   "pose_readout_prenorm": False,
+                                   "pose_readout_post_zero": False},
+                            # a pre-axes args.json: the legacy keys and nothing else
+                            drop_from_args=_PAX.AXIS_KEYS,
+                            args_over={"rel_g_sigmoid": None, "rel_std_floor": None})
+    ok, ns = run("legacy --pose-perblock --pose-readout resumed under --resume-strict",
+                 a, m, o, tr)
+    d = ns["_resume_drift"] or {}
+    ok = ok and not [k for k in d.get("fields", {}) if k.startswith("pose_")]
+    print(f"  [{'OK' if ok else 'UNEXPECTED'}] no pose field reported: "
+          f"{sorted(d.get('fields', {}))}\n")
+    results.append(("a legacy post-LN readout resume reports no pose drift", ok))
 
     # 15 AND THE DRIFT REACHES WHERE RESULTS ARE READ. The record is built inside the region, so
     # the region test above cannot see the two places it is CONSUMED -- and a printed warning in a

@@ -27,7 +27,14 @@ actually happened in pathway C and would happen here the same way.
    checkpointing off and could never see it. This one runs WITH grad, WITH blocks_per_ckpt=1, and
    calls backward.
 
-Run: /home/ebrahim/Protenix/.venv/bin/python -I phases/phase_k_perblock_check.py
+Run with LAYERNORM_TYPE=openfold set:
+  /home/ebrahim/Protenix/.venv/bin/python -I phases/phase_k_perblock_check.py
+
+THE ENV VAR IS NOT OPTIONAL ON A CPU BOX, which the "no GPU" above was quietly wrong
+about: the real PairformerStack runs Protenix's fused LayerNorm, which raises "input must
+be a CUDA tensor" at the first block of the very first forward. openfold is the same
+layer norm every launcher in shell_scripts/ sets, so this is the project's own setting
+rather than a test-only workaround.
 """
 import argparse
 import os
@@ -51,6 +58,16 @@ class FakeHead(torch.nn.Module):
     model and a GPU to instantiate, while A's wiring is entirely about the pair stack and the
     projections. The STACK is the genuine PairformerStack, so the checkpointing path and the
     _prep_blocks contract are real.
+
+    BOTH HALVES OF BLOCK 0's INJECTION, because the real head has both. confidence.py:286-305 adds
+    linear_no_bias_d(one_hot(d)) AND linear_no_bias_d_wo_onehot(d), and install() builds its term
+    table over both sources (pose_perblock.py:208-211) before it looks at which terms are enabled
+    -- so a stand-in carrying only the one-hot half raised AttributeError on the very first
+    install, even for terms=("onehot",). The fixture is what was wrong: every head that has
+    linear_no_bias_d has the wo_onehot layer beside it, `weights="shared"` re-applies exactly that
+    pair, and `init="pretrained"` copies from it, so a head without it is not a model of the thing
+    under test -- and teaching install() to tolerate one would let this checker pass against a
+    fixture that cannot represent two of the three init/weights modes it is here to check.
     """
 
     def __init__(self, n_blocks, c_z, c_s, num_bins):
@@ -59,6 +76,7 @@ class FakeHead(torch.nn.Module):
         from protenix.model.modules.primitives import LinearNoBias
         self.c_z, self.num_bins = c_z, num_bins
         self.linear_no_bias_d = LinearNoBias(in_features=num_bins, out_features=c_z)
+        self.linear_no_bias_d_wo_onehot = LinearNoBias(in_features=1, out_features=c_z)
         lower = torch.arange(3.25, 3.25 + 1.25 * num_bins, 1.25)[:num_bins]
         self.lower_bins = torch.nn.Parameter(lower, requires_grad=False)
         self.upper_bins = torch.nn.Parameter(
@@ -68,11 +86,18 @@ class FakeHead(torch.nn.Module):
 
     def memory_efficient_forward(self, input_feature_dict, s_trunk, z_pair, pair_mask,
                                  x_pred_rep_coords, **kw):
-        """A stand-in for the real one: embed the distance once, then run the stack."""
+        """A stand-in for the real one: embed the distance once, then run the stack.
+
+        BOTH TERMS, in the order confidence.py:297-305 adds them, so "block 0's own injection" --
+        which is what install(weights="shared") re-applies and what init="pretrained" copies --
+        means the same thing here as in the head. Every check below compares ONE instance before
+        and after install, so adding the second term moves the baseline and changes no claim.
+        """
         from protenix.model.utils import one_hot
         d = torch.cdist(x_pred_rep_coords.float(), x_pred_rep_coords.float())
         z = z_pair + self.linear_no_bias_d(
             one_hot(x=d, lower_bins=self.lower_bins, upper_bins=self.upper_bins))
+        z = z + self.linear_no_bias_d_wo_onehot(d.unsqueeze(-1))
         return self.pairformer_stack(s_trunk, z, pair_mask)
 
 
