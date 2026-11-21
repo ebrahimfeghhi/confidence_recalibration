@@ -32,7 +32,13 @@
 #   pose_readout_       -> the 6 readout tensors across sites 5 and 6                    (6)
 #   pae_ln              -> pae_ln.weight, pae_ln.bias                                    (2)
 #   linear_no_bias_pae  -> linear_no_bias_pae.weight                                     (1)
-# 18 in total, which is what EXPECT_TRAINABLE asserts. Cross-check: the prior six-site arm's 20
+#
+# POSE_PERBLOCK AND POSE_PERBLOCK_COPY ARE EXPLICITLY EMPTIED, and that is load-bearing: the base
+# launcher defaults both to 1 with the COLONLESS form (launch_pae_crop_arm.sh:73-74), so an arm
+# that simply omits them still emits --pose-perblock. pose_axes refuses the legacy and the axis
+# surface together -- correctly -- so Arm R would refuse at startup rather than run. Found in
+# review of 5caf2961, where exactly that happened.
+# 21 in total, which is what EXPECT_TRAINABLE asserts. Cross-check: the prior six-site arm's 20
 # was these 18 minus linear_no_bias_pae, plus the 3 extra tensors copy-mode adds.
 #
 # ZERO-INIT IS STILL A FLAG DIFFERENCE: POSE_PERBLOCK_COPY defaults to 1 in the base launcher and
@@ -57,7 +63,7 @@ echo "    hard 280 + pair dropout 0.25, uncropped, 12 epochs, in-sample + val at
 
 env EXPECT_TRAINABLE="${EXPECT_TRAINABLE:-21}" \
     TRAIN_ONLY="${TRAIN_ONLY:-frame_dir_proj,pose_perblock_,linear_no_bias_d,pose_readout_,pae_ln,linear_no_bias_pae}" \
-    FRAME_DIRECTION=1 \
+    FRAME_DIRECTION=1 POSE_PERBLOCK="" POSE_PERBLOCK_COPY="" \
     POSE_BLOCK_TERMS=onehot,dist,orient POSE_BLOCK_INIT=zero \
     POSE_READOUT_SITES=pre,post POSE_READOUT_TERMS=onehot,dist,orient POSE_READOUT_INIT=zero \
     MANIFEST="${MANIFEST:-training/slice280/structures.csv}" \
