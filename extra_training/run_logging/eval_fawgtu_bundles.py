@@ -41,6 +41,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import pose_axes as _PAX   # noqa: E402  the pose axes, and the ONE argv builder
 PY = sys.executable
 
 ap = argparse.ArgumentParser()
@@ -69,14 +71,11 @@ for s in STAGES:
 # pathway silently absent -- and phase_k_eval's own guard is what catches it. Reading them here
 # means the guard never has to.
 ARGS = json.load(open(os.path.join(RUN_D, "args.json")))
-POSE = []
-if ARGS.get("pose_perblock"):
-    POSE.append("--pose-perblock")
-    for k, f in (("pose_perblock_tied", "--pose-perblock-tied"),
-                 ("pose_perblock_share", "--pose-perblock-share"),
-                 ("pose_perblock_copy", "--pose-perblock-copy")):
-        if ARGS.get(k):
-            POSE.append(f)
+# THE POSE ARCHITECTURE, FROM THE ONE BUILDER (phases/pose_axes.py) rather than a ladder over the
+# legacy keys, which cannot express every configuration the trainer can build.
+POSE, _PNOTES = _PAX.argv(ARGS, target="eval", defined=_PAX.eval_long_opts())
+for _n in _PNOTES:
+    raise SystemExit(f"STOP: pose flag derivation: {_n}")
 if ARGS.get("frame_direction"):
     POSE.append("--frame-direction")
 

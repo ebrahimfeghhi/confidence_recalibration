@@ -62,8 +62,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, "/home/ebrahim/Protenix")
 sys.path.insert(0, os.path.join(ROOT, "phases"))
 sys.path.insert(0, os.path.join(ROOT, "run_logging"))
-import label_index as _LI   # the only sanctioned row<->pose-id map
+import label_index as _LI
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import tm_centered_loss as _TMW   # d0_for_pair: the same calculate_normalization ipTM uses   # the only sanctioned row<->pose-id map
 import phase_k_preflight_cover as _PFC   # which STRUCTURES an alignment marker vouches for
+import pose_axes as _PAX   # the three axes of pose injection, and the legacy-flag desugaring
 print = functools.partial(print, flush=True)
 
 TERMS = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss", "loss")
@@ -709,6 +712,53 @@ def main():
                          "is inherent to the mode, so this arm is a different ARCHITECTURE "
                          "evaluated from the shipped weights, not a one-variable change to them. "
                          "Pair it with --l2-sp to price how far that shared injection may move.")
+    # ------------------------------------------------------------------------------------------
+    # THE COMPOSITIONAL SURFACE (phases/pose_axes.py). The four flags above are MODES: each one
+    # fuses which terms a site carries with how its weights are initialised and shared, so
+    # legitimate combinations were unexpressible -- "blocks carry the one-hot AND the raw distance
+    # at ZERO init", the one-variable control for --pose-perblock-copy, could not be asked for at
+    # all. These three name the axes directly. They are mutually exclusive with the legacy flags,
+    # which remain as aliases desugared at one point (pose_axes.resolve) so every earlier arm is
+    # reproduced by the command line it was launched with.
+    ap.add_argument("--pose-block-terms", default="",
+                    help="INJECT AT PAIRFORMER BLOCKS 1..n-1, carrying exactly these terms: a "
+                         "comma list of `onehot` (the binned distance, num_bins -> c_z), `dist` "
+                         "(the raw distance, 1 -> c_z) and `orient` (the frame-relative unit "
+                         "direction, 3 -> c_z; needs --frame-direction, which is what computes "
+                         "the geometry). Block 0 is never wrapped -- its injection already exists "
+                         "as the pretrained pre-stack linear_no_bias_d. This flag is the on "
+                         "switch for the per-block sites: without it they are off, whatever "
+                         "--pose-block-init and --pose-block-weights say. The tensor NAMES follow "
+                         "the terms, not the init: onehot alone is pose_perblock_proj, onehot+dist "
+                         "is pose_perblock_linear_no_bias_d plus "
+                         "pose_perblock_linear_no_bias_d_wo_onehot, so a checkpoint's key set is "
+                         "unchanged from the legacy flag that meant the same terms. Adds "
+                         "trainable tensors, so an existing resume bundle CANNOT be loaded and a "
+                         "--train-only must match `pose_perblock_` (and `frame_dir` for the "
+                         "orientation copies).")
+    ap.add_argument("--pose-block-init", default="zero", choices=["zero", "pretrained"],
+                    help="how the per-block projections START. `zero` (default) makes step 0 "
+                         "bit-identical to the head without them, verified exactly zero through "
+                         "the modules. `pretrained` gives each depth its own COPY of block 0's "
+                         "injection for the terms it carries, verified equal to block 0's weights "
+                         "exactly -- step 0 then matches --pose-block-weights shared instead of "
+                         "the shipped head, which is what makes capacity the only variable "
+                         "against a shared arm. The orientation copies always copy frame_dir_proj, "
+                         "which pose_direction zero-inits and verifies, so they are zero in both "
+                         "cases and there is no pretrained orientation matrix to copy anywhere. "
+                         "Requires --pose-block-terms.")
+    ap.add_argument("--pose-block-weights", default="untied",
+                    choices=["untied", "tied", "shared"],
+                    help="how the per-block DISTANCE projections share weights. `untied` "
+                         "(default) is one matrix per depth. `tied` is ONE matrix for blocks "
+                         "1..n-1 -- the sharper test of the degradation hypothesis, the identical "
+                         "embedding re-presented at each depth, and NOT equivalent to scaling a "
+                         "single injection because each block transforms z before the next add. "
+                         "`shared` re-applies block 0's OWN pretrained tensors at every depth and "
+                         "adds ZERO parameters; it needs terms onehot,dist because block 0 adds "
+                         "both, and step 0 is then NOT bit-identical to the shipped head. The "
+                         "orientation copies are one per depth in every mode, as they always "
+                         "were. Requires --pose-block-terms.")
     ap.add_argument("--allow-unmasked-fallback", action="store_true",
                     help="accept training structures that --pae-scored-pairs does not name, whose "
                          "poses then train the UNMASKED PAE term. Refused by default: the running "
@@ -858,6 +908,38 @@ def main():
                          "later blocks re-normalise, while this site adds after pae_ln with "
                          "nothing downstream to rescale it. Shapes permit it, semantics do not "
                          "match. The orientation arm stays zero either way.")
+    # ------------------------------------------------------------------------------------------
+    # THE READOUT AXES (phases/pose_axes.py), the same split as --pose-block-*: WHERE, WHAT and
+    # HOW IT STARTS, instead of four flags that each move more than one of those.
+    ap.add_argument("--pose-readout-sites", default="",
+                    help="INJECT AT THE READOUT, at these sites: a comma list of `pre` (into "
+                         "pae_ln's INPUT, so the layernorm renormalises the sum and the term can "
+                         "turn the pair feature but not scale it) and `post` (into its OUTPUT, "
+                         "straight into the normalised features linear_no_bias_pae reads). "
+                         "`pre,post` is two genuinely different sites with INDEPENDENT weights, "
+                         "so neither is the other at a different scale. The primary site -- `pre` "
+                         "when present, else `post` -- owns the unprefixed pose_readout_* tensors "
+                         "and the second owns pose_readout_post_*, exactly as the legacy flags "
+                         "laid them out. Needs a stack injection (--pose-block-terms or "
+                         "--pose-inblock): the hook READS that wrapper's per-forward geometry "
+                         "rather than recomputing cdist and the one-hot. Pass "
+                         "--pose-readout-terms with it.")
+    ap.add_argument("--pose-readout-terms", default="",
+                    help="which terms the readout sites carry: a comma list of `onehot`, `dist` "
+                         "and `orient` (needs --frame-direction). The legacy --pose-readout meant "
+                         "onehot,dist plus orient whenever --frame-direction was on; this says it "
+                         "out loud, and a term left out gets NO tensor rather than a zero one "
+                         "that is created, trained and never used. Pass --pose-readout-sites with "
+                         "it.")
+    ap.add_argument("--pose-readout-init", default="zero", choices=["zero", "pretrained"],
+                    help="how the readout's DISTANCE arms start: `zero` (default, verified "
+                         "exactly zero, so step 0 is bit-identical) or `pretrained`, block 0's "
+                         "linear_no_bias_d/_wo_onehot, verified equal to them exactly. The init "
+                         "applies to the PRIMARY site only and the second site is always zero, "
+                         "which is what the old --pose-readout-post-zero's name promised. "
+                         "Pretrained is NOT neutral at the post-LN site: those weights were "
+                         "fitted to add into z_pair inside the stack where later blocks "
+                         "re-normalise. The orientation arm is zero at every site either way.")
     ap.add_argument("--skip-dead-ops", action="store_true",
                     help="DO NOT RUN CONFIDENCE-HEAD MODULES WHOSE OUTPUT IS EXACTLY ZERO. The "
                          "shipped checkpoint carries pairformer modules whose EVERY tensor sits in "
@@ -1465,6 +1547,26 @@ def main():
                     help="when the evaluation must share the training card, how much VRAM has to be "
                          "free for it to run. The eval loads a second 464M-parameter model; "
                          "measured at ~16 GB, so 20 GB is the floor.")
+    ap.add_argument("--pae-tm-weight-mode", choices=("true", "max"), default="true",
+                    help="which TM value weights a pair. 'true' (Arm M) uses the TM value of the "
+                         "pair's own TRUE error. 'max' (Arm N) uses max(s_true, s_pred), where "
+                         "s_pred is the head's EXPECTED TM value over its 64-bin distribution, "
+                         "detached. The max keeps a pair at full weight when it really is a "
+                         "contact OR when the head believes it is one and it is not -- the "
+                         "confident decoys -- and drops only pairs that are truly wrong and "
+                         "already predicted wrong. 'true' alone spends the signal on pairs that "
+                         "are close, which are often the ones the head already gets.")
+    ap.add_argument("--pae-tm-weight", action="store_true",
+                    help="weight each scored pair's PAE cross-entropy by that pair's TM-score "
+                         "value, w = 1/(1 + e^2/d0^2), where e is the pair's TRUE aligned error "
+                         "and d0 comes from that interface's own token count. The reduction stays "
+                         "a PLAIN MEAN over masked pairs: sum(w*CE)/N, not sum(w*CE)/sum(w). "
+                         "WHY: on val83 64.2%% of an unacceptable pose's pairs sit in the last "
+                         "bin (>=31.5 A) and 98.6%% beyond 8 A, so 'everything is far apart' is "
+                         "most of the unweighted objective and is cheap to fit; w downweights a "
+                         "last-bin pair 16x against a 2 A pair, cutting that mass from 64%% of "
+                         "the objective to about 10%%. The weight is a LABEL quantity computed "
+                         "under no_grad, so it cannot feed back into the prediction.")
     ap.add_argument("--tm-centered", action="store_true",
                     help="REPLACE the PAE cross-entropy with the PER-PAIR CENTRED TM ERROR. For "
                          "every pose and every scored cross-chain pair, on the SAME mask the PAE "
@@ -1617,6 +1719,20 @@ def main():
     a = ap.parse_args()
     a.labels = a.labels or os.path.join(a.fold, "labels")
 
+    # THE ONE NORMALISATION POINT FOR POSE INJECTION, before anything reads a pose flag.
+    #
+    # pose_axes.normalise resolves the legacy mode flags AND the new axis flags into one canonical
+    # record and writes BOTH back onto `a`: the axes (pose_block_terms/init/weights,
+    # pose_readout_sites/terms/init) and the legacy booleans derived from them. Everything
+    # downstream therefore sees a single picture -- the installs below, args.json, the resume
+    # guard, and every child argv built by pose_axes.argv -- and the legacy flags are a spelling
+    # rather than a second code path. It refuses an illegal combination here, naming what to pass
+    # instead, rather than at install time after the model has been built.
+    try:
+        _POSE_BLK, _POSE_RD = _PAX.normalise(a)
+    except _PAX.PoseConfigError as e:
+        raise SystemExit(str(e))
+
     # THE ENTROPY TERM JOINS TERMS ONLY WHEN IT IS ON, and TERMS is what reaches trajectory.csv.
     #
     # TERMS is three things at once: the trajectory header, the keys the per-epoch all-reduce
@@ -1716,6 +1832,40 @@ def main():
             "function of pred['pae'] alone and the label is never read. Under any labelled "
             "objective a stale label IS the training signal, and accepting one would train "
             "against coordinates from a different bioassembly while reporting an ordinary loss.")
+    if a.pae_tm_weight:
+        # NEEDS THE BLOCKS. The weight's d0 is per INTERFACE, and the per-interface blocks exist
+        # only when the PAE term is masked to scored chain pairs; without that there is one union
+        # mask and no token count to take d0 from.
+        if not a.pae_scored_pairs:
+            raise SystemExit("STOP: --pae-tm-weight needs --pae-scored-pairs. The weight's d0 is "
+                             "per interface and comes from that interface's token count, which "
+                             "only the scored-pair blocks carry.")
+        # ONE WEIGHT MASK, ONE OWNER. --pae-row-frac already writes _pae_keep['wm']; two writers
+        # would silently multiply or overwrite each other depending on call order, and the run
+        # would still report itself as weighted.
+        if float(a.pae_row_frac) > 0:
+            raise SystemExit("STOP: --pae-tm-weight and --pae-row-frac both weight the PAE pair "
+                             "mask. Pass one.")
+        if a.tm_centered:
+            raise SystemExit("STOP: --pae-tm-weight weights the cross-entropy; --tm-centered "
+                             "REPLACES it with the centred TM error. Pass one.")
+        # --pose-batch > 1 WOULD CRASH, NOT MISWEIGH. sq carries a leading N_sample dim equal to
+        # the batch, so the [N_frame, N_token] reshape raises on the first batched pose. The weight
+        # is a per-POSE quantity (it depends on that pose's own coordinates), so batching would
+        # need the sample dim carried through; refused rather than half-supported.
+        if int(a.pose_batch) > 1:
+            raise SystemExit(f"STOP: --pae-tm-weight does not support --pose-batch "
+                             f"{a.pose_batch}. The weight is per pose and sq carries a sample "
+                             f"dim; pass --pose-batch 1.")
+        # d0 MUST COME FROM THE WHOLE INTERFACE. blocks counts tokens over the CROPPED asym ids, so
+        # under a crop every d0 is the normalisation of a smaller interface and the weighting is
+        # sharper than the ipTM it is meant to mirror. --tm-centered refuses this for the same
+        # reason; --rank-loss instead passes an uncropped count, which this path does not do.
+        if a.crop_pool or int(a.crop_size) < 3400:
+            raise SystemExit(f"STOP: --pae-tm-weight needs an UNCROPPED arm (crop_pool="
+                             f"{a.crop_pool!r}, crop_size={a.crop_size}). d0 is taken from the "
+                             f"block's token count, which a crop shrinks, so every weight would "
+                             f"be sharpened by an amount that depends on the crop.")
     if a.tm_centered:
         # THE SAME TWO REQUIREMENTS rel HAS, AND FOR THE SAME REASONS. Checked here, before CUDA
         # is touched, because a misconfiguration should not cost a GPU allocation to discover.
@@ -2347,32 +2497,19 @@ def main():
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
-    if a.pose_perblock:
+    # THE AXES, RESOLVED ONCE AT PARSE TIME (_PAX.normalise, just after parse_args) and installed
+    # here. Every refusal -- a mode flag without its site, two surfaces at once, an illegal term
+    # set, orientation without its geometry -- already fired there, before the model was built.
+    if _POSE_BLK is not None:
         import pose_perblock
-        pose_perblock.install(model, tied=a.pose_perblock_tied,
-                              share_pretrained=a.pose_perblock_share,
-                              copy_pretrained=a.pose_perblock_copy)
-    elif a.pose_perblock_tied or a.pose_perblock_share or a.pose_perblock_copy:
-        raise SystemExit("STOP: --pose-perblock-tied/-share/-copy without --pose-perblock does "
-                         "nothing. They select how A shares its weights, not whether A is "
-                         "installed.")
-    if a.pose_readout_post_zero and not (a.pose_readout and a.pose_readout_prenorm):
-        raise SystemExit("STOP: --pose-readout-post-zero adds a SECOND site on top of the pre-norm "
-                         "one; it needs --pose-readout --pose-readout-prenorm. Without prenorm the "
-                         "post-LN site is just the default --pose-readout arm.")
-    if a.pose_readout_prenorm and not a.pose_readout:
-        raise SystemExit("STOP: --pose-readout-prenorm moves --pose-readout's injection site; it "
-                         "does nothing on its own. Pass --pose-readout too, or drop it.")
-    if a.pose_readout:
+        pose_perblock.install(model, terms=_POSE_BLK["terms"], init=_POSE_BLK["init"],
+                              weights=_POSE_BLK["weights"])
+    if _POSE_RD is not None:
         # AFTER both stack injections, because it refuses unless one of them is installed: it
         # reads their per-forward geometry rather than recomputing cdist and the one-hot.
         import pose_readout
-        _prd = pose_readout.install(model, copy_distance=a.pose_readout_copy_distance,
-                                    prenorm=a.pose_readout_prenorm,
-                                    post_zero=a.pose_readout_post_zero)
-    elif a.pose_readout_copy_distance:
-        raise SystemExit("STOP: --pose-readout-copy-distance without --pose-readout. It selects "
-                         "how the fifth site is initialised, not whether it exists.")
+        _prd = pose_readout.install(model, sites=_POSE_RD["sites"], terms=_POSE_RD["terms"],
+                                    init=_POSE_RD["init"])
     # LAST OF THE FOUR POSE MODULES, because it reads what the other three publish and injects at
     # the sites they own. Its install() re-checks every one of those prerequisites and names the
     # missing flag, so the order here is the only thing this line has to get right.
@@ -3698,6 +3835,87 @@ def main():
         _pae_keep["blocks"] = blocks
         _pae_mask_stats["masked"] += 1
 
+    # --pae-tm-weight: THE PAE TERM, WRITTEN OUT, because the objective is one line and routing it
+    # through PAELoss's own reduction was the harder thing to reason about.
+    #
+    # THE MEAN DOES NOT CHANGE. The reduction is sum(w * CE * mask) / sum(mask) -- the same
+    # denominator, the same per-pair mean over the same masked pairs as every unweighted arm. Only
+    # the numerator carries w. The first attempt put w INTO the pair mask and let PAELoss reduce by
+    # sum(w * mask), which is a WEIGHTED mean, then multiplied the result by sum(w*mask)/sum(mask)
+    # to get back. That is algebraically the same thing but it is NOT exact -- PAELoss divides by
+    # `eps + sum(pair_mask)`, so the eps survives the round trip -- and it reads as though the mean
+    # had been redefined. Writing the quotient directly removes both problems.
+    #
+    # THE UNWEIGHTED NUMBER IS FREE HERE. It is the same CE tensor reduced with w = 1, so the
+    # curves get their comparable column without the replay forward the row-weighted path needs.
+    if a.pae_tm_weight:
+        from protenix.model.loss import softmax_cross_entropy as _sce
+        _tmw_pl = loss_fn.pae_loss
+        _tmw_unw = {"v": float("nan")}
+        _tmw_unmasked = {"n": 0}
+
+        def _tm_weighted_fwd(logits, pred_coordinate, true_coordinate, coordinate_mask,
+                             frame_atom_index, rep_atom_mask, has_frame):
+            hf = has_frame.bool()
+            with torch.no_grad():
+                # THE HOOKED calculate_label, so the scored-pair mask and every diagnostic that
+                # rides it behave exactly as they do for an unweighted arm.
+                sq, true_bins, pm = _tmw_pl.calculate_label(
+                    pred_coordinate=pred_coordinate, true_coordinate=true_coordinate,
+                    frame_atom_index=frame_atom_index, rep_atom_mask=rep_atom_mask.bool(),
+                    coordinate_mask=coordinate_mask, has_frame=hf)
+            ce = _sce(logits=logits[..., hf, :, :], labels=true_bins)
+            mb = (pm > 0).to(ce.dtype)
+            den = mb.sum()
+            # AN EMPTY MASK IS A FAILURE, NOT A ZERO. _set_pae_mask already falls back to no mask
+            # rather than to an all-zero one precisely so this cannot happen; returning 0.0 here
+            # would report a perfect pose and train on nothing, which is the worst outcome.
+            if float(den) <= 0:
+                raise SystemExit("STOP: --pae-tm-weight got an all-zero pair mask for "
+                                 f"{_pae_keep.get('pdb')}/{_pae_keep.get('unit')}. A zero loss "
+                                 "would read as a perfect pose.")
+            with torch.no_grad():
+                blocks = _pae_keep["blocks"] or []
+                if blocks and a.pae_tm_weight_mode == "max":
+                    # ARM N: max(s_true, s_pred). true_bins carries the label's bin, the sliced
+                    # logits carry the head's distribution over the same pairs, and both are read
+                    # against the same per-bin TM values inside the shared function.
+                    wt = _TMW.pair_tm_weight_max(true_bins, logits[..., hf, :, :], blocks,
+                                                 out_dtype=ce.dtype, device=ce.device,
+                                                 min_bin=_tmw_pl.min_bin, max_bin=_tmw_pl.max_bin,
+                                                 no_bins=_tmw_pl.no_bins)
+                elif blocks:
+                    # THE SHARED FUNCTION, so the CPU gate exercises this exact code rather than a
+                    # retyped copy of the formula.
+                    wt = _TMW.pair_tm_weight(sq.reshape(sq.shape[-2], sq.shape[-1]), blocks,
+                                             out_dtype=ce.dtype, device=ce.device)
+                else:
+                    # NO BLOCKS MEANS THE MASK FELL BACK TO UNMASKED, and an unmasked pose is also
+                    # an UNWEIGHTED one here -- w would have no interface to take d0 from. Counted
+                    # so it cannot be a silent fraction of the epoch: _pae_mask_stats already
+                    # tracks the fallback, and this adds the per-flag tally.
+                    _tmw_unmasked["n"] += 1
+                    wt = torch.ones(mb.shape[-2:], dtype=ce.dtype, device=ce.device)
+            _m = (mb * wt).unsqueeze(dim=-3)
+            loss = (ce * _m).sum(dim=(-1, -2)) / den          # [..., N_sample]
+            with torch.no_grad():
+                _u = (ce * mb.unsqueeze(dim=-3)).sum(dim=(-1, -2)) / den
+                _tmw_unw["v"] = float(_u.mean())
+            out = loss.mean(dim=-1).mean()
+            # THE RELEASE PAELoss DOES IN EVAL MODE, kept: it frees the [.., F, T, 64] label
+            # tensor, which is the largest thing here and matters for in-process eval peak memory.
+            if not _tmw_pl.training:
+                del true_bins, pm, mb
+                torch.cuda.empty_cache()
+            return out
+
+        loss_fn.pae_loss.forward = _tm_weighted_fwd
+        print(f"PAE term TM-WEIGHTED per pair, mode={a.pae_tm_weight_mode}: "
+              + ("w = max(s_true, s_pred), s_pred detached" if a.pae_tm_weight_mode == "max"
+                 else "w = 1/(1 + e^2/d0^2) on the TRUE aligned error") + ", d0 "
+              "per interface. Reduction sum(w*CE*mask)/sum(mask) -- same denominator as every "
+              "unweighted arm. trajectory.csv's pae_loss_unweighted is the comparable column.")
+
     w = {k: loss_fn.loss_weight[k] for k in ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss")}
     print("loss weights: " + "  ".join(
         f"{k.replace('_loss','')} {v:g}" + (" [DROPPED]" if k in _dropped_terms else "")
@@ -4530,6 +4748,20 @@ def main():
                  "pose_perblock_tied": a.pose_perblock_tied,
                  "pose_perblock_share": a.pose_perblock_share,
                  "pose_perblock_copy": a.pose_perblock_copy,
+                 # THE AXES THEMSELVES, AND THEY ARE NOT REDUNDANT WITH THE FOUR ABOVE. The mode
+                 # booleans cannot express the whole space -- blocks carrying onehot+dist at ZERO
+                 # init record pose_perblock True and the other three False, exactly as a
+                 # onehot-only arm does -- so without these a resume could swap one architecture
+                 # for the other and the guard would see no difference while the parameter SET
+                 # changed underneath the saved AdamW moments. The terms decide which tensors
+                 # exist and the weights mode decides how many; the INITS are deliberately not
+                 # compared, for the same reason pose_readout_copy_distance never was: a resume
+                 # overwrites every trained tensor's value, so an initialisation is not part of
+                 # what the bundle continues.
+                 "pose_block_terms": a.pose_block_terms,
+                 "pose_block_weights": a.pose_block_weights,
+                 "pose_readout_sites": a.pose_readout_sites,
+                 "pose_readout_terms": a.pose_readout_terms,
                  # SAME REASON AGAIN, AND THE LARGEST OF THEM: --pose-mlp adds 15 trainable
                  # tensors, so a bundle written without it is missing all 15 and the _missing
                  # check below refuses it anyway. Compared here so the refusal names the setting
@@ -4608,6 +4840,14 @@ def main():
                      "frame_direction": False,
                      "pose_perblock": False, "pose_perblock_tied": False,
                      "pose_perblock_share": False, "pose_perblock_copy": False,
+                     # A BUNDLE PREDATING THE AXES HAD NO POSE INJECTION AT ALL -- but only if it
+                     # also carries none of the legacy mode flags. When it does carry them, the
+                     # axes are DERIVED from them a few lines below (pose_axes.backfill) and these
+                     # constants are never consulted: absence of the axis keys is evidence of the
+                     # legacy point in the space, not of an absent injection, and comparing a copy
+                     # arm's bundle against "" here would report drift on every legacy resume.
+                     "pose_block_terms": "", "pose_block_weights": "untied",
+                     "pose_readout_sites": "", "pose_readout_terms": "",
                      "rank_loss": False, "alpha_rank": 1.0,
                      "rank_pool": "max", "rel_labels": "", "rel_standardize": False,
                      "rel_sd_weight": False, "rel_std_floor": -1.0,
@@ -4656,6 +4896,18 @@ def main():
                      "lr_final": 0.0}
         _migrated = []
 
+        # THE AXES AN OLD RECORD IMPLIES, filled in before the comparison runs. A bundle written
+        # before pose_axes existed records pose_perblock_copy and friends and no axis keys at all;
+        # absence there is evidence of that exact point in the space, so it is READ from the
+        # legacy keys rather than compared against a constant. Without this every legacy resume
+        # would report pose_block_terms drift ("" vs "onehot,dist") over a setting that did not
+        # change. Applied to the side-by-side args.json too, for a bundle whose own guard predates
+        # even the legacy keys.
+        _g = dict(_g or {})
+        _g.update(_PAX.backfill(_g))
+        if _fallback:
+            _fallback = dict(_fallback)
+            _fallback.update(_PAX.backfill(_fallback))
         _bad, _from_args, _unknown = {}, [], []
         # rank_form IS INERT WHEN NEITHER SIDE RUNS A RANKING TERM, and comparing it then refuses
         # a resume over a field that changed nothing.
@@ -4814,6 +5066,11 @@ def main():
                              "pose_inblock_block", "pose_perblock", "pose_perblock_tied",
                              "pose_perblock_share", "pose_perblock_copy",
                              "pose_readout_prenorm", "pose_readout_post_zero",
+                             # THE AXES DECIDE WHICH TENSORS EXIST AND HOW MANY, which is the
+                             # parameter set itself -- the loudest group, by the same argument the
+                             # four mode booleans above are in it.
+                             "pose_block_terms", "pose_block_weights",
+                             "pose_readout_sites", "pose_readout_terms",
                              # THE BIGGEST OF THE PARAMETER-SET FLAGS: 15 tensors, and its second
                              # layers sit at six different sites, so moments landing on the wrong
                              # one would be moments for a different site.
@@ -5189,7 +5446,8 @@ def main():
     traj_cols = ["wall_s", "step", "unit_i", "pdb", "unit", "pose", "lr"] + list(TERMS) + \
                 ["batch_" + k for k in TERMS] + ["batch_n", "partial_step", "step_ok"] + \
                 ["grad_norm", "outside_head", "epoch", "step_taken", "nonfinite_grad"] + \
-                (["pae_loss_unweighted"] if float(a.pae_row_frac) > 0 else [])
+                (["pae_loss_unweighted"]
+                 if (float(a.pae_row_frac) > 0 or a.pae_tm_weight) else [])
     # pae_loss IS THE WEIGHTED TERM once --pae-row-frac is on, because it is what is trained, and
     # a mean-1 row weight does NOT preserve the value: the weighted mean equals the unweighted one
     # only if the per-row loss is uncorrelated with the weight, and the weight is chosen BY t_i.
@@ -6982,7 +7240,23 @@ def main():
             # because the PAE mask has already resolved this pose's sample index under rel; the
             # tally re-reads it only when nothing else has.
             if _ps_on:
-                _pae_split_tally(pdb, lab_p, lab, arm_seed, i, _samp_i, nb, out["pae_loss"])
+                # UNDER --pae-tm-weight THE SPLIT IS FED THE UNWEIGHTED NUMBER, deliberately. The
+                # comment above is right that the split should describe what the run trains -- but
+                # the printed "PAE BY POSE GROUP" line IS the loss curve every arm is compared on,
+                # and a TM-weighted mean is a different quantity from every other arm's. Reported
+                # weighted, this arm's curve would sit on an axis nothing else shares and look like
+                # a huge win. The trained weighted value stays in trajectory.csv's pae_loss column
+                # for anyone who wants it; pae_loss_unweighted is the comparable one and is written
+                # every pose for exactly this reason.
+                _sv = out["pae_loss"]
+                if a.pae_tm_weight:
+                    # READ FROM _tmw_unw, NOT FROM out. out["pae_loss_unweighted"] is assigned
+                    # TWELVE LINES BELOW this call, so out.get() here always missed and the split
+                    # silently reported the WEIGHTED loss -- epoch 1 of xv76z4 printed acceptable
+                    # 1.3060 against shipped 3.4523, which is a weighted number on an axis nothing
+                    # else shares. The dict is the value's actual home and is already current.
+                    _sv = _tmw_unw["v"]
+                _pae_split_tally(pdb, lab_p, lab, arm_seed, i, _samp_i, nb, _sv)
             out["pose"] = i
             # HOW MANY POSES THIS ROW STANDS FOR. One at --pose-batch 1; nb above it. The
             # accumulator, the batch means and the step boundary all count POSES, and without
@@ -6990,6 +7264,10 @@ def main():
             out["n_pose_in_group"] = int(nb)
             if float(a.pae_row_frac) > 0:
                 out["pae_loss_unweighted"] = _pae_unw["v"]
+            # SAME COLUMN, SAME MEANING, different weighting scheme -- so every reader that already
+            # prefers pae_loss_unweighted keeps working without knowing this flag exists.
+            elif a.pae_tm_weight:
+                out["pae_loss_unweighted"] = _tmw_unw["v"]
             # SCALED BY THE EFFECTIVE BATCH, so summing the ranks reconstructs the full-batch mean.
             # NOT UNDER --loss-only: there are no gradients to accumulate, and calling backward
             # would be the one way this mode could change the weights it is supposed to measure.
@@ -7425,7 +7703,17 @@ def main():
         # SUMS AND COUNTS ARE ADDITIVE, so merging is addition and no rank needs to know how the
         # units were dealt. `poses` is summed too, which is what makes the every-pose test
         # (cnt == poses) refer to the STRUCTURE's pose count rather than a rank's share of it.
-        if a.tm_centered and _tm_acc:
+        # GATED ON THE FLAG ALONE, NEVER ON `_tm_acc` BEING NON-EMPTY.
+        #
+        # `a.tm_centered` is the same on every rank; `_tm_acc` is not. The first version read
+        # `if a.tm_centered and _tm_acc:`, so a rank whose share of the step happened to contain no
+        # scored chain pair would SKIP the collective while its peers entered it -- different
+        # collective sequences on different ranks, which is a deadlock until --dist-timeout-min
+        # expires, four hours later. It would not have shown up on a well-behaved step, which is
+        # exactly what makes it worth fixing rather than observing. An empty rank now gathers an
+        # empty dict, which merges to nothing and costs one pickle of `{}`.
+        # External review (ChatGPT, issue #16) on 65d375c0.
+        if a.tm_centered:
             if world > 1:
                 _t_tm = time.perf_counter()
                 _loc_tm = {_p: (_v["sum"].detach().cpu().numpy(),
@@ -7456,6 +7744,24 @@ def main():
                 _tm_stat["gathered"] = _tm_stat.get("gathered", 0) + 1
             else:
                 _tm_stat["gathered"] = _tm_stat.get("gathered", 0) + 1
+
+        # A TM-ONLY ARM STOPS HERE. Everything below builds the RANKING groups, and pass A is
+        # reached by --tm-centered as well now, so without this return a TM-only arm walks straight
+        # into the ranking objective:
+        #   * --rank-form DEFAULTS to 'rel', so the loop calls _rel_labels(pdb), which hard-fails
+        #     when --rel-labels was never passed;
+        #   * and if those labels DID exist it would fill _xs_coef, after which pass B adds
+        #     alpha_rank * coeff * iptm to the objective -- a ranking term in an arm whose whole
+        #     point is that the centred TM error is the ONLY loss, with --rank-loss off.
+        # External review (ChatGPT, issue #16) caught this on 65d375c0. The assertion is kept
+        # rather than trusted: an empty _xs_coef is the observable form of "no ranking term".
+        if a.tm_centered and not (a.rank_loss or a.rank_diag_only):
+            if _xs_coef:
+                raise SystemExit(
+                    f"STOP: --tm-centered with no ranking loss left {len(_xs_coef)} ranking "
+                    f"coefficient(s) in _xs_coef. Pass B would add a ranking term to an arm that "
+                    f"is supposed to train the centred TM error alone.")
+            return
 
         # GROUPED BY (pdb, interface), which is what an interface IS. Keyed by (seed, sample)
         # inside the group so group_coeffs can tell cross-seed pairs from within-seed ones.
@@ -8280,17 +8586,14 @@ def main():
             cmd.append("--drop-pde")
         if a.frame_direction:
             cmd.append("--frame-direction")
-        if a.pose_perblock:
-            cmd.append("--pose-perblock")
-            if a.pose_perblock_tied:
-                cmd.append("--pose-perblock-tied")
-            if a.pose_perblock_share:
-                cmd.append("--pose-perblock-share")
-            # PASSED TO THE CHILD, like the other two. A monitor that built a DIFFERENT
-            # architecture than the parent would report a held-out number for a model that does
-            # not exist -- the --loss-only inheritance class, now seven instances.
-            if a.pose_perblock_copy:
-                cmd.append("--pose-perblock-copy")
+        # THE POSE AXES, FROM ONE BUILDER. A monitor that built a DIFFERENT architecture than the
+        # parent would report a held-out number for a model that does not exist -- the --loss-only
+        # inheritance class, and the reason there is now exactly one place that turns the axes
+        # into an argv (pose_axes.argv) instead of four hand-maintained ladders, one of which was
+        # missed (commit 7d9d4d10). The `train` target includes the INITS, which the eval target
+        # omits: a resume bundle carries only the TRAINABLE tensors, so a pose tensor outside
+        # --train-only keeps its initialisation and the child must build it the same way.
+        cmd += _PAX.argv(a, target="train")[0]
         # THE IN-BLOCK PATHWAY AND THE LEAN TRIO -- the NINTH AND TENTH instances of the
         # --loss-only inheritance class, both found by review before an arm was launched.
         # (Ninth and tenth, not eighth and ninth: :6165 already claims the eighth for
@@ -8314,16 +8617,9 @@ def main():
         # without it fails the resume guard's parameter-set comparison and the held-out point is
         # simply absent; --pose-readout-prenorm adds none and would NOT fail loudly -- the child
         # would measure the pose added after pae_ln while the parent trained it added before.
-        # --pose-readout-copy-distance is an initialisation the bundle overwrites, so it is not
-        # forwarded, exactly as on the eval_checkpoint path.
-        if a.pose_readout:
-            cmd.append("--pose-readout")
-            if a.pose_readout_prenorm:
-                cmd.append("--pose-readout-prenorm")
-            # THE SECOND SITE ADDS TENSORS, so an eval without it fails the checkpoint load --
-            # the same way the evaluator failed on --pose-readout itself before 7d9d4d10.
-            if a.pose_readout_post_zero:
-                cmd.append("--pose-readout-post-zero")
+        # The readout site's flags go through the same builder above: --pose-readout-sites adds
+        # tensors, so a child without it fails the resume guard's parameter-set comparison, and
+        # --pose-readout-terms decides WHICH tensors, which nothing else would catch.
         # AND THE NONLINEAR BRANCH, THE SAME CLASS ONE MORE TIME. --pose-mlp adds 15 head tensors,
         # so a child without it fails the resume guard's parameter-set comparison and the held-out
         # point is simply absent -- the failure that cost arm m8rote three epochs. Passed after
@@ -8795,17 +9091,18 @@ def main():
         # path too; both the sharded driver (--extra) and the single-card path forward `extra`.
         if a.frame_direction:
             extra = extra + ["--frame-direction"]
-        if a.pose_perblock:
-            extra = extra + ["--pose-perblock"]
-            if a.pose_perblock_tied:
-                extra = extra + ["--pose-perblock-tied"]
-            if a.pose_perblock_share:
-                extra = extra + ["--pose-perblock-share"]
-            # AND THE COPY MODE. This one ADDS tensors, so omitting it makes the evaluator's
-            # state-dict guard refuse outright rather than silently score a different
-            # architecture -- but passing it is still the fix, not relying on the refusal.
-            if a.pose_perblock_copy:
-                extra = extra + ["--pose-perblock-copy"]
+        # THE POSE AXES, FROM THE SAME ONE BUILDER the --loss-only child uses. Some of these add
+        # tensors, so omitting them makes the evaluator's state-dict guard refuse outright rather
+        # than silently score a different architecture -- but passing them is the fix, not relying
+        # on the refusal, and --pose-block-weights shared and --pose-readout-sites pre add NO
+        # tensors at all, so nothing would catch their absence. The `eval` target drops the two
+        # init flags, which phase_k_eval does not define and does not need: every head tensor
+        # comes from the checkpoint, so an initialisation is overwritten before anything is
+        # scored, and the tensor NAMES follow the terms alone.
+        _px, _pn = _PAX.argv(a, target="eval", defined=_PAX.eval_long_opts())
+        for _n in _pn:
+            print(f"  STOP-WORTHY: pose flag forwarding: {_n}")
+        extra = extra + _px
         # AND THE IN-BLOCK PATHWAY, which had no evaluator counterpart at all until review found
         # it. The block index goes too: pose_inblock_d* carry no depth in their names, so an
         # evaluator that installed at a DIFFERENT block would pass the key-set guard and score a
@@ -8822,14 +9119,8 @@ def main():
         # no eval number at all. --pose-readout-prenorm adds NO tensors and only moves the site,
         # so nothing would catch its absence: the load would succeed and the evaluator would score
         # the pose added AFTER pae_ln while the trainer trained it added BEFORE. Not forwarded:
-        # --pose-readout-copy-distance, which only chooses an initialisation the checkpoint
-        # overwrites.
-        if a.pose_readout:
-            extra = extra + ["--pose-readout"]
-            if a.pose_readout_prenorm:
-                extra = extra + ["--pose-readout-prenorm"]
-            if a.pose_readout_post_zero:
-                extra = extra + ["--pose-readout-post-zero"]
+        # --pose-readout-init, which only chooses an initialisation the checkpoint overwrites.
+        # The readout flags themselves go through the one builder above.
         # AND THE NONLINEAR BRANCH: 15 extra head tensors in every checkpoint of such an arm, so
         # without this the evaluator's exact key-set guard refuses all of them and the arm trains
         # to completion with no eval number at all.
@@ -9442,6 +9733,13 @@ def main():
                                   # in review of 04503a9.
                                   "pose_perblock_share": a.pose_perblock_share,
                                   "pose_perblock_copy": a.pose_perblock_copy,
+                                  # SAVED AS WELL AS COMPARED, in the same patch, because the four
+                                  # mode booleans above cannot tell two different parameter sets
+                                  # apart on their own -- see the comparison side's comment.
+                                  "pose_block_terms": a.pose_block_terms,
+                                  "pose_block_weights": a.pose_block_weights,
+                                  "pose_readout_sites": a.pose_readout_sites,
+                                  "pose_readout_terms": a.pose_readout_terms,
                                   "l2_sp": a.l2_sp,
                                   "l2_sp_exclude": a.l2_sp_exclude,
                                   # SAVED AS WELL AS COMPARED. Added to the compared dict only,
@@ -9696,7 +9994,8 @@ def main():
                                          **{k: met[k] for k in TERMS},
                                          **({"pae_loss_unweighted":
                                              met.get("pae_loss_unweighted", float("nan"))}
-                                            if float(a.pae_row_frac) > 0 else {}),
+                                            if (float(a.pae_row_frac) > 0
+                                                or a.pae_tm_weight) else {}),
                                          **means})
                             continue
                         step += 1
@@ -9721,7 +10020,8 @@ def main():
                                  **{k: met[k] for k in TERMS},
                                  **({"pae_loss_unweighted":
                                      met.get("pae_loss_unweighted", float("nan"))}
-                                    if float(a.pae_row_frac) > 0 else {}),
+                                    if (float(a.pae_row_frac) > 0
+                                        or a.pae_tm_weight) else {}),
                                  **means})
                     # EVERY RANK FLUSHES ITS OWN FILE; only rank 0 writes trajectory.csv.
                     # The condition used to be `write_traj and ...`, which is is_main, so ranks 1+
@@ -10301,6 +10601,19 @@ def main():
                       f"objective was 0.0 for the whole epoch"
                       + ("; expected under --loss-only." if a.loss_only else
                          " -- THIS ARM TRAINED NOTHING."), flush=True)
+                # RAISED, NOT JUST PRINTED, for a TRAINING run. A zero objective for a whole epoch
+                # is not a diagnostic to read later: every subsequent epoch would be zero for the
+                # same reason, so the run would spend its whole budget producing a head identical
+                # to the one it started from and an in-sample table that looks like "no effect".
+                # --loss-only legitimately takes no gradient and keeps the informational path.
+                # External review (ChatGPT, issue #16) asked for this.
+                if not a.loss_only:
+                    raise SystemExit(
+                        f"STOP: --tm-centered trained NOTHING in epoch {ep + 1}: not one pose "
+                        f"produced a gradient ({_tm_stat['poses']} scored in pass A, "
+                        f"{_tm_stat['nolabel']} with no pass-A mean, {_tm_stat['unmasked']} with "
+                        f"no scored chain pair). Every later epoch would fail the same way, so "
+                        f"this stops now rather than after the full budget.")
             if a.tm_centered and _tm_stat["n"]:
                 print(f"  [rank {rank}] epoch {ep + 1} CENTRED TM ERROR: "
                       f"{_tm_stat['loss'] / _tm_stat['n']:.6f} over {_tm_stat['n']} pose(s) "

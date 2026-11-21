@@ -193,7 +193,7 @@ def build(with_mlp=True):
     m = Model()
     pose_direction.install(m, loud=False)
     pose_perblock.install(m, loud=False)
-    pose_readout.install(m, loud=False, prenorm=True, post_zero=True)
+    pose_readout.install(m, loud=False, sites=("pre", "post"))
     info = pose_mlp.install(m, loud=False) if with_mlp else None
     return m, info
 
@@ -509,7 +509,7 @@ def _no_both_readout_sites():
     mm = Model()
     pose_direction.install(mm, loud=False)
     pose_perblock.install(mm, loud=False)
-    pose_readout.install(mm, loud=False, prenorm=False, post_zero=False)
+    pose_readout.install(mm, loud=False, sites=("post",))
     pose_mlp.install(mm, loud=False)
 
 

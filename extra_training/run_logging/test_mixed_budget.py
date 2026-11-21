@@ -430,7 +430,13 @@ def main():
     sys.path.insert(0, os.path.join(ROOT, "run_logging"))
     pf = importlib.import_module("pathway_flags")
     _fl, _notes = pf.flags_for(os.path.join(ROOT, "training/runs/w57hjo/head_ep20_step2900.pt"))
-    ok("--pose-readout" in _fl and "--pose-readout-prenorm" in _fl,
+    # IN THE AXIS SPELLING NOW (phases/pose_axes.py): the legacy --pose-readout
+    # --pose-readout-prenorm is --pose-readout-sites pre --pose-readout-terms onehot,dist, and
+    # Arm B also ran the post-LN site, so the derivation must name BOTH sites. The thing under
+    # test is unchanged -- the pre-norm SITE is what the failed pass dropped, and dropping it
+    # cannot be caught by the checkpoint load because it adds no tensors.
+    ok("--pose-readout-sites" in _fl and "pre" in _fl[_fl.index("--pose-readout-sites") + 1]
+       and "--pose-readout-terms" in _fl and "--pose-block-terms" in _fl,
        "and that derivation recovers the flags Arm B's failed pass was missing", " ".join(_fl))
     ok(all(f in pf.eval_flags() for f in _fl if f.startswith("--")),
        "every flag it emits is one phase_k_eval really defines")

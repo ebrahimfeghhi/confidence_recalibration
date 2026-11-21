@@ -84,18 +84,39 @@ def extra_of(cmdline):
     return outer, inner
 
 
+#: A sample value for each pose option that takes one, and it must be VALID and NON-DEFAULT:
+#: arch_flags_installed skips a value equal to the parser's own default, so a flag passed at its
+#: default is correctly NOT an architecture change and would not be refused. Keyed by flag so a
+#: new value-taking option fails the assertion below loudly (no sample -> no value -> argparse
+#: error) rather than being quietly tested with a value that means "off".
+SAMPLE = {"--pose-inblock-block": "0", "--pose-block-terms": "onehot,dist",
+          "--pose-block-weights": "tied", "--pose-readout-sites": "pre",
+          "--pose-readout-terms": "onehot,dist"}
+
+
 def eval_pathway_flags():
-    """Every pose_/frame_ option phase_k_eval declares, and whether it takes a value.
+    """Every pose_/frame_ option phase_k_eval declares, and the value to pass it (or None).
 
     READ OUT OF THE PARSER'S OWN SOURCE, the same way run_logging/pathway_flags.py does it. A list
     typed here would be a second copy to keep in step -- and a second copy drifting from the first
-    is the whole defect under test.
+    is the whole defect under test. The AXIS options (--pose-block-terms and friends) take a
+    string rather than being store_true, so "takes a value" is now read off the absence of
+    action="store_true" instead of the presence of type=int, which covered only one of them.
     """
     src = open(EVAL).read()
+    # SLICED BETWEEN CONSECUTIVE add_argument CALLS, so each option's body is the whole text up to
+    # the next one -- comments, continuation lines and all. A regex that stopped at the first ")"
+    # or at the next `ap.` line found 10 of the 17 options, which is a weaker test wearing the
+    # same name: the seven it dropped are the ones followed by a comment block.
+    calls = list(re.finditer(r'ap\.add_argument\("(--[a-z0-9-]+)"', src))
     out = []
-    for m in re.finditer(r'ap\.add_argument\("(--(?:pose|frame)-[a-z0-9-]+)"([^)]*)', src):
-        flag, rest = m.group(1), m.group(2)
-        out.append((flag, "type=int" in rest))
+    for i, m in enumerate(calls):
+        flag = m.group(1)
+        if not flag.startswith(("--pose-", "--frame-")):
+            continue
+        body = src[m.end():(calls[i + 1].start() if i + 1 < len(calls) else len(src))]
+        takes = 'action="store_true"' not in body
+        out.append((flag, SAMPLE.get(flag) if takes else None))
     return out
 
 
@@ -162,8 +183,10 @@ def main():
     flags = eval_pathway_flags()
     ok(len(flags) >= 10, f"phase_k_eval declares {len(flags)} pose_/frame_ option(s) to cover")
     missed, allowed = [], []
-    for flag, takes_value in flags:
-        argv = base + [flag] + (["0"] if takes_value else [])
+    nosample = [f for f, v in flags if v == "" or (v is None and f in SAMPLE)]
+    ok(not nosample, "every value-taking pose option has a sample value here", f"{nosample}")
+    for flag, value in flags:
+        argv = base + [flag] + ([value] if value else [])
         r = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=ROOT)
         txt = r.stdout + r.stderr
         refused = r.returncode != 0 and "STOP (startup)" in txt and flag in txt
@@ -275,7 +298,10 @@ def main():
     r = subprocess.run([PY, "-I", os.path.join(ROOT, "run_logging/pathway_flags.py"),
                         os.path.join(ROOT, "training/runs/w57hjo/head_ep20_step2900.pt")],
                        capture_output=True, text=True)
-    ok(r.returncode == 0 and "--pose-readout-prenorm" in r.stdout,
+    # THE SAME ARCHITECTURE, IN THE AXIS SPELLING (phases/pose_axes.py): --pose-readout-prenorm
+    # is now --pose-readout-sites pre[,post]. What this check is for is unchanged -- the derived
+    # argv must name the pre-norm readout SITE, whose absence no checkpoint load can catch.
+    ok(r.returncode == 0 and "--pose-readout-sites pre" in r.stdout,
        "while a trained head's derivation is unchanged -- Arm B's flags still come back",
        r.stdout.strip()[:70])
 

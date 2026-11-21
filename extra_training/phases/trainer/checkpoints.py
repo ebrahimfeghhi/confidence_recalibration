@@ -86,7 +86,13 @@ ABANDONED = {
     "l2_sp", "l2_sp_exclude", "lora_rank", "lora_alpha", "lora_targets", "lora_dropout",
     "crop_all_poses", "crop_contact", "token_keep_union",
     "token_keep_other", "pose_perblock", "pose_perblock_tied", "pose_perblock_copy",
-    "pose_perblock_share", "frame_direction", "drop_pde", "pae_row_frac", "pae_row_mass",
+    "pose_perblock_share",
+    # THE POSE AXES, ABANDONED FOR THE SAME REASON THE MODE FLAGS ABOVE ARE: this minimal copy
+    # (dead code -- phases/phase_k_train.py is the live guard) does not support pose injection, so
+    # comparing fields neither side owns would refuse resumes over settings it cannot act on.
+    "pose_block_terms", "pose_block_init", "pose_block_weights",
+    "pose_readout_sites", "pose_readout_terms", "pose_readout_init",
+    "frame_direction", "drop_pde", "pae_row_frac", "pae_row_mass",
     "pae_row_floor", "rank_tau", "rank_pairs", "rank_topk_decay", "rank_straddle",
     "rank_within_weight", "rank_spearman_tau", "rank_dist_weight", "rank_weight_by_gap",
     "rank_rel_scale", "rank_labels", "lr_decay_start_epoch", "lr_decay_end_epoch",

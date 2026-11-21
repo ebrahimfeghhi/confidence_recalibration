@@ -115,7 +115,7 @@ def main():
     m = FakeModel(**kw).eval()
     with torch.no_grad():
         b_s, b_z = m.confidence_head.memory_efficient_forward({}, s, z, None, x)
-    info = pose_perblock.install(m, tied=False, loud=False)
+    info = pose_perblock.install(m, terms=("onehot",), loud=False)
 
     # 1. zero-init exact
     worst = max(float(p.weight.abs().max()) for p in m.confidence_head.pose_perblock_proj)
@@ -144,7 +144,7 @@ def main():
     mt = FakeModel(**kw).eval()
     with torch.no_grad():
         bb_s, bb_z = mt.confidence_head.memory_efficient_forward({}, s, z, None, x)
-    it = pose_perblock.install(mt, tied=True, loud=False)
+    it = pose_perblock.install(mt, terms=("onehot",), weights="tied", loud=False)
     ok5 = it["params"] == a.num_bins * a.c_z and len(mt.confidence_head.pose_perblock_proj) == 1
     with torch.no_grad():
         zero_s, zero_z = mt.confidence_head.memory_efficient_forward({}, s, z, None, x)
@@ -157,7 +157,7 @@ def main():
     torch.manual_seed(2)
     mc = FakeModel(**kw)
     mc.confidence_head.pairformer_stack.blocks_per_ckpt = 1
-    pose_perblock.install(mc, tied=False, loud=False)
+    pose_perblock.install(mc, terms=("onehot",), loud=False)
     with torch.no_grad():
         for pr in mc.confidence_head.pose_perblock_proj:
             pr.weight.normal_(0.0, 0.05)

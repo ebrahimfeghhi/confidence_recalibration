@@ -94,17 +94,13 @@ def val_loss_checkpoint(rt, epoch, bundle, step):
         cmd.append("--pae-only")
     if rt.a.frame_direction:
         cmd.append("--frame-direction")
-    if rt.a.pose_perblock:
-        cmd.append("--pose-perblock")
-        if rt.a.pose_perblock_tied:
-            cmd.append("--pose-perblock-tied")
-        if rt.a.pose_perblock_share:
-            cmd.append("--pose-perblock-share")
-        # PASSED TO THE CHILD, like the other two. A monitor that built a DIFFERENT
-        # architecture than the parent would report a held-out number for a model that does
-        # not exist -- the --loss-only inheritance class, now seven instances.
-        if rt.a.pose_perblock_copy:
-            cmd.append("--pose-perblock-copy")
+    # THE POSE AXES, FROM THE ONE BUILDER (phases/pose_axes.py). A monitor that built a
+    # DIFFERENT architecture than the parent would report a held-out number for a model that
+    # does not exist -- the --loss-only inheritance class, and the reason the four
+    # hand-maintained ladders are now one function. (This file is the DEAD extraction; the
+    # live path is phases/phase_k_train.py, which has the same call.)
+    import pose_axes as _PAX
+    cmd += _PAX.argv(rt.a, target="train")[0]
     # THE IN-BLOCK PATHWAY AND THE LEAN TRIO -- the NINTH AND TENTH instances of the
     # --loss-only inheritance class, both found by review before an arm was launched.
     # (Ninth and tenth, not eighth and ninth: :6165 already claims the eighth for
@@ -587,17 +583,12 @@ def eval_checkpoint(rt, step, epoch, train_pool="", tag="", fold="",
     # path too; both the sharded driver (--extra) and the single-card path forward `extra`.
     if rt.a.frame_direction:
         extra = extra + ["--frame-direction"]
-    if rt.a.pose_perblock:
-        extra = extra + ["--pose-perblock"]
-        if rt.a.pose_perblock_tied:
-            extra = extra + ["--pose-perblock-tied"]
-        if rt.a.pose_perblock_share:
-            extra = extra + ["--pose-perblock-share"]
-        # AND THE COPY MODE. This one ADDS tensors, so omitting it makes the evaluator's
-        # state-dict guard refuse outright rather than silently score a different
-        # architecture -- but passing it is still the fix, not relying on the refusal.
-        if rt.a.pose_perblock_copy:
-            extra = extra + ["--pose-perblock-copy"]
+    # THE POSE AXES, FROM THE ONE BUILDER, as on the --loss-only path above. Some of these add
+    # tensors, so omitting them makes the evaluator's state-dict guard refuse outright rather
+    # than silently score a different architecture -- but passing them is the fix, not relying
+    # on the refusal, and `shared` weights and the `pre` site add NO tensors at all.
+    import pose_axes as _PAX
+    extra = extra + _PAX.argv(rt.a, target="eval", defined=_PAX.eval_long_opts())[0]
     # AND THE IN-BLOCK PATHWAY, which had no evaluator counterpart at all until review found
     # it. The block index goes too: pose_inblock_d* carry no depth in their names, so an
     # evaluator that installed at a DIFFERENT block would pass the key-set guard and score a

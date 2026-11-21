@@ -44,8 +44,15 @@ FLAT = [
     ("objective", ["rank_form", "rank_pairs", "rank_within_weight", "rank_topk_decay",
                    "rank_tau", "rank_cross_seed", "rank_weight_by_gap", "alpha_rank",
                    "alpha_pae", "alpha_confidence", "rank_structs_per_step"]),
+    # THE AXES ALONGSIDE THE LEGACY MODE FLAGS, not instead of them: every run already on disk is
+    # described by the mode flags, and the axes are the only columns that can tell two
+    # architectures apart once the modes cannot (blocks carrying onehot+dist at zero init record
+    # pose_perblock true and the other three false, exactly as a onehot-only arm does). --build
+    # drops and recreates the table, so adding columns needs no migration.
     ("model", ["train_only", "pose_perblock", "pose_perblock_copy", "pose_perblock_tied",
-               "pose_perblock_share", "frame_direction", "lora_rank", "blocks_per_ckpt"]),
+               "pose_perblock_share", "pose_block_terms", "pose_block_init",
+               "pose_block_weights", "pose_readout_sites", "pose_readout_terms",
+               "pose_readout_init", "frame_direction", "lora_rank", "blocks_per_ckpt"]),
     ("reg", ["l2_sp", "l2_sp_exclude", "lr", "warmup_steps", "clip_norm"]),
     ("data", ["manifest_selection", "val_loss_selection", "train_eval_pool", "seeds",
               "val_loss_seeds", "train_eval_budget", "epochs", "nsample", "accum", "crop_size"]),

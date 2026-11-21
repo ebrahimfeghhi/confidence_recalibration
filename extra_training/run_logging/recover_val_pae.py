@@ -33,6 +33,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import pose_axes as _PAX   # noqa: E402  the pose axes, and the ONE argv builder
 TRAIN = os.path.join(ROOT, "phases", "phase_k_train.py")
 
 # Fields that legitimately differ between two shards of the same pass.
@@ -72,13 +74,11 @@ def build_cmd(a, bundle, out, epoch):
                       ("--frame-direction", "frame_direction")):
         if a.get(key):
             cmd.append(flag)
-    if a.get("pose_perblock"):
-        cmd.append("--pose-perblock")
-        for flag, key in (("--pose-perblock-tied", "pose_perblock_tied"),
-                          ("--pose-perblock-share", "pose_perblock_share"),
-                          ("--pose-perblock-copy", "pose_perblock_copy")):
-            if a.get(key):
-                cmd.append(flag)
+    # THE POSE ARCHITECTURE, FROM THE ONE BUILDER (phases/pose_axes.py), with the `train` target
+    # because this rebuilds a phase_k_train --loss-only argv: that child needs the INITS too,
+    # since a resume bundle carries only the TRAINABLE tensors and one left out of --train-only
+    # keeps whatever it was initialised to.
+    cmd += _PAX.argv(a, target="train")[0]
     if a.get("val_loss_prep"):
         p = a["val_loss_prep"]
         cmd += ["--indices", os.path.join(p, "job_indices.csv"),

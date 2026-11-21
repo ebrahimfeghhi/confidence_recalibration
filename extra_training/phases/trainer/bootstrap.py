@@ -153,23 +153,28 @@ def build_head(rt, a, dev, t_cuda=None):
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
-    if a.pose_perblock:
+    # DEAD CODE, KEPT CONSISTENT. Nothing imports this module except itself (main.py wires it,
+    # and main.py has never executed a forward pass -- see its header); phases/phase_k_train.py is
+    # the live path. It is updated here only so the extraction does not go stale, and the latent
+    # bug it carried is fixed in passing: its pose_readout.install call omitted prenorm= and
+    # post_zero=, so a prenorm arm run from this copy would have injected AFTER pae_ln while its
+    # log claimed otherwise. With the axes that whole class of omission is gone -- the sites are
+    # arguments, not two booleans that default to the wrong site.
+    #
+    # THE AXES ARE RESOLVED ONCE, in cli/parse (pose_axes.normalise), exactly as the live trainer
+    # does it; this stage only installs what that resolved.
+    import pose_axes as _PAX
+    _blk, _rd = _PAX.resolve(vars(a))
+    if _blk is not None:
         import pose_perblock
-        pose_perblock.install(model, tied=a.pose_perblock_tied,
-                              share_pretrained=a.pose_perblock_share,
-                              copy_pretrained=a.pose_perblock_copy)
-    elif a.pose_perblock_tied or a.pose_perblock_share or a.pose_perblock_copy:
-        raise SystemExit("STOP: --pose-perblock-tied/-share/-copy without --pose-perblock does "
-                         "nothing. They select how A shares its weights, not whether A is "
-                         "installed.")
-    if a.pose_readout:
+        pose_perblock.install(model, terms=_blk["terms"], init=_blk["init"],
+                              weights=_blk["weights"])
+    if _rd is not None:
         # AFTER both stack injections, because it refuses unless one of them is installed: it
         # reads their per-forward geometry rather than recomputing cdist and the one-hot.
         import pose_readout
-        _prd = pose_readout.install(model, copy_distance=a.pose_readout_copy_distance)
-    elif a.pose_readout_copy_distance:
-        raise SystemExit("STOP: --pose-readout-copy-distance without --pose-readout. It selects "
-                         "how the fifth site is initialised, not whether it exists.")
+        _prd = pose_readout.install(model, sites=_rd["sites"], terms=_rd["terms"],
+                                    init=_rd["init"])
 
     # EVERY LOCAL THIS STAGE BOUND GOES ONTO THE CONTEXT. Inside main() these were simply
     # still in scope for everything below; here the hand-off has to be explicit. Written

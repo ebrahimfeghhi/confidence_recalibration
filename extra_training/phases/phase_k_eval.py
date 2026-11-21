@@ -46,6 +46,7 @@ import numpy as np
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, "/home/ebrahim/Protenix")
 sys.path.insert(0, os.path.join(ROOT, "phases"))
+import pose_axes as _PAX   # the three axes of pose injection, and the legacy-flag desugaring
 print = functools.partial(print, flush=True)
 ACCEPTABLE = 0.23
 
@@ -1291,6 +1292,52 @@ def main():
                          "ONE depth instead of four, silently and wrongly. phase_k_train passes "
                          "it automatically. Not accepting it is what made arm wd656y exit 1 after "
                          "its first epoch: the flag was forwarded to a parser that did not know it.")
+    # ------------------------------------------------------------------------------------------
+    # THE COMPOSITIONAL SURFACE (phases/pose_axes.py), which the trainer now forwards instead of
+    # the four mode flags above. THE EVALUATOR MUST BE ABLE TO BUILD WHATEVER THE TRAINER BUILT:
+    # the axes express configurations the mode flags cannot -- blocks carrying onehot AND the raw
+    # distance at zero init, a readout site carrying only one term -- and an evaluator that could
+    # not name them would either refuse every such checkpoint or, where the tensor count happens
+    # to match, score a different function.
+    #
+    # THE FLAGS ARE SPELLED OUT HERE, not registered by a shared helper, because
+    # run_logging/pathway_flags.py reads this file's `ap.add_argument("--...")` calls with a regex
+    # to learn what the evaluator accepts; a flag it cannot see is dropped from a derived eval
+    # argv in silence, which is the failure that file exists to prevent.
+    #
+    # NO --pose-block-init / --pose-readout-init, for the same reason there has never been a
+    # --pose-readout-copy-distance here: every head tensor comes from the checkpoint a few hundred
+    # lines below, so an initialisation is overwritten before anything is scored, and the tensor
+    # NAMES are a function of the TERMS alone.
+    ap.add_argument("--pose-block-terms", default="",
+                    help="the checkpoint was trained with phase_k_train --pose-block-terms, so "
+                         "the head carries per-block injection tensors the stock model does not. "
+                         "A comma list of onehot, dist, orient. The terms decide the tensor NAMES "
+                         "and COUNT (onehot alone is pose_perblock_proj; onehot+dist is "
+                         "pose_perblock_linear_no_bias_d plus ..._wo_onehot), so this must match "
+                         "how the head was trained or the key-set guard below refuses the load. "
+                         "phase_k_train passes it automatically.")
+    ap.add_argument("--pose-block-weights", default="untied",
+                    choices=["untied", "tied", "shared"],
+                    help="how the per-block distance projections shared weights during training: "
+                         "untied (one per depth), tied (one for the whole stack) or shared (block "
+                         "0's OWN tensors, ZERO extra). tied changes the tensor COUNT and shared "
+                         "removes the tensors entirely -- and shared therefore CANNOT be caught by "
+                         "the load guard: omit it and the checkpoint loads cleanly and is scored "
+                         "with the pose injected at ONE depth instead of four, silently and "
+                         "wrongly, which is exactly the trap --pose-perblock-share documents.")
+    ap.add_argument("--pose-readout-sites", default="",
+                    help="the readout sites the checkpoint was trained with: a comma list of pre "
+                         "and post. `pre` adds NO tensors beyond the post-only arm's -- it moves "
+                         "the injection to pae_ln's input -- so its absence is not caught by the "
+                         "load guard and the evaluator would score the pose added AFTER the "
+                         "layernorm while the trainer trained it added BEFORE. pre,post adds a "
+                         "second, independently weighted site whose pose_readout_post_* tensors "
+                         "ARE in the checkpoint. phase_k_train passes this automatically.")
+    ap.add_argument("--pose-readout-terms", default="",
+                    help="which terms those readout sites carry: a comma list of onehot, dist, "
+                         "orient. Each term is one tensor per site, so this decides the key set; a "
+                         "mismatch fails the load. phase_k_train passes it automatically.")
     # --------------------------------------------------------------------------------------
     # THE READOUT SITE (phases/pose_readout.py), the fifth injection, SAME STORY AS --pose-inblock
     # BELOW: the trainer's --pose-readout adds pose_readout_d / pose_readout_d_wo_onehot (and
@@ -1523,6 +1570,20 @@ def main():
     a.arch_installed = _arch_installed
     if not a.rows_in:
         refuse_shipped_with_pathways(_arch_installed, a, "startup")
+    # THE ONE NORMALISATION POINT FOR POSE INJECTION, the trainer's verbatim (phase_k_train.py,
+    # just after its own parse_args), so a combination that is a hard stop when training is a hard
+    # stop when scoring too.
+    #
+    # AFTER arch_flags_installed AND AFTER THE SHIPPED REFUSAL, deliberately. Those two read the
+    # flags as they were TYPED, and the shipped refusal is the cheapest and most informative stop
+    # in this file: a shipped pass that names a pathway flag must be refused for THAT, not for
+    # whatever is incomplete about the flag combination. Normalising first made
+    # `--pose-perblock-share` on a shipped pass report "share without --pose-perblock" and leave
+    # the twelve-GPU-minute substitution unmentioned.
+    try:
+        _POSE_BLK, _POSE_RD = _PAX.normalise(a)
+    except _PAX.PoseConfigError as e:
+        raise SystemExit(str(e))
     # AND THE ABLATION CANNOT BE HALF-ASKED-FOR. --shipped-with-pathways says the model is
     # deliberately not the shipped one, so results.csv cannot be reproduced and the self-check
     # WILL stop the merge -- after the GPU work. Refused here instead.
@@ -1744,27 +1805,20 @@ def main():
         pose_direction.install(model)
     # SAME REASON, SAME PLACE: a head trained with --pose-perblock carries pose_perblock_proj
     # tensors the stock model does not, and the guard below refuses any tensor the model lacks.
-    if a.pose_perblock:
+    # THE AXES, RESOLVED ONCE AT PARSE TIME (_PAX.normalise) exactly as the trainer resolves them,
+    # so the two processes cannot disagree about what a flag means. init is NOT passed: every head
+    # tensor is overwritten from the checkpoint below, and the tensor names follow the terms.
+    if _POSE_BLK is not None:
         import pose_perblock
-        pose_perblock.install(model, tied=a.pose_perblock_tied,
-                              share_pretrained=a.pose_perblock_share,
-                              copy_pretrained=a.pose_perblock_copy)
-    elif a.pose_perblock_share or a.pose_perblock_copy:
-        raise SystemExit("STOP: --pose-perblock-share/-copy without --pose-perblock changes "
-                         "nothing, and scoring would silently use one-depth injection.")
+        pose_perblock.install(model, terms=_POSE_BLK["terms"],
+                              weights=_POSE_BLK["weights"])
     # LAST, AND IN THE TRAINER'S ORDER (phase_k_train.py:2212): pose_readout.install refuses
     # unless a stack injection has already published the geometry it reads. copy_distance is NOT
     # forwarded and must not be: every head tensor comes from the checkpoint a few lines below, so
     # the initialisation is overwritten and only the SITE (prenorm) changes what is scored.
-    if a.pose_readout:
+    if _POSE_RD is not None:
         import pose_readout
-        pose_readout.install(model, prenorm=a.pose_readout_prenorm,
-                             post_zero=a.pose_readout_post_zero)
-    elif a.pose_readout_post_zero:
-        raise SystemExit("STOP: --pose-readout-post-zero without --pose-readout.")
-    elif a.pose_readout_prenorm:
-        raise SystemExit("STOP: --pose-readout-prenorm without --pose-readout. It moves the "
-                         "fifth site, it does not install it; the trainer refuses this too.")
+        pose_readout.install(model, sites=_POSE_RD["sites"], terms=_POSE_RD["terms"])
     # AFTER ALL THREE, AND IN THE TRAINER'S ORDER (phase_k_train.py:2313). pose_mlp reads the
     # geometry the other modules publish and injects at their sites, so it installs last; its
     # install() names any missing prerequisite rather than scoring a branch with fewer sites than

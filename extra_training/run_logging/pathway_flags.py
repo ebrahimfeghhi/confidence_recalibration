@@ -17,6 +17,12 @@ scored through a pathway it was never trained through.
 SO THE ARGV IS COPIED, NOT COMPOSED. The run directory beside the checkpoint holds args.json, the
 record of what the run actually trained with; this turns it into the eval's flag string.
 
+THE POSE INJECTION FLAGS COME FROM phases/pose_axes.py, not from this file's generic loop. The
+loop emits one flag per TRUE key, which cannot express the axes (--pose-block-terms onehot,dist)
+and -- worse -- would read the LEGACY keys for a configuration they cannot express and build a
+different architecture than the run trained. pose_axes.argv is the single builder the trainer's
+own forwarding paths use, so every consumer of a run's args.json derives the same argv.
+
 AND ONLY FLAGS phase_k_eval REALLY DEFINES. The list is intersected with the --long-options
 phase_k_eval.py's own argparse declares, read out of the source. A train-only option (pose_batch,
 pose_readout_copy_distance -- an init-time weight copy the checkpoint already carries) therefore
@@ -30,6 +36,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EVAL = os.path.join(ROOT, "phases", "phase_k_eval.py")
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import pose_axes as _PAX   # noqa: E402  the axes, and the one builder that turns them into argv
 # PATHWAY KEYS ONLY. args.json holds the whole training argv; the crop, the schedule and the loss
 # weights are not things the evaluator installs, and forwarding them would be inventing an argv
 # rather than copying one.
@@ -53,8 +61,22 @@ def flags_for(ckpt, defined=None):
     except (ValueError, OSError) as e:
         return [], [f"STOP-WORTHY: {args} is unreadable ({type(e).__name__}: {e})"]
     out = []
+    # THE POSE INJECTION AXES FIRST, FROM THE ONE BUILDER (phases/pose_axes.py). The generic loop
+    # below cannot derive them: it emits a flag per TRUE key, and the axes are strings whose value
+    # matters -- and for a configuration the legacy mode flags cannot express (blocks carrying
+    # onehot AND the raw distance at zero init) the legacy keys in args.json are the WEAKER true
+    # statement, so a loop over them would build a DIFFERENT architecture than the run trained.
+    # pose_axes.argv reads the axis keys when the record has them and derives them from the legacy
+    # keys when it does not, so an old run's args.json still yields the flags it trained with.
+    _ax, _notes = _PAX.argv(d, target="eval", defined=defined)
+    out += _ax
+    notes += _notes
+    # AND THE KEYS THE AXES OWN ARE NOT EMITTED TWICE. The legacy mode flags describe the same
+    # sites the axes do, and passing both surfaces at once is refused by pose_axes.resolve, so the
+    # generic loop must skip every one of them.
+    _owned = set(_PAX.AXIS_KEYS) | set(_PAX.LEGACY_KEYS)
     for k in sorted(d):
-        if not k.startswith(PREFIX):
+        if not k.startswith(PREFIX) or k in _owned:
             continue
         v, flag = d[k], "--" + k.replace("_", "-")
         if v is True:

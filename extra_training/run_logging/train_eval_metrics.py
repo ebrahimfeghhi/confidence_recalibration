@@ -36,6 +36,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import pose_axes as _PAX   # noqa: E402  the pose axes, and the ONE argv builder
 import eval_dirs                                                             # noqa: E402
 # 9dzj IS EXCLUDED. It is the one structure in full_train/pool.csv that the arms did NOT
 # train on (their selection is structures_no9dzj.csv), and its fold is missing the sample
@@ -49,18 +51,20 @@ TRAIN_BUDGET = 10          # 10 seeds is all the training fold has
 
 
 def arch_flags(a):
-    """Exactly phase_k_train.eval_checkpoint's mapping, so the evaluator builds what we trained."""
+    """Exactly phase_k_train.eval_checkpoint's mapping, so the evaluator builds what we trained.
+
+    LITERALLY the same mapping now, not a copy of it: both go through pose_axes.argv, which is the
+    only place the axes become an argv. The hand-written ladder here had to be edited every time a
+    pose flag was added, and the one that was missed reported numbers for a model that did not
+    exist (commit 7d9d4d10).
+    """
     f = []
     if a.get("frame_direction"):
         f.append("--frame-direction")
-    if a.get("pose_perblock"):
-        f.append("--pose-perblock")
-        for key, flag in (("pose_perblock_tied", "--pose-perblock-tied"),
-                          ("pose_perblock_share", "--pose-perblock-share"),
-                          ("pose_perblock_copy", "--pose-perblock-copy")):
-            if a.get(key):
-                f.append(flag)
-    return f
+    _ax, _notes = _PAX.argv(a, target="eval", defined=_PAX.eval_long_opts())
+    for _n in _notes:
+        raise SystemExit(f"STOP: pose flag derivation: {_n}")
+    return f + _ax
 
 
 def final_ckpt(rid):

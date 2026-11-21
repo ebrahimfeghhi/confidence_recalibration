@@ -24,8 +24,14 @@ second [N, N, 39] one-hot per pose for a quantity already in hand. pose_inblock'
 too, so this module also works in the in-block configuration; it is read second so that when both
 somehow exist the stack-level injection in force wins.
 
+THE AXES, NOT MODES. install() takes `sites` (a subset of {"pre", "post"}), `terms` (a subset of
+{"onehot", "dist", "orient"}) and `init` ("zero" or "pretrained"), and the hooks add exactly the
+terms the arm carries. phases/pose_axes.py desugars the legacy flags -- --pose-readout,
+--pose-readout-prenorm, --pose-readout-post-zero, --pose-readout-copy-distance -- to points here,
+so an earlier arm is reproduced by the same flags it was launched with.
+
 INITIALISATION. Zero by default, so step 0 is bit-identical to the un-injected head and anything
-that moves afterwards is attributable. copy_distance=True instead copies block 0's pretrained
+that moves afterwards is attributable. init="pretrained" instead copies block 0's pretrained
 linear_no_bias_d and linear_no_bias_d_wo_onehot, which is what the request asked for -- and it is
 NOT a neutral choice, so install() says so out loud rather than doing it quietly:
 
@@ -46,6 +52,8 @@ import torch
 
 from protenix.model.modules.primitives import LinearNoBias
 from protenix.model.utils import one_hot  # noqa: F401  (parity with the other injection modules)
+
+import pose_axes as _PA
 
 
 def _geometry():
@@ -115,7 +123,22 @@ def _add_mlp(head, pfx, z):
     return pose_mlp.add_site(head, k, z, pose_mlp.hidden())
 
 
-def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=False):
+def install(model, sites=("post",), terms=None, init="zero", loud=True):
+    """Inject the pose at the readout, at the given SITES with the given TERMS and INIT.
+
+      sites  a subset of {"pre", "post"}: before pae_ln (the layernorm then renormalises the sum,
+             so the term can turn the pair feature but not scale it) and after it. Both is two
+             genuinely different sites with INDEPENDENT weights.
+      terms  a subset of {"onehot", "dist", "orient"}. None means the historical default of the
+             plain --pose-readout flag: onehot+dist, plus orient when pose_direction is installed.
+      init   "zero" (verified exactly zero, so step 0 is bit-identical) or "pretrained" (the
+             distance arms start at block 0's linear_no_bias_d/_wo_onehot). The init applies to
+             the PRIMARY site -- "pre" when it exists, else "post" -- and the second site is
+             always zero, which is what the old flag's name (--pose-readout-post-zero) said.
+
+    The axes replace the old (copy_distance, prenorm, post_zero) mode booleans; pose_axes.py
+    desugars the legacy flags to points here and holds the refusals.
+    """
     head = model.confidence_head
     if getattr(head, "_pose_readout_installed", False):
         raise RuntimeError("STOP: pose_readout.install ran twice; the hook would fire twice and "
@@ -131,31 +154,46 @@ def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=Fals
             "never fire and the flag would be a silent no-op.")
 
     ref = head.linear_no_bias_d.weight
-    d_mod = _zero_linear(head.num_bins, head.c_z, ref)
-    w_mod = _zero_linear(1, head.c_z, ref)
-    if copy_distance:
-        with torch.no_grad():
-            d_mod.weight.copy_(head.linear_no_bias_d.weight)
-            w_mod.weight.copy_(head.linear_no_bias_d_wo_onehot.weight)
-    head.add_module("pose_readout_d", d_mod)
-    head.add_module("pose_readout_d_wo_onehot", w_mod)
+    have_dir = bool(getattr(head, "_pose_direction_installed", False))
+    if terms is None:
+        # THE PLAIN FLAG's HISTORICAL MEANING, for a caller that passes no terms at all.
+        terms = ("onehot", "dist") + (("orient",) if have_dir else ())
+    # REFUSED HERE TOO, NOT ONLY AT THE CLI, for the same reason pose_perblock re-checks: the
+    # evaluator, the checkers and the tests call install() directly.
+    sites, terms = _PA.check_readout_axes(sites, terms, init, have_dir)
+    terms, prenorm = frozenset(terms), "pre" in sites
+    post_zero = set(sites) == set(_PA.READOUT_SITES)
+    has_dir = "orient" in terms
 
-    has_dir = bool(getattr(head, "_pose_direction_installed", False))
-    if has_dir:
-        # ZERO IN BOTH MODES. The request asks for the orientation branch zero-init so step 0 is
-        # the distance-only function; there is also no pretrained orientation matrix anywhere in
-        # this project to copy from -- frame_dir_proj is itself zero at install.
-        head.add_module("pose_readout_frame_dir", _zero_linear(3, head.c_z, ref))
-
-    if post_zero:
-        if not prenorm:
-            raise RuntimeError("STOP: --pose-readout-post-zero adds a SECOND, zero-init site after "
-                               "pae_ln on top of the pre-norm one. Without --pose-readout-prenorm "
-                               "there is no second site -- that is just the default post-LN arm.")
-        head.add_module("pose_readout_post_d", _zero_linear(head.num_bins, head.c_z, ref))
-        head.add_module("pose_readout_post_d_wo_onehot", _zero_linear(1, head.c_z, ref))
-        if has_dir:
-            head.add_module("pose_readout_post_frame_dir", _zero_linear(3, head.c_z, ref))
+    # ONE SET OF MATRICES PER SITE, NAMED AS THEY ALWAYS WERE. The PRIMARY site is unprefixed and
+    # the second one -- "post" when both are on -- carries the `post_` prefix, which is exactly
+    # the layout --pose-readout-prenorm --pose-readout-post-zero built, so an existing
+    # checkpoint's key set is unchanged. A term the arm does not carry gets NO tensor at all,
+    # rather than a zero one that is trained and stays unused.
+    _pfx = {s: ("post_" if (s == "post" and prenorm) else "") for s in sites}
+    names = []
+    for s in sites:
+        pfx, primary = _pfx[s], (s == sites[0])
+        for term, suffix, n_in, src in (
+                ("onehot", "d", head.num_bins, head.linear_no_bias_d.weight),
+                ("dist", "d_wo_onehot", 1, head.linear_no_bias_d_wo_onehot.weight),
+                # ZERO AT EVERY SITE AND IN EVERY MODE. There is no pretrained orientation matrix
+                # anywhere in this project to copy -- frame_dir_proj is itself zero at install --
+                # so the orientation arm starts at zero whatever the distance arms do, and step 0
+                # is the distance-only function.
+                ("orient", "frame_dir", 3, None)):
+            if term not in terms:
+                continue
+            name = f"pose_readout_{pfx}{suffix}"
+            m = _zero_linear(n_in, head.c_z, ref)
+            # THE INIT APPLIES TO THE PRIMARY SITE ONLY, which is what the second site's old flag
+            # name promised. Built zero-and-verified FIRST and copied over afterwards, so the
+            # verification covers the module in both cases.
+            if init == "pretrained" and primary and src is not None:
+                with torch.no_grad():
+                    m.weight.copy_(src)
+            head.add_module(name, m)
+            names.append(name)
 
     def _hook(_mod, _inp, out, pfx=""):
         oh, dd, dr = _geometry()
@@ -172,8 +210,14 @@ def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=Fals
         # ADDED ONE TERM AT A TIME, NOT FUSED. `out = out + A` frees A before B is allocated, so
         # the peak is two pair tensors either way; pose_inblock.py:378-388 records the measurement
         # where fusing these made allocated-at-OOM WORSE (90.85 -> 91.63 GiB).
-        out = out + getattr(head, f"pose_readout_{pfx}d")(oh).to(out.dtype)
-        out = out + getattr(head, f"pose_readout_{pfx}d_wo_onehot")(dd.unsqueeze(-1)).to(out.dtype)
+        #
+        # AND ONLY THE TERMS THIS ARM CARRIES. A term with no tensor is absent from the function,
+        # not added through a zero matrix that would be created and trained and do nothing.
+        if "onehot" in terms:
+            out = out + getattr(head, f"pose_readout_{pfx}d")(oh).to(out.dtype)
+        if "dist" in terms:
+            out = out + getattr(head, f"pose_readout_{pfx}d_wo_onehot")(
+                dd.unsqueeze(-1)).to(out.dtype)
         if has_dir and dr is not None:
             if dr.shape[:-1] != oh.shape[:-1]:
                 raise RuntimeError(
@@ -209,8 +253,10 @@ def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=Fals
                 f"STOP: --pose-readout-prenorm: pae_ln's INPUT is {tuple(z.shape)} but the pose "
                 f"geometry is {tuple(oh.shape)}. The hook is firing on a call it was not written "
                 f"for, and adding across that mismatch would broadcast silently.")
-        z = z + head.pose_readout_d(oh).to(z.dtype)
-        z = z + head.pose_readout_d_wo_onehot(dd.unsqueeze(-1)).to(z.dtype)
+        if "onehot" in terms:
+            z = z + head.pose_readout_d(oh).to(z.dtype)
+        if "dist" in terms:
+            z = z + head.pose_readout_d_wo_onehot(dd.unsqueeze(-1)).to(z.dtype)
         if has_dir and dr is not None:
             if dr.shape[:-1] != oh.shape[:-1]:
                 raise RuntimeError(
@@ -233,33 +279,49 @@ def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=Fals
                 functools.partial(_hook, pfx="post_"))
     else:
         head._pose_readout_hook = head.pae_ln.register_forward_hook(_hook)
+    head._pose_readout_sites = tuple(sites)
+    head._pose_readout_terms = terms
+    head._pose_readout_init = str(init)
+    # THE LEGACY ATTRIBUTES, DERIVED. pose_mlp reads _pose_readout_prenorm and
+    # _pose_readout_post_zero to work out which of its six sites it is at, and _add_mlp above
+    # asserts the same mapping from the other side, so both keep their exact old meaning.
     head._pose_readout_prenorm = bool(prenorm)
     head._pose_readout_installed = True
-    head._pose_readout_copy_distance = bool(copy_distance)
+    head._pose_readout_copy_distance = init == "pretrained"
     head._pose_readout_post_zero = bool(post_zero)
 
-    names = ["pose_readout_d", "pose_readout_d_wo_onehot"]
-    if has_dir:
-        names.append("pose_readout_frame_dir")
-    if post_zero:
-        names += ["pose_readout_post_d", "pose_readout_post_d_wo_onehot"]
-        if has_dir:
-            names.append("pose_readout_post_frame_dir")
+    # VERIFIED AGAINST BLOCK 0, EXACTLY, as pose_perblock's copies are. The copy is the whole
+    # claim of the pretrained init -- "step 0 starts from the injection the head was shipped
+    # with" -- and it was previously taken on trust here while the per-block path verified it.
+    if init == "pretrained":
+        _worst = 0.0
+        for _n, _src in (("d", head.linear_no_bias_d.weight),
+                         ("d_wo_onehot", head.linear_no_bias_d_wo_onehot.weight)):
+            _m = getattr(head, f"pose_readout_{_n}", None)
+            if _m is not None:
+                _worst = max(_worst, float((_m.weight - _src).abs().max()))
+        if _worst != 0.0:
+            raise RuntimeError(
+                f"STOP: a pretrained-init readout arm differs from block 0's weights by "
+                f"{_worst:.3e}, so this arm's step 0 is a third starting point -- neither the "
+                f"un-injected head nor the pretrained injection it claims to start from.")
+
     n_new = sum(p.numel() for n in names for p in getattr(head, n).parameters())
     if loud:
         # THE SITE IS NAMED FROM `prenorm`, NOT HARDCODED. This line said "after pae_ln" in both
         # modes, so a prenorm arm's run.log asserted the post-LN site -- and run.log is how these
         # arms are read back weeks later.
-        _site = ("BEFORE pae_ln, into z_pair with the layernorm downstream" if prenorm
-                 else "after pae_ln")
-        print(f"POSE READOUT (5th site): injected {_site}, upstream of linear_no_bias_pae, "
-              f"with the one-hot and raw-distance terms"
-              + (" and the orientation term" if has_dir else " (no orientation: --frame-direction "
-                                                             "not installed)")
-              + f". {n_new:,} new parameter(s) across {len(names)} tensor(s). Geometry is READ from "
-              f"the installed stack injection's per-forward cache, not recomputed. A --train-only "
-              f"must match `pose_readout` to reach these.")
-        if copy_distance and not prenorm:
+        _site = ", ".join(
+            ("BEFORE pae_ln, into z_pair with the layernorm downstream" if s == "pre"
+             else "AFTER pae_ln") for s in sites)
+        print(f"POSE READOUT: injected {_site}, upstream of linear_no_bias_pae, with the "
+              f"term(s) {'+'.join(t for t in _PA.TERMS if t in terms)}"
+              + ("" if has_dir else " (no orientation term at this site)")
+              + f". {n_new:,} new parameter(s) across {len(names)} tensor(s): "
+              + ", ".join(names)
+              + ". Geometry is READ from the installed stack injection's per-forward cache, not "
+                "recomputed. A --train-only must match `pose_readout` to reach these.")
+        if init == "pretrained" and not prenorm:
             print("  COPY-DISTANCE IS ON, AND IT IS NOT NEUTRAL: pose_readout_d and "
                   "pose_readout_d_wo_onehot start at block 0's PRETRAINED weights, so step 0 is "
                   "NOT bit-identical to the un-injected head. Those weights were fitted to add "
@@ -267,7 +329,7 @@ def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=Fals
                   "adds AFTER pae_ln, so an unnormalised pretrained-scale term lands on a "
                   "normalised one with nothing downstream to rescale it. Shapes permit the copy, "
                   "semantics do not match. The orientation arm stays zero.")
-        elif copy_distance:
+        elif init == "pretrained":
             print("  COPY-DISTANCE IS ON AT THE PRE-NORM SITE, which is the one place in this "
                   "module where the copy is semantically right: block 0's injection was fitted to "
                   "add into z_pair with a normalisation downstream, and pae_ln is exactly that. "
@@ -280,4 +342,7 @@ def install(model, copy_distance=False, loud=True, prenorm=False, post_zero=Fals
             print("  ZERO-INIT and verified exactly zero, so step 0 is bit-identical to the "
                   "un-injected head.")
     return {"params": n_new, "tensors": names, "orientation": has_dir,
-            "copy_distance": bool(copy_distance), "post_zero": bool(post_zero)}
+            "sites": tuple(sites), "terms": tuple(t for t in _PA.TERMS if t in terms),
+            "init": str(init),
+            # THE LEGACY KEYS, DERIVED, for the callers and notes that read them.
+            "copy_distance": init == "pretrained", "post_zero": bool(post_zero)}

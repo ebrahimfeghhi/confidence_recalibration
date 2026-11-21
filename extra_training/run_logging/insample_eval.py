@@ -23,6 +23,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import pose_axes as _PAX   # noqa: E402  the pose axes, and the ONE argv builder
 PY = "/home/ebrahim/Protenix/.venv/bin/python"
 
 # THE TWO UNCROPPED POOLS, as the trainer's own passes define them -- so an off-cadence reading
@@ -96,14 +98,12 @@ if _cm > 0:
              f"number, so it is not a matched baseline for it -- use cropped_eval.py, which runs "
              f"the shipped head's own cropped pass.")
 
-POSE_FLAGS = []
-if G.get("pose_perblock"):
-    POSE_FLAGS.append("--pose-perblock")
-    for k, f in (("pose_perblock_tied", "--pose-perblock-tied"),
-                 ("pose_perblock_share", "--pose-perblock-share"),
-                 ("pose_perblock_copy", "--pose-perblock-copy")):
-        if G.get(k):
-            POSE_FLAGS.append(f)
+# THE POSE ARCHITECTURE, FROM THE ONE BUILDER (phases/pose_axes.py), never a hand-written ladder
+# over the legacy keys: those keys cannot express every configuration the trainer can build, so a
+# ladder would quietly ask the evaluator for a DIFFERENT architecture than the bundle holds.
+POSE_FLAGS, _PNOTES = _PAX.argv(G, target="eval", defined=_PAX.eval_long_opts())
+for _n in _PNOTES:
+    sys.exit(f"STOP: pose flag derivation: {_n}")
 if G.get("frame_direction"):
     POSE_FLAGS.append("--frame-direction")
 # BOTH POOLINGS out of the one pass, as cropped_eval.py does, so MEAN and MAX are both reported.

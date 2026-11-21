@@ -140,7 +140,7 @@ def main():
     m3 = _Model()
     m3.confidence_head._pose_perblock_installed = True
     base3 = m3.confidence_head.readout(z).clone()
-    pose_readout.install(m3, copy_distance=True, loud=False)
+    pose_readout.install(m3, init="pretrained", loud=False)
     _publish(oh, d)
     got3 = m3.confidence_head.readout(z)
     check("copy_distance CHANGES step 0 (the flag is not cosmetic)",
@@ -177,7 +177,7 @@ def main():
     m4.confidence_head._pose_perblock_installed = True
     m4.confidence_head._pose_direction_installed = True
     base4 = m4.confidence_head.readout(z).clone()
-    info4 = pose_readout.install(m4, loud=False, prenorm=True)
+    info4 = pose_readout.install(m4, loud=False, sites=("pre",))
     check("prenorm installs the same three tensors", info4["orientation"] is True
           and info4["tensors"] == ["pose_readout_d", "pose_readout_d_wo_onehot",
                                    "pose_readout_frame_dir"])
@@ -204,8 +204,8 @@ def main():
     for mm in (m5, m6):
         mm.confidence_head._pose_perblock_installed = True
     base5 = m5.confidence_head.readout(z).clone()
-    pose_readout.install(m5, copy_distance=True, loud=False, prenorm=True)
-    pose_readout.install(m6, copy_distance=True, loud=False, prenorm=False)
+    pose_readout.install(m5, init="pretrained", loud=False, sites=("pre",))
+    pose_readout.install(m6, init="pretrained", loud=False, sites=("post",))
     _publish(oh, d)
     got5 = m5.confidence_head.readout(z)
     got6 = m6.confidence_head.readout(z)
@@ -250,8 +250,8 @@ def main():
     m8.load_state_dict(m7.state_dict())
     for mm in (m7, m8):
         mm.confidence_head._pose_perblock_installed = True
-    pose_readout.install(m7, copy_distance=True, loud=False, prenorm=True, post_zero=True)
-    pose_readout.install(m8, copy_distance=True, loud=False, prenorm=True)
+    pose_readout.install(m7, init="pretrained", loud=False, sites=("pre", "post"))
+    pose_readout.install(m8, init="pretrained", loud=False, sites=("pre",))
     h7 = m7.confidence_head
     check("two-site: the post matrices exist and are separate objects",
           hasattr(h7, "pose_readout_post_d")
@@ -279,12 +279,25 @@ def main():
     g7 = h7.pose_readout_post_d.weight.grad
     check("two-site: the post site receives gradient",
           g7 is not None and bool(g7.abs().max() > 0))
+    # THE OLD post_zero-WITHOUT-prenorm REFUSAL, now where it belongs: the SITES are named
+    # directly here (sites=("post",) is the one-site arm, ("pre","post") the two-site one), so
+    # install() has nothing left to refuse. The legacy flag combination it protected is still
+    # refused, by the desugaring, which is the only place that spelling exists any more.
+    import pose_axes
     try:
-        m9 = _Model(); m9.confidence_head._pose_perblock_installed = True
-        pose_readout.install(m9, loud=False, prenorm=False, post_zero=True)
-        check("two-site: post_zero without prenorm is refused", False, "it installed")
-    except RuntimeError as e:
-        check("two-site: post_zero without prenorm is refused", "SECOND" in str(e))
+        pose_axes.resolve({"pose_perblock": True, "pose_readout": True,
+                           "pose_readout_post_zero": True})
+        check("two-site: --pose-readout-post-zero without --pose-readout-prenorm is refused",
+              False, "it resolved")
+    except pose_axes.PoseConfigError as e:
+        check("two-site: --pose-readout-post-zero without --pose-readout-prenorm is refused",
+              "SECOND site" in str(e))
+    # AND A SITE LIST IS A SITE LIST: an unknown site is named, not silently dropped.
+    try:
+        pose_axes.parse_readout_sites("postnorm")
+        check("an unknown readout site is refused", False, "it parsed")
+    except pose_axes.PoseConfigError as e:
+        check("an unknown readout site is refused", "unknown site" in str(e))
 
     print()
     if fails:

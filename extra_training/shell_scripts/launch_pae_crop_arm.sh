@@ -65,6 +65,17 @@ POOL_DIR="${POOL_DIR-training/crop_final}"   # NO COLON: "" means UNCROPPED, see
 # forward never runs. On by default because every selective arm wants it; SKIP_DEAD_OPS="" turns it
 # off for an everything-trainable arm, where the ten modules then compute their zeros honestly.
 SKIP_DEAD_OPS="${SKIP_DEAD_OPS-1}"   # NO COLON: "" is a deliberate off
+# THE PER-BLOCK POSE INJECTION AND THE FRAME DIRECTION ADD PARAMETERS TO THE SHIPPED HEAD, and
+# were hardcoded here because every arm so far has wanted them. A NATIVE arm wants none of them:
+# the shipped confidence head is ALREADY pose-conditioned (run_confidence_head takes
+# x_pred_coords), so an arm with all of these off is the unmodified network, which is a control
+# nothing has run yet. On by default so every existing arm is unchanged; "" turns each off.
+POSE_PERBLOCK="${POSE_PERBLOCK-1}"        # NO COLON: "" is a deliberate off
+POSE_PERBLOCK_COPY="${POSE_PERBLOCK_COPY-1}"
+FRAME_DIRECTION="${FRAME_DIRECTION-1}"
+TM_CENTERED="${TM_CENTERED-}"              # NO COLON: unset and "" both mean off
+PAE_TM_WEIGHT="${PAE_TM_WEIGHT-}"          # NO COLON: unset and "" both mean off
+PAE_TM_WEIGHT_MODE="${PAE_TM_WEIGHT_MODE-}" # "" leaves the trainer default (true); "max" is Arm N
 MANIFEST="${MANIFEST:-train_val_splits/cache_train_structures_extended.csv}"
 # THE SCORED-PAIR POOL. Both the PAE mask and the ranking term are restricted to these
 # interfaces, so narrowing it narrows the whole objective -- which is what an overfit test on a
@@ -280,6 +291,15 @@ fi
 # first version of this gate was written, passed by hand, and never wired in -- so the arm it was
 # written to protect launched without it, and the review that caught that also found 35 of the
 # gate's 50 module names were invented and could never have matched anything.
+# THE TM-WEIGHT GATE, RUN ONLY WHEN THE FLAG IS ON. It existed but nothing called it -- Arm N was
+# about to launch with its weight ungated, which review caught. Conditional so the arms that do not
+# use the flag do not pay a torch import for it.
+if [ -n "$PAE_TM_WEIGHT" ]; then
+    say "CPU gate: the TM pair weight (mode=${PAE_TM_WEIGHT_MODE:-true}) is the specified quotient"
+    $PY -I run_logging/test_pae_tm_weight.py \
+        || { say "REFUSING: the TM pair weight does not behave as specified"; exit 5; }
+fi
+
 if [ -n "$LORA_RANK" ]; then
     say "CPU gate: adapters avoid dead ops and dead readouts; all 12 pose tensors stay dense"
     LORA_RANK="$LORA_RANK" $PY -I run_logging/test_lora_targets.py \
@@ -411,6 +431,16 @@ POSE_READOUT_POST_ZERO="${POSE_READOUT_POST_ZERO:-}"
 # selection). The trainer refuses a POSE_MLP whose --train-only misses it, so a forgotten
 # pattern stops the run instead of training a linear head under a nonlinear name.
 POSE_MLP="${POSE_MLP:-}"
+# THE COMPOSITIONAL POSE SURFACE. These five replace the legacy POSE_PERBLOCK*/POSE_READOUT*
+# switches and are mutually exclusive with them -- phases/pose_axes.py refuses both surfaces at
+# once, by design, so an arm picks one. Empty means "not using the new surface", which leaves
+# every existing arm and launcher behaving exactly as before.
+POSE_BLOCK_TERMS="${POSE_BLOCK_TERMS:-}"
+POSE_BLOCK_INIT="${POSE_BLOCK_INIT:-}"
+POSE_BLOCK_WEIGHTS="${POSE_BLOCK_WEIGHTS:-}"
+POSE_READOUT_SITES="${POSE_READOUT_SITES:-}"
+POSE_READOUT_TERMS="${POSE_READOUT_TERMS:-}"
+POSE_READOUT_INIT="${POSE_READOUT_INIT:-}"
 # A STAIRCASE lr, EPOCH:LR[,EPOCH:LR]. The arms so far dropped the rate by stopping and
 # resuming with a new --lr; passing the schedule means one run instead of two.
 LR_STEPS="${LR_STEPS:-}"
@@ -475,7 +505,14 @@ ARGS=(${POOL_DIR:+--crop-pool "$POOL_DIR"}
       --minimal-items --epoch-cover-all ${EPOCH_BALANCE:+--epoch-balance}
       --pae-only --alpha-pae 1.0 --alpha-confidence 1.0
       --accum "$ACCUM" --nsample "$NSAMPLE"
-      ${SKIP_DEAD_OPS:+--skip-dead-ops} --pose-perblock --pose-perblock-copy --frame-direction --lean-single
+      ${SKIP_DEAD_OPS:+--skip-dead-ops} ${POSE_PERBLOCK:+--pose-perblock}
+      ${POSE_PERBLOCK_COPY:+--pose-perblock-copy} ${FRAME_DIRECTION:+--frame-direction} --lean-single
+      ${POSE_BLOCK_TERMS:+--pose-block-terms "$POSE_BLOCK_TERMS"}
+      ${POSE_BLOCK_INIT:+--pose-block-init "$POSE_BLOCK_INIT"}
+      ${POSE_BLOCK_WEIGHTS:+--pose-block-weights "$POSE_BLOCK_WEIGHTS"}
+      ${POSE_READOUT_SITES:+--pose-readout-sites "$POSE_READOUT_SITES"}
+      ${POSE_READOUT_TERMS:+--pose-readout-terms "$POSE_READOUT_TERMS"}
+      ${POSE_READOUT_INIT:+--pose-readout-init "$POSE_READOUT_INIT"}
       --train-eval-pool "$EVAL_POOL" --train-eval-fold validation/fold
       --train-eval-every "$EVAL_EVERY" --train-eval-budget 30 --train-eval-seed-base 400000
       --epochs "$EPOCHS" --lr "$LR"
@@ -541,6 +578,47 @@ fi
 # THE FOURTH METRIC, IN THE EVAL'S OWN FORWARD. Every eval pass then reports PAE loss beside
 # mean DockQ, frac acceptable and rho, at no extra forward -- see --eval-pae-loss in phase_k_train.
 [ -n "$EVAL_PAE_LOSS" ] && ARGS+=(--eval-pae-loss)
+
+# --tm-centered: THE CENTRED TM ERROR REPLACES THE PAE CROSS-ENTROPY. Off unless TM_CENTERED is set.
+#
+# IT NEEDS --rank-cross-seed WITHOUT --rank-loss, which no arm has wanted before: the flag is only
+# the STEP GROUPING (all of a structure's seeds in one step) and rel is simply the only loss that
+# has needed it so far. The ranking branch above owns the only other copy of these two flags, and
+# it is gated on ALPHA_RANK, so without this block Arm K would have launched as a byte-identical
+# copy of Arm I -- same loss, same everything, a comparison of nothing against itself.
+#
+# REFUSED TOGETHER WITH A RANKING ARM: two objectives both claiming to replace the PAE term would
+# be a third experiment, and which one won would depend on statement order in the trainer.
+# --pae-tm-weight: THE SAME CROSS-ENTROPY, EACH PAIR WEIGHTED BY ITS TM-SCORE VALUE. Unlike
+# TM_CENTERED this does NOT replace the objective, so it composes with everything else; it only
+# changes which pairs dominate the mean. Off unless PAE_TM_WEIGHT is set.
+if [ -n "$PAE_TM_WEIGHT" ]; then
+  if [ -n "$TM_CENTERED" ]; then
+    echo "REFUSING: PAE_TM_WEIGHT weights the cross-entropy, TM_CENTERED replaces it. Pass one."
+    exit 2
+  fi
+  if [ -z "$SCORED_PAIRS" ]; then
+    echo "REFUSING: PAE_TM_WEIGHT needs SCORED_PAIRS -- the weight's d0 is per interface and"
+    echo "comes from that interface's token count, which only the scored-pair blocks carry."
+    exit 2
+  fi
+  ARGS+=(--pae-tm-weight)
+  if [ -n "$PAE_TM_WEIGHT_MODE" ]; then
+    ARGS+=(--pae-tm-weight-mode "$PAE_TM_WEIGHT_MODE")
+  fi
+  echo "### per-pair TM weighting ON, mode=${PAE_TM_WEIGHT_MODE:-true}"
+fi
+if [ -n "$TM_CENTERED" ]; then
+  if [ -n "$ALPHA_RANK" ]; then
+    echo "REFUSING: TM_CENTERED and ALPHA_RANK together. Both replace the PAE objective, so the"
+    echo "  arm would train neither of the two losses it claims to."
+    exit 2
+  fi
+  ARGS+=(--tm-centered --rank-cross-seed --rank-structs-per-step "$RANK_S")
+  say "CENTRED TM ERROR: replaces the PAE cross-entropy; --rank-cross-seed on for the grouping,"
+  say "  --rank-loss OFF. $RANK_S structure(s)/step, all seeds, so the per-pair mean is over the"
+  say "  structure's poses (gathered across ranks in _xs_prepare)."
+fi
 # A HALF-SPECIFIED MONITOR IS A RUN THAT DIES AT LAUNCH, which is better than one that dies at the
 # first epoch boundary, but better still is saying which piece is missing here.
 if [ -n "$VAL_LOSS_EVERY" ]; then
@@ -588,8 +666,26 @@ if [ "$DRY" = "1" ]; then
   exit 0
 fi
 
-B=$($PY -I run_logging/cards_busy.py 2>&1 | tail -1)
-[ "$B" = "0" ] || { say "REFUSING: cards_busy reports '$B'"; exit 3; }
+B=$($PY -I run_logging/cards_busy.py "$CARDS" 2>&1 | tail -1)
+# ALLOW_BUSY_CARDS=1 SHARES CARDS THAT ALREADY HAVE A PROCESS ON THEM. Off by default.
+#
+# WHY IT EXISTS: a FOREIGN job can sit on our cards holding a CUDA context and almost no memory --
+# at 7:52 PM a render_rollouts.py from another user had held cards 4 and 5 since 4:55 PM at ~2 GB
+# of a 97.9 GB card, and the gate refused a launch onto three otherwise-idle cards. Co-locating
+# there is routine: the val-PAE measurements all ran as a second model on a training card.
+#
+# WHAT IT COSTS, AND IT IS NOT NOTHING: an uncropped arm RESERVES 73-75 GB per card (peaks 16-65),
+# because the caching allocator grows to fill what it can. Sharing therefore leaves the other
+# process ~22 GB and can OOM IT -- a cost paid by someone else's run, which is why this is opt-in
+# per launch and never a default.
+if [ -n "${ALLOW_BUSY_CARDS:-}" ] && [ "$B" != "0" ]; then
+  say "ALLOW_BUSY_CARDS=1: $B process(es) already on $CARDS; launching anyway BY REQUEST."
+  say "  An uncropped arm reserves ~74 GB/card, so the other process keeps ~22 GB of headroom."
+  B=0
+fi
+[ "$B" = "0" ] || { say "REFUSING: cards_busy reports '$B' on OUR cards ($CARDS)"
+                    say "  (the check is scoped to \$CARDS: another user's job on a different GPU"
+                    say "   does not block us, but one of ours on these cards does)"; exit 3; }
 for c in $(echo "$CARDS" | tr ',' ' '); do
   F=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i "$c" 2>/dev/null)
   case "$F" in ''|*[!0-9]*) say "REFUSING: GPU $c unreadable"; exit 3;; esac

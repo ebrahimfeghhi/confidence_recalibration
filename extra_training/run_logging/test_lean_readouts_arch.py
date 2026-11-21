@@ -93,8 +93,9 @@ def build(lean):
     if lean:
         LR.install(holder, pae_only=True)
     PD.install(holder, loud=False)
-    # THE ARM'S SETTING: --pose-perblock --pose-perblock-copy.
-    PP.install(holder, tied=False, share_pretrained=False, copy_pretrained=True, loud=False)
+    # THE ARM'S SETTING: --pose-perblock --pose-perblock-copy, which desugars to terms
+    # onehot+dist (+orient, since pose_direction is installed above) at the pretrained init.
+    PP.install(holder, terms=("onehot", "dist", "orient"), init="pretrained", loud=False)
     with torch.no_grad():
         # NON-ZERO, so the orientation term reaches pae and a dropped injection changes it.
         head.frame_dir_proj.weight.normal_(std=0.02)

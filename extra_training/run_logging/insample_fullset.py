@@ -74,6 +74,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import pose_axes as _PAX   # noqa: E402  the pose axes, and the ONE argv builder
 PY = "/home/ebrahim/Protenix/.venv/bin/python"
 FOLD = "training/fold"
 POOL = "training/combined/pool.csv"
@@ -276,13 +278,13 @@ if a.head and a.head != "shipped":
     # a mismatched flag set loads the checkpoint into the wrong module graph.
     G = _b.get("guard") or {}
     EP = int(_b["epoch"])
-    if G.get("pose_perblock"):
-        POSE.append("--pose-perblock")
-        for k, f in (("pose_perblock_tied", "--pose-perblock-tied"),
-                     ("pose_perblock_share", "--pose-perblock-share"),
-                     ("pose_perblock_copy", "--pose-perblock-copy")):
-            if G.get(k):
-                POSE.append(f)
+    # THE POSE ARCHITECTURE, FROM THE ONE BUILDER (phases/pose_axes.py). A ladder over the legacy
+    # keys cannot express every configuration the trainer can build, so it would load the
+    # checkpoint into the wrong module graph for exactly the arms that are hardest to notice.
+    _pose_ax, _pnotes = _PAX.argv(G, target="eval", defined=_PAX.eval_long_opts())
+    for _n in _pnotes:
+        sys.exit(f"STOP: pose flag derivation: {_n}")
+    POSE += _pose_ax
     if G.get("frame_direction"):
         POSE.append("--frame-direction")
     RID = os.path.basename(os.path.dirname(os.path.join(ROOT, a.head)))

@@ -17,15 +17,20 @@ and stays comparable.
 and it must match the training split or the groups mean different things.
 """
 import json
+import os
 import sys
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import pose_axes as _PAX   # noqa: E402  the pose axes, and the ONE argv builder
+
+# THE POSE INJECTION FLAGS ARE NO LONGER LISTED HERE. They came off this table one key at a time
+# -- pose_perblock_share is missing from it, which is the silent-wrong-architecture case the
+# module docstring warns about -- so they now come from pose_axes.argv, the single builder every
+# forwarding path uses. What stays is the rest: the loss shape and the lean trio.
 ARCH_FLAGS = [
     ("pae_only", "--pae-only"), ("drop_pde", "--drop-pde"),
-    ("frame_direction", "--frame-direction"), ("pose_perblock", "--pose-perblock"),
-    ("pose_perblock_tied", "--pose-perblock-tied"), ("pose_perblock_copy", "--pose-perblock-copy"),
-    ("pose_readout", "--pose-readout"), ("pose_readout_prenorm", "--pose-readout-prenorm"),
-    ("pose_readout_copy_distance", "--pose-readout-copy-distance"),
-    ("pose_readout_post_zero", "--pose-readout-post-zero"),
+    ("frame_direction", "--frame-direction"),
     ("lean_readouts", "--lean-readouts"), ("lean_single", "--lean-single"),
     ("pose_mlp", "--pose-mlp"),
 ]
@@ -42,6 +47,11 @@ def main():
     a = json.load(open(f"training/runs/{rid}/args.json"))
     a = a.get("args", a)
     flags = [f for k, f in ARCH_FLAGS if a.get(k)]
+    # AND THE POSE INJECTION AXES, from the one builder. The `train` target because this file's
+    # flags go to phase_k_train --loss-only: that process builds the head from scratch and loads
+    # only the TRAINABLE tensors out of the bundle, so a pose tensor outside --train-only keeps
+    # its initialisation and the init flags are part of the architecture here.
+    flags += _PAX.argv(a, target="train")[0]
     for k, f in VALUE_FLAGS:
         if a.get(k) not in (None, "", 0):
             flags += [f, str(a[k])]
