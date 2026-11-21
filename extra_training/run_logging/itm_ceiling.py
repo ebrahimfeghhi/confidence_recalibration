@@ -221,7 +221,9 @@ def gt_for_unit(pdb, seed, pairs, pl, refs=None):
                 raise SystemExit(
                     f"STOP: --ost-mapping has no chain mapping for {pdb}/{seed} sample {samp} "
                     f"({why}). A label built from the static mapping here is exactly what this "
-                    f"flag exists to prevent.")
+                    f"flag exists to prevent. RECOVERY: if that pose's ost_json is a FAILURE "
+                    f"record, `python -I run_logging/rescue_ost_mapping.py --pdb {pdb} --verify` "
+                    f"re-runs the fixed scorer on CPU and writes OST's own mapping beside it.")
         for iface, ax, ay in use:
             tm, ntok = pair_mask_for(pm, asym, hf, ax, ay)
             if int(tm.sum()) == 0:

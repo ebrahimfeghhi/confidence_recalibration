@@ -54,9 +54,16 @@ import time
 
 import numpy as np
 
+# THE DEPTHS THE MANIFEST ACTUALLY DECLARED, for args.json. --seeds is only a fallback,
+# so a reader who sees "500000-500009" there and infers the training set is wrong by
+# however many structures declared their own deeper range.
+_REALISED_SEED_DEPTHS = None
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, "/home/ebrahim/Protenix")
 sys.path.insert(0, os.path.join(ROOT, "phases"))
+sys.path.insert(0, os.path.join(ROOT, "run_logging"))
+import label_index as _LI   # the only sanctioned row<->pose-id map
+import phase_k_preflight_cover as _PFC   # which STRUCTURES an alignment marker vouches for
 print = functools.partial(print, flush=True)
 
 TERMS = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss", "loss")
@@ -70,6 +77,16 @@ TERMS = ("plddt_loss", "pde_loss", "pae_loss", "resolved_loss", "loss")
 # only the git working tree had moved. A provenance field that reports the tree instead of the
 # running code is worse than no field, because it will be believed.
 _COMMIT_AT_START = None
+
+
+# FORMS WHOSE UNIT OF COMPARISON IS THE INTERFACE, not a static asym pair. They share all of
+# the per-pose plumbing -- pass A emits one score per interface, the sample index is resolved so
+# the PAE mask and the score describe the same chains, and the DockQ lookup goes through
+# _rel_dqkey -- and differ ONLY in the coefficient they compute from those scores. The constant
+# exists so adding a form cannot half-wire that plumbing: the file's own history records a third
+# form being sent to the LINEAR loss while every log line said otherwise, which is the failure
+# this name prevents rather than documents.
+_RANK_IFACE_FORMS = ("rel", "zsoftmax")
 
 
 def _git_commit():
@@ -169,6 +186,18 @@ def main():
                          "window/shape, which interpolate continuously and so cannot "
                          "express a hold-then-drop. Warmup still applies to the first "
                          "steps. Empty (default) leaves every existing arm bit-identical.")
+    ap.add_argument("--save-init", default="",
+                    help="write the head to this path BEFORE any optimiser step, then exit. This "
+                         "is what step-zero parity needs and nothing else produced it: every "
+                         "other head save happens after at least one step, and both pose "
+                         "injections are zero-init, so a head saved after one step is no longer "
+                         "bit-identical to the un-injected one. With it, phase_k_eval can be "
+                         "handed a genuine in-block checkpoint whose PAE and ipTM MUST reproduce "
+                         "the shipped head exactly -- which tests the evaluator's install path, "
+                         "its key-set guard and the zero-init claim in one comparison, on the "
+                         "real CLI rather than in a test harness. Refuses under WORLD_SIZE > 1: "
+                         "it exits the process, and exiting one rank of three parks the others "
+                         "on a collective.")
     ap.add_argument("--grad-probe", action="store_true",
                     help="MEASURE, DON'T GUESS. Run EXACTLY ONE accumulation window -- the unit "
                          "count is derived as accum_local/nsample, not asked for, because a probe "
@@ -215,36 +244,6 @@ def main():
                          "per structure, because a structure holds several and reading one "
                          "interface's ipTM against another's DockQ is the error phase_k_eval "
                          "refuses to run.")
-    ap.add_argument("--rank-weight-by-gap", dest="rank_weight_by_gap",
-                    action="store_true", default=True,
-                    help="weight each pose pair by |DockQ_i - DockQ_j| (default). Separating 0.1 "
-                         "from 0.7 then matters more than separating 0.41 from 0.43, which is "
-                         "what the metric cares about: frac_acc is a threshold at 0.23 and mean "
-                         "DockQ is driven by the big misses.")
-    ap.add_argument("--no-rank-weight-by-gap", dest="rank_weight_by_gap",
-                    action="store_false", help="weight every pose pair equally instead.")
-    ap.add_argument("--rank-spearman-tau", type=float, default=0.0,
-                    help="SOFT-RANK TEMPERATURE for --rank-form spearman, in the units of the "
-                         "quantity ranked (ipTM and DockQ, both 0..1). 0 takes "
-                         "rank_loss.DEFAULT_SPEARMAN_TAU = 0.05, which is ABAG-Rank's own training "
-                         "value. NOT --rank-tau: that is a margin scale for the softplus form, "
-                         "measured as the median cross-seed ipTM gap, and the two are unrelated.")
-    ap.add_argument("--rank-dist-weight", type=float, default=0.1,
-                    help="WEIGHT ON THE DISTANCE-PRESERVATION TERM relative to 1.0 on the ranking "
-                         "term, for --rank-form spearman_distance. 0.1 is ABAG-Rank's effective "
-                         "value (its configs define distance_lambda_start, while train.py:423 "
-                         "reads distance_lambda and falls back to 0.1). Note the term SUMS over "
-                         "pairs, so a 5-pose within-seed group gives ~4.5x less than upstream's "
-                         "10-pose group for the same per-pair error; raise this to compensate if "
-                         "you want upstream's magnitude rather than its weighting.")
-    ap.add_argument("--rank-rel-scale", type=float, default=0.07,
-                    help="RELEVANCE GATE for the two group forms: the group's loss is scaled by "
-                         "clamp(std(DockQ)/this, 0, 1), upstream's. 0 disables it. EXPECT IT TO "
-                         "BITE: 59%% of our training interfaces have pose-to-pose DockQ std below "
-                         "0.07 measured over all 50 poses, and a within-seed group of 5 should "
-                         "spread less, so a large share of groups will be down-weighted or "
-                         "silenced. The run logs the mean weight -- read it before concluding "
-                         "anything about the term's effect.")
     ap.add_argument("--rank-pool", choices=("max", "mean"), default="max",
                     help="HOW A POSE'S ipTM IS POOLED OVER ANCHOR ROWS, in BOTH pass A and the "
                          "pass-B term, so the quantity trained is the quantity scored. max is "
@@ -264,6 +263,132 @@ def main():
                          "run_logging/build_itm_labels.py, keyed (seed, sample, asym_x, asym_y) "
                          "-> g_mean, g_max. REQUIRED by --rank-form rel, which regresses on them "
                          "instead of on DockQ.")
+    ap.add_argument("--rel-std-floor", type=float, default=None, metavar="EPS",
+                    help="the clamp on the std each side of --rel-standardize is divided by. "
+                         "Defaults to rank_loss.DEFAULT_REL_STD_FLOOR = 0.02.\n"
+                         "WHY YOU WANT IT NEAR ZERO. Above the floor the standardised loss is "
+                         "exactly 2*(1 - corr), so shrinking the predictions changes nothing -- "
+                         "the division undoes it -- and only the ORDER can improve the loss. "
+                         "That is the whole point of standardising. The floor breaks it: below "
+                         "0.02 the clamp stops normalising, the prediction contributes ~0, and "
+                         "the loss falls to 1.0 -- which BEATS an uncorrelated ordering (2.0) "
+                         "and any anti-correlated one (up to 4.0). So the floor creates exactly "
+                         "the hedge standardising was meant to remove, for a head whose ordering "
+                         "is worse than corr +0.5. At 1e-8 the division is only guarding against "
+                         "0/0 and the invariance holds all the way down.\n"
+                         "ON THE TRUTH SIDE it is harmless either way: a flat-truth interface "
+                         "has a numerator that is zero too, and --rel-sd-weight already gives it "
+                         "a weight of ~0.")
+    ap.add_argument("--rel-sd-weight", action="store_true",
+                    help="MULTIPLY each interface's rel loss and gradient by the GROUND TRUTH's "
+                         "own within-interface std. Intended with --rel-standardize, which "
+                         "divides both sides by their std and so makes every interface count "
+                         "equally -- measured, corr(within-interface std of the true iTM, DockQ "
+                         "range) = +0.745, so the wide-spread interfaces are exactly where a "
+                         "wrong pick is expensive and the narrow ones have frac acceptable "
+                         "median 1.00. This restores that ordering of importance on top of the "
+                         "scale invariance. SD, NOT VARIANCE: the target is already divided by "
+                         "sigma_g, so sigma_g^2 would nearly cancel the standardisation. The "
+                         "weight comes from g, which does not depend on the parameters, so it "
+                         "scales the gradient exactly; it is NOT floored, because a genuinely "
+                         "flat interface should contribute nothing. ALPHA MUST BE RE-MEASURED "
+                         "with --grad-norm-every: scaling the loss scales its gradient.")
+    ap.add_argument("--rel-g-weight", type=float, default=0.0, metavar="POW",
+                    help="PER-POSE WEIGHT BY THE RAW GROUND TRUTH SCORE, as g^POW. 0 (default) "
+                         "is off; 1.0 weights each pose by its true iTM, 2.0 by its square if "
+                         "the linear form is too gentle. The two-pass standardisation is "
+                         "unchanged -- the prediction is still z-scored by its own mean and std "
+                         "over the interface and the label by its own -- and the weight enters "
+                         "ONLY the final reduction, as sum(w * err^2) / sum(w) instead of "
+                         "mean(err^2), so the loss stays on the scale it had before and does not "
+                         "inflate by the average weight. The point is that misplacing a pose the "
+                         "truth rates highly should cost more than misplacing a bad one, while "
+                         "the shift and scale invariance of the standardised form is kept. THE "
+                         "RAW g, NOT THE Z-SCORED ONE: the z-scored target is centred, so half "
+                         "its values are negative and it would SUBTRACT the error on "
+                         "below-average poses. REQUIRES --rel-standardize, and composes with "
+                         "--rel-sd-weight, which stays applied on top. ALPHA MUST BE "
+                         "RE-MEASURED with --grad-norm-every.")
+    ap.add_argument("--rel-g-sigmoid", default=None, metavar="MID:WIDTH",
+                    help="PER-POSE WEIGHT AS A SOFT THRESHOLD ON THE RAW GROUND TRUTH, "
+                         "w_i = sigmoid((g_i - MID) / WIDTH), in place of --rel-g-weight's g^POW. "
+                         "0.23:0.1 gives ~0.2 at g=0.1, 0.5 at 0.23, ~0.75 at 0.35 and ~1 above "
+                         "0.5. The reduction is the same weighted mean, sum(w * err^2) / sum(w), "
+                         "and the two passes and --rel-sd-weight are unchanged. WHY A THRESHOLD "
+                         "AND NOT THE SCORE: the true iTM here is BIMODAL -- measured over "
+                         "1,117,590 poses, p10 0.086, p25 0.220, p50 0.670, p90 0.853 -- so "
+                         "weighting by g itself spends its contrast separating 0.67 from 0.85, "
+                         "two poses that are both fine, while a midpoint at 0.23 sits in the "
+                         "valley and asks whether the pose is good at all. REQUIRES "
+                         "--rel-standardize and is mutually exclusive with --rel-g-weight. ALPHA "
+                         "MUST BE RE-MEASURED with --grad-norm-every.")
+    ap.add_argument("--rel-balance-accept", type=float, default=0.0, metavar="DOCKQ",
+                    help="PER-LIST CLASS BALANCE. Keep every pose, split each interface's poses "
+                         "into acceptable (DockQ >= DOCKQ) and not, and scale the per-pose "
+                         "weights so each GROUP carries half that interface's loss: "
+                         "0.5/n_acceptable each for the acceptable poses, 0.5/n_unacceptable "
+                         "each for the rest. 0 (default) is off; 0.23 is the acceptable "
+                         "threshold used everywhere else in this project. In a 2-of-75 list that "
+                         "is 0.25 per good pose against 0.00685 per bad one, where the "
+                         "unweighted mean hands the two good poses 2.7%% of the gradient between "
+                         "them -- and 151 of the 1,688 training interfaces are that shape. "
+                         "BALANCED PER LIST, NOT ACROSS THE SET, so a 1-of-75 list and a "
+                         "40-of-75 list are each half-and-half and nothing depends on which "
+                         "lists the epoch dealt. THE SPLIT IS DockQ while the regression target "
+                         "is the true iTM, so the DockQ cache must cover the group exactly or "
+                         "the run refuses. REQUIRES --rel-standardize; mutually exclusive with "
+                         "--rel-g-weight and --rel-g-sigmoid, which are different per-pose "
+                         "weights. ALPHA MUST BE RE-MEASURED with --grad-norm-every.")
+    ap.add_argument("--pae-split-accept", type=float, default=0.0, metavar="DOCKQ",
+                    help="DIAGNOSTIC ONLY: report the per-epoch PAE loss SPLIT BY POSE GROUP on "
+                         "the cropped training batches. Each pose's scored interfaces are looked "
+                         "up in the DockQ labels; a pose whose interfaces are ALL acceptable "
+                         "(DockQ >= DOCKQ) goes in one group, all unacceptable in the other, and "
+                         "the plain per-pose mean of the labelled pae_loss is printed for each "
+                         "with its pose count and their difference. 0 (default) is off; 0.23 is "
+                         "the acceptable threshold used everywhere else in this project. WHAT IT "
+                         "ANSWERS: whether both groups are being fit or one is being sacrificed "
+                         "-- acceptable-pose PAE falling while unacceptable-pose PAE does not (or "
+                         "the reverse) is the signal, and the aggregate pae_loss in "
+                         "trajectory.csv cannot show it. TAKES NO GRADIENT and is NOT gated on "
+                         "--rank-loss or --rank-cross-seed, because the arm it exists for is "
+                         "PAE-only. NEEDS --pae-scored-pairs (there is no interface to classify "
+                         "without it) and DockQ labels (--rank-labels, else <fold>/results.csv); "
+                         "both are refused at STARTUP.")
+    ap.add_argument("--pae-balance-accept", type=float, default=0.0, metavar="DOCKQ",
+                    help="REWEIGHT THE PAE LOSS so each list's acceptable poses carry half of it. "
+                         "Within one interface, an acceptable pose (DockQ >= DOCKQ) gets weight "
+                         "0.5/n_acceptable and an unacceptable one 0.5/n_unacceptable, so in a "
+                         "2-of-75 list that is 0.25 against 0.00685 -- a 36x ratio where the plain "
+                         "mean gives the two good poses 2.7 percent of the gradient between them. "
+                         "0 (default) is off.\n"
+                         "A POSE IN SEVERAL LISTS TAKES THE MEAN OF ITS PER-LIST WEIGHTS. The PAE "
+                         "loss is ONE number per pose covering all its interfaces, and 82 percent "
+                         "of these structures carry more than one, so a pose can be acceptable in "
+                         "AB and not in AC; 0.25 and 0.00685 average to 0.128, which still "
+                         "outweighs a pose that is bad in both. The consequence, stated because it "
+                         "is real: 'each group carries half the list' then holds EXACTLY only for "
+                         "lists with no straddlers.\n"
+                         "THE WEIGHTS ARE NORMALISED BY THEIR POOL MEAN, computed once at startup "
+                         "over every (pose, interface) in --pae-scored-pairs, so the objective "
+                         "keeps the scale an unweighted arm has and the learning rate still means "
+                         "what it meant. Without that the loss shrinks ~100x and the arm is a "
+                         "learning-rate experiment wearing a weighting costume.\n"
+                         "Needs --pae-scored-pairs and DockQ labels. Pairs with "
+                         "--pae-split-accept, which then reports the same groups it weights.")
+    ap.add_argument("--rank-diag-only", action="store_true",
+                    help="RUN THE PER-POSE SCORING AND ITS DIAGNOSTICS WITHOUT TRAINING ON THEM. "
+                         "Every ranking diagnostic -- within-interface Spearman, score spread, "
+                         "in-sample top-1, the rank of the first acceptable pose, the "
+                         "acceptable-minus-unacceptable score gap -- needs a predicted score per "
+                         "pose, and that scoring only ran when the ranking loss was on. So a "
+                         "PAE-only arm could not be measured on the quantity it is meant to "
+                         "improve. This runs the scoring and leaves the loss alone: _xs_coef is "
+                         "never populated, so no coefficient reaches the pose loop and no term is "
+                         "added. --alpha-rank 0 would also zero the term, but the run's args.json "
+                         "and banner would then say rank_loss: True, which is the wrong record. "
+                         "Needs --rank-cross-seed and --rel-labels; refuses together with "
+                         "--rank-loss, which already does the scoring.")
     ap.add_argument("--rel-standardize", action="store_true",
                     help="ABLATION. Also divide each interface's centred prediction and label by "
                          "its own std (floored), which makes the loss invariant to shrinking the "
@@ -272,144 +397,46 @@ def main():
                          "measured, corr(within-interface std of the true iTM, DockQ range) = "
                          "+0.745, so wide-spread interfaces are exactly where a wrong pick is "
                          "expensive, and the narrow ones have frac acceptable median 1.00.")
-    ap.add_argument("--rank-form", choices=("linear", "softplus", "expected",
-                                            "spearman", "distance", "spearman_distance",
-                                            "rel"),
-                    default="linear",
-                    help="SHAPE of the ranking term. linear and softplus are PAIRWISE; expected "
-                         "is not.\n"
-                         "rel is MEAN-CENTRED REGRESSION ON THE TRUE iTM and is not a ranking "
-                         "loss at all: L = (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2 over "
-                         "an interface's poses, with g from --rel-labels. It exists because the "
-                         "head's failure is measured to be positional, not collapse: on d32kqp "
-                         "epoch 66, corr(interface MEAN ipTM, interface MEAN DockQ) = +0.866 "
-                         "while the median WITHIN-interface Spearman is +0.317 against +0.690 for "
-                         "the true iTM. Subtracting each interface's own mean from both sides "
-                         "removes the across-complex signal the head already has, so the only "
-                         "thing left to earn is the within-complex ordering selection uses. Its "
-                         "coefficients sum to EXACTLY zero, so it cannot move an interface's "
-                         "level and its accumulated gradient cancels by construction -- set "
-                         "--alpha-rank from gradient NORMS via --grad-probe, never from loss "
-                         "values.\n"
-                         "expected is L = -sum_i softmax(ipTM/tau)_i * DockQ_i over every pose of "
-                         "the interface: the expected DockQ of the pose the model would SELECT. "
-                         "It exists because a pairwise loss spends gradient in proportion to how "
-                         "many pairs a pose appears in, which is the same for rank 1 and rank 90, "
-                         "while deployment takes the argmax and nothing else -- so ordering the "
-                         "bottom of the list is work that cannot pay. h7msge is the evidence: "
-                         "held-out pairwise loss reached a run best and Spearman went +0.075 over "
-                         "shipped, while selected DockQ stayed flat-to-down and frac acceptable "
-                         "never beat shipped once in 37 epochs. The softmax is a differentiable "
-                         "argmax, so tau sets how much mass sits on the current leaders; it has "
-                         "NO PAIRS, so --rank-weight-by-gap and the cross-seed pair filter have "
-                         "nothing to act on and are reported as inapplicable rather than silently "
-                         "appearing to work. Its floor is -max(DockQ) for the group, not 0.\n"
-                         "linear (default, what every arm so far ran) is "
-                         "-(s_i - s_j)(dq_i - dq_j)/sum|ddq|. Its coefficients come from the "
-                         "LABELS ALONE, so it needs no scoring pass -- and that convenience IS "
-                         "its defect: a gradient that ignores the current scores is constant in "
-                         "them, so the loss has no stopping point and cannot tell an "
-                         "already-correct pair from an inverted one. Scaling all scores by lambda "
-                         "scales the loss by lambda, so WIDENING THE SPREAD PAYS WITHOUT LIMIT, "
-                         "and at the real gap scale spreading is worth ~71x more than reordering. "
-                         "Measured in ntwjfp: spread 0.0114 -> 0.0371 over 8 epochs while held-out "
-                         "rank loss went +0.00018 -> +0.00288 -- the training objective improved "
-                         "while held-out ORDERING got worse.\n"
-                         "softplus is (2 tau/W) sum w_ij softplus(-m_ij/tau), whose per-pair "
-                         "gradient weight sigmoid(-m/tau) decays to 0 once a pair is comfortably "
-                         "correct and caps at 1 when badly inverted. Spreading then buys a bounded "
-                         "amount and stops. Costs the scoring pass (--rank-form softplus implies "
-                         "one), which is exactly the price of having somewhere to stop.")
-    ap.add_argument("--rank-tau", type=float, default=None, metavar="TAU",
-                    help="softplus temperature, the margin scale over which the loss goes from "
-                         "'push hard' to 'satisfied'. Defaults to rank_loss.DEFAULT_TAU = 0.0305, "
-                         "the MEASURED median |ipTM gap| over cross-seed pairs of the full "
-                         "training set (497 structures, 1,028 interfaces, 1,056,035 pairs); "
-                         "reproduce with run_logging/measure_tau.py. NOT a free parameter: tau=1 "
-                         "is the units error the first softplus attempt made (gradient 0.495 for a "
-                         "correct pair vs 0.505 for an inverted one -- inert), and tau far below "
-                         "the gap scale ignores every pair that is not an outright inversion. "
-                         "The within-seed median is 0.0036 and does NOT transfer: cross-seed pairs "
-                         "are 8.5x wider. (An earlier 0.0081 was measured before DockQ ties "
-                         "were dropped; reproduce either with measure_tau.py --pairs within.) "
-                         "The scale is POPULATION-SPECIFIC and must come from the pool being "
-                         "TRAINED on: overfit30 gives within 0.0137 / cross 0.0426, while "
-                         "valfull gives within 0.0011 -- setting tau from val would let the "
-                         "eval set shape the training gradient.")
-    ap.add_argument("--rank-pairs", choices=("cross", "within", "all"), default="cross",
-                    metavar="FAMILY",
-                    help="WHICH PAIRS THE LOSS FORMS INSIDE A GROUP. This is the OBJECTIVE; "
-                         "--rank-cross-seed is the STEP SHAPE, and they are easy to confuse. "
-                         "--rank-cross-seed decides which poses land in one optimiser step (all "
-                         "seeds of a structure, so the group is the whole interface); "
-                         "--rank-pairs decides which pairs drawn from that group enter the loss. "
-                         "'cross' pairs poses from DIFFERENT seeds and is the deployed objective, "
-                         "since selection is argmax ipTM over every pose regardless of seed. "
-                         "'within' pairs poses from the SAME seed -- a separate family at a "
-                         "separate scale, NOT a subset reading of the same one: over the 497-"
-                         "structure training set the median |ipTM gap| is 0.0036 within-seed "
-                         "against 0.0305 cross-seed, 8.5x, so --rank-tau MUST be re-measured for "
-                         "it (measure_tau.py --pairs within, against the TRAINING pool; overfit30 "
-                         "gives 0.0137). Leaving tau at the cross-seed value puts every "
-                         "within-seed pair at m/tau ~ 0, where sigmoid gives a correct pair and "
-                         "an inverted one the same weight and the term is inert. 'all' takes "
-                         "both at ONE tau, which by the same argument can only suit one of them; "
-                         "it is here for completeness, not as a recommendation. NOTE the five "
-                         "earliest arms trained within-seed pairs and did not beat shipped, but "
-                         "they ran the LINEAR form with no tau at all, so they do not test this.")
-    ap.add_argument("--rank-topk-decay", type=float, default=0.0, metavar="K",
-                    help="weight each pair by max(v(r_i), v(r_j)) with v(r) = exp(-(r-1)/K) over "
-                         "the group's CURRENT ipTM order, r=1 the top pose. 0 disables it. "
-                         "WHY: selection is argmax ipTM over the group, so the selected pose "
-                         "changes only when some pose crosses the current top -- the pairs "
-                         "(top, j) are the ENTIRE selection-relevant subspace. Measured on "
-                         "valfull at the shipped head they are 1.33%% of pairs and 1.56%% of the "
-                         "loss's weight, while ordering them all correctly is identical to the "
-                         "top pose being the best pose, i.e. the full oracle (DockQ 0.5831 -> "
-                         "0.6926 over 92 interfaces). MAX, NOT PRODUCT: a product would "
-                         "annihilate the (rank 1, deep pose) pairs, which are the ones carrying "
-                         "the headroom -- the best-DockQ pose sits at a median rank of 68 of "
-                         "150. K INTERPOLATES: K->0 is the pure star (rank-1 pairs only), K->inf "
-                         "is the undecayed objective, and K=2 puts 39.3%% of the weight on the "
-                         "star and 92.8%% inside the top 5 while a rank-1/rank-2 swap moves "
-                         "their weights 1.00 <-> 0.61 rather than 1.00 <-> 0. A spike on the "
-                         "argmax would make the objective's identity change discontinuously "
-                         "whenever the top pose flips, which invites oscillation. STOP-GRADIENT: "
-                         "the ranks come from detached scores, so this is not the exact gradient "
-                         "of a fixed objective -- deliberate, and recorded so it is not read as "
-                         "an oversight.")
-    ap.add_argument("--rank-straddle", type=float, default=0.0, metavar="DOCKQ",
-                    help="keep ONLY pairs that straddle this DockQ threshold -- exactly one pose "
-                         "above it, one below. 0 disables it (every run before this flag). "
-                         "WHY: the reported criterion is the FRACTION of interfaces whose "
-                         "selected pose clears 0.23, and that fraction moves only when selection "
-                         "crosses the threshold. Two acceptable poses, or two unacceptable ones, "
-                         "can be reordered freely without changing it. COST, stated rather than "
-                         "hidden: mean DockQ is NOT invariant to the dropped pairs -- promoting "
-                         "0.61 over 0.38 raises the mean and leaves the fraction alone -- so this "
-                         "optimises the fraction and treats mean DockQ as a free variable. That "
-                         "is a change of objective, not a sparser estimate of the same one. "
-                         "The threshold applies to LABELS, never scores, so the included set is "
-                         "fixed by the data and cannot oscillate as the model trains. "
-                         "Needs its own tau: measure_tau.py --straddle.")
-    ap.add_argument("--rank-within-weight", type=float, default=1.0, metavar="L",
-                    help="with --rank-pairs all, multiply WITHIN-SEED pairs by L in both the "
-                         "numerator and the normaliser W, so the loss stays a weighted mean and "
-                         "L cannot act as a second --alpha-rank. Fixes a SHARE problem, not a "
-                         "gradient-strength one: at tau 0.0305 a median within-seed pair on "
-                         "overfit30 (gap 0.0137) already gets 0.376 correctly ordered against "
-                         "0.624 inverted, which discriminates fine -- but within-seed pairs are "
-                         "only 7.9%% of pairs and 7.0%% of the pairwise gradient mass, so "
-                         "deployment-relevant orderings inside a seed are barely trained. "
-                         "CALIBRATED ON THE FULL TRAINING SET, not on the pool being trained, "
-                         "so the knob does not move when the pool does -- the same rule "
-                         "DEFAULT_TAU follows. Within-seed mass share by L at tau 0.0270: "
-                         "1 -> 7.0%%, 3 -> 18.3%%, 8 -> 37.1%%, 20 -> 59.3%%, while mass reaching "
-                         "INVERTED pairs falls only 75.0%% -> 71.6%% at L=8. overfit30 gives "
-                         "6.7/17.6/36.0/58.0, within a point, so nothing hinges on the pool. "
-                         "Reproduce with run_logging/within_weight.py. Ignored unless "
-                         "--rank-pairs is 'all' (under 'within' every pair is scaled alike and L "
-                         "normalises away).")
+    ap.add_argument("--rank-form", choices=("rel", "zsoftmax"), default="rel",
+                    help="THE RANKING TERM, and there is exactly one. rel is MEAN-CENTRED "
+                         "REGRESSION ON THE TRUE iTM: L = (1/P) sum_i "
+                         "[(s_i - mean_s) - (g_i - mean_g)]^2 over an INTERFACE's poses, with g "
+                         "from --rel-labels and the means taken over that interface's whole "
+                         "group.\n"
+                         "WHY THIS ONE. The head's failure is measured to be positional, not "
+                         "collapse: on d32kqp epoch 66, corr(interface MEAN ipTM, interface MEAN "
+                         "DockQ) = +0.866 while the median WITHIN-interface Spearman is +0.317 "
+                         "against +0.690 for the true iTM. Subtracting each interface's own mean "
+                         "from both sides removes the across-complex signal the head already has, "
+                         "so the only thing left to earn is the within-complex ordering that "
+                         "selection actually uses.\n"
+                         "THE GROUP IS EVERY POSE OF THE INTERFACE, across all its seeds -- 15 "
+                         "seeds x --nsample 5 = 75 on a deep structure -- so poses sharing a seed "
+                         "are centred and compared alongside poses from every other seed. "
+                         "WITHIN-SEED POSES ARE PART OF THE LOSS. A single-seed structure gets a "
+                         "real 5-pose group on the same footing.\n"
+                         "ALPHA COMES FROM GRADIENT NORMS, NEVER FROM LOSS VALUES: the "
+                         "coefficients sum to EXACTLY zero, so this term cannot move an "
+                         "interface's level and its accumulated gradient cancels by construction. "
+                         "Use --grad-probe.\n"
+                         "SIX OTHER FORMS WERE DELETED at the user's direction -- linear, "
+                         "softplus, expected, spearman, distance, spearman_distance -- along with "
+                         "the nine flags that only served them: --rank-weight-by-gap, "
+                         "--rank-tau, --rank-pairs, --rank-within-weight, --rank-topk-decay, "
+                         "--rank-straddle, --rank-spearman-tau, --rank-dist-weight and "
+                         "--rank-rel-scale. --rank-pairs was the one that mattered: its `cross` "
+                         "default EXCLUDED the within-seed family from the pairwise forms, so "
+                         "deleting it removes the only mechanism that ever filtered those "
+                         "comparisons out. The choice is kept as a one-value argument rather than "
+                         "removed so a bundle's recorded rank_form still compares.")
+    ap.add_argument("--rank-accept", type=float, default=0.23, metavar="DOCKQ",
+                    help="THE ACCEPTABILITY THRESHOLD --rank-form zsoftmax CLASSIFIES WITH. "
+                         "y_i = 1 when the candidate's DockQ is >= this, else 0, and the loss is "
+                         "-log of the softmax mass the head puts on the y=1 candidates. Inert "
+                         "under --rank-form rel, which has its own --rel-balance-accept.\n"
+                         "0.23 IS THE ACCEPTABLE THRESHOLD USED EVERYWHERE ELSE in this repo -- "
+                         "the eval tables, --pae-split-accept and the pool builders all split "
+                         "there -- so the ranking term asks the same question the metric does.")
     ap.add_argument("--rank-cross-seed", action="store_true",
                     help="RANK ACROSS SEEDS, not just within one. Deployment selects argmax of "
                          "ipTM over ALL poses of an interface regardless of seed, so cross-seed "
@@ -492,6 +519,55 @@ def main():
                          "a different class and hold 1.57M parameters between them.")
     ap.add_argument("--lora-dropout", type=float, default=0.0,
                     help="dropout on the adapter input only; the frozen path is untouched.")
+    ap.add_argument("--pae-entropy", type=float, default=0.0, metavar="ALPHA",
+                    help="TEST-TIME ADAPTATION: REPLACE the labelled PAE cross-entropy with "
+                         "ALPHA * the mean Shannon entropy of the head's OWN predicted PAE "
+                         "distribution, H = -sum_b p_b log p_b over the 64 distance-error bins. "
+                         "0 (default) changes nothing.\n"
+                         "NO GROUND TRUTH ENTERS THE OBJECTIVE. The label npz is still opened --"
+                         " the unit pipeline and its coverage gates are built around it and a "
+                         "structure with no label is refused long before this point -- but `ld` "
+                         "is not read when this is on, so the gradient depends only on the "
+                         "model's own output. That is what makes it runnable on a pool whose "
+                         "DockQ nobody knows.\n"
+                         "THE POINT IS THE DEPLOYMENT SETTING, not a better training loss. At "
+                         "inference you hold the complex and its 50 poses and no labels at all, "
+                         "so an objective that needs none can adapt to the very structures being "
+                         "selected over. Adapting on the pool you then score is TRANSDUCTIVE by "
+                         "construction and that is legitimate for TTA -- but it is NOT a held-out "
+                         "measurement, and a number from it may not be compared with the "
+                         "train-on-846/score-on-141 numbers in paper_results.md without saying "
+                         "so.\n"
+                         "IT HAS A DEGENERATE OPTIMUM. Entropy is minimised by putting all mass "
+                         "in one bin regardless of which bin, so this can sharpen a confidently "
+                         "WRONG prediction exactly as happily as a right one, and nothing in the "
+                         "objective prefers a good pose's score over a bad one's. Watch "
+                         "pae_entropy against the held-out selection metrics, not on its own: "
+                         "entropy falling while rho falls is the collapse, not progress.\n"
+                         "MASKED TO THE SCORED CROSS-CHAIN PAIRS when --pae-scored-pairs supplies "
+                         "a mask, since those are the pairs ipTM is computed from; otherwise over "
+                         "every token pair, and the startup line says which.")
+    ap.add_argument("--lora-keep-trainable", default="",
+                    help="comma-separated REGEXES matched against head PARAMETER names that stay "
+                         "FULLY TRAINABLE alongside the adapters, instead of being frozen.\n"
+                         "WHY THIS IS NEEDED AT ALL. apply_lora freezes every parameter of the "
+                         "head and then phase_k_train sets `trainable` to the adapter names "
+                         "ALONE, so --train-only does not survive LoRA and anything LoRA did not "
+                         "adapt is frozen outright. Two classes of tensor are then lost: a module "
+                         "whose smaller dimension is below --lora-rank is skipped by apply_lora "
+                         "and frozen, and any parameter that is not a 2-D `weight` is never "
+                         "adaptable in the first place.\n"
+                         "THE CASE IT EXISTS FOR is the pose pathway. frame_dir_proj is (256, 3) "
+                         "and pose_perblock_linear_no_bias_d_wo_onehot is (256, 1), so at rank 8 "
+                         "BOTH are skipped for rank-too-high and would train not at all -- the "
+                         "terms this architecture adds, frozen at their zero init, which is the "
+                         "same as not having them. All ten pose tensors together are 33,792 "
+                         "parameters, 0.6%% of the head's effective capacity, so keeping them "
+                         "dense costs essentially nothing.\n"
+                         "IT IS UNIONED BEFORE --lean-single, not after, so a pose tensor that is "
+                         "genuinely gradient-free is still dropped and --skip-dead-ops still "
+                         "refuses a module it would stub. This widens what MAY train; it never "
+                         "overrides what provably does not.")
     ap.add_argument("--structures-per-step", type=int, default=0,
                     help="K: WHOLE STRUCTURES PER OPTIMISER STEP. Each rank takes ONE seed of each "
                          "of the same K structures, so a step is K x world x --nsample poses. 0 "
@@ -526,15 +602,6 @@ def main():
     ap.add_argument("--eval-pool-every", "--train-eval-every", dest="train_eval_every", type=int, default=2,
                     help="epochs between training-set evaluations. Ignored without "
                          "--train-eval-pool.")
-    ap.add_argument("--eval-pool-crop-tokens", default="",
-                    help="run the PRIMARY in-training eval on a precomputed crop mask "
-                         "instead of full structures. The mask is the same kind of npz "
-                         "--crop-tokens takes, built for the EVAL pool. The pass is then "
-                         "tagged <pool>_cropped rather than <pool>, because a cropped "
-                         "reading written under the uncropped name is how five files called "
-                         "metric_train came to hold the only held-out numbers a run "
-                         "produced -- run_logging/plot_val_2x3.py reads <pool> and must keep "
-                         "getting the deployment-shaped number.")
     ap.add_argument("--extra-eval", action="append", default=[], metavar="SPEC",
                     help="AN ADDITIONAL eval pass at its own cadence, repeatable. The "
                          "trainer historically had exactly ONE: --eval-pool and "
@@ -545,7 +612,7 @@ def main():
                          "SPEC is comma-separated key=value with keys: name (required, "
                          "names metric_<name>_ep<N>.json and <name>_eval_shards_ep<N>), "
                          "pool (required), fold, seed_base, budget, every (required), "
-                         "crop_tokens. Example:\n"
+                         "Example:\n"
                          "  --extra-eval 'name=valfull,pool=training/valfull/pool.csv,"
                          "fold=validation/fold,seed_base=400000,budget=30,every=6'\n"
                          "Each pass costs a full sharded evaluation, so every=1 on three "
@@ -709,6 +776,122 @@ def main():
                          "many were turned away; the epoch line's rate is 50%% when the warmers "
                          "contributed nothing and 100%% when every unit was warmed before pass A. "
                          "CHANGES NO NUMBER the run produces, and is UNTESTED ON A GPU.")
+    ap.add_argument("--prefix-cache-gb", type=float, default=0.0,
+                    help="HOLD THE FROZEN PREFIX OF THE CONFIDENCE HEAD FOR ONE STEP, up to this "
+                         "many GiB of HOST memory per rank; 0 is off. Different cache from "
+                         "--trunk-cache-gb: that one holds the INPUTS (z_trunk et al) so they are "
+                         "read once instead of twice, this one holds an ACTIVATION from partway "
+                         "THROUGH the head so pass B does not recompute it. Under "
+                         "--pose-inblock --lean-single the deepest point at which z is a function "
+                         "of frozen parameters alone is INSIDE the injected block, after "
+                         "tri_mul_in and before the pose enters -- the same boundary the injection "
+                         "is placed at, seen from the other side -- because --train-only freezes "
+                         "blocks 0-2 AND that block's two tri-muls. So a hit skips three whole "
+                         "blocks plus two of the last block's five pair operations, which is most "
+                         "of a forward: gpu_forward was 69.7 min over 23,000 calls on mqird6 epoch "
+                         "6, ~34.9 per pass, and the prefix is ~87%% of it. Expect ~25 min off a "
+                         "222 min epoch, net of the D2H on the fill and the H2D on the hit. "
+                         "SCOPE IS ONE OPTIMISER STEP: pass A fills, pass B hits, the step "
+                         "boundary drops it -- the epoch's poses are distinct, so nothing is "
+                         "reused across steps and a persistent cache would be ~6 TB an epoch "
+                         "against a 3,072 GiB quota. ON THE HOST, because z is [N, N, 256] bf16 = "
+                         "174 MB at the median 583 tokens and a 50-pose step is ~8.7 GB typical / "
+                         "~26 GB at the p90, which no card has spare. CAPPED IN BYTES WITH THE "
+                         "RESERVATION TAKEN BEFORE THE COPY, so the cap bounds RSS and not just "
+                         "the dict; a pose that does not fit RECOMPUTES. Purely advisory -- every "
+                         "miss recomputes the prefix, so NO NUMBER the run produces depends on a "
+                         "hit. REFUSES to enable unless --pose-inblock is on, --lean-single is on, "
+                         "every prefix tensor reads requires_grad=False at runtime and every "
+                         "dropout rate in the prefix blocks is 0.0. Validated on CPU by "
+                         "run_logging/test_prefix_cache.py; UNTESTED ON A GPU.")
+    ap.add_argument("--pose-readout", action="store_true",
+                    help="THE FIFTH INJECTION SITE: pose distance (one-hot + raw) and, with "
+                         "--frame-direction, orientation, added after pae_ln and upstream of the "
+                         "PAE readout -- and unlike --pose-inblock-pae this one works ALONGSIDE "
+                         "--pose-perblock, because it READS the geometry that wrapper already "
+                         "published for this forward instead of needing the in-block wrapper's "
+                         "own stash. Zero-init and verified zero, so step 0 is bit-identical. The "
+                         "tensors are pose_readout_d, pose_readout_d_wo_onehot and "
+                         "pose_readout_frame_dir; a --train-only must match `pose_readout` to "
+                         "reach them.")
+    ap.add_argument("--pose-readout-prenorm", action="store_true",
+                    help="MOVE --pose-readout's injection to BEFORE pae_ln instead of after it. "
+                         "The readout is linear_no_bias_pae(pae_ln(z_pair)); the default site adds "
+                         "the pose term to the LN's OUTPUT, straight into the normalised features "
+                         "the linear layer reads. This adds it to z_pair and lets the LN "
+                         "renormalise the sum, so the injection can change the DIRECTION of the "
+                         "pair feature but not its magnitude -- the LN divides that back out. "
+                         "That is the point: the post-LN site can bias the readout up or down "
+                         "wholesale, and this one cannot. Same three zero-init matrices, same "
+                         "shapes, so step 0 is bit-identical either way; only the hook differs. "
+                         "Requires --pose-readout.")
+    ap.add_argument("--pose-readout-post-zero", action="store_true",
+                    help="with --pose-readout-prenorm, ALSO inject after pae_ln, through a SECOND "
+                         "set of zero-init matrices. The pre-norm site can only turn the pair "
+                         "feature, because the layernorm divides its magnitude back out; the "
+                         "post-norm site can scale the readout. Two sites, two independent sets of "
+                         "weights, so neither is the other at a different scale.")
+    ap.add_argument("--pose-mlp", action="store_true",
+                    help="ADD A NONLINEAR BRANCH to the pose path at ALL SIX injection sites: a "
+                         "two-layer MLP whose FIRST layer is shared across the sites and whose "
+                         "SECOND layer is separate per site (phases/pose_mlp.py). Every pose term "
+                         "in the head today is a LINEAR map added into z_pair -- the one-hot "
+                         "binned distance, the raw distance, the frame-relative unit direction -- "
+                         "so the head can represent 'far' and 'pointing that way' and CANNOT "
+                         "represent their interaction, while PAE is a direction times a length. "
+                         "Layer 1 is ReLU(W_onehot(one_hot) + W_cont([d_CB/50, dir(i,j), "
+                         "dir(j,i), d_CA/50])) at width 64, default PyTorch init, computed ONCE "
+                         "per pose; layer 2 is six Linear(64 -> c_z) with weight AND bias at "
+                         "exactly zero. 52,992 new parameters at 39 bins and c_z 128. STEP 0 IS "
+                         "BIT-IDENTICAL -- every second layer is zero -- but it adds 15 trainable "
+                         "tensors, so an existing resume bundle CANNOT be loaded and the "
+                         "evaluator must be given --pose-mlp too (this passes it). REQUIRES "
+                         "--frame-direction (the direction and its length), --pose-perblock (the "
+                         "one-hot and the raw distance), --pose-readout, "
+                         "--pose-readout-prenorm and --pose-readout-post-zero: those are the six "
+                         "sites, and pose_mlp refuses rather than quietly running at four. A "
+                         "--train-only must match `pose_mlp` to reach the new tensors.")
+    ap.add_argument("--pose-readout-copy-distance", action="store_true",
+                    help="Start --pose-readout's two DISTANCE arms at block 0's pretrained "
+                         "linear_no_bias_d/_wo_onehot instead of zero. STEP 0 IS THEN NOT "
+                         "BIT-IDENTICAL: those weights add into z_pair inside the stack where "
+                         "later blocks re-normalise, while this site adds after pae_ln with "
+                         "nothing downstream to rescale it. Shapes permit it, semantics do not "
+                         "match. The orientation arm stays zero either way.")
+    ap.add_argument("--skip-dead-ops", action="store_true",
+                    help="DO NOT RUN CONFIDENCE-HEAD MODULES WHOSE OUTPUT IS EXACTLY ZERO. The "
+                         "shipped checkpoint carries pairformer modules whose EVERY tensor sits in "
+                         "a band 4.904e-37..4.907e-37 -- a fixed exponent with only the low "
+                         "mantissa bits varying, not a trained weight and not a denormal (fp32's "
+                         "smallest normal is 1.175e-38). Two such factors multiplied underflow to "
+                         "zero, so the module emits EXACTLY 0.0: measured on the shipped head, "
+                         "NINE of the SIXTEEN O(N^3) pair operations (block 0 entirely, blocks "
+                         "1-2's two triangle attentions, block 3's tri_att_end) plus block 1's "
+                         "pair_transition. Every one is consumed as z + module(z), so adding its "
+                         "zero is the identity on z and NOT RUNNING IT IS BIT-IDENTICAL "
+                         "ARITHMETIC, not an approximation -- the module object is replaced by a "
+                         "husk returning zeros_like(z) and the block's own forward is untouched, "
+                         "so there is no third mirror of PairformerBlock.forward to go stale. "
+                         "DECIDED BY MEASUREMENT AT EVERY INSTALL, never from a list: a module is "
+                         "skipped only if every parameter is below 1e-30 AND running it returns "
+                         "exactly 0.0 at the input's shape and dtype, at |z| x1 and x1e3, in "
+                         "train and eval mode and under bf16 autocast. A hardcoded list would go "
+                         "stale against a different checkpoint, and a threshold alone would call "
+                         "a FRESH head fully dead (its residual branches are zero-init). The "
+                         "husks share the originals' parameters by reference, so the head's "
+                         "state-dict key set, --train-only's name matching and the evaluator's "
+                         "set-equality guard are all unchanged, and the weights are re-checked "
+                         "against the floor at every step boundary. REFUSES rather than degrading "
+                         "if a module it would skip is in the TRAINABLE set -- a stubbed module "
+                         "gets no gradient at all (.grad stays None rather than becoming zeros), "
+                         "which changes what the optimiser and the gradient collective see, so "
+                         "the resolution is to drop it from --train-only. NOTE this arm's "
+                         "--train-only includes block 3's tri_att_end, which IS dead, so the "
+                         "refusal fires until that pattern changes. COMPLEMENTARY to "
+                         "--prefix-cache-gb, not redundant with it: the cache removes the frozen "
+                         "prefix from pass B, this removes half of pass A, which the cache leaves "
+                         "running in full. Validated on CPU by run_logging/test_dead_ops.py; "
+                         "UNTESTED ON A GPU.")
     ap.add_argument("--val-loss-every", type=int, default=0,
                     help="EPOCHS BETWEEN HELD-OUT PAE PASSES; 0 is off. This is the monitor the "
                          "run had no way to compute: measured 2026-10-20, the lr 1e-2 anchor's "
@@ -876,6 +1059,48 @@ def main():
                     help="`structure` shuffles the ORDER OF STRUCTURES and the units within each, "
                          "which is as much as can be shuffled while building each structure's "
                          "dataset item once. `none` is deterministic for debugging.")
+    ap.add_argument("--expect-trainable", type=int, default=0,
+                    help="REFUSE unless --train-only leaves exactly this many trainable tensors. "
+                         "A regex is intent; this is the outcome. The bare negative lookahead of "
+                         "the full-head pattern yields 19 tensors and 0.3M parameters against the "
+                         "intended 102 and 5.3M -- launched truncated once, caught only because a "
+                         "human read the startup line. The optimiser is non-empty either way, so "
+                         "no existing guard fires. 0 (default) does not check.")
+    ap.add_argument("--epoch-balance", action="store_true",
+                    help="deal each step's units so the ranks get a similar TOTAL UNCROPPED SIZE, "
+                         "not just a similar count. The crop equalises GPU work at 256 tokens but "
+                         "not the read: a 1,650-token structure still has a ~100 MB z_trunk to "
+                         "open before 97%% of it is discarded. The ranks barrier every step, so a "
+                         "step costs its SLOWEST rank. Measured per-step spread in uncropped "
+                         "tokens: 16.93%% median under plain dealing, 0.55%% balanced -- while the "
+                         "per-EPOCH totals were already even at 1.77%%, which is why balancing "
+                         "those changes nothing. Needs --epoch-cover-all.")
+    ap.add_argument("--pose-batch-max-tokens", type=int, default=384,
+                    help="do not batch poses for a unit above this token count. Activation memory "
+                         "goes as nb x tokens^2, so 5 poses at 768 tokens is ~87 GB of a 98 GB "
+                         "card while 256 is ~11 GB -- and the per-pose overhead batching removes "
+                         "is 72%% of a 256-token pose against 17%% of a 768-token one, so the "
+                         "large crops both need it least and afford it least.")
+    ap.add_argument("--pose-batch", type=int, default=1,
+                    help="POSES PER FORWARD. The confidence head is ALREADY batched over samples "
+                         "-- x_pred_coords is [..., N_sample, N_atoms, 3] and every output carries "
+                         "N_sample -- so calling it once per pose pays the Python and "
+                         "host-to-device cost N times for one pair representation that does not "
+                         "change between poses of a unit. 1 (default) is the historical "
+                         "behaviour, bit-identical. The reason it was 1 is recorded on --accum: "
+                         "token counts ran 263-3,400 so poses could not be stacked without "
+                         "padding. Under a fixed-size crop that premise is gone -- poses of one "
+                         "unit always share a token count by construction, whatever its size.")
+    ap.add_argument("--epoch-cover-all", action="store_true",
+                    help="EVERY UNIT ONCE PER EPOCH, dealt so the ranks hold DISJOINT structures "
+                         "in each step. Without it, and without --rank-cross-seed, build_epoch "
+                         "forms groups of `world` SEEDS OF ONE STRUCTURE, so a structure with "
+                         "fewer than `world` seeds yields floor(1/3)=0 groups and NEVER TRAINS -- "
+                         "412 of this population's 846 structures, silently, in every epoch. "
+                         "Groups of same-structure seeds exist to make per-step work equal across "
+                         "ranks for the RANKING loss, which needs several poses of one structure "
+                         "in one step. A PAE-only arm has no such requirement, and a fixed-size "
+                         "crop already equalises the work, so the units can simply be dealt.")
     ap.add_argument("--epoch-order", default="shuffle",
                     choices=["shuffle", "manifest", "tokens"],
                     help="HOW THE EPOCH'S STRUCTURES ARE ORDERED, independently of "
@@ -888,7 +1113,11 @@ def main():
                          "row order. It was added believing otherwise; prefer `tokens`.")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--seeds", default="500000-500009",
-                    help="the seed range the manifest expects per structure, inclusive.")
+                    help="FALLBACK seed range, used only for --manifest-selection rows that do "
+                         "not declare their own `seeds` column. It is NOT what the run trained "
+                         "on when the selection csv declares per-structure depths -- read "
+                         "`realised_seed_depths` in args.json, or the `manifest: per-structure "
+                         "seed depths` line in run.log, for that.")
     ap.add_argument("--manifest-selection",
                     default=f"{ROOT}/train_val_splits/cache_train_structures.csv",
                     help="THE FROZEN POPULATION. The manifest is this times --seeds, not whatever "
@@ -1040,6 +1269,52 @@ def main():
                          "receive no gradient EITHER WAY -- which is the proof that they were "
                          "already dead rather than being killed by this flag.\n"
                          "REQUIRES --lean-readouts AND --pae-only. UNTESTED ON A GPU.")
+    ap.add_argument("--pose-inblock", action="store_true",
+                    help="INJECT THE POSE INSIDE THE LAST PAIRFORMER BLOCK, after tri_mul_in and "
+                         "before tri_att_start, with BOTH the 39-bin one-hot distance term and the "
+                         "raw-distance term -- the same pair of projections the native pre-stack "
+                         "injection uses (confidence.py:297-305), shapes (c_z, num_bins) and "
+                         "(c_z, 1).\n"
+                         "THE PLACEMENT IS THE WHOLE POINT AND IS WHY THIS IS NOT A MODE OF "
+                         "--pose-perblock. Autograd starts building at the first op whose "
+                         "parameters or inputs require grad. With blocks 0-2 frozen and block 3's "
+                         "two triangle multiplications frozen, injecting at the block's INPUT -- "
+                         "which is where --pose-perblock injects -- makes the z entering "
+                         "tri_mul_out require grad, brings BOTH tri-muls back into the backward, "
+                         "and evaporates the saving SILENTLY: no error, no warning, just a slower "
+                         "epoch. After tri_mul_in is the earliest point at which the frozen "
+                         "tri-muls are already behind us.\n"
+                         "ZERO-INIT AND VERIFIED EXACTLY ZERO, by probing the modules rather than "
+                         "trusting the initialiser, so step 0 is BIT-IDENTICAL to the un-injected "
+                         "head and any later divergence is attributable.\n"
+                         "IT IS A MIRROR AND IT IS PINNED. Injecting between two ops inside "
+                         "PairformerBlock.forward means reimplementing that function for one "
+                         "block; the sha256 is pinned so a Protenix reorder is a hard stop rather "
+                         "than an injection that silently lands somewhere else. Only the "
+                         "inplace_safe=False branch is mirrored, which is the one this trainer "
+                         "takes.\n"
+                         "run_logging/test_pose_inblock_graph.py asserts the backward graph starts "
+                         "where intended AND carries a negative control that moves the injection "
+                         "to the block input and checks the tri-muls DO get gradient -- without "
+                         "that control the assertion proves nothing. UNTESTED ON A GPU.")
+    ap.add_argument("--pose-inblock-block", type=int, default=-1,
+                    help="WHICH BLOCK --pose-inblock injects into; -1 means the LAST one, which is "
+                         "the block the freeze leaves trainable. Any other value is for probing "
+                         "and must be paired with a --train-only that leaves that block's "
+                         "attention and transition trainable, or the injection trains against "
+                         "frozen downstream weights.")
+    ap.add_argument("--pose-inblock-pae", action="store_true",
+                    help="ALSO INJECT THE POSE AT THE READOUT, after pae_ln: "
+                         "linear_no_bias_pae(pae_ln(z) + pose_d(one_hot(d)) + pose_d_wo(d)). "
+                         "AFTER the layer norm, which is a deliberate choice with a consequence: "
+                         "an UNNORMALISED quantity is added to a NORMALISED one and nothing "
+                         "downstream rescales it, since linear_no_bias_pae is the next and last "
+                         "op. So the injection's effective influence is set by its initialisation "
+                         "and by the optimiser, not by the norm. Injecting BEFORE the norm would "
+                         "have bounded it. Implemented as a forward HOOK on pae_ln rather than a "
+                         "wrapper module, because wrapping would rename pae_ln.weight to "
+                         "pae_ln.ln.weight and break phase_k_eval's set-equality check on head "
+                         "tensors. Zero-init and verified zero. Requires --pose-inblock.")
     ap.add_argument("--pair-dropout", type=float, default=-1.0,
                     help="ROW-WISE DROPOUT RATE ON THE PAIR REPRESENTATION in the confidence "
                          "head's pairformer blocks. ConfidenceHead builds its stack with "
@@ -1049,8 +1324,12 @@ def main():
                          "pair-rep sites in PairformerBlock call dropout_add_rowwise(z, "
                          "update, self.p_drop, self.training) and the head trains in train "
                          "mode -- only the rate is zero. Negative (default) touches nothing. "
-                         "It drops whole ROWS of z, structured noise over token pairs rather "
-                         "than per-element noise, which is the AF3 design.")
+                         "Structured noise over token pairs rather than per-element noise, "
+                         "which is the AF3 design. MEASURED, not inferred from the name: "
+                         "dropout_add_rowwise shares the mask along dim -3, so a dropped j is "
+                         "dropped for EVERY i -- it zeroes whole COLUMNS of the [i,j] grid. "
+                         "The 'rowwise' name refers to the mask being shared along rows, not "
+                         "to rows being dropped. This matches openfold's DropoutRowwise.")
     ap.add_argument("--alpha-confidence", type=float, default=1.0,
                     help="weight on the four confidence losses. Protenix ships 1e-4 because in full "
                          "AF3-style training these terms sit beside the diffusion and distogram "
@@ -1111,6 +1390,43 @@ def main():
                          "SAME initial weights and reports the loss trend, then exits without "
                          "training. This is how --lr is chosen instead of inherited.")
     ap.add_argument("--probe-steps", type=int, default=30)
+    ap.add_argument("--crop-allow", default="",
+                    help="json of {pdb: [crop index, ...]} restricting which crops of a structure "
+                         "the epoch rotation may use. A structure absent from the file keeps its "
+                         "whole pool.\n"
+                         "WHAT IT IS FOR. --rank-form rel resolves an interface's chains through "
+                         "the PER-POSE OST mapping, because that is what its labels were built "
+                         "against; the crop pool and the launcher's preflight use the STATIC roles "
+                         "join. The two disagree about which copy of a duplicated chain an "
+                         "interface uses -- on 9o4o the static join says asyms (0,3) and OST says "
+                         "(0,2), the crop keeps 3 and drops 2 -- so the crop keeps the interface by "
+                         "the static definition while rel's lookup finds nothing and pass A's "
+                         "completeness guard stops the run. Measured on this pool: 5 structures "
+                         "and 192 of 92,636 crops (0.21%%), none left with zero usable crops.\n"
+                         "THE INDEX VALUES ARE THE ORIGINAL ONES, not a re-numbering, because the "
+                         "rel labels are keyed by crop_index and a compacted index would read "
+                         "another crop's target.")
+    ap.add_argument("--grad-norm-every", type=int, default=0, metavar="K",
+                    help="EVERY K OPTIMISER STEPS, measure the PAE and ranking gradients "
+                         "SEPARATELY at identical weights and append |g_pae|, |g_rank|, their "
+                         "ratio and cos(PAE,rank) to grad_split.csv. 0 (default) is off.\n"
+                         "WHY IT EXISTS. --alpha-rank cannot be set from loss values: a rel loss "
+                         "of 0.01-0.25 against a PAE loss of 2.3 says nothing about their "
+                         "gradient magnitudes. --grad-probe already measures this, but it runs "
+                         "ONE window and exits, so every alpha this project has used came from a "
+                         "single measurement on one batch of 2-3 structures -- and the five such "
+                         "measurements on record span 0.0041 to 0.4728, mostly because they froze "
+                         "different amounts of the head. This logs the ratio along the whole run "
+                         "instead, so the next arm's alpha comes from a distribution.\n"
+                         "THE COST IS ONE EXTRA BACKWARD PER MEASURED POSE, which is why it is "
+                         "periodic: at K=50 it is ~2%% of the step budget, at K=1 it roughly "
+                         "doubles backward time. It reuses --grad-probe's machinery exactly, so "
+                         "the numbers are the same quantity that tool reports.\n"
+                         "READ THE ACCUMULATED RATIO, NOT THE PER-POSE ONE. The rel coefficients "
+                         "sum to zero within an interface group, so per-pose contributions "
+                         "largely cancel -- measured 0.0311 per-pose against 0.0041 accumulated "
+                         "on 3hzrs8, a 7.6x difference. The accumulated figure is what the "
+                         "optimiser sees.")
     ap.add_argument("--allow-code-drift", action="store_true",
                     help="accept a label whose fingerprint differs ONLY in the `code` field, with "
                          "cif, bio, idx, trunk, loss and schema all matching. The data provenance "
@@ -1119,6 +1435,24 @@ def main():
                          "in phase_j_build_cache.py invalidates all 5,000 labels. OFF by default: a "
                          "drift in any other field, or several fields, is still fatal, and every "
                          "accepted drift is printed with both hashes.")
+    ap.add_argument("--allow-stale-labels", action="store_true",
+                    help="--pae-entropy ONLY: accept a label whose fingerprint differs in the data "
+                         "provenance fields (code, bio, cif, idx) instead of stopping. This is "
+                         "sound for exactly one objective and no other. Entropy minimisation reads "
+                         "nothing out of the label: the gradient is a function of pred['pae'] "
+                         "alone, so a label built against an older bioassembly cannot change what "
+                         "is learned -- it can only make the labelled pae_loss that is still "
+                         "logged BESIDE it wrong. A `trunk` or `schema` difference is still fatal "
+                         "under this flag, because those two say the label is paired with a "
+                         "DIFFERENT trunk or laid out differently, which is a shape and ordering "
+                         "question rather than a provenance one. Measured on validation/fold on "
+                         "2026-11-12: 53 of 83 structures (1,590 labels) differ on bio+code "
+                         "because all 83 bioassemblies were re-dumped at 7:34 PM on 2026-11-04, "
+                         "about five hours AFTER those labels were written; the 30 built after the "
+                         "re-dump match. Every accepted label is counted; the first one prints a "
+                         "banner naming the differing fields and the end of the run prints the "
+                         "total with the structures, so a run that used this flag cannot have its "
+                         "labelled readouts mistaken for trustworthy ones.")
     ap.add_argument("--eval-script", default=f"{ROOT}/phases/phase_k_eval.py")
     ap.add_argument("--eval-device", default="",
                     help="CUDA index for the epoch-end evaluation. The subprocess would otherwise "
@@ -1131,6 +1465,37 @@ def main():
                     help="when the evaluation must share the training card, how much VRAM has to be "
                          "free for it to run. The eval loads a second 464M-parameter model; "
                          "measured at ~16 GB, so 20 GB is the floor.")
+    ap.add_argument("--tm-centered", action="store_true",
+                    help="REPLACE the PAE cross-entropy with the PER-PAIR CENTRED TM ERROR. For "
+                         "every pose and every scored cross-chain pair, on the SAME mask the PAE "
+                         "loss uses: s_pred = sum_bins p_bin * f(bin_center), s_true = f(true "
+                         "aligned error), f(e) = 1/(1 + (e/d0)^2), d0 the ipTM normalisation for "
+                         "that chain pair's token count. The signed error e = s_pred - s_true is "
+                         "centred per pair over the STRUCTURE's poses and the loss is mean(c^2). "
+                         "WHY: measured on the hard 280, every arm improves frac acceptable at "
+                         "TOP-5 (Arm G +8.6 points) while top-1 barely moves, and on the 81 "
+                         "contestable val interfaces +2.5 points survives -- so the head learns a "
+                         "per-structure LEVEL it is not rewarded for and is weak on the "
+                         "within-structure ORDERING selection actually reads. Centring removes "
+                         "the level from the objective entirely. The transform is IMPORTED from "
+                         "sample_confidence, never reimplemented: s_pred is bit-identical to its "
+                         "token_token_ptm. NEEDS --rank-cross-seed (the mean is over a "
+                         "structure's poses across all its seeds) and --pae-scored-pairs (no mask "
+                         "means no cross-chain pairs). The PAE cross-entropy is still COMPUTED as "
+                         "a readout so trajectory.csv and the training plot stay comparable with "
+                         "every other arm; it simply takes no gradient, exactly as --pae-entropy "
+                         "already does.")
+    ap.add_argument("--eval-pae-loss", action="store_true",
+                    help="have every eval pass ALSO report the training PAE loss, computed in "
+                         "that pass's own forward from the 64-bin logits the confidence head "
+                         "already produces. This is the fourth metric beside mean DockQ, frac "
+                         "acceptable and rho, and it costs no extra forward: the DockQ pass and "
+                         "the held-out PAE pass see identical inputs, so running them separately "
+                         "was ~12 min of three cards per epoch of pure duplication. The loss is "
+                         "the PLAIN per-pose mean masked to the pool's scored chain pairs -- no "
+                         "row weighting and no class balance, which are TRAINING choices and "
+                         "would make a balanced arm's number incomparable with every arm "
+                         "measured before it. Written to a sidecar beside each shard's rows.")
     ap.add_argument("--eval-budget", type=int, default=100,
                     help="seeds per interface for the epoch-end metric. 100 is the full budget and "
                          "the one the 0.5775 / 0.7283 baseline is quoted at; a pass is ~73 min, measured.")
@@ -1141,9 +1506,14 @@ def main():
                          "than restarting -- a weights-only warm start throws both away. Training "
                          "picks up at epoch N+1, which reproduces the right data order because the "
                          "per-epoch reshuffle is random.Random(seed + ep) and depends on nothing "
-                         "else. REFUSES a bundle whose world size, seed, accum or nsample differ "
-                         "from this run's: all four change which poses land in which batch, so the "
-                         "optimiser state would belong to a different problem.")
+                         "else. A bundle whose world size, seed, accum or nsample differ from this "
+                         "run's is ALLOWED with a loud warning and a recorded resume_drift entry "
+                         "-- all four change which poses land in which batch, so the restored "
+                         "moments describe a different problem, which the reader of the result "
+                         "needs to know and is not a reason to refuse the run. REFUSES only what "
+                         "cannot be reconstructed: a weights-only head_*.pt, a bundle with no "
+                         "AdamW moments, a missing trainable tensor, or moments whose count or "
+                         "shapes do not match this run's trainable set.")
     ap.add_argument("--minimal-items", action="store_true",
                     help="ACCEPTED AND IGNORED -- this is now the only path, and --alignment-preflight is required whether or not it is passed. Kept so the launch scripts that pass it keep working. MEASURED "
                          "2026-10-17 by recording every key access during a real "
@@ -1165,48 +1535,43 @@ def main():
                          "it: that check is the one failure that would pair a pose with another "
                          "molecule's label, and skipping it silently is not a trade worth making.")
     ap.add_argument("--resume-allow-drift", action="store_true",
-                    help="BLANKET override: accept EVERY setting that differs from the bundle. "
-                         "Prefer --resume-override, which names the fields and so still refuses "
-                         "the difference you did not expect. Both record identically.")
+                    help="LEGACY, and now almost always a no-op: setting differences are allowed "
+                         "with a loud warning whether or not it is passed. It still suppresses "
+                         "the refusal under --resume-strict. Kept so every launch script and "
+                         "every running trainer's --loss-only child keeps working.")
+    ap.add_argument("--resume-strict", action="store_true",
+                    help="RESTORE THE OLD REFUSAL: stop if any guard field differs from the "
+                         "bundle and is not named in --resume-override. Off by default, because "
+                         "the default refusal cost four launches to accept one correct resume of "
+                         "Arm B's epoch-10 bundle -- the weights and AdamW moments were intact "
+                         "every time. Pass this when a chain of bundles must read as ONE run and "
+                         "a fork is a reason to abort.")
     ap.add_argument("--resume-override", default="",
-                    help="comma-separated GUARD FIELDS this resume may change, e.g. "
-                         "'lr,warmup_steps'. A difference in any field NOT named here is still "
-                         "refused, which is the whole point: a blanket --resume-allow-drift also "
-                         "accepts the change you did not intend. Naming a field that does not "
-                         "actually differ is an error too -- a stale override silently weakens "
-                         "the guard on the next resume that reuses the command line.")
+                    help="comma-separated GUARD FIELDS this resume is KNOWN to change, e.g. "
+                         "'lr,warmup_steps'. It no longer PERMITS anything -- an unnamed "
+                         "difference is allowed too, with a louder warning and a line in "
+                         "resume_drift -- it ACKNOWLEDGES: a named field is recorded as "
+                         "deliberate and an unnamed one as unexpected. Under --resume-strict it "
+                         "recovers its old meaning and permits the fields it names. Naming a "
+                         "field that does not differ, or one the guard does not have, is a "
+                         "warning rather than an error.")
     ap.add_argument("--resume-note", default="",
                     help="why this resume deviates, recorded beside the accepted fields in "
-                         "resume_drift.json and carried forward in every bundle this run writes. "
-                         "Required when --resume-override or --resume-allow-drift accepts "
-                         "anything: an unexplained deviation is the one a later reader cannot "
-                         "tell from a mistake.")
-    ap.add_argument("--crop-margin", type=float, default=0.0,
-                    help="interface-plus-margin cropping: train on the window within this many "
-                         "angstroms of an interface token instead of the whole structure. 0 "
-                         "(default) is the whole structure. TRAINING ONLY -- validation is never "
-                         "cropped, so the metric stays comparable with every historical number. "
-                         "At 10 the population keeps a median 51.1%% of tokens (333 of 641, all "
-                         "491 structures, 0 with no definable crop) for a MEASURED 3.35x on the "
-                         "head and ~1.99x on a whole step, landing near Protenix's own "
-                         "train_crop_size of 256. Requires --minimal-items.")
-    ap.add_argument("--crop-tokens", default="",
-                    help="TRAIN on a PRECOMPUTED token mask per structure instead of the "
-                         "--crop-margin interface crop. The npz comes from "
-                         "run_logging/build_union_crop_masks.py and holds <pdb> -> "
-                         "bool[n_token]: the UNION over every one of the structure's 50 "
-                         "candidate poses of that pose's own predicted interface, "
-                         "optionally with the ground-truth contact tokens forced in "
-                         "(--force-gt). WHY A UNION AND NOT A PER-POSE CROP: the relative "
-                         "loss grades the GAPS between a structure's poses, so if one pose "
-                         "kept its whole interface and another kept half, the score "
-                         "difference would measure the crop and not the poses. One shared "
-                         "mask gives every pose the same tokens, the same n and the same "
-                         "ipTM d0. It also keeps every seed of a structure at an identical "
-                         "token count, which is what makes per-rank work equal BY "
-                         "CONSTRUCTION in build_epoch_cross_seed -- unequal per-rank unit "
-                         "counts do not degrade, they deadlock the first all-reduce. "
-                         "Mutually exclusive with --crop-margin.")
+                         "resume_drift.json, in the run's args.json and in every metric_*.json "
+                         "the run writes, and carried forward in every bundle. NOT required -- it "
+                         "used to be, and a refusal over a missing sentence is a refusal while "
+                         "the weights and moments are fine -- but its absence is itself recorded "
+                         "as '(none given)', because an unexplained deviation is the one a later "
+                         "reader cannot tell from a mistake.")
+    ap.add_argument("--crop-pool", default="",
+                    help="DIRECTORY of per-structure crop POOLS from "
+                         "run_logging/select_crop_pool.py. Each <pdb>.npz holds N token masks and "
+                         "the structure uses mask `epoch %% N`, so it sees a different view every "
+                         "epoch instead of one fixed crop -- which is most of why Protenix crops "
+                         "randomly at all. REQUIRES --rel-labels to point at an itm_labels_crop "
+                         "directory built on the SAME pool: a cropped prediction against an "
+                         "uncropped target trains toward something unreachable and nothing would "
+                         "refuse. Mutually exclusive with --crop-tokens and --crop-margin.")
     ap.add_argument("--token-keep-union", type=float, default=-1.0,
                     help="STOCHASTIC TOKEN DROPOUT, biased toward the interface. Instead of "
                          "training on the union mask as a fixed crop, draw a fresh token "
@@ -1252,15 +1617,146 @@ def main():
     a = ap.parse_args()
     a.labels = a.labels or os.path.join(a.fold, "labels")
 
+    # THE ENTROPY TERM JOINS TERMS ONLY WHEN IT IS ON, and TERMS is what reaches trajectory.csv.
+    #
+    # TERMS is three things at once: the trajectory header, the keys the per-epoch all-reduce
+    # packs into one collective, and the list line ~5917 asserts is present in `met` for every
+    # pose. That assertion is the reason this is conditional rather than a fourth entry in the
+    # literal: a run without --pae-entropy never puts the key in `met`, so an unconditional
+    # TERMS would make every ordinary run stop on its first pose. Rebinding here, before any
+    # reader runs, keeps one code path for both and makes the term's absence from the log a
+    # crash rather than a silently missing column -- which is how a loss term that never
+    # actually fired would otherwise look exactly like one that did.
+    if a.pae_entropy > 0.0:
+        globals()["TERMS"] = TERMS + ("pae_entropy",)
+    _G_SIG = None
+    if a.rel_g_sigmoid:
+        try:
+            _m, _w = (float(x) for x in str(a.rel_g_sigmoid).split(":"))
+        except Exception:
+            raise SystemExit(f"STOP: --rel-g-sigmoid {a.rel_g_sigmoid!r} is not MID:WIDTH, "
+                             f"e.g. 0.23:0.1")
+        if not _w > 0.0:
+            raise SystemExit(f"STOP: --rel-g-sigmoid width {_w} must be positive; at 0 the "
+                             f"weight is a hard step with no gradient either side.")
+        if a.rel_g_weight:
+            raise SystemExit("STOP: --rel-g-sigmoid and --rel-g-weight are two different "
+                             "per-pose weights; pass one.")
+        if not a.rel_standardize:
+            raise SystemExit("STOP: --rel-g-sigmoid needs --rel-standardize, for the same reason "
+                             "--rel-g-weight does: the weight is defined on the z-scored error "
+                             "and the unstandardised path uses a closed-form gradient.")
+        _G_SIG = (_m, _w)
+    if a.rel_balance_accept:
+        if not a.rel_standardize:
+            raise SystemExit("STOP: --rel-balance-accept needs --rel-standardize, for the same "
+                             "reason the other per-pose weights do: the weight is defined on the "
+                             "z-scored error and the unstandardised path uses a closed-form "
+                             "gradient a per-pose weight would invalidate.")
+        if a.rel_g_weight or a.rel_g_sigmoid:
+            raise SystemExit("STOP: --rel-balance-accept, --rel-g-weight and --rel-g-sigmoid are "
+                             "three different per-pose weights; pass one.")
+        if not 0.0 < a.rel_balance_accept < 1.0:
+            raise SystemExit(f"STOP: --rel-balance-accept {a.rel_balance_accept} is not a DockQ "
+                             f"threshold in (0, 1).")
+    if a.pae_split_accept:
+        # REFUSED EARLY, BEFORE ANY HARDWARE, like the other threshold flags. The split itself is
+        # written so that nothing about it can raise mid-epoch -- a diagnostic that kills a
+        # training run on pose 40,000 is worse than no diagnostic -- so every reason it could not
+        # work has to surface here instead.
+        if not 0.0 < a.pae_split_accept < 1.0:
+            raise SystemExit(f"STOP: --pae-split-accept {a.pae_split_accept} is not a DockQ "
+                             f"threshold in (0, 1).")
+        if not a.pae_scored_pairs:
+            raise SystemExit("STOP: --pae-split-accept needs --pae-scored-pairs. The split is by "
+                             "the DockQ of the interfaces a pose SCORES, and with no scored pair "
+                             "there is no interface to look a DockQ up for -- every pose would "
+                             "land in the unclassified bucket and the two means would be empty.")
+        # THE LABEL SOURCE IS STATTED HERE, BEFORE ANY HARDWARE, and not where it is loaded: the
+        # load sits past init_process_group, so refusing there would already have taken a card
+        # and, under torchrun, left the other ranks in a barrier until --dist-timeout-min. A
+        # missing file is a stat, so it costs nothing to say so first.
+        _ps_lab0 = a.rank_labels or os.path.join(a.fold, "results.csv")
+        if not os.path.exists(_ps_lab0):
+            raise SystemExit(
+                f"STOP: --pae-split-accept {a.pae_split_accept:g} needs DockQ labels to put each "
+                f"pose in a group, and there are none at {_ps_lab0}. Pass --rank-labels, or drop "
+                f"the flag.")
+    if a.pae_balance_accept:
+        if not 0.0 < a.pae_balance_accept < 1.0:
+            raise SystemExit(f"STOP: --pae-balance-accept {a.pae_balance_accept} is not a DockQ "
+                             f"threshold in (0, 1).")
+        if not a.pae_scored_pairs:
+            raise SystemExit("STOP: --pae-balance-accept needs --pae-scored-pairs. The weights "
+                             "are per INTERFACE, and without the pool there are no interfaces to "
+                             "count acceptable poses within.")
+    if a.rank_diag_only:
+        if a.rank_loss:
+            raise SystemExit("STOP: --rank-diag-only with --rank-loss is contradictory -- the "
+                             "ranking loss already runs the scoring and its diagnostics. Pass "
+                             "one.")
+        if not a.rank_cross_seed:
+            raise SystemExit("STOP: --rank-diag-only needs --rank-cross-seed; the per-pose "
+                             "scoring is built per interface across its seeds and there is no "
+                             "other path to it.")
+        if not a.rel_labels:
+            raise SystemExit("STOP: --rank-diag-only needs --rel-labels. The diagnostics compare "
+                             "the predicted score against the TRUE iTM, and without the label "
+                             "cache there is nothing to compare it to.")
+    if a.rel_g_weight and not a.rel_standardize:
+        raise SystemExit("STOP: --rel-g-weight needs --rel-standardize. The weight is defined on "
+                         "the z-scored error, and the unstandardised path uses a closed-form "
+                         "gradient that a per-pose weight would invalidate.")
+    if a.rel_g_weight < 0.0:
+        raise SystemExit(f"STOP: --rel-g-weight {a.rel_g_weight} is negative; a negative power "
+                         f"makes the WORST poses dominate.")
+    if a.allow_stale_labels and not a.pae_entropy > 0.0:
+        raise SystemExit(
+            "STOP: --allow-stale-labels is only sound with --pae-entropy, where the gradient is a "
+            "function of pred['pae'] alone and the label is never read. Under any labelled "
+            "objective a stale label IS the training signal, and accepting one would train "
+            "against coordinates from a different bioassembly while reporting an ordinary loss.")
+    if a.tm_centered:
+        # THE SAME TWO REQUIREMENTS rel HAS, AND FOR THE SAME REASONS. Checked here, before CUDA
+        # is touched, because a misconfiguration should not cost a GPU allocation to discover.
+        if not a.rank_cross_seed:
+            raise SystemExit(
+                "STOP: --tm-centered needs --rank-cross-seed. The per-pair mean is taken over a "
+                "STRUCTURE's poses across all its seeds; within one seed it would be a mean over "
+                f"{a.nsample} poses, which removes most of what the centring exists to use.")
+        if not a.pae_scored_pairs:
+            raise SystemExit(
+                "STOP: --tm-centered needs --pae-scored-pairs. The loss is defined on the scored "
+                "CROSS-CHAIN pairs; with no mask there is nothing to score and the term would "
+                "silently average the intra-chain blocks too.")
+        if float(a.pae_row_frac) > 0.0 or float(a.pae_balance_accept) > 0.0:
+            raise SystemExit(
+                "STOP: --tm-centered with row weighting or class balance. Both reweight the PAE "
+                "cross-entropy, which this arm does not train, so they would change nothing while "
+                "the launch line claimed they did.")
+        if a.crop_pool:
+            # TWO SEPARATE REASONS, EITHER ONE FATAL. (1) d0: _set_pae_mask counts the chain pair's
+            # tokens over the CROPPED asym_id, and selection reads chain_pair_iptm over the whole
+            # structure, so every block's d0 would be the normalisation of a smaller N_d and the
+            # loss would be a different metric than ipTM -- the same defect --rank-loss fixed by
+            # passing _uncrop_npt, which this path does not do. (2) pass A takes the true error
+            # from BC.minimal_loss_inputs(lab, 0), which is FULL SIZE, against a cropped
+            # prediction: the shapes disagree and pair_errors raises, hundreds of units in.
+            raise SystemExit(
+                "STOP: --tm-centered with --crop-pool. The per-block d0 would come from the "
+                "CROPPED chain-pair token count while selection reads ipTM over the whole "
+                "structure (--rank-loss passes _uncrop_npt for this; --tm-centered does not), "
+                "and pass A's label is full-size against a cropped prediction. Run this arm "
+                "uncropped, or plumb _uncrop_npt into the tm_centered blocks first.")
+
     # CROPPING IS ONLY COHERENT ON THE MINIMAL PATH. The dataset item carries a FULL-SIZE
     # label_dict, so cropping the prediction while the loss reads full-size masks would either
     # raise on a shape or line up by accident and score poses against the wrong residues. The
     # minimal path builds the loss inputs from the same cached label the crop slices, so both
     # sides are cropped together or neither is.
-    if a.crop_margin > 0 and not a.minimal_items:
+    if False:
         raise SystemExit(
-            "STOP: --crop-margin needs --minimal-items. The dataset item's label_dict is built at "
-            "full size, so cropping only the prediction would score poses against the wrong "
+            "unreachable: --crop-margin was deleted 2026-11-13. "
             "residues. Pass --minimal-items with its --alignment-preflight marker.")
     # EXTRA EVAL PASSES, parsed and validated HERE so a typo costs a second rather than surfacing
     # at the first epoch boundary hours in, on three ranks, after a full epoch of training.
@@ -1277,11 +1773,11 @@ def main():
                 raise SystemExit(f"STOP: --extra-eval {_spec!r}: {_kv!r} is not key=value.")
             _k, _v = _kv.split("=", 1)
             _d[_k.strip()] = _v.strip()
-        _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every",
-                                     "crop_tokens"})
+        _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every"})
         if _unknown:
             raise SystemExit(f"STOP: --extra-eval {_spec!r} has unknown key(s) {_unknown}. "
-                             f"Known: name, pool, fold, seed_base, budget, every, crop_tokens.")
+                             f"Known: name, pool, fold, seed_base, budget, every. The crop_tokens "
+                             f"key went with --crop-tokens on 2026-11-13.")
         for _req in ("name", "pool", "every"):
             if not _d.get(_req):
                 raise SystemExit(f"STOP: --extra-eval {_spec!r} is missing {_req}=.")
@@ -1301,9 +1797,6 @@ def main():
             if not os.path.exists(_need):
                 raise SystemExit(f"STOP: --extra-eval {_nm}: {_need} does not exist. A pool is "
                                  f"scored against its OWN fold's results and roles.")
-        if _d.get("crop_tokens") and not os.path.exists(_d["crop_tokens"]):
-            raise SystemExit(f"STOP: --extra-eval {_nm}: crop_tokens {_d['crop_tokens']} does "
-                             f"not exist.")
         try:
             _ev = int(_d["every"])
             _bg = int(_d.get("budget") or 0)
@@ -1314,14 +1807,7 @@ def main():
         if _ev <= 0:
             raise SystemExit(f"STOP: --extra-eval {_nm}: every={_ev} must be positive.")
         _EXTRA_EVAL.append(dict(name=_nm, pool=_d["pool"], fold=_ef, seed_base=_sb,
-                                budget=_bg, every=_ev,
-                                crop_tokens=_d.get("crop_tokens", "")))
-    if a.eval_pool_crop_tokens and not a.train_eval_pool:
-        raise SystemExit("STOP: --eval-pool-crop-tokens without --eval-pool: there is no primary "
-                         "eval pass to crop.")
-    if a.eval_pool_crop_tokens and not os.path.exists(a.eval_pool_crop_tokens):
-        raise SystemExit(f"STOP: --eval-pool-crop-tokens {a.eval_pool_crop_tokens} does not "
-                         f"exist. Build it with run_logging/build_union_crop_masks.py.")
+                                budget=_bg, every=_ev))
     _TOK_DROP = (a.token_keep_union >= 0.0) or (a.token_keep_other >= 0.0)
     if _TOK_DROP:
         if not (a.token_keep_union >= 0.0 and a.token_keep_other >= 0.0):
@@ -1333,52 +1819,122 @@ def main():
             if not (0.0 < _v <= 1.0):
                 raise SystemExit(f"STOP: {_nm}={_v} must be in (0, 1]. Zero would delete a whole "
                                  f"population outright, which is a crop and not a dropout.")
-        if not a.crop_tokens:
-            raise SystemExit("STOP: --token-keep-union needs --crop-tokens, which supplies the "
-                             "union the probabilities are conditioned on. Without it there is no "
-                             "'inside' to bias toward.")
+        raise SystemExit("STOP: --token-keep-union conditioned its probabilities on the "
+                         "--crop-tokens union, which was deleted 2026-11-13 with its builder. "
+                         "There is no 'inside' to bias toward any more.")
         if a.token_keep_other > a.token_keep_union:
             raise SystemExit(f"STOP: --token-keep-other {a.token_keep_other} exceeds "
                              f"--token-keep-union {a.token_keep_union}, so the periphery would "
                              f"survive MORE often than the interface. That is not the experiment.")
-    if a.crop_tokens and a.crop_margin > 0:
-        raise SystemExit("STOP: --crop-tokens and --crop-margin are two crop rules at once. Which "
-                         "one applied would depend on branch order, and the run would name itself "
-                         "after whichever flag the reader noticed.")
-    if a.crop_tokens and not os.path.exists(a.crop_tokens):
-        raise SystemExit(f"STOP: --crop-tokens {a.crop_tokens} does not exist. Build it with "
-                         f"run_logging/build_union_crop_masks.py.")
-    # THE MASK'S CONTENTS, DIGESTED AT STARTUP -- here and not beside the loader because the
-    # resume guard dict is built before the loader runs. The guard recorded
-    # basename(a.crop_tokens) first, so rebuilding the mask with a different margin, contact
-    # cutoff or forced-pair rule under the SAME NAME resumed as "unchanged": the whole training
-    # input distribution could move while the record said it had not. This hashes the
-    # per-structure masks themselves in sorted order, plus the builder's provenance blob.
-    # Found in review.
-    _CROP_TOK_DIGEST = ""
-    if a.crop_tokens:
-        _ctd = hashlib.sha256()
-        _z0 = np.load(a.crop_tokens)
-        # __pairs HOLDS CHAIN INDICES, NOT A MASK. Hashing it through .astype(bool) collapsed
-        # every nonzero index to True, so pair (3,1) and pair (2,1) contributed the same bytes and
-        # two masks differing only in which chains are supervised would have shared a digest.
-        # Hash the integer bytes for those and the packed bits for the masks. Raised in review.
-        for _k0 in sorted(k for k in _z0.files if not (k.endswith("__n") or k == "__meta")):
-            _ctd.update(_k0.encode())
-            if _k0.endswith("__pairs"):
-                _ctd.update(np.asarray(_z0[_k0], dtype=np.int64).tobytes())
-            else:
-                _ctd.update(np.packbits(np.asarray(_z0[_k0]).astype(bool)).tobytes())
-        if "__meta" in _z0.files:
-            _ctd.update(np.asarray(_z0["__meta"]).tobytes())
-        _CROP_TOK_DIGEST = _ctd.hexdigest()[:16]
-        del _z0
-    if a.crop_tokens and not a.minimal_items:
-        raise SystemExit("STOP: --crop-tokens needs --minimal-items, for the same reason "
-                         "--crop-margin does: the full dataset item is built uncropped and "
-                         "check_alignment would compare it against cropped features.")
-    if a.crop_margin < 0:
-        raise SystemExit("STOP: --crop-margin cannot be negative.")
+    if a.epoch_balance and not a.epoch_cover_all:
+        raise SystemExit("STOP: --epoch-balance needs --epoch-cover-all; it reorders the deal "
+                         "that builder performs and has no effect on the group-of-world builder.")
+    if a.pose_batch > 1:
+        # EVERY REASON THIS CAN BE WRONG, CHECKED AT STARTUP RATHER THAN AT POSE 0 OF EPOCH 1.
+        if a.nsample % a.pose_batch != 0:
+            raise SystemExit(
+                f"STOP: --pose-batch {a.pose_batch} does not divide --nsample {a.nsample}. The "
+                f"groups would be ragged ({a.nsample // a.pose_batch} full and one short), and "
+                f"since each group contributes one sample-mean scaled by its own size, the poses "
+                f"in the short group would carry a different weight from the rest.")
+        if a.pose_batch > a.nsample:
+            raise SystemExit(f"STOP: --pose-batch {a.pose_batch} exceeds --nsample {a.nsample}; "
+                             f"only poses of ONE unit may share a forward, because the trunk is "
+                             f"the thing being reused.")
+        if a.rank_loss:
+            raise SystemExit("STOP: --pose-batch > 1 is not supported with --rank-loss. A pose's "
+                             "ranking coefficient is resolved per pose, and under --rank-form rel "
+                             "the PAE mask is a per-pose chain pair -- batched, one mask would "
+                             "stand for poses that need not share it.")
+        if getattr(a, "emit_iptm_rows", ""):
+            raise SystemExit("STOP: --pose-batch > 1 with --emit-iptm-rows would write ONE row "
+                             "per group keyed with the first pose's sample index, for a value "
+                             "pooled over the group -- the same wrong-sample defect the emit path "
+                             "already documents.")
+        if getattr(a, "pae_row_frac", 0) and float(a.pae_row_frac) > 0:
+            raise SystemExit("STOP: --pose-batch > 1 with --pae-row-frac > 0 would count groups "
+                             "where the row diagnostics count poses, and average the per-row "
+                             "weighting over the group.")
+        if a.loss_only:
+            raise SystemExit("STOP: --pose-batch > 1 is not supported under --loss-only; the "
+                             "measurement path reports per pose.")
+        if not a.pae_only:
+            # THE SHARED LABEL IS ONLY JUSTIFIED FOR PAE. _one_pose gives the whole group pose 0's
+            # coordinates and mask, which is exact for the PAE target -- measured over all 8,981
+            # label files, every pose against pose 0 on the PAE representative atoms, 0 moved. It
+            # is NOT exact for pLDDT, PDE or resolved, which read atom-level labels that the
+            # per-pose permutation DOES move (median 2 atoms, max 8). Without --pae-only those
+            # three losses are live and would be supervised with the first pose's labels for all
+            # nb poses, silently. Raised in external review of 03970def; the guard list had every
+            # other exclusion and not this one.
+            raise SystemExit(
+                "STOP: --pose-batch > 1 requires --pae-only. The batched path gives the whole "
+                "group pose 0's coordinates and mask, which is exact for the PAE target and NOT "
+                "for pLDDT/PDE/resolved -- the per-pose label permutation moves atoms those "
+                "losses read (median 2, max 8 of several thousand).")
+        if not a.crop_pool:
+            raise SystemExit("STOP: --pose-batch > 1 needs a crop. Poses of one unit share a "
+                             "token count either way, but the cropped label path is the only one "
+                             "that slices labels by RANGE; uncropped goes through "
+                             "BC.minimal_loss_inputs, which takes a single pose index.")
+    if a.crop_pool:
+        if not os.path.isdir(a.crop_pool):
+            raise SystemExit(f"STOP: --crop-pool {a.crop_pool} is not a directory. Build it with "
+                             f"run_logging/select_crop_pool.py")
+        if not a.minimal_items:
+            raise SystemExit("STOP: --crop-pool needs --minimal-items, for the same reason "
+                             "--crop-margin does: the full dataset item carries FULL-SIZE arrays "
+                             "that the crop never reaches.")
+        # THE LABELS MUST HAVE BEEN BUILT ON THIS POOL -- WHEN THERE ARE LABELS AT ALL.
+        #
+        # A cropped prediction against an uncropped target is the one failure in this feature that
+        # produces no error at all: the residual absorbs it and the run looks healthy. So whenever
+        # a relative-iTM target is in play, the label directory must carry crop_index, which only
+        # build_itm_labels_cropped.py writes.
+        #
+        # BUT THAT ENTIRE HAZARD IS SPECIFIC TO THE RANKING LOSS. --rank-form rel compares a
+        # predicted ipTM for a named chain pair against a true iTM for that pair, so target and
+        # prediction must have been computed over the same token set. A PAE-only arm has no such
+        # target: the PAE loss is a per token-pair cross-entropy taken from the cropped unit's own
+        # coordinates, so it is self-consistent under any crop and there is nothing to mismatch.
+        # Requiring rel labels there would demand an artefact the run never reads.
+        # zsoftmax HAS NO iTM TARGET. Its label is the pose's DockQ, a property of the POSE and
+        # not of the token set the forward happened to crop to, so there is nothing here that a
+        # crop could silently mismatch -- the same argument the paragraph above makes for a
+        # PAE-only arm. Demanding cropped iTM labels would require an artefact it never reads.
+        _needs_rel = bool(a.rank_loss) and a.rank_form == "rel" and not a.loss_only
+        if _needs_rel and not a.rel_labels:
+            raise SystemExit("STOP: --crop-pool needs --rel-labels pointing at labels built on "
+                             "the same pool (run_logging/build_itm_labels_cropped.py).")
+        _probe = (sorted(f for f in os.listdir(a.rel_labels) if f.endswith(".npz"))
+                  if a.rel_labels else [])
+        if a.rel_labels and not _probe:
+            raise SystemExit(f"STOP: --rel-labels {a.rel_labels} holds no npz files.")
+        _pz = (np.load(os.path.join(a.rel_labels, _probe[0]), allow_pickle=True)
+               if _probe else {"files": []})
+        if _probe and "crop_index" not in _pz.files:
+            raise SystemExit(
+                f"STOP: --crop-pool is set but --rel-labels {a.rel_labels} has no crop_index -- "
+                f"these are UNCROPPED labels. The head would predict a cropped ipTM against a "
+                f"full-structure target and nothing downstream would notice. Build cropped labels "
+                f"with run_logging/build_itm_labels_cropped.py --pool {a.crop_pool}")
+
+    # ONE SWITCH FOR "IS THIS A CROPPED RUN". --crop-pool was added as a loader and a label
+    # lookup but every execution gate still read `crop_margin > 0 or crop_tokens`, so a run given
+    # --crop-pool alone trained on FULL structures while the relative loss read CROPPED targets --
+    # no error anywhere, and the arm would have been named for a crop it never applied. Caught in
+    # external review. Every such gate now reads _USE_CROP.
+    # ONE CROP RULE, AND _USE_CROP IS STILL THE SWITCH EVERY GATE READS. --crop-tokens and
+    # --crop-margin were deleted 2026-11-13: the first consumed a precomputed mask whose builder
+    # no longer exists, the second defined its window from label_coordinate so nothing it
+    # produced was a deployment number. The indirection stays because a crop flag that some
+    # gates did not consult is the defect _USE_CROP was introduced for.
+    _USE_CROP = bool(a.crop_pool)
+
+    # _CROP_TOK_DIGEST IS GONE WITH --crop-tokens. It hashed the mask file's contents so a
+    # rebuild under the same name could not resume as 'unchanged'. The crop pool's own
+    # identity is covered by crop_pool in the resume guard plus the rel labels' manifest
+    # digest, so nothing is left unverified by removing it.
     # A THRESHOLD WITH NOTHING TO TURN OFF IS A NO-OP THAT READS LIKE A SETTING. With
     # --blocks-per-ckpt 0 every unit is already uncheckpointed, so the rule would select between
     # "off" and "off" and the run would look configured when it is not.
@@ -1492,8 +2048,9 @@ def main():
         if a.warmup_steps:
             raise SystemExit("STOP: --loss-only with --warmup-steps is meaningless -- there is no "
                              "optimiser to warm up, and the logged lr would imply one ran.")
-    if a.crop_log and a.crop_margin == 0 and not a.crop_tokens:
-        raise SystemExit("STOP: --crop-log was given but --crop-margin is 0, so nothing is cropped.")
+    if a.crop_log and not a.crop_pool:
+        raise SystemExit("STOP: --crop-log was given but --crop-pool is unset, so nothing is "
+                         "cropped.")
 
     # PIN THE COMMIT NOW, before any work, so every bundle this process writes records the code it
     # is running rather than whatever HEAD has become hours later. Caching it lazily at the first
@@ -1504,12 +2061,23 @@ def main():
     # rest of the ranking-loss setup, which runs after CUDA initialisation -- so a
     # misconfiguration cost a GPU allocation to discover, and the gate could not reach them
     # without a free card. A config error should never need hardware to be caught.
-    if a.rank_loss and a.rank_form == "rel":
+    if a.rank_loss and a.rank_form in _RANK_IFACE_FORMS:
         if not a.rank_cross_seed:
             raise SystemExit(
-                "STOP: --rank-form rel needs --rank-cross-seed. The loss centres on an "
-                "INTERFACE's poses across all its seeds; within one seed it would centre on "
-                f"{a.nsample} poses and remove most of the signal it exists to use.")
+                f"STOP: --rank-form {a.rank_form} needs --rank-cross-seed. The loss is taken over "
+                f"an INTERFACE's poses across all its seeds; within one seed it would see "
+                f"{a.nsample} poses and remove most of the signal it exists to use. For zsoftmax "
+                f"that is not merely weaker: the softmax normalises over the candidates it is "
+                f"GIVEN, so a 5-pose group would ask the head to rank 5 candidates while "
+                f"selection ranks all 150.")
+    if a.rank_loss and a.rank_form == "zsoftmax":
+        # THE THRESHOLD DEFINES THE LABEL, so a nonsensical one is a different experiment rather
+        # than a bad setting. DockQ lives on [0, 1]; outside that every label is the same constant
+        # and the term is identically zero on every item.
+        if not (0.0 < a.rank_accept < 1.0):
+            raise SystemExit(f"STOP: --rank-accept {a.rank_accept:g} is outside (0, 1), so every "
+                             f"candidate falls in one class and the term is inert on every item.")
+    if a.rank_loss and a.rank_form == "rel":
         if not a.rel_labels:
             raise SystemExit("STOP: --rank-form rel needs --rel-labels (see "
                              "run_logging/build_itm_labels.py).")
@@ -1752,6 +2320,30 @@ def main():
               f"from the optimiser below. PairformerBlock.forward pinned at "
               f"{_LS.PINNED_BLOCK_SHA[:16]}, PairformerStack.forward at "
               f"{_LS.PINNED_STACK_SHA[:16]}")
+    # AFTER lean_readouts AND --lean-single, BEFORE pose_direction/pose_perblock. It wraps
+    # memory_efficient_forward and replaces the stack's _prep_blocks, so lean_readouts -- which
+    # REPLACES that attribute rather than wrapping it -- must already be in place; its refusal list
+    # carries this module's marker so the wrong order is a hard stop.
+    if a.pose_inblock:
+        # AND NOT ALONGSIDE --pose-perblock. Both replace the stack's _prep_blocks, so whichever
+        # installs second wins and the other's injection silently disappears -- pose_perblock also
+        # raises _NoPose from its own _prep_blocks if it is the loser, which is a symptom and not a
+        # check. This combination has not been reasoned through and is refused rather than ordered.
+        if a.pose_perblock:
+            raise SystemExit(
+                "STOP: --pose-inblock with --pose-perblock. Both replace "
+                "pairformer_stack._prep_blocks, so one of the two injections is silently dropped "
+                "depending on install order. If you want the pose at every depth AND inside the "
+                "last block, that is a third design and needs its own module.")
+        import pose_inblock
+        _pib_blk = a.pose_inblock_block
+        if _pib_blk < 0:
+            _pib_blk = len(model.confidence_head.pairformer_stack.blocks) - 1
+        _pib = pose_inblock.install(model, block_index=_pib_blk, pae_inject=a.pose_inblock_pae)
+    elif a.pose_inblock_pae:
+        raise SystemExit("STOP: --pose-inblock-pae without --pose-inblock. The readout injection "
+                         "shares the pose geometry the in-block wrapper computes and stashes, so "
+                         "on its own it would never fire and the flag would be a silent no-op.")
     if a.frame_direction:
         import pose_direction
         pose_direction.install(model)
@@ -1764,6 +2356,29 @@ def main():
         raise SystemExit("STOP: --pose-perblock-tied/-share/-copy without --pose-perblock does "
                          "nothing. They select how A shares its weights, not whether A is "
                          "installed.")
+    if a.pose_readout_post_zero and not (a.pose_readout and a.pose_readout_prenorm):
+        raise SystemExit("STOP: --pose-readout-post-zero adds a SECOND site on top of the pre-norm "
+                         "one; it needs --pose-readout --pose-readout-prenorm. Without prenorm the "
+                         "post-LN site is just the default --pose-readout arm.")
+    if a.pose_readout_prenorm and not a.pose_readout:
+        raise SystemExit("STOP: --pose-readout-prenorm moves --pose-readout's injection site; it "
+                         "does nothing on its own. Pass --pose-readout too, or drop it.")
+    if a.pose_readout:
+        # AFTER both stack injections, because it refuses unless one of them is installed: it
+        # reads their per-forward geometry rather than recomputing cdist and the one-hot.
+        import pose_readout
+        _prd = pose_readout.install(model, copy_distance=a.pose_readout_copy_distance,
+                                    prenorm=a.pose_readout_prenorm,
+                                    post_zero=a.pose_readout_post_zero)
+    elif a.pose_readout_copy_distance:
+        raise SystemExit("STOP: --pose-readout-copy-distance without --pose-readout. It selects "
+                         "how the fifth site is initialised, not whether it exists.")
+    # LAST OF THE FOUR POSE MODULES, because it reads what the other three publish and injects at
+    # the sites they own. Its install() re-checks every one of those prerequisites and names the
+    # missing flag, so the order here is the only thing this line has to get right.
+    if a.pose_mlp:
+        import pose_mlp
+        _pml = pose_mlp.install(model)
     loss_fn = ProtenixLoss(configs)
     if a.drop_pde:
         # A STUB IN PLACE OF THE MODULE, because a zero weight would still run it.
@@ -1929,6 +2544,13 @@ def main():
                                       else pm)
             if _pae_keep["stash"]:
                 _pae_keep["bins"], _pae_keep["pm"] = bins, pm
+            # --tm-centered NEEDS THE TRUE ERROR, and this is the only place it is computed.
+            # calculate_label does the frame alignment; recomputing it in the pose loop would be a
+            # second alignment of the same pose and a second chance for the two to disagree. sq is
+            # the alignment error SQUARED, which is what the TM transform wants: f(sqrt(sq)) is
+            # 1/(1 + sq/d0^2) with no square root taken.
+            if a.tm_centered:
+                _pae_keep["sq"] = sq
             return sq, bins, pm
 
         loss_fn.pae_loss.calculate_label = _masked_calc
@@ -2122,13 +2744,28 @@ def main():
     # CROSS-SEED STATE. _xs_coef holds dL/ds for every pose of the CURRENT step, keyed
     # (pdb, seed, sample, pair) -- a pose's coefficient depends on every other pose of its
     # interface, which is why it cannot be built per unit the way the linear one is. _xs_div is the
-    # number of interface-groups in the step, so the term is a mean over groups; it is a one-element
-    # list because pass A writes it and the pose loop reads it from a different frame.
+    # number of interface-groups the step HOLDS -- not the number that produced coefficients -- so
+    # the term is a mean over the step's items and a skipped item contributes zero to it; it is a
+    # one-element list because pass A writes it and the pose loop reads it from a different frame.
     # RELATIVE-iTM LABEL CACHE, loaded lazily per structure and kept. One <pdb>.npz is a few KB
     # and a structure recurs every epoch, so reading it once per process is right; loading all 368
     # at startup would be wasted on a rank that never sees most of them.
     _rel_cache = {}
-    _rel_stat = {"groups": 0, "poses": 0, "short_groups": 0, "csum": 0.0, "missing_files": 0}
+    # zsoftmax's OWN READS, kept out of _rel_stat so the names cannot be mistaken for rel's.
+    # items: items that produced a coefficient. onesided: items skipped for having one class only
+    # -- EXPECTED and not a fault, which is why it is counted here rather than flagged the way
+    # rel's one-sided lists are. flat: items whose scores had zero spread, where z is 0/0 and the
+    # loss is undefined. zmax: the largest |z| in the item, which is how saturation shows up
+    # before the loss does. pgood: the softmax mass on the acceptable candidates, which is
+    # exp(-L) and the one number saying what the objective achieved on this epoch's own forward.
+    _zs_stat = {}
+    _rel_stat = {"groups": 0, "poses": 0, "short_groups": 0, "csum": 0.0, "missing_files": 0,
+                 # --pae-split-accept LIVES IN THIS DICT so it is reset at the same epoch
+                 # boundary as every other per-epoch accumulator here. A module-level or
+                 # per-unit accumulator would have carried epoch 1's poses into epoch 2's mean
+                 # and the curve would have looked like a slowly flattening loss.
+                 "ps_acc_sum": 0.0, "ps_acc_n": 0, "ps_un_sum": 0.0, "ps_un_n": 0,
+                 "ps_straddle": 0, "ps_unclass": 0, "ps_batched": 0}
 
     # THE SAME MODULE phase_k_eval USES, so the per-pose chain join is literally the evaluator's
     # and cannot drift from it.
@@ -2137,7 +2774,7 @@ def main():
     # because that name is bound inside `if a.pae_scored_pairs:` and this must be safe either way.
     _rel_roles_p = a.pae_scored_roles or os.path.join(a.fold, "chain_roles.csv")
     _rel_refs = (_PKE.pool_ref_pairs(a.pae_scored_pairs)
-                 if (a.rank_form == "rel" and a.pae_scored_pairs) else {})
+                 if (a.rank_form in _RANK_IFACE_FORMS and a.pae_scored_pairs) else {})
     # _roles_p, NOT <fold>/chain_roles.csv. Raised in review and correct: --pae-scored-roles
     # already steered the PAE mask and RKL.load_labels at line 1769, but these two calls still
     # hardcoded the default file. chain_roles.csv names 501 structures and interface_chain_pairs
@@ -2147,14 +2784,14 @@ def main():
     # covers 853 of 853; the point of the flag is that both readers use it.
     _rel_ifaces = {_p: [t[0] for t in _l] for _p, _l in
                    ((_PKE.interface_chain_pairs(a.pae_scored_pairs, _rel_roles_p)[0]).items()
-                    if (a.rank_form == "rel" and a.pae_scored_pairs) else {}.items())}
+                    if (a.rank_form in _RANK_IFACE_FORMS and a.pae_scored_pairs) else {}.items())}
     # IFACE -> STATIC ASYM PAIR, for the DockQ lookup ONLY. _rank_lab is keyed by the asym pair
     # rank_loss.parse_iface derives from chain_roles, while rel keys everything by the interface
     # name. DockQ is a property of the INTERFACE -- results.csv is keyed by its `iface` column --
     # so which asym representation indexes it is an internal detail and the static one is
     # correct here. This is NOT the same question as which pair to SCORE, which is per pose.
     _rel_dqkey = {}
-    if a.rank_form == "rel" and a.pae_scored_pairs:
+    if a.rank_form in _RANK_IFACE_FORMS and a.pae_scored_pairs:
         for _p2, _l2 in _PKE.interface_chain_pairs(
                 a.pae_scored_pairs, _rel_roles_p)[0].items():
             for _ifc2, _x2, _y2 in _l2:
@@ -2216,11 +2853,20 @@ def main():
                 f"({type(_e).__name__}), so this pose's chains cannot be mapped the way its "
                 f"label was built.")
         got, why = _PKE.ost_chain_pairs(ud, pdb, int(samp), _rel_refs.get(pdb) or [])
-        if got is None:
+        if not got:
+            # `not got`, NOT `got is None`. ost_chain_pairs returns (None, why) when it cannot
+            # read a mapping, but it returns an EMPTY LIST when it reads one and resolves no
+            # interface from it -- and sorted([]) passed straight through here, emitting zero
+            # keys for every pose of the structure while raising nothing. Pass A would then come
+            # up short and the completeness guard would blame a missing score, several hundred
+            # units after the real cause. An empty mapping is as fatal as no mapping.
             raise SystemExit(
                 f"STOP: --rank-form rel has no OST chain mapping for {pdb}/{sd} sample {samp} "
-                f"({why}). Falling back to the static pair is the exact mismatch this resolution "
-                f"exists to prevent.")
+                f"({why or 'the mapping resolved no scored interface'}). Falling back to the "
+                f"static pair is the exact mismatch this resolution exists to prevent. "
+                f"RECOVERY: if that pose's ost_json is a FAILURE record, "
+                f"`python -I run_logging/rescue_ost_mapping.py --pdb {pdb} --verify` re-runs the "
+                f"fixed scorer on CPU and writes OST's own mapping beside it.")
         _ost_cache[key] = sorted(got)
         return _ost_cache[key]
 
@@ -2231,7 +2877,19 @@ def main():
         would skip them all, and the run would train on PAE alone while its log and saved guard
         both said --rank-form rel -- the row-weight bool-cast failure in another costume.
         """
-        if pdb in _rel_cache:
+        # UNDER --crop-pool THE CACHE KEY CARRIES THE CROP. The label changes with the crop, so a
+        # cache keyed by pdb alone would serve epoch 0's target for the whole run -- the silent
+        # failure this path exists to prevent. n_crop comes from the POOL, which _crop_masks also
+        # uses, so the two cannot drift apart.
+        if a.crop_pool:
+            _ent = _CROPPOOL.get(pdb)
+            if _ent is None:
+                raise SystemExit(f"STOP: --crop-pool has no entry for {pdb}, but its labels were "
+                                 f"requested. Pool and manifest disagree.")
+            _cidx = int(_crop_epoch[0]) % len(_ent[0])
+            if (pdb, _cidx) in _rel_cache:
+                return _rel_cache[(pdb, _cidx)]
+        elif pdb in _rel_cache:
             return _rel_cache[pdb]
         if not a.rel_labels:
             raise SystemExit("STOP: --rank-form rel needs --rel-labels; build it with "
@@ -2253,13 +2911,63 @@ def main():
                 f"STOP: {f} is an OLD label cache keyed by an asym pair. Those caches paired a "
                 f"value computed on the pose's OST pair with the STATIC pair as its key, which is "
                 f"the mismatch review caught. Rebuild with run_logging/build_itm_labels.py.")
+        if a.crop_pool:
+            # KEYED BY CROP, AND THE KEY MUST MATCH THE MASK _crop_masks CHOSE. Both use
+            # `epoch % n`, so a label built for crop 7 is only ever paired with the mask of crop 7.
+            # If the two ever disagreed the head would be graded against a different crop's target
+            # and the loss would still look perfectly healthy, which is why this is recomputed from
+            # the same expression rather than passed in.
+            if "crop_index" not in z.files:
+                raise SystemExit(
+                    f"STOP: --crop-pool is set but {f} has no crop_index. These are UNCROPPED "
+                    f"labels; the head would be graded against a full-structure target. Rebuild "
+                    f"with run_logging/build_itm_labels_cropped.py")
+            _n = int(z["n_crop"])
+            if _n != len(_CROPPOOL[pdb][0]):
+                raise SystemExit(
+                    f"STOP: {pdb} has {len(_CROPPOOL[pdb][0])} crop(s) in --crop-pool but its "
+                    f"label cache reports {_n}. They were built from different pools, so mask k "
+                    f"and label k are different crops and the head would be graded against the "
+                    f"wrong target with no error anywhere.")
+            _ci = _cidx
+            _m = np.asarray(z["crop_index"]) == _ci
+            if not _m.any():
+                raise SystemExit(
+                    f"STOP: {f} has no rows for crop {_ci} of {_n}. The label cache and the crop "
+                    f"pool disagree about how many crops {pdb} has -- they were built from "
+                    f"different pools.")
+            d = {(int(sd), int(sp), str(ifc)): float(g)
+                 for ifc, sd, sp, g in zip(z["iface"][_m], z["seed"][_m], z["sample"][_m],
+                                           z[col][_m])}
+            # NOT CACHED ACROSS EPOCHS. The label changes with the crop, so a cache keyed by pdb
+            # alone would serve epoch 0's target forever -- the exact silent failure this whole
+            # path exists to avoid.
+            _rel_cache[(pdb, _ci)] = d
+            return d
         d = {(int(sd), int(sp), str(ifc)): float(g)
              for ifc, sd, sp, g in zip(z["iface"], z["seed"], z["sample"], z[col])}
         _rel_cache[pdb] = d
         return d
 
+    # groups: items that PRODUCED coefficients. items: items the step held at all, which is the
+    # ranking term's divisor -- the two differ by every skipped item and both are reported.
     _xs_coef, _xs_div, _xs_stat = {}, [1], {"groups": 0, "pairs": 0, "loss": 0.0, "steps": 0,
-                                             "last_groups": 0, "skipped": 0}
+                                             "last_groups": 0, "skipped": 0, "items": 0}
+    # --tm-centered STATE, FILLED BY PASS A AND READ BY PASS B, keyed by pdb alone.
+    #
+    # WHY pdb AND NOT (pdb, seed): the centring is per PAIR over the STRUCTURE's poses, and
+    # --rank-cross-seed puts every seed of a structure in the same step, so one entry serves all of
+    # them. That is the whole reason the flag requires cross-seed grouping.
+    #
+    # WHAT IS STORED: sum of the signed per-pair errors, the count of poses contributing to each
+    # pair, and the number of poses seen -- so pass B can form e_mean = sum/count and the
+    # every-pose mask (count == n_poses). A pair masked out for one pose would otherwise have its
+    # mean taken over a different population than the poses it is subtracted from.
+    #
+    # CLEARED AT THE STEP BOUNDARY, like _xs_coef: the tensors are [N_frame, N_token] per structure
+    # and holding them past their step would grow without bound across an epoch.
+    _tm_acc, _tm_stat = {}, {"poses": 0, "loss": 0.0, "n": 0, "pred_sum": 0.0, "pred_n": 0,
+                             "unmasked": 0, "nolabel": 0, "mpose": 0}
     # THE CURRENT STEP'S EXPECTED POSE COUNT. accum_local is a constant only when every
     # step holds the same number of units, which --rank-cross-seed breaks: S structures x
     # their seeds need not divide `world`, so the short rank rotates and the quota varies
@@ -2280,13 +2988,76 @@ def main():
     # STEPS PER EPOCH THE HORIZON WAS CALIBRATED FROM, 0 when cross-seed packing is not in use.
     # build_epoch_cross_seed compares its own packing against it every epoch.
     _xs_spe = [0]
-    _rank_tau = float(a.rank_tau) if a.rank_tau is not None else None
     _probe = {"rows": [], "units": 0, "poses": 0, "sum": {}, "finite": {}, "nonzero": {}}
-    if a.grad_probe:
+    # ONE-ELEMENT LIST, NOT A BARE BOOL, because the per-pose measurement site is inside a nested
+    # function and rebinding a plain name there would create a local instead of flipping this.
+    _gn_on = [False]
+    _gn_fh = [None]
+
+    def _gn_emit(step_i, ep_i):
+        """Append this step's PAE-vs-ranking gradient split to grad_split.csv, then clear it.
+
+        THE SAME QUANTITY --grad-probe REPORTS, by construction: both read _probe["sum"], which
+        the per-pose site fills with two separate autograd.grad calls at identical weights. The
+        difference is only that this one runs every K steps and does not exit.
+
+        ACCUMULATED, AND SUMMED ACROSS RANKS, because that is what the optimiser sees. ||sum_i
+        g_i|| is not sum_i ||g_i||, and the rel coefficients sum to zero within an interface
+        group, so the per-pose figure overstates the surviving magnitude -- 0.0311 against 0.0041
+        measured on 3hzrs8. The all-reduce is what makes this the real step gradient rather than
+        this rank's share of it.
+
+        EVERY RANK WRITES ITS OWN FILE and rank 0's is the one to read, matching how the
+        trajectory rows are already split. A collective here means every rank must reach it, so
+        it is called from the step boundary that every rank passes.
+        """
+        # NO EARLY RETURN BEFORE THE COLLECTIVE, AND THE VECTOR IS ALWAYS THE SAME LENGTH.
+        #
+        # The first version returned when this rank had no entries and built the vector from
+        # `_n in _d`, so a rank whose units carried no rel coefficient would have skipped the
+        # all_reduce -- or reached it with a shorter tensor -- while the others waited. Both are
+        # hangs, not errors, and this file's own comments record two of them. Every rank walks
+        # trainable_params in full and substitutes zeros, so the shape is a function of the
+        # parameter list alone and participation is unconditional.
+        _sm = _probe.get("sum") or {}
+        _flat = {}
+        for _nm in ("pae", "rank"):
+            _d = _sm.get(_nm) or {}
+            _v = torch.cat([(_d[_n].reshape(-1) if _n in _d
+                             else torch.zeros(_pp.numel(), device=_pp.device,
+                                              dtype=torch.float32))
+                            for _n, _pp in trainable_params])
+            if world > 1:
+                torch.distributed.all_reduce(_v, op=torch.distributed.ReduceOp.SUM)
+            _flat[_nm] = _v
+        _gp, _gr = _flat["pae"], _flat["rank"]
+        _np_, _nr = float(_gp.norm()), float(_gr.norm())
+        _cos = (float(torch.dot(_gp, _gr)) / (_np_ * _nr)) if (_np_ > 0 and _nr > 0) else float("nan")
+        if _gn_fh[0] is None:
+            _gn_fh[0] = open(os.path.join(a.out, f"grad_split.r{rank}.csv"), "a", buffering=1)
+            if _gn_fh[0].tell() == 0:
+                _gn_fh[0].write("epoch,step,g_pae,g_rank,ratio,cos,alpha_rank,"
+                                "alpha_for_parity,poses\n")
+        # alpha_for_parity IS THE POINT OF THE FILE: the alpha that would make the ranking
+        # gradient match the PAE one AT THIS STEP, given the alpha actually in force. The ratio
+        # already includes a.alpha_rank, so dividing it out first is what makes the answer
+        # independent of the arm's own setting.
+        _r = (_nr / _np_) if _np_ > 0 else float("nan")
+        _par = (float(a.alpha_rank) / _r) if (_r and _r == _r and _r > 0) else float("nan")
+        _gn_fh[0].write(f"{ep_i},{step_i},{_np_:.6e},{_nr:.6e},{_r:.6e},{_cos:+.4f},"
+                        f"{a.alpha_rank:g},{_par:.4g},{_probe.get('poses', 0)}\n")
+        _probe["sum"] = {}
+        _probe["poses"] = 0
+    # THE IMPORT FOLLOWS THE MEASUREMENT, NOT JUST --grad-probe. This was gated on a.grad_probe
+    # alone while the per-pose measurement site now also runs under --grad-norm-every, so the
+    # first measured step died with "cannot access free variable 'RKL_probe'" on all three ranks.
+    # Both flags reach the same code, so both must bring the module in.
+    if a.grad_probe or a.grad_norm_every:
         import rank_loss as RKL_probe
         if not a.rank_loss:
-            raise SystemExit("STOP: --grad-probe needs --rank-loss; there is nothing to compare "
-                             "the PAE gradient against.")
+            raise SystemExit(
+                f"STOP: {'--grad-probe' if a.grad_probe else '--grad-norm-every'} needs "
+                f"--rank-loss; there is nothing to compare the PAE gradient against.")
     if a.rank_loss and a.loss_only:
         # SAME REASON. Nothing below is needed for a measurement, and --rank-labels points at the
         # training fold while this subprocess reads the validation one.
@@ -2318,9 +3089,35 @@ def main():
         # (pdb, seed, interface) this run will train must carry --nsample finite DockQ values at
         # the expected sample indices.
         _rl_pdbs = {k[0] for k in _rank_lab}
-        _rl_missing = sorted(set(_scored_asym) - _rl_pdbs)
-        import rank_loss as _RKL_cfg
-        _tau_eff = _rank_tau if _rank_tau is not None else _RKL_cfg.DEFAULT_TAU
+        # THE STRUCTURES THIS ARM TRAINS, NOT EVERY STRUCTURE THE POOL NAMES. _scored_asym comes
+        # from --pae-scored-pairs, which lists interfaces for the whole fold; --manifest-selection
+        # is what decides which structures are dealt into an epoch. On training/fullset the pool
+        # names 7stz, 9dc3 and 9mx1 and structures.csv does not, so this refused a launch over
+        # three structures that pay no forward at all -- and its own message, "their poses would
+        # pay a forward and contribute no ranking gradient", was false for exactly those three.
+        #
+        # THE GATE ITSELF IS RIGHT AND STAYS. A declared structure with no DockQ really does make
+        # the arm a partial experiment. Narrowing it to the declared set is what makes the refusal
+        # mean that, rather than meaning the pool is broader than the manifest -- which is normal.
+        _rl_declared = None
+        try:
+            import csv as _csvL
+            _skL = {x.strip().lower() for x in (a.manifest_skip or "").split(",") if x.strip()}
+            _rl_declared = {(_r.get("pdb") or "").strip().lower()
+                            for _r in _csvL.DictReader(open(a.manifest_selection))
+                            if (_r.get("pdb") or "").strip()}
+            _rl_declared -= _skL
+            if not _rl_declared:
+                _rl_declared = None
+        except (OSError, ValueError, KeyError, AttributeError, TypeError):
+            _rl_declared = None
+        _rl_scope = set(_scored_asym) if _rl_declared is None else (set(_scored_asym)
+                                                                    & _rl_declared)
+        if _rl_declared is not None and len(_rl_scope) != len(_scored_asym):
+            print(f"  --rank-loss label check scoped to the {len(_rl_scope)} structure(s) this "
+                  f"arm declares, of {len(_scored_asym)} the pool names "
+                  f"({len(set(_scored_asym) - _rl_scope)} pooled but not trained)", flush=True)
+        _rl_missing = sorted(_rl_scope - _rl_pdbs)
         if a.rank_form == "rel":
             # The refusals for this form run EARLY, before any hardware -- see the block beside
             # the LAYERNORM_TYPE check. This is only the report.
@@ -2330,6 +3127,13 @@ def main():
                   f"L = (1/P) sum_i [(s_i - mean_s) - (g_i - mean_g)]^2 per interface over all "
                   f"its seeds, alpha {a.alpha_rank:g}"
                   + (", STANDARDISED by the within-interface std" if a.rel_standardize else "")
+                  + (", WEIGHTED by the true within-interface std" if a.rel_sd_weight else "")
+                  + (f", PER-POSE WEIGHTED by g^{a.rel_g_weight:g}" if a.rel_g_weight else "")
+                  + (f", PER-POSE WEIGHTED by sigmoid((g-{_G_SIG[0]:g})/{_G_SIG[1]:g})"
+                     if _G_SIG else "")
+                  + (f", CLASS-BALANCED per list at DockQ {a.rel_balance_accept:g} "
+                     f"(acceptable poses carry half the list's loss)"
+                     if a.rel_balance_accept else "")
                   + f". Labels {a.rel_labels} ({_mj.get('structures', '?')} structure(s), "
                   f"{_mj.get('rows', '?')} row(s), column "
                   f"{'g_max' if a.rank_pool == 'max' else 'g_mean'}, digest "
@@ -2337,151 +3141,46 @@ def main():
                   f"this term cannot move an interface's level and its accumulated gradient "
                   f"cancels by construction -- alpha must come from --grad-probe norms, not from "
                   f"loss values.")
+        if a.rank_form == "zsoftmax":
+            print(f"Z-SCORED SOFTMAX LOSS on chain_pair ipTM pooled by {a.rank_pool.upper()}: "
+                  f"z_i = (s_i - mean_s) / std_s over an INTERFACE's candidates across all its "
+                  f"seeds, p = softmax(z) with NO temperature, "
+                  f"L = -log(sum of p over the candidates with DockQ >= {a.rank_accept:g}), "
+                  f"alpha {a.alpha_rank:g}. mean_s and std_s are CONSTANTS -- taken from the "
+                  f"detached scores -- so dz_i/ds_j = delta_ij / std_s and the gradient is the "
+                  f"gradient of exactly this loss. Items whose candidates are ALL acceptable or "
+                  f"ALL unacceptable are skipped: the softmax is over the item's own candidates, "
+                  f"so an all-good item has L = 0 identically and an all-bad one has no "
+                  f"numerator. They keep their PAE loss. The coefficients sum to EXACTLY zero, "
+                  f"so this term cannot move an interface's level -- alpha must come from "
+                  f"--grad-probe norms, not from loss values.")
         print(f"RANKING LOSS on chain_pair_iptm: form {a.rank_form}, alpha {a.alpha_rank:g}, "
-              f"weight_by_gap={a.rank_weight_by_gap}, {len(_rank_lab)} labelled "
-              f"(pdb, seed, interface) group(s) from {_rl_p}"
+              f"{len(_rank_lab)} labelled (pdb, seed, interface) group(s) from {_rl_p}"
               + (f", {_rl_bad} unparsed row(s)" if _rl_bad else ""))
-        # VALIDATED BEFORE ANYTHING IS PRINTED. tau <= 0 is refused in three places while these
-        # two floats took nan, inf and negatives silently: --rank-topk-decay nan makes every
-        # weight nan and the `> 0` banner test below is FALSE for nan, so the log would not even
-        # mention the decay while the loss trained on nan; --rank-within-weight -1 drives den
-        # negative and flips the loss's sign.
-        for _nm, _vv in (("--rank-within-weight", a.rank_within_weight),
-                         ("--rank-topk-decay", a.rank_topk_decay),
-                         ("--rank-straddle", a.rank_straddle)):
-            if not math.isfinite(_vv) or _vv < 0:
-                raise SystemExit(f"STOP: {_nm} {_vv!r} must be a finite number >= 0.")
-        if a.rank_within_weight == 0 and a.rank_pairs == "all":
-            print("  NOTE --rank-within-weight 0 drops the within-seed family from the WEIGHTING "
-                  "while --rank-pairs all still forms its pairs. Groups whose poses all come "
-                  "from one seed then carry no weighted pair and contribute nothing, which is "
-                  "handled (rank_loss guards den == 0) but means this is NOT the same run as "
-                  "--rank-pairs cross.")
-        # THE BANNERS MUST NOT DESCRIBE A PATH THAT IS NOT TAKEN. These three flags are read only
-        # by group_coeffs on the pass-A cross-seed path. The linear form without --rank-cross-seed
-        # goes through RKL.coeffs, which takes labels alone and honours none of them, and the
-        # expected form returns before the pair loop. Printing "CROSS-SEED pairs only -- the
-        # deployed objective" while training within-seed linear pairs is how a run gets written up
-        # as the wrong experiment, so a non-default setting on a path that ignores it is refused
-        # rather than announced.
-        # THE TWO GROUP FORMS IGNORE THEM TOO, for the same reason the expected form does: they
-        # are defined on a whole ordering, so there is no pair to include, weight or decay. Added
-        # to this guard rather than documented, because the banner below would otherwise print a
-        # pair family for a loss that has none.
-        _group_form = a.rank_form in ("spearman", "distance", "spearman_distance")
-        _ignores = (a.rank_form == "expected") or _group_form or not a.rank_cross_seed
-        _nondefault = [f"--rank-pairs {a.rank_pairs}" for _ in (1,) if a.rank_pairs != "cross"] \
-            + [f"--rank-within-weight {a.rank_within_weight:g}" for _ in (1,)
-               if a.rank_within_weight != 1.0] \
-            + [f"--rank-topk-decay {a.rank_topk_decay:g}" for _ in (1,) if a.rank_topk_decay != 0.0] \
-            + [f"--rank-straddle {a.rank_straddle:g}" for _ in (1,) if a.rank_straddle != 0.0]
-        if _ignores and _nondefault:
-            raise SystemExit(
-                "STOP: " + ", ".join(_nondefault) + " cannot take effect here. "
-                + (f"--rank-form {a.rank_form} is defined on the whole ordering of a group, not "
-                   "on pairs, so the family, the within-seed weight, the rank decay and the "
-                   "straddle filter are all inapplicable. Its own knobs are "
-                   "--rank-spearman-tau, --rank-dist-weight and --rank-rel-scale."
-                   if _group_form else
-                   "--rank-form expected is pair-free -- group_coeffs returns before the pair "
-                   "loop, so the family, the within-seed weight and the rank decay are all "
-                   "inapplicable."
-                   if a.rank_form == "expected" else
-                   "without --rank-cross-seed the loss goes through the per-unit path "
-                   "(rank_loss.coeffs), which takes labels alone and honours none of these three. "
-                   "Add --rank-cross-seed, or drop these flags.")
-                + " Refused rather than warned: the startup banner would otherwise name an "
-                  "objective the run is not training.")
-
-        # THE FAMILY IS NAMED BEFORE THE TAU, because the tau is only interpretable against it.
-        _fam_txt = {"cross": ("GROUPS OF ONE SEED -- ABAG-Rank's group terms, partitioned by seed "
-                              "inside group_coeffs; --rank-pairs does not apply"
-                              if _group_form else
-                              "CROSS-SEED pairs only (different seeds) -- the deployed objective"),
-                    "within": "WITHIN-SEED pairs only (same seed) -- a PROXY for selection, not "
-                              "the deployed objective",
-                    "all": "BOTH families at ONE tau"}[a.rank_pairs]
-        print(f"  PAIR FAMILY: {_fam_txt}")
-        if a.rank_pairs == "all":
-            print(f"  within-seed pairs weighted x{a.rank_within_weight:g} in numerator and W "
-                  f"(full training set at tau 0.0270: L=1 leaves within-seed at 7.0% of pairwise "
-                  f"gradient mass, L=3 18.3%, L=8 37.1%, L=20 59.3%)")
-        if a.rank_straddle > 0:
-            print(f"  STRADDLE-ONLY at DockQ {a.rank_straddle:g}: a pair counts only when exactly "
-                  f"one of its two poses is above {a.rank_straddle:g}. This is the subspace the "
-                  f"FRACTION-ACCEPTABLE criterion can see; mean DockQ is deliberately left as a "
-                  f"free variable and both are reported.")
-        if a.rank_topk_decay > 0:
-            print(f"  TOP-k RANK DECAY K={a.rank_topk_decay:g}: pair weight x "
-                  f"max(v(r_i), v(r_j)), v(r)=exp(-(r-1)/K) over the current ipTM order. "
-                  f"K=2 puts ~39% of weight on pairs touching rank 1 (1.6% undecayed) and ~93% "
-                  "inside the top 5. Ranks are taken from DETACHED scores, so the weight is a "
-                  "constant in the backward and the loss is not the exact gradient of a fixed "
-                  "objective.")
-        elif a.rank_within_weight != 1.0:
-            print(f"  NOTE --rank-within-weight {a.rank_within_weight:g} is INERT under "
-                  f"--rank-pairs {a.rank_pairs}: it scales one family against the other, and "
-                  "this run has only one family. Not an error; stated so the log cannot be read "
-                  "as if the weighting were in force.")
-        # NO STOP HERE, AND THE EARLIER ONE WAS WRONG. It refused --rank-pairs within/all
-        # without an explicit --rank-tau, on the grounds that at the cross-seed tau a within-seed
-        # pair "sits at m/tau ~ 0 where the softplus gives a correct pair and an inverted one the
-        # same weight, so the term is inert". The premise is right and the conclusion is not.
-        # At overfit30's within-seed median gap of 0.0137 against tau 0.0305 the weights are
-        # 0.376 correct / 0.624 inverted -- real discrimination; even at the full training set's
-        # 0.0036 they are 0.467 / 0.533, and BOTH PUSH THE SAME WAY, toward the better-DockQ
-        # pose. They add, they do not cancel. What a large tau costs is SATURATION: the loss
-        # never stops pushing pairs it has already ordered, so the term degenerates toward the
-        # linear loss. That is what the --rank-tau help means by the original units error being
-        # "inert" -- the softplus NONLINEARITY is inert, not the gradient. Within-seed pairs are
-        # under-weighted (6.7% of pairwise gradient mass on overfit30), which is a question for
-        # --rank-within-weight, not for tau. So this prints the regime and lets the run proceed.
-        if a.rank_pairs != "cross" and a.rank_form == "softplus":
-            _r = 0.0137 / _tau_eff          # overfit30 within-seed median; the training pool's
-            _sg = 1.0 / (1.0 + math.exp(-_r))
-            print(f"  within-seed pairs at tau {_tau_eff:g}: a median-gap pair (0.0137 on "
-                  f"overfit30) gets weight {1 - _sg:.3f} if correctly ordered and {_sg:.3f} if "
-                  f"inverted ({_sg / (1 - _sg):.2f}x). Re-measure for another pool with "
-                  "measure_tau.py --pairs within --restrict-to <pool>/structures.csv; the full "
-                  "training set gives 0.0036 and valfull 0.0011, so this ratio is "
-                  "POPULATION-SPECIFIC and tau must never be set from val.")
-        if a.rank_form == "softplus":
-            print(f"  softplus tau {_tau_eff:g}"
-                  + ("  (rank_loss.DEFAULT_TAU, the measured median cross-seed |ipTM gap| over "
-                     "the full training set)" if _rank_tau is None else "  (given)"))
-        elif a.rank_form == "expected":
-            # TWO DIFFERENT QUANTITIES SHARE THE --rank-tau FLAG, so say which one is in force.
-            # A margin scale of 0.0305 and a softmax temperature of 0.05 are not comparable, and
-            # defaulting silently to DEFAULT_TAU here would be a 1.6x sharper selection than
-            # intended with nothing in the log to show it.
-            _tau_sm = _rank_tau if _rank_tau is not None else _RKL_cfg.DEFAULT_SOFTMAX_TAU
-            print(f"  EXPECTED-DockQ, softmax temperature tau {_tau_sm:g}"
-                  + ("  (rank_loss.DEFAULT_SOFTMAX_TAU)" if _rank_tau is None else "  (given)")
-                  + "\n  L = -sum_i softmax(ipTM/tau)_i * DockQ_i over ALL poses of the "
-                    "interface; the floor is -max(DockQ) of the group, NOT 0. PAIR-FREE: "
-                    f"--rank-weight-by-gap={a.rank_weight_by_gap} and the cross-seed pair filter "
-                    "are INAPPLICABLE and are not applied.")
+        # ONE FORM, AND EVERY POSE OF THE INTERFACE IS IN ITS GROUP.
+        #
+        # Six other --rank-form values used to live here: linear, softplus, expected, spearman,
+        # distance, spearman_distance. Each carried its own pair family, tau, decay, straddle and
+        # within/cross weighting, and the banner block this replaces was larger than the loss
+        # itself -- its whole job was to say which of those knobs the chosen form silently
+        # ignored. Deleted at the user's direction. A flag that is inert on the path actually
+        # taken is how a run gets written up as the wrong experiment.
+        #
+        # WITHIN-SEED POSES ARE PART OF THE LOSS AND ALWAYS WERE UNDER rel. The group is every
+        # pose of an interface across all its seeds -- 15 x 5 = 75 on a deep structure -- and the
+        # mean-centring is over all of them, so the 5 poses sharing a seed are compared with each
+        # other and with every pose of every other seed. The flag that DID drop them was
+        # --rank-pairs, whose "cross" default excluded the within-seed family from the pairwise
+        # forms; deleting it removes the only mechanism that ever filtered them out. A single-seed
+        # structure gets a real 5-pose group on the same footing.
+        #
+        # --rank-cross-seed is a STEP GROUPING, not a pair filter: it puts all of a structure's
+        # seeds in one optimiser step so pass A can score the whole interface before the first
+        # backward. rel refuses to run without it, checked before any hardware is touched.
         if a.rank_cross_seed:
             print(f"  CROSS-SEED GROUPS: {a.rank_structs_per_step} structure(s) x all seeds per "
                   f"step; a pose's coefficient uses every other pose of its interface, so pass A "
                   f"scores the whole step before the first backward")
-        elif a.rank_form in ("spearman", "distance", "spearman_distance"):
-            raise SystemExit(
-                f"STOP: --rank-form {a.rank_form} requires --rank-cross-seed. Its coefficients "
-                "depend on every score in the group, so they need pass A, and pass A only runs on "
-                "the cross-seed step grouping. THIS IS NOT A CROSS-SEED OBJECTIVE: the groups are "
-                "partitioned by seed inside group_coeffs, so each group is one seed's --nsample "
-                "poses. --rank-cross-seed is what makes a step hold whole structures so pass A "
-                "can score them; the grouping it implies is then overridden.")
-        elif a.rank_form in ("softplus", "expected"):
-            raise SystemExit(
-                f"STOP: --rank-form {a.rank_form} without --rank-cross-seed is not implemented. "
-                "Its coefficients need pass A, which is wired to the cross-seed step grouping; "
-                "running it within-seed would silently fall through to the linear per-unit path "
-                "and train a different objective than the flags say. For the expected form this "
-                "would also defeat its purpose outright -- the softmax has to run over ALL poses "
-                "competing for selection, and within one seed it would range over 5 poses rather "
-                "than 50.")
         if _rl_missing:
             raise SystemExit(
                 f"STOP: {len(_rl_missing)} scored structure(s) have no DockQ labels in {_rl_p}, "
@@ -2561,6 +3260,295 @@ def main():
         if is_main:
             print(f"  ranking label coverage: all {len(expected)} (pdb, seed, interface) group(s) "
                   f"hold {a.nsample} finite DockQ value(s)")
+
+    # DockQ FOR --pae-split-accept, LOADED EVEN WITH THE RANKING LOSS OFF. This cannot ride on
+    # the `elif a.rank_loss` block above, and it must not be gated on a.rank_cross_seed the way
+    # the ranking diagnostics are: the arm this split exists for trains PAE alone, so either gate
+    # would have made the flag inert on the only path that passes it -- a flag that does nothing
+    # on the path actually taken is how a run gets written up as the wrong experiment.
+    #
+    # THE REFUSAL IS AT STARTUP. Everything below is written so the classification can never
+    # raise, which means the absence of a label SOURCE has to be caught here or it would surface
+    # as every pose silently unclassified.
+    #
+    # NO --loss-only INHERITANCE HAZARD, checked rather than assumed: val_loss_checkpoint builds
+    # its child argv explicitly and does not forward the parent's flags, so this never reaches the
+    # measurement subprocess -- which reads the VALIDATION fold and has no training-fold
+    # results.csv to load. That is the class of bug this file has already paid for five times.
+    _pb_on = float(a.pae_balance_accept) > 0.0
+    _ps_on = float(a.pae_split_accept) > 0.0 or _pb_on
+    if _ps_on:
+        _ps_src = "the ranking labels already loaded"
+        if not _rank_lab:
+            import rank_loss as RKL_ps
+            _ps_p = a.rank_labels or os.path.join(a.fold, "results.csv")
+            # SAID TWICE ON PURPOSE. The pre-hardware block already statted this path; repeating
+            # it keeps the message right if the file goes away in between, and means the load
+            # below never has to reason about a missing file.
+            if not os.path.exists(_ps_p):
+                raise SystemExit(
+                    f"STOP: --pae-split-accept {a.pae_split_accept:g} needs DockQ labels to put "
+                    f"each pose in a group, and there are none at {_ps_p}. Pass --rank-labels, "
+                    f"or drop the flag.")
+            _rank_lab, _ps_bad = RKL_ps.load_labels(_ps_p, _rel_roles_p)
+            if not _rank_lab:
+                raise SystemExit(
+                    f"STOP: --pae-split-accept found no usable (pdb, seed, interface) -> DockQ "
+                    f"group in {_ps_p}, so no pose could be classified.")
+            _ps_src = f"{_ps_p}" + (f", {_ps_bad} unparsed row(s)" if _ps_bad else "")
+        print(f"PAE LOSS SPLIT BY POSE GROUP at DockQ {a.pae_split_accept:g}: per-epoch plain "
+              f"per-pose mean of the labelled pae_loss for the all-acceptable poses and for the "
+              f"all-unacceptable ones, on the CROPPED training batches, from "
+              f"{len(_rank_lab)} labelled (pdb, seed, interface) group(s) ({_ps_src}). "
+              f"DIAGNOSTIC: it takes no gradient, changes no loss, and cannot fail the run.")
+
+    def _pae_split_tally(pdb, lab_p, lab, arm_seed, i, samp_hint, nb, v):
+        """Add ONE pose's labelled PAE loss to its DockQ group. Never raises.
+
+        THE POSE INDEX IS NOT THE SAMPLE INDEX, and _rank_lab is indexed by the SAMPLE. This file
+        has paid for that confusion twice already -- the rel target regressed pose 1 onto pose 4's
+        true iTM, and --emit-iptm-rows wrote `i` while 73.8% of its rows carried another sample's
+        DockQ and the aggregate moved by only 0.0009, which is exactly how little a wrong join
+        shows. So the sample index is the label's own `sample_index`, and when the PAE mask has
+        already resolved it for this pose (`_samp_i`) that one value is reused rather than read a
+        second time: two resolutions of the same thing is the shape of the original bug.
+
+        WHICH INTERFACES THE POSE SCORES comes from _pose_pairs -- the per-pose OST join -- not
+        from _scored_asym's static pairs: the two disagree on 1,095 of 18,400 (structure, seed,
+        pose) checks, so the static set can name an interface this pose does not score at all.
+        DockQ is then looked up through _rel_dqkey, the STATIC pair that indexes _rank_lab, which
+        is the same two-step the --rel-balance-accept site makes for the same reason.
+
+        EXCLUSIONS ARE COUNTED, NEVER FOLDED INTO A GROUP. 82% of these structures carry more than
+        one interface, so a pose can be acceptable on one and not on another; putting a straddler
+        in either group would let a mean move because the membership moved rather than because the
+        loss did, which is the one thing this read is for. A missing or non-finite DockQ, an
+        unresolvable sample index and a batched row are unclassified: under --pose-batch > 1 the
+        row's pae_loss is a MEAN over nb poses with different DockQ, so there is no per-pose value
+        to attribute, and counting it under one pose's class would quietly average the groups
+        together.
+
+        NOTHING HERE RAISES -- not even the SystemExit _pose_pairs throws for an unreadable OST
+        mapping, which is why the except names it. This is a diagnostic, and the opposite choice
+        in --rel-balance-accept is right only because there the classification sets a WEIGHT and a
+        wrong weight trains the head.
+        """
+        st = _rel_stat
+        try:
+            if int(nb) != 1:
+                st["ps_batched"] += 1
+                st["ps_unclass"] += 1
+                return
+            # ROW -> SAMPLE THROUGH THE ONE SANCTIONED FUNCTION. run_logging/label_index.py
+            # explains why row position is not pose id (99.2% of labels are permuted) and what
+            # open-coding this cost; this call is value-identical to the arithmetic it replaces.
+            samp = samp_hint
+            if samp is None:
+                samp = _LI.sample_of_row(lab, i)
+            samp = int(samp)
+            _cls, _bad = set(), False
+            for _ifc, _x, _y in _pose_pairs(pdb, lab_p, samp):
+                _dk = _rel_dqkey.get(_ifc)
+                _m = _rank_lab.get(_rank_key(pdb, arm_seed, _dk)) if _dk is not None else None
+                _dq = _m.get(samp) if _m else None
+                if _dq is None or not math.isfinite(float(_dq)):
+                    _bad = True
+                    break
+                _cls.add(float(_dq) >= float(a.pae_split_accept))
+            if _bad or not _cls:
+                st["ps_unclass"] += 1
+            elif len(_cls) > 1:
+                st["ps_straddle"] += 1
+            elif True in _cls:
+                st["ps_acc_sum"] += float(v)
+                st["ps_acc_n"] += 1
+            else:
+                st["ps_un_sum"] += float(v)
+                st["ps_un_n"] += 1
+        except (Exception, SystemExit):                      # noqa: BLE001
+            st["ps_unclass"] += 1
+
+    # ---- --pae-balance-accept: per-interface class counts and the pool-mean normaliser --------
+    _pb_cnt, _pb_norm = {}, 1.0
+    if _pb_on:
+        # COUNTED OVER THE WHOLE LIST, NOT OVER AN EPOCH'S DRAW. The weight 0.5/n_acceptable is a
+        # property of the interface, so n must be every scored pose of that interface -- counting
+        # within a step would make a pose's weight depend on which other poses happened to be
+        # dealt with it.
+        _pb_thr = float(a.pae_balance_accept)
+        # ONLY THE UNITS THIS ARM ACTUALLY TRAINS. _rank_lab is every scored row in results.csv --
+        # for this arm, 31.8% of them are (pdb, seed) pairs the manifest does not declare or the
+        # skip list removes. Counting those made n_good/n_bad a property of the FOLD rather than of
+        # the arm: a structure declaring one seed, with ten seeds of surviving rows, had its
+        # balance computed over fifty poses when five are trained. The weights were then not
+        # 0.5/n_good and 0.5/n_bad over the candidates the loss sees, which is the whole claim.
+        _pb_active = None
+        try:
+            import csv as _csv0
+            _sk0 = {x.strip().lower() for x in (a.manifest_skip or "").split(",") if x.strip()}
+            _pb_active = set()
+            for _r0 in _csv0.DictReader(open(a.manifest_selection)):
+                _p0 = (_r0.get("pdb") or "").strip().lower()
+                if not _p0 or _p0 in _sk0:
+                    continue
+                _sd0 = (_r0.get("seeds") or "").strip()
+                if not _sd0:
+                    _pb_active = None
+                    break
+                for _tok0 in _sd0.split(","):
+                    if "-" in _tok0:
+                        _lo0, _hi0 = _tok0.split("-")
+                        for _v0 in range(int(_lo0), int(_hi0) + 1):
+                            _pb_active.add((_p0, str(_v0)))
+                    else:
+                        _pb_active.add((_p0, str(int(_tok0))))
+        except (OSError, ValueError, KeyError, AttributeError):
+            _pb_active = None
+        if _pb_active is None:
+            print("  --pae-balance-accept: the manifest declares no per-structure seeds, so the "
+                  "counts are over every labelled pose. That is the old behaviour and it is wrong "
+                  "whenever results.csv holds rows this arm does not train.", flush=True)
+        else:
+            _pb_drop = sum(1 for _k0 in _rank_lab
+                           if (_k0[0], str(_k0[1])) not in _pb_active)
+            print(f"  --pae-balance-accept: counting over the {len(_pb_active)} declared "
+                  f"(structure, seed) unit(s); {_pb_drop} label group(s) in the results csv are "
+                  f"outside them and do not contribute to any weight", flush=True)
+        for _ifc, _per in _rank_lab.items():
+            if _pb_active is not None and (_ifc[0], str(_ifc[1])) not in _pb_active:
+                continue
+            # _rank_lab is keyed (pdb, seed, asym pair) -> {sample: dockq}; the weight is per
+            # INTERFACE, so the seeds of one interface pool together.
+            _key = (_ifc[0], _ifc[2])
+            _a0, _u0 = _pb_cnt.get(_key, (0, 0))
+            for _dq in _per.values():
+                try:
+                    _f = float(_dq)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(_f):
+                    continue
+                if _f >= _pb_thr:
+                    _a0 += 1
+                else:
+                    _u0 += 1
+            _pb_cnt[_key] = (_a0, _u0)
+        # THE NORMALISER IS PER STRUCTURE, and the mean weight over that structure's own poses.
+        #
+        # WHY PER STRUCTURE AND NOT ONE GLOBAL CONSTANT. Dividing a structure's weights by their
+        # mean makes them sum to its POSE COUNT -- mean = S/n, so S / (S/n) = n -- which is
+        # exactly what an unweighted arm contributes for that structure. The ratios inside the
+        # structure are untouched, because every weight was divided by the same number. A global
+        # constant fixes only the overall average, and it makes a structure's weights depend on
+        # which OTHER structures are in the pool: the same structure would be weighted differently
+        # in this 151-list arm and in a full-set arm, so the two could not be compared. The first
+        # version of this code did that, and averaged over all 1,688 interfaces while the arm
+        # trained on 151 -- 0.0158 against 0.0140, a 13% hot loss.
+        #
+        # COMPUTED FROM THE LABELS, not from the per-pose OST join. A pose's interface set at
+        # runtime comes from _pose_pairs, which disagrees with the static set on 1,095 of 18,400
+        # checks; using it here would mean no normaliser until a structure had been seen. The
+        # labels give every (seed, sample) of every interface, which is the same population to
+        # within those disagreements -- and this is a scale, so a small difference in it is a
+        # small difference in scale, not a wrong weight.
+        _pb_norm = {}
+        _pb_pose_w = {}
+        for (_p0, _pr0), (_a0, _u0) in _pb_cnt.items():
+            _per = None
+            for _k0, _v0 in _rank_lab.items():
+                if _k0[0] != _p0 or _k0[2] != _pr0:
+                    continue
+                if _pb_active is not None and (_k0[0], str(_k0[1])) not in _pb_active:
+                    continue
+                for _sm0, _dq0 in _v0.items():
+                    try:
+                        _f0 = float(_dq0)
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(_f0):
+                        continue
+                    _w0 = ((0.5 / _a0) if (_f0 >= _pb_thr and _a0)
+                           else ((0.5 / _u0) if _u0 else None))
+                    if _w0 is None:
+                        continue
+                    _pb_pose_w.setdefault((_p0, _k0[1], _sm0), []).append(_w0)
+        for (_p0, _sd0, _sm0), _ws0 in _pb_pose_w.items():
+            _pb_norm.setdefault(_p0, []).append(sum(_ws0) / len(_ws0))
+        _pb_norm = {_p0: (sum(_v0) / len(_v0)) for _p0, _v0 in _pb_norm.items() if _v0}
+        _nv = sorted(_pb_norm.values())
+        print(f"  --pae-balance-accept {_pb_thr:g}: {len(_pb_cnt)} interface(s) over "
+              f"{len(_pb_norm)} structure(s); per-STRUCTURE mean weight "
+              f"{(_nv[len(_nv) // 2] if _nv else float('nan')):.6g} at the median "
+              f"({(_nv[0] if _nv else float('nan')):.6g} to "
+              f"{(_nv[-1] if _nv else float('nan')):.6g}). Each structure's weights are divided "
+              f"by its OWN mean, so they sum to its pose count -- what an unweighted arm "
+              f"contributes -- and the ratios inside it are unchanged", flush=True)
+        if not _pb_cnt:
+            raise SystemExit("STOP: --pae-balance-accept counted no interface. The DockQ labels "
+                             "cover none of --pae-scored-pairs, so every weight would be the "
+                             "same and the flag would do nothing while claiming to.")
+
+    def _pae_balance_weight(pdb, lab_p, lab, arm_seed, i, samp_hint, nb):
+        """This pose's PAE weight: the MEAN of its per-interface weights, normalised. 1.0 on doubt.
+
+        THE SAME TWO-STEP LOOKUP as _pae_split_tally -- _pose_pairs for the interfaces this pose
+        actually scores, _rel_dqkey for the static pair that indexes _rank_lab, and the SAMPLE
+        index rather than the pose index. That join has been wrong twice in this file.
+
+        A WEIGHT OF 1.0 WHEN THE CLASS CANNOT BE ESTABLISHED, which is the opposite of the
+        diagnostic's "exclude and count". A diagnostic can drop a pose; the objective cannot --
+        dropping it would silently stop training on it. 1.0 is the unweighted behaviour, i.e. the
+        pose is treated exactly as it would be with the flag off, and the count is reported so a
+        run where that happens often is visible rather than quietly half-unweighted.
+
+        UNDER --pose-batch > 1 THE ROW IS A MEAN over nb poses with different DockQ, so there is
+        no single weight that is correct; 1.0 again, counted.
+        """
+        if not _pb_on:
+            return 1.0
+        try:
+            if int(nb) != 1:
+                _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
+                return 1.0
+            # ROW -> SAMPLE THROUGH THE ONE SANCTIONED FUNCTION. run_logging/label_index.py
+            # explains why row position is not pose id (99.2% of labels are permuted) and what
+            # open-coding this cost; this call is value-identical to the arithmetic it replaces.
+            samp = samp_hint
+            if samp is None:
+                samp = _LI.sample_of_row(lab, i)
+            samp = int(samp)
+            _ws = []
+            for _ifc, _x, _y in _pose_pairs(pdb, lab_p, samp):
+                _dk = _rel_dqkey.get(_ifc)
+                if _dk is None:
+                    continue
+                _m = _rank_lab.get(_rank_key(pdb, arm_seed, _dk))
+                _dq = _m.get(samp) if _m else None
+                if _dq is None or not math.isfinite(float(_dq)):
+                    continue
+                _a0, _u0 = _pb_cnt.get((pdb, _dk), (0, 0))
+                if float(_dq) >= float(a.pae_balance_accept):
+                    if _a0:
+                        _ws.append(0.5 / _a0)
+                elif _u0:
+                    _ws.append(0.5 / _u0)
+            if not _ws:
+                _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
+                return 1.0
+            _nrm = _pb_norm.get(pdb)
+            if not _nrm:
+                # NO NORMALISER FOR THIS STRUCTURE means the labels covered none of its poses, so
+                # there is no scale to divide by; 1.0 leaves the pose exactly as an unweighted arm
+                # would have it, and the count makes that visible.
+                _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
+                return 1.0
+            _w = (sum(_ws) / len(_ws)) / _nrm
+            _rel_stat["pb_wsum"] = _rel_stat.get("pb_wsum", 0.0) + _w
+            _rel_stat["pb_wn"] = _rel_stat.get("pb_wn", 0) + 1
+            return _w
+        except (Exception, SystemExit):                      # noqa: BLE001
+            _rel_stat["pb_unweighted"] = _rel_stat.get("pb_unweighted", 0) + 1
+            return 1.0
 
     def _check_eval_pool():
         """Stat the training-eval pool now, not at the first epoch boundary.
@@ -2757,8 +3745,33 @@ def main():
         print(f"--train-only {_pats}: {len(_kept)} of {len(_rel)} head tensor(s), "
               f"{_after:,} of {_before:,} parameters ({100.0*_after/max(1,_before):.3f}% of the "
               f"head). Everything else is FROZEN.")
+        # THE OUTCOME, NOT THE INTENT. --train-only matching SOMETHING is already checked above;
+        # this checks it matched what was meant. The full-head pattern truncated to its bare
+        # negative lookahead gives 19 tensors instead of 102 -- a non-empty optimiser, no guard
+        # fired, and the run was stopped only because the startup line was read by eye.
+        if a.expect_trainable and len(_kept) != a.expect_trainable:
+            raise SystemExit(
+                f"STOP: --expect-trainable {a.expect_trainable} but --train-only left "
+                f"{len(_kept)} trainable tensor(s) ({_after:,} parameters). The pattern matched "
+                f"something, so the optimiser is not empty and nothing else would have caught "
+                f"this.\n  patterns: {_pats}\n  kept e.g. {[_rel[n] for n in _kept[:6]]}")
         for n in _kept:
             print(f"    {_rel[n]:46} {tuple(dict(model.named_parameters())[n].shape)}")
+        # THE NONLINEAR BRANCH MUST BE IN THE SELECTION, and --expect-trainable cannot catch its
+        # absence. The six-site arm's pattern is
+        # 'frame_dir_proj,pose_perblock_,linear_no_bias_d,pose_readout_' at --expect-trainable 18;
+        # none of those four regexes matches a pose_mlp_* name, so adding --pose-mlp to that arm
+        # WITHOUT widening the pattern leaves the count at exactly 18, every guard silent, and
+        # 52,992 parameters created and frozen at their initialisation -- a run that reports a
+        # nonlinear branch and trains a linear head. That is this file's most-repeated failure
+        # (--train-only, LoRA, the evaluator's flags, --pose-perblock-copy's own warning), so it
+        # is a refusal here rather than a sentence in --pose-mlp's help text.
+        if a.pose_mlp and not any("pose_mlp" in _rel[n] for n in _kept):
+            raise SystemExit(
+                f"STOP: --pose-mlp installs 15 trainable tensor(s) and --train-only {_pats} "
+                f"matches none of them, so they would be created and never trained -- and "
+                f"--expect-trainable cannot see it, because the count is unchanged. Add "
+                f"`pose_mlp` to --train-only (and raise --expect-trainable by 15).")
 
     # A LoRA BUNDLE HOLDS ADAPTERS, NOT HEAD TENSORS, and the held-out monitor spawns itself
     # without --lora-rank -- the running trainer builds that command from its in-memory arguments,
@@ -2790,12 +3803,10 @@ def main():
         if _gr.get("rank_loss"):
             a.rank_loss = True
             a.alpha_rank = float(_gr.get("alpha_rank") or 0.0)
-            a.rank_weight_by_gap = bool(_gr.get("rank_weight_by_gap", True))
             if is_main:
                 print(f"  --loss-only: inheriting the bundle's ranking configuration "
-                      f"(alpha_rank {a.alpha_rank:g}, "
-                      f"weight_by_gap={a.rank_weight_by_gap}) so the guard matches; the ranking "
-                      f"term itself does not run -- a measurement takes no step.")
+                      f"(alpha_rank {a.alpha_rank:g}) so the guard matches; the ranking term "
+                      f"itself does not run -- a measurement takes no step.")
 
     if a.loss_only and a.resume and not a.lora_rank:
         try:
@@ -2809,6 +3820,22 @@ def main():
             a.lora_alpha = float(_g.get("lora_alpha") or 0.0)
             a.lora_targets = _g.get("lora_targets") or ""
             a.lora_dropout = float(_g.get("lora_dropout") or 0.0)
+            # AND THE KEEP-SET, which was the one LoRA field this block did not inherit.
+            # apply_lora freezes the whole head and `trainable` then becomes the adapter names
+            # alone, so WITHOUT this the measurement subprocess restores only the adapters and
+            # every --lora-keep-trainable tensor -- on the pose arms that is the entire pose
+            # pathway plus pae_ln, 53 tensors -- stays at its freshly-built value: shipped
+            # weights, or zero for the zero-init readout terms. The number that comes back is
+            # then approximately the SHIPPED head's held-out loss, reported as this arm's, every
+            # epoch, looking plausibly flat. It cannot be caught downstream because the child
+            # passes --resume-allow-drift, which turns the guard's keep-set mismatch from a
+            # refusal into accepted drift. Twelfth instance of the inheritance class this file
+            # keeps counting.
+            a.lora_keep_trainable = _g.get("lora_keep_trainable") or ""
+            if _g.get("lora_keep_trainable") and not a.lora_keep_trainable:
+                raise SystemExit(
+                    "STOP: the bundle declares --lora-keep-trainable but it did not survive "
+                    "inheritance, so the dense tensors would be measured at their init.")
             if is_main:
                 print(f"  --loss-only: inheriting the bundle's LoRA configuration "
                       f"(rank {a.lora_rank}, alpha {a.lora_alpha:g}, dropout {a.lora_dropout:g}) "
@@ -2823,6 +3850,31 @@ def main():
             _hm, a.lora_rank, a.lora_alpha or 2.0 * a.lora_rank,
             [t.strip() for t in a.lora_targets.split(",") if t.strip()], a.lora_dropout)
         trainable = [f"{prefixes[0]}.{n}" for n in _lnames]
+        # KEEP THE NAMED PARAMETERS DENSE, unioned in BEFORE the --lean-single dead-strip below so
+        # a pose tensor nothing reads is still removed and --skip-dead-ops still refuses a module
+        # it would stub. apply_lora has already frozen the whole head, so requires_grad is restored
+        # for these at the `p.requires_grad_(id(p) in head_ids)` line that follows.
+        if a.lora_keep_trainable:
+            # LOCALLY, LIKE EVERY OTHER re USER IN THIS FILE. Module scope has no `re` -- see the
+            # comment at the --pae-scored-pairs block -- so a bare re.search here would NameError
+            # on the first LoRA run, after the model is built and the cards are already held.
+            import re as _re_lk
+            _keep_pats = [t.strip() for t in a.lora_keep_trainable.split(",") if t.strip()]
+            _pfx_dot = prefixes[0] + "."
+            _kept = [n for n, _p in model.named_parameters()
+                     if n.startswith(_pfx_dot) and n not in set(trainable)
+                     and any(_re_lk.search(_pt, n[len(_pfx_dot):]) for _pt in _keep_pats)]
+            if not _kept:
+                raise SystemExit(
+                    f"STOP: --lora-keep-trainable {_keep_pats} matched NO head parameter. A "
+                    f"pattern that matches nothing is indistinguishable from the flag being "
+                    f"absent, and the tensors it was meant to protect would train frozen at "
+                    f"their init while the run reported success.")
+            _kept_n = sum(p.numel() for n, p in model.named_parameters() if n in set(_kept))
+            trainable = trainable + _kept
+            print(f"--lora-keep-trainable: {len(_kept)} head parameter(s) stay DENSE alongside "
+                  f"the adapters ({_kept_n/1e6:.3f}M), e.g. "
+                  f"{[n[len(_pfx_dot):] for n in _kept[:3]]}")
 
         print(f"LoRA rank {a.lora_rank} alpha {a.lora_alpha or 2.0*a.lora_rank:g} "
               f"dropout {a.lora_dropout:g}: {lora_report['modules_adapted']} module(s) adapted, "
@@ -2876,6 +3928,44 @@ def main():
     for n, p in model.named_parameters():
         p.requires_grad_(id(p) in head_ids)
 
+    # ---- DEAD OPERATION ELIMINATION ------------------------------------------------------------
+    # INSTALLED HERE, AND HERE FOR THE SAME REASON THE PREFIX CACHE IS: its central refusal is "a
+    # module I would stub is TRAINABLE", read from requires_grad on the tensors, and requires_grad
+    # is not final until the line above has applied --train-only, LoRA and --lean-single. Any
+    # earlier and it would be checking a flag's intent instead of the model's state.
+    #
+    # BEFORE THE PREFIX CACHE, though either order is correct -- the husks leave named_parameters()
+    # and named_modules() unchanged and move no value, so the cache's prefix set, its dropout scan
+    # and its digest are identical either way. This order only means a dead_ops refusal happens
+    # before the cache turns on, and that the cache's log line describes the tree that will run.
+    # phases/dead_ops.py's docstring states the full order.
+    _dops = None
+    if a.skip_dead_ops:
+        import dead_ops as DOPS
+        # THE KERNEL NAMES COME FROM configs, THE SAME PLACE run_confidence_head GETS THEM.
+        # Both default to "cuequivariance", and with hidden_scale_up the tri-mul cueq gate is
+        # open -- so probing the "torch" reference implementation would certify a code path this
+        # run never executes. Found in review after the first version hardcoded "torch".
+        _dops = DOPS.install(model, autocast_dtype=torch.bfloat16,
+                             triangle_multiplicative=configs.triangle_multiplicative,
+                             triangle_attention=configs.triangle_attention)
+    else:
+        DOPS = None
+
+    # ---- THE FROZEN-PREFIX CACHE ---------------------------------------------------------------
+    # INSTALLED HERE AND NOT AT THE pose_inblock SITE, which is ~1,100 lines above. Its central
+    # precondition is that every prefix tensor reads requires_grad=False, and requires_grad is not
+    # set until the line above -- `trainable` is not final until --train-only, LoRA and
+    # --lean-single have all had their say. Installing it earlier would check the flag's intent
+    # instead of the model's state, which is the distinction the whole guard exists to make.
+    _pfc = None
+    if a.prefix_cache_gb > 0:
+        import prefix_cache as PFC
+        _pfc = PFC.install(model, a.prefix_cache_gb, lean_single=a.lean_single, device=dev,
+                           crop_pool=a.crop_pool, crop_all_poses=a.crop_all_poses)
+    else:
+        PFC = None
+
     _head_names = {n for n, _p in model.named_parameters()
                    if any(n == pr or n.startswith(pr + ".") for pr in prefixes)}
 
@@ -2902,6 +3992,40 @@ def main():
         # whole head trains, which is every run so far.
         return {n: pp.detach().cpu() for n, pp in model.named_parameters()
                 if n in _head_names}
+
+    # ---- --save-init: THE HEAD BEFORE ANY STEP IS TAKEN ----------------------------------------
+    # PLACED HERE, which is after every pathway has been installed (lean_readouts, --lean-single,
+    # pose_inblock, pose_direction, pose_perblock all happen around :1776-1835) and after
+    # _head_names is fixed, but far above the training loop. So the file holds exactly the
+    # architecture the run was configured for, with the injections still at their zero init.
+    if a.save_init:
+        if world > 1:
+            raise SystemExit(
+                f"STOP: --save-init with WORLD_SIZE={world}. It writes the head and exits, and "
+                f"exiting one rank of {world} leaves the others parked on the next collective "
+                f"until the elastic agent times out. Run it on one card.")
+        _si_d = os.path.dirname(os.path.abspath(a.save_init))
+        if _si_d:
+            os.makedirs(_si_d, exist_ok=True)
+        _si_t = _head_ckpt_tensors()
+        torch.save(_si_t, a.save_init)
+        # THE ZERO-INIT CLAIM, ASSERTED AT THE MOMENT IT IS SAVED rather than trusted. If a future
+        # change initialises either injection non-zero, step-zero parity against the shipped head
+        # stops being the right test and this says so instead of the parity run failing later with
+        # a number nobody can attribute.
+        _si_inj = {k: v for k, v in _si_t.items() if "pose_inblock" in k or "pose_perblock" in k
+                   or "frame_dir" in k}
+        _si_nz = sorted(k for k, v in _si_inj.items() if float(v.abs().max()) != 0.0)
+        print(f"--save-init: wrote {len(_si_t)} head tensor(s) to {a.save_init} before any step. "
+              f"{len(_si_inj)} injected tensor(s) present; "
+              + ("ALL EXACTLY ZERO, so this head is bit-identical to the un-injected one and its "
+                 "PAE/ipTM must reproduce the shipped head."
+                 if not _si_nz else
+                 f"NOT ZERO: {_si_nz}. Step-zero parity against the shipped head is NOT the right "
+                 f"check for this configuration."))
+        sys.stdout.flush()
+        raise SystemExit(0)
+    # -------------------------------------------------------------------------------------------
 
     # NO EXPERIMENT TRACKER. Runs are recorded by the files this script already writes --
     # trajectory.csv, metric_ep<N>.json, args.json -- and rendered by run_logging/render_report.py.
@@ -2983,6 +4107,7 @@ def main():
     if _seed_col:
         _depths = collections.Counter(len(_seed_col.get(p) or range(lo_s, hi_s + 1))
                                       for p in sel_pdbs if p not in skip)
+        globals()["_REALISED_SEED_DEPTHS"] = dict(sorted(_depths.items()))
         print(f"manifest: per-structure seed depths from {a.manifest_selection}: "
               f"{dict(sorted(_depths.items()))} "
               f"({len(_seed_col)} of {len(sel_pdbs)} row(s) declare `seeds`)")
@@ -3087,8 +4212,9 @@ def main():
         #
         # The `checked` list the preflight now also writes is a strictly tighter check and is used
         # when present -- it covers the case of a run whose selection differs but whose structures
-        # happen to be covered.
-        _pf_checked = set(_pf.get("checked") or [])
+        # happen to be covered. Reading it, and recomputing the set for an older marker that has
+        # none, lives in phase_k_preflight_cover.marker_cover; that file explains why the marker's
+        # claim is per-structure and what makes the recomputation evidence rather than assertion.
         _run_pdbs = {p for p, _lp, _c in flat}
 
         def _skipset(txt):
@@ -3114,28 +4240,65 @@ def main():
             bool(_pf.get("complete"))
             and (_pf.get("manifest_selection") or "") == (a.manifest_selection or "")
             and _run_skip >= _pf_skip)
-        _subset_ok = _same_population or (bool(_pf_checked) and _run_pdbs <= _pf_checked)
+        # A COMPLETE MARKER VOUCHES FOR A SET OF STRUCTURES, AND THAT SET CAN BE PROVEN FROM DISK.
+        #
+        # The two tests above both fail for a perfectly safe case: a DIFFERENT selection file whose
+        # structures are all inside the marker's. _same_population compares the selection PATH, and
+        # the `checked` name list is something older markers simply do not carry
+        # (training/full_train/alignment_preflight.json has only counts: n_structures 488,
+        # complete true, mismatches []). So a manifest listing the same 488 structures with
+        # different per-structure SEED lists was refused four times on 2026-11-19, even though atom
+        # order -- the only thing this preflight checks, and it checks it from ONE trunk per
+        # structure -- is a property of the molecule and says nothing about which seeds produced
+        # its poses. The digest therefore claimed MORE than the preflight checked (per-seed) while
+        # authorising LESS than it proved (per-structure), and the gap was paid at every launch.
+        #
+        # THE CLAIM IS NOW READ AS PER-STRUCTURE. phase_k_preflight_cover.marker_cover returns the
+        # structures a marker vouches for: its `checked` names when it has them, otherwise the
+        # population recomputed from the selection csv the marker names -- accepted ONLY if that
+        # recomputation reproduces the digest the marker carries. That reproduction is what makes
+        # this evidence rather than trusting a path string: a selection csv rewritten since the
+        # marker was written hashes differently, marker_cover returns None, and the run is refused
+        # exactly as before.
+        #
+        # NOT A LOOSENING, and deliberately not a no-op. The run is accepted only when EVERY
+        # structure it will touch is in that set; one structure outside it refuses and prints the
+        # names. A marker with any mismatch or missing trunk authorises nothing, and neither does
+        # an incomplete one -- marker_cover refuses those itself, because an incomplete marker
+        # carries the whole population's digest over a slice of the structures.
+        _cover, _cover_how = _PFC.marker_cover(_pf, a.alignment_preflight)
+        _run_lc = {p.strip().lower() for p in _run_pdbs}
+        _cover_clean = not (_pf.get("mismatches") or []) and not (_pf.get("missing_trunks") or [])
+        _uncovered = sorted(_run_lc - _cover) if _cover is not None else sorted(_run_lc)
+        _cover_ok = _cover is not None and not _uncovered and _cover_clean
+        _subset_ok = _same_population or _cover_ok
         if _pf.get("manifest_digest") != _manifest_digest and _subset_ok:
             _why = ((f"it is COMPLETE over the same selection and this run skips "
                      f"{len(_run_skip)} structure(s) against the marker's {len(_pf_skip)} "
                      f"(a superset: {sorted(_run_skip - _pf_skip) or 'identical'}), so every "
                      f"structure this run touches was checked") if _same_population else
-                    f"this run's {len(_run_pdbs)} structure(s) are a SUBSET of the "
-                    f"{len(_pf_checked)} named in its `checked` list")
+                    f"it {_cover_how}, and all {len(_run_lc)} structure(s) this run touches are "
+                    f"inside that set; alignment is a per-structure property, and the seed "
+                    f"lists the two digests disagree about are not what was checked")
             print(f"  alignment preflight: digest differs ({_pf.get('manifest_digest')} vs "
                   f"{_manifest_digest}) but {_why}, so it authorises this run.")
         elif _pf.get("manifest_digest") != _manifest_digest:
             raise SystemExit(
                 f"STOP: the alignment preflight was run over manifest "
-                f"{_pf.get('manifest_digest')}, this run is {_manifest_digest}. It says nothing "
-                f"about the structures this run will train on; re-run it.\n"
-                + (f"  Its selection/skip are {_pf.get('manifest_selection')!r} / "
-                   f"{_pf.get('manifest_skip')!r} against this run's "
-                   f"{a.manifest_selection!r} / {a.manifest_skip!r}, and it records no `checked` "
-                   f"list, so neither subset path applies."
-                   if not _pf_checked else
-                   f"  {len(_run_pdbs - _pf_checked)} of this run's structure(s) are NOT in the "
-                   f"marker's checked list, e.g. {sorted(_run_pdbs - _pf_checked)[:5]}."))
+                f"{_pf.get('manifest_digest')}, this run is {_manifest_digest}, and it does not "
+                f"cover every structure this run will train on; re-run it.\n"
+                f"  Its selection/skip are {_pf.get('manifest_selection')!r} / "
+                f"{_pf.get('manifest_skip')!r} against this run's "
+                f"{a.manifest_selection!r} / {a.manifest_skip!r}.\n"
+                + (f"  The marker vouches for no KNOWN set of structures: it {_cover_how}."
+                   if _cover is None else
+                   f"  It {_cover_how}, and {len(_uncovered)} of this run's structure(s) are NOT "
+                   f"among them, e.g. {_uncovered[:5]}. Run the preflight for those."
+                   if _uncovered else
+                   f"  It {_cover_how} and covers all of them, but records "
+                   f"{len(_pf.get('mismatches') or [])} mismatch(es) and "
+                   f"{len(_pf.get('missing_trunks') or [])} missing trunk(s), so it authorises "
+                   f"nothing."))
         if not _pf.get("ok"):
             raise SystemExit(f"STOP: {a.alignment_preflight} does not record a pass.")
         # THE MARKER MUST COVER THE WHOLE MANIFEST, not just carry its digest. The digest is
@@ -3206,10 +4369,31 @@ def main():
     # and quietly corrupt the averaged step.
     start_epoch, start_step = 0, 0
     _drift_history = []
+    # THIS RUN'S OWN DEVIATION FROM ITS BUNDLE, or None when it is a clean continuation. It is set
+    # in the resume block below and read twice afterwards -- by the args.json writer at the end of
+    # main() and by eval_checkpoint -- because a drift that lives only in run.log lives nowhere: the
+    # log is ~25k lines and the reader of a result opens args.json and metric_*.json, not the log.
+    _resume_drift = None
     if a.resume:
         if not os.path.exists(a.resume):
             raise SystemExit(f"STOP: no resume bundle at {a.resume}")
         _b = torch.load(a.resume, map_location="cpu", weights_only=False)
+        # IS THIS A RESUME BUNDLE AT ALL? Say so here, not three hundred lines later as a bare
+        # KeyError: 'epoch'. Pointing --resume at head_ep10_step1450.pt -- a weights-only
+        # checkpoint, which is what every save-every write produces and what sits in the same
+        # directory under a very similar name -- cost a launch on Arm B, because the traceback named
+        # a dict key instead of naming the file as the wrong kind of file. A weights-only head can
+        # NOT be resumed: it carries no AdamW moments and no step counter, so the warmup position
+        # and the per-parameter adaptive scales would restart from zero while the log said RESUMED.
+        if not isinstance(_b, dict) or "head" not in _b or "epoch" not in _b or "step" not in _b:
+            _keys = (sorted(_b.keys())[:6] if isinstance(_b, dict) else type(_b).__name__)
+            raise SystemExit(
+                f"STOP: {a.resume} is not a resume bundle.\n"
+                f"  A resume bundle carries 'head', 'opt', 'epoch' and 'step'; this file's top "
+                f"level holds {_keys}.\n"
+                f"  head_ep<N>_step<M>.pt and head_final.pt are WEIGHTS ONLY -- no AdamW moments, "
+                f"no step counter -- so they cannot be resumed from.\n"
+                f"  Resume from resume_ep<N>.pt in the same directory.")
         _g = _b.get("guard", {})
         # INHERITED ON EVERY RESUME, NOT ONLY A DRIFTING ONE. A clean continuation of a run that
         # was itself a fork is still a fork's descendant, and a chain that dropped its history at
@@ -3221,28 +4405,54 @@ def main():
         # let a resume through after the exclusions, the loss weights and the lr had all changed
         # (review 2026-10-16).
         _mine = {"world": world, "seed": a.seed, "accum": a.accum, "nsample": a.nsample,
+                 # THE EPOCH BUILDER IS PART OF THE TRAINING POPULATION, not a tuning knob.
+                 # Toggling --epoch-cover-all on a resume changes WHICH STRUCTURES TRAIN -- the
+                 # group-of-world builder drops every structure with fewer than `world` seeds,
+                 # 412 of 846 here -- while AdamW state is restored as if nothing moved. Absent
+                 # from a bundle written before the flag existed, so it reads as False, which is
+                 # exactly what those runs did. Raised in external review of e4e39731.
+                 "epoch_cover_all": bool(a.epoch_cover_all),
+                 # IT CHANGES THE STEP SHAPE, so by this guard's own stated convention it belongs
+                 # here: poses per forward alters the gradient scaling and, if the counter were
+                 # ever wrong again, the effective batch. Absent from older bundles, so it reads
+                 # as 1 via _PRE_CROP -- which is exactly what those runs did.
+                 "pose_batch": int(a.pose_batch),
+                 # IT CHANGES WHICH UNITS A RANK WALKS, so a resume that moved it would train a
+                 # different per-rank stream while restoring AdamW as if nothing had.
+                 "epoch_balance": bool(a.epoch_balance),
                  "manifest_digest": _manifest_digest, "crop_size": a.crop_size,
+                 # SAVED SINCE THE BEGINNING AND NEVER COMPARED, which is the inert half of the
+                 # half-wiring this file keeps rediscovering from the other side. The skip list
+                 # removes structures from the training population, so moving it moves which poses
+                 # land in which batch -- the loudest class of drift -- and the warning cannot
+                 # report a field nothing compares. manifest_digest is a hash of the resulting
+                 # unit list and so normally catches it, but the digest is absent from every
+                 # bundle written before it was saved, which is exactly when this one is the only
+                 # evidence left.
+                 "manifest_skip": a.manifest_skip,
                  "alpha_confidence": a.alpha_confidence, "alpha_pae": a.alpha_pae,
                  "drop_pde": a.drop_pde, "clip_norm": a.clip_norm,
                  "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
-                 "rank_weight_by_gap": a.rank_weight_by_gap,
+                 "rel_sd_weight": a.rel_sd_weight,
+                 "rel_g_weight": a.rel_g_weight,
+                 "pose_readout_prenorm": a.pose_readout_prenorm,
+                 "pose_readout_post_zero": a.pose_readout_post_zero,
+                 "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
+                 "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                  # THE FOUR CROSS-SEED FIELDS. Every one of them changes the objective or the step
                  # shape, so a resume that moved any of them silently would be a different
                  # experiment wearing the same run id. FOURTH time a field has been added to this
                  # comparison without being added to the saved bundle below -- so both sides are
                  # edited in the same patch, and test_guard_fields.py asserts they agree.
                  "rank_form": a.rank_form,
-                 "rank_tau": (float(a.rank_tau) if a.rank_tau is not None else -1.0),
+                 "rank_accept": a.rank_accept,
                  "rank_cross_seed": a.rank_cross_seed,
-                 "rank_pairs": a.rank_pairs,
-                 "rank_within_weight": a.rank_within_weight,
-                 "rank_topk_decay": a.rank_topk_decay,
-                 "rank_straddle": a.rank_straddle,
                  "rank_structs_per_step": a.rank_structs_per_step,
                  # L2-SP CHANGES THE OBJECTIVE and was missing here: a resume could silently move
                  # lambda and the drift guard would not notice. Caught in review of cd8e6ab7.
+                 "lora_keep_trainable": a.lora_keep_trainable,
                  "l2_sp": a.l2_sp,
                  "l2_sp_exclude": a.l2_sp_exclude,
                  # AND SO DOES THE SCHEDULE. lr_final changes the lr at every step after warmup,
@@ -3275,10 +4485,9 @@ def main():
                  # CROPPING CHANGES THE OBJECTIVE -- the loss averages over a different set of
                  # tokens and pairs -- so resuming across a crop change would blend two experiments
                  # into one curve, which is exactly what this guard exists to stop.
-                 "crop_margin": a.crop_margin, "crop_contact": a.crop_contact,
+                 "crop_contact": a.crop_contact,
                  # A CROP RULE CHANGE IS AN OBJECTIVE CHANGE: the loss averages over a different
                  # set of tokens and pairs, so resuming across it would blend two objectives.
-                 "crop_tokens": _CROP_TOK_DIGEST,
                  # THE CROP DEFINITION ITSELF, not just its radii. a16911de changed the DEFAULT
                  # from the union over all nsample poses to pose 0 alone, so a resume across that
                  # change blends two crop definitions into one curve. f1268fe5 added the field to
@@ -3301,6 +4510,14 @@ def main():
                  # the same shape, and no way to notice afterwards. It changes no mathematics in
                  # the forward, which is exactly why nothing else would catch it.
                  "lean_single": a.lean_single,
+                 # THE PARAMETER SET AGAIN: --pose-inblock ADDS trainable tensors (two, or four
+                 # with --pose-inblock-pae), so a bundle written without it is missing them and
+                 # the _missing check below refuses it anyway. Compared here so the refusal names
+                 # the setting instead of reporting an absent tensor -- the same reason
+                 # frame_direction is compared. The BLOCK matters too: the same two tensors at a
+                 # different depth is a different operator.
+                 "pose_inblock": a.pose_inblock, "pose_inblock_pae": a.pose_inblock_pae,
+                 "pose_inblock_block": a.pose_inblock_block,
                  # NOT JUST THE OBJECTIVE -- THE PARAMETER SET. --frame-direction adds a trainable
                  # tensor, so a bundle written without it is missing one and the _missing check
                  # below refuses it anyway. It is compared here so the refusal names the setting
@@ -3313,6 +4530,11 @@ def main():
                  "pose_perblock_tied": a.pose_perblock_tied,
                  "pose_perblock_share": a.pose_perblock_share,
                  "pose_perblock_copy": a.pose_perblock_copy,
+                 # SAME REASON AGAIN, AND THE LARGEST OF THEM: --pose-mlp adds 15 trainable
+                 # tensors, so a bundle written without it is missing all 15 and the _missing
+                 # check below refuses it anyway. Compared here so the refusal names the setting
+                 # rather than listing absent tensors.
+                 "pose_mlp": a.pose_mlp,
                  # THE PARAMETER SET ITSELF. A bundle written at rank 8 holds 282 adapter
                  # tensors and one written without LoRA holds 248 head tensors; resuming one as
                  # the other fails on the missing-tensor check with a message about tensors
@@ -3352,11 +4574,18 @@ def main():
         # like any other field -- which means a resume that ENABLES cropping shows up as real
         # drift and needs --resume-allow-drift, because it genuinely changes the objective.
         _PRE_CROP = {"lora_rank": 0, "lora_alpha": 0.0, "lora_targets": "", "lora_dropout": 0.0,
+                     # ABSENCE IS EVIDENCE, same reading as --pae-row-frac below. Every bundle
+                     # written before --epoch-cover-all existed ran the group-of-`world` builder,
+                     # which is exactly what False means. Without this entry such a bundle would
+                     # fall through to the unknown-key branch instead of migrating, and a resume
+                     # that TURNS THE FLAG ON still shows as drift -- which is the point, since it
+                     # changes which structures train while AdamW state is restored unchanged.
+                     "epoch_cover_all": False, "pose_batch": 1, "epoch_balance": False,
                      # A bundle written before these flags existed ran the full-run schedule, which
                      # is exactly what the 0 defaults mean, and "cosine" is what it computed.
                      "lr_decay_start_epoch": 0.0, "lr_decay_end_epoch": 0.0,
                      "lr_decay_shape": "cosine", "lr_steps": "",
-                     "pair_dropout": -1.0, "crop_tokens": "",
+                     "pair_dropout": -1.0,
                      "token_keep_union": -1.0, "token_keep_other": -1.0,
                      # ABSENCE IS EVIDENCE: a bundle written before --pae-row-frac existed ran the
                      # unweighted term, which is exactly what frac 0 means. The mass and floor
@@ -3364,7 +4593,7 @@ def main():
                      # weighting ON still shows up as drift on the frac field.
                      "pae_row_frac": 0.0, "pae_row_mass": 0.8, "pae_row_floor": 10,
                  "train_only": "",
-                     "crop_margin": 0.0, "crop_contact": 5.0, "pae_scored_pairs": "",
+                     "crop_contact": 5.0, "pae_scored_pairs": "",
                      # ABSENCE IS EVIDENCE, as for the two above: a bundle written before
                      # a16911de was written by code that had no such flag and always took the
                      # union, so it migrates to True. A resume that switches to pose 0 therefore
@@ -3373,16 +4602,41 @@ def main():
                      "pae_only": False,
                      # A BUNDLE PREDATING THE FLAG TRAINED THE FULL PARAMETER GROUP.
                      "lean_single": False,
+                     # A BUNDLE PREDATING THE FLAG HAD NO IN-BLOCK INJECTION AT ALL.
+                     "pose_inblock": False, "pose_inblock_pae": False,
+                     "pose_inblock_block": -1,
                      "frame_direction": False,
                      "pose_perblock": False, "pose_perblock_tied": False,
                      "pose_perblock_share": False, "pose_perblock_copy": False,
                      "rank_loss": False, "alpha_rank": 1.0,
                      "rank_pool": "max", "rel_labels": "", "rel_standardize": False,
-                     "rank_weight_by_gap": True, "l2_sp": 0.0, "l2_sp_exclude": "",
+                     "rel_sd_weight": False, "rel_std_floor": -1.0,
+                     "rel_g_weight": 0.0, "rel_g_sigmoid": "",
+                     "pose_readout_prenorm": False,
+                     # BOTH SIDES PLUS THE DEFAULT, IN ONE PATCH. Compared and saved without a
+                     # default here, the field lands in _unknown and the unconditional STOP below
+                     # makes EVERY bundle written before it unresumable -- including ctgfwj's
+                     # epoch-80 pause, which is what this arm resumes from.
+                     "pose_readout_post_zero": False,
+                     # A BUNDLE PREDATING THE FLAG HAD NO NONLINEAR BRANCH, which is what False
+                     # says. Defaulted on BOTH sides in the same patch, for the reason the
+                     # comment above gives: a field compared and saved without a default here
+                     # lands in _unknown and makes every earlier bundle unresumable.
+                     "pose_mlp": False,
                      # A BUNDLE PREDATING THESE RAN THE LINEAR WITHIN-SEED LOSS, which is what
                      # these defaults say. rank_tau -1.0 means "unset", matching how the
                      # comparison side encodes None.
-                     "rank_form": "linear", "rank_tau": -1.0,
+                     # rank_tau's FLAG AND ITS READER WERE DELETED with the forms that used it
+                     # (see the saved-side comment), so a default for it compared against nothing
+                     # was the one thing keeping test_guard_fields.py red -- which is why the
+                     # half-wired pose_readout_post_zero went in unnoticed.
+                     "rank_form": "linear",
+                     # THE FLAG'S OWN DEFAULT, so a bundle predating it resumes clean. Any value
+                     # is equally inert on such a bundle -- no zsoftmax term ran there, and under
+                     # --rank-form rel the field is not read at all -- so recording the shipped
+                     # default is the honest migration rather than a sentinel that would make
+                     # every earlier bundle, the live full-set chain's among them, unresumable.
+                     "rank_accept": 0.23,
                      "rank_cross_seed": False, "rank_structs_per_step": 2,
                      # A BUNDLE PREDATING THESE THREE RAN CROSS-SEED PAIRS ONLY, AT NATURAL
                      # WEIGHT, WITH NO RANK DECAY -- which is what these defaults say. Their
@@ -3392,8 +4646,6 @@ def main():
                      # cannot be overridden, which would have made every pre-patch bundle --
                      # including the live zg5fnw's per-epoch held-out subprocess, which resumes
                      # its own bundle through this same file -- unresumable.
-                     "rank_pairs": "cross", "rank_within_weight": 1.0, "rank_topk_decay": 0.0,
-                     "rank_straddle": 0.0,
                      # A BUNDLE PREDATING --lr-final HELD lr FLAT AFTER WARMUP, which is exactly
                      # what lr_final 0.0 means -- the flag's own help says 0 "keeps the historical
                      # schedule ... hold --lr flat for the whole run, which is what every arm
@@ -3405,18 +4657,58 @@ def main():
         _migrated = []
 
         _bad, _from_args, _unknown = {}, [], []
+        # rank_form IS INERT WHEN NEITHER SIDE RUNS A RANKING TERM, and comparing it then refuses
+        # a resume over a field that changed nothing.
+        #
+        # Every bundle written before the forms were cut down records rank_form 'linear', because
+        # that was the argparse default and it was saved whether or not --rank-loss was passed.
+        # 'rel' is now the only legal value, so EVERY pre-deletion PAE-only bundle became
+        # unresumable -- vdmheg's epoch 27 among them, which is how this was found. The field
+        # describes the SHAPE of a term that is not in the loss, so when rank_loss is false on
+        # both sides a difference cannot blend two experiments into one curve, which is the thing
+        # this guard exists to prevent.
+        #
+        # NARROW ON PURPOSE: if either side trains a ranking term, rank_form is compared as
+        # before. The alternative -- --resume-override rank_form -- would work once and would
+        # also disarm the guard for that field on the NEXT resume, which is exactly the
+        # disarming the override's own warning describes.
+        _rank_inert = (not bool(_g.get("rank_loss", False))) and (not bool(a.rank_loss))
+        # UNSET IS UNSET, however it was spelled when the bundle was written. The guard normalises
+        # the CURRENT value of these two -- `a.rel_g_sigmoid or ""` and `-1.0 if rel_std_floor is
+        # None` -- but compared it against the bundle's raw None, so an older bundle reported
+        # "rel_g_sigmoid: bundle None vs this run ''" and refused a resume over a difference that
+        # does not exist. Normalise BOTH sides instead of waiving it: a waiver would also hide a
+        # real change to the same field on the next resume that reused the command line.
+        #
+        # THE LIST IS COMPLETE, AUDITED RATHER THAN GUESSED: exactly three flags in this file take
+        # `default=None` (--rank-labels, --rel-std-floor, --rel-g-sigmoid) and --rank-labels is not
+        # a guard field, so these two are the only fields whose "unset" has two spellings. Anything
+        # added with `default=None` AND compared above belongs here in the same patch, or it
+        # reproduces the Arm B refusal: "rel_g_sigmoid: bundle None vs this run ''".
+        _UNSET_AS = {"rel_g_sigmoid": "", "rel_std_floor": -1.0}
+
+        def _norm(k, x):
+            return _UNSET_AS[k] if (k in _UNSET_AS and x is None) else x
+
         for k, v in _mine.items():
+            if k == "rank_form" and _rank_inert:
+                continue
             if k in _g:
-                if _g[k] != v:
+                if _norm(k, _g[k]) != _norm(k, v):
                     _bad[k] = (_g[k], v)
             elif k in _fallback:
-                if _fallback[k] != v:
+                if _norm(k, _fallback[k]) != _norm(k, v):
                     _bad[k] = (_fallback[k], v)
                 else:
                     _from_args.append(k)
             elif k in _PRE_CROP:
                 _migrated.append(k)
-                if _PRE_CROP[k] != v:
+                # THROUGH _norm ON THIS SIDE TOO. rel_std_floor's migration default is -1.0 and
+                # _mine encodes unset as -1.0, so they agree today -- but a default written as
+                # None here (the natural way to spell "unset") would have compared raw against a
+                # normalised current value and reported drift that does not exist, which is the
+                # same bug as the bundle side above, one dict over.
+                if _norm(k, _PRE_CROP[k]) != _norm(k, v):
                     _bad[k] = (f"{_PRE_CROP[k]} (pre-crop default)", v)
             else:
                 _unknown.append(k)
@@ -3427,6 +4719,27 @@ def main():
         if _from_args:
             print(f"  resume guard: {len(_from_args)} field(s) absent from the bundle and matched "
                   f"against {os.path.basename(_side)} instead: {', '.join(sorted(_from_args))}")
+        # THE GUARD RECORDS; IT DOES NOT REFUSE. Everything from here to the optimiser load is a
+        # WARNING, and the only hard stops left are the ones where the state cannot be
+        # reconstructed at all: not a resume bundle (above), a missing trainable tensor, missing or
+        # mismatched AdamW moments (below).
+        #
+        # WHY IT CHANGED. Resuming Arm B's epoch-10 bundle to add a cosine decay took FOUR failed
+        # launches, none of which found a real problem: `world` recorded in neither the bundle nor
+        # args.json was a hard STOP telling the user to relaunch from scratch; rel_g_sigmoid and
+        # rel_std_floor compared "unset" against "unset" and refused over two flags a PAE-only arm
+        # never reads; and naming `world` in --resume-override then became a "stale override"
+        # error on the next attempt because the real bundle DID record it. The weights and the
+        # moments were intact every time. A guard that costs four launches to accept a correct
+        # resume is not protecting the result -- it is spending GPU hours to be obeyed.
+        #
+        # WHAT REPLACES THE REFUSAL. A changed lr, loss weight or rank setting makes this run a
+        # FORK of the bundle, which is a fact the reader of the result needs and not a reason to
+        # stop the run. So it is printed loudly, grouped by severity, AND stamped where results
+        # are actually read: resume_drift.json, the run's args.json, and every metric_*.json the
+        # run writes. run.log is ~25k lines; a warning that only lands there is a warning nobody
+        # will see.
+        _ovr = {f.strip() for f in a.resume_override.split(",") if f.strip()}
         if _unknown:
             # manifest_digest is the only field in neither place. It is a hash of the unit list,
             # which is determined by the selection file and the skip list -- and manifest_skip IS
@@ -3435,41 +4748,87 @@ def main():
             # unverified field is not a verified one.
             print(f"  resume guard: {len(_unknown)} field(s) in neither the bundle nor "
                   f"{os.path.basename(_side)}, so NOT compared: {', '.join(sorted(_unknown))}")
-            for k in _unknown:
-                if k != "manifest_digest":
-                    raise SystemExit(
-                        f"STOP: {k} is recorded nowhere for this bundle, so a resume cannot show "
-                        f"the setting is unchanged. Relaunch from scratch instead.")
+            # AN UNRECORDED FIELD IS NOT A MISMATCH AND NEVER WAS. The guard grew fields faster
+            # than the bundles in flight could record them -- Arm B's epoch-10 bundle has no
+            # `world` -- and the old hard STOP demanded either --resume-override world or a
+            # from-scratch rerun of ten epochs the checkpoint already holds. It fired on the
+            # ABSENCE of evidence, which is not evidence of a changed setting. It is now a line
+            # in the warning and in the recorded drift, where a later reader can see exactly
+            # which settings this resume could not verify.
+            print(f"    they are UNVERIFIED, not refused: the bundle predates them, so this "
+                  f"resume cannot show they are unchanged. Recorded under "
+                  f"resume_drift.not_compared.")
             print(f"    manifest_digest is a hash of the unit list; manifest_skip "
                   f"({_g.get('manifest_skip')!r}) and the selection file determine that list and "
                   f"manifest_skip is compared, so the population is checked by its inputs.")
-        # NAMED OVERRIDES, NOT A BLANKET ONE. --resume-allow-drift accepts every difference,
-        # including the one you did not know you had made -- which is how a resume that was meant
-        # to change only the lr can also silently change the crop. --resume-override names the
-        # fields, so an unnamed difference is still refused.
-        _ovr = {f.strip() for f in a.resume_override.split(",") if f.strip()}
-        _unknown_ovr = sorted(_ovr - set(_mine))
+        _unknown_ovr = sorted(_ovr - set(_mine) - set(_unknown))
         if _unknown_ovr:
-            raise SystemExit(
-                f"STOP: --resume-override names {len(_unknown_ovr)} field(s) the guard does not "
-                f"have: {_unknown_ovr}.\n"
-                f"  A typo here protects nothing -- the field it was meant to allow stays refused "
-                f"and the one it mistyped is not a field at all.\n"
-                f"  The guard's fields are: {', '.join(sorted(_mine))}")
-        # A STALE OVERRIDE IS ALSO AN ERROR. A name left on the command line after the setting it
-        # covered went back to matching still disarms the guard for that field on the NEXT resume
-        # that reuses the line, and nothing would say so.
-        _stale = sorted(_ovr - set(_bad))
-        if _stale and not a.resume_allow_drift:
-            raise SystemExit(
-                f"STOP: --resume-override names {len(_stale)} field(s) that do not differ from the "
-                f"bundle: {_stale}.\n"
-                f"  Drop them. Left in place they disarm the guard for those fields on the next "
-                f"resume that reuses this command line.")
+            print(f"  WARNING: --resume-override names {len(_unknown_ovr)} field(s) the guard "
+                  f"does not have: {_unknown_ovr} -- a typo, and it protects nothing. "
+                  f"The guard's fields are: {', '.join(sorted(_mine))}")
+        # A STALE OVERRIDE IS A WARNING, NOT AN ERROR. It used to be a SystemExit, on the reasoning
+        # that a name left on the command line disarms the guard for that field on the next resume.
+        # It fired on Arm B's fourth launch for the opposite reason: `world` had to be named to get
+        # past the unrecorded-field stop on one bundle, and the NEXT bundle recorded it, so the
+        # same command line became an error. That is the guard's own inconsistency, not the user's
+        # mistake -- and with nothing refused by name any more, a stale name disarms nothing.
+        _stale = sorted(_ovr - set(_bad) - set(_unknown))
+        if _stale:
+            print(f"  note: --resume-override names {len(_stale)} field(s) that do not differ "
+                  f"from the bundle: {_stale}. Harmless; they can be dropped.")
+        # TWO SEVERITIES, BECAUSE THE TWO FAIL DIFFERENTLY. A changed lr or alpha is an ordinary
+        # fork: both runs are well-defined and the curve simply has a kink in it. A changed world,
+        # accum, seed, manifest or crop changes WHICH POSES LAND IN WHICH BATCH, so the restored
+        # AdamW moments -- exp_avg and exp_avg_sq accumulated over a different sampling -- describe
+        # a different problem than the one about to be trained. Same for anything that moves the
+        # trainable tensor set (lean_single, train_only, the LoRA and pose-injection flags): the
+        # moments are keyed by position in the param group, so a changed set means moments landing
+        # on different tensors. That last class is also checked numerically below and hard-fails
+        # there; it is named here so the warning says WHICH SETTING did it.
+        # manifest_selection IS DELIBERATELY NOT IN THIS SET: nothing compares it, and a name here
+        # for a field the guard does not check would be the same inert half-guard the comparison
+        # dict's comments describe five times over. manifest_digest hashes the unit list the
+        # selection produces, and manifest_skip is compared beside it.
+        _DRIFT_POPULATION = {"world", "accum", "seed", "nsample", "manifest_digest",
+                             "manifest_skip", "crop_size",
+                             # THE CROSS-SEED PACKING IS STEP SHAPE, not just objective: the
+                             # builder puts S structures x their seeds in one step, so moving
+                             # either field changes what a step IS, which the comparison dict's
+                             # own comment calls out ("changes the objective or the step shape").
+                             "rank_cross_seed", "rank_structs_per_step",
+                             # THE EPOCH BUILDERS BELONG HERE BY THE SAME ARGUMENT the comparison
+                             # dict above makes for them: --epoch-cover-all changes which
+                             # structures train at all, --pose-batch the poses per forward, and
+                             # --epoch-balance which units a rank walks.
+                             "epoch_cover_all", "pose_batch", "epoch_balance",
+                             # THE CROP DEFINITION DECIDES WHICH TOKENS AND PAIRS the loss
+                             # averages over, which is the same class of change as a different
+                             # manifest, not a schedule knob.
+                             "crop_contact", "crop_all_poses", "pae_scored_pairs",
+                             "token_keep_union", "token_keep_other",
+                             # THE PARAMETER SET. Each of these adds, drops or renames trainable
+                             # tensors, so the saved moments can land on the wrong ones.
+                             "lean_single", "train_only", "lora_rank", "lora_alpha",
+                             "lora_targets", "lora_dropout", "lora_keep_trainable",
+                             "frame_direction", "pose_inblock", "pose_inblock_pae",
+                             "pose_inblock_block", "pose_perblock", "pose_perblock_tied",
+                             "pose_perblock_share", "pose_perblock_copy",
+                             "pose_readout_prenorm", "pose_readout_post_zero",
+                             # THE BIGGEST OF THE PARAMETER-SET FLAGS: 15 tensors, and its second
+                             # layers sit at six different sites, so moments landing on the wrong
+                             # one would be moments for a different site.
+                             "pose_mlp"}
+        _hot = {k: v for k, v in _bad.items() if k in _DRIFT_POPULATION}
+        _warm = {k: v for k, v in _bad.items() if k not in _DRIFT_POPULATION}
         _unnamed = {k: v for k, v in _bad.items() if k not in _ovr}
-        if _unnamed and not a.resume_allow_drift:
+        # THE OLD STRICTNESS, STILL AVAILABLE, NOW OPT-IN. --resume-strict restores the refusal of
+        # an unnamed difference for anyone who wants a resume to be a continuation or nothing --
+        # which is a legitimate thing to want for a chain of bundles meant to read as one run.
+        # It is NOT the default, because the default cost four launches, and --resume-allow-drift
+        # is NOT the default path either: drift is allowed on its own, loudly and on the record.
+        if _unnamed and a.resume_strict and not a.resume_allow_drift:
             raise SystemExit(
-                "STOP: this resume bundle was written under different settings:\n"
+                "STOP (--resume-strict): this resume bundle was written under different settings:\n"
                 + "".join(f"  {k}: bundle {b!r} vs this run {m!r}\n"
                           for k, (b, m) in _unnamed.items())
                 + "  Changes to world/seed/accum/nsample/manifest_digest/crop_size move which poses\n"
@@ -3478,60 +4837,91 @@ def main():
                   "  the schedule, so continuing would blend two experiments into one curve.\n"
                   "  Match the settings, relaunch from scratch, or accept these deliberately with\n"
                   f"    --resume-override {','.join(sorted(_unnamed))} --resume-note '<why>'\n"
-                  "  (--resume-allow-drift accepts everything at once, including what you did not\n"
-                  "  intend). Either way it is recorded in resume_drift.json and carried forward in\n"
-                  "  every bundle this run writes.")
-        # AN UNEXPLAINED DEVIATION IS THE ONE A LATER READER CANNOT TELL FROM A MISTAKE --
-        # EXCEPT UNDER --loss-only, WHICH IS NOT A DEVIATION AT ALL. A measurement does not
-        # continue the bundle's schedule; it reads the bundle's weights, writes no checkpoint and
-        # takes no step, so there is nothing for a later reader to mistake. The same reasoning
-        # already exempts it from the epoch-count refusal below.
-        #
-        # THIS WAS LEARNED THE EXPENSIVE WAY, on the live run. The epoch-7 held-out pass died
-        # with "accepts 5 changed setting(s) (lr, manifest_digest, pae_scored_pairs,
-        # warmup_steps, world) and --resume-note is empty" -- a held-out fold legitimately
-        # differs from the training bundle in all five. Passing the note from the subprocess
-        # command does NOT fix it: the trainer that spawns that subprocess has its own code
-        # loaded in memory and keeps sending the old argument list, while the subprocess reads
-        # this file fresh from disk. Any mandatory flag added here breaks every RUNNING trainer's
-        # monitor the moment the file is saved. A measurement must never be able to do that.
-        if _bad and not a.resume_note.strip() and not a.loss_only:
-            raise SystemExit(
-                f"STOP: this resume accepts {len(_bad)} changed setting(s) "
-                f"({', '.join(sorted(_bad))}) and --resume-note is empty.\n"
-                f"  Say why in one line. It is written to resume_drift.json and travels in every "
-                f"bundle this run writes, which is what lets the next reader tell a deliberate "
-                f"fork from a mismatch nobody noticed.")
+                  "  or drop --resume-strict, which allows them with a warning on the record.")
+        # THE BANNER IS FOR DRIFT THAT WAS MEASURED, NOT FOR DRIFT THAT COULD NOT BE. An unverified
+        # field is reported in the three lines above and stops there: manifest_digest is unrecorded
+        # on EVERY bundle written before it was saved, so banner-shouting "THIS RUN IS A FORK" at a
+        # pristine continuation -- and stamping resume_drift into its args.json and every
+        # metric_*.json -- would make the stamp mean nothing by the time a real fork carried it.
+        # The unverified list still travels inside the record whenever there IS drift.
         if _bad:
-            _via = "--resume-allow-drift" if (a.resume_allow_drift and _unnamed) \
-                else "--resume-override"
-            print(f"ACCEPTING RESUME DRIFT ({_via}); this run is a FORK of the bundle, "
-                  f"not a continuation of it:")
-            for k, (b, m) in _bad.items():
-                print(f"  {k}: bundle {b!r} -> this run {m!r}"
-                      + ("" if k in _ovr else "   <- NOT NAMED, accepted by the blanket flag"))
-            print(f"  why: {a.resume_note.strip()}")
+            # A MEASUREMENT IS NOT A FORK, so it gets one line rather than the banner and stamps
+            # nothing. --loss-only reads the bundle's weights, takes no step and writes no
+            # checkpoint; the held-out monitor legitimately differs from the training bundle in
+            # the fold, the selection, the seed range, the lr and the epoch count, and it runs
+            # once per epoch for the life of the run. Banner-shouting at every one of those would
+            # train the reader to ignore the banner, which is the only thing it has going for it.
+            if a.loss_only:
+                print(f"  --loss-only: {len(_bad)} setting(s) differ from the bundle "
+                      f"({', '.join(sorted(_bad))}) and {len(_unknown)} are unrecorded. A "
+                      f"measurement does not continue the bundle's schedule, so this is not a "
+                      f"fork and nothing is stamped.")
+            else:
+                _note = a.resume_note.strip()
+                print("\n" + "=" * 78)
+                print("RESUME DRIFT ALLOWED -- THIS RUN IS A FORK OF THE BUNDLE, NOT A "
+                      "CONTINUATION OF IT")
+                print(f"  bundle   {os.path.abspath(a.resume)}")
+                print(f"  written  epoch {int(_b['epoch'])}, step {int(_b['step'])}, commit "
+                      f"{str(_g.get('commit', '?'))[:8]}, {_g.get('written', '?')}")
+                if _hot:
+                    print(f"  *** {len(_hot)} BATCH-COMPOSITION / PARAMETER-SET field(s) changed. "
+                          f"THE RESTORED ADAMW MOMENTS DESCRIBE A DIFFERENT PROBLEM:")
+                    for k, (b, m) in sorted(_hot.items()):
+                        print(f"  ***   {k}: bundle {b!r} -> this run {m!r}")
+                    print(f"  *** exp_avg and exp_avg_sq were accumulated over a different "
+                          f"sampling of the data. The run will train, and the first steps will "
+                          f"be scaled by moments that do not belong to them.")
+                if _warm:
+                    print(f"  {len(_warm)} schedule/objective field(s) changed -- an ordinary "
+                          f"fork; the curve has a kink at this epoch:")
+                    for k, (b, m) in sorted(_warm.items()):
+                        print(f"      {k}: bundle {b!r} -> this run {m!r}")
+                if _unknown:
+                    print(f"  {len(_unknown)} field(s) UNVERIFIED (recorded in neither the bundle "
+                          f"nor its args.json): {', '.join(sorted(_unknown))}")
+                # AN UNEXPLAINED DEVIATION IS THE ONE A LATER READER CANNOT TELL FROM A MISTAKE.
+                # It used to be a hard STOP when --resume-note was empty, which is a refusal over
+                # a missing sentence while the weights and moments are perfectly fine. Now the
+                # missing explanation is itself recorded, in the file the reader opens: "(none
+                # given)" beside the fields is the same information, and it does not cost a
+                # launch.
+                print(f"  why: {_note if _note else '(none given -- pass --resume-note next time)'}")
+                print("=" * 78 + "\n", flush=True)
+        if _bad and not a.loss_only:
             # CARRIED FORWARD, NOT JUST PRINTED. A fork of a fork must still be readable as one,
             # so this run's deviation is appended to whatever history the bundle already carried
             # and the whole chain goes into every bundle this run writes.
-            _drift_history.append({
+            _resume_drift = {
                 "from_bundle": os.path.abspath(a.resume),
                 "bundle_commit": _g.get("commit", "?"),
                 "bundle_written": _g.get("written", "?"),
                 "bundle_epoch": int(_b["epoch"]), "bundle_step": int(_b["step"]),
                 "accepted_at": _dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-                "via": _via,
+                "via": ("--resume-allow-drift" if (a.resume_allow_drift and _unnamed)
+                        else "--resume-override" if _ovr else "allowed with a warning"),
                 "note": a.resume_note.strip(),
                 "fields": {k: {"bundle": b, "this_run": m} for k, (b, m) in _bad.items()},
+                # THE SEVERITY TRAVELS WITH THE FIELDS. A reader opening metric_valfull_ep14.json
+                # a month from now must be able to tell "the lr changed here" from "the moments
+                # belong to a different sampling" without reconstructing this file's reasoning.
+                "batch_composition": sorted(_hot),
+                "schedule_objective": sorted(_warm),
+                "not_compared": sorted(_unknown),
                 "named": sorted(_ovr & set(_bad)),
                 "unnamed": sorted(_unnamed),
-            })
+                # HOW DEEP THE CHAIN IS. A fork of a fork of a fork is a different claim than a
+                # single deliberate schedule change, and the count says which this is.
+                "prior_forks": len(_drift_history),
+            }
+            _drift_history.append(_resume_drift)
             if is_main:
                 _dp = os.path.join(a.out, "resume_drift.json")
                 try:
                     with open(_dp, "w") as _fh:
                         json.dump(_drift_history, _fh, indent=1, default=str)
-                    print(f"  recorded -> {_dp}")
+                    print(f"  drift recorded -> {_dp}, the run's args.json (resume_drift) and "
+                          f"every metric_*.json this run writes")
                 except Exception as _e:
                     print(f"  (could not write {_dp}: {type(_e).__name__}: {_e})")
         # NOT UNDER --loss-only. A measurement does not continue the bundle's schedule, it reads
@@ -3580,6 +4970,61 @@ def main():
         # its moments are dead weight -- and after inheriting a 3-tensor set above, the live param
         # group still holds 248, so load_state_dict would raise on the size mismatch.
         if not a.loss_only:
+            # THE ONE THING THAT IS NOT A JUDGMENT CALL. Every setting difference above is now
+            # allowed with a warning, because a fork is a fact about the result and not a broken
+            # run. This is different: AdamW's state_dict is keyed by the parameter's INDEX in its
+            # param group, so loading moments saved for one tensor set onto another puts exp_avg
+            # and exp_avg_sq on the WRONG TENSORS. torch does not check this -- load_state_dict
+            # casts each saved moment to its target's dtype and device and accepts a shape
+            # mismatch silently in the cases that do not happen to broadcast -- and nothing
+            # afterwards would reveal it: the loss keeps falling, just adapted by the wrong
+            # second moments. --lean-single alone drops 158 tensors from the group and many of
+            # the survivors share shapes, which is exactly the case where no error is raised.
+            #
+            # So the count and every moment's shape are checked HERE, before the load, and a
+            # mismatch is a hard STOP. A resume that cannot restore the optimiser is not a fork of
+            # the bundle; it is a weights-only warm start wearing a resume's name.
+            _os_sd = _b["opt"] if isinstance(_b.get("opt"), dict) else {}
+            _os_state = _os_sd.get("state") or {}
+            _os_params = [i for _gp in (_os_sd.get("param_groups") or [])
+                          for i in (_gp.get("params") or [])]
+            _live = [_p for _gp in opt.param_groups for _p in _gp["params"]]
+            if not _os_state:
+                raise SystemExit(
+                    f"STOP: {a.resume} carries no AdamW moments (opt.state is "
+                    f"{'absent' if 'opt' not in _b else 'empty'}), so the adaptive scales and the "
+                    f"warmup position cannot be restored.\n"
+                    f"  Resuming anyway would restart exp_avg and exp_avg_sq from zero while the "
+                    f"log said RESUMED -- a weights-only warm start, which is the one thing a "
+                    f"resume exists not to be.")
+            if len(_os_params) != len(_live):
+                raise SystemExit(
+                    f"STOP: {a.resume} saved AdamW state for {len(_os_params)} parameter(s) and "
+                    f"this run's optimiser holds {len(_live)}.\n"
+                    f"  AdamW state is keyed by position in the param group, so the saved moments "
+                    f"would land on different tensors. This is NOT waivable: the settings that "
+                    f"change the trainable set are --lean-single, --train-only, --lora-*, "
+                    f"--frame-direction, --pose-inblock* and --pose-perblock*; the drift warning "
+                    f"above names whichever of them moved.")
+            _shape_bad = []
+            for _i, _p in enumerate(_live):
+                _st = _os_state.get(_i, _os_state.get(str(_i)))
+                if not isinstance(_st, dict):
+                    continue
+                for _mk in ("exp_avg", "exp_avg_sq"):
+                    _mt = _st.get(_mk)
+                    if _mt is not None and tuple(_mt.shape) != tuple(_p.shape):
+                        _shape_bad.append((_i, _mk, tuple(_mt.shape), tuple(_p.shape)))
+            if _shape_bad:
+                raise SystemExit(
+                    f"STOP: {len(_shape_bad)} saved AdamW moment(s) do not match the shape of the "
+                    f"parameter they would be restored onto, e.g.\n"
+                    + "".join(f"  param {_i} {_mk}: bundle {_bs} vs this run {_ms}\n"
+                              for _i, _mk, _bs, _ms in _shape_bad[:4])
+                    + f"  The counts agree ({len(_live)}), so the param group holds the same "
+                      f"NUMBER of tensors in a different order or at different widths -- "
+                      f"restoring these would adapt each parameter by another parameter's "
+                      f"second moment. Match the architecture flags to the bundle's.")
             opt.load_state_dict(_b["opt"])
         start_epoch, start_step = int(_b["epoch"]), int(_b["step"])
         if a.loss_only:
@@ -3633,6 +5078,21 @@ def main():
                 for n in sorted(_drop):
                     print(f"    excluded  {n[len(_pfx_sp) + 1:]}")
         _l2sp_params = [(n, pp) for n, pp in model.named_parameters() if n in _tset_sp]
+        # L2-SP ANCHORS THE NONLINEAR BRANCH AT ZERO, WHICH IS A PENALTY TOWARD "OFF". The anchor
+        # is snapshotted from the initial weights, and --pose-mlp's six second layers ARE exactly
+        # zero there, so with the branch inside the anchor the penalty pulls the whole thing back
+        # toward contributing nothing, at the full lambda, for the length of the run. The arm
+        # would report a six-site nonlinear branch while the objective fights it. Said out loud
+        # rather than refused, because the same is true of frame_dir_proj and of every zero-init
+        # readout arm this project has run, so a refusal would be a new rule applied to one flag;
+        # --l2-sp-exclude pose_mlp is the fix when it is not what was meant.
+        if a.pose_mlp and is_main and any("pose_mlp" in n for n, _ in _l2sp_params):
+            print("  NOTE --l2-sp WITH --pose-mlp: the branch's six second layers are anchored at "
+                  "their initial value, which is EXACTLY ZERO, so the penalty pulls the nonlinear "
+                  "branch back toward off for the whole run. Pass --l2-sp-exclude pose_mlp_out "
+                  "(or pose_mlp) if the branch is meant to be free to grow. Layer 1 is anchored "
+                  "at its random init, which is a shrink toward a random projection rather than "
+                  "toward zero.")
         if a.resume:
             # THE ANCHOR BELONGS TO THE LINEAGE, NOT THE DIRECTORY. A resume writes to a FRESH
             # directory and launch.py refuses a non-empty one, so there is no window in which to
@@ -3702,12 +5162,24 @@ def main():
     # the other two accumulated rows forever and wrote none, so the csv described a third of the
     # run while reading like the whole of it. Review round 6 caught that.
     crop_p = ""
-    if a.crop_margin > 0 or a.crop_tokens:
+    if _USE_CROP:
         _base = a.crop_log or os.path.join(a.out, "crop_sizes.csv")
         _stem, _ext = os.path.splitext(_base)
         crop_p = f"{_stem}_rank{rank}{_ext or '.csv'}"
 
     traj_p = os.path.join(a.out, "trajectory.csv")
+    # AND A PER-RANK COPY, for the same reason crop_sizes.csv got one above. trajectory.csv is
+    # written by rank 0 alone (write_traj=is_main), so its per-pose columns describe the third of
+    # the units rank 0 walked while reading like the whole run -- which is how five plotters came
+    # to report a rank-local mean. The per-EPOCH curve is safe either way, because batch_<term> is
+    # already reduced across ranks; what is NOT recoverable from rank 0 alone is any per-pose
+    # question that filters by pdb (an unwinnable-structure filter, a per-structure histogram),
+    # because the other ranks' poses were never written down anywhere.
+    #
+    # trajectory.csv is left exactly as it is so nothing that reads it today changes. This is an
+    # ADDITIONAL file per rank, rank 0 included, so the full set is self-describing rather than
+    # "the main one plus the others".
+    traj_rank_p = os.path.join(a.out, f"trajectory_rank{rank}.csv")
     # THE BATCH COLUMNS ARE THE CURVE; the bare TERMS are the single pose that happened to be last.
     # batch_<term> is the mean over ALL accum_eff poses in the step, reduced across every rank, and
     # batch_n is how many actually contributed -- accum_eff on a normal step, fewer on the partial
@@ -3737,6 +5209,10 @@ def main():
     # and is not representative of the 499 that follow.
     _T = collections.defaultdict(float)
     _TN = collections.defaultdict(int)
+    # {(bucket_key, n_tok): [seconds, calls]} -- forward and backward GPU time against the pose's
+    # OWN token count, so the cost-vs-length exponent is measured rather than fitted. See the
+    # comment on _gpu_span for why the trajectory.csv-derived version was not good enough.
+    _T_TOK = {}
     # [units run UNCHECKPOINTED, units run CHECKPOINTED] under --ckpt-token-threshold. Reported
     # per epoch because a threshold that silently matches nothing -- or everything -- looks
     # exactly like a threshold that works until the timings fail to move.
@@ -3744,31 +5220,76 @@ def main():
     # loader filters only __n and so counts __meta as a structure, which is why it prints one more
     # than it has. Filter both.
     _CROPTOK = {}
-    if a.crop_tokens:
-        _ctz = np.load(a.crop_tokens)
-        _CROPTOK = {k: np.asarray(_ctz[k]).astype(bool) for k in _ctz.files
-                    if not (k.endswith("__n") or k.endswith("__pairs") or k == "__meta")}
-        # THE SCORED PAIRS PER STRUCTURE, as asym indices. Needed by --token-keep-*: a draw must
-        # leave BOTH chains of EVERY supervised pair scoreable, and "two chains survived
-        # somewhere" does not establish that for a four-chain complex -- 81% of this pool has more
-        # than one scored pair. Absent on a mask built before the builder wrote them, which the
-        # draw refuses rather than silently checking a weaker condition. Raised in review.
-        _CROPPAIRS = {k[:-7]: np.asarray(_ctz[k]).reshape(-1, 2)
-                      for k in _ctz.files if k.endswith("__pairs")}
-        # the content digest is computed at STARTUP (see _CROP_TOK_DIGEST), because the resume
-        # guard dict is built before this loader runs. Reported here so a run's log says which
-        # mask it actually trained on.
-        _ctn = {k[:-3]: np.asarray(_ctz[k]) for k in _ctz.files if k.endswith("__n")}
-        _kf = [float(v[1]) / float(v[2]) for v in _ctn.values()] or [float("nan")]
-        _forced = [int(v[5]) for v in _ctn.values() if len(v) > 5]
+    _CROPPOOL = {}
+    # {pdb: bincount of the UNCROPPED asym_id}, so n_pair_tokens for a pair (i, j) is
+    # counts[i] + counts[j] exactly as (asym == i) | (asym == j) would have summed it.
+    _UNCROP_CHAIN_N = {}
+    # VALIDATED AGAINST THE POOL AT LOAD, not trusted. An index past a structure's crop count, or
+    # an empty list, would otherwise surface as an IndexError hundreds of units in or silently
+    # pin every epoch to one crop.
+    _CROP_ALLOW = {}
+    if a.crop_allow:
+        # THE FLAG, NOT THE DICT. _CROPPOOL is filled LAZILY, one structure at a time as units
+        # arrive, so it is empty here even on a --crop-pool run -- the first version tested it and
+        # refused every launch with "has nothing to restrict". The bound check against each
+        # structure's crop count therefore cannot happen here either; it happens in _crop_masks,
+        # where _rows is in hand, on the first unit of each restricted structure.
+        if not a.crop_pool:
+            raise SystemExit("STOP: --crop-allow without --crop-pool has nothing to restrict.")
+        with open(a.crop_allow) as _fh:
+            _raw = json.load(_fh)
+        for _p, _v in _raw.items():
+            _vv = sorted({int(x) for x in _v})
+            if not _vv:
+                raise SystemExit(f"STOP: --crop-allow leaves {_p} with no usable crop.")
+            if _vv[0] < 0:
+                raise SystemExit(f"STOP: --crop-allow gives {_p} a negative index {_vv[0]}.")
+            _CROP_ALLOW[_p] = _vv
         if is_main:
-            print(f"CROP: precomputed token masks from {a.crop_tokens} -- {len(_CROPTOK)} "
-                  f"structure(s), median kept fraction {float(np.median(_kf)):.4f}, built from "
-                  f"{int(np.median([v[0] for v in _ctn.values()]))} pose(s) each (median)"
-                  + f", content digest {_CROP_TOK_DIGEST}"
-                  + (f", ground-truth contacts forced in (median {int(np.median(_forced))} "
-                     f"token(s) added, max {max(_forced)})" if _forced else
-                     " -- NO --force-gt, so interface coverage is NOT guaranteed"))
+            print(f"  --crop-allow: {len(_CROP_ALLOW)} structure(s) restricted from "
+                  f"{os.path.basename(a.crop_allow)}: "
+                  + ", ".join(f"{_p} {len(_v)} crop(s)"
+                              for _p, _v in sorted(_CROP_ALLOW.items())))
+
+    def _uncrop_npt(pdb_, pair_):
+        """Uncropped scored chain-pair token count, or None when not cropping."""
+        if not _CROPPOOL:
+            return None
+        c_ = _UNCROP_CHAIN_N.get(pdb_)
+        if c_ is None:
+            raise SystemExit(f"STOP: no uncropped chain counts cached for {pdb_}; the crop mask "
+                             f"must be applied before the rel score is taken.")
+        i_, j_ = int(pair_[0]), int(pair_[1])
+        if i_ >= len(c_) or j_ >= len(c_):
+            raise SystemExit(f"STOP: {pdb_} pair {pair_} is outside its uncropped asym range.")
+        return int(c_[i_]) + int(c_[j_])
+    if a.crop_pool:
+        # ONE FILE PER STRUCTURE, each holding N masks of possibly DIFFERENT lengths -- a pool can
+        # mix crop sizes, because 28 structures needed a larger rung to reach 40 passing crops.
+        # So the masks are kept as a list of index arrays rather than one rectangular block.
+        for _f in sorted(os.listdir(a.crop_pool)):
+            if not _f.endswith(".npz"):
+                continue
+            _z = np.load(os.path.join(a.crop_pool, _f), allow_pickle=True)
+            _ks = sorted((k for k in _z.files if k.startswith("c") and k[1:].isdigit()),
+                         key=lambda k: int(k[1:]))
+            _rows = [np.asarray(r, dtype=np.int64) for k in _ks for r in _z[k]]
+            if _rows:
+                _CROPPOOL[_f[:-4]] = (_rows, np.asarray(_z["sizes"]))
+        if not _CROPPOOL:
+            raise SystemExit(f"STOP: --crop-pool {a.crop_pool} produced no masks.")
+        if is_main:
+            _n = np.array([len(v[0]) for v in _CROPPOOL.values()])
+            _mix = sum(1 for v in _CROPPOOL.values() if len(set(v[1].tolist())) > 1)
+            print(f"CROP POOL: {len(_CROPPOOL)} structure(s) from {a.crop_pool} -- "
+                  f"crops per structure min {_n.min()} median {int(np.median(_n))} "
+                  f"max {_n.max()}; {_mix} structure(s) mix crop sizes; a structure uses "
+                  f"mask `epoch % n` so it sees a different view each epoch", flush=True)
+
+    # THE --crop-tokens LOADER WAS HERE, with _CROPTOK, _CROPPAIRS and their reporting.
+    # Deleted 2026-11-13 with the flag: its masks came from a builder that no longer
+    # exists, and --crop-pool is the one crop rule left.
+
 
     def _crop_masks(pdb_, zc_):
         """(keep_tok, keep_atom) from whichever crop rule is configured. One dispatch, two callers.
@@ -3777,13 +5298,49 @@ def main():
         some units were cropped and some were not would still write a complete trajectory and
         name itself after the crop.
         """
-        kt_ = _CROPTOK.get(pdb_)
-        if kt_ is None:
-            raise SystemExit(f"STOP: --crop-tokens has no mask for {pdb_}. The file names "
-                             f"{len(_CROPTOK)} structure(s); this manifest needs {pdb_} too. "
-                             f"Rebuild the mask over this pool.")
+        _asym_full = np.asarray(zc_["ci_feat_asym_id"]).reshape(-1)
+        ntok_ = int(_asym_full.shape[0])
+        if _CROPPOOL:
+            # THE UNCROPPED CHAIN-PAIR SIZE, recorded HERE because this is the last point at which
+            # the full token set is in hand -- everything downstream sees the cropped features.
+            # iptm_pooled needs it to pin d0 to the same value the rel target was built with.
+            if pdb_ not in _UNCROP_CHAIN_N:
+                _UNCROP_CHAIN_N[pdb_] = np.bincount(_asym_full.astype(np.int64))
+            _ent = _CROPPOOL.get(pdb_)
+            if _ent is None:
+                raise SystemExit(f"STOP: --crop-pool has no entry for {pdb_}. The pool holds "
+                                 f"{len(_CROPPOOL)} structure(s); this manifest needs {pdb_} too.")
+            _rows, _ = _ent
+            # epoch % n, NOT a draw. The n masks of a structure are independent enumerations of
+            # its own eligible anchors, so a fixed rotation gives the same view distribution as a
+            # random one and makes two runs on the same pool reproducible. The crop_index used
+            # here MUST be the one the labels were keyed by -- see _rel_labels.
+            # THE ROTATION RUNS OVER THE ALLOWED CROPS, which is the whole pool unless
+            # --crop-allow names this structure. Still epoch % n rather than a draw, so two runs
+            # on the same pool and allowlist see the same sequence.
+            _alw = _CROP_ALLOW.get(pdb_) if _CROP_ALLOW else None
+            if _alw and max(_alw) >= len(_rows):
+                raise SystemExit(f"STOP: --crop-allow gives {pdb_} crop index {max(_alw)} but its "
+                                 f"pool holds {len(_rows)}. The allowlist was built against a "
+                                 f"different crop pool.")
+            if _alw:
+                _ci = int(_alw[int(_crop_epoch[0]) % len(_alw)])
+            else:
+                _ci = int(_crop_epoch[0]) % len(_rows)
+            kt_ = np.zeros(ntok_, dtype=bool)
+            _idx = _rows[_ci]
+            if _idx.size and int(_idx.max()) >= ntok_:
+                raise SystemExit(f"STOP: {pdb_} crop {_ci} indexes token {int(_idx.max())} but "
+                                 f"its cached trunk has {ntok_}. The pool was built against a "
+                                 f"different cache and slicing with it would scramble the "
+                                 f"structure.")
+            kt_[_idx] = True
+        else:
+            # UNREACHABLE: --crop-pool is the only crop rule, and _crop_masks is only called
+            # when _USE_CROP, which is now bool(a.crop_pool). Kept as a refusal rather than
+            # deleted so a future second rule cannot fall through to an undefined mask.
+            raise SystemExit(f"STOP: _crop_masks reached with no --crop-pool entry for {pdb_}.")
         a2t_ = np.asarray(zc_["ci_feat_atom_to_token_idx"]).reshape(-1)
-        ntok_ = int(np.asarray(zc_["ci_feat_asym_id"]).reshape(-1).shape[0])
         if kt_.shape[0] != ntok_:
             raise SystemExit(f"STOP: {pdb_}'s mask has {kt_.shape[0]} token(s) but its cached "
                              f"trunk has {ntok_}. The mask was built against a different cache "
@@ -3815,7 +5372,7 @@ def main():
                 raise SystemExit(
                     f"STOP: --token-keep-* needs the scored pairs for {pdb_}, which this mask "
                     f"does not carry (no {pdb_}__pairs entry). It was built before the builder "
-                    f"wrote them; rebuild with run_logging/build_union_crop_masks.py so the "
+                    f"wrote them; rebuild with run_logging/build_crop_pool.py (run_logging/build_crop_pool.py (build_union_crop_masks.py was removed 2026-11-13; the crop pool this project uses is --crop-pool, built by build_crop_pool*.py) was removed 2026-11-13; the crop pool this project uses is --crop-pool, built by build_crop_pool*.py) so the "
                     f"per-pair scoreability check has something to check.")
             # REPAIRED, NOT REFUSED. The first version raised SystemExit here and killed the
             # run 2,240 poses into vxwvzr's first epoch, on 9iut: chain 2 drew 3 survivors against
@@ -3884,22 +5441,37 @@ def main():
     # anyway.
     _ev_pending = []
 
-    def _gpu_span(key):
+    # PER-TOKEN-COUNT GPU TIME. The aggregate buckets answer "where did the epoch go" but not
+    # "how does it scale", and the scaling is what decides whether cropping is worth the change.
+    # It had to be inferred from trajectory.csv's wall_s differences instead, which absorb the
+    # optimiser step, the all-reduce and the trunk load, and are logged at 0.1 s resolution -- so
+    # a log-log fit on them read an exponent of 1.31 when fitting an additive constant alongside
+    # the power gave 2.47. These are CUDA events around the forward and the backward only, keyed
+    # by the pose's own token count, so the exponent comes out of measurement rather than a fit.
+    #
+    # COST: one dict update per pose per pass, against a ~0.45 s pose. The table is a few hundred
+    # token values, printed once per epoch and reset with the other counters.
+    def _gpu_span(key, n_tok=None):
         if not torch.cuda.is_available():
             return None, None
         e0 = torch.cuda.Event(enable_timing=True)
         e1 = torch.cuda.Event(enable_timing=True)
         e0.record()
-        _ev_pending.append((key, e0, e1))
+        _ev_pending.append((key, e0, e1, n_tok))
         return e0, e1
 
     def _drain_gpu_spans():
         if not _ev_pending:
             return
         torch.cuda.synchronize()
-        for key, e0, e1 in _ev_pending:
-            _T[key] += e0.elapsed_time(e1) / 1000.0
+        for key, e0, e1, n_tok in _ev_pending:
+            _dt = e0.elapsed_time(e1) / 1000.0
+            _T[key] += _dt
             _TN[key] += 1
+            if n_tok is not None and n_tok > 0:
+                _slot = _T_TOK.setdefault((key, int(n_tok)), [0.0, 0])
+                _slot[0] += _dt
+                _slot[1] += 1
         _ev_pending.clear()
     nonfinite = {"n": 0}
     code_drift = {"n": 0, "warned": False}
@@ -4155,14 +5727,26 @@ def main():
         zc = np.load(trunk_p)
         _tick("cpucrop_trunk", _t)
         _t = time.perf_counter()
-        kt, ka = (_crop_masks(pdb, zc) if a.crop_tokens
-                  else BC.interface_crop_tokens(zc, lab_l, a.crop_contact, a.crop_margin,
-                                                all_poses=a.crop_all_poses))
+        kt, ka = _crop_masks(pdb, zc)
         _tick("cpucrop_tokens", _t)
         if kt is None:
             return ("nocrop", None, None)
         _t = time.perf_counter()
-        sl = BC.slice_cached_unit(zc, lab_l, kt, ka, torch.device("cpu"), torch)
+        # MAP z_trunk WHEN ASKED. The uncropped path has had this since --trunk-memmap landed
+        # (phase_k_train.py:5408); the cropped path never took it and read the whole member.
+        _zt_src = None
+        if a.trunk_memmap:
+            try:
+                _zt_src = RC.npy_memmap(trunk_p, "z_trunk")
+            except Exception:                                       # noqa: BLE001
+                _zt_src = None
+            # COUNTED, NOT INFERRED. npy_memmap REJECTS a member it cannot map -- deflated, bad
+            # header, non-C-order, wrong span -- by RETURNING None rather than raising, so the
+            # except clause above never fires for the ordinary failure and a run could report
+            # --trunk-memmap while mapping nothing at all. Two counters, so the epoch line says
+            # what fraction was actually mapped. Raised in external review of 03970def.
+            _TN["trunk_mapped" if _zt_src is not None else "trunk_memmap_fallback"] += 1
+        sl = BC.slice_cached_unit(zc, lab_l, kt, ka, torch.device("cpu"), torch, zt_src=_zt_src)
         _tick("cpucrop_slice", _t)
         return ("ok", kt, sl)
 
@@ -4290,9 +5874,21 @@ def main():
             # turns into a miss and an inline recrop -- the very work the prefetch exists to
             # avoid. Each held slice is ~30 MB, so this is tens of MB per rank.
             if len(_pf_pending) > max(16, 8 * max(1, a.prefetch_workers)):
-                # RECORD IT. Dropping silently is what turned one eviction into a cascade of
-                # full-budget waits; the set is units, not slices, so it costs nothing.
-                _dk = next(iter(_pf_pending))
+                # EVICT THE NEWEST, NOT THE OLDEST.
+                #
+                # `next(iter(...))` is insertion order, so this dropped the LOWEST-numbered unit
+                # -- which, because the main loop consumes in that same order, is precisely the
+                # one it is about to ask for. Every eviction therefore bought a guaranteed miss
+                # and an inline recrop of the full trunk on the main thread.
+                #
+                # It got worse when the crop got faster: making _cpu_crop ~4.6x cheaper let the
+                # workers run hundreds of units ahead instead of the "~W" this comment used to
+                # claim, so on rdi25k epoch 5 the hit rate fell 68-80% -> 34-58% and evictions
+                # doubled to 980-1,524 per rank. The feature partly cannibalised itself.
+                #
+                # The newest entry is the one the main loop will want LAST, so dropping it costs
+                # the least and the entry it wants next survives. Found in adversarial review.
+                _dk = next(reversed(_pf_pending))
                 _pf_pending.pop(_dk)
                 _pf_dropped.add(_dk)
 
@@ -4314,7 +5910,7 @@ def main():
         # The default arm passes --prefetch-units 2 --prefetch-workers 4, so that is 8 wasted
         # crops and 8 retained slices on every uncropped run to date. The uncropped path has its
         # own warmer (_tr_step_start) and does not use this queue.
-        if not (a.crop_margin > 0 or a.crop_tokens):
+        if not (_USE_CROP):
             return
         _pf_stop.clear(); _pf_pending.clear(); _pf_dropped.clear()
         _pf_stat.update(hit=0, miss=0, wait_s=0.0, dropped=0, exhausted=0)
@@ -4422,18 +6018,29 @@ def main():
     # _tr_step_start is never called, every unit is read exactly once and there is nothing to hit.
     # The cache would then fill to its cap, refuse everything after that and hold the RSS for no
     # benefit -- so the same condition that gates _xs_prepare gates this.
-    _tr_on = (_tr_cap > 0 and not (a.crop_margin > 0 or a.crop_tokens)
+    _tr_on = (_tr_cap > 0 and not (_USE_CROP)
               and getattr(dev, "type", "") == "cuda"
               and a.rank_cross_seed and a.rank_loss and not a.loss_only)
     _tr_cache = {}
-    _tr_inflight = set()
+    # PATH -> RESERVED BYTES, not a bare set of paths. A set records THAT a read is in flight; the
+    # cap needs to know HOW MUCH. Review found that _tr_bytes counted only ADMITTED entries, so the
+    # pre-read check `_tr_bytes[0] + _sz > _tr_cap` was evaluated against a number that four
+    # concurrent warmers all saw as the same low value: each passed, each allocated its whole
+    # ~243 MB, and TRUNK_CACHE_GB bounded the cache while the PROCESS went ~4x over it. The
+    # reservation is taken under the lock at the same instant the check passes and released in the
+    # `finally`, so the cap now bounds admitted + in-flight, which is what host RSS actually is.
+    _tr_inflight = {}
     _tr_lock = threading.Lock()
     _tr_bytes = [0]
+    _tr_resv = [0]
     # SHARED WITH THE WARMERS, AND `+=` ON A DICT ENTRY IS NOT ATOMIC, so a simultaneous put can
     # lose one sample out of thousands. Acceptable for a diagnostic and NOT acceptable for anything
     # the run branches on; nothing branches on these. Same bargain as _cpu_crop's counters.
     _tr_stat = {"hit": 0, "miss": 0, "put": 0, "full": 0, "err": 0, "dup": 0}
     _tr_threads = [None]
+    # EVERY warmer ever started and not yet reaped. _tr_threads[0] holds only the CURRENT step's,
+    # which is what made an older generation's thread unjoinable.
+    _tr_live = []
     # A GENERATION COUNTER, NOT AN EVENT, AND THAT IS A BUG FIX. The first version used one shared
     # threading.Event: _tr_step_start did set() -> join(timeout=30) -> clear(). A warmer still
     # inside a 243 MB read when the join expired then resumed its loop, found the flag CLEARED, and
@@ -4474,7 +6081,11 @@ def main():
                 return
             if trunk_p in _tr_cache:
                 return
-            if _tr_bytes[0] + nb > _tr_cap:
+            # THIS PATH'S OWN RESERVATION IS DISCOUNTED, because the bytes it reserved before the
+            # read are the very bytes it is now offering -- charging both would refuse a put that
+            # the reservation had already made room for.
+            _mine = _tr_inflight.get(trunk_p, 0)
+            if _tr_bytes[0] + (_tr_resv[0] - _mine) + nb > _tr_cap:
                 _tr_stat["full"] += 1
                 return
             _tr_cache[trunk_p] = host
@@ -4513,30 +6124,41 @@ def main():
                 with _tr_lock:
                     if gen != _tr_gen[0]:
                         return
+                    # ADMITTED PLUS ALREADY-RESERVED, which is the whole point of the fix. With
+                    # only _tr_bytes[0] here, every concurrent warmer saw the same pre-read total.
                     if (tp in _tr_cache or tp in _tr_inflight
-                            or _tr_bytes[0] + _sz > _tr_cap):
+                            or _tr_bytes[0] + _tr_resv[0] + _sz > _tr_cap):
                         _tr_stat["dup"] += 1
                         continue
-                    _tr_inflight.add(tp)
+                    _tr_inflight[tp] = _sz
+                    _tr_resv[0] += _sz
                 try:
                     _tr_put(tp, RC.read_unit_host(tp), gen=gen)
                 finally:
                     with _tr_lock:
-                        _tr_inflight.discard(tp)
+                        _tr_resv[0] -= _tr_inflight.pop(tp, 0)
             except BaseException:          # noqa: BLE001 -- see the docstring
                 # INSIDE THE LOCK, because `+=` on a dict entry is not atomic and several warmers
                 # reach this. The same reason `dup` is counted under the lock above.
                 with _tr_lock:
                     _tr_stat["err"] += 1
                     if tp is not None:
-                        _tr_inflight.discard(tp)
+                        # BOTH, OR THE CAP LEAKS. An exception between the reservation and the
+                        # `finally` -- resolve_trunk raising, a read error -- would otherwise leave
+                        # the bytes reserved forever and the cache would refuse everything after a
+                        # few failures.
+                        _tr_resv[0] -= _tr_inflight.pop(tp, 0)
 
     def _tr_reset():
         """Retire the current generation and drop its arrays. One lock, no joins."""
         with _tr_lock:
             _tr_gen[0] += 1
             _tr_cache.clear()
-            _tr_inflight.clear()
+            # THE RESERVATION IS NOT CLEARED HERE, only the admitted bytes. A warmer from the
+            # retired generation may still be inside its read; its `finally` will pop its own entry
+            # and decrement, and clearing the dict underneath it would make that pop a no-op and
+            # leave _tr_resv permanently above zero. The generation check stops NEW reservations,
+            # which is what retiring a step needs to do.
             _tr_bytes[0] = 0
             return _tr_gen[0]
 
@@ -4546,10 +6168,19 @@ def main():
             return
         gen = _tr_reset()
         _w = max(1, min(a.prefetch_workers, len(step_units)))
+        # EVERY GENERATION'S THREADS ARE TRACKED, not just the latest. _tr_threads[0] was
+        # OVERWRITTEN here each step, so a warmer from an earlier generation became unreachable and
+        # _tr_end could never join it -- it could outlive the epoch boundary and run while
+        # _fp_cache_save iterated shared state. Retired threads are reaped first so the list cannot
+        # grow across 231 steps.
+        _tr_live[:] = [t for t in _tr_live if t.is_alive()]
         _tr_threads[0] = [threading.Thread(target=_tr_worker, args=(step_units[i::_w], gen),
                                            daemon=True) for i in range(_w)]
         for _t in _tr_threads[0]:
             _t.start()
+        # REGISTERED AFTER START, so _tr_end can join this generation even once _tr_threads[0]
+        # has been replaced by the next step's.
+        _tr_live.extend(_tr_threads[0])
 
     def _tr_end():
         """At the EPOCH boundary: retire, then join, so nothing races _fp_cache_save.
@@ -4559,8 +6190,24 @@ def main():
         subprocesses in the case where the main thread had filled it but no warmer ever started.
         """
         _tr_reset()
-        for _t in _tr_threads[0] or ():
+        # JOIN EVERY GENERATION STILL ALIVE, not only the newest. The generation counter already
+        # guarantees a stale warmer cannot reach the cache; this guarantees it is not still RUNNING
+        # when _fp_cache_save walks shared state at the boundary.
+        # DEDUPED. The current generation is registered in BOTH _tr_live and _tr_threads[0], so
+        # joining the concatenation gave every current thread two 30 s windows and doubled the
+        # worst-case boundary stall to 30 s x 2 x prefetch_workers. Threads are hashable, and
+        # dict.fromkeys keeps the order.
+        for _t in dict.fromkeys(list(_tr_live) + list(_tr_threads[0] or ())):
             _t.join(timeout=30)
+        _still = [t for t in _tr_live if t.is_alive()]
+        if _still:
+            print(f"  trunk warmer: {len(_still)} thread(s) still alive after a 30s join; their "
+                  f"generation is retired so they cannot reach the cache, but they are reading.",
+                  flush=True)
+        # A STRAGGLER STAYS REGISTERED. Clearing the list outright dropped the only reference to
+        # a thread that outlived its join, so it was never joined again and the next boundary
+        # could not wait for it either. _tr_start already reaps the ones that have since died.
+        _tr_live[:] = _still
         _tr_threads[0] = None
         # A WARMER THAT OUTLIVES THE JOIN CAN STILL BE HOLDING ONE READ, and that is all it can do:
         # its generation is retired, so _tr_put drops the result and the loop exits at its next
@@ -4587,6 +6234,22 @@ def main():
         The stored fingerprint names its trunk by content hash, so the trunk is chosen BY it. Two
         candidates matching is ambiguous and refused rather than resolved arbitrarily.
         """
+        # STALENESS IS NOT CHECKED HERE ANY MORE. It is checked ONCE, per label, in
+        # phase_k_alignment_preflight, which compares cif|bio|trunk and names every label that has
+        # to be rebuilt. Repeating it on every load bought nothing and cost a sha256 of a ~205 MB
+        # trunk per unit; worse, it tied label validity to a hash of the BUILDER'S SOURCE, so an
+        # edit to a comment in phase_j_build_cache.py invalidated every label on disk. The rule for
+        # code changes is now a habit rather than a guard: change how labels are computed, rebuild
+        # the labels.
+        #
+        # WHAT THIS FUNCTION STILL DOES is pick WHICH trunk goes with this label when more than one
+        # candidate exists -- a fold and a fold_regen copy, say. That is selection, not validation,
+        # and getting it wrong pairs a label with another run's permuted trunk (review round 8
+        # reproduced exactly that). With a single candidate there is nothing to choose, so the
+        # common path now returns immediately and hashes nothing.
+        if len(cands) == 1:
+            _trunk_choice[_ck] = cands[0]
+            return cands[0]
         stored = str(np.asarray(np.load(lab_p, allow_pickle=True)["fingerprint"]))
         ok = []
         for tp in cands:
@@ -4616,6 +6279,19 @@ def main():
                           f"labels are correct but not reproducible from this checkout.")
                     code_drift["warned"] = True
                 code_drift["n"] += 1
+                return cands[0]
+            _STALE_OK = {"code", "bio", "cif", "idx"}
+            if a.allow_stale_labels and diff and set(diff) <= _STALE_OK:
+                if not code_drift.get("stale_warned"):
+                    print(f"  ACCEPTING STALE LABELS (--allow-stale-labels, --pae-entropy "
+                          f"{a.pae_entropy:g}): {lab_p} differs on {diff}. THE LABELLED LOSSES IN "
+                          f"THIS RUN'S trajectory.csv ARE NOT TRUSTWORTHY -- pae_loss, pde_loss, "
+                          f"plddt_loss and resolved_loss are all computed against these labels. "
+                          f"The entropy objective does not read them, so the GRADIENT is "
+                          f"unaffected; nothing else here is.")
+                    code_drift["stale_warned"] = True
+                code_drift["stale_n"] = code_drift.get("stale_n", 0) + 1
+                code_drift.setdefault("stale_pdbs", set()).add(pdb)
                 return cands[0]
             raise SystemExit(
                 f"STOP: {lab_p} does not match its inputs. No trunk among {cands} reproduces its "
@@ -4681,14 +6357,15 @@ def main():
         # THE FINGERPRINT IS COMPARED, NOT MERELY PRESENT. resolve_trunk already proved one trunk
         # reproduces it; this re-asserts against the trunk actually being used, so the two cannot
         # come apart if resolve_trunk is ever bypassed.
-        _want = _unit_fp(pdb, trunk_p)
-        _got = str(np.asarray(lab["fingerprint"]))
-        if _got != _want:
-            _dw = dict(x.split("=", 1) for x in _want.split("|") if "=" in x)
-            _dg = dict(x.split("=", 1) for x in _got.split("|") if "=" in x)
-            _df = sorted(k for k in set(_dw) | set(_dg) if _dw.get(k) != _dg.get(k))
-            if not (_df == ["code"] and a.allow_code_drift):
-                raise SystemExit(f"STOP: {lab_p} fingerprint differs in {_df}. Rebuild it.")
+        # THE FINGERPRINT COMPARISON IS GONE, on the owner's instruction. A label now pairs
+        # with its pose file BY FILENAME and nothing else. Staleness is handled by rebuilding, not
+        # by refusing at load: the orphan sweep made the pairing 1:1 (7,309 train / 2,490 val,
+        # verified), and the atom-order preflight remains the one check, run once per structure.
+        #
+        # WHAT THIS GAVE UP, STATED ONCE: a label whose pose coordinates changed under the same
+        # filename will no longer be caught. The agreed replacement is that regenerated poses,
+        # bioassemblies and labels go into a NEW versioned directory rather than overwriting in
+        # place, so a run points at one version and cannot mix two.
         _missing_lf = [k for k in BC.LOSS_FEATS if f"lf_{k}" not in lab]
         if _missing_lf:
             raise SystemExit(f"STOP: {lab_p} stores no lf_ array for {_missing_lf}. Falling back to "
@@ -4706,7 +6383,7 @@ def main():
         # chains with usable coordinates, or no cross-chain contact), and this trains on the whole
         # structure then, counted, rather than guessing at a window.
         crop_slice = None
-        if a.crop_margin > 0 or a.crop_tokens:
+        if _USE_CROP:
             # THE PREFETCHED SLICE, IF THE WORKER GOT THERE FIRST. A hit skips straight to the
             # device move; a miss falls through to the inline path below, so a worker that is
             # behind, failed, or disabled costs correctness nothing.
@@ -4751,10 +6428,7 @@ def main():
                 # argues for caching the crop indices and nothing else.
                 _t0 = time.perf_counter()
                 _zc = np.load(trunk_p)
-                _kt, _ka = (_crop_masks(pdb, _zc) if a.crop_tokens
-                            else BC.interface_crop_tokens(_zc, lab, a.crop_contact,
-                                                          a.crop_margin,
-                                                          all_poses=a.crop_all_poses))
+                _kt, _ka = _crop_masks(pdb, _zc)
                 _tick("trunk_read_plus_crop_tokens", _t0)
                 if _kt is None:
                     crop_stats["undefined"] += 1
@@ -4762,7 +6436,23 @@ def main():
                                       "frames_cleared": "", "status": "no-crop-definable"})
                 else:
                     _t1 = time.perf_counter()
-                    crop_slice = BC.slice_cached_unit(_zc, lab, _kt, _ka, dev, torch)
+                    # THE INLINE RECROP NEEDS THE MAPPING TOO, and this is the path that matters
+                    # MOST because it is on the MAIN THREAD and therefore on the critical path.
+                    # When --trunk-memmap landed on the cropped path it was wired only into
+                    # _cpu_crop, which runs on the prefetch workers; every prefetch MISS fell
+                    # through to here and still materialised the whole ~100 MB z_trunk. Measured
+                    # on rdi25k epoch 5: 980 / 1,115 / 1,524 units per rank took this path, 42-66%
+                    # of 2,308, which is most of why the feature returned 10% rather than the 2.4x
+                    # its single-card smoke suggested. Raised in adversarial review of 03970def.
+                    _zts = None
+                    if a.trunk_memmap:
+                        try:
+                            _zts = RC.npy_memmap(trunk_p, "z_trunk")
+                        except Exception:                           # noqa: BLE001
+                            _zts = None
+                        _TN["trunk_mapped" if _zts is not None
+                            else "trunk_memmap_fallback"] += 1
+                    crop_slice = BC.slice_cached_unit(_zc, lab, _kt, _ka, dev, torch, zt_src=_zts)
                     _tick("crop_slice", _t1)
                     # THE CROPPED TOKEN COUNT, which is the workload. Equal structure counts per
                     # rank do not mean equal compute, and this is what shows it: the pair track is
@@ -4867,20 +6557,46 @@ def main():
 
         _tick("unit_setup", _t_unit_setup)
 
-        def _one_pose(i):
-            x = poses[i:i + 1].to(dev).float() if torch.is_tensor(poses) \
-                else torch.as_tensor(poses[i:i + 1], dtype=torch.float32, device=dev)
-            _fe0, _fe1 = _gpu_span("gpu_forward")
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                plddt, pae, pde, resolved = model.run_confidence_head(
-                    input_feature_dict=feat_head, s_inputs=s_inputs, s_trunk=s_trunk, z_trunk=zt,
-                    pair_mask=None, x_pred_coords=x,
-                    triangle_multiplicative=configs.triangle_multiplicative,
-                    triangle_attention=configs.triangle_attention, inplace_safe=False,
-                    # CHUNKING WAS TRIED AND REMOVED: --chunk-size 64 cost 5.8x in speed for no
-                    # measurable memory, and Protenix's own config says chunk_size "should set to
-                    # null for normal training".
-                    chunk_size=None)
+        def _one_pose(i, nb=1):
+            # nb POSES IN ONE FORWARD. The slice is the only difference: x already carried a
+            # sample dimension of 1, so widening it is what the head wanted all along.
+            x = poses[i:i + nb].to(dev).float() if torch.is_tensor(poses) \
+                else torch.as_tensor(poses[i:i + nb], dtype=torch.float32, device=dev)
+            _fe0, _fe1 = _gpu_span("gpu_forward", n_tok)
+            # WHICH POSE THE FROZEN-PREFIX CACHE IS LOOKING AT, and whether it may fill.
+            #
+            # (pdb, arm_seed, pose) IS ENOUGH OF AN IDENTITY because the cache is dropped at every
+            # step boundary and a step holds each pose exactly once; n_tok goes in too, so a unit
+            # re-entered at a different token count is a MISS rather than a shape that lines up.
+            # fill=score_only is the pass: pass A computes the prefix and offers it, pass B takes
+            # it. A fill in pass B would pay a D2H for a tensor nothing reads again.
+            #
+            # CLEARED IN A `finally`, so a forward that happens anywhere else in this process
+            # cannot be keyed as this pose and hit on it. The plan is decided once, inside
+            # _prep_blocks, so clearing it here does not disturb the backward that re-runs the
+            # block under blocks_per_ckpt=1.
+            if _pfc is not None:
+                if nb != 1:
+                    raise SystemExit(
+                        "STOP: --pose-batch > 1 is incompatible with the frozen-prefix cache. "
+                        "PFC keys a prefix by (pdb, seed, POSE) and a batched forward covers nb "
+                        "poses at once, so one key would stand for several and a later pose could "
+                        "hit on another's prefix.")
+                PFC.set_pose((pdb, arm_seed, int(i)), fill=bool(score_only), n_tok=n_tok)
+            try:
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    plddt, pae, pde, resolved = model.run_confidence_head(
+                        input_feature_dict=feat_head, s_inputs=s_inputs, s_trunk=s_trunk,
+                        z_trunk=zt, pair_mask=None, x_pred_coords=x,
+                        triangle_multiplicative=configs.triangle_multiplicative,
+                        triangle_attention=configs.triangle_attention, inplace_safe=False,
+                        # CHUNKING WAS TRIED AND REMOVED: --chunk-size 64 cost 5.8x in speed for
+                        # no measurable memory, and Protenix's own config says chunk_size "should
+                        # set to null for normal training".
+                        chunk_size=None)
+            finally:
+                if _pfc is not None:
+                    PFC.clear_pose()
             if _fe1 is not None:
                 _fe1.record()
             # WHERE THE HEAD'S OUTPUTS LANDED. Compared BY INDEX, because torch.device("cuda") is not
@@ -4904,15 +6620,40 @@ def main():
                 # SLICED ONCE PER UNIT: the label coordinates for every pose were cropped together,
                 # so per pose this only picks a row.
                 _cc, _cm = crop_labels
-                ld = {"coordinate": torch.as_tensor(_cc[i], dtype=torch.float32, device=dev),
-                      "coordinate_mask": torch.as_tensor(_cm[i].astype(np.float32), device=dev)}
+                # THE SAME RANGE AS x, so label row k belongs to pose i+k. Slicing with [i] gave a
+                # (N_atom, 3) array and [i:i+nb] gives (nb, N_atom, 3), which is the shape the loss
+                # already expects for N_sample -- the single-pose path was the special case.
+                ld = {"coordinate": torch.as_tensor(_cc[i:i + nb], dtype=torch.float32, device=dev),
+                      "coordinate_mask": torch.as_tensor(_cm[i:i + nb].astype(np.float32),
+                                                         device=dev)}
+                # ONE LABEL FOR THE GROUP, WHICH IS WHAT PROTENIX DOES AND WHAT ITS LOSS
+                # SIGNATURE SAYS. protenix/model/protenix.py:1713 permutes the ground truth ONCE,
+                # against a single mini-rollout, then scores every sample against it; loss.py's
+                # docstrings accordingly take `true_coordinate [..., N_atom, 3]` and
+                # `coordinate_mask [N_atom]`. Our cache instead permutes PER POSE
+                # (phase_j_build_cache.py:1052), which is why five labels exist at all.
+                #
+                # FOR A PAE-ONLY ARM THAT COSTS EXACTLY NOTHING, measured over the whole training
+                # set rather than argued: run_logging/check_pae_label_shared.py compared every
+                # pose against pose 0 on the PAE representative atoms across all 8,981 label
+                # files -- 8,981 identical, 0 moved, worst displacement 0.000000 A. The per-pose
+                # permutation only ever swaps symmetric SIDE-CHAIN atoms, and PAE is built from
+                # the per-token representative atoms, which it never touches. The losses that
+                # would have noticed -- pLDDT, PDE, resolved -- are stubbed out under --pae-only,
+                # and the startup guard refuses --pose-batch > 1 without it.
+                ld = {k: v[0] for k, v in ld.items()}
             else:
+                if nb != 1:
+                    raise SystemExit(
+                        "STOP: --pose-batch > 1 needs the cropped label path. "
+                        "BC.minimal_loss_inputs takes ONE pose index and there is no range form, "
+                        "so batching here would silently train every pose against pose i's label.")
                 _, ld = BC.minimal_loss_inputs(lab, i, dev, torch)
             # THE POSE'S SAMPLE INDEX, resolved ONCE here and reused by the mask, pass A and
             # pass B. Three readers previously resolved it separately, and the first version of
             # the rel wiring had one of them use the pose index instead.
             _samp_i = None
-            if a.rank_form == "rel" and a.rank_loss:
+            if a.rank_form in _RANK_IFACE_FORMS and a.rank_loss:
                 _sv_i = lab.get("sample_index") if hasattr(lab, "get") else None
                 if _sv_i is None:
                     try:
@@ -4939,6 +6680,48 @@ def main():
             #
             # THE SAME ipTM FUNCTION AS PASS B, deliberately. If the two disagreed, the coefficient
             # would have been computed for a different function than the one being differentiated.
+            if score_only and a.tm_centered:
+                # --tm-centered PASS A: accumulate the signed per-pair TM error for this pose into
+                # its STRUCTURE's running sum, so pass B can centre against the mean over every
+                # pose of the structure. --rank-cross-seed is what makes that possible in one step.
+                #
+                # THE TRUE ERROR IS COMPUTED HERE, not reused from pass B -- pass B has not run
+                # yet. calculate_label is called directly because pass A deliberately never calls
+                # calculate_losses; the arguments are the seven its own signature names, taken from
+                # the label-derived features rather than the trunk's (feat_cache carries asym_id
+                # and has_frame; frame_atom_index and pae_rep_atom_mask live only in the label).
+                import tm_centered_loss as TMC
+                _tm_lf, _ = BC.minimal_loss_inputs(lab, 0, dev, torch)
+                _sqA, _, _ = loss_fn.pae_loss.calculate_label(
+                    pred_coordinate=x.detach(), true_coordinate=ld["coordinate"],
+                    coordinate_mask=ld["coordinate_mask"],
+                    rep_atom_mask=_tm_lf["pae_rep_atom_mask"],
+                    frame_atom_index=_tm_lf["frame_atom_index"],
+                    has_frame=_tm_lf["has_frame"])
+                _blocks = _pae_keep.get("blocks")
+                if not _blocks:
+                    # COUNTED, NEVER SILENTLY CENTRED ON NOTHING. A pose with no scored chain pair
+                    # contributes no pair to the mean and must also contribute no loss in pass B.
+                    _tm_stat["unmasked"] += 1
+                else:
+                    _eA, _mA = TMC.pair_errors(
+                        pred["pae"].detach(), _sqA, _blocks,
+                        loss_fn.pae_loss.min_bin, loss_fn.pae_loss.max_bin,
+                        loss_fn.pae_loss.no_bins)
+                    _acc = _tm_acc.get(pdb)
+                    if _acc is None:
+                        _tm_acc[pdb] = {"sum": _eA.sum(dim=0).clone(),
+                                        "cnt": (_mA > 0).to(torch.float32).sum(dim=0).clone(),
+                                        "poses": int(_eA.shape[0])}
+                    else:
+                        _acc["sum"] += _eA.sum(dim=0)
+                        _acc["cnt"] += (_mA > 0).to(torch.float32).sum(dim=0)
+                        _acc["poses"] += int(_eA.shape[0])
+                    _tm_stat["poses"] += int(_eA.shape[0])
+                    _tm_stat["pred_sum"] += TMC.mean_pred_score(
+                        pred["pae"].detach(), _blocks, loss_fn.pae_loss.min_bin,
+                        loss_fn.pae_loss.max_bin, loss_fn.pae_loss.no_bins)
+                    _tm_stat["pred_n"] += 1
             if score_only:
                 import rank_loss as RKL
                 # THE POSE INDEX IS NOT THE SAMPLE INDEX, and the external labels are keyed by
@@ -4974,16 +6757,20 @@ def main():
                 # KEYED BY WHAT IS STABLE ACROSS POSES. For rel the unit of comparison is the
                 # reference interface; its asym pair is resolved PER POSE, so the key is the
                 # iface and the pair is a per-pose detail of how the score is computed.
-                if a.rank_form == "rel":
+                if a.rank_form in _RANK_IFACE_FORMS:
                     _items = [(_ifc, (_x, _y)) for _ifc, _x, _y
                               in _pose_pairs(pdb, lab_p, _samp_a)]
                 else:
                     _items = [(_p, _p) for _p in sorted(_scored_asym.get(pdb) or ())]
                 for _k_, _p in _items:
-                    # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
-                    # describe one quantity and the backward would move another.
+                    # POOLED THE SAME WAY AS PASS B, AND WITH THE SAME d0. Both halves matter:
+                    # if the pooling or the n_pair_tokens differed, the coefficients would
+                    # describe one quantity and the backward would move another. Pass B passed no
+                    # n_pair_tokens until the external review caught it; all four iptm_pooled
+                    # call sites in this file now pin d0 to the UNCROPPED chain-pair size.
                     _v = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
-                                         pool=a.rank_pool)
+                                         pool=a.rank_pool,
+                                         n_pair_tokens=_uncrop_npt(pdb, _p))
                     if _v is not None:
                         _sc[_k_] = float(_v.detach())
                 del pred, x, plddt, pae, pde, resolved
@@ -5030,10 +6817,12 @@ def main():
                                      f"({_si.shape[0]} entries).")
                 _samp = int(_si[i])
                 for _p in sorted(_scored_asym.get(pdb) or ()):
-                    # POOLED THE SAME WAY AS PASS B. If these differed, the coefficients would
-                    # describe one quantity and the backward would move another.
+                    # POOLED THE SAME WAY AS PASS B, AND WITH THE SAME d0 -- see the pass A
+                    # comment above. Emitted rows that used a different kernel from the trained
+                    # score would describe a statistic the run does not optimise.
                     _v = RKL.iptm_pooled(pred["pae"], feat_head, configs, _p,
-                                         pool=a.rank_pool)
+                                         pool=a.rank_pool,
+                                         n_pair_tokens=_uncrop_npt(pdb, _p))
                     if _v is None:
                         continue
                     _ifc = _iface_of.get((pdb, _p))
@@ -5049,6 +6838,117 @@ def main():
                 _iptm_fh["fh"].flush()
             try:
                 cum, met = loss_fn.calculate_losses(feat_cache, pred, ld, mode="train")
+                if a.tm_centered:
+                    # REPLACE, NOT ADD -- the same contract --pae-entropy has just below. `cum`
+                    # from calculate_losses is the PAE cross-entropy; this arm does not train it,
+                    # and keeping any of it would make the comparison "centred TM error PLUS
+                    # cross-entropy". `met` is left exactly as computed so trajectory.csv and the
+                    # training plot still carry the labelled pae_loss as a READOUT, comparable with
+                    # every other arm; it simply takes no gradient.
+                    import tm_centered_loss as TMC
+                    _sqB = _pae_keep.get("sq")
+                    _blocksB = _pae_keep.get("blocks")
+                    _accB = _tm_acc.get(pdb)
+                    if _sqB is None or not _blocksB or _accB is None:
+                        # NO GRADIENT RATHER THAN A WRONG ONE. Pass A skipped this pose (no scored
+                        # pair, or no label), so there is no mean to centre against. Counted so a
+                        # run where it happens often is visible instead of quietly training on a
+                        # subset.
+                        _tm_stat["nolabel"] += 1
+                        cum = cum * 0.0
+                    else:
+                        _eB, _mB = TMC.pair_errors(
+                            pred["pae"], _sqB, _blocksB,
+                            loss_fn.pae_loss.min_bin, loss_fn.pae_loss.max_bin,
+                            loss_fn.pae_loss.no_bins)
+                        # e_mean = sum/count, AND THE EVERY-POSE MASK. A pair kept for only some of
+                        # the structure's poses would have its mean taken over a different
+                        # population than the poses it is subtracted from, so cnt must equal the
+                        # pose count for the pair to be used at all.
+                        _cnt = _accB["cnt"]
+                        _emean = _accB["sum"] / _cnt.clamp_min(1.0)
+                        _mall = (_cnt >= float(_accB["poses"])).to(torch.float32)
+                        _lv = TMC.centred_loss(_eB, _mB, _emean, _mall)
+                        if _lv is None:
+                            _tm_stat["unmasked"] += 1
+                            cum = cum * 0.0
+                        else:
+                            cum = _lv
+                            _tm_stat["loss"] += float(_lv.detach())
+                            _tm_stat["n"] += 1
+                            # HOW MANY POSES THIS POSE'S MEAN WAS TAKEN OVER. _tm_acc is PER RANK,
+                            # and build_epoch_cross_seed deals a structure's seeds round-robin
+                            # across the ranks, so a structure with 15 seeds x 5 poses in one step
+                            # gives each of 3 ranks 25 of its 75 poses -- the centring is over
+                            # that subset, not over the structure's poses in the training set.
+                            # Reported so the gap between the spec and the shard is a number in
+                            # the log rather than an assumption.
+                            _tm_stat["mpose"] += int(_accB["poses"])
+                    _pae_keep["sq"] = None
+                if a.pae_entropy > 0.0:
+                    # REPLACE, NOT ADD. `cum` above is the labelled objective; keeping any of it
+                    # would make this a semi-supervised arm and the comparison would no longer be
+                    # "what can be learned without labels". met is left as computed so
+                    # trajectory.csv still carries the labelled pae_loss as a READOUT -- it is
+                    # the only way to see whether sharpening is also fitting, and it costs a
+                    # forward that has already happened.
+                    _pl = pred["pae"]
+                    _lp = torch.log_softmax(_pl.float(), dim=-1)
+                    _ent = -(_lp.exp() * _lp).sum(-1)          # [..., n_tok, n_tok]
+                    # NameError, NOT dir(). `_pae_keep` is a closure variable from the
+                    # `if a.pae_scored_pairs:` block, and dir() with no argument lists only the
+                    # LOCAL names -- so `"_pae_keep" in dir()` is False even when the mask exists,
+                    # and the scored-pair mask would have been silently discarded in favour of a
+                    # mean over every token pair. Exactly the silent-fallback class this file's
+                    # other guards exist to prevent.
+                    try:
+                        _m_ent = _pae_keep.get("m")
+                    except NameError:
+                        _m_ent = None
+                    # AND THE FALLBACK IS A STOP, NOT A MEAN, WHENEVER A MASK WAS ASKED FOR.
+                    #
+                    # Falling back to _ent.mean() when --pae-scored-pairs is set would train a
+                    # DIFFERENT objective -- entropy over every token pair, antigen interior
+                    # included -- while the log, the args and the run name all still say the
+                    # scored pairs. That is the same shape of bug as the dir() one above, one
+                    # level up: not a discarded mask but a quietly substituted loss, and
+                    # unlabelled training has no held-out number that would catch it early.
+                    # A mean is only legitimate when no mask was requested at all.
+                    _want_mask = bool(getattr(a, "pae_scored_pairs", None))
+                    if _want_mask:
+                        if _m_ent is None or not torch.is_tensor(_m_ent):
+                            raise SystemExit(
+                                f"STOP: --pae-entropy with --pae-scored-pairs but no scored-pair "
+                                f"mask reached the loss for {pdb}/{arm_seed} pose {i} "
+                                f"(_pae_keep={'absent' if _m_ent is None else type(_m_ent)}). "
+                                f"Refusing to average entropy over every token pair.")
+                        if tuple(_m_ent.shape[-2:]) != tuple(_ent.shape[-2:]):
+                            raise SystemExit(
+                                f"STOP: scored-pair mask {tuple(_m_ent.shape)} does not match the "
+                                f"PAE grid {tuple(_ent.shape)} for {pdb}/{arm_seed} pose {i}.")
+                        _w = _m_ent.to(_ent.dtype)
+                        _den = _w.sum()
+                        if float(_den) <= 0.0:
+                            raise SystemExit(
+                                f"STOP: scored-pair mask is all zero for {pdb}/{arm_seed} pose "
+                                f"{i}; the entropy term would be 0.0 with no gradient and the "
+                                f"pose would look trained.")
+                        _ent_v = (_ent * _w).sum() / _den
+                    else:
+                        _ent_v = _ent.mean()
+                    cum = a.pae_entropy * _ent_v
+                    met = dict(met)
+                    met["pae_entropy"] = float(_ent_v.detach())
+                if nb > 1:
+                    # PROTENIX'S LOSSES MEAN OVER THE SAMPLE AXIS -- PAELoss loss.py:995, PDELoss
+                    # :771, PLDDTLoss :1372, ExperimentallyResolvedLoss :1058 all end in a mean.
+                    # Downstream, _obj = cum / _step_poses_g[0] divides by a POSE count, so with
+                    # nb = 1 each pose contributed L_i / accum_eff. Batched, the group would
+                    # contribute mean(L) / accum_eff -- nb times too little gradient -- and the
+                    # run would train perfectly happily with a quietly smaller effective lr.
+                    # Scaling by nb restores sum(L_i) / accum_eff, which is what the unbatched
+                    # path accumulated. Raised in adversarial review.
+                    cum = cum * float(nb)
             except RuntimeError as _e:
                 if "same device" not in str(_e):
                     raise
@@ -5075,7 +6975,19 @@ def main():
                                  f"finite. Training on it would destroy the head.")
             out = {k: (float(met[k]) if k in met else 0.0) for k in TERMS}
             out["loss"] = float(met["loss"])
+            # THE PAE SPLIT IS TALLIED HERE, from the SAME number that is reported and
+            # differentiated. Reading pae_loss anywhere else -- recomputing it, or taking it from
+            # the batch means below -- would make the split describe a quantity the run does not
+            # train on, which is the failure the pass A comment warns about. _samp_i is passed in
+            # because the PAE mask has already resolved this pose's sample index under rel; the
+            # tally re-reads it only when nothing else has.
+            if _ps_on:
+                _pae_split_tally(pdb, lab_p, lab, arm_seed, i, _samp_i, nb, out["pae_loss"])
             out["pose"] = i
+            # HOW MANY POSES THIS ROW STANDS FOR. One at --pose-batch 1; nb above it. The
+            # accumulator, the batch means and the step boundary all count POSES, and without
+            # this a batched row would be indistinguishable from a single-pose one.
+            out["n_pose_in_group"] = int(nb)
             if float(a.pae_row_frac) > 0:
                 out["pae_loss_unweighted"] = _pae_unw["v"]
             # SCALED BY THE EFFECTIVE BATCH, so summing the ranks reconstructs the full-batch mean.
@@ -5084,7 +6996,8 @@ def main():
             # TWO SOURCES OF c_i, AND ONLY ONE IS ACTIVE. Per-unit (_rank_c, from the labels
             # alone) for the within-seed linear form; per-step (_xs_coef, from pass A) for
             # --rank-cross-seed, where a pose's coefficient depends on every other pose of its
-            # interface and the divisor is interface-groups per step rather than units.
+            # interface and the divisor is interface-groups per step rather than units -- every
+            # group the step holds, so a skipped one is a zero in the mean.
             if a.rank_cross_seed:
                 _cs_pairs = sorted({_k[3] for _k in _xs_coef
                                     if _k[0] == pdb and _k[1] == _xs_sd and _k[2] == i})
@@ -5102,7 +7015,7 @@ def main():
             # first pose -- the same defect review found at line 1067 with `want`. One binding,
             # above both readers.
             if not a.loss_only and not score_only:
-                _be0, _be1 = _gpu_span("gpu_backward")
+                _be0, _be1 = _gpu_span("gpu_backward", n_tok)
                 # UNDER --grad-probe: the two terms are measured with torch.autograd.grad,
                 # which returns gradients WITHOUT touching any parameter's .grad. The first
                 # version used .backward() with opt.zero_grad() around it, which wiped every
@@ -5132,7 +7045,7 @@ def main():
                 # "AttributeError: 'Parameter' object has no attribute 'get'". Found by running
                 # it; the static gate could not see a name collision.
                 _rel_pp = None
-                if a.rank_form == "rel" and _cs_src:
+                if a.rank_form in _RANK_IFACE_FORMS and _cs_src:
                     if _si_b is None:
                         raise SystemExit(
                             f"STOP: pass B has no sample index for {pdb} pose {i}; it is resolved "
@@ -5155,7 +7068,7 @@ def main():
                             f"its coefficient cannot be applied to the score it describes.")
                     return _v
 
-                if a.grad_probe and _cs_src:
+                if (a.grad_probe or _gn_on[0]) and _cs_src:
                     _rt = None
                     for _p, _cv in _cs_src:
                         if not _cv:
@@ -5164,10 +7077,16 @@ def main():
                         # MAX-pooled, while training's backward uses iptm_pooled(pool=rank_pool).
                         # So the first rel probe's headline numbers -- parity alpha 121.7 and
                         # cos(PAE,rel) +0.2043 -- described the max-pooled score and NOT the
-                        # objective being trained. Caught in external review; the parity must be
-                        # re-measured.
+                        # objective being trained. Caught in external review. The pooling is
+                        # fixed, and so is d0: this now passes n_pair_tokens like every other
+                        # call site, so the probe measures the same score the backward moves.
+                        # ANY PARITY ALPHA MEASURED BEFORE THIS IS STALE on two counts -- the
+                        # d0 fix here and the step-item divisor in _xs_prepare -- so it has to be
+                        # re-measured with --grad-probe on this code.
+                        _pp_ = _asym_for(_p)
                         _sp_ = RKL_probe.iptm_pooled(pred["pae"], feat_head, configs,
-                                                     _asym_for(_p), pool=a.rank_pool)
+                                                     _pp_, pool=a.rank_pool,
+                                                     n_pair_tokens=_uncrop_npt(pdb, _pp_))
                         if _sp_ is None:
                             continue
                         _tm = (a.alpha_rank * _cv / _cs_div) * _sp_
@@ -5210,7 +7129,9 @@ def main():
                         _probe["rows"].append((pdb, arm_seed, i, float(_vp.norm()),
                                                float(_vr.norm()), _c, float(_cabs)))
                     _probe["poses"] += 1
-                _obj = cum / _step_poses_g[0]
+                _pb_w = (_pae_balance_weight(pdb, lab_p, lab, arm_seed, i, _samp_i, nb)
+                         if _pb_on else 1.0)
+                _obj = (cum * _pb_w) / _step_poses_g[0] if _pb_on else cum / _step_poses_g[0]
                 # THE RANKING TERM, as c_i * s_i. Its gradient is the exact gradient of the unit's
                 # pairwise loss contribution, because dL/dtheta = sum_i (dL/ds_i)(ds_i/dtheta) and
                 # c_i IS dL/ds_i. Divided by units-per-step so the term is a mean over units, the
@@ -5220,8 +7141,18 @@ def main():
                     for _p, _cv in _cs_src:
                         if not _cv:
                             continue
+                        # d0 ON THE UNCROPPED CHAIN PAIR, exactly as pass A takes it. This call
+                        # omitted n_pair_tokens, so under --crop-pool it scored with a d0 derived
+                        # from the CROPPED pair (256 tokens out of 600-1200) while the
+                        # coefficients in _xs_coef described the uncropped-d0 score. What was
+                        # descended was then sum_i c_i(s_A) * s_B,i with s_A != s_B -- not the
+                        # gradient of the loss pass A evaluated. _uncrop_npt returns None when
+                        # --crop-pool is off, and iptm_pooled falls back to its own tok.sum()
+                        # there, so an uncropped run is unchanged. Found in external review.
+                        _pr_ = _asym_for(_p)
                         _sr = RKL.iptm_pooled(pred["pae"], feat_head, configs,
-                                              _asym_for(_p), pool=a.rank_pool)
+                                              _pr_, pool=a.rank_pool,
+                                              n_pair_tokens=_uncrop_npt(pdb, _pr_))
                         if _sr is None:
                             continue
                         _obj = _obj + (a.alpha_rank * _cv / _cs_div) * _sr
@@ -5262,32 +7193,41 @@ def main():
         # rides along on the backward that was happening anyway. One graph at a time, exact
         # gradient, zero extra forwards.
         _rank_c, _rank_on = {}, False
-        if a.rank_loss and not a.loss_only and not a.rank_cross_seed:
-            import rank_loss as RKL
-            _rk_pairs = sorted(_scored_asym.get(pdb) or ())
-            _rk_lab = [(_p, _rank_lab.get(_rank_key(pdb, arm_seed, _p))) for _p in _rk_pairs]
-            _rk_lab = [(_p, _d) for _p, _d in _rk_lab if _d]
-            # AVERAGED OVER THE UNIT'S INTERFACES, so a 3-interface structure does not get three
-            # times the weight of a 1-interface one.
-            _nif = 0
-            for _p, _dqmap in _rk_lab:
-                _idx = [_i for _i in range(n_pose) if _i in _dqmap]
-                if len(_idx) < 2:
-                    continue
-                _cs, _np_ = RKL.coeffs([_dqmap[_i] for _i in _idx],
-                                       weight_by_gap=a.rank_weight_by_gap)
-                if _np_ == 0:
-                    continue
-                _nif += 1
-                for _i, _cv in zip(_idx, _cs):
-                    _rank_c[(_i, _p)] = _rank_c.get((_i, _p), 0.0) + _cv
-            if _nif:
-                for _k in list(_rank_c):
-                    _rank_c[_k] /= float(_nif)
-                _rank_on = True
-                _rank_seen["units"] += 1
+        # THE WITHIN-SEED PER-UNIT PATH IS GONE WITH THE PAIRWISE FORMS.
+        #
+        # It read `if a.rank_loss and not a.loss_only and not a.rank_cross_seed`, built linear
+        # coefficients from RKL.coeffs over the 5 poses of ONE seed, and was the fallback for
+        # every form that did not need pass A. rel is the only form left and it refuses to run
+        # without --rank-cross-seed, so this branch was unreachable; keeping it would leave a
+        # second, differently-shaped ranking objective in the file for no caller.
+        #
+        # THIS IS NOT THE REMOVAL OF WITHIN-SEED COMPARISONS. Under rel every pose of an
+        # interface is in one group across all its seeds, so poses sharing a seed are compared
+        # with each other there -- see the banner block beside the RANKING LOSS print.
 
-        for i in range(n_pose):
+
+        # HOW MANY POSES PER FORWARD, decided once per unit and refused wherever it would change
+        # the objective rather than just the speed.
+        #   score_only  -- pass A keys ipTM per pose and returns one row each; batching it would
+        #                  need the per-pose unpacking that pass B has and pass A does not.
+        #   rank_loss   -- a pose's coefficient is resolved per pose, and under --rank-form rel the
+        #                  PAE mask is a PER-POSE chain pair (_samp_i). Batched, one mask would
+        #                  stand for five poses that may not share it.
+        #   nsample mismatch -- a short final group is fine, but only whole poses of ONE unit may
+        #                  share a forward; the trunk is the thing being reused.
+        _pb = max(1, int(getattr(a, "pose_batch", 1) or 1))
+        if score_only or a.rank_loss:
+            _pb = 1
+        # NOT ON A LARGE CROP. Activation memory goes as nb x tokens^2 (measured
+        # peak_GB = 2.02 + 2.896e-05 * tokens^2 per sample), so 5 poses at 768 tokens is ~87 GB of
+        # a 98 GB card -- no margin for fragmentation. At 256 it is ~11 GB. The batching is also
+        # worth least exactly there: the fixed per-pose cost is 72% of a 256-token pose and 17% of
+        # a 768-token one. 818 of this pool's 846 structures crop to 256, so the threshold costs
+        # almost nothing. At the user's direction.
+        if _pb > 1 and n_tok > int(getattr(a, "pose_batch_max_tokens", 384) or 384):
+            _pb = 1
+        for i in range(0, n_pose, _pb):
+            _nb = min(_pb, n_pose - i)
             _t_pose = time.perf_counter()
             # NO GRAPH UNDER --loss-only. Skipping only the backward would still build the
             # autograd graph for every pose and free it unused -- correct, but it pays the
@@ -5309,9 +7249,9 @@ def main():
                 torch.cuda.reset_peak_memory_stats(dev)
             if a.loss_only or score_only:
                 with torch.no_grad():
-                    m = _one_pose(i)
+                    m = _one_pose(i, _nb)
             else:
-                m = _one_pose(i)
+                m = _one_pose(i, _nb)
             # PASS A'S POSES GET THEIR OWN BUCKET. Ticking them into pose_total would double-count
             # every pose and make the epoch accounting -- which is checked against the wall clock
             # and reported as a residual -- silently wrong.
@@ -5325,7 +7265,8 @@ def main():
                 # THE PASS IS PART OF THE MEASUREMENT. A pass A pose runs under no_grad and
                 # stores no activations, so its peak is not comparable to a pass B pose's and is
                 # not what any checkpointing threshold is decided from.
-                print(f"MEM {pdb}/{arm_seed} pose {i} pass {_pass} tokens {n_tok}: "
+                print(f"MEM {pdb}/{arm_seed} pose {i}{'' if _nb == 1 else f'-{i + _nb - 1}'} "
+                      f"pass {_pass} tokens {n_tok}: "
                       f"allocated {torch.cuda.memory_allocated(dev) / 2**30:.2f} GB  "
                       f"peak {torch.cuda.max_memory_allocated(dev) / 2**30:.2f}  "
                       f"reserved {torch.cuda.memory_reserved(dev) / 2**30:.2f}", flush=True)
@@ -5359,7 +7300,19 @@ def main():
         """
         _xs_coef.clear()
         _xs_div[0] = 1
-        if not (a.rank_cross_seed and a.rank_loss) or a.loss_only:
+        # --tm-centered STATE IS PER STEP, like _xs_coef, and for the same reason: its entries are
+        # [N_frame, N_token] tensors per structure, so holding them past their step would grow
+        # without bound across an epoch. Cleared here rather than at the end of the step because
+        # this is the one function guaranteed to run before the step's first pose.
+        _tm_acc.clear()   # the counters in _tm_stat are per EPOCH and are not cleared here
+        # AND --tm-centered MUST NOT BE EXCLUDED HERE. This gate asked for a ranking loss, so with
+        # --tm-centered alone pass A returned immediately, _tm_acc stayed empty, every pose took
+        # the "no mean to centre against" branch, and the arm would have trained on a zero
+        # objective while reporting an ordinary PAE readout -- silently, since the readout is
+        # computed either way.
+        if (not (a.rank_cross_seed
+                 and (a.rank_loss or a.rank_diag_only or a.tm_centered))
+                or a.loss_only):
             return
         import rank_loss as RKL
         _rng_cpu = torch.get_rng_state()
@@ -5397,7 +7350,7 @@ def main():
         # ASSERTED PER RANK, BEFORE THE GATHER. Every rank verifies its own units, so the merged
         # set is complete by construction -- there is no need to know the other ranks' units here.
         # Found by review of f01dec8a.
-        if a.rank_form == "rel":
+        if a.rank_form in _RANK_IFACE_FORMS:
             # EXPECTED KEYS ARE (pdb, seed, pose, IFACE) for rel, because that is what pass A
             # emits. Built from the pool's interface names, which every pose must score.
             _exp = {(_pdb, _rank_key(_pdb, os.path.basename(_lab)[:-4], (0, 0))[1], _i, _ifc)
@@ -5452,6 +7405,58 @@ def main():
             allsc = dict(local)
             allsamp = dict(local_samp)
 
+        # --tm-centered: THE PER-PAIR MEAN MUST BE OVER THE STRUCTURE'S POSES, NOT THIS RANK'S.
+        #
+        # All of a structure's poses ARE in this step -- that is what --rank-cross-seed guarantees
+        # -- but they are not all on this rank. build_epoch_cross_seed deals the step's units in
+        # CONTIGUOUS slices after shuffling the per-structure lists, so with 2 structures x 15
+        # seeds over 3 ranks a rank can hold 10 units of one structure and none of the other. Left
+        # ungathered, each pose was centred against 25 of its structure's 75 poses and WHICH 25
+        # depended on the shard, so the objective depended on the world size. The ranking loss is
+        # immune to the same dealing only because it gathers its scalars here, which is exactly
+        # what this does for the sums.
+        #
+        # OBJECT COLLECTIVE, LIKE THE TWO ABOVE, AND FOR THE SAME REASON: the per-structure arrays
+        # have different shapes ([N_frame, N_token] per structure), so a tensor collective would
+        # need a shape exchange and padding. At the hard set's median 589 tokens one structure's
+        # sum+count is ~2.8 MB, two structures per step over three ranks -- irrelevant next to the
+        # trunk reads this step already paid for.
+        #
+        # SUMS AND COUNTS ARE ADDITIVE, so merging is addition and no rank needs to know how the
+        # units were dealt. `poses` is summed too, which is what makes the every-pose test
+        # (cnt == poses) refer to the STRUCTURE's pose count rather than a rank's share of it.
+        if a.tm_centered and _tm_acc:
+            if world > 1:
+                _t_tm = time.perf_counter()
+                _loc_tm = {_p: (_v["sum"].detach().cpu().numpy(),
+                                _v["cnt"].detach().cpu().numpy(),
+                                int(_v["poses"]))
+                           for _p, _v in _tm_acc.items()}
+                _bag_tm = [None] * world
+                dist.all_gather_object(_bag_tm, _loc_tm)
+                _tick("tm_gather", _t_tm)
+                _merged = {}
+                for _d in _bag_tm:
+                    for _p, (_s, _c, _n) in (_d or {}).items():
+                        if _p in _merged:
+                            _m = _merged[_p]
+                            _merged[_p] = (_m[0] + _s, _m[1] + _c, _m[2] + _n)
+                        else:
+                            _merged[_p] = (_s.copy(), _c.copy(), _n)
+                for _p, (_s, _c, _n) in _merged.items():
+                    # ONLY THE STRUCTURES THIS RANK WILL ACTUALLY BACKWARD, so a rank holding none
+                    # of a structure does not carry its arrays into pass B for nothing.
+                    if _p not in _tm_acc:
+                        continue
+                    _dev0 = _tm_acc[_p]["sum"].device
+                    _tm_acc[_p] = {
+                        "sum": torch.as_tensor(_s, dtype=torch.float32, device=_dev0),
+                        "cnt": torch.as_tensor(_c, dtype=torch.float32, device=_dev0),
+                        "poses": int(_n)}
+                _tm_stat["gathered"] = _tm_stat.get("gathered", 0) + 1
+            else:
+                _tm_stat["gathered"] = _tm_stat.get("gathered", 0) + 1
+
         # GROUPED BY (pdb, interface), which is what an interface IS. Keyed by (seed, sample)
         # inside the group so group_coeffs can tell cross-seed pairs from within-seed ones.
         groups = {}
@@ -5476,6 +7481,13 @@ def main():
                     _g = _gl.get((int(_sd), int(_sx), str(_pair)))
                     if _g is not None:
                         dq_by[(_sd, _i)] = float(_g)
+            elif a.rank_form == "zsoftmax":
+                # NO REGRESSION TARGET AT ALL. The only label this form uses is the BINARY
+                # acceptability of each candidate, built as _acc_by below through _rel_dqkey --
+                # the same two-step lookup rel's class balance uses, and the only one that is
+                # correct when _pair is an interface name. dq_by stays empty on purpose and the
+                # coverage checks that guard it are skipped with it.
+                pass
             else:
                 for (_sd, _i) in s_by:
                     _lab = _rank_lab.get(_rank_key(_pdb, _sd, _pair))
@@ -5492,7 +7504,7 @@ def main():
                     f"for every surviving pose, so this is not a partial-data case. Rebuild the "
                     f"cache with run_logging/build_itm_labels.py and check its manifest covers "
                     f"this manifest-selection.")
-            if len(dq_by) < 2:
+            if a.rank_form != "zsoftmax" and len(dq_by) < 2:
                 _rel_stat["short_groups"] += 1
                 continue
             # THE FORM IS PASSED THROUGH, NOT RE-DERIVED. This read
@@ -5500,25 +7512,93 @@ def main():
             # which sent any third form to the LINEAR loss while every log line and the saved
             # guard still said otherwise -- a run that looks right and is the wrong experiment.
             # rank_loss.group_coeffs raises on an unknown form, so a typo fails loudly instead.
-            if a.rank_form == "rel":
+            _acc_by = None
+            # THE THRESHOLD IS THE FORM'S OWN. rel's class balance reweights a regression and
+            # takes --rel-balance-accept; zsoftmax's labels ARE the classification and take
+            # --rank-accept. One flag for both would make a value set for one form silently
+            # redefine the other's objective.
+            _acc_thr = (a.rank_accept if a.rank_form == "zsoftmax" else a.rel_balance_accept)
+            if _acc_thr and (a.rank_form == "zsoftmax"
+                             or (a.rank_form == "rel" and a.rel_balance_accept)):
+                # DockQ PER POSE, keyed (seed, pose) exactly like s_by. _rank_lab is keyed by the
+                # STATIC asym pair (_rel_dqkey) and indexed by the SAMPLE, while s_by is keyed by
+                # the pose -- the same two-step lookup the Spearman diagnostic does below, which
+                # is why this is hoisted rather than duplicated.
+                _acc_by = {}
+                _dk0 = _rel_dqkey.get(_pair)
+                for (_sd0, _i0) in s_by:
+                    _l0 = _rank_lab.get(_rank_key(_pdb, _sd0, _dk0)) if _dk0 is not None else None
+                    _sx0 = allsamp.get((_pdb, _sd0, int(_i0)))
+                    if _l0 is None or _sx0 is None or _sx0 not in _l0:
+                        # EXACT COVERAGE, FOR THE SAME REASON THE iTM CACHE DEMANDS IT: a pose
+                        # whose DockQ is unknown cannot be put in either class, and guessing it
+                        # into the majority class would quietly change every weight in the list.
+                        raise SystemExit(
+                            f"STOP: --rel-balance-accept needs a DockQ for every pose, but "
+                            f"{_pdb} interface {_pair} pose {_i0} (seed {_sd0}) has none. The "
+                            f"classification sets every weight in the list, so a missing label "
+                            f"is not a partial-data case. Check --rank-labels covers this "
+                            f"manifest-selection. (threshold {_acc_thr:g}, from "
+                            f"{'--rank-accept' if a.rank_form == 'zsoftmax' else '--rel-balance-accept'})")
+                    _acc_by[(_sd0, _i0)] = float(_l0[_sx0]) >= _acc_thr
+                _na0 = sum(1 for _v0 in _acc_by.values() if _v0)
+                if (_na0 == 0 or _na0 == len(_acc_by)) and a.rank_form != "zsoftmax":
+                    # THE FALLBACK IS A SYMPTOM, NOT A FEATURE. rel_coeffs falls back to a
+                    # uniform mean when a list has only one class, silently and correctly -- 0.5/0
+                    # is not a weight. But on a pool selected to have BOTH classes in every list,
+                    # a one-sided list cannot be real: it means the DockQ lookup returned the
+                    # wrong rows, or the threshold is not the one the pool was built with. Counted
+                    # and named per epoch so that shows up instead of hiding inside a loss value.
+                    _rel_stat["bal_onesided"] = _rel_stat.get("bal_onesided", 0) + 1
+                    _rel_stat.setdefault("bal_onesided_ifaces", []).append(
+                        f"{_pdb}_{_pair}({'all-acc' if _na0 else 'none-acc'},n={len(_acc_by)})")
+                _rel_stat["bal_lists"] = _rel_stat.get("bal_lists", 0) + 1
+                _rel_stat.setdefault("bal_nacc", []).append(_na0)
+            if a.rank_form == "zsoftmax":
+                # ONE ITEM, ONE SOFTMAX, over every candidate the step scored for it. A missing
+                # label is impossible here -- the _acc_by builder above raises on one -- so a
+                # short group means the interface itself had fewer than two poses in the step.
+                if _acc_by is None or len(_acc_by) < 2:
+                    _rel_stat["short_groups"] += 1
+                    continue
+                c, npair, lval = RKL.zsoftmax_coeffs(s_by, _acc_by, stat=_zs_stat)
+                _rel_stat["groups"] += 1
+                _rel_stat["poses"] += npair
+            elif a.rank_form == "rel":
                 # NOT group_coeffs. rel is a regression, not a pairwise family, so none of the
                 # pairwise knobs apply and passing them would make flags look honoured.
                 c, npair, lval = RKL.rel_coeffs(s_by, dq_by,
-                                                standardize=a.rel_standardize)
+                                                standardize=a.rel_standardize,
+                                                sd_weight=a.rel_sd_weight,
+                                                g_weight=a.rel_g_weight,
+                                                g_sigmoid=_G_SIG,
+                                                accept_by=_acc_by,
+                                                **({} if a.rel_std_floor is None
+                                                   else {"std_floor": a.rel_std_floor}))
                 _rel_stat["groups"] += 1
                 _rel_stat["poses"] += npair
-                # DIAGNOSTIC 1: WITHIN-INTERFACE SPEARMAN of the predicted mean-pooled ipTM
-                # against DockQ -- the arm's actual prediction. The head measured +0.317 at
-                # d32kqp epoch 66 against +0.690 for the TRUE iTM, and this is the quantity that
-                # should move between them. It is far more sensitive than selected DockQ (t=7.6
-                # against t=2.7) because it uses all 50 poses rather than just the argmax.
-                #
-                # DIAGNOSTIC 2: SCORE SPREAD, std of the predicted ipTM over the interface's
-                # poses, against std of the TRUE iTM on the same poses. Below 1 the model is
-                # collapsing its scores, above 1 it is exaggerating pose-to-pose differences, and
-                # ~1 means it has the magnitude right. Every ranking arm in this repo lowered its
-                # loss by margin collapse (x5frz6: within-seed std 0.00593 -> 0.00147 while the
-                # loss fell), so this is the falsifier for that failure mode in one number.
+            else:
+                # UNREACHABLE, AND A STOP RATHER THAN A FALLBACK. This was the group_coeffs call
+                # for the six deleted forms, with tau, weight_by_gap, pairs, within_weight,
+                # rank_decay_k, straddle, spearman_tau, dist_weight and rel_scale all threaded
+                # through it. --rank-form admits rel and zsoftmax, both wired above; if a
+                # future form is added and forgets to wire itself up, this says so instead of
+                # training rel's coefficients under another form's name.
+                raise SystemExit(f"STOP: --rank-form {a.rank_form!r} has no coefficient path. "
+                                 f"rel and zsoftmax are the wired forms; see --rank-form's help.")
+            # DIAGNOSTIC 1: WITHIN-INTERFACE SPEARMAN of the predicted mean-pooled ipTM
+            # against DockQ -- the arm's actual prediction. The head measured +0.317 at
+            # d32kqp epoch 66 against +0.690 for the TRUE iTM, and this is the quantity that
+            # should move between them. It is far more sensitive than selected DockQ (t=7.6
+            # against t=2.7) because it uses all 50 poses rather than just the argmax.
+            #
+            # DIAGNOSTIC 2: SCORE SPREAD, std of the predicted ipTM over the interface's
+            # poses, against std of the TRUE iTM on the same poses. Below 1 the model is
+            # collapsing its scores, above 1 it is exaggerating pose-to-pose differences, and
+            # ~1 means it has the magnitude right. Every ranking arm in this repo lowered its
+            # loss by margin collapse (x5frz6: within-seed std 0.00593 -> 0.00147 while the
+            # loss fell), so this is the falsifier for that failure mode in one number.
+            if a.rank_form in _RANK_IFACE_FORMS:
                 _ks = sorted(s_by)
                 _sv = [float(s_by[_k2]) for _k2 in _ks]
                 _gv = [float(dq_by[_k2]) for _k2 in _ks if _k2 in dq_by]
@@ -5534,6 +7614,56 @@ def main():
                     _rho = _spearman(_sv, _dv)
                     if _rho is not None:
                         _rel_stat.setdefault("rho", []).append(_rho)
+                    # DIAGNOSTIC 3: THE SELECTION METRIC ITSELF, in sample and for free.
+                    # _sv is this epoch's predicted ipTM for the interface's poses and _dv their
+                    # DockQ, already aligned -- so the pose the head would pick is _sv's argmax
+                    # and its DockQ is what top-1 selection would score. rho says whether the
+                    # ordering is right; this says whether being right there is worth anything,
+                    # which is the quantity the held-out eval reports and the one we are paid on.
+                    #
+                    # IT IS NOT THE HELD-OUT NUMBER AND MUST NOT BE READ AS ONE. These are
+                    # training interfaces, scored on the CROPPED poses this epoch happened to
+                    # forward, under whatever dropout was active. It moves with the held-out
+                    # metric only to the extent the arm generalises -- which is exactly the gap
+                    # worth watching, and why the oracle goes out beside it as the ceiling.
+                    _am = max(range(len(_sv)), key=lambda _j: _sv[_j])
+                    _rel_stat.setdefault("sel_dq", []).append(_dv[_am])
+                    _rel_stat.setdefault("orc_dq", []).append(max(_dv))
+                    # DIAGNOSTIC 4: THE THREE READS THAT MOVE BEFORE TOP-1 DOES.
+                    #
+                    # RANK OF THE FIRST ACCEPTABLE POSE. Top-1 is a step function -- it only
+                    # changes when the argmax crosses the threshold -- so an arm can improve for
+                    # several epochs with top-1 flat. The rank of the first acceptable pose is
+                    # the same ordering read continuously: 1 means top-1 succeeded, 40 of 75
+                    # means the acceptable poses are sitting in the middle of the list.
+                    #
+                    # SCORE GAP. Mean predicted score of the acceptable poses minus the mean of
+                    # the unacceptable ones, per list. It is the quantity the balanced loss acts
+                    # on directly, and it is signed: at or below 0 the head prefers the bad poses.
+                    #
+                    # SELECTED DockQ AS A FRACTION OF HEADROOM, with the floor being the mean
+                    # DockQ over ALL of the list's poses -- the expected score of a RANDOM pick --
+                    # and the ceiling the best pose. 0 means "no better than picking blind", 1
+                    # means the oracle. The floor is the random pick and NOT the shipped head
+                    # because shipped's per-list number is not available inside a training run,
+                    # and a floor that is not actually computed here would be a different
+                    # quantity from the one the ceiling table reports.
+                    _ACC = 0.23
+                    _ord = sorted(range(len(_sv)), key=lambda _j: -_sv[_j])
+                    _fr = next((_r + 1 for _r, _j in enumerate(_ord) if _dv[_j] >= _ACC), None)
+                    if _fr is not None:
+                        _rel_stat.setdefault("first_acc_rank", []).append(_fr)
+                    _hi = [_sv[_j] for _j in range(len(_sv)) if _dv[_j] >= _ACC]
+                    _lo = [_sv[_j] for _j in range(len(_sv)) if _dv[_j] < _ACC]
+                    if _hi and _lo:
+                        _rel_stat.setdefault("score_gap", []).append(
+                            sum(_hi) / len(_hi) - sum(_lo) / len(_lo))
+                    _base = sum(_dv) / len(_dv)
+                    _orc = max(_dv)
+                    if _orc - _base > 1e-9:
+                        _rel_stat.setdefault("headroom", []).append(
+                            (_dv[_am] - _base) / (_orc - _base))
+                    _rel_stat.setdefault("acc_top1", []).append(1.0 if _dv[_am] >= _ACC else 0.0)
                 if len(_gv) == len(_sv) and len(_sv) >= 3:
                     _ms = sum(_sv) / len(_sv)
                     _mg = sum(_gv) / len(_gv)
@@ -5546,41 +7676,46 @@ def main():
                 if npair:
                     _rel_stat["csum"] = max(_rel_stat["csum"],
                                             abs(sum(c.values())))
-            else:
-                c, npair, lval = RKL.group_coeffs(
-                 s_by, dq_by,
-                 form=a.rank_form,
-                # THE DEFAULT DEPENDS ON THE FORM. DEFAULT_TAU is a margin scale in ipTM units;
-                # the expected form's tau is a softmax temperature. Falling back to 0.0305 for
-                # the expected form would be a sharper selection than the 0.05 default intends,
-                # with nothing in the log to reveal it.
-                tau=(_rank_tau if _rank_tau is not None else
-                     (RKL.DEFAULT_SOFTMAX_TAU if a.rank_form == "expected" else RKL.DEFAULT_TAU)),
-                weight_by_gap=a.rank_weight_by_gap,
-                pairs=a.rank_pairs,
-                within_weight=a.rank_within_weight,
-                rank_decay_k=a.rank_topk_decay,
-                straddle=a.rank_straddle,
-                # GROUP-FORM KNOBS. Ignored by every pairwise form, and the pairwise knobs above
-                # are ignored by these two -- which is why the startup guard refuses the
-                # combinations rather than letting a flag look honoured.
-                spearman_tau=(a.rank_spearman_tau if a.rank_spearman_tau > 0
-                              else RKL.DEFAULT_SPEARMAN_TAU),
-                 dist_weight=a.rank_dist_weight,
-                 rel_scale=a.rank_rel_scale)
             if npair == 0:
                 continue
             n_groups += 1
             _xs_stat["pairs"] += npair
             _xs_stat["loss"] += lval
             for (_sd, _i), _cv in c.items():
-                _xs_coef[(_pdb, _sd, _i, _pair)] = _cv
-        _xs_div[0] = max(1, n_groups)
-        # PER-STEP, not cumulative. Pass A is REPLICATED -- it fills _xs_coef for the poses of
-        # step_units across ALL ranks -- so n_groups is identical on every rank and the skip
-        # decision below needs no collective and cannot desynchronise them.
+                if not a.rank_diag_only:
+                    # THE ONLY ROUTE from a coefficient to the loss: the pose loop reads
+                    # _xs_coef and multiplies by alpha. Leaving it empty under --rank-diag-only
+                    # means the term cannot be added by construction, rather than being
+                    # multiplied by a zero someone could later change.
+                    _xs_coef[(_pdb, _sd, _i, _pair)] = _cv
+        # THE DIVISOR IS THE NUMBER OF ITEMS IN THE STEP, NOT THE NUMBER THAT CONTRIBUTED.
+        # It was max(1, n_groups), and n_groups counts only items that produced coefficients.
+        # zsoftmax skips an item whose candidates are all acceptable or all unacceptable, and
+        # that is ~60% of items, so the divisor moved step to step: ~5.9 items per step of which
+        # ~2.4 contributed, i.e. a ~4x swing in each surviving item's weight, and ~5% of steps
+        # with no contributor at all. Dividing by the step's item count makes a skipped item
+        # contribute ZERO to a mean instead of being removed from the denominator -- which is
+        # what the PAE term already does by dividing by _step_poses_g[0], all poses in the step
+        # rather than the ones that happened to produce a loss.
+        #
+        # THIS CHANGES THE TERM'S MAGNITUDE, by ~2.5x on average for zsoftmax (the mean ratio of
+        # items to contributors). ANY PREVIOUSLY MEASURED PARITY ALPHA IS THEREFORE STALE and
+        # must be re-measured with --grad-probe; alpha_rank is deliberately NOT adjusted here to
+        # compensate, because a hidden compensation would make the flag value in args.json mean
+        # something different from run to run.
+        #
+        # IDENTICAL ON EVERY RANK. `groups` is built from `allsc`, which is the all-gathered
+        # union of every rank's pass A scores for step_units, so len(groups) is rank-invariant
+        # for the same reason n_groups was -- no rank-local state enters it, and the skip
+        # decision below still needs no collective.
+        n_items = len(groups)
+        _xs_div[0] = max(1, n_items)
+        # PER-STEP, not cumulative. last_groups stays the CONTRIBUTING count, because the step
+        # skip gate ("this step has no task gradient") is a statement about contributors, not
+        # about items present.
         _xs_stat["last_groups"] = n_groups
         _xs_stat["groups"] += n_groups
+        _xs_stat["items"] += n_items
         _xs_stat["steps"] += 1
 
     def outside_head_grads():
@@ -5803,7 +7938,7 @@ def main():
                      f"{sorted(_ov['pdbs'])[:4]}" if _ov["pdbs"] else
                      " -- NO structure in this window disagrees, so the fix is UNEXERCISED here "
                      "and the numbers are EXPECTED to match the pre-fix run"))
-        elif a.rank_form == "rel":
+        elif a.rank_form in _RANK_IFACE_FORMS:
             print("\n  PAE MASK OVERRIDE: NOT APPLIED on any pose, which under --rank-form rel "
                   "means the per-pose pairs never reached _set_pae_mask -- the fix is not live.")
         print(f"\n  GRADIENT COVERAGE over {len(names)} trainable tensor(s): "
@@ -5940,13 +8075,64 @@ def main():
         # d/dW [ lambda * ||W - W0||^2 ] = 2 * lambda * (W - W0).
         if a.l2_sp and _l2sp_anchor is not None:
             with torch.no_grad():
+                # THE TASK GRADIENT NORM IS MEASURED FIRST, BEFORE THE PENALTY IS ADDED, and this
+                # ordering is the whole point. paper_results.md section 17: reporting the penalty
+                # as a share of the LOSS VALUE is the trap that made 1e-5 look like a meaningful
+                # setting -- it was 0.5% of the objective and 0.08% of the GRADIENT, i.e. off.
+                # The loss value does not act on the weights; the gradient does. This is the only
+                # point in the step where the task gradient still exists uncontaminated: after
+                # the all-reduce, before the L2 term, before the clip. `gn` from clip_grad_norm_
+                # below is the TOTAL after the penalty and cannot be decomposed back.
+                _tsq = 0.0
+                for _p_t in params:
+                    if _p_t.grad is not None:
+                        _tsq += float(_p_t.grad.detach().pow(2).sum())
                 _sq = 0.0
                 for _n_sp, _p_sp in _l2sp_params:
                     _d_sp = _p_sp.detach() - _l2sp_anchor[_n_sp]
+                    # .grad CAN BE None HERE and the penalty must still apply. zero_grad is
+                    # set_to_none=True, and under --pae-only some anchored tensors are reached by
+                    # neither loss term -- the --grad-probe PASS message says so explicitly. The
+                    # world>1 path happens to zero-fill before its collective, which masked this;
+                    # a single-GPU --l2-sp run would have hit
+                    # AttributeError: 'NoneType' object has no attribute 'add_'.
+                    # L2-SP prices distance from the anchor whether or not the task touched the
+                    # tensor, so the right fix is to CREATE the gradient, not to skip the tensor.
+                    if _p_sp.grad is None:
+                        _p_sp.grad = torch.zeros_like(_p_sp)
                     _p_sp.grad.add_(_d_sp, alpha=2.0 * a.l2_sp)
                     _sq += float((_d_sp * _d_sp).sum())
                 _l2sp_drift["sq"] = _sq
                 _l2sp_drift["n"] += 1
+                # PER-STEP SHARES, NOT A RUNNING MEAN, and NON-FINITE STEPS ARE EXCLUDED.
+                #
+                # Excluded because clip_grad_norm_(error_if_nonfinite=True) below DROPS the
+                # gradients of a non-finite step and takes no step, so its share describes nothing
+                # -- and nan is absorbing, so folding one in would have destroyed the whole
+                # epoch's number with no signal but the NON-FINITE GRADIENT line far above.
+                # --max-nonfinite defaults to 10, so up to ten such steps are tolerated per run.
+                #
+                # Per-step rather than a mean because the mean answers the wrong question. The
+                # danger case for an anchor is the step where the TASK gradient nearly vanishes:
+                # this head has had 16 of 69 taken steps under grad_norm 1e-3, the late ones
+                # clustered near 2.5e-4, and on those the penalty is in sole charge of the
+                # update. A ratio-of-means is dominated by the big-gradient steps and shows a few
+                # percent while that is happening. The median, the max and a count of steps where
+                # the penalty EXCEEDS the task gradient are what show it.
+                _tgn_step = _tsq ** 0.5
+                if _tgn_step == _tgn_step and _tgn_step > 0.0:
+                    _l2sp_drift.setdefault("shares", []).append(
+                        (2.0 * a.l2_sp * _sq ** 0.5) / _tgn_step)
+                    _l2sp_drift.setdefault("tgns", []).append(_tgn_step)
+                # ||2*lambda*(W-W0)|| = 2*lambda*||W-W0|| exactly, because the penalty gradient is
+                # a scalar multiple of the displacement over THIS SAME parameter set (_l2sp_params,
+                # which is the anchored 92 and not the full 102 -- the 10 zero-init tensors are
+                # excluded from the anchor, so they contribute to _tsq but not to _sq, which is
+                # correct: they receive no penalty gradient).
+                _l2sp_drift["task_gn_sum"] = _l2sp_drift.get("task_gn_sum", 0.0) + _tsq ** 0.5
+                _l2sp_drift["l2_gn_sum"] = (_l2sp_drift.get("l2_gn_sum", 0.0)
+                                            + 2.0 * a.l2_sp * _sq ** 0.5)
+                _l2sp_drift["share_n"] = _l2sp_drift.get("share_n", 0) + 1
         try:
             gn = float(torch.nn.utils.clip_grad_norm_(params, a.clip_norm,
                                                       error_if_nonfinite=True))
@@ -5969,6 +8155,16 @@ def main():
                     f"gradient at step {step}. FT3 freezes the trunk; this is not FT3 any more.")
         opt.step()
         opt.zero_grad(set_to_none=True)
+        # THE DEAD-OP RE-CHECK, HERE AND NOT AT THE CROSS-SEED STEP BOUNDARY. The obvious home for
+        # it was beside PFC.step_reset() in the unit loop -- but that site is inside
+        # `if ui in _xs_at:`, and _xs_at is only populated under --rank-cross-seed, so on any other
+        # arm the check would have run ZERO times for the whole run while the install line claimed
+        # "re-checked at every step boundary". The prefix cache survives that because it has a
+        # second, unconditional call at the epoch boundary; this has no equivalent. Immediately
+        # after opt.step() is also the strictly better moment: an optimiser step is the only thing
+        # that could have written a stubbed tensor, and this is the first instruction after it.
+        if _dops is not None:
+            DOPS.step_check()
         return gn, outside, True
 
     # DERIVED FROM --seeds, NOT FROM --eval-budget. The validation fold holds 100 seeds per
@@ -6048,7 +8244,6 @@ def main():
                # --crop-margin 0 IS WHAT "UNCROPPED" MEANS here; the argument's own help says 0
                # is the whole structure. crop_contact and crop_size are still passed because they
                # are inert at margin 0 and passing them keeps the recorded config complete.
-               "--crop-margin", ("0" if a.val_loss_uncropped else str(a.crop_margin)),
                "--crop-contact", str(a.crop_contact),
                "--crop-size", str(a.crop_size), "--accum", str(a.accum),
                # THE PATH IS PER SHARD, and the sharded launcher below rewrites it the same way
@@ -6096,6 +8291,57 @@ def main():
             # not exist -- the --loss-only inheritance class, now seven instances.
             if a.pose_perblock_copy:
                 cmd.append("--pose-perblock-copy")
+        # THE IN-BLOCK PATHWAY AND THE LEAN TRIO -- the NINTH AND TENTH instances of the
+        # --loss-only inheritance class, both found by review before an arm was launched.
+        # (Ninth and tenth, not eighth and ninth: :6165 already claims the eighth for
+        # --crop-all-poses. The running count in these comments is off by one further up --
+        # :6177 says "sixth" and :6200 "now seven instances" for what are the seventh and
+        # eighth -- so the ordinals are a narrative, not an index. Worth one more than nothing
+        # because the POINT of the running count is that this keeps happening.)
+        #
+        # --pose-inblock ADDS tensors, so a child without it fails the resume guard's parameter-set
+        # comparison (phase_k_train.py:3373-3381) and the held-out point is simply absent.
+        #
+        # --lean-single is worse, because it would NOT fail loudly here. It changes no mathematics
+        # on the PAE path, so the child would compute the right number -- but the guard compares
+        # it, so the child refuses the bundle and the monitor reports nothing. Forwarded with the
+        # two flags it hard-requires (phase_k_train.py:1788), since the child parses them itself.
+        if a.pose_inblock:
+            cmd += ["--pose-inblock", "--pose-inblock-block", str(a.pose_inblock_block)]
+            if a.pose_inblock_pae:
+                cmd.append("--pose-inblock-pae")
+        # THE READOUT SITE, SAME CLASS AGAIN. --pose-readout ADDS three head tensors, so a child
+        # without it fails the resume guard's parameter-set comparison and the held-out point is
+        # simply absent; --pose-readout-prenorm adds none and would NOT fail loudly -- the child
+        # would measure the pose added after pae_ln while the parent trained it added before.
+        # --pose-readout-copy-distance is an initialisation the bundle overwrites, so it is not
+        # forwarded, exactly as on the eval_checkpoint path.
+        if a.pose_readout:
+            cmd.append("--pose-readout")
+            if a.pose_readout_prenorm:
+                cmd.append("--pose-readout-prenorm")
+            # THE SECOND SITE ADDS TENSORS, so an eval without it fails the checkpoint load --
+            # the same way the evaluator failed on --pose-readout itself before 7d9d4d10.
+            if a.pose_readout_post_zero:
+                cmd.append("--pose-readout-post-zero")
+        # AND THE NONLINEAR BRANCH, THE SAME CLASS ONE MORE TIME. --pose-mlp adds 15 head tensors,
+        # so a child without it fails the resume guard's parameter-set comparison and the held-out
+        # point is simply absent -- the failure that cost arm m8rote three epochs. Passed after
+        # the readout flags because pose_mlp.install refuses unless they are present.
+        if a.pose_mlp:
+            cmd.append("--pose-mlp")
+        # FORWARDED WHENEVER THE PARENT HAS IT, not only alongside --lean-single. lean_readouts
+        # replaces memory_efficient_forward rather than adding or removing tensors, so its absence
+        # in the child was invisible to both the key-set guard and the resume guard -- the child
+        # was simply computing readouts the parent does not, slower and on a different code path.
+        if a.lean_readouts:
+            cmd.append("--lean-readouts")
+        if a.lean_single:
+            if not a.lean_readouts or not a.pae_only:
+                raise SystemExit(
+                    "STOP: --lean-single without --lean-readouts and --pae-only reached "
+                    "val_loss_checkpoint. The parse-time check should have refused this run.")
+            cmd.append("--lean-single")
         if a.val_loss_prep:
             cmd += ["--indices", os.path.join(a.val_loss_prep, "job_indices.csv"),
                     "--bio-dir", os.path.join(a.val_loss_prep, "job_bioassembly"),
@@ -6455,9 +8701,9 @@ def main():
         _record_val_loss(epoch, step, bundle, mean, len(vals))
         return mean
 
-    def eval_checkpoint(step, epoch, train_pool="", crop_tokens="", tag="", fold="",
+    def eval_checkpoint(step, epoch, train_pool="", tag="", fold="",
                         seed_base=-1, budget=0):
-        """One sharded evaluation. tag names its outputs; crop_tokens crops its INPUTS.
+        """One sharded evaluation. tag names its outputs. Nothing here crops.
 
         tag EXISTS BECAUSE TWO PASSES CAN SHARE A POOL. A cropped and an uncropped reading of
         valfull are different numbers, and writing both under metric_valfull_ep<N>.json would
@@ -6504,8 +8750,6 @@ def main():
         # must keep getting the deployment-shaped number.
         if tag:
             _ptag = tag
-        elif _ptag and crop_tokens:
-            _ptag = f"{_ptag}_cropped"
         mj = os.path.join(a.out, (f"metric_{_ptag}_ep%d.json" if train_pool else "metric_ep%d.json")
                           % epoch)
         extra = []
@@ -6519,11 +8763,31 @@ def main():
             _seed_base = (seed_base if seed_base >= 0
                           else (a.train_eval_seed_base if a.train_eval_seed_base >= 0
                                 else _train_eval_seed_base))
+            # THE ROLES TABLE CAN ALSO LIVE BESIDE THE POOL, same rule as the seed manifest
+            # below and for the same reason. The fold's own chain_roles.csv names only the 53
+            # structures of the original valfull wave, so an 83-structure pool spanning BOTH
+            # waves leaves 49 of its 141 interfaces unmappable and phase_k_eval stops on them.
+            # A pool directory describes its own pool: pool.csv, chain_roles.csv, seed_manifest
+            # .json. Falling back to the fold keeps every existing pool working untouched.
+            _prd = os.path.dirname(os.path.abspath(train_pool))
+            _srol = os.path.join(_prd, "chain_roles.csv")
+            _roles = _srol if os.path.exists(_srol) else os.path.join(_tef, "chain_roles.csv")
             extra = ["--fold", _tef,
                      "--results", os.path.join(_tef, "results.csv"),
                      "--pool", train_pool,
-                     "--roles", os.path.join(_tef, "chain_roles.csv"),
+                     "--roles", _roles,
                      "--seed-base", str(_seed_base)]
+            # AND WHICH SEEDS THAT POOL KEPT. A trimmed fold keeps 30 of a 100-wide sweep, chosen
+            # per structure, so the evaluator's contiguous window asks for seeds the fold never
+            # wrote and its coverage guard stops on them -- which is exactly what killed the
+            # epoch-5 valfull eval. The manifest sits beside the POOL, not under the fold, because
+            # it describes what this pool's metric claims. Forwarded only when it exists, so an
+            # untrimmed pool keeps the contiguous behaviour.
+            _sman = os.path.join(_prd, "seed_manifest.json")
+            if os.path.exists(_sman):
+                extra += ["--seed-manifest", _sman]
+        if a.eval_pae_loss:
+            extra = extra + ["--pae-loss"]
         # THE EVALUATOR MUST RUN THE SAME FUNCTION WE TRAINED. Without this it builds a head with
         # no frame_dir_proj, and its own guard refuses the checkpoint for holding a tensor the
         # model does not have -- a loud failure rather than a silently different metric, but a
@@ -6542,6 +8806,35 @@ def main():
             # architecture -- but passing it is still the fix, not relying on the refusal.
             if a.pose_perblock_copy:
                 extra = extra + ["--pose-perblock-copy"]
+        # AND THE IN-BLOCK PATHWAY, which had no evaluator counterpart at all until review found
+        # it. The block index goes too: pose_inblock_d* carry no depth in their names, so an
+        # evaluator that installed at a DIFFERENT block would pass the key-set guard and score a
+        # different operator. --lean-single is deliberately NOT forwarded: it sets c_s = 0 on
+        # built blocks, leaves every module in the tree, and so changes neither the checkpoint's
+        # key set nor the PAE path's mathematics -- the evaluator has no such flag and needs none.
+        if a.pose_inblock:
+            extra = extra + ["--pose-inblock",
+                             "--pose-inblock-block", str(a.pose_inblock_block)]
+            if a.pose_inblock_pae:
+                extra = extra + ["--pose-inblock-pae"]
+        # AND THE READOUT SITE. --pose-readout ADDS three head tensors, so without this the
+        # evaluator's key-set guard refuses every checkpoint of such an arm and the run produces
+        # no eval number at all. --pose-readout-prenorm adds NO tensors and only moves the site,
+        # so nothing would catch its absence: the load would succeed and the evaluator would score
+        # the pose added AFTER pae_ln while the trainer trained it added BEFORE. Not forwarded:
+        # --pose-readout-copy-distance, which only chooses an initialisation the checkpoint
+        # overwrites.
+        if a.pose_readout:
+            extra = extra + ["--pose-readout"]
+            if a.pose_readout_prenorm:
+                extra = extra + ["--pose-readout-prenorm"]
+            if a.pose_readout_post_zero:
+                extra = extra + ["--pose-readout-post-zero"]
+        # AND THE NONLINEAR BRANCH: 15 extra head tensors in every checkpoint of such an arm, so
+        # without this the evaluator's exact key-set guard refuses all of them and the arm trains
+        # to completion with no eval number at all.
+        if a.pose_mlp:
+            extra = extra + ["--pose-mlp"]
         # THE THREE OPTIMISATIONS THE EVALUATOR ALREADY HAS, which this path never passed.
         #
         # --join-cache is the big one. The pose->sample join is a function of the trunk's own
@@ -6568,11 +8861,21 @@ def main():
         # mean_dockq / mean_dockq_select_max in its json.
         if a.rank_pool == "mean" and a.rank_loss:
             extra = extra + ["--pool-mean", "--select-by", "mean"]
+        else:
+            # BOTH POOLINGS REPORTED EVEN WHEN SELECTION IS THE MAX. --pool-mean makes the
+            # evaluator write mean_dockq_select_mean alongside the selected number, from the SAME
+            # pass, so a PAE-only arm can be read against both the shipped max baseline and the
+            # mean-pooled one without a second evaluation and without assuming two runs were
+            # otherwise identical. Selection is untouched: --select-by stays at the default max,
+            # which is the shipped convention and what this arm's json already records.
+            #
+            # WHY IT WAS MISSING: the flag was gated on `rank_pool == mean AND rank_loss`, which
+            # is false for an arm with no ranking loss, so epoch 5 of axrorr reported only the max
+            # column -- and I compared it against the shipped MEAN baseline by mistake.
+            extra = extra + ["--pool-mean"]
         # THE CROP, FORWARDED. phase_k_eval's --crop-tokens takes the same npz --crop-tokens does
         # here, so a cropped reading of a pool is the evaluator's own code path and not a
         # reimplementation. Absent, the pass is uncropped, which is what every pass has been.
-        if crop_tokens:
-            extra = extra + ["--crop-tokens", os.path.abspath(crop_tokens)]
         # SHARDED OVER EVERY CARD THE RUN WAS GIVEN. The other ranks are parked at a barrier for
         # the whole evaluation, so their cards are idle: at 73 min a pass, evaluating on one card
         # wasted ~47% of the run's wall clock with two cards doing nothing. The driver puts one
@@ -6627,6 +8930,19 @@ def main():
                              f"checkpoint cannot be scored and a training curve without it is not "
                              f"interpretable:\n  " + "\n  ".join(tail))
         m = json.load(open(mj))
+        # AND THE DRIFT TRAVELS WITH THE NUMBER. A metric_*.json is the unit this project actually
+        # compares across arms, and a number produced after a resume that changed the lr, the loss
+        # weights or the sampling is not the same measurement as one produced by a clean
+        # continuation. The warning in run.log cannot help here: the reader of a bar chart never
+        # opens the log of the run behind the bar. Written back into the file the evaluator just
+        # produced so that the drift cannot be separated from the metric it qualifies.
+        if _resume_drift is not None:
+            try:
+                m["resume_drift"] = _resume_drift
+                with open(mj, "w") as _mfh:
+                    json.dump(m, _mfh, indent=1, default=str)
+            except Exception as _e:
+                print(f"  (could not stamp resume_drift into {mj}: {type(_e).__name__}: {_e})")
         if train_pool:
             print(f"  epoch {epoch} TRAIN: mean_dockq {m['mean_dockq']:.4f}  "
                   f"frac_acc {m['frac_acc']:.4f}  oracle {m['oracle_mean_dockq']:.4f} / "
@@ -6696,6 +9012,63 @@ def main():
                 # ROTATED BY POSITION so a rank is not always handed the same seed slot.
                 mine.append(grp[(rank + gi) % world])
         return mine
+
+    # ONE-SHOT, so the coverage check runs on the first epoch this PROCESS sees rather than only
+    # on global epoch 0, which a resume never reaches.
+    _cov_checked = [False]
+
+    def build_epoch_cover_all(ep):
+        """Every unit exactly once per epoch, dealt round-robin so ranks hold disjoint structures.
+
+        WHY THIS EXISTS. build_epoch's unit of work is `world` SEEDS OF ONE STRUCTURE, which makes
+        per-step work equal across ranks by construction -- the right answer when the RANKING loss
+        needs several poses of one structure in a single step. Its cost is that a structure with
+        fewer than `world` seeds produces NO group: `for g in range(len(u) // world)` is an empty
+        range at len(u)=1, so the structure never appears in any epoch and nothing says so. This
+        population is 412 structures at 1 seed and 434 at 15, so 412 of 846 would never train.
+        Found by adversarial review and independently by external review of 216b0630.
+
+        A PAE-ONLY ARM HAS NO SUCH REQUIREMENT. Each pose contributes an independent cross-entropy;
+        nothing is compared within a structure, so a step does not need several of its seeds.
+        Work is equalised a different way: the 256-token crop makes nearly every unit the same
+        size, and measured per-step rank imbalance at this batch size is ~0.5%.
+
+        EQUAL COUNTS PER RANK, OR THE FIRST ALL-REDUCE HANGS RATHER THAN FAILS. len(flat) need not
+        divide `world`, so the tail is truncated to a multiple of it -- at most world-1 units, a
+        different few each epoch because the shuffle is reseeded as seed+ep.
+
+        THE DEAL IS units[rank::world], so one step's units are a contiguous global block split
+        across the ranks: rank r takes global indices r, r+world, r+2*world ... Within a step of
+        `structs_per_step` units per rank that is `structs_per_step * world` DISTINCT units,
+        spanning that many distinct structures except where a deep structure's seeds collide by
+        chance -- which costs an extra trunk read and nothing else.
+        """
+        import epoch_plan as _EP
+        _mine = _EP.cover_all(flat, world, rank, a.seed, ep, a.epoch_order, _sel_tokens,
+                              balance=bool(a.epoch_balance), per_step=structs_per_step)
+        # THE FIRST EPOCH THIS PROCESS SEES, NOT GLOBAL EPOCH 0. Gating on `ep == 0` made the
+        # guard inert on every RESUMED run -- which is most of them -- so the defect it exists to
+        # catch (412 structures silently absent) would have gone unreported on exactly the runs
+        # least likely to be watched closely. Confirmed on rdi25k, which resumed at ep=4 and
+        # printed no coverage line at all. Raised in adversarial review.
+        if is_main and not _cov_checked[0]:
+            _cov_checked[0] = True
+            # SAY THE COVERAGE OUT LOUD, because the failure this builder exists to fix was
+            # silent: 412 structures absent from every epoch with nothing in the log.
+            # THE DEAL ACTUALLY WALKED, not the round-robin one. Without balance/per_step this
+            # validated a different assignment from the one the ranks use.
+            _cov = _EP.coverage(flat, world, a.seed, ep, a.epoch_order, _sel_tokens,
+                                balance=bool(a.epoch_balance), per_step=structs_per_step)
+            _all = {_t[0] for _t in flat}
+            print(f"  epoch plan (cover-all): {len(flat)} unit(s) over {len(_all)} structure(s); "
+                  f"every rank walks {len(_mine)}; structures covered {len(_cov)} of {len(_all)}"
+                  + ("" if len(_cov) == len(_all)
+                     else f"  *** {len(_all) - len(_cov)} MISSING ***"), flush=True)
+            if len(_cov) != len(_all):
+                raise SystemExit(
+                    f"STOP: --epoch-cover-all left {len(_all) - len(_cov)} structure(s) out of "
+                    f"epoch {ep}. That is the defect this builder exists to prevent.")
+        return _mine
 
     def build_epoch_cross_seed(ep):
         """This epoch's unit sequence FOR THIS RANK, with ALL SEEDS OF A STRUCTURE IN ONE STEP.
@@ -6779,6 +9152,22 @@ def main():
         _depth = {_p: len(by[_p]) for _p in order}
         _chunks, _dropped, U = _LRS.pack_cross_seed_steps(_depth, order, S,
                                                            preserve_order=_manifest_order)
+        # THE DEEPEST STRUCTURE'S UNIT COUNT. Both diagnostics below interpolate `_maxd` and
+        # nothing ever bound it: `NameError: name '_maxd' is not defined`, raised from the
+        # _manifest_order branch, which the arm never takes and a size-ordered memory probe always
+        # does. So the one configuration that exists to find the memory ceiling died before
+        # reaching a single pose.
+        #
+        # Derived from _depth rather than from U, and then checked against U, so the message
+        # cannot drift from the packing it describes -- lr_schedule.pack_cross_seed_steps:154
+        # computes U = S * max(depth), and if that ever changes this stops rather than printing a
+        # number that is no longer true.
+        _maxd = max(_depth.values()) if _depth else 0
+        if _chunks and U != S * _maxd:
+            raise SystemExit(
+                f"STOP: a cross-seed step is {U} unit(s) but S={S} times the deepest structure "
+                f"({_maxd}) is {S * _maxd}. build_epoch_cross_seed's diagnostics describe a step "
+                f"as 'S x deepest', and pack_cross_seed_steps no longer agrees.")
         steps = []
         for chunk in _chunks:
             # WHICH SEEDS, AND IN WHAT ORDER, STAYS RANDOM -- that is this shuffle, and it is the
@@ -6997,6 +9386,19 @@ def main():
                                   "lora_dropout": a.lora_dropout,
                                   "train_only": a.train_only,
                                   "world": world, "seed": a.seed, "accum": a.accum,
+                                  "epoch_cover_all": bool(a.epoch_cover_all),
+                                  # SIXTH HALF-WIRING, found by run_logging/test_guard_fields.py
+                                  # while this patch was being verified, not by reading the diff.
+                                  # Both are in the comparison dict above with comments saying
+                                  # they change the step shape and which units a rank walks, and
+                                  # neither was written into the bundle -- so a bundle moved away
+                                  # from its args.json recorded neither and fell through to the
+                                  # _PRE_CROP defaults (1, False), reporting a pose-batched or
+                                  # balanced run as an unbatched unbalanced one. They are now in
+                                  # the loudest severity group of the drift warning, which is
+                                  # worth nothing if the bundle does not record them.
+                                  "pose_batch": int(a.pose_batch),
+                                  "epoch_balance": bool(a.epoch_balance),
                                   "nsample": a.nsample, "lr": a.lr,
                                   "lr_final": a.lr_final,
                                   # ALSO HALF-WIRED, and this one decides the lr at every step of
@@ -7021,6 +9423,9 @@ def main():
                                   "pae_scored_pairs": a.pae_scored_pairs,
                                   "pae_only": a.pae_only,
                                   "lean_single": a.lean_single,
+                                  "pose_inblock": a.pose_inblock,
+                                  "pose_inblock_pae": a.pose_inblock_pae,
+                                  "pose_inblock_block": a.pose_inblock_block,
                                   # SAVED, NOT ONLY COMPARED. frame_direction went into the
                                   # comparison side but not here, so a bundle carried no record of
                                   # it: a resume beside its args.json still matched, because the
@@ -7039,6 +9444,16 @@ def main():
                                   "pose_perblock_copy": a.pose_perblock_copy,
                                   "l2_sp": a.l2_sp,
                                   "l2_sp_exclude": a.l2_sp_exclude,
+                                  # SAVED AS WELL AS COMPARED. Added to the compared dict only,
+                                  # which test_guard_fields.py catches as "half-wired": the bundle
+                                  # then records no value, and a bundle moved away from its
+                                  # args.json lands in _unknown and hits the hard stop that runs
+                                  # BEFORE --resume-override and --resume-allow-drift are
+                                  # consulted -- unresumable, by a check no override can bypass.
+                                  # That is verbatim the crop_margin/crop_contact failure the
+                                  # comment above describes as "I turned a safety check into a
+                                  # wall", re-introduced.
+                                  "lora_keep_trainable": a.lora_keep_trainable,
                                   # FIFTH TIME. The three row-weight fields went into the
                                   # comparison side and not here, so a bundle moved without its
                                   # args.json would carry no record of the PAE objective and read
@@ -7052,24 +9467,32 @@ def main():
                                   "rank_loss": a.rank_loss, "alpha_rank": a.alpha_rank,
                  "rank_pool": a.rank_pool, "rel_labels": a.rel_labels,
                  "rel_standardize": a.rel_standardize,
-                                  "rank_weight_by_gap": a.rank_weight_by_gap,
+                 "rel_sd_weight": a.rel_sd_weight,
+                 "rel_g_weight": a.rel_g_weight,
+                 "pose_readout_prenorm": a.pose_readout_prenorm,
+                 "pose_readout_post_zero": a.pose_readout_post_zero,
+                 # SAVED AS WELL AS COMPARED AND DEFAULTED, all three in one patch. The comment
+                 # eleven lines up names what happens otherwise: a bundle moved away from its
+                 # args.json records no value for the field, lands in _unknown, and hits the hard
+                 # stop that runs BEFORE --resume-override is consulted. test_guard_fields.py's
+                 # watched set does not cover this prefix, so this one is on the reader.
+                 "pose_mlp": a.pose_mlp,
+                 "rel_g_sigmoid": (a.rel_g_sigmoid or ""),
+                 "rel_std_floor": (-1.0 if a.rel_std_floor is None else a.rel_std_floor),
                                   "rank_form": a.rank_form,
-                                  "rank_tau": (float(a.rank_tau)
-                                               if a.rank_tau is not None else -1.0),
+                                  "rank_accept": a.rank_accept,
                                   "rank_cross_seed": a.rank_cross_seed,
                                   "rank_structs_per_step": a.rank_structs_per_step,
-                                  # FIFTH TIME. rank_pairs, rank_within_weight and rank_topk_decay
-                                  # went into the comparison side with a comment claiming both
-                                  # sides were edited together; they were not, and
-                                  # test_guard_fields.py said so. Found in review.
-                                  "rank_pairs": a.rank_pairs,
-                                  "rank_within_weight": a.rank_within_weight,
-                                  "rank_topk_decay": a.rank_topk_decay,
-                                  "rank_straddle": a.rank_straddle,
+                                  # BOTH SIDES IN ONE PATCH, which test_guard_fields.py asserts.
+                                  # Four separate fields once went into the comparison side with
+                                  # a comment claiming otherwise. rank_pairs, rank_within_weight,
+                                  # rank_topk_decay, rank_straddle, rank_tau, rank_weight_by_gap,
+                                  # rank_spearman_tau, rank_dist_weight and rank_rel_scale have
+                                  # since been deleted outright with the forms that read them, so
+                                  # a bundle recording them resumes only under a run that still
+                                  # has them -- which is none.
                                   "alpha_pae": a.alpha_pae, "drop_pde": a.drop_pde,
                                   "clip_norm": a.clip_norm,
-                                  "crop_margin": a.crop_margin,
-                                  "crop_tokens": _CROP_TOK_DIGEST,
                                   "crop_contact": a.crop_contact,
                  # THE CROP DEFINITION, for the same reason as the two above: a16911de changed
                  # the DEFAULT, so resuming a pre-change bundle under post-change code blends two
@@ -7104,6 +9527,8 @@ def main():
                 # EVERY STEP HOLDS THE SAME TOTAL unit count across ranks -- only the per-rank
                 # split rotates -- so the global pose count per step is a constant.
                 _step_poses_g[0] = _xs_nunits * a.nsample
+            elif a.epoch_cover_all:
+                ep_units = build_epoch_cover_all(ep)
             else:
                 ep_units = build_epoch(ep)
             if world > 1:
@@ -7141,6 +9566,7 @@ def main():
             for _k in _tr_stat:
                 _tr_stat[_k] = 0
             _T0, _TN0 = dict(_T), dict(_TN)
+            _T_TOK0 = {k: list(v) for k, v in _T_TOK.items()}
             # PEAK MEMORY PER EPOCH, reset here so each epoch reports its own rather than the
             # high-water mark of the whole run. This is the number that decides whether activation
             # checkpointing can stay off: --mem-log answers it too but emits one line per pose,
@@ -7174,6 +9600,17 @@ def main():
                     # the GPU with unit 0. It also drops the PREVIOUS step's arrays, which is what
                     # bounds the cache to one step.
                     _tr_step_start(_xs_steps[_xs_at[ui]])
+                    # BEFORE PASS A AND AFTER THE OPTIMISER STEP THAT ENDED THE LAST ONE. Both
+                    # halves matter: the entries of the step that just finished are dead (its poses
+                    # never recur), and this is also where the cache re-verifies that nothing moved
+                    # the frozen prefix -- an optimiser step is the only thing that could have.
+                    if _pfc is not None:
+                        PFC.step_reset()
+                    # THE DEAD-OP RE-CHECK IS DELIBERATELY *NOT* HERE. This site is inside
+                    # `if ui in _xs_at:`, which is only reached under --rank-cross-seed, so a
+                    # check placed here runs zero times on every other arm -- silently. It lives
+                    # immediately after opt.step() in _apply_step instead, which is unconditional
+                    # and is the actual instant a stubbed tensor could have been written.
                     _xs_prepare(_xs_steps[_xs_at[ui]], ep)
                 trunk_p = resolve_trunk(pdb, lab_p, cands)
                 # THE NEXT UNIT'S TRUNK, WARMED WHILE THIS ONE COMPUTES. Resolving it is cheap
@@ -7214,11 +9651,19 @@ def main():
                         _LR_STEPS)
                     for g in opt.param_groups:
                         g["lr"] = cur_lr
-                    n_in_accum += 1
+                    # POSES, NOT YIELDS. One yield is one pose at --pose-batch 1 and nb poses
+                    # above it, and the step boundary below compares this against accum_local,
+                    # which is a POSE count. Counting yields would make the effective batch nb
+                    # times the requested --accum, drop the steps per epoch by nb, and stretch the
+                    # lr horizon by nb -- all silently, since every log line would still say
+                    # "poses". Raised in adversarial review.
+                    _nb_row = int(_m.get("n_pose_in_group", 1) or 1)
+                    n_in_accum += _nb_row
                     # EVERY POSE CONTRIBUTES TO THE WINDOW SUM, which is what the batch columns
-                    # average. The per-pose TERMS stay in the row too, for provenance.
+                    # average. The per-pose TERMS stay in the row too, for provenance. A batched
+                    # row carries the group's MEAN, so it is weighted by the poses behind it.
                     for _k in TERMS:
-                        batch_sum[_k] += float(met[_k])
+                        batch_sum[_k] += float(met[_k]) * _nb_row
                     gn, outside, took, bad_grad = float("nan"), -1, 0, 0
                     means = {"batch_" + _k: None for _k in TERMS}
                     means["batch_n"] = 0
@@ -7255,6 +9700,14 @@ def main():
                                          **means})
                             continue
                         step += 1
+                        # THE GRADIENT SPLIT FOR THIS STEP, written before the next one arms.
+                        if _gn_on[0]:
+                            _gn_emit(step, ep + 1)
+                        # ARM THE NEXT MEASURED STEP. Keyed on the step counter AFTER the
+                        # increment so step K, 2K ... are measured; the poses of the step are
+                        # accumulated as they are seen, so this has to be set before they are.
+                        _gn_on[0] = bool(a.grad_norm_every
+                                         and (step + 1) % a.grad_norm_every == 0)
                         if a.save_every and step % a.save_every == 0 and write_traj:
                             cp = os.path.join(a.out, f"head_step{step}.pt")
                             torch.save(_head_ckpt_tensors(), cp)
@@ -7270,8 +9723,17 @@ def main():
                                      met.get("pae_loss_unweighted", float("nan"))}
                                     if float(a.pae_row_frac) > 0 else {}),
                                  **means})
-                    if write_traj and len(rows) % 20 == 0:
-                        _flush(traj_p, traj_cols, rows); rows = []
+                    # EVERY RANK FLUSHES ITS OWN FILE; only rank 0 writes trajectory.csv.
+                    # The condition used to be `write_traj and ...`, which is is_main, so ranks 1+
+                    # never flushed AND never cleared `rows`: they accumulated the whole epoch in
+                    # memory and wrote nothing. That is the same defect the crop log was fixed for
+                    # in review round 6, and it is why every per-pose figure described a third of
+                    # the run.
+                    if len(rows) % 20 == 0:
+                        _flush(traj_rank_p, traj_cols, list(rows))
+                        if write_traj:
+                            _flush(traj_p, traj_cols, rows)
+                        rows = []
                     # THE CROP LOG FLUSHES ON EVERY RANK, and with the trajectory rather than only
                     # at the epoch boundary: a run that dies mid-epoch -- as this one did, on a
                     # hangup -- would otherwise leave no record of what it had cropped. Outside the
@@ -7363,6 +9825,10 @@ def main():
             # subprocesses have to fit beside this rank -- the same reason empty_cache() runs
             # below for the device side.
             _tr_end()
+            # SO THE EVALUATOR SUBPROCESSES DO NOT INHERIT UP TO --prefix-cache-gb OF HELD HOST
+            # MEMORY. Same reason _tr_end is unconditional.
+            if _pfc is not None:
+                PFC.step_reset()
             # ANY EVENTS LEFT FROM THE EPOCH'S TAIL, so the last partial accumulation window's
             # GPU time is not carried silently into the next epoch's figures.
             _drain_gpu_spans()
@@ -7424,6 +9890,28 @@ def main():
                      "rank_gather", "pose_a_total")
             _acc = sum(v for k, v, c in _parts if k in _EXCL and c)
             print(f"  [rank {rank}] epoch {ep + 1} took {_ep_s/60:.1f} min -- {_shown}", flush=True)
+            # COST VERSUS LENGTH, measured. Buckets are fixed so the lines are comparable epoch to
+            # epoch and arm to arm; a token value with fewer than 8 poses behind it in this epoch
+            # is still counted, since the bucket is the unit of report, not the token value.
+            _BK = (0, 350, 450, 550, 650, 800, 1000, 1300, 10 ** 9)
+            _tb = {}
+            for (_k, _nt), _v in _T_TOK.items():
+                _p = _T_TOK0.get((_k, _nt), [0.0, 0])
+                _ds, _dc = _v[0] - _p[0], _v[1] - _p[1]
+                if _dc <= 0:
+                    continue
+                _b = max(_i for _i in range(len(_BK) - 1) if _nt >= _BK[_i])
+                _slot = _tb.setdefault(_b, {"s": 0.0, "n": 0, "tok": 0.0})
+                _slot["s"] += _ds
+                _slot["n"] += _dc
+                _slot["tok"] += _nt * _dc
+            if _tb:
+                _line = "  ".join(
+                    f"[{_BK[_b]}-{'inf' if _BK[_b+1] >= 10**9 else _BK[_b+1]}] "
+                    f"{1000*_d['s']/_d['n']:.0f}ms/{_d['n']}@{_d['tok']/_d['n']:.0f}tok"
+                    for _b, _d in sorted(_tb.items()))
+                print(f"  [rank {rank}] epoch {ep + 1} gpu time by token count "
+                      f"(forward+backward, mean per call): {_line}", flush=True)
             # DID THE PREFETCH ACTUALLY FIRE? crop_slice alone cannot answer it: a miss falls back
             # to the inline crop and ticks the same counter, which is exactly how the first
             # version's 100% miss rate looked identical to no prefetch at all.
@@ -7469,6 +9957,40 @@ def main():
                       f"{_tr_stat['put']} cached, {_tr_stat['full']} refused for cap, "
                       f"{_tr_stat['dup']} skipped as present/full, {_tr_stat['err']} "
                       f"warmer error(s)", flush=True)
+            # DID THE PREFIX CACHE ACTUALLY FIRE? Same question, same reason: a miss recomputes
+            # the prefix and ticks the same gpu_forward bucket, so without a hit rate a cache that
+            # never fires looks exactly like one that always does.
+            #
+            # HOW TO READ THE RATE. The ceiling here really IS 50%: every pose is forwarded twice
+            # per step, pass A always misses (it is the fill) and pass B hits, so 50% means the
+            # cache worked on every pose and anything below it is poses that were refused for cap.
+            # That is the opposite of the trunk cache's range and the reason both lines say so.
+            if _pfc is not None:
+                _ps = PFC.stats()
+                _pn = _ps["hit"] + _ps["miss"]
+                print(f"  [rank {rank}] epoch {ep + 1} prefix cache "
+                      f"({a.prefix_cache_gb:g} GiB, cut in block {_pfc['block_index']} after "
+                      f"tri_mul_in, sig {_pfc['sig']}): "
+                      f"{_ps['hit']}/{_pn} hit ({100.0 * _ps['hit'] / max(1, _pn):.1f}%; 50% is "
+                      f"the ceiling -- pass A fills and pass B hits), {_ps['put']} cached, "
+                      f"{_ps['full']} refused for cap, {_ps['shape']} dropped on a shape "
+                      f"mismatch, {_ps['nokey']} forward(s) with no pose key, {_ps['err']} "
+                      f"copy error(s); {_ps['d2h_bytes'] / (1 << 30):.1f} GiB staged to host, "
+                      f"{_ps['h2d_bytes'] / (1 << 30):.1f} GiB read back", flush=True)
+                PFC.reset_stats()
+            # DID THE DEAD-OP SKIP ACTUALLY FIRE? Same question as the two caches above, and the
+            # same reason: a stub that is never reached costs nothing and saves nothing, and the
+            # epoch time is the only other signal. The count is per stub invocation, so under
+            # --prefix-cache-gb expect FEWER calls than stubs x poses x passes -- on a cache hit
+            # the blocks before the cut are identities and their stubs are not reached at all.
+            if _dops is not None:
+                _ds = DOPS.stats()
+                print(f"  [rank {rank}] epoch {ep + 1} dead ops: {_ds['calls']:,} stub call(s) "
+                      f"across {_ds['stubbed']} skipped module(s) "
+                      f"({_ds['tensors']} tensor(s) held at the floor); each one is an O(N^3) or "
+                      f"O(N^2) pair operation NOT computed, and each returned a zeros tensor the "
+                      f"block added to z -- bit-identical to running it", flush=True)
+                DOPS.reset_stats()
             # THE DRIFT IS THE EXPERIMENT under --l2-sp, so it is reported, not inferred. The
             # full head reached ||dW||^2 = 67,052 unconstrained over 30 epochs; this says where
             # the penalised run actually sits.
@@ -7499,6 +10021,36 @@ def main():
                       f"= {100.0 * _l2_share:.1f}% of the epoch's mean loss {_l2_ref:.4f} "
                       f"(unconstrained full head reached 67,052 by epoch 30, which at "
                       f"lambda {a.l2_sp:g} would be {a.l2_sp * 67052.0:.2f})", flush=True)
+                # THE NUMBER THAT DECIDES WHETHER THIS LAMBDA IS ON. The line above is kept for
+                # continuity with every earlier arm's logs, but it is the misleading one: section
+                # 17 measured 1e-5 at 0.5% of the objective and 0.08% of the gradient. Read THIS
+                # line instead. The reference points, measured on egw5wq at epoch 6 over 804 steps
+                # against a median task grad_norm of 1.080 with ||W-W0|| = 43.2: 1e-5 -> 0.08%,
+                # 1e-4 -> 0.80%, 1e-3 -> 7.99%. Below ~1% is "no L2", not "a little L2".
+                _sh = _l2sp_drift.get("shares") or []
+                if _sh:
+                    # MEDIAN, TO MATCH THE ESTIMATOR THE THRESHOLDS CAME FROM. Section 17's
+                    # reference points are ratios against the MEDIAN grad_norm (1.080, p10 0.475,
+                    # p90 2.421). That distribution is right-skewed, so a mean sits well above the
+                    # median and a mean-based share would read systematically LOW against the very
+                    # numbers printed beside it -- comparing two different estimators and calling
+                    # it a comparison.
+                    def _med(_v):
+                        _q = sorted(_v)
+                        _m = len(_q) // 2
+                        return _q[_m] if len(_q) % 2 else 0.5 * (_q[_m - 1] + _q[_m])
+                    _gshare = _med(_sh)
+                    _tgn = _med(_l2sp_drift.get("tgns") or [float("nan")])
+                    _over = sum(1 for _x in _sh if _x >= 1.0)
+                    print(f"  [rank {rank}] epoch {ep + 1} l2-sp GRADIENT share: median "
+                          f"{100.0 * _gshare:.2f}%, max {100.0 * max(_sh):.2f}%, "
+                          f"{_over} of {len(_sh)} step(s) where the penalty EXCEEDS the task "
+                          f"gradient; median task gradient {_tgn:.4f}, penalty gradient at the "
+                          f"epoch's end 2*lambda*||W-W0|| = {2.0 * a.l2_sp * _l2sp_drift['sq'] ** 0.5:.4e} "
+                          f"(>=1% acts, <1% is off; measured on egw5wq: 1e-5 0.08%, 1e-4 0.80%, "
+                          f"1e-3 7.99%)", flush=True)
+                _l2sp_drift["shares"] = []
+                _l2sp_drift["tgns"] = []
             # THE RANKING LOSS IS THE EXPERIMENT under --rank-loss. ZERO is the reference, not
             # ln2: this loss is a normalised covariance between score gaps and DockQ gaps, so
             # equal scores give exactly 0 and so does an ordering uncorrelated with DockQ.
@@ -7510,20 +10062,24 @@ def main():
             # ranked above everything still gets pushed up: the loss can fall by widening gaps
             # that were already correct, with the inverted fraction unchanged. The within-seed
             # inversion rate has to be read separately -- see run_logging/rank_rho.py.
-            if a.rank_loss and a.rank_cross_seed and _xs_stat["groups"]:
-                # THE SOFTPLUS LOSS IS NOT sum_i c_i s_i, so it cannot be reconstructed from the
-                # coefficients the way the linear one is. group_coeffs returns the value in pass A
-                # and it is accumulated there; 0 is the floor (every pair ordered), not "no
-                # alignment".
-                # THE PAIR FAMILY IS a.rank_pairs, NOT the string "cross-seed". That was
-                # hardcoded here from a time when every arm formed cross-seed pairs, so x5frz6 --
-                # which forms WITHIN-SEED pairs only -- printed "cross-seed" at every epoch while
-                # the startup banner said the opposite. The pair count was the only thing that
-                # gave it away: 6,656 against the ~86,600 a cross-seed objective would form.
-                if a.rank_form == "rel" and _rel_stat.get("rho"):
-                    def _med(v):
-                        w = sorted(v)
-                        return w[len(w) // 2] if w else float("nan")
+            # DEFINED ONCE, ABOVE BOTH READERS. The ranking prints and the spread.r<rank>.csv
+            # writer used to be one block, so the median helper lived inside the ranking gate;
+            # the csv writer now sits outside it (--pae-split-accept must write a row on a
+            # PAE-only arm, where that gate never opens), and leaving the def behind would have
+            # raised NameError there on the first epoch of exactly that arm.
+            def _med(v):
+                w = sorted(v)
+                return w[len(w) // 2] if w else float("nan")
+            # WHETHER THE RANKING COLUMNS HAVE ANYTHING IN THEM, carried out of the gate as a
+            # flag rather than re-tested below: the gate reads _xs_stat["groups"], and the block
+            # it guards RESETS that counter to 0, so re-testing it after the hoist would have
+            # written a row of nan ranking columns on every ranking epoch.
+            _sp_rank_due = False
+            if (a.rank_loss or a.rank_diag_only) and a.rank_cross_seed and _xs_stat["groups"]:
+                # THE LOSS VALUE IS ACCUMULATED IN PASS A, not reconstructed from the
+                # coefficients: rel's value is a sum of squares, so sum_i c_i s_i is not it.
+                # 0 is the floor, not "no alignment".
+                if a.rank_form in _RANK_IFACE_FORMS and _rel_stat.get("rho"):
                     _rh = _rel_stat["rho"]
                     print(f"  [rank {rank}] epoch {ep + 1} WITHIN-INTERFACE SPEARMAN "
                           f"(predicted mean ipTM vs DockQ): median {_med(_rh):+.4f} over "
@@ -7535,27 +10091,99 @@ def main():
                               f"{_med(_rel_stat['sd_g']):.4f}, median ratio "
                               f"{_med(_rel_stat['sd_ratio']):.3f}   "
                               f"[<1 collapsing, >1 exaggerating, ~1 right magnitude]")
-                    for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio"):
-                        _rel_stat[_k3] = []
-                # THE LINE MUST NAME THE OBJECTIVE THAT RAN. Raised in review: this printed
-                # "({rank_form}, {rank_pairs}-seed pairs)" for EVERY form, so a rel run -- which
-                # has no pair family at all and ignores --rank-pairs entirely -- was logged as
-                # "(rel, cross-seed pairs)". This is the one line most likely to be read back
-                # months later to establish what an arm trained on, and it was asserting a pair
-                # family for an objective that forms no pairs.
-                _obj = ("relative regression on true iTM, mean-centred per interface"
-                        if a.rank_form == "rel"
-                        else f"{a.rank_form}, {a.rank_pairs}-seed pairs")
+                    if _rel_stat.get("bal_lists"):
+                        _nb = _rel_stat.get("bal_nacc") or [0]
+                        _one = _rel_stat.get("bal_onesided", 0)
+                        _bthr = (a.rank_accept if a.rank_form == "zsoftmax"
+                                 else a.rel_balance_accept)
+                        print(f"  [rank {rank}] epoch {ep + 1} "
+                              + ("LABELS: " if a.rank_form == "zsoftmax" else "CLASS BALANCE: ")
+                              + f"{_rel_stat['bal_lists']} list(s) classified at DockQ "
+                              f"{_bthr:g}, median {_med(_nb)} acceptable; "
+                              f"{_one} fell back to a uniform mean for having only ONE class"
+                              + ("   [EXPECTED 0 on a pool where every list has both -- a "
+                                 "non-zero count means the DockQ lookup is wrong, not that the "
+                                 "data is odd]" if _one else ""))
+                        if _one:
+                            print(f"    one-sided: "
+                                  f"{', '.join(_rel_stat['bal_onesided_ifaces'][:8])}"
+                                  + (" ..." if _one > 8 else ""))
+                    if _rel_stat.get("first_acc_rank") or _rel_stat.get("score_gap"):
+                        _fa = _rel_stat.get("first_acc_rank") or []
+                        _sg = _rel_stat.get("score_gap") or []
+                        _hd = _rel_stat.get("headroom") or []
+                        _t1 = _rel_stat.get("acc_top1") or []
+                        print(f"  [rank {rank}] epoch {ep + 1} RANKING READS ({a.rank_pool}"
+                              f"-pooled, the readout this arm uses): top-1 acceptable "
+                              f"{(sum(_t1) / len(_t1) if _t1 else float('nan')):.1%} over "
+                              f"{len(_t1)} list(s); median rank of the first acceptable pose "
+                              f"{_med(_fa) if _fa else float('nan')}; score gap "
+                              f"{(sum(_sg) / len(_sg) if _sg else float('nan')):+.5f} over "
+                              f"{len(_sg)} two-class list(s); selected DockQ at "
+                              f"{(sum(_hd) / len(_hd) if _hd else float('nan')):.1%} of headroom "
+                              f"above a random pick")
+                    if _rel_stat.get("sel_dq"):
+                        _sq = _rel_stat["sel_dq"]
+                        _oq = _rel_stat["orc_dq"]
+                        _mean = sum(_sq) / len(_sq)
+                        _fa = sum(1 for _v in _sq if _v >= 0.23) / len(_sq)
+                        print(f"  [rank {rank}] epoch {ep + 1} IN-SAMPLE SELECTED DockQ: mean "
+                              f"{_mean:.4f}, frac acceptable {_fa:.4f} over {len(_sq)} "
+                              f"interface-group(s)   [oracle mean "
+                              f"{sum(_oq) / len(_oq):.4f}; CROPPED training poses, top-1 of this "
+                              f"epoch's own forward -- not the held-out number]")
+                    _sp_rank_due = True
+                # THE LINE NAMES THE OBJECTIVE THAT RAN. It once printed
+                # "({rank_form}, {rank_pairs}-seed pairs)" for every form, so a rel run -- which
+                # forms no pairs at all -- was logged as "(rel, cross-seed pairs)". This is the
+                # one line most likely to be read back months later to establish what an arm
+                # trained on. There is now one objective and it is named in full.
+                _obj = ("z-scored softmax, -log(mass on the acceptable candidates) per interface"
+                        if a.rank_form == "zsoftmax" else
+                        "relative regression on true iTM, mean-centred per interface")
+                if a.rank_form == "zsoftmax" and _zs_stat.get("items"):
+                    _pg = _zs_stat.get("pgood") or [float("nan")]
+                    _zm = _zs_stat.get("zmax") or [float("nan")]
+                    _ngd = _zs_stat.get("ngood") or [0]
+                    print(f"  [rank {rank}] epoch {ep + 1} Z-SOFTMAX: {_zs_stat['items']} item(s) "
+                          f"scored, median acceptable mass {_med(_pg):.4f} "
+                          f"(= exp(-loss); 1.0 is the ceiling), median {_med(_ngd)} acceptable "
+                          f"candidate(s) per item, median max|z| {_med(_zm):.2f}, median score "
+                          f"spread {_med(_zs_stat.get('sd_s') or [float('nan')]):.5f}, median "
+                          f"sum|dL/ds| {_med(_zs_stat.get('cabs') or [float('nan')]):.4f}   "
+                          f"[THE LOSS ALONE DOES NOT DIAGNOSE THIS ONE: m and d are detached, so "
+                          f"a flat loss is consistent with a live gradient, and the all-acceptable"
+                          f"-tied configuration is a stationary point rather than the minimum. "
+                          f"Read the spread and the norm -- coefficients go as 1/spread]"
+                          + (f"; {_zs_stat['onesided']} item(s) SKIPPED for one class only "
+                             f"(expected -- they keep their PAE loss)"
+                             if _zs_stat.get("onesided") else "")
+                          + (f"; {_zs_stat['flat']} item(s) SKIPPED for ZERO score spread -- the "
+                             f"z-score is undefined there, which is score collapse, not a quirk"
+                             if _zs_stat.get("flat") else ""), flush=True)
                 print(f"  [rank {rank}] epoch {ep + 1} rank-loss ({_obj}): "
                       f"{_xs_stat['loss'] / _xs_stat['groups']:+.5f} over "
                       f"{_xs_stat['groups']} interface-group(s) in {_xs_stat['steps']} step(s)"
+                      # THE SECOND COUNT IS THE DIVISOR, and it is not the first one. The loss
+                      # mean above is over CONTRIBUTING groups (a skipped item has no loss
+                      # value), while the gradient is divided by every group the step HELD --
+                      # see the _xs_div comment in _xs_prepare. Printing only the contributor
+                      # count hid that these are different numbers. APPENDED, not substituted
+                      # into the leading phrase, because run_logging/spread_from_log.py,
+                      # plot_uncropped_progress.py and plot_train_insample.py all parse
+                      # "over (\d+) interface-group" out of this exact line. AND WITH NO
+                      # COMMA IN IT: plot_uncropped_progress.py's RANK_RE spans from "step(s)"
+                      # to the candidate count with [^,]*, so a comma here would empty its
+                      # ranking panel.
+                      + f" [divisor: the {_xs_stat['items']} group(s) the steps HELD -- a "
+                        f"skipped group is a zero in the mean rather than a smaller denominator]"
                       # THE REASON MUST MATCH THE FORM. Raised in review: this said "no
                       # straddling pair" whatever the objective, which is false under rel -- rel
                       # forms no pairs, and a skipped rel step means the step held no interface
                       # with at least two labelled poses to centre over.
                       + ((f" [{_xs_stat['skipped']} step(s) SKIPPED: "
                           + ("no interface with two or more labelled poses to centre over"
-                             if a.rank_form == "rel" else
+                             if a.rank_form in _RANK_IFACE_FORMS else
                              "no straddling pair in either structure")
                           + ", so no task gradient -- not handed to AdamW]")
                          if _xs_stat.get("skipped") else "") + ", "
@@ -7567,14 +10195,17 @@ def main():
                       # POSES FOR rel TOO, not just for expected. rank_loss.rel_coeffs returns
                       # (coeffs, n_poses, loss), so this counter holds a POSE count under rel and
                       # calling it "pair(s)" overstated the group size by the pair-count factor.
-                      + ("pose(s)" if a.rank_form in ("expected", "rel") else "pair(s)")
+                      + ("candidate(s)" if a.rank_form == "zsoftmax" else
+                         "pose(s)" if a.rank_form in ("expected", "rel") else "pair(s)")
                       + ("  (0 is the FLOOR -- every pair ordered)"
                          if a.rank_form == "softplus" else "")
                       + ("  (0 is the FLOOR -- centred prediction equals centred true iTM)"
                          if a.rank_form == "rel" else "")
+                      + ("  (0 is the FLOOR -- all of the softmax mass on acceptable candidates)"
+                         if a.rank_form == "zsoftmax" else "")
                       + ("  (NEGATIVE: this is -expected DockQ, floor -max(DockQ) per group)"
                          if a.rank_form == "expected" else ""), flush=True)
-                for _k in ("groups", "pairs", "steps", "skipped"):
+                for _k in ("groups", "items", "pairs", "steps", "skipped"):
                     _xs_stat[_k] = 0
                 _xs_stat["loss"] = 0.0
             elif a.rank_loss and _rank_seen["units"]:
@@ -7584,6 +10215,181 @@ def main():
                       f"NOT an inversion rate)", flush=True)
                 _rank_seen["loss"] = 0.0
                 _rank_seen["units"] = 0
+            # THE PAE LOSS, SPLIT BY POSE GROUP. OUTSIDE the ranking gate above, which is the
+            # whole point: that gate needs --rank-cross-seed and a non-empty pass A, and this
+            # read exists for an arm that runs neither.
+            #
+            # ALL-REDUCED ACROSS RANKS, and it has to be. The epoch deals 1,173 units x 5 poses
+            # over three ranks, so a rank-local line covers a THIRD of the epoch -- and because
+            # acceptable poses are only ~3.5% of the population, that third swings the acceptable
+            # count 51-80 between epochs. The first four epochs of 7c8koq were read off rank 0
+            # alone and the acceptable mean moved 4.26-4.75 on which poses the shuffle dealt that
+            # rank, not on anything the model did. A diagnostic that moves with the deal is worse
+            # than no diagnostic.
+            #
+            # THE COLLECTIVE IS UNCONDITIONAL once _ps_on, which is a flag and so identical on
+            # every rank. Guarding it on "this rank classified something" would hang the run the
+            # first time a rank's draw held no acceptable pose -- the defect that made _gn_emit's
+            # early return a hang risk.
+            #
+            # WHAT TO READ: the two means separately, over epochs. The aggregate pae_loss falls
+            # whichever group is being fit, so only the DIFFERENCE says whether one is being
+            # sacrificed for the other. The counts are printed beside them because the means are
+            # over different, unequal populations and a count that moves between epochs changes
+            # a mean without any pose's loss changing.
+            if _pb_on:
+                _pbw = _rel_stat.get("pb_wsum", 0.0)
+                _pbn = _rel_stat.get("pb_wn", 0)
+                _pbu = _rel_stat.get("pb_unweighted", 0)
+                if world > 1:
+                    _pbt = torch.tensor([_pbw, float(_pbn), float(_pbu)], dtype=torch.float64)
+                    dist.all_reduce(_pbt, op=dist.ReduceOp.SUM)
+                    _pbw, _pbn, _pbu = float(_pbt[0]), int(_pbt[1]), int(_pbt[2])
+                print(f"  [all {world} rank(s)] epoch {ep + 1} PAE BALANCE (DockQ "
+                      f"{a.pae_balance_accept:g}): {_pbn} pose(s) weighted, mean normalised "
+                      f"weight {(_pbw / _pbn) if _pbn else float('nan'):.4f} (1.0 would be no "
+                      f"reweighting on average), {_pbu} pose(s) left at 1.0 for want of a class"
+                      + ("   [a large unweighted count means the flag is half off]"
+                         if _pbu > 0.02 * max(1, _pbn) else ""), flush=True)
+                _rel_stat["pb_wsum"] = 0.0
+                _rel_stat["pb_wn"] = 0
+                _rel_stat["pb_unweighted"] = 0
+            if _ps_on:
+                _ps_keys = ("ps_acc_sum", "ps_acc_n", "ps_un_sum", "ps_un_n",
+                            "ps_straddle", "ps_unclass", "ps_batched")
+                if world > 1:
+                    _ps_t = torch.tensor([float(_rel_stat.get(_k) or 0.0) for _k in _ps_keys],
+                                         dtype=torch.float64)
+                    dist.all_reduce(_ps_t, op=dist.ReduceOp.SUM)
+                    _ps_all = {_k: float(_v) for _k, _v in zip(_ps_keys, _ps_t.tolist())}
+                else:
+                    _ps_all = {_k: float(_rel_stat.get(_k) or 0.0) for _k in _ps_keys}
+                _pm_a = ((_ps_all["ps_acc_sum"] / _ps_all["ps_acc_n"])
+                         if _ps_all["ps_acc_n"] else float("nan"))
+                _pm_u = ((_ps_all["ps_un_sum"] / _ps_all["ps_un_n"])
+                         if _ps_all["ps_un_n"] else float("nan"))
+                print(f"  [all {world} rank(s)] epoch {ep + 1} PAE BY POSE GROUP (DockQ "
+                      f"{a.pae_split_accept:g}, CROPPED training batches, the loss this arm "
+                      f"trains on): acceptable {_pm_a:.4f} over {int(_ps_all['ps_acc_n'])} pose(s), "
+                      f"unacceptable {_pm_u:.4f} over {int(_ps_all['ps_un_n'])} pose(s), "
+                      f"acceptable minus unacceptable {_pm_a - _pm_u:+.4f}; "
+                      f"{int(_ps_all['ps_straddle'])} pose(s) STRADDLED the threshold across their "
+                      f"interfaces and are in neither, {int(_ps_all['ps_unclass'])} unclassified"
+                      + (f" ({int(_ps_all['ps_batched'])} of them --pose-batch rows, whose pae_loss "
+                         f"is a mean over the batch)" if _ps_all["ps_batched"] else "")
+                      + "   [one group falling while the other does not is the signal]",
+                      flush=True)
+            # --tm-centered, PER EPOCH: the objective this arm actually descends, and the average
+            # predicted pair score beside it.
+            #
+            # WHY THE PREDICTED SCORE IS REPORTED AT ALL: the loss cannot see it. Centring removes
+            # any per-pair constant, so a head that drives every s_pred to 0 or to 1 can still have
+            # a small centred loss -- squashing is invisible in the loss and obvious in this number.
+            # A value drifting to either end means the term is being satisfied by collapse rather
+            # than by ordering.
+            # AND THE n == 0 CASE IS THE ONE THAT MUST NOT BE SILENT. Gating the whole line on
+            # n > 0 hid exactly the failure the nolabel counter exists to surface: every pose
+            # taking `cum = cum * 0.0` is an epoch of training on a zero objective, and with the
+            # line suppressed the only visible number was the pae_loss READOUT, which is computed
+            # either way and looks completely ordinary. --loss-only reaches this legitimately
+            # (pass A returns before filling _tm_acc, so there is no mean and no gradient); a
+            # gradient run reaching it does not.
+            if a.tm_centered and not _tm_stat["n"]:
+                print(f"  [rank {rank}] epoch {ep + 1} CENTRED TM ERROR: NO POSE TOOK A GRADIENT "
+                      f"({_tm_stat['poses']} scored in pass A, {_tm_stat['nolabel']} pose(s) had "
+                      f"no pass-A mean, {_tm_stat['unmasked']} had no scored chain pair). The "
+                      f"objective was 0.0 for the whole epoch"
+                      + ("; expected under --loss-only." if a.loss_only else
+                         " -- THIS ARM TRAINED NOTHING."), flush=True)
+            if a.tm_centered and _tm_stat["n"]:
+                print(f"  [rank {rank}] epoch {ep + 1} CENTRED TM ERROR: "
+                      f"{_tm_stat['loss'] / _tm_stat['n']:.6f} over {_tm_stat['n']} pose(s) "
+                      # POSES OF THE STRUCTURE, ACROSS ALL RANKS, now that _xs_prepare gathers the
+                      # sums. Read this number: it should equal the structure's full depth x
+                      # nsample (15 x 5 = 75 on the hard set). If it is about a third of that, the
+                      # gather is not running and each pose is being centred against its own
+                      # rank's share -- which is a different objective and depends on world size.
+                      f"({_tm_stat['poses']} scored in pass A on this rank, each pose centred "
+                      f"against {_tm_stat['mpose'] / _tm_stat['n']:.1f} pose(s) of its structure "
+                      f"across ALL ranks), mean predicted pair score "
+                      f"{(_tm_stat['pred_sum'] / _tm_stat['pred_n']) if _tm_stat['pred_n'] else float('nan'):.4f}"
+                      + (f"; {_tm_stat['unmasked']} pose(s) had no scored chain pair"
+                         if _tm_stat["unmasked"] else "")
+                      + (f"; {_tm_stat['nolabel']} pose(s) had no pass-A mean and took NO gradient"
+                         if _tm_stat["nolabel"] else ""), flush=True)
+            if a.tm_centered:
+                # RESET UNCONDITIONALLY, outside the n > 0 branch: the counters are per EPOCH, and
+                # resetting them only when a pose trained made the nolabel count of a dead epoch
+                # roll into the next one.
+                for _k in ("poses", "loss", "n", "pred_sum", "pred_n", "unmasked", "nolabel",
+                           "mpose"):
+                    _tm_stat[_k] = 0 if _k != "loss" and _k != "pred_sum" else 0.0
+            # THE SAME MEDIANS, TO A FILE. Until now the print above was the only record
+            # of the within-interface spread, so reading a 20-epoch curve out of it meant
+            # grepping a log format that is free to change -- and the quantity the rel loss
+            # exists to control was the one quantity not in any csv. One row per epoch per
+            # rank, beside trajectory.csv. Per rank, not reduced: each rank sees its own
+            # structures, an all-reduce here would be a collective in a print block, and
+            # three near-identical medians are a cheap consistency check.
+            #
+            # ONE WRITER, NOT TWO. The pae-split columns are appended to THIS row rather than
+            # written to a file of their own, the way insample_dq was appended: a second writer
+            # would mean two header lines and two rows per epoch in the same file whenever both
+            # reads were on, and nothing downstream could tell which row carried which. So the
+            # ranking columns go out as nan when the ranking block did not run, which is what a
+            # PAE-only arm produces, and the header stays fixed for the life of the file.
+            #
+            # A RESUMED RUN GETS A RAGGED TAIL -- the header was written when the file was
+            # created and is not rewritten, so rows appended after this change carry seven more
+            # fields than that header names. That is what appending insample_dq already did
+            # (training/runs/nad5rc/spread.r0.csv still holds 6-field rows under a 9-field
+            # header), and it is the deliberate trade: rewriting a header in place means
+            # rewriting the file, and nothing reads these columns positionally.
+            if _sp_rank_due or _ps_on:
+                _rh = _rel_stat.get("rho") or []
+                _sp = os.path.join(a.out, f"spread.r{rank}.csv")
+                _new = not os.path.exists(_sp)
+                with open(_sp, "a") as _fh:
+                    if _new:
+                        _fh.write("epoch,n_ifaces,rho,sd_pred,sd_true,sd_ratio,"
+                                  "insample_dq,insample_frac,oracle_dq,"
+                                  "pae_acc,pae_unacc,n_pae_acc,n_pae_unacc,"
+                                  "n_pae_straddle,n_pae_unclassified,pae_acc_minus_unacc\n")
+                    _fh.write("%d,%d,%.6f,%.6f,%.6f,%.6f" % (
+                        ep + 1, len(_rh), _med(_rh or [float("nan")]),
+                        _med(_rel_stat.get("sd_s") or [float("nan")]),
+                        _med(_rel_stat.get("sd_g") or [float("nan")]),
+                        _med(_rel_stat.get("sd_ratio") or [float("nan")])))
+                    _sq = _rel_stat.get("sel_dq") or []
+                    _oq = _rel_stat.get("orc_dq") or []
+                    _fh.write(",%.6f,%.6f,%.6f" % (
+                        (sum(_sq) / len(_sq)) if _sq else float("nan"),
+                        (sum(1 for _v in _sq if _v >= 0.23) / len(_sq)) if _sq
+                        else float("nan"),
+                        (sum(_oq) / len(_oq)) if _oq else float("nan")))
+                    if _ps_on:
+                        _na = int(_ps_all["ps_acc_n"])
+                        _nu = int(_ps_all["ps_un_n"])
+                        _ma = (_ps_all["ps_acc_sum"] / _na) if _na else float("nan")
+                        _mu = (_ps_all["ps_un_sum"] / _nu) if _nu else float("nan")
+                        _fh.write(",%.6f,%.6f,%d,%d,%d,%d,%.6f\n" % (
+                            _ma, _mu, _na, _nu, int(_ps_all["ps_straddle"]),
+                            int(_ps_all["ps_unclass"]), _ma - _mu))
+                    else:
+                        _fh.write(",,,,,,\n")
+                _zs_stat.clear()
+                for _k3 in ("rho", "sd_s", "sd_g", "sd_ratio", "sel_dq", "orc_dq",
+                            "bal_nacc", "bal_onesided_ifaces",
+                            "first_acc_rank", "score_gap", "headroom", "acc_top1"):
+                    _rel_stat[_k3] = []
+                _rel_stat["bal_lists"] = 0
+                _rel_stat["bal_onesided"] = 0
+                # RESET WITH THE REST, at the same boundary, or epoch 2's mean would be epochs
+                # 1 and 2 pooled -- a curve that cannot help but look like it is flattening.
+                _rel_stat["ps_acc_sum"] = 0.0
+                _rel_stat["ps_un_sum"] = 0.0
+                for _k4 in ("ps_acc_n", "ps_un_n", "ps_straddle", "ps_unclass", "ps_batched"):
+                    _rel_stat[_k4] = 0
             print(f"  [rank {rank}] epoch {ep + 1} accounted {_acc/60:.1f}m of {_ep_s/60:.1f}m, "
                   f"residual {(_ep_s - _acc)/60:.1f}m "
                   f"(exclusive buckets only; gpu_* overlap pose_total, "
@@ -7692,8 +10498,11 @@ def main():
                 # training a whole pass behind the others.
                 if world > 1:
                     dist.barrier()
+                _flush(traj_rank_p, traj_cols, list(rows))
                 if is_main:
-                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    _flush(traj_p, traj_cols, rows)
+                rows.clear()
+                if is_main:
                     _bundle = os.path.join(a.out, f"resume_ep{ep + 1}.pt")
                     if not os.path.exists(_bundle):
                         print(f"  WARNING: no {_bundle}; skipping the held-out PAE for this epoch")
@@ -7727,8 +10536,11 @@ def main():
                 # the second one, rank 0 would re-enter training a whole evaluation behind.
                 if world > 1:
                     dist.barrier()
+                _flush(traj_rank_p, traj_cols, list(rows))
                 if is_main:
-                    _flush(traj_p, traj_cols, rows); rows = []
+                    _flush(traj_p, traj_cols, rows)
+                rows.clear()
+                if is_main:
                     eval_checkpoint(step, ep + 1)
                 if world > 1:
                     dist.barrier()
@@ -7738,10 +10550,13 @@ def main():
                 # over every card, the other ranks parked for its duration.
                 if world > 1:
                     dist.barrier()
+                _flush(traj_rank_p, traj_cols, list(rows))
                 if is_main:
-                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    _flush(traj_p, traj_cols, rows)
+                rows.clear()
+                if is_main:
                     eval_checkpoint(step, ep + 1, train_pool=a.train_eval_pool,
-                                    crop_tokens=a.eval_pool_crop_tokens)
+                                    )
                 if world > 1:
                     dist.barrier()
             # EVERY EXTRA PASS, each on its own cadence. SAME BARRIER DISCIPLINE: one evaluator
@@ -7751,13 +10566,16 @@ def main():
                     continue
                 if world > 1:
                     dist.barrier()
+                _flush(traj_rank_p, traj_cols, list(rows))
                 if is_main:
-                    _flush(traj_p, traj_cols, rows); rows.clear()
+                    _flush(traj_p, traj_cols, rows)
+                rows.clear()
+                if is_main:
                     print(f"  extra eval '{_ee['name']}': pool {_ee['pool']}, budget "
                           f"{_ee['budget'] or 'default'}, every {_ee['every']} epoch(s), "
-                          f"{'CROPPED' if _ee['crop_tokens'] else 'uncropped'}", flush=True)
+                          f"uncropped", flush=True)
                     eval_checkpoint(step, ep + 1, train_pool=_ee["pool"],
-                                    crop_tokens=_ee["crop_tokens"], tag=_ee["name"],
+                                    tag=_ee["name"],
                                     fold=_ee["fold"], seed_base=_ee["seed_base"],
                                     budget=_ee["budget"])
                 if world > 1:
@@ -7773,6 +10591,10 @@ def main():
                             "unit": os.path.basename(lab_p)[:-4], "pose": i})
         if write_traj:
             _flush(traj_p, traj_cols, rows)
+        # EVERY RANK, including rank 0. _flush clears nothing, so the same rows go to both files;
+        # the final clear below is what retires them.
+        if rows:
+            _flush(traj_rank_p, traj_cols, list(rows))
         if crop_p and crop_rows:        # every rank, its own file
             _flush(crop_p, crop_cols, crop_rows)
             crop_rows.clear()
@@ -7855,8 +10677,10 @@ def main():
     for _p, _lp, _c in flat:
         _units_by_pdb[_p] = _units_by_pdb.get(_p, 0) + 1
     _units_per_rank = _LRS.units_per_rank(_units_by_pdb, world,
-                                          bool(a.rank_cross_seed), len(flat))
+                                          bool(a.rank_cross_seed), len(flat),
+                                          cover_all=bool(a.epoch_cover_all))
     _spe_ep = _LRS.steps_per_epoch(_units_by_pdb, world, a.nsample, accum_local,
+                                   cover_all=bool(a.epoch_cover_all),
                                    cross_seed=bool(a.rank_cross_seed), n_units=len(flat),
                                    structs_per_step=(a.rank_structs_per_step
                                                      if a.rank_cross_seed else 0),
@@ -7880,14 +10704,37 @@ def main():
     # WHAT THE HORIZON WAS BUILT FROM, so build_epoch_cross_seed can refuse if it packs a
     # different number of steps than the schedule was calibrated for.
     _xs_spe[0] = _spe_ep if a.rank_cross_seed and a.rank_structs_per_step else 0
-    _sched = ("flat after warmup (no decay)" if a.lr_final <= 0.0 else
-              f"COSINE {a.lr:g} -> {a.lr_final:g} over steps {a.warmup_steps}..{_expect}")
+    # --lr-steps IS CHECKED FIRST, because it takes precedence over --lr-final and the decay
+    # window (see its help). This line derived the description from lr_final alone, so a run with
+    # a staircase printed "flat after warmup (no decay)" while the staircase was in fact applied
+    # -- parse_lr_steps' own docstring warns that "the run trains at the wrong lr for twenty
+    # epochs and nothing in the log says so", and the startup line was saying exactly nothing.
+    if a.lr_steps:
+        _sched = "STAIRCASE: " + f"{a.lr:g}" + "".join(
+            f" -> {_v:g} from epoch {_e:g}" for _e, _v in _LRS0.parse_lr_steps(a.lr_steps))
+    elif a.lr_final <= 0.0:
+        _sched = "flat after warmup (no decay)"
+    else:
+        _sched = f"COSINE {a.lr:g} -> {a.lr_final:g} over steps {a.warmup_steps}..{_expect}"
     print(f"\ntraining: lr {a.lr:g}, warmup {a.warmup_steps}, accum {a.accum}, "
           f"~{_expect} optimiser step(s) for {a.epochs} epoch(s) "
           f"({_full} full + {_part} partial per epoch); no step cap, the epoch loop decides")
     print(f"  lr schedule: {_sched}")
     print(f"trajectory -> {traj_p}")
-    json.dump(vars(a), open(os.path.join(a.out, "args.json"), "w"), indent=1)
+    _args_rec = dict(vars(a))
+    # REALISED, NOT REQUESTED. `seeds` above is the fallback range; this is the per-structure
+    # depth histogram the manifest actually declared ({depth: n_structures}), so args.json and
+    # run.log cannot disagree about what the run trained on.
+    _args_rec["realised_seed_depths"] = _REALISED_SEED_DEPTHS
+    # THE ACCEPTED DRIFT GOES WHERE THE RESULT IS READ. args.json is the file every reader opens to
+    # find out what a run was -- plot_arm_bars.py, the arm tables, a human three weeks later -- and
+    # a resume that changed the lr, the loss or the sampling is part of what the run WAS. Printed
+    # to run.log it is one block in ~25k lines, scrolled past before the first epoch ends; here it
+    # sits beside the flags themselves, and because args.json records the CURRENT values, the
+    # bundle's values would otherwise be unrecoverable from this file at all.
+    if _resume_drift is not None:
+        _args_rec["resume_drift"] = _resume_drift
+    json.dump(_args_rec, open(os.path.join(a.out, "args.json"), "w"), indent=1, default=str)
     train_loop(steps_cap, a.lr, "train", write_traj=is_main,
                from_epoch=start_epoch, from_step=start_step)
     # --grad-probe STOPS HERE. The return inside train_loop only exits train_loop; main() then
@@ -7908,7 +10755,7 @@ def main():
     # every counter at zero and printed nothing at all -- an arm would have reported no retained
     # fraction and no fallback count, which is exactly the bookkeeping it exists to provide.
     # Review round 6 caught it.
-    if a.crop_margin > 0 or a.crop_tokens:
+    if _USE_CROP:
         if crop_p and crop_rows:
             _flush(crop_p, crop_cols, crop_rows)
             crop_rows.clear()
@@ -7922,7 +10769,7 @@ def main():
             _cs = {k: int(v) for k, v in zip(_keys, _t.tolist())}
         if is_main:
             if _cs["n"]:
-                print(f"\ncrop: contact {a.crop_contact:.0f} A, margin {a.crop_margin:.0f} A over "
+                print(f"\ncrop: pool {a.crop_pool} over "
                       f"{_cs['n']} unit(s) across {world} rank(s): kept {_cs['kept']}/{_cs['tok']} "
                       f"token(s) ({_cs['kept'] / _cs['tok'] * 100:.1f}%), "
                       f"{_cs['frames']} frame(s) cleared for want of their atoms")
@@ -7954,6 +10801,15 @@ def main():
                       f"absent from the pool, or no scored pair survived the crop. Those poses "
                       f"trained the ungraded blocks too.")
 
+    if code_drift.get("stale_n"):
+        _sp = sorted(code_drift.get("stale_pdbs", ()))
+        print(f"\nSTALE LABELS ACCEPTED on {code_drift['stale_n']} unit(s) across {len(_sp)} "
+              f"structure(s) via --allow-stale-labels: {_sp[:8]}"
+              f"{' ...' if len(_sp) > 8 else ''}\n"
+              f"  The entropy gradient never read them, so the TRAINING is unaffected. The "
+              f"labelled columns of trajectory.csv -- pae_loss, pde_loss, plddt_loss, "
+              f"resolved_loss, loss -- were computed against labels whose bioassembly provenance "
+              f"no longer matches, and are NOT a diagnostic for this run. pae_entropy is.")
     if code_drift["n"]:
         print(f"\nCODE DRIFT ACCEPTED on {code_drift['n']} unit(s) via --allow-code-drift. The "
               f"labels' data provenance matched in every field; only the builder's source hash "

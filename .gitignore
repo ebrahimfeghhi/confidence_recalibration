@@ -229,3 +229,7 @@ figures/__pycache__/
 # every epoch. Never read for a result -- the token-draw summary in run.log carries the
 # kept fraction, and trajectory.csv carries the losses. Untracked 2026-11-03.
 extra_training/training/runs/*/crop_sizes_rank*.csv
+
+# PAE-ONLY REFERENCE ARM'S EVAL ROWS. The per-pose CSVs are 16 MB and reproducible from the saved
+# heads; the report_*.txt and *.json summaries beside them ARE the baseline numbers and ARE tracked.
+extra_training/training/runs/pae_ref_scores/*/

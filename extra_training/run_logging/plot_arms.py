@@ -179,80 +179,15 @@ def _cache_path(rid, budget):
     return best
 
 
-def xsloss(rid, budget, shipped=False, canonical=False):
-    """epoch -> held-out ranking loss, from the run's own rank_rho cache.
-
-    TWO QUANTITIES LIVE IN ONE COLUMN NAME ACROSS THE v4 BOUNDARY. Before v4 the xsloss_* column
-    was always cross-seed at DEFAULT_TAU -- the canonical loss. From v4 it is the run's OWN
-    objective, and v5 added a separate canonical column beside it. So for a pre-v4 cache the
-    canonical request is served by the old column, and the own-objective request is served by it
-    ONLY when the run's objective happens to be the canonical one; otherwise there is no such
-    number on disk and this returns empty rather than the wrong curve.
-    """
-    out = {}
-    # THE WHOLE CHAIN, same reason as series(). Each member caches only its own epochs.
-    for _r in _chain(rid):
-        out.update(_xsloss_one(_r, budget, shipped=shipped, canonical=canonical))
-    return out
 
 
-def _xsloss_one(rid, budget, shipped=False, canonical=False):
-    out = {}
-    path, ver = _cache_path(rid, budget)
-    if not path:
-        return out
-    if ver >= 5:
-        col = ("xscanon_shipped" if shipped else "xscanon_trained") if canonical \
-            else ("xsloss_shipped" if shipped else "xsloss_trained")
-    elif ver == 4:
-        # own-objective only; no canonical column existed yet
-        if canonical and not _is_canonical_objective(rid):
-            return out
-        col = "xsloss_shipped" if shipped else "xsloss_trained"
-    else:
-        # pre-v4: the column IS the canonical loss
-        if not canonical and not _is_canonical_objective(rid):
-            return out
-        col = "xsloss_shipped" if shipped else "xsloss_trained"
-    with open(path) as fh:
-        for r in csv.DictReader(fh):
-            try:
-                out[int(r["epoch"])] = float(r[col])
-            except (KeyError, ValueError, TypeError):
-                continue
-    return out
 
 
-def _is_canonical_objective(rid):
-    """True when the run trained exactly the canonical loss: cross-seed softplus at DEFAULT_TAU.
-
-    Only then are the own-objective and canonical held-out curves the same number, which is what
-    lets a pre-v4 cache answer for both.
-    """
-    try:
-        with open(f"training/runs/{rid}/args.json") as fh:
-            a = json.load(fh)
-    except Exception:
-        return False
-    import sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                    "phases"))
-    # rank_loss, NOT rank_rho: rank_rho has no module-level DEFAULT_TAU -- it reaches it through a
-    # function-local `import rank_loss` every time. Reading it off rank_rho raised AttributeError
-    # for every run with an explicit --rank-tau, which is every arm since bjwcm5.
-    import rank_loss as _RKL
-    tau = a.get("rank_tau")
-    tau_ok = tau is None or abs(float(tau) - _RKL.DEFAULT_TAU) < 1e-9
-    return (a.get("rank_form") == "softplus" and bool(a.get("rank_cross_seed"))
-            and a.get("rank_pairs") in (None, "cross")
-            and float(a.get("rank_within_weight") or 1.0) == 1.0
-            and not a.get("rank_topk_decay")
-            # straddle and weight_by_gap change the function too. Without them, an arm at
-            # --rank-straddle 0.23 --rank-pairs cross and the default tau would be called
-            # canonical and its own-objective curve plotted on the cross-arm axis.
-            and not float(a.get("rank_straddle") or 0.0)
-            and bool(a.get("rank_weight_by_gap", True)) and tau_ok)
+# _is_canonical_objective WAS HERE: it asked whether a run trained exactly the
+# canonical cross-seed softplus at DEFAULT_TAU with no decay, straddle or within-seed
+# reweighting, which is what licensed plotting several arms' own-objective curves on
+# one axis. Every flag it read is deleted and its only caller went with the held-out
+# loss panel, so the question no longer has a subject.
 
 
 def _chain(rid):
@@ -467,15 +402,17 @@ def main():
             axes[2].fill_between(rep, [x - y for x, y in zip(m, se)],
                                  [x + y for x, y in zip(m, se)], color=c, alpha=0.15, lw=0)
             axes[2].plot(rep, m, color=c, lw=2, marker="o", ms=3.5, label=labels[rid])
-        if pae_mode:
-            _pe, _ptr, _pvl = pae_loss(rid)
-            tl = dict(zip(_pe, _ptr))
-            xl = dict(zip(_pe, _pvl))
-        else:
-            tl = train_loss(rid)
-            # ACROSS ARMS the canonical column is the only comparable one; for ONE arm the
-            # own-objective column is what pairs with its training curve.
-            xl = xsloss(rid, a.budget, canonical=(len(a.arms) > 1))
+        # THE PAE PAIR FOR EVERY ARM, because the held-out ranking loss column is gone.
+        #
+        # The non-PAE branch read rank_rho's own-objective column (or its canonical twin when
+        # several arms shared the axis). rank_rho stopped emitting both when --rank-form was cut
+        # to rel alone: rel is a mean-centred regression against the true iTM and needs
+        # --rel-labels, which this tool does not take. The training curve alone under a title
+        # promising a held-out comparison would be a false claim, so both series come from the
+        # PAE loss, which is a real pair for every arm here.
+        _pe, _ptr, _pvl = pae_loss(rid)
+        tl = dict(zip(_pe, _ptr))
+        xl = dict(zip(_pe, _pvl))
         # NOT restricted to `ep`. The loss is recorded every epoch while the DockQ shards are
         # written only by an evaluated epoch, so intersecting with `ep` silently dropped loss
         # points that exist.
@@ -506,73 +443,10 @@ def main():
     axes[2].set_title("mean within-interface Spearman(ipTM, DockQ)\n"
                       "band = PAIRED s.e. vs shipped, so clearing the dashed line is the test",
                       fontsize=10.5)
-    _shipped_xs = None
-    for spec in ([] if pae_mode else a.arms):
-        _x = xsloss(spec.partition("=")[0], a.budget, shipped=True,
-                    canonical=(len(a.arms) > 1))
-        if _x:
-            _shipped_xs = next(iter(_x.values()))
-            break
-    # SHIPPED IS KEPT OFF THE AXIS WHEN IT IS FAR ABOVE THE CURVES. Drawing the line at 0.0803
-    # against data in 0.036-0.046 squashed every curve into the bottom fifth of the panel and
-    # hid the thing the panel exists to show. It is stated in the corner instead, with "off
-    # scale" so its absence cannot read as the arm being level with shipped.
-    if _shipped_xs is not None:
-        lo, hi = axes[3].get_ylim()
-        if _shipped_xs > hi or (hi - lo) and (_shipped_xs - lo) / (hi - lo) > 1.6:
-            axes[3].annotate(f"shipped {_shipped_xs:.4f} (off scale, ~{_shipped_xs/max(hi,1e-9):.1f}x higher)",
-                             xy=(0.015, 0.96), xycoords="axes fraction", color="#777777",
-                             fontsize=9, va="top")
-        else:
-            axes[3].axhline(_shipped_xs, color=SHIPPED_C, ls="--", lw=1.3, zorder=0)
-            axes[3].annotate(f"shipped {_shipped_xs:.4f}", xy=(0.015, _shipped_xs),
-                             xycoords=("axes fraction", "data"), color="#777777", fontsize=9,
-                             va="bottom")
-    twins = (len(a.arms) == 1
-             and heldout_is_twin(a.arms[0].partition("=")[0], a.budget))
-    if pae_mode:
-        # The vertical gap is NOT a clean generalisation gap: the two sides are different pools
-        # AND, as of 2026-10-26, the held-out pass still crops while training does too but on a
-        # different population. Comparing the SAME side across arms is what this panel supports.
-        axes[3].set_title("PAE loss \u2014 light dashed = TRAINING, dark solid = HELD OUT\n"
-                          "the shared objective of both arms; compare like side to like side",
-                          fontsize=10.5)
-        axes[3].set_ylabel("PAE loss")
-    else:
-        axes[3].set_title("ranking loss \u2014 light dashed = TRAINING, dark solid = HELD OUT\n"
-                          + ("same function both sides: the gap is generalisation"
-                             if twins else
-                             "held out is the CANONICAL cross-seed loss, comparable across arms"),
-                          fontsize=10.5)
-    multi = len(a.arms) > 1
-    for ax in axes[:4]:
-        ax.set_xlabel("epoch")
-        # EPOCHS ARE INTEGERS. The default locator put ticks at 2.5, 5.0, 7.5 on a 1-8 range,
-        # labelling an axis whose values can only be whole numbers with halves that name no epoch.
-        ax.xaxis.set_major_locator(MaxNLocator(integer=True, nbins="auto"))
-        ax.grid(alpha=0.6, lw=0.7)
-        ax.margins(x=0.03)
-    # ONE LEGEND FOR THE FIGURE, IN THE MARGIN, NOT FOUR INSIDE THE DATA.
-    # Panels 0-2 label nothing but the arm names (shipped is annotated on the line itself), so
-    # each carried a byte-identical three-entry legend, and loc="best" has nowhere good to go on
-    # a panel whose curves cross the middle -- the legend sat on top of them. The hue -> arm map
-    # is the same for every panel, so it belongs to the figure once.
-    # PANEL 3 GETS NO LEGEND AT ALL, at the user's direction: its title already states
-    # "light dashed = TRAINING, dark solid = HELD OUT", and its hues are the same arm hues the
-    # figure legend names, so both cues are already on the page. Its own legend was the worst
-    # offender anyway -- two entries per arm, so six lines over the curves at three arms.
-    if multi:
-        _h, _l = axes[0].get_legend_handles_labels()
-        if _h:
-            fig.legend(_h, _l, loc="lower center", bbox_to_anchor=(0.5, 0.004),
-                       ncol=min(len(_h), 4), fontsize=10)
-    axes[0].set_ylabel(f"held out, {n_if} interfaces")
-    fig.suptitle(" vs ".join(labels[s.partition('=')[0]] for s in a.arms)
-                 + f"   \u00b7   held out, {n_if} interfaces at budget {a.budget}"
-                 + "   \u00b7   shipped from each run's own shards", fontsize=13, y=0.995)
-    fig.tight_layout(rect=(0, 0.052 if multi else 0, 1, 0.96))
-    plt.savefig(a.out, dpi=140, bbox_inches="tight")
-    print(f"wrote {a.out}")
+    # THE SHIPPED HELD-OUT-LOSS ANNOTATION IS GONE WITH ITS COLUMN. It read the shipped
+    # head's value of the same ranking loss and stated it in the corner when it sat far above
+    # the arms' curves. There is no such column now; the shipped baseline for the panels that
+    # remain is the dashed line, which comes from stored_iptm and is unaffected.
 
 
 if __name__ == "__main__":

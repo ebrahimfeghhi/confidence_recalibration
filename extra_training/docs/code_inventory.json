@@ -1,0 +1,7010 @@
+{
+ "note": "Every tracked .py/.sh with its size, last commit date, and how many other tracked files mention it. referenced_by == 0 means nothing in the repo names it -- a strong signal it is a one-off, though a script invoked only by hand or by a cron would also read as 0.",
+ "generated_by": "extra_training/phases/trainer/inventory.py sibling; see commit",
+ "total_files": 717,
+ "orphans": 257,
+ "files": [
+  {
+   "path": "archive/analysis/esmc_default_well.py",
+   "lines": 446,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_oracle_decoy_vs_solved.py",
+   "lines": 385,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/rep_diff_vs_struct_diff.py",
+   "lines": 320,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/test_seed_manifest.py",
+   "lines": 310,
+   "last_commit": "2026-11-08",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/pdockq2_ceiling.py",
+   "lines": 296,
+   "last_commit": "2026-10-29",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/budget_decomposition.py",
+   "lines": 294,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit/clustering/pxm_posepose.py",
+   "lines": 286,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/key_residue_masking.py",
+   "lines": 283,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_egw5wq_ep28_to40.sh",
+   "lines": 258,
+   "last_commit": "2026-11-03",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/archive_abag/abag_pairsets_superseded.py",
+   "lines": 252,
+   "last_commit": "2026-10-27",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/training_signal_report.py",
+   "lines": 242,
+   "last_commit": "2026-11-05",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/test_dedupe_results.py",
+   "lines": 238,
+   "last_commit": "2026-11-05",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit/analysis/hybrid25_compare.py",
+   "lines": 227,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/rebalance_gpus.py",
+   "lines": 225,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/plot_arms_full.py",
+   "lines": 224,
+   "last_commit": "2026-11-08",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/plot_crop_vs_uncrop.py",
+   "lines": 221,
+   "last_commit": "2026-11-08",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/build_benchmark_baseline.py",
+   "lines": 217,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/run/esm/capture_reps.py",
+   "lines": 217,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_deferred_then_foldbench.sh",
+   "lines": 217,
+   "last_commit": "2026-10-15",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/perpose_eval_at_boundary.sh",
+   "lines": 215,
+   "last_commit": "2026-11-01",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/pick_repeat_seed.py",
+   "lines": 210,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/union_crop_forced_gt.py",
+   "lines": 208,
+   "last_commit": "2026-11-02",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/predicted_union_crop.py",
+   "lines": 207,
+   "last_commit": "2026-10-31",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/pae_mask_locality.py",
+   "lines": 202,
+   "last_commit": "2026-10-31",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/region_mask_bias_7txw.py",
+   "lines": 199,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/val_pae_watchdog.py",
+   "lines": 194,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/migrate_pxm_layout.py",
+   "lines": 185,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/plot/plot_mask_sweep.py",
+   "lines": 178,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/orientation_summary.py",
+   "lines": 174,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/extra_seeds_rescue.py",
+   "lines": 170,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/consensus_support.py",
+   "lines": 169,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/plot_noise_sweep.py",
+   "lines": 167,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/donor_lift.py",
+   "lines": 166,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/plot/plot_seed_variation.py",
+   "lines": 165,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_uncropped_memory_expseg.sh",
+   "lines": 164,
+   "last_commit": "2026-10-30",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit/self_template/write_templates.py",
+   "lines": 159,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_uncropped_1epoch.sh",
+   "lines": 159,
+   "last_commit": "2026-11-06",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/recover_seed_gaps.sh",
+   "lines": 158,
+   "last_commit": "2026-11-06",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit/migrate_to_runids.py",
+   "lines": 157,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/plot/plot_seed_comparison.py",
+   "lines": 157,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean/analysis/donor_variants.py",
+   "lines": 153,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/distogram_loop_trajectory.py",
+   "lines": 152,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean/analysis/anchor_vs_crystal.py",
+   "lines": 150,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/split_free_pool.py",
+   "lines": 150,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/watch_pose_z_rescore.sh",
+   "lines": 150,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_uncropped_memory_ckpt.sh",
+   "lines": 150,
+   "last_commit": "2026-10-30",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/distogram_w1.py",
+   "lines": 149,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/consolidate_arms.py",
+   "lines": 148,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/distogram_kl_basins.py",
+   "lines": 147,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/steering/plot_deviation.py",
+   "lines": 147,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/fold_check.py",
+   "lines": 146,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/audit_chain_survival.py",
+   "lines": 144,
+   "last_commit": "2026-11-01",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/anchor_distance_vs_iptm.py",
+   "lines": 140,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/reconstruct_cross_seed_step.py",
+   "lines": 135,
+   "last_commit": "2026-11-07",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/build_uniref_from_mirror.sh",
+   "lines": 135,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/handover_readout_then_wsonly.sh",
+   "lines": 134,
+   "last_commit": "2026-10-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/pca_pairformer_loops.py",
+   "lines": 131,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean/analysis/iface_list_from_poses.py",
+   "lines": 131,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/decoy_orientation.py",
+   "lines": 129,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean/monitoring/top50_report.py",
+   "lines": 128,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/scatter_iptm_dockq.py",
+   "lines": 128,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/watch_fb_mask_on.sh",
+   "lines": 128,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/pair_conflict.py",
+   "lines": 127,
+   "last_commit": "2026-10-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean/make_queue.py",
+   "lines": 125,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit/watch_folds.sh",
+   "lines": 124,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_seed_scatter_decoy_vs_good.py",
+   "lines": 124,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/audit_chain_roles_identity.py",
+   "lines": 124,
+   "last_commit": "2026-11-06",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/phases/test_cross_seed_interleave.py",
+   "lines": 123,
+   "last_commit": "2026-11-07",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/plot_scatter_ours_vs_shipped.py",
+   "lines": 123,
+   "last_commit": "2026-11-01",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/plot_train30_vs_full.py",
+   "lines": 123,
+   "last_commit": "2026-11-04",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit/analysis/inmem_pooled.py",
+   "lines": 122,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/test_seed_coverage.py",
+   "lines": 122,
+   "last_commit": "2026-11-06",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/report_cropped_eval.py",
+   "lines": 121,
+   "last_commit": "2026-10-30",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/run/esm/capture_distograms.py",
+   "lines": 120,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_full_train_from_ep2_nockpt.sh",
+   "lines": 120,
+   "last_commit": "2026-10-20",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/test_pose_sets.py",
+   "lines": 116,
+   "last_commit": "2026-11-04",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_within_arms.sh",
+   "lines": 115,
+   "last_commit": "2026-10-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_fullhead_after_dntxmn.sh",
+   "lines": 112,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/reclaim_checkpoints.sh",
+   "lines": 112,
+   "last_commit": "2026-11-06",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/eval/compute_msa_depths.py",
+   "lines": 111,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/spread_plot.py",
+   "lines": 111,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/health_watch.sh",
+   "lines": 111,
+   "last_commit": "2026-11-07",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/select_complexes.py",
+   "lines": 110,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/run/esm/launch_rebaseline.sh",
+   "lines": 110,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/audit_mapping_provenance.py",
+   "lines": 110,
+   "last_commit": "2026-11-06",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/why_b2_confident.py",
+   "lines": 108,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/steering/decode_starred.py",
+   "lines": 108,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/nskyne_health.py",
+   "lines": 108,
+   "last_commit": "2026-10-29",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wave1_reclaim_chain.sh",
+   "lines": 108,
+   "last_commit": "2026-11-04",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/cluster_antigen_poses.py",
+   "lines": 107,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/run_esm/run_7txw_speedtest.py",
+   "lines": 107,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/plot_itm_vs_dockq.py",
+   "lines": 107,
+   "last_commit": "2026-10-29",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_rel_itm_ep28.sh",
+   "lines": 107,
+   "last_commit": "2026-10-30",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_rel_itm_ep32.sh",
+   "lines": 107,
+   "last_commit": "2026-10-30",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_seed_scatter_pair_similarity.py",
+   "lines": 105,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/test_classify_missing.py",
+   "lines": 105,
+   "last_commit": "2026-11-05",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_rank_perblock_frame.sh",
+   "lines": 105,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/steering/plot_centroid_dist.py",
+   "lines": 104,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/plot_selected_scatter.py",
+   "lines": 104,
+   "last_commit": "2026-10-29",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit/analysis/hook_transparency_plot.py",
+   "lines": 103,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit/analysis/plot_reps.py",
+   "lines": 103,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_rel_arm.sh",
+   "lines": 103,
+   "last_commit": "2026-10-30",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/pca_esmc_reps.py",
+   "lines": 102,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/build_val30_selection.py",
+   "lines": 102,
+   "last_commit": "2026-11-04",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/pca_pairformer_reps.py",
+   "lines": 101,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/archive_legacy_block.py",
+   "lines": 99,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/run/protenix/deep_coverage.sh",
+   "lines": 99,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_rank_l2sp_pae.sh",
+   "lines": 99,
+   "last_commit": "2026-10-23",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_full_train_from_ep6_balanced.sh",
+   "lines": 99,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/phases/trainer/test_checkpoints_equivalence.py",
+   "lines": 98,
+   "last_commit": "2026-11-08",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/extend_uncropped_to_10.sh",
+   "lines": 98,
+   "last_commit": "2026-11-06",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_pose_focused_from_ep11.sh",
+   "lines": 98,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/plot_dockq_loops.py",
+   "lines": 96,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/low_anchor_badness.py",
+   "lines": 96,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_expected_tau002.sh",
+   "lines": 96,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_expected_tau005.sh",
+   "lines": 96,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_expected_tau010.sh",
+   "lines": 96,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/nc5_vs_nc10_breakage.py",
+   "lines": 95,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/add_orientation_to_bundle.py",
+   "lines": 95,
+   "last_commit": "2026-11-04",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/build_extended_train_labels.sh",
+   "lines": 95,
+   "last_commit": "2026-11-05",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/ep1_pause_verify_resume.sh",
+   "lines": 95,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_rank_l2sp.sh",
+   "lines": 95,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_full_train_from_ep1.sh",
+   "lines": 95,
+   "last_commit": "2026-10-20",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/pair_queues_by_payoff.py",
+   "lines": 94,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/plot/plot_interface_atoms.py",
+   "lines": 94,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_zfahpb.sh",
+   "lines": 94,
+   "last_commit": "2026-10-23",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/reorder_queue_by_size.py",
+   "lines": 93,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/plot_pool_iptm_strips.py",
+   "lines": 93,
+   "last_commit": "2026-11-01",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/test_chain_compaction.py",
+   "lines": 93,
+   "last_commit": "2026-11-01",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_rank_perblock_copy.sh",
+   "lines": 92,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_topup_seeds.py",
+   "lines": 91,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/abag_rank/plot_7030.py",
+   "lines": 91,
+   "last_commit": "2026-10-27",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_health.sh",
+   "lines": 91,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/locate_residues_7txw.py",
+   "lines": 89,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_armB_valfull.sh",
+   "lines": 89,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_rank_only_fullset.sh",
+   "lines": 89,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_rank_only_xs_softplus.sh",
+   "lines": 89,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_simple_pae.sh",
+   "lines": 89,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_rank_perblock_copy.sh",
+   "lines": 89,
+   "last_commit": "2026-10-23",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_rank_xs_softplus.sh",
+   "lines": 89,
+   "last_commit": "2026-10-22",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit/self_template/watch_self_template.sh",
+   "lines": 88,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_rank_gradients.sh",
+   "lines": 88,
+   "last_commit": "2026-10-22",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/smoke_mixed_depth.sh",
+   "lines": 88,
+   "last_commit": "2026-11-06",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/organize_pxm.py",
+   "lines": 87,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/plot/render_7txw_poses.py",
+   "lines": 87,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/dedup_then_queue_jy6sah_to200.sh",
+   "lines": 85,
+   "last_commit": "2026-10-19",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/where_bad_dock.py",
+   "lines": 84,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "tools/colabfold/phase1_uniref2103.sh",
+   "lines": 84,
+   "last_commit": "2026-10-16",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean/monitoring/matched70.py",
+   "lines": 83,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_iptm_dockq_corr_by_bucket.py",
+   "lines": 83,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean/monitoring/k50_report.py",
+   "lines": 82,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/run_esm/run_7txw_forcemask_parallel.py",
+   "lines": 81,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/epoch_report.sh",
+   "lines": 81,
+   "last_commit": "2026-11-03",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/basin_distances_full.py",
+   "lines": 80,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean/monitoring/four_way.py",
+   "lines": 80,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_health_watch.sh",
+   "lines": 80,
+   "last_commit": "2026-11-05",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_full_train_4metrics.sh",
+   "lines": 80,
+   "last_commit": "2026-10-20",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_wsonly4y.sh",
+   "lines": 80,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_pt3_arm.sh",
+   "lines": 79,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/reorder_method_by_payoff.py",
+   "lines": 78,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/distogram_skip_filter.py",
+   "lines": 77,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/winnable_gap.py",
+   "lines": 77,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/run_esm/loop_diffusion_parallel.py",
+   "lines": 76,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_fullhead_l2sp_1e4_40ep.sh",
+   "lines": 76,
+   "last_commit": "2026-10-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_pae_share_full.sh",
+   "lines": 76,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/verify_val_launch.sh",
+   "lines": 76,
+   "last_commit": "2026-11-04",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/check_good_bad.py",
+   "lines": 75,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/run_esm/run_7txw_maskpct_sweep.py",
+   "lines": 75,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/run_health.sh",
+   "lines": 75,
+   "last_commit": "2026-10-30",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_cosine30.sh",
+   "lines": 75,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/profile_recycles.py",
+   "lines": 74,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_resume_j583i8_fast.sh",
+   "lines": 74,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/pool_baseline.py",
+   "lines": 73,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_ocqtyt_from_ep26.sh",
+   "lines": 72,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_fullhead_overfit30.sh",
+   "lines": 71,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/predcrop_resume_safetynet.sh",
+   "lines": 71,
+   "last_commit": "2026-10-31",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/build_val30_labels.sh",
+   "lines": 70,
+   "last_commit": "2026-11-05",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/reclaim_superseded_trees.sh",
+   "lines": 69,
+   "last_commit": "2026-11-06",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/distogram_baseline_trajectory.py",
+   "lines": 67,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/run/esm/launch_msa_ablation.sh",
+   "lines": 67,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/handoff_e4tvxe_fast_eval.sh",
+   "lines": 67,
+   "last_commit": "2026-10-19",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_rowweight_after_ep60.sh",
+   "lines": 66,
+   "last_commit": "2026-10-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_l2sp_1e2_after_tv6hue.sh",
+   "lines": 65,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_l2sp_sweep_after_dntxmn.sh",
+   "lines": 65,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_rowweight_ep69_80.sh",
+   "lines": 65,
+   "last_commit": "2026-10-29",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/analysis/basin_distances.py",
+   "lines": 64,
+   "last_commit": "2026-06-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/abag_rank/plot_training.py",
+   "lines": 64,
+   "last_commit": "2026-10-27",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_high_iptm_solved.py",
+   "lines": 63,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_epochs_refresh.sh",
+   "lines": 63,
+   "last_commit": "2026-10-20",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/plot_longer_doesnt_help.py",
+   "lines": 61,
+   "last_commit": "2026-10-31",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_hhzddi_to150.sh",
+   "lines": 61,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_e20.sh",
+   "lines": 60,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_cropped_arm.sh",
+   "lines": 60,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/crossing_audit.py",
+   "lines": 59,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wave1_cpu_chain.sh",
+   "lines": 59,
+   "last_commit": "2026-11-04",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/arm_val_after_train.sh",
+   "lines": 57,
+   "last_commit": "2026-11-04",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/doc_refresh_loop.sh",
+   "lines": 57,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/finish_label_cache.sh",
+   "lines": 57,
+   "last_commit": "2026-10-15",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/measure_then_launch.sh",
+   "lines": 57,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_jer222.sh",
+   "lines": 55,
+   "last_commit": "2026-10-27",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/plot_gain_location_simple.py",
+   "lines": 54,
+   "last_commit": "2026-10-31",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/measure_shipped_train_pae.sh",
+   "lines": 54,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_rel_parity.sh",
+   "lines": 52,
+   "last_commit": "2026-10-29",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_paeonly_fresh.sh",
+   "lines": 51,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_pt3.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_simple_pae.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_335psh_to100.sh",
+   "lines": 50,
+   "last_commit": "2026-10-19",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_pykssn_resume.sh",
+   "lines": 50,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_x5a4uj_resume.sh",
+   "lines": 50,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_p5yoza.sh",
+   "lines": 50,
+   "last_commit": "2026-10-27",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/run_free_extra10.sh",
+   "lines": 48,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_ep45.sh",
+   "lines": 47,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_next_epoch.sh",
+   "lines": 46,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/iptm_calibration_high_iptm.py",
+   "lines": 44,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/abag_rank/chain_valfull_dump.sh",
+   "lines": 43,
+   "last_commit": "2026-10-27",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_decoy_top_iptm_hist.py",
+   "lines": 42,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/verify_lora_valloss.sh",
+   "lines": 42,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_pose_focused_plot.sh",
+   "lines": 41,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/rearm_watchdog_after_resume.sh",
+   "lines": 40,
+   "last_commit": "2026-10-31",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_three_arms.sh",
+   "lines": 38,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/eval_train_pool.sh",
+   "lines": 38,
+   "last_commit": "2026-10-27",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/analysis/oneoff/09_checkpointing_equivalence.sh",
+   "lines": 37,
+   "last_commit": "2026-10-20",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_three_arm_plot.sh",
+   "lines": 37,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_jy6sah_ep137_to200.sh",
+   "lines": 37,
+   "last_commit": "2026-10-19",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/plot/plot_msa_depths.py",
+   "lines": 36,
+   "last_commit": "2026-06-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_arm_comparison_plot.sh",
+   "lines": 36,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_overfit30_lr1e1.sh",
+   "lines": 35,
+   "last_commit": "2026-10-19",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_orange_lr1e2.sh",
+   "lines": 35,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_six_arm_plot.sh",
+   "lines": 33,
+   "last_commit": "2026-10-22",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_anchor_to200_noeval.sh",
+   "lines": 32,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_rowweight_launch.sh",
+   "lines": 32,
+   "last_commit": "2026-10-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_five_arm_plot.sh",
+   "lines": 31,
+   "last_commit": "2026-10-22",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/run_logging/refresh_plots.sh",
+   "lines": 30,
+   "last_commit": "",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_resume70_after_poolmean.sh",
+   "lines": 30,
+   "last_commit": "2026-10-29",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_val_after_insample.sh",
+   "lines": 29,
+   "last_commit": "2026-10-29",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_four_arm_plot.sh",
+   "lines": 29,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_train_eval_plot.sh",
+   "lines": 29,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_ep80_after_ep70.sh",
+   "lines": 28,
+   "last_commit": "2026-10-29",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_next_arm.sh",
+   "lines": 25,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_compare_after_nskyne.sh",
+   "lines": 24,
+   "last_commit": "2026-10-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_lora_after_fullhead.sh",
+   "lines": 22,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/analysis/oneoff/08_backfill_ep1_dockq.sh",
+   "lines": 21,
+   "last_commit": "2026-10-20",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_l2sp_after_lora.sh",
+   "lines": 21,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_plot.sh",
+   "lines": 21,
+   "last_commit": "2026-10-19",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_epoch_fawgtu.sh",
+   "lines": 21,
+   "last_commit": "2026-10-28",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_epoch_dntxmn.sh",
+   "lines": 20,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_epoch_ij24wr.sh",
+   "lines": 20,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_epoch_straddle.sh",
+   "lines": 20,
+   "last_commit": "2026-10-24",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_epoch_tv6hue.sh",
+   "lines": 20,
+   "last_commit": "2026-10-26",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/overnight_status.sh",
+   "lines": 18,
+   "last_commit": "2026-11-04",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_epoch_ip8ga4.sh",
+   "lines": 15,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_epoch_j583i8.sh",
+   "lines": 15,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_epoch_uhyypy.sh",
+   "lines": 15,
+   "last_commit": "2026-10-25",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/regen_seed_depth_figures.sh",
+   "lines": 14,
+   "last_commit": "2026-10-14",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_pose_focused_after_measure.sh",
+   "lines": 14,
+   "last_commit": "2026-10-21",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/shell_scripts/run_solved_cut_preflight.sh",
+   "lines": 12,
+   "last_commit": "2026-10-19",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/analysis/oneoff/07_val10_pae_sweep.sh",
+   "lines": 9,
+   "last_commit": "2026-10-20",
+   "referenced_by": 0,
+   "refs": []
+  },
+  {
+   "path": "extra_training/phases/phase_k_crop_consistency.py",
+   "lines": 486,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_cropped_eval_labelfree.py",
+   "lines": 384,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "paper_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/wave1_pilot_monitor.py",
+   "lines": 376,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "degenerate_structure_pruning.md"
+   ]
+  },
+  {
+   "path": "archive/analysis/mask_pattern_powered.py",
+   "lines": 364,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "run_7txw_forcemask.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_itm_quality_loss.py",
+   "lines": 361,
+   "last_commit": "2026-10-29",
+   "referenced_by": 1,
+   "refs": [
+    "itm_quality_weighted_loss.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/select_val_seeds.py",
+   "lines": 341,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "degenerate_structure_pruning.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/eval_fawgtu_bundles.py",
+   "lines": 315,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "insample_eval.py"
+   ]
+  },
+  {
+   "path": "extra_training/analysis/train_seed_depth_curve.py",
+   "lines": 302,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "folder.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/cost_model.py",
+   "lines": 298,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "migrate_pxm_layout.py"
+   ]
+  },
+  {
+   "path": "archive/run_esm/loop_diffusion.py",
+   "lines": 280,
+   "last_commit": "2026-06-28",
+   "referenced_by": 1,
+   "refs": [
+    "loop_diffusion_parallel.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/val_shard_retry_repro.py",
+   "lines": 278,
+   "last_commit": "2026-10-26",
+   "referenced_by": 1,
+   "refs": [
+    "codex_review_request_val_shard_retry.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_tokendrop_90_35.sh",
+   "lines": 275,
+   "last_commit": "2026-11-03",
+   "referenced_by": 1,
+   "refs": [
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/inblock_gpu_smoke.sh",
+   "lines": 272,
+   "last_commit": "2026-11-07",
+   "referenced_by": 1,
+   "refs": [
+    "launch_default_arm.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/compare_entry_as_reference.py",
+   "lines": 262,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "wave1_validation_plan.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/epitope_recall.py",
+   "lines": 257,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "ost_epitope.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_fullhead_after_24u34d.sh",
+   "lines": 255,
+   "last_commit": "2026-10-23",
+   "referenced_by": 1,
+   "refs": [
+    "push_findings.sh"
+   ]
+  },
+  {
+   "path": "figures/within_vs_between_trunk.py",
+   "lines": 248,
+   "last_commit": "2026-10-20",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "archive/steering/hotflip_mask.py",
+   "lines": 240,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/wave1_preflight.py",
+   "lines": 219,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "degenerate_structure_pruning.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/run_index.py",
+   "lines": 215,
+   "last_commit": "2026-10-24",
+   "referenced_by": 1,
+   "refs": [
+    "launch_wsonly.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_epoch_curve.py",
+   "lines": 214,
+   "last_commit": "2026-11-08",
+   "referenced_by": 1,
+   "refs": [
+    "epoch_curve.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_tokendrop_dropout_l2.sh",
+   "lines": 213,
+   "last_commit": "2026-11-02",
+   "referenced_by": 1,
+   "refs": [
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/compare_rowweight_valfull.py",
+   "lines": 206,
+   "last_commit": "2026-10-29",
+   "referenced_by": 1,
+   "refs": [
+    "chain_val_after_insample.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit/clustering/epitope_leader.py",
+   "lines": 202,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "metrics.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/run_exp/build_queue.py",
+   "lines": 198,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "phase_i_fold_validation.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_perblock_check.py",
+   "lines": 197,
+   "last_commit": "2026-10-19",
+   "referenced_by": 1,
+   "refs": [
+    "experiment_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/perpose_crop_spread.py",
+   "lines": 197,
+   "last_commit": "2026-11-01",
+   "referenced_by": 1,
+   "refs": [
+    "perpose_crop_spread.sh"
+   ]
+  },
+  {
+   "path": "archive/plot/plot_scaling_compare.py",
+   "lines": 190,
+   "last_commit": "2026-06-28",
+   "referenced_by": 1,
+   "refs": [
+    "plot_mask_sweep.py"
+   ]
+  },
+  {
+   "path": "archive/analysis/compare_good_bad_masks.py",
+   "lines": 183,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "key_residue_masking.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/measure_softmax_tau.py",
+   "lines": 181,
+   "last_commit": "2026-10-23",
+   "referenced_by": 1,
+   "refs": [
+    "softmax_tau_choice.md"
+   ]
+  },
+  {
+   "path": "archive/ost_epitope.py",
+   "lines": 180,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "epitope_recall.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_rel_heldout.py",
+   "lines": 178,
+   "last_commit": "2026-10-31",
+   "referenced_by": 1,
+   "refs": [
+    "eval_dirs.py"
+   ]
+  },
+  {
+   "path": "archive/steering/steer_coverage.py",
+   "lines": 174,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_rowweight_pair.py",
+   "lines": 170,
+   "last_commit": "2026-11-08",
+   "referenced_by": 1,
+   "refs": [
+    "test_epoch_curve.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_val_series.py",
+   "lines": 164,
+   "last_commit": "2026-10-30",
+   "referenced_by": 1,
+   "refs": [
+    "uncropped_arm_review.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/compare_forced_chain_map.py",
+   "lines": 163,
+   "last_commit": "2026-11-05",
+   "referenced_by": 1,
+   "refs": [
+    "forced_chain_map_measurement_2026-11-05.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_epoch_order.py",
+   "lines": 163,
+   "last_commit": "2026-11-02",
+   "referenced_by": 1,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_fullfold_after_24u342.sh",
+   "lines": 161,
+   "last_commit": "2026-10-24",
+   "referenced_by": 1,
+   "refs": [
+    "push_findings.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_fingerprint_scan.py",
+   "lines": 155,
+   "last_commit": "2026-11-06",
+   "referenced_by": 1,
+   "refs": [
+    "launch.py"
+   ]
+  },
+  {
+   "path": "archive/analysis/pca_blocks.py",
+   "lines": 154,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "distogram_kl_basins.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_pairtrans_after_24u34d.sh",
+   "lines": 148,
+   "last_commit": "2026-10-23",
+   "referenced_by": 1,
+   "refs": [
+    "push_findings.sh"
+   ]
+  },
+  {
+   "path": "figures/commitment_vs_iptm.py",
+   "lines": 147,
+   "last_commit": "2026-10-20",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/analysis/heatmaps.py",
+   "lines": 144,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "rep_diff_vs_struct_diff.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/gt_crop_composition.py",
+   "lines": 144,
+   "last_commit": "2026-11-01",
+   "referenced_by": 1,
+   "refs": [
+    "gt_crop_composition.sh"
+   ]
+  },
+  {
+   "path": "archive/steering/steer_sweep.py",
+   "lines": 141,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_head_diagram.py",
+   "lines": 141,
+   "last_commit": "2026-10-22",
+   "referenced_by": 1,
+   "refs": [
+    "EXPERIMENTS.md"
+   ]
+  },
+  {
+   "path": "extra_training/analysis/val_selection_metric.py",
+   "lines": 140,
+   "last_commit": "2026-10-16",
+   "referenced_by": 1,
+   "refs": [
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/eval_curve.py",
+   "lines": 139,
+   "last_commit": "2026-11-08",
+   "referenced_by": 1,
+   "refs": [
+    "plot_eval_series.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/run_exp/build_simple_queue.py",
+   "lines": 137,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "donor_variants.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit/analysis/score_hook_poses.py",
+   "lines": 133,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "watch_folds.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/build_instance_cifs.py",
+   "lines": 133,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "wave1_validation_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/interface_contacts.py",
+   "lines": 131,
+   "last_commit": "2026-11-05",
+   "referenced_by": 1,
+   "refs": [
+    "SCORING_RECOVERY.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/trainer/test_cli_equivalence.py",
+   "lines": 130,
+   "last_commit": "2026-11-08",
+   "referenced_by": 1,
+   "refs": [
+    "cli.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/check_rel_label_coverage.py",
+   "lines": 128,
+   "last_commit": "2026-11-06",
+   "referenced_by": 1,
+   "refs": [
+    "launch_default_arm.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/derive_scoreable_pool.py",
+   "lines": 127,
+   "last_commit": "2026-11-05",
+   "referenced_by": 1,
+   "refs": [
+    "SCORING_RECOVERY.md"
+   ]
+  },
+  {
+   "path": "archive/analysis/verify_mask_reproduction.py",
+   "lines": 124,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "run_7txw_forcemask.py"
+   ]
+  },
+  {
+   "path": "archive/confornet/decode_confornet.py",
+   "lines": 122,
+   "last_commit": "2026-06-28",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_24u34d.sh",
+   "lines": 122,
+   "last_commit": "2026-10-23",
+   "referenced_by": 1,
+   "refs": [
+    "push_findings.sh"
+   ]
+  },
+  {
+   "path": "figures/dockq_vs_budget.py",
+   "lines": 122,
+   "last_commit": "2026-10-20",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/trainer/test_config_equivalence.py",
+   "lines": 120,
+   "last_commit": "2026-11-08",
+   "referenced_by": 1,
+   "refs": [
+    "config.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/seed_depth_split.py",
+   "lines": 119,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "seed_scaling_impact.md"
+   ]
+  },
+  {
+   "path": "archive/analysis/profile_stages.py",
+   "lines": 117,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "profile_recycles.py"
+   ]
+  },
+  {
+   "path": "archive/steering/steer_lmz.py",
+   "lines": 117,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_pt3_full.sh",
+   "lines": 113,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "handover_to_full.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/pose_quality.py",
+   "lines": 110,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "donor_lift.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/compare_rows_identical.py",
+   "lines": 110,
+   "last_commit": "2026-11-01",
+   "referenced_by": 1,
+   "refs": [
+    "perpose_eval_at_boundary.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/watchdog_uncropped.sh",
+   "lines": 110,
+   "last_commit": "2026-10-30",
+   "referenced_by": 1,
+   "refs": [
+    "rearm_watchdog_after_resume.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/greenlight_uncropped.sh",
+   "lines": 109,
+   "last_commit": "2026-10-30",
+   "referenced_by": 1,
+   "refs": [
+    "uncropped_arm_review.md"
+   ]
+  },
+  {
+   "path": "archive/run/esm/run_foldbench_abag_parallel.py",
+   "lines": 106,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "run_benchmark_parallel.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_seed500010_fold.sh",
+   "lines": 106,
+   "last_commit": "2026-11-05",
+   "referenced_by": 1,
+   "refs": [
+    "recover_seed_gaps.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/handover_to_wsonly.sh",
+   "lines": 102,
+   "last_commit": "2026-10-24",
+   "referenced_by": 1,
+   "refs": [
+    "launch_wsonly.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/query_only_msa.py",
+   "lines": 101,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "HANDOFF.md"
+   ]
+  },
+  {
+   "path": "archive/run/esm/complex_io.py",
+   "lines": 101,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "capture_distograms.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_eval_series.py",
+   "lines": 97,
+   "last_commit": "2026-11-08",
+   "referenced_by": 1,
+   "refs": [
+    "refresh_plots.sh"
+   ]
+  },
+  {
+   "path": "archive/analysis/pca_blocks_perm.py",
+   "lines": 96,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "esmc_default_well.py"
+   ]
+  },
+  {
+   "path": "archive/steering/basin_w1_matrix.py",
+   "lines": 96,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/argv_from_dry.py",
+   "lines": 96,
+   "last_commit": "2026-11-07",
+   "referenced_by": 1,
+   "refs": [
+    "inblock_gpu_smoke.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_pose_focused_overfit30.sh",
+   "lines": 96,
+   "last_commit": "2026-10-21",
+   "referenced_by": 1,
+   "refs": [
+    "queue_pose_focused_after_measure.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/check_smoke_rowweight.py",
+   "lines": 95,
+   "last_commit": "2026-10-28",
+   "referenced_by": 1,
+   "refs": [
+    "smoke_rowweight.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/predcrop_compare.py",
+   "lines": 95,
+   "last_commit": "2026-10-31",
+   "referenced_by": 1,
+   "refs": [
+    "paper_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_records.py",
+   "lines": 95,
+   "last_commit": "2026-10-16",
+   "referenced_by": 1,
+   "refs": [
+    "codex_review_request_val_shard_retry.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_eval_crop.py",
+   "lines": 94,
+   "last_commit": "2026-10-30",
+   "referenced_by": 1,
+   "refs": [
+    "paper_results.md"
+   ]
+  },
+  {
+   "path": "archive/run/protenix/deep_traps.sh",
+   "lines": 93,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "deep_coverage.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/order_accuracy.py",
+   "lines": 93,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "launch_pae_share_full.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/cmp_eval_json.py",
+   "lines": 92,
+   "last_commit": "2026-11-07",
+   "referenced_by": 1,
+   "refs": [
+    "inblock_gpu_smoke.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_pae_hist.py",
+   "lines": 92,
+   "last_commit": "2026-11-08",
+   "referenced_by": 1,
+   "refs": [
+    "test_epoch_curve.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/handover_to_full.sh",
+   "lines": 92,
+   "last_commit": "2026-10-24",
+   "referenced_by": 1,
+   "refs": [
+    "launch_pt3_full.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_poseshare_l2_overfit30.sh",
+   "lines": 91,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "chain_three_arms.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_alignment_trend.sh",
+   "lines": 91,
+   "last_commit": "2026-10-23",
+   "referenced_by": 1,
+   "refs": [
+    "gradient_alignment.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_within_arm.sh",
+   "lines": 90,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "queue_within_arms.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/sample_from_trunk.py",
+   "lines": 89,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "STEERING_SUMMARY.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_eval_dir_names.py",
+   "lines": 89,
+   "last_commit": "2026-10-30",
+   "referenced_by": 1,
+   "refs": [
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_poseshare_rank_readout.sh",
+   "lines": 88,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "EXPERIMENTS.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_rank_gradients_readout.sh",
+   "lines": 88,
+   "last_commit": "2026-10-22",
+   "referenced_by": 1,
+   "refs": [
+    "EXPERIMENTS.md"
+   ]
+  },
+  {
+   "path": "archive/plot/plot_tts_slopegraph.py",
+   "lines": 86,
+   "last_commit": "2026-06-28",
+   "referenced_by": 1,
+   "refs": [
+    "select_complexes.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_lora_overfit30.sh",
+   "lines": 86,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "queue_lora_after_fullhead.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_poseshare_rank_l2_overfit30.sh",
+   "lines": 86,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "ranking_loss_experiment.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_straddle.sh",
+   "lines": 86,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "chain_straddle.sh"
+   ]
+  },
+  {
+   "path": "archive/steering/plot_converge.py",
+   "lines": 84,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "steering_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/build_val_queue.py",
+   "lines": 83,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "val30_cpu_chain.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_fullfold.sh",
+   "lines": 83,
+   "last_commit": "2026-10-23",
+   "referenced_by": 1,
+   "refs": [
+    "push_findings.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_poseshare_overfit30.sh",
+   "lines": 82,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "chain_three_arms.sh"
+   ]
+  },
+  {
+   "path": "archive/plot/plot_tts_scatter.py",
+   "lines": 81,
+   "last_commit": "2026-06-28",
+   "referenced_by": 1,
+   "refs": [
+    "select_complexes.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_pose_focused_arm.sh",
+   "lines": 81,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "next_restart.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_readout.sh",
+   "lines": 80,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "handover_readout_then_wsonly.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_lora_arm.sh",
+   "lines": 78,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "next_restart.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/rescore_training.sh",
+   "lines": 76,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "codex_questions_2026-11-05.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/verify_train_trim.py",
+   "lines": 73,
+   "last_commit": "2026-11-04",
+   "referenced_by": 1,
+   "refs": [
+    "wave1_reclaim_chain.sh"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/plot_valfull.py",
+   "lines": 72,
+   "last_commit": "2026-10-27",
+   "referenced_by": 1,
+   "refs": [
+    "RESULTS.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/decode_and_score.py",
+   "lines": 71,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "STEERING_SUMMARY.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/rebuild_labels.sh",
+   "lines": 67,
+   "last_commit": "2026-10-15",
+   "referenced_by": 1,
+   "refs": [
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_ocqtyt_26_to_50.sh",
+   "lines": 67,
+   "last_commit": "2026-10-27",
+   "referenced_by": 1,
+   "refs": [
+    "resume_p5yoza.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_rowweight_ep67_70.sh",
+   "lines": 65,
+   "last_commit": "2026-10-29",
+   "referenced_by": 1,
+   "refs": [
+    "chain_resume70_after_poolmean.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_rowweight_ep71_80.sh",
+   "lines": 65,
+   "last_commit": "2026-10-29",
+   "referenced_by": 1,
+   "refs": [
+    "chain_ep80_after_ep70.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_dockq_range_high_iptm.py",
+   "lines": 63,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "plot_scatter_high_iptm.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_ij24wr.sh",
+   "lines": 63,
+   "last_commit": "2026-10-26",
+   "referenced_by": 1,
+   "refs": [
+    "ep1_pause_verify_resume.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_C_after_anchor.sh",
+   "lines": 62,
+   "last_commit": "2026-10-20",
+   "referenced_by": 1,
+   "refs": [
+    "experiment_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/fallback_selected.py",
+   "lines": 61,
+   "last_commit": "2026-11-01",
+   "referenced_by": 1,
+   "refs": [
+    "paper_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_lr_probe_full.sh",
+   "lines": 59,
+   "last_commit": "2026-10-19",
+   "referenced_by": 1,
+   "refs": [
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/argmax_margin.py",
+   "lines": 57,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "spread_plot.py"
+   ]
+  },
+  {
+   "path": "archive/analysis/save_masks_7txw.py",
+   "lines": 56,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "region_mask_bias_7txw.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_scatter_high_iptm.py",
+   "lines": 54,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "plot_decoy_top_iptm_hist.py"
+   ]
+  },
+  {
+   "path": "archive/eval/score_7txw_noise.py",
+   "lines": 53,
+   "last_commit": "2026-06-28",
+   "referenced_by": 1,
+   "refs": [
+    "plot_noise_sweep.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_fullhead_noanchor_40ep.sh",
+   "lines": 53,
+   "last_commit": "2026-10-28",
+   "referenced_by": 1,
+   "refs": [
+    "launch_rowweight_cosine.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/smoke_rowweight.sh",
+   "lines": 53,
+   "last_commit": "2026-10-28",
+   "referenced_by": 1,
+   "refs": [
+    "chain_rowweight_after_ep60.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_overfit30_lr1e1_val10.sh",
+   "lines": 52,
+   "last_commit": "2026-10-19",
+   "referenced_by": 1,
+   "refs": [
+    "experiment_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_straddle.sh",
+   "lines": 51,
+   "last_commit": "2026-10-24",
+   "referenced_by": 1,
+   "refs": [
+    "straddle_arm.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/wait_epoch.sh",
+   "lines": 48,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "handover_readout_then_wsonly.sh"
+   ]
+  },
+  {
+   "path": "archive/steering/wg_k3_check.py",
+   "lines": 45,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_overfit30_lr1e2.sh",
+   "lines": 44,
+   "last_commit": "2026-10-19",
+   "referenced_by": 1,
+   "refs": [
+    "experiment_plan.md"
+   ]
+  },
+  {
+   "path": "archive/eval/score_7txw_loops.py",
+   "lines": 42,
+   "last_commit": "2026-06-28",
+   "referenced_by": 1,
+   "refs": [
+    "plot_dockq_loops.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_lrdecay_when_free.sh",
+   "lines": 42,
+   "last_commit": "2026-10-27",
+   "referenced_by": 1,
+   "refs": [
+    "launch_fullhead_l2sp_1e3_lrdecay.sh"
+   ]
+  },
+  {
+   "path": "archive/analysis/anarci_cdr.py",
+   "lines": 39,
+   "last_commit": "2026-06-24",
+   "referenced_by": 1,
+   "refs": [
+    "region_mask_bias_7txw.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_copy_after_ip8ga4.sh",
+   "lines": 39,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "chain_fullhead_after_dntxmn.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_cosine30.sh",
+   "lines": 37,
+   "last_commit": "2026-10-25",
+   "referenced_by": 1,
+   "refs": [
+    "launch_cosine30.sh"
+   ]
+  },
+  {
+   "path": "archive/confornet/run_newserver.sh",
+   "lines": 30,
+   "last_commit": "2026-06-28",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/cifconv.py",
+   "lines": 26,
+   "last_commit": "2026-10-14",
+   "referenced_by": 1,
+   "refs": [
+    "build_selftmpl_general.py"
+   ]
+  },
+  {
+   "path": "extra_training/analysis/oneoff/04_train_selection_ep142.sh",
+   "lines": 26,
+   "last_commit": "2026-10-20",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/perpose_crop_spread.sh",
+   "lines": 25,
+   "last_commit": "2026-11-01",
+   "referenced_by": 1,
+   "refs": [
+    "perpose_crop_spread.py"
+   ]
+  },
+  {
+   "path": "extra_training/analysis/oneoff/06_val10_loss_shipped.sh",
+   "lines": 22,
+   "last_commit": "2026-10-20",
+   "referenced_by": 1,
+   "refs": [
+    "plot_full_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/analysis/oneoff/02_val10_alignment_preflight.sh",
+   "lines": 18,
+   "last_commit": "2026-10-20",
+   "referenced_by": 1,
+   "refs": [
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/gpu_free_sampler.sh",
+   "lines": 18,
+   "last_commit": "2026-10-30",
+   "referenced_by": 1,
+   "refs": [
+    "greenlight_uncropped.sh"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/postprocess.sh",
+   "lines": 17,
+   "last_commit": "2026-10-27",
+   "referenced_by": 1,
+   "refs": [
+    "eval_ost_foldbench.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_full_train_plot.sh",
+   "lines": 16,
+   "last_commit": "2026-10-21",
+   "referenced_by": 1,
+   "refs": [
+    "watch_epochs_refresh.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/gt_crop_composition.sh",
+   "lines": 15,
+   "last_commit": "2026-11-01",
+   "referenced_by": 1,
+   "refs": [
+    "gt_crop_composition.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_val10_plot.sh",
+   "lines": 10,
+   "last_commit": "2026-10-20",
+   "referenced_by": 1,
+   "refs": [
+    "experiment_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_val_five.sh",
+   "lines": 9,
+   "last_commit": "2026-10-22",
+   "referenced_by": 1,
+   "refs": [
+    "EXPERIMENTS.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/seed_scatter_report.py",
+   "lines": 355,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "plot_seed_scatter_decoy_vs_good.py",
+    "plot_seed_scatter_pair_similarity.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/val_seed_depth_curve.py",
+   "lines": 349,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "regen_seed_depth_figures.sh",
+    "seed_scaling_impact.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/tests/test_folder.py",
+   "lines": 280,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "AUDIT.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/fold_scatter.py",
+   "lines": 255,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "HANDOFF.md",
+    "seed_scatter_score.py"
+   ]
+  },
+  {
+   "path": "archive/steering/steer_repel.py",
+   "lines": 246,
+   "last_commit": "2026-06-24",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "repel_status.md"
+   ]
+  },
+  {
+   "path": "archive/run_esm/run_7txw_forcemask.py",
+   "lines": 241,
+   "last_commit": "2026-06-28",
+   "referenced_by": 2,
+   "refs": [
+    "run_7txw_forcemask_parallel.py",
+    "run_7txw_maskpct_sweep.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/union_crop_margin_sweep.py",
+   "lines": 237,
+   "last_commit": "2026-10-31",
+   "referenced_by": 2,
+   "refs": [
+    "predicted_crop_eval_review.md",
+    "union_crop_forced_gt.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/itm_quality_loss.py",
+   "lines": 235,
+   "last_commit": "2026-10-29",
+   "referenced_by": 2,
+   "refs": [
+    "itm_quality_weighted_loss.md",
+    "test_itm_quality_loss.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/build_extended_train_selection.py",
+   "lines": 220,
+   "last_commit": "2026-11-06",
+   "referenced_by": 2,
+   "refs": [
+    "launch_default_arm.sh",
+    "launch_uncropped_1epoch.sh"
+   ]
+  },
+  {
+   "path": "figures/pool_sweep.py",
+   "lines": 218,
+   "last_commit": "2026-10-20",
+   "referenced_by": 2,
+   "refs": [
+    "dockq_vs_budget.py",
+    "selection_vs_budget.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/to_tensorboard.py",
+   "lines": 211,
+   "last_commit": "2026-10-16",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "render_report.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/build_free_queue.py",
+   "lines": 197,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "AUDIT.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/arm_statistics.py",
+   "lines": 196,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "HANDOFF.md",
+    "plot_arms.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/chain_extra_seeds.sh",
+   "lines": 189,
+   "last_commit": "2026-11-05",
+   "referenced_by": 2,
+   "refs": [
+    "recover_seed_gaps.sh",
+    "seed_coverage.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/build_wave1_queue.py",
+   "lines": 186,
+   "last_commit": "2026-11-04",
+   "referenced_by": 2,
+   "refs": [
+    "degenerate_structure_pruning.md",
+    "wave1_preflight.py"
+   ]
+  },
+  {
+   "path": "archive/run/esm/run_msa_ablation.py",
+   "lines": 185,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "launch_msa_ablation.sh",
+    "launch_rebaseline.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/cropped_eval_labelfree.sh",
+   "lines": 180,
+   "last_commit": "2026-11-04",
+   "referenced_by": 2,
+   "refs": [
+    "paper_results.md",
+    "test_cropped_eval_labelfree.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/experiments_doc.py",
+   "lines": 178,
+   "last_commit": "2026-10-26",
+   "referenced_by": 2,
+   "refs": [
+    "EXPERIMENTS.md",
+    "doc_refresh_loop.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_val_panels.py",
+   "lines": 170,
+   "last_commit": "2026-10-22",
+   "referenced_by": 2,
+   "refs": [
+    "EXPERIMENTS.md",
+    "refresh_val_five.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/seed_scatter_select.py",
+   "lines": 169,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "seed_scatter_report.py",
+    "seed_scatter_score.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/build_wave1_jobs.py",
+   "lines": 166,
+   "last_commit": "2026-11-04",
+   "referenced_by": 2,
+   "refs": [
+    "build_val30_selection.py",
+    "wave1_preflight.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/audit_chain_mapping.py",
+   "lines": 165,
+   "last_commit": "2026-10-29",
+   "referenced_by": 2,
+   "refs": [
+    "itm_ceiling.py",
+    "rank_loss.py"
+   ]
+  },
+  {
+   "path": "archive/run/protenix/run_benchmark_parallel.py",
+   "lines": 161,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "deep_coverage.sh",
+    "deep_traps.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_uncropped_memory.sh",
+   "lines": 150,
+   "last_commit": "2026-10-30",
+   "referenced_by": 2,
+   "refs": [
+    "paper_results.md",
+    "probe_uncropped_memory_ckpt.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_frame_direction_check.py",
+   "lines": 145,
+   "last_commit": "2026-10-19",
+   "referenced_by": 2,
+   "refs": [
+    "experiment_plan.md",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/stage_val_refs.py",
+   "lines": 142,
+   "last_commit": "2026-11-04",
+   "referenced_by": 2,
+   "refs": [
+    "val30_cpu_chain.sh",
+    "wave1_validation_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_derive_preflight_subset.py",
+   "lines": 137,
+   "last_commit": "2026-10-19",
+   "referenced_by": 2,
+   "refs": [
+    "launch_rank_only_fullset.sh",
+    "queue_fullfold_after_24u342.sh"
+   ]
+  },
+  {
+   "path": "archive/steering/steer_z0.py",
+   "lines": 127,
+   "last_commit": "2026-06-24",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "steering_results.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/stage_arms.sh",
+   "lines": 126,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "HANDOFF.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/rank_gain_location.py",
+   "lines": 125,
+   "last_commit": "2026-10-30",
+   "referenced_by": 2,
+   "refs": [
+    "paper_results.md",
+    "uncropped_arm_review.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_pick_lr.py",
+   "lines": 121,
+   "last_commit": "2026-10-15",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "queue_ft3_pilot.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/predcrop_eval_at_boundary.sh",
+   "lines": 121,
+   "last_commit": "2026-10-31",
+   "referenced_by": 2,
+   "refs": [
+    "perpose_eval_at_boundary.sh",
+    "predcrop_resume_safetynet.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/consolidate_training_scores.sh",
+   "lines": 113,
+   "last_commit": "2026-11-05",
+   "referenced_by": 2,
+   "refs": [
+    "SCORING_RECOVERY.md",
+    "recover_seed_gaps.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/test_unit_fingerprint_split.py",
+   "lines": 112,
+   "last_commit": "2026-11-07",
+   "referenced_by": 2,
+   "refs": [
+    "phase_k_train.py",
+    "training_speedups.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/donor_summary.py",
+   "lines": 111,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "HANDOFF.md",
+    "SELF_TEMPLATING_TWO_RUNS.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_verify_labels.py",
+   "lines": 108,
+   "last_commit": "2026-10-15",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "finish_label_cache.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/pool_contact_audit.py",
+   "lines": 108,
+   "last_commit": "2026-11-05",
+   "referenced_by": 2,
+   "refs": [
+    "SCORING_RECOVERY.md",
+    "consolidate_training_scores.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_resolve_seed_dir_selftest.py",
+   "lines": 101,
+   "last_commit": "2026-10-16",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "pose_provenance.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_rel_itm_beta75.sh",
+   "lines": 101,
+   "last_commit": "2026-10-29",
+   "referenced_by": 2,
+   "refs": [
+    "resume_rel_itm_ep28.sh",
+    "resume_rel_itm_ep32.sh"
+   ]
+  },
+  {
+   "path": "archive/confornet/prepare_data.py",
+   "lines": 95,
+   "last_commit": "2026-06-28",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "paths.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/tests/check_steer_reps.py",
+   "lines": 94,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "STEERING_SUMMARY.md",
+    "steer_reps.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/extract_instance_cifs.py",
+   "lines": 93,
+   "last_commit": "2026-11-04",
+   "referenced_by": 2,
+   "refs": [
+    "val30_cpu_chain.sh",
+    "wave1_validation_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_l2sp_overfit30.sh",
+   "lines": 90,
+   "last_commit": "2026-10-25",
+   "referenced_by": 2,
+   "refs": [
+    "chain_three_arms.sh",
+    "queue_l2sp_after_lora.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/watch_free_extra10.sh",
+   "lines": 89,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "gpu_guard.sh",
+    "phase_i_fold_validation.sh"
+   ]
+  },
+  {
+   "path": "archive/steering/decode_steered.py",
+   "lines": 87,
+   "last_commit": "2026-06-24",
+   "referenced_by": 2,
+   "refs": [
+    "repel_status.md",
+    "steering_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/zero_margin.py",
+   "lines": 78,
+   "last_commit": "2026-10-25",
+   "referenced_by": 2,
+   "refs": [
+    "launch_wsonly4y.sh",
+    "plot_three.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_wsonly.sh",
+   "lines": 78,
+   "last_commit": "2026-10-25",
+   "referenced_by": 2,
+   "refs": [
+    "handover_readout_then_wsonly.sh",
+    "handover_to_wsonly.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_fullhead_l2sp_1e3_lrdecay.sh",
+   "lines": 77,
+   "last_commit": "2026-10-27",
+   "referenced_by": 2,
+   "refs": [
+    "launch_fullhead_l2sp_1e4_40ep.sh",
+    "queue_lrdecay_when_free.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_train_cache.sh",
+   "lines": 77,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/watch_scatter50.sh",
+   "lines": 74,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "seed_scatter_report.py",
+    "watch_fb_mask_on.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/weight_travel.py",
+   "lines": 73,
+   "last_commit": "2026-10-25",
+   "referenced_by": 2,
+   "refs": [
+    "launch_cosine30.sh",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/numa_rank_wrap.sh",
+   "lines": 72,
+   "last_commit": "2026-10-26",
+   "referenced_by": 2,
+   "refs": [
+    "codex_review_2026-10-26.md",
+    "launch.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/watch_arms.sh",
+   "lines": 67,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "HANDOFF.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_dntxmn_e20.sh",
+   "lines": 60,
+   "last_commit": "2026-10-26",
+   "referenced_by": 2,
+   "refs": [
+    "chain_fullhead_after_dntxmn.sh",
+    "chain_l2sp_sweep_after_dntxmn.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_train_loss.py",
+   "lines": 56,
+   "last_commit": "2026-10-27",
+   "referenced_by": 2,
+   "refs": [
+    "paper_results.md",
+    "plot_train_pae.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_pae_copy_full.sh",
+   "lines": 56,
+   "last_commit": "2026-10-25",
+   "referenced_by": 2,
+   "refs": [
+    "chain_copy_after_ip8ga4.sh",
+    "resume_dntxmn_e20.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_pt3_full.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "referenced_by": 2,
+   "refs": [
+    "handover_to_full.sh",
+    "launch_pt3_full.sh"
+   ]
+  },
+  {
+   "path": "archive/steering/confornet_runner.sh",
+   "lines": 47,
+   "last_commit": "2026-06-24",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "tools/fetch/verify_parts.sh",
+   "lines": 42,
+   "last_commit": "2026-10-14",
+   "referenced_by": 2,
+   "refs": [
+    "README.md",
+    "parallel_fetch.sh"
+   ]
+  },
+  {
+   "path": "extra_training/analysis/oneoff/03_val10_loss_only.sh",
+   "lines": 24,
+   "last_commit": "2026-10-20",
+   "referenced_by": 2,
+   "refs": [
+    "07_val10_pae_sweep.sh",
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/refresh_three.sh",
+   "lines": 9,
+   "last_commit": "2026-10-22",
+   "referenced_by": 2,
+   "refs": [
+    "watch_arm.sh",
+    "watch_fullfold.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_dead_ops.py",
+   "lines": 741,
+   "last_commit": "2026-11-07",
+   "referenced_by": 3,
+   "refs": [
+    "cli.py",
+    "dead_ops.py",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_prefix_cache.py",
+   "lines": 613,
+   "last_commit": "2026-11-07",
+   "referenced_by": 3,
+   "refs": [
+    "cli.py",
+    "phase_k_train.py",
+    "test_dead_ops.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_arms.py",
+   "lines": 579,
+   "last_commit": "2026-10-26",
+   "referenced_by": 3,
+   "refs": [
+    "EXPERIMENTS.md",
+    "experiments_doc.py",
+    "plot_arms.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/render_report.py",
+   "lines": 441,
+   "last_commit": "2026-10-16",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "phase_k_train.py",
+    "report.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/foldbench_setup.py",
+   "lines": 420,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "HANDOFF.md",
+    "README.md",
+    "paths.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_pose_inblock_integration.py",
+   "lines": 387,
+   "last_commit": "2026-11-07",
+   "referenced_by": 3,
+   "refs": [
+    "inblock_gpu_smoke.sh",
+    "pose_inblock.md",
+    "test_prefix_cache.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/recover_val_pae.py",
+   "lines": 367,
+   "last_commit": "2026-10-26",
+   "referenced_by": 3,
+   "refs": [
+    "codex_review_request_val_shard_retry.md",
+    "eval_fawgtu_bundles.py",
+    "val_pae_watchdog.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_rel_bars.py",
+   "lines": 311,
+   "last_commit": "2026-10-30",
+   "referenced_by": 3,
+   "refs": [
+    "eval_dirs.py",
+    "plot_val_series.py",
+    "watch_rel_arm.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_corrected_jobs.py",
+   "lines": 299,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "msa_rebuild_plan.md",
+    "phase_j_corrected_queries.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/cropped_eval_report.py",
+   "lines": 298,
+   "last_commit": "2026-11-04",
+   "referenced_by": 3,
+   "refs": [
+    "cropped_eval_labelfree.sh",
+    "paper_results.md",
+    "test_cropped_eval_labelfree.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_train_ddp_selftest.py",
+   "lines": 280,
+   "last_commit": "2026-10-16",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "ft3_multigpu_review.md",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/build_selftmpl_general.py",
+   "lines": 268,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "build_templates.py",
+    "write_templates.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/free_vs_matched.py",
+   "lines": 266,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "consolidate_arms.py",
+    "pair_queues_by_payoff.py",
+    "reorder_method_by_payoff.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/seed_scatter_score.py",
+   "lines": 262,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "plot_seed_scatter_pair_similarity.py",
+    "seed_scatter_report.py",
+    "watch_scatter50.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/build_free_pool.py",
+   "lines": 262,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "WORKER_MOVED.md",
+    "paths.py",
+    "seed_scaling_impact.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_drop_superseded_rows.py",
+   "lines": 242,
+   "last_commit": "2026-10-19",
+   "referenced_by": 3,
+   "refs": [
+    "dedup_then_queue_jy6sah_to200.sh",
+    "resume_jy6sah_ep137_to200.sh",
+    "train_val_difficulty.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/seed_coverage.py",
+   "lines": 239,
+   "last_commit": "2026-11-06",
+   "referenced_by": 3,
+   "refs": [
+    "phase_l_merge_recovered.py",
+    "recover_seed_gaps.sh",
+    "test_seed_coverage.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_compare_msa.py",
+   "lines": 225,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "msa_rebuild_plan.md",
+    "questions_for_review.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/predcrop_size_control.py",
+   "lines": 204,
+   "last_commit": "2026-10-31",
+   "referenced_by": 3,
+   "refs": [
+    "build_union_crop_masks.py",
+    "predicted_crop_eval_review.md",
+    "predicted_union_crop.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_train_val_then_foldbench.sh",
+   "lines": 203,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "execution_plan.md",
+    "watch_deferred_then_foldbench.sh",
+    "watch_foldbench_then_training.sh"
+   ]
+  },
+  {
+   "path": "tools/fetch/parallel_fetch.sh",
+   "lines": 190,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "build_uniref_from_mirror.sh",
+    "verify_parts.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_corrected_queries.py",
+   "lines": 173,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "phase_j_compare_msa.py",
+    "phase_j_corrected_jobs.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/val30_cpu_chain.sh",
+   "lines": 162,
+   "last_commit": "2026-11-04",
+   "referenced_by": 3,
+   "refs": [
+    "build_val30_labels.sh",
+    "build_val_queue.py",
+    "wave1_validation_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_eval_stage_timing.py",
+   "lines": 161,
+   "last_commit": "2026-10-22",
+   "referenced_by": 3,
+   "refs": [
+    "measure_then_launch.sh",
+    "phase_j_rescore_cache.py",
+    "phase_k_eval.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_minimal_item_equivalence.py",
+   "lines": 155,
+   "last_commit": "2026-10-17",
+   "referenced_by": 3,
+   "refs": [
+    "cli.py",
+    "phase_k_alignment_preflight.py",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/run_exp/build_complex_queue.py",
+   "lines": 149,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "anchor_vs_crystal.py",
+    "build_simple_queue.py",
+    "donor_variants.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_train_pae.py",
+   "lines": 149,
+   "last_commit": "2026-11-08",
+   "referenced_by": 3,
+   "refs": [
+    "launch_rowweight_cosine.sh",
+    "phase_k_train.py",
+    "plot_rowweight_pair.py"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/val_baseline.py",
+   "lines": 147,
+   "last_commit": "2026-10-27",
+   "referenced_by": 3,
+   "refs": [
+    "RESULTS.md",
+    "paper_results.md",
+    "plot_7030.py"
+   ]
+  },
+  {
+   "path": "archive/steering/steer_converge.py",
+   "lines": 142,
+   "last_commit": "2026-06-24",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "plot_converge.py",
+    "steering_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_val10.py",
+   "lines": 139,
+   "last_commit": "2026-10-19",
+   "referenced_by": 3,
+   "refs": [
+    "experiment_plan.md",
+    "plot_full_train.py",
+    "refresh_val10_plot.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/build_topup_queue.py",
+   "lines": 134,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "WORKER_MOVED.md",
+    "seed_scaling_impact.md",
+    "train_seed_depth_curve.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_refold_list.py",
+   "lines": 129,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "README.md",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_overfit30.py",
+   "lines": 128,
+   "last_commit": "2026-11-08",
+   "referenced_by": 3,
+   "refs": [
+    "paper_results.md",
+    "plot_train30_vs_full.py",
+    "plot_train_pae.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/plot_arms.py",
+   "lines": 119,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "EXPERIMENTS.md",
+    "experiments_doc.py",
+    "plot_arms.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/push_findings.sh",
+   "lines": 112,
+   "last_commit": "2026-10-24",
+   "referenced_by": 3,
+   "refs": [
+    "doc_refresh_loop.sh",
+    "watch_arm.sh",
+    "watch_fullfold.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_disposition_mismatches.py",
+   "lines": 110,
+   "last_commit": "2026-10-15",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "phase_j_label_audit.py",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/trainer/inventory.py",
+   "lines": 108,
+   "last_commit": "2026-11-08",
+   "referenced_by": 3,
+   "refs": [
+    "degenerate_structure_pruning.md",
+    "staged_reclaim.py",
+    "wave1_reclaim_chain.sh"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/merge_pae_mean.py",
+   "lines": 95,
+   "last_commit": "2026-10-27",
+   "referenced_by": 3,
+   "refs": [
+    "features.py",
+    "phase_k_eval.py",
+    "postprocess.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/await_msa_server.sh",
+   "lines": 83,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "build_uniref_from_mirror.sh",
+    "connecting_to_server.md",
+    "msa_rebuild_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_l2sp_1e3_overfit30.sh",
+   "lines": 72,
+   "last_commit": "2026-10-26",
+   "referenced_by": 3,
+   "refs": [
+    "EXPERIMENTS.md",
+    "chain_fullhead_after_dntxmn.sh",
+    "chain_l2sp_sweep_after_dntxmn.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_l2sp_1e4_overfit30.sh",
+   "lines": 72,
+   "last_commit": "2026-10-26",
+   "referenced_by": 3,
+   "refs": [
+    "EXPERIMENTS.md",
+    "chain_fullhead_after_dntxmn.sh",
+    "chain_l2sp_sweep_after_dntxmn.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/gpu_guard.sh",
+   "lines": 64,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "health.sh",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/resume_rowweight_ep56_70.sh",
+   "lines": 60,
+   "last_commit": "2026-10-29",
+   "referenced_by": 3,
+   "refs": [
+    "resume_rowweight_ep67_70.sh",
+    "resume_rowweight_ep69_80.sh",
+    "resume_rowweight_ep71_80.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_lr_probe.sh",
+   "lines": 54,
+   "last_commit": "2026-10-19",
+   "referenced_by": 3,
+   "refs": [
+    "launch_full_train_4metrics.sh",
+    "resume_full_train_from_ep1.sh",
+    "resume_full_train_from_ep2_nockpt.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_straddle.sh",
+   "lines": 53,
+   "last_commit": "2026-10-24",
+   "referenced_by": 3,
+   "refs": [
+    "chain_straddle.sh",
+    "launch_straddle.sh",
+    "straddle_arm.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/backfill_val_pae.sh",
+   "lines": 50,
+   "last_commit": "2026-10-20",
+   "referenced_by": 3,
+   "refs": [
+    "launch_pose_focused_overfit30.sh",
+    "next_restart.md",
+    "resume_pose_focused_from_ep11.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_readout.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "referenced_by": 3,
+   "refs": [
+    "aup7ku_results.md",
+    "handover_readout_then_wsonly.sh",
+    "launch_readout.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/probe_wsonly.sh",
+   "lines": 50,
+   "last_commit": "2026-10-24",
+   "referenced_by": 3,
+   "refs": [
+    "handover_readout_then_wsonly.sh",
+    "handover_to_wsonly.sh",
+    "launch_wsonly.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/pick_unfolded_unit.py",
+   "lines": 37,
+   "last_commit": "2026-10-12",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "phase_i_fold_validation.sh",
+    "validation_set.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/build_valfull_labels.sh",
+   "lines": 32,
+   "last_commit": "2026-10-22",
+   "referenced_by": 3,
+   "refs": [
+    "build_extended_train_labels.sh",
+    "build_val30_labels.sh",
+    "launch_armB_valfull.sh"
+   ]
+  },
+  {
+   "path": "archive/confornet/confornet_one.sh",
+   "lines": 24,
+   "last_commit": "2026-06-28",
+   "referenced_by": 3,
+   "refs": [
+    "README.md",
+    "README.md",
+    "run_newserver.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/high_iptm_solved.py",
+   "lines": 22,
+   "last_commit": "2026-10-14",
+   "referenced_by": 3,
+   "refs": [
+    "plot_dockq_range_high_iptm.py",
+    "plot_high_iptm_solved.py",
+    "plot_iptm_dockq_corr_by_bucket.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/trainer/cli.py",
+   "lines": 784,
+   "last_commit": "2026-11-08",
+   "referenced_by": 4,
+   "refs": [
+    "config.py",
+    "test_cli_equivalence.py",
+    "test_config_equivalence.py",
+    "validate.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/dead_ops.py",
+   "lines": 665,
+   "last_commit": "2026-11-07",
+   "referenced_by": 4,
+   "refs": [
+    "cli.py",
+    "phase_k_train.py",
+    "pose_inblock.py",
+    "test_dead_ops.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/staged_reclaim.py",
+   "lines": 472,
+   "last_commit": "2026-11-04",
+   "referenced_by": 4,
+   "refs": [
+    "build_extended_train_selection.py",
+    "build_val30_labels.sh",
+    "degenerate_structure_pruning.md",
+    "wave1_reclaim_chain.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_uncropped_progress.py",
+   "lines": 377,
+   "last_commit": "2026-11-06",
+   "referenced_by": 4,
+   "refs": [
+    "epoch_curve.py",
+    "plot_arms_full.py",
+    "plot_crop_vs_uncrop.py",
+    "test_epoch_curve.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_e_search_envdb.sh",
+   "lines": 370,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "msa_rebuild_plan.md",
+    "phase_d_search_uniref.sh",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/prefetch_deadlock_repro.py",
+   "lines": 294,
+   "last_commit": "2026-10-26",
+   "referenced_by": 4,
+   "refs": [
+    "cli.py",
+    "codex_review_2026-10-26.md",
+    "launch_fullhead_l2sp_posefree.sh",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_train_insample.py",
+   "lines": 266,
+   "last_commit": "2026-11-03",
+   "referenced_by": 4,
+   "refs": [
+    "epoch_curve.py",
+    "epoch_report.sh",
+    "plot_uncropped_progress.py",
+    "test_epoch_curve.py"
+   ]
+  },
+  {
+   "path": "archive/run/esm/run_foldbench_abag.py",
+   "lines": 264,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "capture_reps.py",
+    "run_foldbench_abag_parallel.py",
+    "run_msa_ablation.py",
+    "verify_mask_reproduction.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/queue_ft3_pilot.sh",
+   "lines": 261,
+   "last_commit": "2026-10-16",
+   "referenced_by": 4,
+   "refs": [
+    "ft3_multigpu_review.md",
+    "multi_gpu_training.md",
+    "phase_j_merge_results.py",
+    "pose_provenance.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_foldbench_then_training.sh",
+   "lines": 215,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "execution_plan.md",
+    "phase_j_drop_superseded_poses.py",
+    "phase_j_queue_now.py",
+    "watch_train_val_then_foldbench.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_label_audit_selftest.py",
+   "lines": 196,
+   "last_commit": "2026-10-15",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "label_audit_results.md",
+    "organization_plan.md",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/analysis/crystal_frame_selection.py",
+   "lines": 192,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "AUDIT.md",
+    "HANDOFF.md",
+    "crystal_frame_selection.md",
+    "donor_summary.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_extra_eval.py",
+   "lines": 182,
+   "last_commit": "2026-11-02",
+   "referenced_by": 4,
+   "refs": [
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "launch_unioncrop_dropout_l2.sh",
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_token_dropout.py",
+   "lines": 165,
+   "last_commit": "2026-11-02",
+   "referenced_by": 4,
+   "refs": [
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "phase_k_train.py",
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "figures/selection_vs_budget.py",
+   "lines": 165,
+   "last_commit": "2026-10-20",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "commitment_vs_iptm.py",
+    "dockq_vs_budget.py",
+    "within_vs_between_trunk.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/build_wave1_pool.py",
+   "lines": 160,
+   "last_commit": "2026-11-04",
+   "referenced_by": 4,
+   "refs": [
+    "extract_instance_cifs.py",
+    "stage_val_refs.py",
+    "val30_cpu_chain.sh",
+    "wave1_validation_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_train_eval.py",
+   "lines": 154,
+   "last_commit": "2026-10-19",
+   "referenced_by": 4,
+   "refs": [
+    "experiment_plan.md",
+    "plot_val10.py",
+    "refresh_plot.sh",
+    "watch_train_eval_plot.sh"
+   ]
+  },
+  {
+   "path": "eval/pxm_dockq.py",
+   "lines": 151,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "chain_map.py",
+    "scorer.py",
+    "validate.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_b3_pick_second_reps.py",
+   "lines": 149,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "phases_history.md",
+    "train_val_difficulty.md",
+    "validation_set.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_drop_superseded_poses.py",
+   "lines": 147,
+   "last_commit": "2026-10-16",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "phase_j_drop_superseded_rows.py",
+    "pose_provenance.md",
+    "train_val_difficulty.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/crop_pose_equivalence.py",
+   "lines": 138,
+   "last_commit": "2026-10-25",
+   "referenced_by": 4,
+   "refs": [
+    "EXPERIMENTS.md",
+    "ip8ga4_results.md",
+    "launch_e20.sh",
+    "launch_resume_j583i8_fast.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/training_queue_drained.py",
+   "lines": 132,
+   "last_commit": "2026-11-04",
+   "referenced_by": 4,
+   "refs": [
+    "arm_val_after_train.sh",
+    "codex_questions_2026-11-05.md",
+    "rescore_training.sh",
+    "wave1_validation_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/verify_iptm_join.sh",
+   "lines": 130,
+   "last_commit": "2026-10-26",
+   "referenced_by": 4,
+   "refs": [
+    "chain_fullhead_after_dntxmn.sh",
+    "codex_review_2026-10-26.md",
+    "dockq_from_iptm.py",
+    "ep1_pause_verify_resume.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_queue_now.py",
+   "lines": 127,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "execution_plan.md",
+    "train_val_difficulty.md",
+    "watch_foldbench_then_training.sh"
+   ]
+  },
+  {
+   "path": "archive/steering/steer_horizon.py",
+   "lines": 118,
+   "last_commit": "2026-06-24",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "decode_steered.py",
+    "steer_z0.py",
+    "steering_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/test_trunk_memmap.py",
+   "lines": 118,
+   "last_commit": "2026-11-07",
+   "referenced_by": 4,
+   "refs": [
+    "cli.py",
+    "launch_default_arm.sh",
+    "phase_k_train.py",
+    "training_speedups.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/quota_guard.sh",
+   "lines": 111,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "gpu_guard.sh",
+    "health.sh",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_merge_results.py",
+   "lines": 94,
+   "last_commit": "2026-10-16",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "phase_j_drop_superseded_rows.py",
+    "pose_provenance.md",
+    "queue_ft3_pilot.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/phase2_envdb.sh",
+   "lines": 89,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "METHODS.md",
+    "README.md",
+    "phase_d_search_uniref.sh",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/gpu_hold.sh",
+   "lines": 58,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "gpu_hold.py",
+    "hold_gpus.sh",
+    "resume_ep45.sh"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/run_7030.sh",
+   "lines": 55,
+   "last_commit": "2026-10-27",
+   "referenced_by": 4,
+   "refs": [
+    "RESULTS.md",
+    "paper_results.md",
+    "plot_7030.py",
+    "val_baseline.py"
+   ]
+  },
+  {
+   "path": "archive/steering/gpu_hold.py",
+   "lines": 38,
+   "last_commit": "2026-06-24",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "gpu_hold.sh",
+    "hold_gpus.sh",
+    "resume_ep45.sh"
+   ]
+  },
+  {
+   "path": "extra_training/analysis/oneoff/01_build_val10_labels.sh",
+   "lines": 22,
+   "last_commit": "2026-10-20",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "build_valfull_labels.sh",
+    "config.py",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_remap_msa.sh",
+   "lines": 3,
+   "last_commit": "2026-10-14",
+   "referenced_by": 4,
+   "refs": [
+    "README.md",
+    "connecting_to_server.md",
+    "connectivity_fix_plan.md",
+    "phase_j_corrected_jobs.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_f_pair_and_split.py",
+   "lines": 581,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "METHODS.md",
+    "README.md",
+    "msa_rebuild_plan.md",
+    "phase_j_corrected_queries.py",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_default_arm.sh",
+   "lines": 548,
+   "last_commit": "2026-11-07",
+   "referenced_by": 5,
+   "refs": [
+    "argv_from_dry.py",
+    "inblock_gpu_smoke.sh",
+    "pose_inblock.md",
+    "prefix_cache.py",
+    "training_speedups.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/steer_reps.py",
+   "lines": 537,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "STEERING_SUMMARY.md",
+    "check_steer_reps.py",
+    "decode_and_score.py",
+    "phase_j_rescore_cache.py",
+    "sample_from_trunk.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_rescore_unmapped.py",
+   "lines": 536,
+   "last_commit": "2026-11-05",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "SCORING_RECOVERY.md",
+    "audit_chain_roles_identity.py",
+    "chain_extra_seeds.sh",
+    "recover_seed_gaps.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_c_extract_msa_queries.py",
+   "lines": 462,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "METHODS.md",
+    "MSA_RUNBOOK.md",
+    "README.md",
+    "README.md",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/build_experiment.py",
+   "lines": 448,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "AUDIT.md",
+    "HANDOFF.md",
+    "README.md",
+    "SELF_TEMPLATING_TWO_RUNS.md",
+    "crystal_frame_selection.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_domain_audit.py",
+   "lines": 277,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "README.md",
+    "execution_plan.md",
+    "phase_j_refold_from_audit.py",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/train_eval_metrics.py",
+   "lines": 264,
+   "last_commit": "2026-10-30",
+   "referenced_by": 5,
+   "refs": [
+    "eval.py",
+    "eval_dirs.py",
+    "eval_fawgtu_bundles.py",
+    "extract_heads.py",
+    "paper_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_remap_msa.py",
+   "lines": 257,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "connecting_to_server.md",
+    "connectivity_fix_plan.md",
+    "phase_j_corrected_jobs.py",
+    "phase_j_remap_msa.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_b2_propose_val_split.py",
+   "lines": 252,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "phase_b_define_val_clusters.py",
+    "phases_history.md",
+    "train_val_difficulty.md",
+    "validation_set.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_lean_readouts_arch.py",
+   "lines": 208,
+   "last_commit": "2026-11-01",
+   "referenced_by": 5,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "launch_unioncrop_dropout_l2.sh",
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_crop_tokens.py",
+   "lines": 203,
+   "last_commit": "2026-11-02",
+   "referenced_by": 5,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "launch_unioncrop_dropout_l2.sh",
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_lean_single.py",
+   "lines": 198,
+   "last_commit": "2026-11-07",
+   "referenced_by": 5,
+   "refs": [
+    "cli.py",
+    "dead_compute.md",
+    "launch_default_arm.sh",
+    "lean_readouts.py",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_fill_scores.py",
+   "lines": 193,
+   "last_commit": "2026-10-15",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "concern1_diagnosis.md",
+    "phase_k_eval.py",
+    "unscored_interfaces.md",
+    "val_selection_metric.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_refold_from_audit.py",
+   "lines": 193,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "README.md",
+    "execution_plan.md",
+    "phase_j_corrected_queries.py",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "archive/steering/steer_deviation.py",
+   "lines": 184,
+   "last_commit": "2026-06-24",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "plot_deviation.py",
+    "steer_repel.py",
+    "steer_sweep.py",
+    "wg_k3_check.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_two_pass_dropout.py",
+   "lines": 183,
+   "last_commit": "2026-11-02",
+   "referenced_by": 5,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "launch_unioncrop_dropout_l2.sh",
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/dockq_from_iptm.py",
+   "lines": 181,
+   "last_commit": "2026-10-26",
+   "referenced_by": 5,
+   "refs": [
+    "EXPERIMENTS.md",
+    "cli.py",
+    "codex_review_2026-10-26.md",
+    "phase_k_train.py",
+    "verify_iptm_join.sh"
+   ]
+  },
+  {
+   "path": "run_model/runmeta.py",
+   "lines": 170,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "AUDIT.md",
+    "folder.py",
+    "organization_plan.md",
+    "protenix_local.patch.md",
+    "test_folder.py"
+   ]
+  },
+  {
+   "path": "archive/confornet/steer_confornet.py",
+   "lines": 162,
+   "last_commit": "2026-06-28",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "confornet_one.sh",
+    "confornet_runner.sh",
+    "decode_confornet.py",
+    "run_newserver.sh"
+   ]
+  },
+  {
+   "path": "archive/analysis/compare_7txw_poses.py",
+   "lines": 155,
+   "last_commit": "2026-06-24",
+   "referenced_by": 5,
+   "refs": [
+    "cluster_antigen_poses.py",
+    "decoy_orientation.py",
+    "fold_check.py",
+    "key_residue_masking.py",
+    "orientation_summary.py"
+   ]
+  },
+  {
+   "path": "archive/steering/steer_sequential.py",
+   "lines": 155,
+   "last_commit": "2026-06-24",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "repel_status.md",
+    "steer_deviation.py",
+    "steer_repel.py",
+    "steer_sweep.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_wave1_val_fold.sh",
+   "lines": 153,
+   "last_commit": "2026-11-05",
+   "referenced_by": 5,
+   "refs": [
+    "arm_val_after_train.sh",
+    "codex_questions_2026-11-05.md",
+    "launch_seed500010_fold.sh",
+    "recover_seed_gaps.sh",
+    "wave1_validation_plan.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/metrics/build_matrices.py",
+   "lines": 142,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "anchor_vs_crystal.py",
+    "build_simple_queue.py",
+    "heatmaps.py",
+    "pool.py",
+    "validate.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/verify_minidb.sh",
+   "lines": 140,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "msa_rebuild_plan.md",
+    "phase_d_search_uniref.sh",
+    "phase_e_search_envdb.sh",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_fullhead_l2sp_posefree.sh",
+   "lines": 136,
+   "last_commit": "2026-10-26",
+   "referenced_by": 5,
+   "refs": [
+    "chain_fullhead_after_dntxmn.sh",
+    "codex_review_2026-10-26.md",
+    "launch_fullhead_l2sp_1e2.sh",
+    "resume_ij24wr.sh",
+    "tv6hue_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/verify_val_manifest.py",
+   "lines": 123,
+   "last_commit": "2026-11-04",
+   "referenced_by": 5,
+   "refs": [
+    "build_val30_labels.sh",
+    "degenerate_structure_pruning.md",
+    "staged_reclaim.py",
+    "verify_train_trim.py",
+    "wave1_reclaim_chain.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_fullhead_l2sp_1e2.sh",
+   "lines": 104,
+   "last_commit": "2026-10-26",
+   "referenced_by": 5,
+   "refs": [
+    "chain_l2sp_1e2_after_tv6hue.sh",
+    "launch_fullhead_l2sp_1e3_lrdecay.sh",
+    "launch_fullhead_l2sp_1e4_40ep.sh",
+    "launch_fullhead_noanchor_40ep.sh",
+    "resume_jer222.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_ckpt_threshold.py",
+   "lines": 76,
+   "last_commit": "2026-11-01",
+   "referenced_by": 5,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "launch_unioncrop_dropout_l2.sh",
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/extract_heads.py",
+   "lines": 71,
+   "last_commit": "2026-10-28",
+   "referenced_by": 5,
+   "refs": [
+    "compare_rowweight_insample.py",
+    "compare_rowweight_valfull.py",
+    "cropped_eval.py",
+    "eval_fawgtu_bundles.py",
+    "insample_eval.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/lib_fetch.sh",
+   "lines": 63,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "README.md",
+    "phase2_envdb.sh",
+    "phase_d_search_uniref.sh",
+    "phase_e_search_envdb.sh",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/hold_gpus.py",
+   "lines": 60,
+   "last_commit": "2026-10-14",
+   "referenced_by": 5,
+   "refs": [
+    "HANDOFF.md",
+    "README.md",
+    "SELF_TEMPLATING_TWO_RUNS.md",
+    "hold_gpus.sh",
+    "stage_arms.sh"
+   ]
+  },
+  {
+   "path": "archive/steering/hold_gpus.sh",
+   "lines": 45,
+   "last_commit": "2026-06-24",
+   "referenced_by": 5,
+   "refs": [
+    "HANDOFF.md",
+    "README.md",
+    "SELF_TEMPLATING_TWO_RUNS.md",
+    "hold_gpus.py",
+    "stage_arms.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/paired_mean.py",
+   "lines": 33,
+   "last_commit": "2026-10-24",
+   "referenced_by": 5,
+   "refs": [
+    "EXPERIMENTS.md",
+    "experiments_doc.py",
+    "handover_readout_then_wsonly.sh",
+    "handover_to_wsonly.sh",
+    "plot_arms.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/prefix_cache.py",
+   "lines": 587,
+   "last_commit": "2026-11-07",
+   "referenced_by": 6,
+   "refs": [
+    "cli.py",
+    "dead_ops.py",
+    "phase_k_train.py",
+    "pose_inblock.py",
+    "test_dead_ops.py",
+    "test_prefix_cache.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_label_audit.py",
+   "lines": 551,
+   "last_commit": "2026-10-15",
+   "referenced_by": 6,
+   "refs": [
+    "README.md",
+    "label_audit_results.md",
+    "phase_j_disposition_mismatches.py",
+    "phase_j_label_audit_selftest.py",
+    "phase_j_labels_and_audit.sh",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_h_search_templates.py",
+   "lines": 377,
+   "last_commit": "2026-10-16",
+   "referenced_by": 6,
+   "refs": [
+    "METHODS.md",
+    "README.md",
+    "build_wave1_jobs.py",
+    "msa_rebuild_plan.md",
+    "phase_i_inputs.py",
+    "phases_history.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_l_merge_recovered.py",
+   "lines": 362,
+   "last_commit": "2026-11-06",
+   "referenced_by": 6,
+   "refs": [
+    "SCORING_RECOVERY.md",
+    "chain_extra_seeds.sh",
+    "consolidate_training_scores.sh",
+    "launch_seed500010_fold.sh",
+    "recover_seed_gaps.sh",
+    "seed_coverage.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/dedupe_results.py",
+   "lines": 320,
+   "last_commit": "2026-11-05",
+   "referenced_by": 6,
+   "refs": [
+    "SCORING_RECOVERY.md",
+    "codex_questions_2026-11-05.md",
+    "consolidate_training_scores.sh",
+    "phase_l_merge_recovered.py",
+    "rescore_training.sh",
+    "test_dedupe_results.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_pose_inblock_graph.py",
+   "lines": 282,
+   "last_commit": "2026-11-07",
+   "referenced_by": 6,
+   "refs": [
+    "cli.py",
+    "launch_default_arm.sh",
+    "phase_k_train.py",
+    "pose_inblock.md",
+    "pose_inblock.py",
+    "test_pose_inblock_integration.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/build_combined_train_pool.py",
+   "lines": 256,
+   "last_commit": "2026-11-06",
+   "referenced_by": 6,
+   "refs": [
+    "extend_uncropped_to_10.sh",
+    "itm_ceiling.py",
+    "launch_default_arm.sh",
+    "launch_seed500010_fold.sh",
+    "launch_uncropped_1epoch.sh",
+    "smoke_mixed_depth.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/metrics_io.py",
+   "lines": 226,
+   "last_commit": "2026-10-30",
+   "referenced_by": 6,
+   "refs": [
+    "eval_dirs.py",
+    "next_restart.md",
+    "plot_full_train.py",
+    "plot_three.py",
+    "plot_val_panels.py",
+    "results_table.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_unioncrop_dropout_l2.sh",
+   "lines": 210,
+   "last_commit": "2026-11-02",
+   "referenced_by": 6,
+   "refs": [
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "resume_egw5wq_ep28_to40.sh",
+    "test_crop_tokens.py",
+    "test_extra_eval.py",
+    "test_lr_schedule.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_pair_dropout.py",
+   "lines": 162,
+   "last_commit": "2026-11-02",
+   "referenced_by": 6,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "launch_unioncrop_dropout_l2.sh",
+    "resume_egw5wq_ep28_to40.sh",
+    "test_two_pass_dropout.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/insample_eval.py",
+   "lines": 161,
+   "last_commit": "2026-11-03",
+   "referenced_by": 6,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "launch_unioncrop_dropout_l2.sh",
+    "paper_results.md",
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_i_inputs.py",
+   "lines": 156,
+   "last_commit": "2026-10-14",
+   "referenced_by": 6,
+   "refs": [
+    "README.md",
+    "phase_h_search_templates.py",
+    "phase_i_fold_validation.sh",
+    "phases_history.md",
+    "train_val_difficulty.md",
+    "validation_set.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_check_contacts.py",
+   "lines": 156,
+   "last_commit": "2026-10-14",
+   "referenced_by": 6,
+   "refs": [
+    "README.md",
+    "build_cache_exclusions.md",
+    "label_audit_results.md",
+    "phase_j_disposition_mismatches.py",
+    "phases_history.md",
+    "unscored_interfaces.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_val_2x3.py",
+   "lines": 147,
+   "last_commit": "2026-11-03",
+   "referenced_by": 6,
+   "refs": [
+    "epoch_report.sh",
+    "eval_dirs.py",
+    "launch_unioncrop_dropout_l2.sh",
+    "phase_k_train.py",
+    "plot_train_insample.py",
+    "test_extra_eval.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/pose_sets.py",
+   "lines": 134,
+   "last_commit": "2026-11-04",
+   "referenced_by": 6,
+   "refs": [
+    "SCORING_RECOVERY.md",
+    "dedupe_results.py",
+    "phase_i_check.py",
+    "phase_j_rescore_unmapped.py",
+    "test_pose_sets.py",
+    "training_queue_drained.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/structural_diversity_filter.py",
+   "lines": 131,
+   "last_commit": "2026-10-14",
+   "referenced_by": 6,
+   "refs": [
+    "AUDIT.md",
+    "README.md",
+    "SELF_TEMPLATING_TWO_RUNS.md",
+    "build_experiment.py",
+    "build_templates.py",
+    "crystal_frame_selection.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/build_varseed_queue.py",
+   "lines": 124,
+   "last_commit": "2026-10-14",
+   "referenced_by": 6,
+   "refs": [
+    "AUDIT.md",
+    "HANDOFF.md",
+    "README.md",
+    "compare_arms.py",
+    "stage_arms.sh",
+    "watch_fb_mask_on.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/stop_run.sh",
+   "lines": 110,
+   "last_commit": "2026-10-30",
+   "referenced_by": 6,
+   "refs": [
+    "handover_readout_then_wsonly.sh",
+    "perpose_eval_at_boundary.sh",
+    "predcrop_eval_at_boundary.sh",
+    "queue_fullhead_after_24u34d.sh",
+    "test_cropped_eval_labelfree.py",
+    "watchdog_uncropped.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_rowweight_cosine.sh",
+   "lines": 108,
+   "last_commit": "2026-10-28",
+   "referenced_by": 6,
+   "refs": [
+    "chain_rowweight_after_ep60.sh",
+    "resume_rowweight_ep56_70.sh",
+    "resume_rowweight_ep67_70.sh",
+    "resume_rowweight_ep69_80.sh",
+    "resume_rowweight_ep71_80.sh",
+    "test_lr_schedule.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_labels_and_audit.sh",
+   "lines": 97,
+   "last_commit": "2026-10-15",
+   "referenced_by": 6,
+   "refs": [
+    "README.md",
+    "label_audit_results.md",
+    "phase_j_label_audit_selftest.py",
+    "phases_history.md",
+    "rebuild_labels.sh",
+    "train_val_difficulty.md"
+   ]
+  },
+  {
+   "path": "tools/colabfold/phase1_uniref.sh",
+   "lines": 96,
+   "last_commit": "2026-10-16",
+   "referenced_by": 6,
+   "refs": [
+    "METHODS.md",
+    "MSA_RUNBOOK.md",
+    "phase2_envdb.sh",
+    "phase_d_search_uniref.sh",
+    "phases_history.md",
+    "quota_guard.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_poseshare_rank_overfit30.sh",
+   "lines": 88,
+   "last_commit": "2026-10-25",
+   "referenced_by": 6,
+   "refs": [
+    "probe_rank_gradients.sh",
+    "probe_rank_gradients_readout.sh",
+    "probe_rank_perblock_copy.sh",
+    "probe_rank_xs_softplus.sh",
+    "ranking_loss_experiment.md",
+    "ranking_vs_pae.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_d_search_uniref.sh",
+   "lines": 491,
+   "last_commit": "2026-10-14",
+   "referenced_by": 7,
+   "refs": [
+    "README.md",
+    "await_msa_server.sh",
+    "connecting_to_server.md",
+    "execution_plan.md",
+    "msa_rebuild_plan.md",
+    "phase_j_corrected_queries.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_perblock_ckpt_equiv.py",
+   "lines": 244,
+   "last_commit": "2026-10-30",
+   "referenced_by": 7,
+   "refs": [
+    "bench_ckpt_by_size.py",
+    "cli.py",
+    "launch_default_arm.sh",
+    "paper_results.md",
+    "phase_k_train.py",
+    "pose_perblock.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_eval_pool_paths.py",
+   "lines": 222,
+   "last_commit": "2026-10-29",
+   "referenced_by": 7,
+   "refs": [
+    "launch_rel_itm_beta75.sh",
+    "launch_rel_itm_beta75_uncropped.sh",
+    "probe_uncropped_memory.sh",
+    "probe_uncropped_memory_ckpt.sh",
+    "probe_uncropped_memory_expseg.sh",
+    "resume_rel_itm_ep28.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_stage_complete.py",
+   "lines": 188,
+   "last_commit": "2026-10-16",
+   "referenced_by": 7,
+   "refs": [
+    "README.md",
+    "connectivity_fix_plan.md",
+    "execution_plan.md",
+    "pose_provenance.md",
+    "watch_deferred_then_foldbench.sh",
+    "watch_foldbench_then_training.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/epoch_curve.py",
+   "lines": 157,
+   "last_commit": "2026-11-08",
+   "referenced_by": 7,
+   "refs": [
+    "plot_arms_full.py",
+    "plot_crop_vs_uncrop.py",
+    "plot_pae_hist.py",
+    "plot_rel_arm.py",
+    "plot_rowweight_pair.py",
+    "plot_train_pae.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/launch_rel_itm_beta75_uncropped.sh",
+   "lines": 145,
+   "last_commit": "2026-10-30",
+   "referenced_by": 7,
+   "refs": [
+    "greenlight_uncropped.sh",
+    "paper_results.md",
+    "probe_uncropped_memory.sh",
+    "probe_uncropped_memory_ckpt.sh",
+    "probe_uncropped_memory_expseg.sh",
+    "uncropped_arm_review.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_rel_arm.py",
+   "lines": 104,
+   "last_commit": "2026-11-08",
+   "referenced_by": 7,
+   "refs": [
+    "epoch_curve.py",
+    "plot_arms_full.py",
+    "plot_crop_vs_uncrop.py",
+    "plot_rel_heldout.py",
+    "refresh_plots.sh",
+    "test_epoch_curve.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/select_tied.py",
+   "lines": 70,
+   "last_commit": "2026-10-30",
+   "referenced_by": 7,
+   "refs": [
+    "plot_arms_full.py",
+    "plot_crop_vs_uncrop.py",
+    "plot_rel_bars.py",
+    "plot_rel_heldout.py",
+    "plot_train_insample.py",
+    "plot_val_2x3.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/bench_ckpt_by_size.py",
+   "lines": 610,
+   "last_commit": "2026-11-06",
+   "referenced_by": 8,
+   "refs": [
+    "argv_from_dry.py",
+    "cli.py",
+    "inblock_gpu_smoke.sh",
+    "launch_default_arm.sh",
+    "lean_readouts.py",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_b_define_val_clusters.py",
+   "lines": 345,
+   "last_commit": "2026-10-14",
+   "referenced_by": 8,
+   "refs": [
+    "METHODS.md",
+    "README.md",
+    "phase_g_build_val_jobs.py",
+    "phase_j0_select_structures.py",
+    "phases_history.md",
+    "run_7030.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_rel_itm_loss.py",
+   "lines": 309,
+   "last_commit": "2026-10-29",
+   "referenced_by": 8,
+   "refs": [
+    "launch_rel_itm_beta75.sh",
+    "launch_rel_itm_beta75_uncropped.sh",
+    "probe_rel_parity.sh",
+    "probe_uncropped_memory.sh",
+    "probe_uncropped_memory_ckpt.sh",
+    "probe_uncropped_memory_expseg.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_prepare_training_data.py",
+   "lines": 245,
+   "last_commit": "2026-11-04",
+   "referenced_by": 8,
+   "refs": [
+    "README.md",
+    "cached_training.md",
+    "phase_j_replay.py",
+    "phases_history.md",
+    "rebuild_labels.sh",
+    "train_val_difficulty.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/lora.py",
+   "lines": 220,
+   "last_commit": "2026-10-21",
+   "referenced_by": 8,
+   "refs": [
+    "launch_l2sp_overfit30.sh",
+    "launch_lora_arm.sh",
+    "launch_lora_overfit30.sh",
+    "phase_k_train.py",
+    "steer_reps.py",
+    "test_guard_fields.py"
+   ]
+  },
+  {
+   "path": "archive/pose_to_pose_dockq.py",
+   "lines": 163,
+   "last_commit": "2026-10-14",
+   "referenced_by": 8,
+   "refs": [
+    "AUDIT.md",
+    "README.md",
+    "SELF_TEMPLATING_TWO_RUNS.md",
+    "anchor_distance_vs_iptm.py",
+    "build_experiment.py",
+    "crystal_frame_selection.py"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/restypes.py",
+   "lines": 124,
+   "last_commit": "2026-10-27",
+   "referenced_by": 8,
+   "refs": [
+    "README.md",
+    "chain_valfull_dump.sh",
+    "eval.py",
+    "features.py",
+    "phase_k_eval.py",
+    "run_7030.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_pool_mean.py",
+   "lines": 107,
+   "last_commit": "2026-10-29",
+   "referenced_by": 8,
+   "refs": [
+    "launch_rel_itm_beta75.sh",
+    "launch_rel_itm_beta75_uncropped.sh",
+    "probe_uncropped_memory.sh",
+    "probe_uncropped_memory_ckpt.sh",
+    "probe_uncropped_memory_expseg.sh",
+    "rank_loss.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/pose_interfaces.py",
+   "lines": 82,
+   "last_commit": "2026-10-14",
+   "referenced_by": 8,
+   "refs": [
+    "AUDIT.md",
+    "README.md",
+    "anchor_relabel.py",
+    "build_experiment.py",
+    "build_templates.py",
+    "paths.py"
+   ]
+  },
+  {
+   "path": "archive/analysis/analyze_masks.py",
+   "lines": 717,
+   "last_commit": "2026-06-24",
+   "referenced_by": 9,
+   "refs": [
+    "compare_good_bad_masks.py",
+    "hotflip_mask.py",
+    "key_residue_masking.py",
+    "locate_residues_7txw.py",
+    "mask_pattern_powered.py",
+    "region_mask_bias_7txw.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/build_templates.py",
+   "lines": 333,
+   "last_commit": "2026-10-14",
+   "referenced_by": 9,
+   "refs": [
+    "AUDIT.md",
+    "HANDOFF.md",
+    "README.md",
+    "SELF_TEMPLATING_TWO_RUNS.md",
+    "build_experiment.py",
+    "build_templates.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_alignment_preflight.py",
+   "lines": 286,
+   "last_commit": "2026-11-06",
+   "referenced_by": 9,
+   "refs": [
+    "02_val10_alignment_preflight.sh",
+    "README.md",
+    "cli.py",
+    "launch_default_arm.sh",
+    "launch_uncropped_1epoch.sh",
+    "phase_k_derive_preflight_subset.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/dockq_torch.py",
+   "lines": 247,
+   "last_commit": "2026-10-14",
+   "referenced_by": 9,
+   "refs": [
+    "AUDIT.md",
+    "README.md",
+    "chain_map.py",
+    "fold_scatter.py",
+    "metrics.py",
+    "paths.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j0_select_structures.py",
+   "lines": 247,
+   "last_commit": "2026-10-14",
+   "referenced_by": 9,
+   "refs": [
+    "README.md",
+    "build_val30_selection.py",
+    "build_wave1_jobs.py",
+    "build_wave1_queue.py",
+    "cached_training.md",
+    "phase_j_check_contacts.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/compare_rowweight_insample.py",
+   "lines": 223,
+   "last_commit": "2026-10-30",
+   "referenced_by": 9,
+   "refs": [
+    "chain_compare_after_nskyne.sh",
+    "compare_rowweight_valfull.py",
+    "launch_rel_itm_beta75.sh",
+    "launch_rel_itm_beta75_uncropped.sh",
+    "probe_uncropped_memory.sh",
+    "probe_uncropped_memory_ckpt.sh"
+   ]
+  },
+  {
+   "path": "run_model/call_folder.py",
+   "lines": 161,
+   "last_commit": "2026-10-14",
+   "referenced_by": 9,
+   "refs": [
+    "HANDOFF.md",
+    "README.md",
+    "WORKER_MOVED.md",
+    "build_free_queue.py",
+    "seed_scatter_report.py",
+    "stage_arms.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/build_templates.py",
+   "lines": 155,
+   "last_commit": "2026-10-14",
+   "referenced_by": 9,
+   "refs": [
+    "AUDIT.md",
+    "HANDOFF.md",
+    "README.md",
+    "SELF_TEMPLATING_TWO_RUNS.md",
+    "build_experiment.py",
+    "build_templates.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/check_crop_mask.py",
+   "lines": 117,
+   "last_commit": "2026-11-02",
+   "referenced_by": 9,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "cropped_eval_labelfree.sh",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "launch_unioncrop_dropout_l2.sh",
+    "resume_egw5wq_ep28_to40.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/eta.py",
+   "lines": 61,
+   "last_commit": "2026-10-30",
+   "referenced_by": 9,
+   "refs": [
+    "audit_chain_mapping.py",
+    "build_matrices.py",
+    "chain_map.py",
+    "itm_ceiling.py",
+    "loop_diffusion.py",
+    "pdockq2_ceiling.py"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/watch_arm.sh",
+   "lines": 47,
+   "last_commit": "2026-10-24",
+   "referenced_by": 9,
+   "refs": [
+    "chain_straddle.sh",
+    "handover_readout_then_wsonly.sh",
+    "handover_to_full.sh",
+    "handover_to_wsonly.sh",
+    "queue_within_arms.sh",
+    "wait_epoch_dntxmn.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_i_fold_validation.sh",
+   "lines": 582,
+   "last_commit": "2026-10-14",
+   "referenced_by": 10,
+   "refs": [
+    "METHODS.md",
+    "README.md",
+    "four_training_stages.md",
+    "phase_h_search_templates.py",
+    "phase_i_check.py",
+    "phase_i_inputs.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/itm_ceiling.py",
+   "lines": 455,
+   "last_commit": "2026-11-06",
+   "referenced_by": 10,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "audit_chain_mapping.py",
+    "build_itm_labels.py",
+    "itm_quality_loss.py",
+    "itm_quality_weighted_loss.md",
+    "launch_uncropped_1epoch.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/anchor_relabel.py",
+   "lines": 251,
+   "last_commit": "2026-10-14",
+   "referenced_by": 10,
+   "refs": [
+    "AUDIT.md",
+    "README.md",
+    "anchor_vs_crystal.py",
+    "build_experiment.py",
+    "build_templates.py",
+    "foldbench_setup.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_pae_row_weight.py",
+   "lines": 186,
+   "last_commit": "2026-10-28",
+   "referenced_by": 10,
+   "refs": [
+    "launch_rowweight_cosine.sh",
+    "pae_row_weight.py",
+    "phase_k_train.py",
+    "rank_loss.py",
+    "resume_rowweight_ep56_70.sh",
+    "resume_rowweight_ep67_70.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_lean_readouts.py",
+   "lines": 177,
+   "last_commit": "2026-11-01",
+   "referenced_by": 10,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "cli.py",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh",
+    "launch_unioncrop_dropout_l2.sh",
+    "lean_readouts.py"
+   ]
+  },
+  {
+   "path": "run_model/reconcile_stale_claims.py",
+   "lines": 68,
+   "last_commit": "2026-10-14",
+   "referenced_by": 10,
+   "refs": [
+    "WORKER_MOVED.md",
+    "execution_plan.md",
+    "phase_i_fold_validation.sh",
+    "rebalance_gpus.py",
+    "validation_set.md",
+    "watch_deferred_then_foldbench.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/monitoring/handoff.sh",
+   "lines": 33,
+   "last_commit": "2026-10-14",
+   "referenced_by": 10,
+   "refs": [
+    "execution_plan.md",
+    "handoff_e4tvxe_fast_eval.sh",
+    "overnight_2026-10-15_concerns.md",
+    "phase_j_stage_complete.py",
+    "repel_status.md",
+    "stage_arms.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/test_rank_loss.py",
+   "lines": 471,
+   "last_commit": "2026-10-27",
+   "referenced_by": 11,
+   "refs": [
+    "6v6bbf_results.md",
+    "EXPERIMENTS.md",
+    "bjwcm5_results.md",
+    "hronsr_results.md",
+    "launch_expected_tau002.sh",
+    "launch_expected_tau005.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/cropped_eval.py",
+   "lines": 363,
+   "last_commit": "2026-11-04",
+   "referenced_by": 11,
+   "refs": [
+    "cropped_eval_labelfree.sh",
+    "cropped_eval_report.py",
+    "insample_eval.py",
+    "paper_results.md",
+    "perpose_eval_at_boundary.sh",
+    "plot_arms_full.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_dataset.py",
+   "lines": 120,
+   "last_commit": "2026-10-14",
+   "referenced_by": 11,
+   "refs": [
+    "README.md",
+    "config.py",
+    "phase_j_build_cache.py",
+    "phase_j_prepare_training_data.py",
+    "phase_j_replay.py",
+    "phase_k_alignment_preflight.py"
+   ]
+  },
+  {
+   "path": "archive/eval_ost_foldbench.py",
+   "lines": 562,
+   "last_commit": "2026-10-14",
+   "referenced_by": 12,
+   "refs": [
+    "README.md",
+    "decode_confornet.py",
+    "decode_starred.py",
+    "decode_steered.py",
+    "foldbench_setup.py",
+    "launch_rebaseline.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/pose_inblock.py",
+   "lines": 434,
+   "last_commit": "2026-11-07",
+   "referenced_by": 12,
+   "refs": [
+    "checkpoints.py",
+    "dead_ops.py",
+    "inblock_gpu_smoke.sh",
+    "lean_readouts.py",
+    "phase_k_eval.py",
+    "phase_k_train.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_replay.py",
+   "lines": 408,
+   "last_commit": "2026-10-15",
+   "referenced_by": 12,
+   "refs": [
+    "README.md",
+    "cached_training.md",
+    "cli.py",
+    "concern1_diagnosis.md",
+    "config.py",
+    "execution_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_full_train.py",
+   "lines": 231,
+   "last_commit": "2026-10-22",
+   "referenced_by": 12,
+   "refs": [
+    "metrics_io.py",
+    "plot_three.py",
+    "ranking_loss_experiment.md",
+    "ranking_vs_pae.md",
+    "refresh_arm_comparison_plot.sh",
+    "refresh_five_arm_plot.sh"
+   ]
+  },
+  {
+   "path": "tools/colabfold/setup_databases.sh",
+   "lines": 218,
+   "last_commit": "2026-10-14",
+   "referenced_by": 12,
+   "refs": [
+    "METHODS.md",
+    "MSA_RUNBOOK.md",
+    "build_uniref_from_mirror.sh",
+    "msa_rebuild_plan.md",
+    "phase1_uniref.sh",
+    "phase1_uniref2103.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/build_itm_labels.py",
+   "lines": 136,
+   "last_commit": "2026-10-29",
+   "referenced_by": 12,
+   "refs": [
+    "cli.py",
+    "config.py",
+    "launch_rel_itm_beta75.sh",
+    "launch_rel_itm_beta75_uncropped.sh",
+    "phase_k_train.py",
+    "probe_uncropped_memory.sh"
+   ]
+  },
+  {
+   "path": "extra_training/analysis/oneoff/05_val10_rank_correlation.py",
+   "lines": 114,
+   "last_commit": "2026-10-20",
+   "referenced_by": 12,
+   "refs": [
+    "README.md",
+    "full_train_results.md",
+    "fullhead_l2sp_overfit30_results.md",
+    "fullhead_overfit30_results.md",
+    "launch_full_train_4metrics.sh",
+    "lora_overfit30_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/eval_dirs.py",
+   "lines": 114,
+   "last_commit": "2026-11-03",
+   "referenced_by": 12,
+   "refs": [
+    "dead_compute.md",
+    "eta.py",
+    "insample_eval.py",
+    "metrics_io.py",
+    "phase_k_train.py",
+    "plot_rel_bars.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_g_build_val_jobs.py",
+   "lines": 544,
+   "last_commit": "2026-10-14",
+   "referenced_by": 13,
+   "refs": [
+    "METHODS.md",
+    "README.md",
+    "SCORING_RECOVERY.md",
+    "build_wave1_pool.py",
+    "compare_entry_as_reference.py",
+    "concern1_diagnosis.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/pae_row_weight.py",
+   "lines": 193,
+   "last_commit": "2026-10-28",
+   "referenced_by": 13,
+   "refs": [
+    "chain_rowweight_after_ep60.sh",
+    "itm_ceiling.py",
+    "launch_rowweight_cosine.sh",
+    "phase_j_rescore_cache.py",
+    "phase_k_train.py",
+    "rank_loss.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/within_weight.py",
+   "lines": 64,
+   "last_commit": "2026-10-24",
+   "referenced_by": 13,
+   "refs": [
+    "6v6bbf_results.md",
+    "8fkrsu_results.md",
+    "bjwcm5_results.md",
+    "hronsr_results.md",
+    "launch_straddle.sh",
+    "launch_within_arm.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_a_define_train_set.py",
+   "lines": 971,
+   "last_commit": "2026-10-14",
+   "referenced_by": 14,
+   "refs": [
+    "METHODS.md",
+    "MSA_RUNBOOK.md",
+    "README.md",
+    "cached_training.md",
+    "phase_b2_propose_val_split.py",
+    "phase_b_define_val_clusters.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/measure_tau.py",
+   "lines": 316,
+   "last_commit": "2026-10-24",
+   "referenced_by": 14,
+   "refs": [
+    "8fkrsu_results.md",
+    "EXPERIMENTS.md",
+    "launch_rank_only_xs_softplus.sh",
+    "launch_straddle.sh",
+    "launch_within_arm.sh",
+    "launch_wsonly.sh"
+   ]
+  },
+  {
+   "path": "extra_training/shell_scripts/health.sh",
+   "lines": 57,
+   "last_commit": "2026-10-14",
+   "referenced_by": 14,
+   "refs": [
+    "README.md",
+    "epoch_report.sh",
+    "launch.py",
+    "launch_fullhead_l2sp_posefree.sh",
+    "nskyne_health.py",
+    "paper_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_i_check.py",
+   "lines": 787,
+   "last_commit": "2026-11-05",
+   "referenced_by": 15,
+   "refs": [
+    "README.md",
+    "SCORING_RECOVERY.md",
+    "concern1_diagnosis.md",
+    "consolidate_training_scores.sh",
+    "dedupe_results.py",
+    "execution_plan.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/results_table.py",
+   "lines": 187,
+   "last_commit": "2026-10-20",
+   "referenced_by": 15,
+   "refs": [
+    "full_train_results.md",
+    "fullhead_l2sp_overfit30_results.md",
+    "fullhead_overfit30_results.md",
+    "lora_overfit30_results.md",
+    "metrics_io.py",
+    "pose_focused_results.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/pool_index.py",
+   "lines": 117,
+   "last_commit": "2026-10-14",
+   "referenced_by": 15,
+   "refs": [
+    "AUDIT.md",
+    "README.md",
+    "anchor_relabel.py",
+    "budget_decomposition.py",
+    "build_experiment.py",
+    "build_templates.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/render_findings.py",
+   "lines": 367,
+   "last_commit": "2026-10-23",
+   "referenced_by": 16,
+   "refs": [
+    "24u342_results.md",
+    "6v6bbf_results.md",
+    "8fkrsu_results.md",
+    "aup7ku_results.md",
+    "bjwcm5_results.md",
+    "dntxmn_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/build_union_crop_masks.py",
+   "lines": 434,
+   "last_commit": "2026-11-02",
+   "referenced_by": 17,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "config.py",
+    "cropped_eval.py",
+    "cropped_eval_labelfree.sh",
+    "degenerate_structure_pruning.md",
+    "launch_tokendrop_90_35.sh"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/chain_map.py",
+   "lines": 140,
+   "last_commit": "2026-10-14",
+   "referenced_by": 17,
+   "refs": [
+    "README.md",
+    "build_matrices.py",
+    "build_selftmpl_general.py",
+    "build_simple_queue.py",
+    "build_templates.py",
+    "compare_entry_as_reference.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_lr_schedule.py",
+   "lines": 252,
+   "last_commit": "2026-11-06",
+   "referenced_by": 18,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "launch_rel_itm_beta75.sh",
+    "launch_rel_itm_beta75_uncropped.sh",
+    "launch_rowweight_cosine.sh",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/chain_map.py",
+   "lines": 129,
+   "last_commit": "2026-10-27",
+   "referenced_by": 18,
+   "refs": [
+    "README.md",
+    "build_matrices.py",
+    "build_selftmpl_general.py",
+    "build_simple_queue.py",
+    "build_templates.py",
+    "chain_map.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/compare_arms.py",
+   "lines": 336,
+   "last_commit": "2026-10-14",
+   "referenced_by": 19,
+   "refs": [
+    "AUDIT.md",
+    "HANDOFF.md",
+    "README.md",
+    "arm_statistics.py",
+    "build_experiment.py",
+    "build_varseed_queue.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/lr_schedule.py",
+   "lines": 216,
+   "last_commit": "2026-11-07",
+   "referenced_by": 19,
+   "refs": [
+    "chain_rowweight_after_ep60.sh",
+    "config.py",
+    "launch_default_arm.sh",
+    "launch_rowweight_cosine.sh",
+    "launch_tokendrop_90_35.sh",
+    "launch_tokendrop_dropout_l2.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_rescore_cache.py",
+   "lines": 638,
+   "last_commit": "2026-11-07",
+   "referenced_by": 20,
+   "refs": [
+    "README.md",
+    "abag_rank_plan.md",
+    "cached_training.md",
+    "config.py",
+    "dead_compute.md",
+    "phase_j_build_cache.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/test_guard_fields.py",
+   "lines": 113,
+   "last_commit": "2026-10-28",
+   "referenced_by": 20,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "codex_review_request_val_shard_retry.md",
+    "launch_rel_itm_beta75.sh",
+    "launch_rel_itm_beta75_uncropped.sh",
+    "launch_rowweight_cosine.sh",
+    "launch_tokendrop_90_35.sh"
+   ]
+  },
+  {
+   "path": "extra_training/phases/test_guard_fields.py",
+   "lines": 100,
+   "last_commit": "2026-10-22",
+   "referenced_by": 20,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "codex_review_request_val_shard_retry.md",
+    "launch_rel_itm_beta75.sh",
+    "launch_rel_itm_beta75_uncropped.sh",
+    "launch_rowweight_cosine.sh",
+    "launch_tokendrop_90_35.sh"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/rank_rho.py",
+   "lines": 453,
+   "last_commit": "2026-10-24",
+   "referenced_by": 21,
+   "refs": [
+    "EXPERIMENTS.md",
+    "EXPERIMENTS.md",
+    "doc_refresh_loop.sh",
+    "experiments_doc.py",
+    "phase_k_train.py",
+    "plot_arms.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/analysis/separation.py",
+   "lines": 231,
+   "last_commit": "2026-10-14",
+   "referenced_by": 21,
+   "refs": [
+    "anchor_vs_crystal.py",
+    "basin_w1_matrix.py",
+    "build_queue.py",
+    "cluster.py",
+    "donor_variants.py",
+    "four_way.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_job_cifs.py",
+   "lines": 1308,
+   "last_commit": "2026-11-04",
+   "referenced_by": 22,
+   "refs": [
+    "README.md",
+    "README.md",
+    "build_cache_exclusions.md",
+    "build_instance_cifs.py",
+    "cached_training.md",
+    "concern1_diagnosis.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/plot_three.py",
+   "lines": 533,
+   "last_commit": "2026-10-26",
+   "referenced_by": 22,
+   "refs": [
+    "EXPERIMENTS.md",
+    "epoch_curve.py",
+    "paper_results.md",
+    "plot_arms.py",
+    "plot_eval_series.py",
+    "plot_overfit30.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/lean_readouts.py",
+   "lines": 330,
+   "last_commit": "2026-11-07",
+   "referenced_by": 22,
+   "refs": [
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "bench_ckpt_by_size.py",
+    "cli.py",
+    "config.py",
+    "dead_compute.md",
+    "dead_ops.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/validate.py",
+   "lines": 172,
+   "last_commit": "2026-10-14",
+   "referenced_by": 22,
+   "refs": [
+    "README.md",
+    "README.md",
+    "README.md",
+    "SCORING_RECOVERY.md",
+    "build_experiment.py",
+    "build_matrices.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_eval_sharded.py",
+   "lines": 142,
+   "last_commit": "2026-10-16",
+   "referenced_by": 22,
+   "refs": [
+    "04_train_selection_ep142.sh",
+    "08_backfill_ep1_dockq.sh",
+    "README.md",
+    "chain_valfull_dump.sh",
+    "cli.py",
+    "compare_rowweight_insample.py"
+   ]
+  },
+  {
+   "path": "archive/analysis/__init__.py",
+   "lines": 0,
+   "last_commit": "2026-06-24",
+   "referenced_by": 24,
+   "refs": [
+    "cli.py",
+    "dataset.py",
+    "dead_compute.md",
+    "dead_ops.py",
+    "folder.py",
+    "inventory.py"
+   ]
+  },
+  {
+   "path": "archive/run/__init__.py",
+   "lines": 0,
+   "last_commit": "2026-10-14",
+   "referenced_by": 24,
+   "refs": [
+    "cli.py",
+    "dataset.py",
+    "dead_compute.md",
+    "dead_ops.py",
+    "folder.py",
+    "inventory.py"
+   ]
+  },
+  {
+   "path": "archive/run/esm/__init__.py",
+   "lines": 0,
+   "last_commit": "2026-10-14",
+   "referenced_by": 24,
+   "refs": [
+    "cli.py",
+    "dataset.py",
+    "dead_compute.md",
+    "dead_ops.py",
+    "folder.py",
+    "inventory.py"
+   ]
+  },
+  {
+   "path": "archive/run/protenix/__init__.py",
+   "lines": 0,
+   "last_commit": "2026-10-14",
+   "referenced_by": 24,
+   "refs": [
+    "cli.py",
+    "dataset.py",
+    "dead_compute.md",
+    "dead_ops.py",
+    "folder.py",
+    "inventory.py"
+   ]
+  },
+  {
+   "path": "eval/__init__.py",
+   "lines": 0,
+   "last_commit": "2026-06-12",
+   "referenced_by": 24,
+   "refs": [
+    "cli.py",
+    "dataset.py",
+    "dead_compute.md",
+    "dead_ops.py",
+    "folder.py",
+    "inventory.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/trainer/__init__.py",
+   "lines": 0,
+   "last_commit": "2026-11-08",
+   "referenced_by": 24,
+   "refs": [
+    "cli.py",
+    "dataset.py",
+    "dead_compute.md",
+    "dead_ops.py",
+    "folder.py",
+    "inventory.py"
+   ]
+  },
+  {
+   "path": "eval/ost_dockq.py",
+   "lines": 297,
+   "last_commit": "2026-11-05",
+   "referenced_by": 25,
+   "refs": [
+    "README.md",
+    "SCORING_RECOVERY.md",
+    "audit_chain_roles_identity.py",
+    "audit_mapping_provenance.py",
+    "codex_questions_2026-11-05.md",
+    "compare_entry_as_reference.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/pose_direction.py",
+   "lines": 328,
+   "last_commit": "2026-10-23",
+   "referenced_by": 27,
+   "refs": [
+    "6v6bbf_results.md",
+    "add_orientation_to_bundle.py",
+    "bjwcm5_results.md",
+    "dead_compute.md",
+    "experiment_plan.md",
+    "hronsr_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/l2sp_lambda.py",
+   "lines": 134,
+   "last_commit": "2026-10-23",
+   "referenced_by": 31,
+   "refs": [
+    "EXPERIMENTS.md",
+    "chain_straddle.sh",
+    "confidence_head_reachability.md",
+    "handover_readout_then_wsonly.sh",
+    "handover_to_full.sh",
+    "handover_to_wsonly.sh"
+   ]
+  },
+  {
+   "path": "run_model/fmt.py",
+   "lines": 110,
+   "last_commit": "2026-10-14",
+   "referenced_by": 33,
+   "refs": [
+    "anchor_vs_crystal.py",
+    "arm_statistics.py",
+    "build_experiment.py",
+    "cluster.py",
+    "compare_arms.py",
+    "crystal_frame_selection.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/score_experiment.py",
+   "lines": 230,
+   "last_commit": "2026-10-14",
+   "referenced_by": 38,
+   "refs": [
+    "AUDIT.md",
+    "README.md",
+    "anchor_distance_vs_iptm.py",
+    "arm_statistics.py",
+    "budget_decomposition.py",
+    "build_experiment.py"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/features.py",
+   "lines": 139,
+   "last_commit": "2026-10-27",
+   "referenced_by": 38,
+   "refs": [
+    "AUDIT.md",
+    "METHODS.md",
+    "README.md",
+    "README.md",
+    "RESULTS.md",
+    "analyze_masks.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/monitoring/watch.sh",
+   "lines": 74,
+   "last_commit": "2026-10-14",
+   "referenced_by": 39,
+   "refs": [
+    "AUDIT.md",
+    "EXPERIMENTS.md",
+    "README.md",
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "call_folder.py",
+    "cli.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/rank_loss.py",
+   "lines": 1039,
+   "last_commit": "2026-10-29",
+   "referenced_by": 44,
+   "refs": [
+    "6v6bbf_results.md",
+    "EXPERIMENTS.md",
+    "argmax_margin.py",
+    "bjwcm5_results.md",
+    "check_rel_label_coverage.py",
+    "checkpoints.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_j_build_cache.py",
+   "lines": 1183,
+   "last_commit": "2026-11-07",
+   "referenced_by": 49,
+   "refs": [
+    "01_build_val10_labels.sh",
+    "README.md",
+    "README.md",
+    "abag_rank_plan.md",
+    "audit_chain_mapping.py",
+    "audit_chain_survival.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/analysis/cluster.py",
+   "lines": 159,
+   "last_commit": "2026-10-14",
+   "referenced_by": 54,
+   "refs": [
+    "METHODS.md",
+    "README.md",
+    "README.md",
+    "README.md",
+    "README.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/trainer/checkpoints.py",
+   "lines": 115,
+   "last_commit": "2026-11-08",
+   "referenced_by": 55,
+   "refs": [
+    "EXPERIMENTS.md",
+    "README.md",
+    "README.md",
+    "STEERING_SUMMARY.md",
+    "abag_rank_plan.md",
+    "bench_ckpt_by_size.py"
+   ]
+  },
+  {
+   "path": "extra_training/phases/pose_perblock.py",
+   "lines": 378,
+   "last_commit": "2026-10-30",
+   "referenced_by": 58,
+   "refs": [
+    "24u342_results.md",
+    "8fkrsu_results.md",
+    "EXPERIMENTS.md",
+    "add_orientation_to_bundle.py",
+    "checkpoints.py",
+    "compare_rowweight_insample.py"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/contacts.py",
+   "lines": 91,
+   "last_commit": "2026-10-14",
+   "referenced_by": 59,
+   "refs": [
+    "README.md",
+    "README.md",
+    "README.md",
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "SCORING_RECOVERY.md",
+    "abag_pairsets_superseded.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/contacts.py",
+   "lines": 69,
+   "last_commit": "2026-11-05",
+   "referenced_by": 59,
+   "refs": [
+    "README.md",
+    "README.md",
+    "README.md",
+    "REVIEW_RESPONSE_1c88e5a7.md",
+    "SCORING_RECOVERY.md",
+    "abag_pairsets_superseded.py"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/provenance.py",
+   "lines": 163,
+   "last_commit": "2026-10-29",
+   "referenced_by": 61,
+   "refs": [
+    "HANDOFF.md",
+    "README.md",
+    "README.md",
+    "README.md",
+    "README.md",
+    "REVIEW_RESPONSE_1c88e5a7.md"
+   ]
+  },
+  {
+   "path": "run_model/scorer.py",
+   "lines": 89,
+   "last_commit": "2026-10-14",
+   "referenced_by": 63,
+   "refs": [
+    "AUDIT.md",
+    "HANDOFF.md",
+    "METHODS.md",
+    "README.md",
+    "README.md",
+    "SCORING_RECOVERY.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/trainer/config.py",
+   "lines": 351,
+   "last_commit": "2026-11-08",
+   "referenced_by": 67,
+   "refs": [
+    "24u342_results.md",
+    "6v6bbf_results.md",
+    "8fkrsu_results.md",
+    "README.md",
+    "README.md",
+    "RESULTS.md"
+   ]
+  },
+  {
+   "path": "run_model/folder.py",
+   "lines": 1274,
+   "last_commit": "2026-11-05",
+   "referenced_by": 75,
+   "refs": [
+    "AUDIT.md",
+    "HANDOFF.md",
+    "METHODS.md",
+    "MSA_RUNBOOK.md",
+    "README.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/metrics/metrics.py",
+   "lines": 175,
+   "last_commit": "2026-10-14",
+   "referenced_by": 79,
+   "refs": [
+    "01_build_val10_labels.sh",
+    "24u342_results.md",
+    "6v6bbf_results.md",
+    "8fkrsu_results.md",
+    "EXPERIMENTS.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_eval.py",
+   "lines": 1830,
+   "last_commit": "2026-11-08",
+   "referenced_by": 92,
+   "refs": [
+    "08_backfill_ep1_dockq.sh",
+    "README.md",
+    "README.md",
+    "README.md",
+    "README.md",
+    "SCORING_RECOVERY.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/records.py",
+   "lines": 406,
+   "last_commit": "2026-10-20",
+   "referenced_by": 116,
+   "refs": [
+    "24u342_results.md",
+    "6v6bbf_results.md",
+    "8fkrsu_results.md",
+    "AUDIT.md",
+    "README.md",
+    "REVIEW_RESPONSE_1c88e5a7.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/cards_busy.py",
+   "lines": 118,
+   "last_commit": "2026-10-30",
+   "referenced_by": 117,
+   "refs": [
+    "arm_val_after_train.sh",
+    "chain_compare_after_nskyne.sh",
+    "chain_copy_after_ip8ga4.sh",
+    "chain_ep80_after_ep70.sh",
+    "chain_extra_seeds.sh",
+    "chain_fullhead_after_dntxmn.sh"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/dataset.py",
+   "lines": 236,
+   "last_commit": "2026-10-27",
+   "referenced_by": 120,
+   "refs": [
+    "AUDIT.md",
+    "HANDOFF.md",
+    "METHODS.md",
+    "README.md",
+    "README.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/monitoring/matched.py",
+   "lines": 85,
+   "last_commit": "2026-10-14",
+   "referenced_by": 128,
+   "refs": [
+    "AUDIT.md",
+    "EXPERIMENTS.md",
+    "EXPERIMENTS.md",
+    "HANDOFF.md",
+    "METHODS.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/phases/phase_k_train.py",
+   "lines": 8488,
+   "last_commit": "2026-11-08",
+   "referenced_by": 135,
+   "refs": [
+    "03_val10_loss_only.sh",
+    "04_train_selection_ep142.sh",
+    "06_val10_loss_shipped.sh",
+    "09_checkpointing_equivalence.sh",
+    "EXPERIMENTS.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean_v2/preflight.py",
+   "lines": 208,
+   "last_commit": "2026-10-14",
+   "referenced_by": 151,
+   "refs": [
+    "02_val10_alignment_preflight.sh",
+    "03_val10_loss_only.sh",
+    "06_val10_loss_shipped.sh",
+    "09_checkpointing_equivalence.sh",
+    "AUDIT.md",
+    "HANDOFF.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/report.py",
+   "lines": 151,
+   "last_commit": "2026-10-16",
+   "referenced_by": 169,
+   "refs": [
+    "01_build_val10_labels.sh",
+    "README.md",
+    "README.md",
+    "README.md",
+    "README.md",
+    "REVIEW_RESPONSE_1c88e5a7.md"
+   ]
+  },
+  {
+   "path": "extra_training/run_logging/launch.py",
+   "lines": 274,
+   "last_commit": "2026-11-07",
+   "referenced_by": 198,
+   "refs": [
+    "AUDIT.md",
+    "EXPERIMENTS.md",
+    "HANDOFF.md",
+    "README.md",
+    "README.md",
+    "REVIEW_RESPONSE_1c88e5a7.md"
+   ]
+  },
+  {
+   "path": "paths.py",
+   "lines": 310,
+   "last_commit": "2026-10-16",
+   "referenced_by": 230,
+   "refs": [
+    "05_val10_rank_correlation.py",
+    "AUDIT.md",
+    "HANDOFF.md",
+    "MSA_RUNBOOK.md",
+    "README.md",
+    "README.md"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/train.py",
+   "lines": 321,
+   "last_commit": "2026-10-27",
+   "referenced_by": 296,
+   "refs": [
+    "03_val10_loss_only.sh",
+    "04_train_selection_ep142.sh",
+    "06_val10_loss_shipped.sh",
+    "08_backfill_ep1_dockq.sh",
+    "09_checkpointing_equivalence.sh",
+    "24u342_results.md"
+   ]
+  },
+  {
+   "path": "extra_training/abag_rank/eval.py",
+   "lines": 188,
+   "last_commit": "2026-10-27",
+   "referenced_by": 297,
+   "refs": [
+    "08_backfill_ep1_dockq.sh",
+    "24u342_results.md",
+    "6v6bbf_results.md",
+    "8fkrsu_results.md",
+    "EXPERIMENTS.md",
+    "METHODS.md"
+   ]
+  },
+  {
+   "path": "archive/diffusion_commit_clean/metrics/pool.py",
+   "lines": 55,
+   "last_commit": "2026-10-14",
+   "referenced_by": 383,
+   "refs": [
+    "03_val10_loss_only.sh",
+    "04_train_selection_ep142.sh",
+    "06_val10_loss_shipped.sh",
+    "08_backfill_ep1_dockq.sh",
+    "09_checkpointing_equivalence.sh",
+    "AUDIT.md"
+   ]
+  }
+ ]
+}

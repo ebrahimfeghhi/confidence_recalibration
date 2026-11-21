@@ -1,0 +1,21 @@
+pool: 141 interface(s) over 83 structure(s)
+results.csv: 70500 scored (iface, seed, sample) row(s)
+intended seed set: /home/ebrahim/confidence_recalibration/extra_training/training/valfull83/seed_manifest.json (algo anchored-coverage-v2, digest , k=30, range 400000-400099) over 83 structure(s) -- the TRIMMED set, not the contiguous window
+shard 0 of 3: 830 unit(s)
+units: 830 of 2490 intended (83 structures x 30 seeds)
+train scheduler 16.0
+inference scheduler 16.0
+Diffusion Module has 16.0
+POSE IN-BLOCK: injected into pairformer block 3 at after_tri_mul_in (after tri_mul_in, before tri_att_start) with BOTH the one-hot and the raw-distance term, and after pae_ln in the PAE readout. 20,480 new parameter(s) across 4 tensor(s), ZERO-INIT and verified exactly zero, so step 0 is bit-identical to the un-injected head. PairformerBlock.forward pinned at 379f595070ca6467.
+  NOTE the PAE injection is added AFTER pae_ln, so an UNNORMALISED quantity is added to a normalised one and nothing downstream rescales it. Its effective influence is set by its initialisation and by the optimiser, not by the norm.
+loaded 252 head tensor(s) from /home/ebrahim/confidence_recalibration/extra_training/training/runs/peae97/head_ep10_step2310.pt, exact match against 252 head parameter(s)
+join cache: 2211 entry(ies) from /home/ebrahim/confidence_recalibration/extra_training/training/valfull83/join_cache_shard0.json
+prefetch: one background reader warming the next trunk
+  ...200/830 units
+  ...400/830 units
+  ...600/830 units
+  ...800/830 units
+join cache: 830 hit(s), 0 newly derived (100% reused)
+
+join 1: OST's per-pose chain mapping used on 4150 pose(s), unresolvable on 0
+shard 0: 7050 row(s) -> /home/ebrahim/confidence_recalibration/extra_training/training/runs/peae97/valfull83_eval_shards_ep10/rows_b30_head_ep10_step2310_s0.csv

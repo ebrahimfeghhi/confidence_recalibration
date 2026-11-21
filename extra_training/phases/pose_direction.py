@@ -50,7 +50,7 @@ _UNIT = {"frame_atom_index": None, "has_frame": None, "pae_rep_atom_mask": None,
 # Set by the patched forward for the patched memory_efficient_forward to read. `forward` holds the
 # full atom coordinates and loops over samples; memory_efficient_forward receives only the
 # representative-atom subset of one sample, and the frames need N and C, which are not in it.
-_CALL = {"coords": None, "i": 0, "dir": None}
+_CALL = {"coords": None, "i": 0, "dir": None, "len": None}
 """`dir` caches the UNIT-DIRECTION GEOMETRY for the sample currently in the stack, so
 pose_perblock can project it again at each block with its own weights.
 
@@ -63,6 +63,26 @@ of the frame construction, which is the expensive part.
 
 It is cleared in the outer forward's `finally`, so a stack reached by some other path finds None
 rather than a stale sample's directions.
+
+`len` caches the PRE-NORMALISATION LENGTH of that same displacement, [N_token, N_token, 1] float32
+-- 46 MiB at the 3,400-token crop cap, a third of `dir` -- and ONLY when pose_mlp is installed. It
+is the `ln` that `direction_tensor` already computes one line before it divides by it and throws it
+away. The nonlinear branch (phases/pose_mlp.py) wants it as an input; nothing else reads it, so
+without that branch it is not computed at all and the geometry cost of a --frame-direction arm is
+unchanged.
+
+WHY IT IS CA->CA WHILE THE ONE-HOT IS CB->CB -- the two distances are over DIFFERENT ATOMS and that
+is deliberate, confirmed by the user on 2026-11-18, not an oversight to reconcile. `ln` is over the
+PAE representative atoms because it is the length of the SAME arrow whose direction is cached
+above: that direction times this length is j's CA position in i's frame, which is exactly the
+quantity PAE is defined on, and a CB->CB length would be the wrong length for that arrow. The
+one-hot and raw-distance paths stay on the distogram representative atoms because the pretrained
+bin edges and the pretrained `linear_no_bias_d` / `linear_no_bias_d_wo_onehot` weights are defined
+on those atoms, so moving them would invalidate those weights. Feeding the branch both is mildly
+USEFUL rather than merely tolerable: CB->CB shorter than CA->CA means the two side chains point
+toward each other, so the branch gets a cue about facing that neither distance carries alone --
+which is the kind of interaction a nonlinear branch exists to represent. Do not "fix" one to match
+the other.
 """
 
 # Length below which a displacement has no direction.
@@ -150,7 +170,7 @@ def derive_frames(feat):
     return fai, pae
 
 
-def direction_tensor(rep_coords, full_coords, frame_atom_index, has_frame):
+def direction_tensor(rep_coords, full_coords, frame_atom_index, has_frame, return_length=False):
     """[N_token, N_token, 3]: the unit direction of token j in token i's frame.
 
     Pure function of coordinates and the frame definition, so the self-test can call it without a
@@ -164,6 +184,17 @@ def direction_tensor(rep_coords, full_coords, frame_atom_index, has_frame):
         full_coords: [N_atom, 3] every atom, which is where the frame atoms come from
         frame_atom_index: [N_token, 3] atom indices of each token's three frame atoms
         has_frame: [N_token] whether that token has a frame
+        return_length: also return [N_token, N_token, 1] float32, the length of the displacement
+            BEFORE it was normalised -- i.e. the distance from token i's frame origin (its PAE
+            representative atom) to token j's. Default False, so every existing caller sees the
+            same single return value it saw before.
+
+    THE LENGTH DOES NOT CARRY THE DEGENERATE-FRAME MASK, by request. `ok` exists because a
+    near-degenerate basis has no reliable ORIENTATION; a distance is a plain distance and is right
+    whatever the basis did, since expressCoordinatesInFrame's basis is orthonormal and so preserves
+    the norm. Rows with no frame at all are a different thing from a degenerate one: there is no
+    displacement computed for them, so they stay zero here exactly as they are zero in the
+    direction tensor, and a consumer sees one all-zero input row rather than two inconsistent ones.
     """
     if rep_coords.ndim != 2 or full_coords.ndim != 2:
         raise ValueError(f"expected [N, 3] tensors, got rep {tuple(rep_coords.shape)} "
@@ -182,8 +213,9 @@ def direction_tensor(rep_coords, full_coords, frame_atom_index, has_frame):
     # half is not redundant: the -1 placeholder would index the last atom instead of failing.
     cand = hf & (fai >= 0).all(dim=-1) & (fai < full.shape[0]).all(dim=-1)
     out = rep.new_zeros((n_token, n_token, 3))
+    lens = rep.new_zeros((n_token, n_token, 1)) if return_length else None
     if not bool(cand.any()):
-        return out
+        return (out, lens) if return_length else out
 
     frames = gather_frame_atom_by_indices(coordinate=full, frame_atom_index=fai[cand], dim=-2)
     a, b, c = torch.unbind(frames, dim=-2)              # [N_frame, 3] each
@@ -201,6 +233,12 @@ def direction_tensor(rep_coords, full_coords, frame_atom_index, has_frame):
     unit = torch.where(ln > EPS_LEN, vec / ln.clamp_min(EPS_LEN), torch.zeros_like(vec))
     unit = unit * ok[:, None, None].to(unit.dtype)
     out[cand] = unit
+    if return_length:
+        # NOT MULTIPLIED BY `ok`. See the docstring: `ok` masks orientation, and this is a
+        # distance. Scattered into the same `cand` rows as the direction so the two inputs agree
+        # about which rows exist.
+        lens[cand] = ln
+        return out, lens
     return out
 
 
@@ -239,12 +277,17 @@ def install(model, loud=True):
         # only x_pred_coords[..., rep_atom_mask, :] for one sample, and the frame atoms (N and C)
         # are not in that subset, so the inner call cannot build frames from what it receives.
         _CALL["coords"], _CALL["i"], _CALL["dir"] = x_pred_coords, 0, None
+        _CALL["len"] = None
         try:
             return orig_forward(input_feature_dict=input_feature_dict, s_inputs=s_inputs,
                                 s_trunk=s_trunk, z_trunk=z_trunk, pair_mask=pair_mask,
                                 x_pred_coords=x_pred_coords, **kw)
         finally:
             _CALL["coords"], _CALL["i"], _CALL["dir"] = None, 0, None
+            # THE SAME CLEARING AS `dir`, in the same `finally`: a stack reached by some other
+            # path must find None rather than a stale sample's lengths, which is the failure this
+            # project has paid for most often -- one pose's geometry against another's gradient.
+            _CALL["len"] = None
 
     def memory_efficient_forward(input_feature_dict, s_trunk, z_pair, pair_mask,
                                  x_pred_rep_coords, **kw):
@@ -254,6 +297,18 @@ def install(model, loud=True):
         # forward AND backward: 210 MiB at 656 tokens and 5.5 GiB at the 3,400-token crop cap,
         # on top of the activations the stack already needs. Found in review.
         z = z_pair + _delta(head, input_feature_dict, x_pred_rep_coords)
+        # THE NONLINEAR BRANCH'S FIRST LAYER IS EVALUATED HERE, at this first injection site,
+        # because this is the earliest point at which all five of its geometry inputs exist:
+        # pose_perblock's wrapper published the one-hot and the raw distance on the way in, and
+        # _delta has just published the direction and the length. Sites 1-3 (the wrapped blocks)
+        # and 4-5 (the pae_ln hooks) all run downstream of here, so they reuse that one hidden
+        # tensor instead of rebuilding it five more times. A SEPARATE ADD, not fused into the line
+        # above: `z_pair + a + b` written as one expression holds two pair-sized deltas plus the
+        # sum at once, and pose_inblock.py:378-388 has the measurement where fusing made
+        # allocated-at-OOM worse. Returns z unchanged when pose_mlp is not installed.
+        if getattr(head, "_pose_mlp_installed", False):
+            import pose_mlp
+            z = pose_mlp.prestack(head, z)
         return orig_mef(input_feature_dict=input_feature_dict, s_trunk=s_trunk,
                         z_pair=z, pair_mask=pair_mask,
                         x_pred_rep_coords=x_pred_rep_coords, **kw)
@@ -320,9 +375,19 @@ def _delta(head, feat, x_pred_rep_coords):
         # THE GEOMETRY USES THE PAE REPRESENTATIVE ATOMS, selected from the full coordinates --
         # NOT x_pred_rep_coords, which is the distogram (CB) subset. See the EPS_LEN note.
         full_f = full_i.to(torch.float32)
-        d = direction_tensor(full_f[pae_mask], full_f,
-                             _UNIT["frame_atom_index"], _UNIT["has_frame"])
+        # THE LENGTH IS COMPUTED ONLY WHEN pose_mlp IS INSTALLED, so a --frame-direction arm
+        # without the nonlinear branch allocates exactly what it allocated before -- 46 MiB a
+        # sample at the 3,400-token cap is not free, and an input nothing reads is not worth it.
+        _want_len = bool(getattr(head, "_pose_mlp_installed", False))
+        if _want_len:
+            d, ln = direction_tensor(full_f[pae_mask], full_f, _UNIT["frame_atom_index"],
+                                     _UNIT["has_frame"], return_length=True)
+        else:
+            d = direction_tensor(full_f[pae_mask], full_f,
+                                 _UNIT["frame_atom_index"], _UNIT["has_frame"])
+            ln = None
     # STASHED FOR THE PER-BLOCK COPIES, if pose_perblock installed any. Kept as the geometry,
     # not the projection -- see the _CALL docstring for the memory arithmetic.
     _CALL["dir"] = d
+    _CALL["len"] = ln
     return head.frame_dir_proj(d)

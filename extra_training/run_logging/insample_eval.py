@@ -44,6 +44,22 @@ POOLS = {
                  "seed_base": 500000,
                  "budget": 10,          # 10 seeds x 5 samples = all 50 training poses
                  "join": "training/full_train/join_cache_winnable.json"},
+    # BUDGET 1 IS THE ONLY DEPTH THAT COVERS THE WHOLE IN-SAMPLE POOL. Measured 2026-11-11 over
+    # training/fold/trunks: seed free_500000 exists for all 368 pool structures, seeds
+    # free_500001..500014 for only 274 of them -- the other 94 are the depth-1 singletons of the
+    # {1: 412, 15: 434} training population. So `insample` at budget 10 asserts 3680 units and
+    # 846 of them (94 x 9) have no trunk and never did; phase_k_eval's coverage guard refuses it,
+    # correctly. This entry keeps every structure at EQUAL depth (one trunk = 5 poses) instead of
+    # mixing 50-pose and 5-pose structures under one max, which would bias the max-pooled column
+    # toward the deep ones. The shipped baseline is stored_iptm on these same units, computed in
+    # the same pass, so arm-vs-shipped is matched at this budget whatever the budget is.
+    # NOT COMPARABLE to the budget-10 in-sample numbers in section 9 (fnegj8 0.5795 / shipped
+    # 0.5474): different units, hence a different quantity.
+    "insample1": {"fold": "training/fold",
+                  "pool": "training/full_train/pool_winnable.csv",
+                  "seed_base": 500000,
+                  "budget": 1,
+                  "join": "training/full_train/join_cache_winnable.json"},
     "valfull":  {"fold": "validation/fold",
                  "pool": "training/valfull/pool.csv",
                  "seed_base": 400000,

@@ -1,0 +1,18 @@
+{
+ "shard": 1,
+ "nshards": 3,
+ "units": 830,
+ "rows": 7050,
+ "n_ost": 4150,
+ "n_unresolvable": 0,
+ "n_differ": 99,
+ "differ_pdbs": {
+  "7zra": 25,
+  "9eg6": 25,
+  "9ena": 49
+ },
+ "n_unmapped": 0,
+ "unmapped": [],
+ "budget": 30,
+ "ckpt": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/peae97/head_ep10_step2310.pt"
+}

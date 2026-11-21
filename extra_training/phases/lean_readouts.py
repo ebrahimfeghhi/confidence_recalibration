@@ -306,7 +306,12 @@ def install(model, require_pae_only=True, pae_only=False):
     # a check, it is a symptom, and it only fires when --pose-perblock happens to be on. This
     # refuses the ordering outright. Found in review.
     for _marker, _mod in (("_pose_direction_installed", "--frame-direction / pose_direction"),
-                          ("_pose_perblock_installed", "--pose-perblock / pose_perblock")):
+                          ("_pose_perblock_installed", "--pose-perblock / pose_perblock"),
+                          # SAME CONTRACT, THIRD PATCH. pose_inblock wraps
+                          # memory_efficient_forward and also replaces the stack's _prep_blocks, so
+                          # installing the lean mirror after it would drop the wrapper AND leave
+                          # _prep_blocks raising _NoPose with the geometry unset.
+                          ("_pose_inblock_installed", "--pose-inblock / pose_inblock")):
         if getattr(head, _marker, False):
             raise SystemExit(
                 f"STOP: --lean-readouts must be installed BEFORE {_mod}, which has already "

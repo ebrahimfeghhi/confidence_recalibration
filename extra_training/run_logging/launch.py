@@ -127,14 +127,23 @@ def main():
     # `python3 -u phase_k_train.py`), but under --no-python it adds nothing, and without -u the
     # trainer's stdout buffers -- run.log is tailed live by the watchers and read by the health
     # check, so losing live output would break both while the run looked fine.
+    # THE PORT WAS HARDCODED AT 29540, which is fine for one run at a time and a hard failure for
+    # two. The GPU smoke runs its independent gates CONCURRENTLY on separate cards, and two
+    # torchrun agents on the same port means the second rendezvous joins the first's group: with
+    # luck it hangs, without luck the two runs silently share a process group. MASTER_PORT lets
+    # each concurrent invocation take its own. Default unchanged, so every existing caller and
+    # every recorded argv behaves exactly as before.
+    _mp = os.environ.get("MASTER_PORT", "29540")
+    if not str(_mp).isdigit() or not (1024 <= int(_mp) <= 65535):
+        sys.exit(f"STOP: MASTER_PORT={_mp!r} is not a port number in 1024-65535.")
     if a.numa_map:
         wrap = os.path.join(ROOT, "shell_scripts", "numa_rank_wrap.sh")
         if not os.access(wrap, os.X_OK):
             sys.exit(f"STOP: --numa-map given but {wrap} is missing or not executable.")
-        cmd = [torchrun, f"--nproc_per_node={nproc}", "--master_port=29540", "--no-python",
+        cmd = [torchrun, f"--nproc_per_node={nproc}", f"--master_port={_mp}", "--no-python",
                wrap, sys.executable, "-u", train, *rest, "--out", out]
     else:
-        cmd = [torchrun, f"--nproc_per_node={nproc}", "--master_port=29540", train,
+        cmd = [torchrun, f"--nproc_per_node={nproc}", f"--master_port={_mp}", train,
                *rest, "--out", out]
 
     # LR and epochs are pulled out of the passed-through arguments for the index, so the table is
@@ -217,7 +226,13 @@ def main():
         # (which structures) and --seed-manifest (how many seeds each). A flat --seeds range scans
         # seeds a shallow structure does not have and never trains on: 220 of 223 structures the
         # old scan flagged are declared at ONE seed.
-        for flag in ("--manifest-skip", "--seeds", "--indices", "--bio-dir", "--mmcif-dir"):
+        # --fold TOO, OR THE SCAN READS THE WRONG LABEL TREE. The scan used to hardcode
+        # training/fold/labels, so a validation run's preflight looked 83 val structures up under
+        # the training labels and called them all missing. Forwarding --fold is what makes the
+        # population the gate checks the population the run reads, the same argument the comment
+        # above makes for --indices.
+        for flag in ("--manifest-skip", "--seeds", "--indices", "--bio-dir", "--mmcif-dir",
+                     "--fold", "--labels"):
             if flag in rest:
                 gate += [flag, rest[rest.index(flag) + 1]]
         if "--manifest-selection" in rest:

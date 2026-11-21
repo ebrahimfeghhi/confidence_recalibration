@@ -1,0 +1,27 @@
+=== fs_ep10 ===
+                                          this head                  shipped
+                                  top-1      mean q        top-1      mean q    gained  lost
+TRAIN SLICE (280, in-sample)      29.3%      0.2431        30.7%      0.2505        15    19
+VAL (141, held out)               72.3%      0.5903        72.3%      0.5812         1     1
+
+  TRAIN SLICE (280, in-sample) by bin
+  bin                           n            this head                shipped
+  1/5                          94        4%      0.067          3%      0.065
+  2/5                          42       17%      0.142         12%      0.123
+  3/5                          42       17%      0.163         21%      0.157
+  4/5                          28       21%      0.232         36%      0.275
+  5/5                          74       78%      0.574         80%      0.602
+  5/5 (1 all-good seeds)       28       64%      0.437         71%      0.511
+  5/5 (2-3 all-good seeds)     22       77%      0.580         73%      0.572
+  5/5 (4+ all-good seeds)      24       96%      0.728         96%      0.738
+  lost vs shipped (19): 21en_CD, 6hga_AC, 7rly_AE, 7sk7_BC, 7tr4_AC, 8der_HI, 8ez3_AC, 8r9z_AC ...
+
+  VAL (141, held out) by bin
+  bin                           n            this head                shipped
+  0/5                          14        0%      0.030          0%      0.031
+  1/5                          13        0%      0.050          0%      0.039
+  2/5                           6        0%      0.042          0%      0.025
+  3/5                           1        0%      0.020          0%      0.074
+  4/5                           1        0%      0.125          0%      0.103
+  5/5                         106       96%      0.772         96%      0.761
+  lost vs shipped (1): 9dbo_AB
