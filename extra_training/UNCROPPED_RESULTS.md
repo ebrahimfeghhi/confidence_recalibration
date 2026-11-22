@@ -188,3 +188,53 @@ best@5 DockQ above shipped in 16 of 16) even while most lose on top-1. The uncro
 same narrow shortlist gain on held-out data (74.5% against 72.3%). Whatever both regimes are
 learning, it reorders the top of the list more reliably than it improves the single pick -- and that
 is the one finding this project has reproduced across two different training distributions.
+
+---
+
+# Arm R: the six pose sites alone
+
+**Arm R** -- the six pose injection sites are the ONLY trainable thing apart from the readout, every
+site carrying binned distance, raw distance and orientation, every new weight starting at exactly
+zero. 21 trainable tensors, 82,944 parameters, 0.419% of the head; all four pairformer blocks and
+the other 243 head tensors frozen. Hard 280 pool, pair dropout 0.25, lr 1e-3, dead ops skipped.
+
+Why it was run: five arms had changed the loss (M, N), the data (O) and the regularisation (P) with
+no held-out top-1 gain, and in all five the 103-tensor head could absorb or cancel whatever a change
+contributed. Freezing everything else asks whether the pose pathway can express something the head
+cannot already express.
+
+| | top-1 mean DockQ | top-1 frac acc | best@5 | frac acc@5 | PAE good | PAE bad | PAE all |
+|---|---|---|---|---|---|---|---|
+| **IN-SAMPLE 280** | | | | | | | |
+| shipped | 0.2505 | 30.7% | 0.2825 | 35.7% | 3.4523 | 2.4313 | 2.6995 |
+| Arm R ep6 max | 0.2471 | 29.3% | 0.2913 | 38.6% | 3.6795 | 2.2538 | 2.6212 |
+| Arm R ep6 mean | 0.2489 | 29.6% | 0.2945 | 38.9% | -- | -- | -- |
+| **VAL83** | | | | | | | |
+| shipped | 0.5814 | 72.3% | 0.6014 | 72.3% | 3.1203 | 2.3905 | 2.8735 |
+| Arm R ep6 max | 0.5790 | 70.9% | 0.5996 | 72.3% | 3.3601 | 2.1553 | 2.9144 |
+| Arm R ep6 mean | 0.5751 | 70.2% | 0.6031 | 72.3% | -- | -- | -- |
+
+**At epoch 6 Arm R is behind shipped on everything.** Below on in-sample top-1 (-0.0016 mean-pooled,
+where every other uncropped arm was ABOVE at this epoch: Arm L +0.0047, Arm N +0.0154, Arm P
++0.0219). Below on held-out top-1. The only arm so far with NO top-5 gain -- 72.3% frac acceptable@5
+exactly matching shipped, against 74.5% for Arm L and Arm O. And the worst held-out PAE loss of any
+arm, 2.9144 against shipped's 2.8735.
+
+The good-pose PAE loss is the clearest signal: **3.6795 in-sample against shipped's 3.4523**, where
+every other arm IMPROVED it. The objective is barely moving, which is a statement about optimisation
+rather than about the architecture.
+
+## What this does and does not establish
+
+IT DOES establish that the pathway is wired and live. `run_logging/check_unfreeze.py` on the epoch-1
+and epoch-2 checkpoints: 21 of 21 selected tensors moved, 0 unselected moved, "exactly the selected
+set trained". Nineteen of those 21 started at exactly zero, so every one receiving a gradient rules
+out the inert-pathway failure that zero-init makes easy to miss.
+
+IT DOES NOT establish that the pose pathway cannot help. lr 1e-3 was inherited from arms training
+103 tensors, 19 of which here start at zero, and the gradient scale on a frozen architecture was
+never measured -- `--grad-probe` has not been re-run since the architecture changed. Six epochs at a
+learning rate chosen for a different parameterisation is not a test of the hypothesis.
+
+The honest next step is to measure the gradient scale on THIS architecture and set the rate from it,
+rather than reading a null result off an untuned one.
