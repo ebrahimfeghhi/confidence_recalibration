@@ -118,3 +118,73 @@ of the same pool are meaningful.
 - val83's good poses are 99.7% from easy interfaces, so no good-pose metric on it can see what these
   arms are built to improve. All 206 hard 15-seed interfaces are already in the training pool, so no
   held-out hard slice can be carved from this data.
+
+---
+
+# Why we left cropped training
+
+Sixteen arms were trained on CROPPED inputs (crop 3400 with an interface margin) before this
+series. All sixteen have at least one in-sample pass on the UNCROPPED hard-280 pool, which is the
+input distribution inference actually runs on, so the two regimes can be compared on identical
+interfaces and identical candidates against the same shipped baseline.
+
+## Cropped arms, read on the uncropped 280
+
+27 arm-epoch passes over 16 arms, mean-pooled ipTM, each arm at its own best epoch:
+
+| | shipped | cropped arms (best epoch each) |
+|---|---|---|
+| top-1 mean DockQ | 0.2505 | 0.2412 .. 0.2607 — **7 of 16 above**, max **+0.0102**, max **-0.0093** |
+| top-1 frac acceptable | 30.7% | 28.2% .. 31.8% — **7 of 16 above** |
+| best@5 DockQ | 0.2825 | 0.2872 .. 0.3201 — **16 of 16 above** |
+| frac acceptable@5 | 35.7% | 38.2% .. 44.3% — **16 of 16 above** |
+
+The eight arms with more than one pass barely move with further cropped training: six gain between
++0.0002 and +0.0050 from epoch 10 to their last epoch, two lose 0.0012-0.0033. Fifty epochs of
+cropped training (jyz3g2) ends at 0.2461, still below shipped.
+
+## The same metric for the uncropped arms
+
+| arm | epoch | top-1 mean DockQ | vs shipped |
+|---|---|---|---|
+| Arm L | 12 | 0.2940 | **+0.0435** |
+| Arm N | 12 | 0.2874 | **+0.0369** |
+| Arm P | 9 | 0.2704 | **+0.0199** |
+| best cropped arm | 10 | 0.2607 | +0.0102 |
+| shipped | -- | 0.2505 | -- |
+
+**That is the motivating comparison.** On the inputs inference uses, the best of sixteen cropped
+arms gains +0.0102 on top-1 while a plain uncropped arm gains +0.0435 -- four times as much -- and
+nine of the sixteen cropped arms are at or below shipped. Training cropped and deploying uncropped
+costs more than any objective change we have since measured.
+
+## This is not the metric flattering uncropped training
+
+paper_results.md section 9 scored the same cropped checkpoint BOTH ways after the evaluator learned
+to crop, with every setting read from the checkpoint's own guard:
+
+| head | input | mean DockQ | frac acc |
+|---|---|---|---|
+| shipped | uncropped | 0.5474 | 70.6% |
+| shipped | cropped | 0.5572 | 72.1% |
+| beta-75 arm ep30 | uncropped | 0.5387 | 69.9% |
+| beta-75 arm ep30 | cropped | **0.6305** | **85.2%** |
+
+Matched cropped, that arm is +0.0733 mean DockQ over shipped; read uncropped it is -0.0087. Cropping
+flatters the shipped head too, but only by +0.0098, so it does not account for the arm moving
++0.0918 on the identical interfaces. Its within-interface Spearman tells the same story -- +0.5810
+cropped against +0.2819 uncropped, and picking the truly best pose 15.99% of the time cropped
+against 3.79% uncropped.
+
+So the cropped arms were not failures at what they were trained to do. They learned something
+CROP-DEPENDENT, and the crop is an artefact of training, not a property of the problem: FoldBench
+and PXM antibody-antigen inference runs on whole structures. A method that only helps on cropped
+inputs helps nobody, which is why every arm in this document trains uncropped.
+
+## The one thing that survives the input mismatch
+
+All sixteen cropped arms beat shipped on top-5 (38.2-44.3% frac acceptable@5 against 35.7%, and
+best@5 DockQ above shipped in 16 of 16) even while most lose on top-1. The uncropped arms show the
+same narrow shortlist gain on held-out data (74.5% against 72.3%). Whatever both regimes are
+learning, it reorders the top of the list more reliably than it improves the single pick -- and that
+is the one finding this project has reproduced across two different training distributions.
