@@ -71,14 +71,15 @@ def load_rank_reports(prefix: Path, ranks: int, crop: int, k: int,
     return reports
 
 
-def save_results(path: Path, rows: list[dict], limits: dict, margin: float,
+def save_results(path: Path, rows: list[dict], limits: dict, observed: dict, headroom_gib: float,
                  dry_run: bool) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "report.json").write_text(json.dumps({
         "dry_run": dry_run,
-        "safety_margin": margin,
+        "headroom_gib": headroom_gib,
         "trials": rows,
         "safe_pose_limits": limits,
+        "max_observed_pose_counts": observed,
     }, indent=2) + "\n")
     cols = ("crop", "poses", "case", "status", "min_free_before_gib",
             "max_peak_reserved_gib", "max_step_seconds", "detail")
@@ -88,7 +89,7 @@ def save_results(path: Path, rows: list[dict], limits: dict, margin: float,
         for row in rows:
             writer.writerow({k: row.get(k, "") for k in cols})
     md = ["# Real-training GPU capacity sweep", "",
-          f"Safety margin: {margin:.0%} of *initial available* GPU memory per rank.",
+          f"Required training headroom: {headroom_gib:g} GiB per rank (absolute).",
           "A passing trial requires all DDP ranks, live gradients into the head and",
           "reranker, and >=2 real forward/backward/optimizer steps. No synthetic results.",
           "", "| crop | pose group | case | result | peak reserved (worst rank) |",
@@ -97,7 +98,7 @@ def save_results(path: Path, rows: list[dict], limits: dict, margin: float,
         mem = f"{row['max_peak_reserved_gib']:.1f} GiB" if row.get("max_peak_reserved_gib") else "—"
         md.append(f"| {row['crop']} | {row['poses']} | {row['case']} | {row['status']} | {mem} |")
     md.extend(["", "## Largest validated group per crop", "",
-               *(f"- {crop}: {k} poses" for crop, k in limits.items()),
+               *(f"- {crop}: {k} poses (maximum observed success: {observed.get(crop)})" for crop, k in limits.items()),
                "", "These are measured training-memory bounds, NOT a validation of",
                "the ranking objective, crop correctness, or launch-ready integration."])
     (path / "report.md").write_text("\n".join(md) + "\n")
@@ -113,12 +114,13 @@ def main() -> int:
                     help="comma-separated input cases supplied by the REAL probe adapter")
     ap.add_argument("--ranks", type=int, default=3)
     ap.add_argument("--steps", type=int, default=3)
-    ap.add_argument("--safety-margin", type=float, default=0.15)
+    ap.add_argument("--headroom-gib", type=float, default=8.0,
+                    help="absolute minimum unreserved VRAM desired for a SAFE training launch")
     ap.add_argument("--dry-run", action="store_true",
                     help="print planned commands; do NOT claim a measured capacity")
     a = ap.parse_args()
-    if a.ranks <= 0 or a.steps < 2 or not 0 < a.safety_margin < 0.5:
-        ap.error("ranks>0, steps>=2 and safety margin in (0,0.5) are required")
+    if a.ranks <= 0 or a.steps < 2 or a.headroom_gib <= 0:
+        ap.error("ranks>0, steps>=2 and headroom-gib>0 are required")
     template_fields = ("{crop}", "{poses}", "{case}", "{steps}", "{prefix}")
     if not all(f in a.command_template for f in template_fields):
         ap.error("command template must contain ALL placeholders " + ", ".join(template_fields))
@@ -130,6 +132,7 @@ def main() -> int:
 
     rows = []
     limits = {}
+    observed = {}
     for crop, poses in grids.items():
         safe = 0
         for k in poses:
@@ -139,8 +142,9 @@ def main() -> int:
             for case in cases:
                 prefix = out_dir / "trials" / f"crop{crop}_k{k}_{case}"
                 prefix.parent.mkdir(parents=True, exist_ok=True)
-                for old in glob.glob(f"{prefix}.rank*.json"):
-                    Path(old).unlink()  # forbid stale reports masquerading as new runs
+                if not a.dry_run:
+                    for old in glob.glob(f"{prefix}.rank*.json"):
+                        Path(old).unlink()  # forbid stale reports masquerading as new runs
                 command = a.command_template.format(
                     crop=crop, poses=k, case=case, steps=a.steps, prefix=str(prefix)
                 )
@@ -170,7 +174,7 @@ def main() -> int:
                                detail=f"exit={proc.returncode}; log={prefix}.log")
                     stage_ok = False
                     rows.append(row)
-                    save_results(out_dir, rows, limits, a.safety_margin, False)
+                    save_results(out_dir, rows, limits, observed, a.headroom_gib, False)
                     if not oom:
                         print(f"Non-OOM integration failure: {prefix}.log", file=sys.stderr)
                         return 2
@@ -181,7 +185,7 @@ def main() -> int:
                 except (KeyError, TypeError, ValueError, OSError) as e:
                     row.update(status="ERROR", detail=f"invalid report: {e}")
                     rows.append(row)
-                    save_results(out_dir, rows, limits, a.safety_margin, False)
+                    save_results(out_dir, rows, limits, observed, a.headroom_gib, False)
                     print(f"Invalid trial, cannot claim capacity: {e}", file=sys.stderr)
                     return 2
 
@@ -189,7 +193,8 @@ def main() -> int:
                 free = min(v["initial_free_bytes"] for v in reports)
                 step_secs = max(v["max_step_seconds"] for v in reports)
                 has_margin = all(
-                    v["peak_reserved_bytes"] <= (1.0 - a.safety_margin) * v["initial_free_bytes"]
+                    (v["initial_free_bytes"] - v["peak_reserved_bytes"])
+                    >= a.headroom_gib * (1024 ** 3)
                     for v in reports
                 )
                 row.update(status="PASS" if has_margin else "LOW_HEADROOM",
@@ -200,20 +205,22 @@ def main() -> int:
                 rows.append(row)
                 print(f"  {row['status']} peak={row['max_peak_reserved_gib']} GiB, "
                       f"worst step={row['max_step_seconds']} s", flush=True)
-                save_results(out_dir, rows, limits, a.safety_margin, False)
-                if not has_margin:
-                    stage_ok = False
-                    break
+                observed[str(crop)] = k
+                if has_margin:
+                    safe = k
+                    limits[str(crop)] = safe
+                # Keep probing after LOW_HEADROOM to establish the actual maximum;
+                # the next trial is a separate subprocess, so a CUDA OOM does not
+                # poison the current CUDA context.
+                save_results(out_dir, rows, limits, observed, a.headroom_gib, False)
             if not a.dry_run and not stage_ok:
                 break
-            if not a.dry_run:
-                safe = k
-                limits[str(crop)] = safe
         if not a.dry_run and safe == 0:
             limits[str(crop)] = None
-        save_results(out_dir, rows, limits, a.safety_margin, a.dry_run)
+        save_results(out_dir, rows, limits, observed, a.headroom_gib, a.dry_run)
 
     print("SAFE GROUP LIMITS (None means even smallest tested group not validated):", limits, flush=True)
+    print("MAX OBSERVED SUCCESS (may have low headroom):", observed, flush=True)
     if a.dry_run:
         print("DRY RUN ONLY; no CUDA memory was measured.", flush=True)
     return 0
