@@ -46,6 +46,32 @@ regions or DockQ-dependent feature selection at inference. Sampling groups
 with known positives/negatives is a legitimate **training** sampling policy
 but must be separate from deployable inputs.
 
+## Initial architecture decision: preserve pose injections, do not feed them separately to reranker
+
+For the **first** joint end-to-end arm, keep the same upstream confidence-head pose-injection
+configuration as the cropped `7mo52r` recipe:
+`--pose-perblock --pose-perblock-copy --frame-direction`, with its matching trainable-parameter
+scope and other architecture settings. These are trainable, never frozen. The new learned
+ranking loss backpropagates through the PAE logits into the head **and** the injected pose
+layers, so the pose pathway receives the new supervision without any extra reranker input.
+
+The reranker should initially consume only the **current** head's differentiable PAE
+probability distributions and live per-interface ipTM as a residual baseline; do NOT
+route intermediate pose-injection outputs, geometry tensors, or frame-direction features
+directly to the reranker. Adding those would confound the basic hypothesis (a learned
+readout from PAE vs a fixed ipTM readout) and introduce another memory/architecture axis.
+
+For a **clean** attribution test, initialize the new arm and its matched control from the
+same shipped-head / pose-injection initialization. Warming from a trained `7mo52r`
+checkpoint is allowed as a separately labelled speed/transfer experiment, but should
+not be presented as a fresh comparison to `7mo52r` because that checkpoint has already
+been updated by the old ranking loss.
+
+The 256/384/512 GPU capacity sweep MUST include these same pose-injection pathways.
+If memory is tight, reduce the poses per group using the measured safe K before deleting
+injections. Once the joint model works, run an explicit no-pose-injection ablation if the
+paper needs to distinguish the two mechanisms.
+
 ## Files
 
 - `model.py`: differentiable PAE-pair encoder, pose attention, residual
