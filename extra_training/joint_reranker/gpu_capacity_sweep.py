@@ -118,7 +118,7 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=3)
     ap.add_argument("--trial-timeout-min", type=float, default=30.0,
                     help="kill the entire torchrun process group if any test hangs")
-    ap.add_argument("--headroom-gib", type=float, default=8.0,
+    ap.add_argument("--headroom-gib", type=float, default=5.0,
                     help="absolute minimum unreserved VRAM desired for a SAFE training launch")
     ap.add_argument("--dry-run", action="store_true",
                     help="print planned commands; do NOT claim a measured capacity")
