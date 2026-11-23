@@ -15,8 +15,10 @@ import csv
 import glob
 import json
 from pathlib import Path
+import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 
@@ -114,13 +116,15 @@ def main() -> int:
                     help="comma-separated input cases supplied by the REAL probe adapter")
     ap.add_argument("--ranks", type=int, default=3)
     ap.add_argument("--steps", type=int, default=3)
+    ap.add_argument("--trial-timeout-min", type=float, default=30.0,
+                    help="kill the entire torchrun process group if any test hangs")
     ap.add_argument("--headroom-gib", type=float, default=8.0,
                     help="absolute minimum unreserved VRAM desired for a SAFE training launch")
     ap.add_argument("--dry-run", action="store_true",
                     help="print planned commands; do NOT claim a measured capacity")
     a = ap.parse_args()
-    if a.ranks <= 0 or a.steps < 2 or a.headroom_gib <= 0:
-        ap.error("ranks>0, steps>=2 and headroom-gib>0 are required")
+    if a.ranks <= 0 or a.steps < 2 or a.headroom_gib <= 0 or a.trial_timeout_min <= 0:
+        ap.error("ranks>0, steps>=2, headroom-gib>0, timeout>0 are required")
     template_fields = ("{crop}", "{poses}", "{case}", "{steps}", "{prefix}")
     if not all(f in a.command_template for f in template_fields):
         ap.error("command template must contain ALL placeholders " + ", ".join(template_fields))
@@ -155,9 +159,29 @@ def main() -> int:
                                  "detail": command})
                     continue
 
+                timed_out = False
                 with Path(f"{prefix}.log").open("w") as log:
-                    proc = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT,
-                                          check=False)
+                    # A rank can OOM while its peers hang inside a DDP collective;
+                    # subprocess.run(timeout=...) would kill only torchrun, not its
+                    # workers. Own a process group and terminate EVERY child.
+                    proc = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT,
+                                            start_new_session=True)
+                    try:
+                        proc.wait(timeout=a.trial_timeout_min * 60.0)
+                    except subprocess.TimeoutExpired:
+                        timed_out = True
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                        try:
+                            proc.wait(timeout=10.0)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                os.killpg(proc.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            proc.wait()
                 log_text = Path(f"{prefix}.log").read_text(errors="replace")
                 error_reports = []
                 for p in glob.glob(f"{prefix}.rank*.json"):
@@ -169,8 +193,8 @@ def main() -> int:
                     v.get("status") == "oom" for v in error_reports
                 )
                 row = {"crop": crop, "poses": k, "case": case}
-                if proc.returncode != 0:
-                    row.update(status="OOM" if oom else "ERROR",
+                if proc.returncode != 0 or timed_out:
+                    row.update(status="TIMEOUT" if timed_out else ("OOM" if oom else "ERROR"),
                                detail=f"exit={proc.returncode}; log={prefix}.log")
                     stage_ok = False
                     rows.append(row)
