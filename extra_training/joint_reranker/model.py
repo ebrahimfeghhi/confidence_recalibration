@@ -67,8 +67,10 @@ class PAEPoseReranker(nn.Module):
     """Scores K poses jointly; K and crop length are variable at each call.
 
     The encoder indexes masked pairs BEFORE softmax to avoid materializing
-    full softmax grids. It caps encoder pairs to limit additional activation
-    memory; chunking itself does NOT remove autograd's saved activations.
+    full softmax grids. By default ALL AB/AG pairs contribute: truncating
+    them would otherwise change the scientific input silently. An explicit
+    max_pairs cap is available as a separately tested memory ablation.
+    Chunking itself does NOT remove autograd's saved activations.
     """
 
     def __init__(
@@ -79,14 +81,14 @@ class PAEPoseReranker(nn.Module):
         pose_dim: int = 128,
         attention_heads: int = 4,
         pair_chunk_size: int = 2048,
-        max_pairs: int = 1500,
+        max_pairs: int | None = None,
         attention_dropout: float = 0.1,
     ) -> None:
         super().__init__()
         if pae_bins != 64:
             raise ValueError("this architecture assumes 64 PAE bins")
-        if pair_chunk_size <= 0 or max_pairs <= 0 or pose_dim % attention_heads:
-            raise ValueError("positive chunk/max_pairs and pose_dim divisible by heads required")
+        if pair_chunk_size <= 0 or (max_pairs is not None and max_pairs <= 0) or pose_dim % attention_heads:
+            raise ValueError("positive chunk/optional max_pairs and pose_dim divisible by heads required")
         self.pae_bins = pae_bins
         self.pair_chunk_size = pair_chunk_size
         self.max_pairs = max_pairs
@@ -124,9 +126,10 @@ class PAEPoseReranker(nn.Module):
         count = rows.numel()
         if count == 0:
             raise ValueError("a pose has no valid AB/AG residue pairs")
-        # Bound backward-memory growth. Prefer a predicted-geometry-based
-        # contact mask upstream, with this label-free uniform cap as fallback.
-        if count > self.max_pairs:
+        # Only use a pair-count limit when the experiment EXPLICITLY requests
+        # it. Uniform subsampling by flattened index may discard informative
+        # contacts; report it as a separate ablation, never the default.
+        if self.max_pairs is not None and count > self.max_pairs:
             inds = torch.linspace(0, count - 1, steps=self.max_pairs,
                                   device=rows.device).long()
             rows, cols = rows[inds], cols[inds]
