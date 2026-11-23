@@ -1770,3 +1770,85 @@ term that plausibly produced the table above.
 direction) and no single successor arm separates them. Separating them needs a dropout-only arm
 and an anchor-only arm against this one -- three slots, not one.
 
+
+---
+
+## 26. THE FULL-SET ARM AND THE TM-WEIGHTED ARM, BOTH POOLINGS -- and the val set cannot resolve either
+
+Two arms on the **full training set** (842 structures capped at 1,745 tokens, Arm L's own maximum;
+all seeds, uncropped, lr 1e-3, `--pair-dropout 0.25`, split 0.23, balance on, dead ops skipped,
+103 trainable tensors). Held out on **val83 leak-free, 139 interfaces** -- `8z7j_AB` and `8z7j_AC`
+dropped because `8z7j` is the one val structure sharing an antibody cluster with training.
+Shipped is recomputed from each run's OWN shard rows via `stored_iptm`, so it differs in the
+fourth decimal between the two tables (0.5886 vs 0.5882); that is the recompute, not two baselines.
+
+- **Arm S** (`qjneze -> 7tc8bk`): the objective unchanged. 20 epochs requested, scored at 1, 2,
+  4, 5, 6, 10, 12.
+- **Arm N-full** (`5yetx3 -> kimt97`): Arm S **plus** `--pae-tm-weight --pae-tm-weight-mode max`,
+  which weights each scored pair by max(s_true, s_pred) -- s_pred being the head's own detached
+  expected TM. The one difference from Arm S is the weight. 10 epochs, scored at 5 (live at
+  epoch 6 as this was written).
+
+### HELD-OUT top-1 DockQ, paired against shipped on the same 139 interfaces
+
+| arm | epoch | max-pooled Δtop-1 | t | mean-pooled Δtop-1 | t |
+|---|---|---|---|---|---|
+| Arm S | 1 | -0.0019 | -1.42 | -0.0081 | -1.35 |
+| Arm S | 2 | -0.0015 | -0.89 | -0.0055 | -0.87 |
+| Arm S | 4 | **+0.0040** | +0.64 | -0.0023 | -0.55 |
+| Arm S | 5 | +0.0022 | +0.35 | -0.0001 | -0.04 |
+| Arm S | 6 | -0.0023 | -0.30 | -0.0014 | -0.17 |
+| Arm S | 10 | -0.0072 | -0.92 | -0.0066 | -1.09 |
+| Arm S | 12 | **-0.0178** | **-2.25** | **-0.0191** | -1.96 |
+| Arm N-full | 5 | **+0.0049** | +0.82 | **+0.0010** | +0.34 |
+
+**NOTHING IN THIS TABLE IS SIGNIFICANT EXCEPT THE DAMAGE.** At n=139, df=138, two-sided p<0.05
+needs |t| >= 1.977. The only cell that clears it is Arm S epoch 12 max-pooled, and it clears it
+in the WRONG direction. Every positive entry sits between t=+0.34 and t=+0.82.
+
+**ARM N-full IS THE FIRST ARM POSITIVE IN BOTH POOLINGS AT THE SAME EPOCH.** Arm S's mean-pooled
+column is <= 0 at every one of its seven epochs while its max-pooled column is positive at 4 and
+5; reading only the max column would have made Arm S look like a small win for two epochs. That
+is the whole reason both poolings are now reported for every arm. Arm N-full being positive in
+both at epoch 5 is the only thing distinguishing it so far, and at t=+0.82 it is not a result.
+
+### IN-SAMPLE (280 interfaces, budget 15), shipped 0.2501 / 30.7%
+
+| arm | epoch | max-pooled | mean-pooled |
+|---|---|---|---|
+| Arm S | 5 | 0.2570 / 31.1% | 0.2628 / 31.1% |
+| Arm S | 10 | 0.2718 / 35.0% | 0.2796 / 36.1% |
+| Arm N-full | 5 | 0.2591 / 31.4% | 0.2568 / 31.1% |
+
+In-sample climbs while held-out falls: Arm S gains +0.0217 in-sample from epoch 5 to 10 and loses
+0.0094 held-out over the same window. **842 structures with dropout still overfit by epoch 10-12**,
+so "not enough structures" is not the explanation for the earlier arms either.
+
+### frac ACCEPTABLE IS NOT A RESOLVABLE COLUMN AT THIS POOL SIZE
+
+`run_logging/val_acc_significance.py` runs McNemar on the accept indicator (top-1 DockQ >= 0.23),
+which is the right paired test for a binary outcome where a t is not. The discordant counts are
+the whole story:
+
+| arm | epoch | pooling | acc | gained | lost | discordant | McNemar p |
+|---|---|---|---|---|---|---|---|
+| Arm N-full | 5 | max | 74.8% | 2 | 0 | 2 | 0.500 |
+| Arm N-full | 5 | mean | 74.1% | 1 | 0 | 1 | 1.000 |
+| Arm S | 5 | max | 74.1% | 1 | 0 | 1 | 1.000 |
+| Arm S | 12 | max | 71.9% | 0 | 2 | 2 | 0.500 |
+| Arm S | 12 | mean | 71.2% | 0 | 3 | 3 | 0.250 |
+
+Across all 15 arm/epoch/pooling cells measured, the **largest** discordant set is 3 interfaces.
+With b+c = 3 the exact two-sided p floor is 0.25; with b+c = 2 it is 0.50. **No frac-acceptable
+move on this pool can reach p<0.05 unless at least 6 interfaces change in the same direction**,
+and none has. The 73.4% -> 74.8% that looks like a gain is two interfaces.
+
+### WHAT THIS CLOSES
+
+**The val set has essentially no power to resolve the effects being chased.** The per-interface
+sd of top-1 DockQ is ~0.075 -- it jumps discretely when the pick changes -- so the paired SE at
+n=139 is ~0.006 and anything under |0.012| is unresolvable. Detecting Arm S's epoch-5 +0.0022 at
+80% power would need ~6,500 interfaces. Running more arms against THIS pool cannot settle
+anything; the measurement has to change before the next arm is worth interpreting. The proposed
+instrument is cluster-wise 2-fold cross-validation on the training pool, which yields ~1,600
+held-out interfaces instead of 139.
