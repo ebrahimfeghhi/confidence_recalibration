@@ -108,10 +108,10 @@ def shared_gradient_stats(
     g_pae = torch.autograd.grad(pae_loss, params, allow_unused=True, retain_graph=True)
     g_rank = torch.autograd.grad(rank_loss, params, allow_unused=True, retain_graph=True)
     origin = torch.zeros((), device=params[0].device)
-    dot = sum(
-        (a.detach().float() * b.detach().float()).sum()
-        for a, b in zip(g_pae, g_rank) if a is not None and b is not None
-    , origin)
+    dot = origin
+    for a, b in zip(g_pae, g_rank):
+        if a is not None and b is not None:
+            dot = dot + (a.detach().float() * b.detach().float()).sum()
     sqp = sum(
         (g.detach().float().square().sum() for g in g_pae if g is not None),
         start=torch.zeros((), device=params[0].device),
