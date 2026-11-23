@@ -12,7 +12,7 @@ TWO FAILURES ARE REPORTED SEPARATELY because they mean different things: a SELEC
 did not move is an unfreeze that did nothing (the pattern missed, or nothing reads it), while an
 UNSELECTED tensor that moved is a leak -- the frozen set is not frozen.
 """
-import argparse, sys, torch
+import argparse, re, sys, torch
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--init", required=True)
@@ -25,7 +25,48 @@ i = torch.load(a.init, map_location="cpu", weights_only=False)
 f = torch.load(a.after, map_location="cpu", weights_only=False)
 i = i.get("head", i) if isinstance(i, dict) and "head" in i else i
 pats = [p.strip() for p in a.train_only.split(",") if p.strip()]
-sel = {k for k in f if any(p in k for p in pats)}
+
+# MATCHED THE WAY THE TRAINER MATCHES, which is re.search against the name with the head's own
+# prefix STRIPPED (phase_k_train: `_rel = {n: n[len(_pfx) + 1:]}` then
+# `any(re.search(p, _rel[n]) for p in _pats)`).
+#
+# IT USED TO BE `any(p in k for p in pats)` -- a plain substring test against the FULL name. That
+# silently broke for every arm whose pattern is a regex rather than a list of substrings. Arm I's
+# first term is the negative lookahead `^(?!pairformer_stack\.)`, which occurs in no tensor name,
+# so NOTHING was selected, all 106 moved tensors were reported as leaks, and the verdict was
+# MISMATCH on a correctly-behaving arm. The failure is worse than cosmetic: with an empty selected
+# set the check cannot distinguish a real leak from a working arm either, so the one thing it
+# exists to catch was unreachable.
+#
+# THE PREFIX IS STRIPPED PER KEY, not assumed: a bundle's keys carry `confidence_head.` while the
+# trainer's patterns are written relative to the head, so `^` anchors would never match otherwise.
+_PFX = "confidence_head."
+
+
+def _rel(k):
+    return k[len(_PFX):] if k.startswith(_PFX) else k
+
+
+def _hit(k):
+    r = _rel(k)
+    for p in pats:
+        try:
+            if re.search(p, r):
+                return True
+        except re.error:
+            # A PATTERN THAT IS NOT VALID REGEX falls back to the substring test rather than
+            # killing the check, because some arms really do pass bare names.
+            if p in r:
+                return True
+    return False
+
+
+sel = {k for k in f if _hit(k)}
+if not sel:
+    print(f"  WARNING: --train-only matched NO tensor in the bundle. Patterns: {pats[:3]}"
+          f"{' ...' if len(pats) > 3 else ''}\n"
+          f"  Every moved tensor below will read as a leak, which is a fault in this check and not "
+          f"in the arm. Example bundle key: {next(iter(f), '(empty)')}")
 
 moved, still, leaked = [], [], []
 for k in f:

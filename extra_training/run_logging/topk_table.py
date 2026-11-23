@@ -70,10 +70,26 @@ def topk(by, key, k):
     return hit / n, sum(best) / n
 
 
-def pae_split(dirs, results):
+def pae_split(dirs, results, pool=None):
+    """Good/bad/all PAE loss, grouped ONLY BY THE POOL'S INTERFACES.
+
+    WHY THE POOL FILTER IS NOT OPTIONAL. results.csv carries a DockQ row for every interface the
+    FOLD scored, which is a superset of the pool an arm trains on: 10fj has rows for both AB and
+    AC while the hard 280 lists only AB. Without the filter, 6,375 of 13,500 poses were classified
+    partly by interfaces the arm never trains on and the metric never reads -- which put the
+    shipped baseline's groups at 2,731/9,450/1,319 against the trainer's 3,040/9,985/475 over the
+    same poses, and made the baseline lines on the loss figure incomparable to the arm curves they
+    were drawn against. With the filter the two agree exactly. The trainer restricts to its
+    --pae-scored-pairs mask and is the reference behaviour here.
+    """
+    keep = None
+    if pool and os.path.exists(pool):
+        keep = {f'{r["pdb"]}_{r["chain1"]}{r["chain2"]}' for r in csv.DictReader(open(pool))}
     dq = collections.defaultdict(list)
     if os.path.exists(results):
         for r in csv.DictReader(open(results)):
+            if keep is not None and r["iface"] not in keep:
+                continue
             try:
                 dq[(r["iface"].split("_")[0], int(r["seed"]), int(r["sample"]))].append(
                     float(r["dockq"]))
@@ -108,6 +124,20 @@ def main():
     ap.add_argument("--label", default="")
     ap.add_argument("--results", default="training/fold/results_with_trunks.csv")
     ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--pool", default="",
+                    help="pool csv whose interfaces define the good/bad grouping; "
+                         "without it the grouping uses every interface results.csv "
+                         "has, which is a SUPERSET and does not match the trainer")
+    ap.add_argument("--restrict", default="",
+                    help="csv of interfaces (pdb,chain1,chain2) that the DOCKQ TABLE is limited "
+                         "to, not merely grouped by. --pool only chooses which interfaces define "
+                         "the good/bad PAE split; the top-k table still aggregated every interface "
+                         "in the eval dirs, so passing --pool a subset returned the SAME DockQ "
+                         "numbers for every subset and the difference the subsets exist to show "
+                         "was invisible. Use this to score one bin of the slice (the thin 1/5-4/5 "
+                         "items against the 5/5 ones, say): shipped and ours are then both means "
+                         "over the same restricted interface set, which is the only way the two "
+                         "columns are comparable.")
     ap.add_argument("--md", action="store_true")
     ap.add_argument("--contestable", action="store_true",
                     help="keep only interfaces where the choice can matter: at least one "
@@ -120,6 +150,13 @@ def main():
     a = ap.parse_args()
     dirs = [x for x in a.dirs.split(",") if x]
     by = load(dirs)
+    if a.restrict:
+        keep = {f'{r["pdb"]}_{r["chain1"]}{r["chain2"]}'
+                for r in csv.DictReader(open(a.restrict))}
+        _n0 = len(by)
+        by = {i: c for i, c in by.items() if i in keep}
+        print(f"  RESTRICTED to {len(by)} of {_n0} interface(s) "
+              f"({len(keep)} listed in {os.path.basename(a.restrict)})")
     if a.contestable:
         _n0 = len(by)
         by = {i: c for i, c in by.items()
@@ -149,7 +186,7 @@ def main():
               f"{'acc@'+str(a.k):>9s}")
         for nm, b1, a1, bk, ak in rows:
             print(f"    {nm:11s} {b1:>11.4f} {a1*100:>8.1f}% {bk:>9.4f} {ak*100:>8.1f}%")
-    pl = pae_split(dirs, a.results)
+    pl = pae_split(dirs, a.results, a.pool)
     if pl:
         if a.md:
             print(f"\n| PAE loss | good ({pl[3]}) | bad ({pl[4]}) | all |")

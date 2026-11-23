@@ -76,16 +76,41 @@ def main():
         b5 = [max(sorted(d[k], key=lambda t: -t[idx])[:5], key=lambda t: t[3])[3] for k in keys]
         return t1, b5
 
+    # RANK OF THE FIRST ACCEPTABLE POSE, the graded version of the acc column. top-1 and acc only
+    # move when the pick crosses DockQ 0.23, so a reordering that lifts an acceptable pose from
+    # rank 40 to rank 5 is invisible in both; this is its 1-based position in the arm's own
+    # ranking. In-sample it is the only statistic in this project to clear significance
+    # (t = -3.68 at n=885) while every DockQ column stayed inside the noise. LOWER IS BETTER, so
+    # a NEGATIVE delta is an improvement -- the opposite sign convention from the DockQ columns,
+    # which is why the header says so.
+    #
+    # WINNABLE INTERFACES ONLY. Rank is undefined where no candidate is acceptable, and those are
+    # dropped rather than censored at n+1: censoring makes the mean a function of the candidate
+    # count and so incomparable between pools of different depth.
+    win = [k for k in keys if any(t[3] >= ACC for t in eps[min(eps)][k])]
+    nw = len(win)
+
+    def rank(d, idx):
+        out = []
+        for k in win:
+            order = sorted(d[k], key=lambda t: -t[idx])
+            out.append(next(j for j, t in enumerate(order, 1) if t[3] >= ACC))
+        return out
+
+    br = rank(eps[min(eps)], 0)
     bt, bb = col(eps[min(eps)], 0)
     f = lambda L: (sum(L) / n, 100.0 * sum(1 for x in L if x >= ACC) / n)
 
     for idx, title in ((1, "MAX-POOLED ipTM"), (2, "MEAN-POOLED ipTM")):
-        print(f"\n**{title}** -- val83{' leak-free' if keep else ''}, n={n}\n")
+        print(f"\n**{title}** -- val83{' leak-free' if keep else ''}, n={n}"
+              f" ({nw} winnable, for the rank columns)\n")
         if a.md:
-            print("| epoch | top-1 | acc | best@5 | acc@5 | Δtop1 | t | Δbest@5 | t |")
-            print("|---|---|---|---|---|---|---|---|---|")
+            print("| epoch | top-1 | acc | best@5 | acc@5 | Δtop1 | t | Δbest@5 | t | "
+                  "mean rank 1st acc | Δrank (neg=better) | t |")
+            print("|---|---|---|---|---|---|---|---|---|---|---|---|")
             x, y = f(bt); c, d2 = f(bb)
-            print(f"| shipped | {x:.4f} | {y:.1f}% | {c:.4f} | {d2:.1f}% | — | | — | |")
+            print(f"| shipped | {x:.4f} | {y:.1f}% | {c:.4f} | {d2:.1f}% | — | | — | | "
+                  f"{statistics.fmean(br):.2f} | — | |")
         else:
             print(f"  {'epoch':>6s} {'top-1':>8s} {'acc':>7s} {'best@5':>8s} {'acc@5':>7s}"
                   f" {'Δtop1':>9s} {'t':>6s} {'Δb@5':>9s} {'t':>6s}")
@@ -97,10 +122,15 @@ def main():
             d5 = [p - q for p, q in zip(b5, bb)]
             m1 = sum(d1) / n; s1 = statistics.stdev(d1) / math.sqrt(n) if n > 1 else float("nan")
             m5 = sum(d5) / n; s5 = statistics.stdev(d5) / math.sqrt(n) if n > 1 else float("nan")
+            rk = rank(eps[e], idx)
+            dr = [p - q for p, q in zip(rk, br)]
+            mr = sum(dr) / nw
+            sr = statistics.stdev(dr) / math.sqrt(nw) if nw > 1 else float("nan")
             x, y = f(t1); c, d2 = f(b5)
             if a.md:
                 print(f"| {e} | {x:.4f} | {y:.1f}% | {c:.4f} | {d2:.1f}% | "
-                      f"{m1:+.4f} | {m1/s1:+.2f} | {m5:+.4f} | {m5/s5:+.2f} |")
+                      f"{m1:+.4f} | {m1/s1:+.2f} | {m5:+.4f} | {m5/s5:+.2f} | "
+                      f"{statistics.fmean(rk):.2f} | {mr:+.2f} | {mr/sr:+.2f} |")
             else:
                 print(f"  {e:6d} {x:8.4f} {y:6.1f}% {c:8.4f} {d2:6.1f}% "
                       f"{m1:+9.4f} {m1/s1:+6.2f} {m5:+9.4f} {m5/s5:+6.2f}")

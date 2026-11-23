@@ -395,10 +395,17 @@ REL_BALANCE_ACCEPT="${REL_BALANCE_ACCEPT:-}"
 # several --extra-eval SPECs (each SPEC is itself comma-separated, which is why ';' and not ',').
 # PAE_SPLIT_ACCEPT turns on the per-epoch PAE-loss-by-group diagnostic at that DockQ threshold.
 EXTRA_EVAL="${EXTRA_EVAL:-}"
-PAE_SPLIT_ACCEPT="${PAE_SPLIT_ACCEPT:-0.23}"
+# NO COLON. With `:-` an explicit PAE_SPLIT_ACCEPT= was replaced by 0.23, so "off" could not be
+# expressed from the environment at all -- the same colon hazard that let an empty SKIP win over a
+# real one in launch_armNfull_tmmax.sh. Colonless honours the empty string, so PAE_SPLIT_ACCEPT=
+# means off and an unset variable still gets 0.23.
+PAE_SPLIT_ACCEPT="${PAE_SPLIT_ACCEPT-0.23}"
 # PAE_BALANCE_ACCEPT reweights the PAE loss itself so each list's acceptable poses carry half of
 # it. Unlike PAE_SPLIT_ACCEPT, which only reports, this CHANGES THE OBJECTIVE.
-PAE_BALANCE_ACCEPT="${PAE_BALANCE_ACCEPT:-0.23}"
+# NO COLON, and it matters more here: this one CHANGES THE OBJECTIVE. Reproducing a run that
+# predates the flag (7mo52r, ggd8uv) requires being able to say "not passed", and with `:-` the
+# launcher silently turned the 36x reweighting on instead.
+PAE_BALANCE_ACCEPT="${PAE_BALANCE_ACCEPT-0.23}"
 VAL_LOSS_EVERY="${VAL_LOSS_EVERY:-}"
 VAL_LOSS_FOLD="${VAL_LOSS_FOLD:-}"
 VAL_LOSS_LABELS="${VAL_LOSS_LABELS:-}"
@@ -643,7 +650,36 @@ if [ -n "$EXTRA_EVAL" ]; then
   say "EXTRA EVAL passes: $EXTRA_EVAL"
 fi
 
-printf '    %s\n' "${ARGS[@]}"   # NO COLON: "" is a deliberate empty value
+# THE TAIL OF THE COMMAND LIVES IN AN ARRAY, NOT AS LITERALS AT THE LAUNCH CALL.
+#
+# Half the argv -- --resume, --pair-dropout, --train-only, --expect-trainable, the preflight, the
+# manifest, every runtime flag -- used to be written inline at the `launch.py` invocation, which
+# is AFTER the DRY exit. So `DRY=1` printed a 30-flag preview of a 60-flag command and the
+# missing half included the resume path and the dropout. A spec table built from that preview
+# reads as complete and is not, which is worse than having no preview at all. Collecting them
+# here means the preview and the launch are the same list by construction.
+TAIL_ARGS=(
+  --alignment-preflight "$PREFLIGHT"
+  --manifest-selection "$MANIFEST" --manifest-skip "$SKIP"
+  --fold training/fold --indices training/prep/all857_indices.csv
+  --pae-scored-pairs "$SCORED_PAIRS"
+  --pae-scored-roles training/fold/chain_roles_all.csv
+  --lean-readouts --train-only "$TRAIN_ONLY" --expect-trainable "$EXPECT_TRAINABLE"
+  --warmup-steps 20 --seed 0 --clip-norm 25.0
+  --blocks-per-ckpt 1 --ckpt-token-threshold 1250 --mem-log
+  --prefetch-units 2 --prefetch-workers "$PREFETCH_WORKERS"
+  ${TRUNK_MEMMAP:+--trunk-memmap}
+  ${PAIR_DROPOUT:+--pair-dropout "$PAIR_DROPOUT"}
+  ${L2_SP:+--l2-sp "$L2_SP" --l2-sp-exclude "$L2_SP_EXCLUDE"}
+  ${LORA_RANK:+--lora-rank "$LORA_RANK" --lora-targets "$LORA_TARGETS" --lora-keep-trainable "$LORA_KEEP"}
+  ${LORA_RANK:+${LORA_ALPHA:+--lora-alpha "$LORA_ALPHA"}}
+  ${RESUME:+--resume "$RESUME"}
+  ${RESUME_OVERRIDE:+--resume-override "$RESUME_OVERRIDE" --resume-note "$RESUME_NOTE"}
+  --dist-backend gloo --dist-timeout-min 240
+  --max-rss-gb 80 --preload-min-free-gb 250 --save-every 250
+  --require-replay training/extended_mixed_replay.log --allow-code-drift
+)
+printf '    %s\n' "${ARGS[@]}" "${TAIL_ARGS[@]}"   # NO COLON: "" is a deliberate empty value
 
 if [ -n "$ALPHA_RANK" ]; then
   say "RANKING LOSS ON: $RANK_FORM at alpha $ALPHA_RANK, cross-seed, $RANK_S structure(s)/step,"
@@ -718,24 +754,5 @@ fi
 
 say "LAUNCH"
 LAYERNORM_TYPE=openfold $PY -I run_logging/launch.py --cards "$CARDS" \
-  --numa-map 0:0,1:0,2:1 --note "$NOTE" -- "${ARGS[@]}" \
-  --alignment-preflight "$PREFLIGHT" \
-  --manifest-selection "$MANIFEST" --manifest-skip "$SKIP" \
-  --fold training/fold --indices training/prep/all857_indices.csv \
-  --pae-scored-pairs "$SCORED_PAIRS" \
-  --pae-scored-roles training/fold/chain_roles_all.csv \
-  --lean-readouts --train-only "$TRAIN_ONLY" --expect-trainable "$EXPECT_TRAINABLE" \
-  --warmup-steps 20 --seed 0 --clip-norm 25.0 \
-  --blocks-per-ckpt 1 --ckpt-token-threshold 1250 --mem-log \
-  --prefetch-units 2 --prefetch-workers "$PREFETCH_WORKERS" \
-  ${TRUNK_MEMMAP:+--trunk-memmap} \
-  ${PAIR_DROPOUT:+--pair-dropout "$PAIR_DROPOUT"} \
-  ${L2_SP:+--l2-sp "$L2_SP" --l2-sp-exclude "$L2_SP_EXCLUDE"} \
-  ${LORA_RANK:+--lora-rank "$LORA_RANK" --lora-targets "$LORA_TARGETS" --lora-keep-trainable "$LORA_KEEP"} \
-  ${LORA_RANK:+${LORA_ALPHA:+--lora-alpha "$LORA_ALPHA"}} \
-  ${RESUME:+--resume "$RESUME"} \
-  ${RESUME_OVERRIDE:+--resume-override "$RESUME_OVERRIDE" --resume-note "$RESUME_NOTE"} \
-  --dist-backend gloo --dist-timeout-min 240 \
-  --max-rss-gb 80 --preload-min-free-gb 250 --save-every 250 \
-  --require-replay training/extended_mixed_replay.log --allow-code-drift
+  --numa-map 0:0,1:0,2:1 --note "$NOTE" -- "${ARGS[@]}" "${TAIL_ARGS[@]}"
 say "launch.py returned $?"

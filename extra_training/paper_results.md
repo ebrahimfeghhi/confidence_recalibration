@@ -1852,3 +1852,116 @@ n=139 is ~0.006 and anything under |0.012| is unresolvable. Detecting Arm S's ep
 anything; the measurement has to change before the next arm is worth interpreting. The proposed
 instrument is cluster-wise 2-fold cross-validation on the training pool, which yields ~1,600
 held-out interfaces instead of 139.
+
+---
+
+## 27. THE CROPPED, RANK-TRAINED ARM IS THE BEST IN THE PROJECT. The uncropped arms peak at epoch 3-5 and collapse
+
+`run_logging/rank_arms_val.py` scores every run that has valfull83 rows -- 53 of them -- on the
+same 139 leak-free interfaces, recomputing shipped from each run's OWN `stored_iptm` so each arm
+is paired against shipped on exactly the poses it scored. **7mo52r is first on top-1.** Second is
+Arm B at +0.0125 and third Arm E at +0.0122; the whole field sits between +0.006 and +0.012.
+
+### HELD OUT, val83 leak-free, n=139 (125 winnable for the rank column)
+
+Each arm's BEST epoch and pooling, against its own recomputed shipped (top-1 0.5884, 73.4%,
+best@5 0.6081, mean rank of the first acceptable pose 15.04).
+
+| arm | best top-1 | at | Δ | t | best best@5 | Δ | t | best mean rank | at |
+|---|---|---|---|---|---|---|---|---|---|
+| **7mo52r** (+fshpzx+ggd8uv+qkicr2) | **0.6048** | ep16 max | **+0.0164** | **+1.95** | **0.6297** | **+0.0216** | **+3.11** | **10.80** | ep13 max |
+| Arm N-full (TM weight, uncropped) | 0.5963 | ep3 max | +0.0077 | +1.26 | 0.6208 | +0.0128 | +1.97 | 14.74 | ep8 max |
+| Arm S (PAE only, uncropped) | 0.5926 | ep4 max | +0.0040 | +0.64 | 0.6195 | +0.0115 | +1.82 | 13.46 | ep10 mean |
+
+**THE SHAPE MATTERS MORE THAN THE PEAK.** 7mo52r holds its gain across 21 scored epochs and its
+best@5 clears |t| >= 1.977 at 16 of 18 epochs on max-pooling and at EVERY epoch on mean-pooling.
+Arm S and Arm N-full peak at epoch 3-5 and then go negative: Arm S reaches **-0.0178 (t = -2.25)**
+by epoch 12 and Arm N-full -0.0169 (t = -1.97) by epoch 9 on mean-pooled top-1. The only cell in
+this project that has ever cleared significance on a DockQ column did so in the WRONG direction,
+and it belongs to an uncropped arm.
+
+**THE RANK COLUMN SEPARATES THEM FURTHEST.** 7mo52r beats shipped's 15.04 at all 21 of its scored
+epochs (10.80 to 13.8). Arm N-full beats it at exactly one epoch of six and is WORSE at the other
+five (+0.44 to +1.76, and epoch 1 mean-pooled is significantly worse at t = +2.15). Arm S beats it
+only at epochs 10-12. So the uncropped arms never learned to order poses better at all.
+
+### IN-SAMPLE, the WHOLE training pool: 1,688 interfaces, 853 structures, 7,279 units
+
+`training/fulltrain_mixed` with `--mixed-budget`, built because the pool's folded depth is 15
+seeds for 459 structures and 1 for 394 and a uniform `--budget 15` stopped on 5,516 of 12,795
+intended units. The depth-15 stratum (947 interfaces, 75 candidates each) is the only one that
+can separate arms; the 741 depth-1 interfaces have an oracle just 0.014 above their own baseline
+and their shipped, max, mean and ORACLE frac acceptable are all identically 58.4%.
+
+| arm | DockQ max | frac max | DockQ mean | frac mean | mean rank |
+|---|---|---|---|---|---|
+| shipped | 0.5386 | 68.7% | — | — | 8.98 |
+| Arm N-full ep5 | **0.5392** | **69.3%** | 0.5370 | 69.0% | 8.58 |
+| 7mo52r ep16 | 0.5352 | 68.5% | 0.5276 | 67.8% | **7.79** |
+| oracle | 0.7066 | 93.5% | — | — | 1.00 |
+
+**THE BEST HELD-OUT ARM IS A WASH IN-SAMPLE** -- -0.0034 max, -0.0110 mean on top-1 DockQ against
+shipped, on 947 interfaces, while being the clear best on mean rank. It is not picking
+acceptable-but-mediocre poses: its top-1 picks reach DockQ >= 0.80 on 34.8% against shipped's
+34.5%, and among the 629 interfaces where both pick an acceptable pose it is better on 186, worse
+on 208 and tied on 235. A coin flip.
+
+**AND THE GAINS ON THE TRAINING SET ARE TINY FOR EVERY ARM.** Arm N-full showed +0.0090 on the
+280-interface hard slice and +0.0007 on the 947 depth-15 interfaces of the full pool -- 13x
+smaller. slice280 keeps every "thin" interface whole (94 at 1/5 acceptable, 42 at 2/5, 42 at 3/5,
+28 at 4/5 = 206 of 280) and only samples the easy 5/5 bin, so it is a near-miss benchmark by
+construction and its 30.7% shipped baseline was never the training set's. What looked like
+memorisation is concentrated almost entirely in the subset built to enrich for it.
+
+### THE ONE STATISTIC THAT CLEARS SIGNIFICANCE
+
+Rank of the first acceptable pose, paired against shipped, lower better:
+
+| pool | pooling | n | mean Δrank | t |
+|---|---|---|---|---|
+| in-sample depth-15 | max | 885 | -1.19 | **-3.68** |
+| in-sample depth-15 | mean | 885 | -1.46 | **-3.92** |
+| val83 | max | 125 | -2.25 | -1.46 |
+| val83 | mean | 125 | -2.93 | -1.96 |
+
+In-sample it is the first statistic in this project to clear the bar while every DockQ column
+stayed inside the noise. HONEST LIMIT: the sign test is not significant (131 better / 105 worse,
+p = 0.10) and 649 of 885 interfaces have identical rank under both, so this is a large effect on a
+minority of interfaces, not a broad shift.
+
+**THE NORMALISED RANK IMPROVEMENT IS THE SAME IN BOTH POOLS** -- 1.5 percentile points held out
+(12.78/150 vs 15.03/150), 1.6 in-sample (7.79/75 vs 8.98/75). The entire difference is whether it
+reaches rank 1: held out, rank-1 hits go 81.6% -> 84.0%; in-sample 73.6% -> 73.3%, flat to down.
+Why the same reordering converts at the top only off-distribution is open. An earlier guess that
+val's 150 candidates give more room than in-sample's 75 is RULED OUT by the normalised column.
+
+### WHY THE FOCUS GOES BACK TO THE CROPPED EXPERIMENTS
+
+1. **It is the only arm whose held-out curve does not decay.** Twenty-one scored epochs above
+   shipped on DockQ and on rank, against two uncropped arms that are negative by epoch 9-12. Every
+   recent arm removed one of 7mo52r's ingredients and got weaker, which makes the recent direction
+   subtractive rather than exploratory.
+2. **It was never finished.** 7mo52r asked for 50 epochs and was SIGTERM'd at 18; `ggd8uv` resumed
+   it to 21 and was SIGTERM'd too. Neither stopped for a result. `qkicr2` is now running epochs
+   22-30 with val every epoch.
+3. **Its best@5 is reproducibly significant** at t = +2.3 to +3.4 across 18 epochs and both
+   poolings -- unlike every top-1 result here, which is a single favourable epoch inside the noise.
+4. **The uncropped arms' in-sample story dissolved** once measured over the whole training pool
+   rather than the hard slice, so "they overfit" was never the right diagnosis and there is nothing
+   left to fix there.
+
+### WHAT IS NOT ESTABLISHED, AND NEEDS TO BE
+
+**NO CLEAN RANKING-LOSS ABLATION OF 7mo52r EXISTS.** Four cropped arms with `rank_loss` off looked
+matched on a 12-argument comparison and are not: `yn34zs`, `dmekx9` and `vdmheg` all run **LoRA
+rank 8**, a different experiment. Only `yw8rtt` is dense with the ranking loss off, and it still
+differs in `rank_structs_per_step` (2 vs 3), which changes the effective batch. It reaches +0.0106
+and collapses to -0.0088 by epoch 20, which is suggestive and is one imperfect pair. It also has
+no checkpoints on disk, so a clean control has to be a fresh run.
+
+**THE CROP, THE RANKING LOSS AND THE POSE INJECTION ARE CONFOUNDED** in 7mo52r. Separating them is
+three arms, not one.
+
+**7mo52r HAS NO GOOD/BAD LOSS SPLIT.** It predates `--pae-split-accept`, so the figure every other
+arm is read on cannot be drawn for it; `run_logging/plot_chain_loss.py` draws the stitched total
+instead. Adding the flag is diagnostic-only and would cost one relaunch.

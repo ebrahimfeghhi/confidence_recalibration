@@ -131,5 +131,19 @@ check("pae_ln and every readout tensor match --lora-keep-trainable",
 check(f"rank {RANK} fits every adapted module",
       [f"{n}{ADAPTABLE[n]}" for n in adapted if RANK > min(ADAPTABLE[n])])
 
+# THE COUNT AND THE GATES, added after an external review pointed out that every check above
+# passes for a pattern that lost its trailing `$` and adapted all 36 tri_mul modules -- gates
+# included. A count is the one assertion that a widened regex cannot satisfy.
+_want = os.environ.get("LORA_EXPECT_ADAPTED", "").strip()
+if _want:
+    if len(adapted) != int(_want):
+        sys.exit(f"FAIL  expected exactly {_want} adapted module(s), got {len(adapted)}:\n"
+                 + "\n".join(f"    {m}" for m in sorted(adapted)))
+    print(f"PASS  exactly {_want} module(s) adapted, as declared")
+_gates = sorted(m for m in adapted if re.search(r"\.linear_(a_g|b_g|g)$", m))
+if _gates:
+    sys.exit("FAIL  adapter on a triangle-multiplication GATE: " + ", ".join(_gates))
+print(f"PASS  no adapter on any triangle-multiplication gate")
+
 print(f"\n  adapted: {len(adapted)} module(s); pose kept dense: {len(POSE)} tensor(s)")
 sys.exit(1 if fail else 0)

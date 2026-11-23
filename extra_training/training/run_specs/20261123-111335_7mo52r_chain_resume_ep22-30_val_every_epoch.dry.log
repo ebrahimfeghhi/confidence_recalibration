@@ -1,0 +1,139 @@
+### 2:12:51 PM EST PAE-only cropped arm: pool=training/crop_final cards=4,5,7 epochs=30 accum=240 nsample=5
+### 2:12:51 PM EST   prefetch-workers=16  memmap=1  balance=1  resume=/home/ebrahim/confidence_recalibration/extra_training/training/runs/ggd8uv/resume_ep21.pt  pair-dropout=0.25  l2-sp=off  lora=off  DRY=1
+### 2:12:51 PM EST   core budget: 48 crop thread(s) across 3 ranks, ceiling 64
+  manifest 853 rows, SKIP removes 7 -> trainable 846
+  crop pool 846   want == pool: YES
+### 2:12:51 PM EST CPU gate: wiring
+crop-pool wiring gates
+  PASS  every crop gate routes through _USE_CROP   (blind gates 0, dispatchers 0)
+  PASS  pool and labels agree on crop count   (846 structure(s))
+  PASS  mask and label rotate together   (10fj, n=93; epoch 0 vs 1 differ: True; epoch n wraps to 0: True)
+  PASS  one crop covers all poses and interfaces   (10fj: 5 pose(s), 2 interface(s) under crop 0)
+  PASS  refuses uncropped labels under --crop-pool
+
+5/5 gate(s) passed
+### 2:12:53 PM EST CPU gate: cached units hold exactly --nsample 5 pose(s)
+  sampled 40 trunk(s) of 7309: pose counts {5: 40}
+### 2:12:53 PM EST CPU gate: the epoch plan covers every structure, singletons included
+manifest: 846 structure(s), 6922 unit(s); 412 with fewer than world=3 seeds
+  PASS  every structure appears in epochs 0-5, BOTH deals (412/412 singletons)
+  PASS  every unit dealt at least once (6922 distinct of 6922; 2 padded for an equal split)
+  PASS  every rank walks the same number of units [2308, 2308, 2308]
+  PASS  ranks disjoint within a step; distinct structures per step min 43 median 47 max 48 (ideal 48)
+  PASS  control: the old builder drops 412 structure(s), which is the bug
+  round-robin    epoch spread  1.77%   PER-STEP spread median  16.93%  p90  35.05%  units [2308, 2308, 2308]
+  size-balanced  epoch spread  0.05%   PER-STEP spread median   0.55%  p90   1.68%  units [2308, 2308, 2308]
+
+all gates passed
+### 2:12:53 PM EST CPU gate: every crop keeps a scorable cross-chain pair under the STATIC join
+checked 846 structure(s), 94630 crop(s) against the STATIC chain-pair join
+OK: every selected crop keeps a scorable cross-chain pair under the STATIC join
+### 2:12:59 PM EST argv the trainer would receive:
+    --crop-pool
+    training/crop_final
+    --minimal-items
+    --epoch-cover-all
+    --epoch-balance
+    --pae-only
+    --alpha-pae
+    1.0
+    --alpha-confidence
+    1.0
+    --accum
+    240
+    --nsample
+    5
+    --skip-dead-ops
+    --pose-perblock
+    --pose-perblock-copy
+    --frame-direction
+    --lean-single
+    --train-eval-pool
+    training/valfull83/pool.csv
+    --train-eval-fold
+    validation/fold
+    --train-eval-every
+    1
+    --train-eval-budget
+    30
+    --train-eval-seed-base
+    400000
+    --epochs
+    30
+    --lr
+    1e-3
+    --crop-allow
+    training/crop_final/ost_usable_crops.json
+    --rank-loss
+    --rank-form
+    rel
+    --alpha-rank
+    59
+    --rank-cross-seed
+    --rank-structs-per-step
+    3
+    --rank-labels
+    training/fold/results.csv
+    --rank-pool
+    mean
+    --rel-labels
+    training/fold/itm_labels_crop
+    --alignment-preflight
+    training/alignment_preflight_sharded.json
+    --manifest-selection
+    train_val_splits/cache_train_structures_extended.csv
+    --manifest-skip
+    4zto,7m7i,9b9j,9dzf,9dzg,9e7x,9mx1,9q5m
+    --fold
+    training/fold
+    --indices
+    training/prep/all857_indices.csv
+    --pae-scored-pairs
+    training/combined/pool.csv
+    --pae-scored-roles
+    training/fold/chain_roles_all.csv
+    --lean-readouts
+    --train-only
+    ^(?!pairformer_stack\.),blocks\.0\.pair_transition\.,blocks\.1\.tri_mul_out\.,blocks\.1\.tri_mul_in\.,blocks\.2\.tri_mul_out\.,blocks\.2\.tri_mul_in\.,blocks\.2\.pair_transition\.,blocks\.3\.tri_mul_out\.,blocks\.3\.tri_mul_in\.,blocks\.3\.tri_att_start\.,blocks\.3\.pair_transition\.
+    --expect-trainable
+    113
+    --warmup-steps
+    20
+    --seed
+    0
+    --clip-norm
+    25.0
+    --blocks-per-ckpt
+    1
+    --ckpt-token-threshold
+    1250
+    --mem-log
+    --prefetch-units
+    2
+    --prefetch-workers
+    16
+    --trunk-memmap
+    --pair-dropout
+    0.25
+    --resume
+    /home/ebrahim/confidence_recalibration/extra_training/training/runs/ggd8uv/resume_ep21.pt
+    --dist-backend
+    gloo
+    --dist-timeout-min
+    240
+    --max-rss-gb
+    80
+    --preload-min-free-gb
+    250
+    --save-every
+    250
+    --require-replay
+    training/extended_mixed_replay.log
+    --allow-code-drift
+### 2:12:59 PM EST RANKING LOSS ON: rel at alpha 59, cross-seed, 3 structure(s)/step,
+### 2:12:59 PM EST   iTM labels training/fold/itm_labels_crop,
+### 2:12:59 PM EST   ipTM pooled by mean, gradient split logged every
+### 2:12:59 PM EST   0 step(s). PAE stays on at --alpha-pae 1.0, so this is PAE + rel.
+### 2:12:59 PM EST NOT passed, deliberately: --crop-margin, --crop-tokens, --eval-pool-crop-tokens
+### 2:12:59 PM EST   (eval stays UNCROPPED)
+### 2:12:59 PM EST DRY RUN -- nothing launched. Re-run with DRY=0 to go.
