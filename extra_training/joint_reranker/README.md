@@ -143,7 +143,7 @@ export CUDA_VISIBLE_DEVICES=4,5,7
 # Must construct the exact head, original PAE CE, rank loss, optimizer,
 # full K-pose backward, and realistic PAE masks and original training trunks.
 python -m extra_training.joint_reranker.gpu_capacity_sweep \
-  --ranks 3 --steps 3 --headroom-gib 8 \
+  --ranks 3 --steps 3 --headroom-gib 5 \
   --cases representative,worst \
   --grids '256:4,8,12,16,20,24;384:2,4,6,8,10,12;512:2,3,4,5,6,8' \
   --out-dir training/joint_reranker_capacity \
@@ -159,11 +159,11 @@ Non-OOM runtime errors are **blockers**, not a smaller-memory verdict.
 
 The driver writes `trials.csv`, `report.md` and `report.json`:
 - **Largest completed tested K** (can be near OOM)
-- **Largest K with >=8 GiB unreserved VRAM per GPU** (launch recommendation)
+- **Largest K with >=5 GiB unreserved VRAM per GPU** (launch recommendation)
 
-Do not infer K from the naive square-law alone. For a 96 GiB GPU, 8 GiB
-headroom means ideally staying at or below ~88 GiB reserved; 15% headroom
-would leave ~14.4 GiB unused and is unnecessarily conservative here.
+Do not infer K from the naive square-law alone. For a 96 GiB GPU, 5 GiB
+headroom means ideally staying at or below ~91 GiB of overall device usage;
+verify the actual per-rank free memory, not only the PyTorch allocator peak.
 If large-crop groups only support K=2–5, retain those structures and use
 masked variable-K group processing rather than discarding them.
 
