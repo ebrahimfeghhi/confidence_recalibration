@@ -149,9 +149,13 @@ def plan_epoch(
     # straggler time; shuffle their rank positions each epoch for fairness.
     rng.shuffle(bundles)
     bundles.sort(key=lambda b: -b.estimated_work)  # stable: ties remain shuffled
+    # Bucket similarly expensive interfaces first to reduce GPU stragglers,
+    # then shuffle the STEP buckets: a global descending-cost epoch would
+    # bias the optimizer by always showing large crops at high early LR.
+    cost_buckets = [bundles[i:i + world] for i in range(0, len(bundles), world)]
+    rng.shuffle(cost_buckets)
     steps: list[OptimizerStep] = []
-    for i in range(0, len(bundles), world):
-        block = bundles[i:i + world]
+    for block in cost_buckets:
         rng.shuffle(block)
         per_rank: tuple[InterfaceBatch | None, ...] = tuple(
             block[r] if r < len(block) else None for r in range(world)
