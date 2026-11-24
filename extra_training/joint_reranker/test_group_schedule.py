@@ -1,7 +1,7 @@
 """CPU-only gates for the interface-bundle plan; no Protenix/GPU needed."""
 import unittest
 
-from extra_training.joint_reranker.group_schedule import PoseRef, plan_epoch
+from extra_training.joint_reranker.group_schedule import PoseRef, plan_epoch, scaled_group_loss
 
 
 def poses(pdb, iface, n, crop, seed_base=0):
@@ -138,6 +138,19 @@ class GroupScheduleTest(unittest.TestCase):
                  + alpha * r_scale * ranking(local, group)).backward()
             summed_manual_grad += local.grad
         torch.testing.assert_close(summed_manual_grad, expected_grad)
+
+    def test_scaled_helper_does_not_double_alpha_and_retains_autograd(self):
+        from types import SimpleNamespace
+        import torch
+        step = plan_epoch(poses('x', 'x_HA', 5, 256), self.cap,
+                          world=3, seed=1, epoch=0)[0]
+        rank = next(r for r, b in enumerate(step.per_rank) if b)
+        w = torch.tensor(0.5, requires_grad=True)
+        result = SimpleNamespace(pae=w.square(), ranking=(w - 2).square(),
+                                 total=w.square() + 99 * (w - 2).square())
+        loss = scaled_group_loss(step, rank, 0, result, alpha=0.25)
+        loss.backward()
+        self.assertAlmostEqual(float(w.grad), 2 * 0.5 + 0.25 * (2 * (0.5 - 2)))
 
     def test_same_seed_different_pose_indices_wont_be_confused(self):
         p = poses('a','a_HA',5,256)
