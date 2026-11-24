@@ -39,7 +39,10 @@ REAL (the module, its weights, the objective, the optimiser):
     `--train-only` regex list, checked against its `--expect-trainable`, then narrowed again by
     `lean_readouts.dead_head_params` exactly as --lean-single does. NOTHING IS FROZEN THAT THE
     REFERENCE ARM TRAINS, and `requires_grad` is set before `dead_ops.install` runs, because that
-    module's central refusal reads `requires_grad` off the tensors.
+    module's central refusal reads `requires_grad` off the tensors. Run against 7mo52r this comes
+    out at 113 tensors from the regex (its `--expect-trainable`, so the gate passes), 102 tensors
+    and 5,347,406 parameters after --lean-single drops 75 provably gradient-free names -- measured
+    on CPU, see the verification note at the end.
   * The per-pose PAE cross-entropy is Protenix's own `protenix.model.loss.PAELoss`, constructed by
     the same expression `ProtenixLoss.__init__` uses (`loss.py:1481`, `PAELoss(**configs.loss.pae)`)
     and called with its unchanged signature, labels, mask and denominator.
@@ -58,10 +61,15 @@ SYNTHETIC (shape-faithful stand-ins for the dataset, because a probe must not ne
     _TRUNK_MOMENTS). The head DETACHES all three (`confidence.py:179-182`, stop_gradient=True), so
     their values never enter the graph that backward walks -- only the magnitude of the downstream
     activations, which is why the moments were measured instead of guessed.
-  * `x_pred_coords`: a synthetic per-chain 3.8 A CA random walk with chains placed in contact, one
-    [1,N_atom,3] tensor per pose, the antigen chain rigidly perturbed per pose. Realistic only in
-    the sense that matters here -- the pairwise distances land across the head's 3.25-52 A one-hot
-    bins instead of saturating one of them.
+  * `x_pred_coords`: a synthetic per-chain 3.8 A CA random walk, rescaled to a globular radius of
+    gyration and with the SCORED chain pair slid into 4.5 A contact; one [1,N_atom,3] tensor per
+    pose, the antigen chain rigidly perturbed per pose. Realistic only in the three senses that
+    matter: 88-98% of pairwise distances land inside the head's 3.25-52 A one-hot bins instead of
+    piling into the last one, the scored interface actually exists, and the within-token atom
+    indexing is the real one -- the frame is atoms 0/1/2 (N, CA, C) and the DISTOGRAM
+    representative atom is atom 4 (CB) on 92.6% of tokens while the PAE representative atom is the
+    CA, which is the split `pose_direction._delta` depends on and which `build_probe` checks
+    against `pose_direction.derive_frames`.
   * The PAE LABEL (`true_coordinate`, `coordinate_mask`, `frame_atom_index`, `rep_atom_mask`,
     `has_frame`) is synthetic: the label coordinates are the unperturbed geometry plus 0.6 A noise,
     and `coordinate_mask` is the measured median 98.7% present. The CE is the real function of
@@ -88,8 +96,24 @@ so capacity is independent of it; the real value must come from the measured sha
 (`training.shared_gradient_stats` / `alpha_for_shared_gradient_ratio`, r=0.3), and the README is
 explicit that the old `alpha_rank=59` does not transfer to this objective.
 
-CPU-only sanity: `python -m compileall` and an import of this module. Everything that needs a card
-is inside `build_probe`.
+WHAT WAS VERIFIED WITHOUT A CARD (the three live GPUs were off limits while this was written):
+
+  * `_build_head` and `_trainable_names` ran end to end against the REAL checkpoint on CPU (150 s):
+    lean_readouts' pinned-SHA check passed, pose_direction installed its zero-verified
+    frame_dir_proj, pose_perblock installed 9 tensors at terms onehot+dist+orient / init
+    pretrained / weights untied plus 3 orientation copies, blocks_per_ckpt resolved to None at
+    crop 256, and the trainable scope came out 113 -> 102 tensors / 5,347,406 parameters.
+  * A CPU rehearsal of the whole objective with a one-tensor stand-in in place of
+    `run_confidence_head` -- three AdamW steps, both cases, 96-512 tokens: `pae_ce` a 0-dim
+    tensor, `iptm_pooled` differentiable, `ranking_active` True on every step, nonzero gradient to
+    the head stand-in on every step and to 2 of the reranker's 24 tensors at step 1, all 24 from
+    step 2.
+  * `PAELoss(**configs.loss.pae)` and `sample_confidence.get_bin_params` against the real parsed
+    configs; `pose_direction.derive_frames` and `direction_tensor` against the synthetic unit;
+    `compileall`; import; `reference_recipe()` against 7mo52r.
+
+The head forward itself, `dead_ops.install`'s cuequivariance probe and every VRAM figure are
+UNMEASURED here, by construction -- that is what the sweep is for.
 """
 
 import json
@@ -100,7 +124,16 @@ import sys
 import torch
 
 from .integration import PosePrediction, joint_group_loss
-from .model import PAEPoseReranker, antibody_antigen_pair_mask
+from .model import PAEPoseReranker
+# THE MASK AND ROW-SET DERIVATIONS COME FROM THE LIVE BRIDGE, NOT FROM A SECOND COPY HERE. The
+# probe's whole claim is that it measures the arm the trainer will run, so the one place where the
+# probe could silently describe a different pair population than the real predict_one is this
+# derivation -- and that is exactly the drift `protenix_head_bridge`'s own header warns about.
+# `scored_pair_mask` also carries a fix a chain-list mask does not have: iptm_pooled scores ONE
+# asym pair and restricts its anchor rows to that pair, so a mask unioning every antibody chain
+# against every antigen chain would pool H-AG and L-AG rows while the baseline ipTM is the single
+# pair -- on nearly every H+L structure in the set.
+from .protenix_head_bridge import ligand_token_flag, live_row_mask, scored_pair_mask
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _EXTRA_TRAINING = os.path.dirname(_HERE)
@@ -165,6 +198,21 @@ _CASES = {
 #: Measured median fraction of label atoms with true coordinates (8 random real label npz files:
 #: median 0.9873, min 0.3016). It sets the PAE CE denominator and nothing else.
 _COORD_MASK_FRAC = 0.9873
+
+#: Globular-protein radius of gyration, Rg ~ 2.2 * N^0.38 A for N residues (the standard empirical
+#: scaling). A 3.8 A CA random walk of N steps has Rg = 3.8*sqrt(N/6), which at N=210 is 22.5 A
+#: against the 16.7 A a real 210-residue domain has -- 35% too extended, enough to push most of
+#: the distance histogram past the head's last one-hot bin at 52 A. Each synthetic chain is
+#: rescaled to this Rg. It changes no allocation (`one_hot` emits [T,T,num_bins] whichever bin a
+#: pair lands in) and no reported number; it exists so the head is not fed a degenerate distance
+#: matrix in which nearly every pair is in the same bin.
+_RG_COEF, _RG_EXP = 2.2, 0.38
+#: Closest CA-CA approach across a contacting chain pair. Real antibody-antigen interfaces sit
+#: here; the first version of this file slid chains apart by 0.9x their own extent instead and
+#: produced a "scored interface" whose closest approach was 33-42 A -- no interface at all, and a
+#: claim the module docstring was making in good faith. The assertion in _synthetic_unit exists
+#: because of that.
+_INTERFACE_GAP_A = 4.5
 
 #: Keys of the reference args.json this probe consumes. A missing one is a refusal, not a default:
 #: silently defaulting an architecture flag is how a child process ends up measuring a different
@@ -274,22 +322,64 @@ def _rotation(axis, angle, device):
 
 
 def _ca_walk(n, gen, device):
-    """n CA positions as a 3.8 A random walk, centred. 3.8 A is the CA-CA virtual bond length."""
+    """n CA positions: a 3.8 A random walk, centred, then rescaled to a globular Rg.
+
+    3.8 A is the CA-CA virtual bond length; the rescaling is _RG_COEF/_RG_EXP, see there.
+    """
     step = torch.randn(n, 3, generator=gen, device=device)
     step = step / step.norm(dim=-1, keepdim=True).clamp_min(1e-6) * 3.8
     xyz = torch.cumsum(step, dim=0)
-    return xyz - xyz.mean(dim=0, keepdim=True)
+    xyz = xyz - xyz.mean(dim=0, keepdim=True)
+    rg = float(xyz.square().sum(dim=-1).mean().sqrt())
+    want = _RG_COEF * (max(n, 1) ** _RG_EXP)
+    return xyz * (want / max(rg, 1e-6))
+
+
+def _place_chains(sizes, placement, gen, device):
+    """Per-chain CA coordinates with each chain slid into CONTACT with the ones already placed.
+
+    `placement` is [(chain_index, direction), ...] in placement order; the first entry is the
+    anchor and every later chain is slid along `direction * x_hat` until its minimum CA-CA
+    distance to the whole placed set reaches _INTERFACE_GAP_A. Bisection on that slide, which
+    assumes the minimum distance is non-decreasing in it -- true once the two blobs are disjoint,
+    and the achieved interface distance is ASSERTED by the caller rather than trusted.
+
+    Returns a list indexed by CHAIN INDEX (not placement order), because the token axis is ordered
+    by chain id and `asym_id` has to agree with it.
+    """
+    out = [None] * len(sizes)
+    placed = None
+    for chain, direction in placement:
+        xyz = _ca_walk(sizes[chain], gen, device)
+        if placed is None:
+            out[chain] = xyz
+            placed = xyz
+            continue
+        axis = torch.tensor([float(direction), 0.0, 0.0], device=device)
+        hi = 2.0 * (float(placed.norm(dim=-1).max()) + float(xyz.norm(dim=-1).max())) + 20.0
+        lo = 0.0
+        for _ in range(40):
+            mid = 0.5 * (lo + hi)
+            if float(torch.cdist(placed, xyz + mid * axis).min()) >= _INTERFACE_GAP_A:
+                hi = mid
+            else:
+                lo = mid
+        out[chain] = xyz + hi * axis
+        placed = torch.cat((placed, out[chain]), dim=0)
+    return out
 
 
 def _atoms_per_token(n_tok, ratio):
-    """Per-token atom counts averaging `ratio`, each at least 4.
+    """Per-token atom counts averaging `ratio`, each at least 5.
 
-    AT LEAST FOUR, because `frame_atom_index` takes the token's first three atoms as N, CA, C and
-    the representative atom is the second of them. A token with fewer would index another token's
-    atoms and score a pose against the wrong residue's frame -- the exact silent failure
-    `phase_j_build_cache.slice_cached_unit` guards with its `broken` mask.
+    AT LEAST FIVE, because the within-token atom indices are canonical and this construction uses
+    four of them: `frame_atom_index` is the token's atoms 0/1/2 (N, CA, C -- `pose_direction
+    .derive_frames` proves that derivation exact against the label npz on all 500 training
+    structures) and the distogram representative atom is index 4 (CB). A token with fewer atoms
+    would index the NEXT token's atoms and score a pose against the wrong residue's frame -- the
+    silent failure `phase_j_build_cache.slice_cached_unit` guards with its `broken` mask.
     """
-    base = max(4, int(ratio))
+    base = max(5, int(ratio))
     counts = [base] * n_tok
     extra = int(round(ratio * n_tok)) - base * n_tok
     for i in range(max(0, extra)):
@@ -312,18 +402,27 @@ def _synthetic_unit(crop_size, pose_count, case, device, seed=0):
     asym = torch.cat([torch.full((n,), c, dtype=torch.int64, device=device)
                       for c, n in enumerate(sizes)])
 
-    # ---- per-token CA geometry, chains placed in contact ------------------------------------
-    chains, offset = [], 0.0
-    for n in sizes:
-        xyz = _ca_walk(n, gen, device)
-        extent = float(xyz.norm(dim=-1).max())
-        # 0.9 * the mean extent puts the next chain's surface against this one's instead of
-        # concentric with it, so cross-chain distances populate the head's bins rather than
-        # collapsing into the last one (which is where a wildly separated chain would sit).
-        xyz = xyz + torch.tensor([offset, 0.0, 0.0], device=device)
-        offset += 0.9 * extent
-        chains.append(xyz)
-    ca = torch.cat(chains, dim=0)                                    # [T,3]
+    # ---- per-token CA geometry, the SCORED PAIR placed in contact ---------------------------
+    # The placement order puts the two chains of the scored pair next to each other, which a
+    # left-to-right order does NOT do for the representative layout: there the scored pair is
+    # (heavy, antigen) = (0, 2) with the light chain in between, and placing 0,1,2 in sequence left
+    # the scored pair 33-42 A apart -- i.e. no interface, so no AB/AG contacts, so a reranker
+    # encoding pairs that touch nothing. The antigen is therefore placed against the heavy chain on
+    # +x and the light chain against it on -x, which is also the real topology.
+    ab, ag = spec["pair"]
+    placement = [(ab, +1), (ag, +1)] + [(c, -1) for c in range(len(sizes)) if c not in (ab, ag)]
+    ca = torch.cat(_place_chains(sizes, placement, gen, device), dim=0)   # [T,3]
+    # ASSERTED, NOT ASSUMED, because the bisection above relies on a monotonicity that is only
+    # practically true. An interface that failed to form would not raise anywhere else: the pair
+    # mask would still be full, the ipTM would still compute, and the probe would still report a
+    # capacity -- measured on a geometry no structure has.
+    _ab_ca, _ag_ca = ca[asym == ab], ca[asym == ag]
+    _gap = float(torch.cdist(_ab_ca, _ag_ca).min())
+    if not (2.5 <= _gap <= 12.0):
+        raise RuntimeError(
+            f"the synthetic scored pair {spec['pair']} came out {_gap:.1f} A apart at its closest "
+            f"CA-CA approach; a real antibody-antigen interface is ~{_INTERFACE_GAP_A} A, so the "
+            f"chain placement failed and this geometry has no interface to score")
 
     # ---- atoms ------------------------------------------------------------------------------
     counts = _atoms_per_token(n_tok, spec["atoms_per_token"])
@@ -335,24 +434,49 @@ def _synthetic_unit(crop_size, pose_count, case, device, seed=0):
                                for t, c in enumerate(counts)])
     atom_to_tokatom = torch.cat([torch.arange(c, dtype=torch.int64, device=device)
                                  for c in counts])
-    rep_atom_index = torch.tensor([s + 1 for s in starts], dtype=torch.int64, device=device)
-    # ONE representative atom per token, so rep_atom_mask.sum() == N_token == the PAE grid side.
-    # Both the distogram mask (which selects the cdist input inside the head) and the PAE mask
-    # (which selects the loss's token coordinates) are the token's CA here. In the real cache they
-    # are separate arrays; for an all-protein, all-framed population they select the same atom,
-    # and keeping them equal is what makes the [T,T,64] logits and the [F,T] label line up.
-    rep_mask = torch.zeros(n_atom, dtype=torch.bool, device=device)
-    rep_mask[rep_atom_index] = True
+    # TWO DIFFERENT REPRESENTATIVE ATOMS, which is what the real cache has and what a first
+    # version of this file got wrong. MEASURED on 10fj (625 tokens, 4,795 atoms):
+    #   * the PAE representative atom is exactly frame_atom_index[:, 1] -- the CA, within-token
+    #     index 1 -- on every token (checked: equal for all 625).
+    #   * the DISTOGRAM representative atom is within-token index 4 (CB) on 579 tokens and index 1
+    #     on 46 (7.4%, the glycines, which have no CB). The two masks differ on 1,158 of the atoms.
+    # They both sum to N_token, so the [T,T,64] logit grid and the [F,T] label line up either way,
+    # but the head's `torch.cdist` runs on the DISTOGRAM atoms while the PAE label is built on the
+    # CA frames -- so making them the same atom would feed the head a distance matrix the real run
+    # never sees. Every 14th token takes CA here, reproducing the measured 7.1% glycine share.
+    pae_rep_index = torch.tensor([s + 1 for s in starts], dtype=torch.int64, device=device)
+    disto_rep_index = torch.tensor([s + (1 if t % 14 == 0 else 4) for t, s in enumerate(starts)],
+                                   dtype=torch.int64, device=device)
+    pae_rep_mask = torch.zeros(n_atom, dtype=torch.bool, device=device)
+    pae_rep_mask[pae_rep_index] = True
+    disto_rep_mask = torch.zeros(n_atom, dtype=torch.bool, device=device)
+    disto_rep_mask[disto_rep_index] = True
     frame_atom_index = torch.stack(
         [torch.tensor(starts, dtype=torch.int64, device=device),
-         rep_atom_index,
+         pae_rep_index,
          torch.tensor([s + 2 for s in starts], dtype=torch.int64, device=device)], dim=-1)  # [T,3]
 
     base_atoms = ca[atom_to_token] + 1.4 * torch.randn(
         n_atom, 3, generator=gen, device=device)
-    base_atoms[rep_atom_index] = ca                                  # the CA is exactly the CA
-    base_atoms[frame_atom_index[:, 0]] = ca + torch.tensor([1.46, 0.0, 0.0], device=device)
-    base_atoms[frame_atom_index[:, 2]] = ca + torch.tensor([0.0, 1.52, 0.0], device=device)
+    base_atoms[pae_rep_index] = ca                                   # the CA is exactly the CA
+    # N AND C AT THEIR REAL BOND LENGTHS AND IN A DIFFERENT DIRECTION PER RESIDUE. A fixed offset
+    # (+x for N, +y for C) was the first version and it gives every token the SAME frame
+    # orientation, which would make --frame-direction's whole input degenerate: the frame-relative
+    # unit direction of j in i's frame would then be a pure function of the displacement, carrying
+    # none of the orientation information that pathway exists to supply. Two independent random
+    # directions are almost surely non-collinear, so `expressCoordinatesInFrame`'s Gram-Schmidt
+    # never sees a degenerate frame.
+    def _unit(k):
+        v = torch.randn(k, 3, generator=gen, device=device)
+        return v / v.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+    base_atoms[frame_atom_index[:, 0]] = ca + 1.46 * _unit(n_tok)    # N, the N-CA bond
+    base_atoms[frame_atom_index[:, 2]] = ca + 1.52 * _unit(n_tok)    # C, the CA-C bond
+    # CB at the real 1.53 A CA-CB bond length, in a random direction. This is the atom the head's
+    # cdist -- and therefore its one-hot distance bins -- actually sees. ONLY on the tokens that
+    # HAVE a CB: on a glycine token the distogram atom IS the CA, and writing a displaced position
+    # there would move the CA that the frame and the PAE label are both built on.
+    has_cb = torch.tensor([t % 14 != 0 for t in range(n_tok)], dtype=torch.bool, device=device)
+    base_atoms[disto_rep_index[has_cb]] = (ca + 1.53 * _unit(n_tok))[has_cb]
 
     # ---- K poses: the antigen chain rigidly perturbed ---------------------------------------
     ag_chain = spec["pair"][1]
@@ -376,6 +500,10 @@ def _synthetic_unit(crop_size, pose_count, case, device, seed=0):
     # ---- the PAE label ----------------------------------------------------------------------
     true_coord = base_atoms + 0.6 * torch.randn(n_atom, 3, generator=gen, device=device)
     coord_mask = (torch.rand(n_atom, generator=gen, device=device) < _COORD_MASK_FRAC)
+    # The PAE label's token coordinates are the representative atoms, and `calculate_label` builds
+    # its [N_frame,N_token] mask from `coordinate_mask[rep_atom_mask]`; a missing one would delete
+    # that token's whole COLUMN.
+    coord_mask[pae_rep_index] = True
     # THE FRAME ATOMS AND THE REPRESENTATIVE ATOM ARE ALWAYS PRESENT. calculate_label drops a
     # frame unless all three of its atoms have coordinates, and at the measured 1.3% missing rate
     # a uniform draw would silently delete ~4% of the rows -- changing the loss's row count, which
@@ -390,7 +518,7 @@ def _synthetic_unit(crop_size, pose_count, case, device, seed=0):
         "has_frame": has_frame,
         "atom_to_token_idx": atom_to_token,
         "atom_to_tokatom_idx": atom_to_tokatom,
-        "distogram_rep_atom_mask": rep_mask.to(torch.float32),
+        "distogram_rep_atom_mask": disto_rep_mask.to(torch.float32),
         "is_ligand": is_ligand,
     }
     m = _TRUNK_MOMENTS
@@ -409,7 +537,7 @@ def _synthetic_unit(crop_size, pose_count, case, device, seed=0):
         "label_true_coordinate": true_coord,
         "label_coordinate_mask": coord_mask.to(torch.float32),
         "label_frame_atom_index": frame_atom_index,
-        "label_rep_atom_mask": rep_mask,
+        "label_rep_atom_mask": pae_rep_mask,
         "label_has_frame": has_frame,
         "pair": spec["pair"],
         "uncropped_pair_tokens": spec["uncropped_pair_tokens"],
@@ -597,13 +725,36 @@ def build_probe(crop_size: int, pose_count: int, case: str, device: torch.device
                      triangle_multiplicative=configs.triangle_multiplicative,
                      triangle_attention=configs.triangle_attention)
 
-    # The real PAE loss object, built by the same expression ProtenixLoss uses (loss.py:1481), so
-    # its bin boundaries, eps and reduction are the configs' and not this file's. Left in training
-    # mode (nn.Module's default, and what the trainer's ProtenixLoss is in) because
-    # PAELoss.forward's `not self.training` branch calls torch.cuda.empty_cache(), which would
-    # make the probe's peak-reserved reading optimistic and unlike the real run.
+    # WHY THIS IS PAELoss AND NOT protenix_head_bridge.make_predict_one, which is the live
+    # trainer's predict_one for this same objective. That bridge takes the CE from
+    # `loss_fn.calculate_losses` and requires two things the probe has no way to hold: a
+    # ProtenixLoss whose plddt/pde/resolved are the trainer's `_Zero` stubs (it checks the class
+    # NAME), and a `set_pae_mask` callable reaching the trainer's `_pae_keep` closure. Faking
+    # either would be a reimplementation wearing the real path's name. For CAPACITY the two agree
+    # anyway: under --pae-only + --lean-readouts pae_loss is the only term that computes anything,
+    # the other three are 1-element placeholders, and calculate_losses adds no allocation of a
+    # size that matters. For the CE VALUE they do not necessarily agree, which is one more reason
+    # this probe's CE is not a result. The mask/row-set helpers ARE imported from the bridge
+    # above, because those are the parts where disagreeing would change the measured shapes.
+    #
+    # Built by the same expression ProtenixLoss uses (loss.py:1481), so its bin boundaries, eps and
+    # reduction are the configs' and not this file's. Left in training mode (nn.Module's default,
+    # and what the trainer's ProtenixLoss is in) because PAELoss.forward's `not self.training`
+    # branch calls torch.cuda.empty_cache(), which would make the probe's peak-reserved reading
+    # optimistic and unlike the real run.
     pae_loss = PAELoss(**configs.loss.pae)
 
+    # AT STEP 1 ONLY score_head[-1].weight GETS REAL GRADIENT, and that is by design rather than a
+    # half-wired reranker. `score_head[-1]` is zero-initialised so the scores start exactly equal
+    # to the ipTM baseline, which makes d(delta)/d(anything upstream) exactly zero on the first
+    # step. Measured on CPU at K=5: 22 of the 24 reranker tensors get exactly zero,
+    # `score_head.2.weight` gets |g|max 1.6e+01, and `score_head.2.bias` gets 3.6e-06 -- which is
+    # float noise around an analytic zero, because `logsumexp(s/tau) - logsumexp(s_good/tau)` is
+    # invariant to a uniform shift of the scores and a bias is exactly a uniform shift.
+    # gpu_probe_step's check is `any(...)` over the group, so the weight alone satisfies it; from
+    # step 2 the last layer is nonzero and the pair encoder and pose attention get gradient too,
+    # which is why the sweep is run with --steps >= 2 (it refuses fewer). DO NOT read a step-0
+    # gradient ratio as a calibrated alpha for the same reason.
     reranker = PAEPoseReranker().to(device)
     reranker.train()
     reranker_params = [p for p in reranker.parameters()]
@@ -613,18 +764,34 @@ def build_probe(crop_size: int, pose_count: int, case: str, device: torch.device
     pair = unit["pair"]
     npt = int(unit["uncropped_pair_tokens"])
 
-    # THE LIGAND-AWARE ROW SET, derived the way iptm_pooled derives it (rank_loss.py:395-397) and
-    # not from a chain annotation: scatter_add of the per-ATOM is_ligand onto tokens, then > 0.
-    # `live` is what row_t pools over, so the [F,T,64] logits handed to the reranker must be sliced
-    # with the SAME boolean -- model.antibody_antigen_pair_mask's docstring is explicit that the
-    # row axis is `has_frame & ~ligand` while the TARGET axis keeps ligand columns. In this
-    # ligand-free population live == has_frame, so F == T; the derivation is kept general anyway.
-    lig_tok = (torch.zeros_like(feat["asym_id"]).scatter_add(
-        0, feat["atom_to_token_idx"], feat["is_ligand"].long()) > 0)
-    live = feat["has_frame"].reshape(-1).bool() & (~lig_tok)
-    pair_mask = antibody_antigen_pair_mask(
-        feat["asym_id"], [pair[0]], [pair[1]],
-        has_frame=feat["has_frame"].reshape(-1), is_ligand_token=lig_tok)
+    # THE SYNTHETIC UNIT'S ATOM INDEXING IS CHECKED AGAINST THE REAL DERIVATION, not asserted.
+    # `pose_direction.derive_frames` recovers (frame_atom_index, pae_rep_atom_mask) from
+    # atom_to_tokatom_idx alone, and its docstring records that derivation as verified exact
+    # against the label npz on all 500 training structures. If it reproduces what _synthetic_unit
+    # built, the synthetic unit obeys the same canonical within-token atom convention the real
+    # cache does -- which is the one property of the fake data the real pose pathway depends on.
+    _fai, _prep = pose_direction.derive_frames(feat)
+    if not (bool(torch.equal(_fai, unit["label_frame_atom_index"]))
+            and bool(torch.equal(_prep, unit["label_rep_atom_mask"]))):
+        raise RuntimeError(
+            "the synthetic unit's frame atoms / PAE representative atoms disagree with "
+            "pose_direction.derive_frames, so its within-token atom indexing is not the real "
+            "convention and --frame-direction would be fed a different geometry than it will see")
+
+    # THE ROW SET AND THE PAIR MASK ARE THE LIVE BRIDGE'S, imported rather than rebuilt. `live` is
+    # `has_frame & ~ligand` with the ligand scattered from atoms onto tokens, which is what row_t
+    # pools over -- so the [F,T,64] logits handed to the reranker must be sliced with the SAME
+    # boolean, and are. In this measured ligand-free population live == has_frame and F == T; the
+    # derivation stays general because the population is an observation, not a guarantee.
+    lig_tok = ligand_token_flag(feat)
+    live = live_row_mask(feat)
+    pair_mask = scored_pair_mask(feat, pair)
+    if int(lig_tok.sum()) or int(live.sum()) != unit["n_token"]:
+        raise RuntimeError(
+            f"the synthetic unit produced {int(lig_tok.sum())} ligand token(s) and "
+            f"{int(live.sum())} live row(s) of {unit['n_token']}; it is built ligand-free and "
+            f"all-framed because every one of the 40 real trunks sampled is, so this means the "
+            f"construction drifted from what the docstring claims")
 
     print(f"probe: case={case} crop={crop_size} K={pose_count} chains={unit['chain_sizes']} "
           f"n_atom={unit['n_atom']} scored pair={pair} uncropped pair tokens={npt} "
