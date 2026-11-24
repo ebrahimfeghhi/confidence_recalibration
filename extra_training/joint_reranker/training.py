@@ -46,6 +46,12 @@ class JointLoss:
     ranking: Tensor
     ranking_active: bool
     scores: Tensor
+    # THE INPUT ipTM, CARRIED SO THE RESIDUAL IS RECOVERABLE. scores = iptm + correction, and the
+    # correction's size is what says whether a calibration was taken at step 0 (zero-initialised
+    # final layer => correction exactly 0) or after the reranker started moving. Without this the
+    # only way to get it is a second forward over every pose, which doubles the cost of a
+    # measurement that is supposed to be cheap.
+    iptm: Tensor
 
 
 def joint_objective(
@@ -86,6 +92,7 @@ def joint_objective(
         ranking=ranking,
         ranking_active=active,
         scores=scores,
+        iptm=iptm_scores,
     )
 
 
