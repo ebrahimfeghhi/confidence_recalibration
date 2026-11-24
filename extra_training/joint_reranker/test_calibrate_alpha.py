@@ -84,6 +84,7 @@ class CalibrateAlphaTests(unittest.TestCase):
         self.assertAlmostEqual(s["alpha_by_ratio"]["0.3"], 0.3 * vals[2], places=6)
         self.assertAlmostEqual(s["recommended_alpha"], s["alpha_by_ratio"]["0.3"], places=9)
         self.assertGreaterEqual(s["spread_factor"], 1.0)
+        self.assertNotIn("p10_alpha_parity", s)   # min/max, not percentiles
         self.assertIn("Recommended start", format_report(s))
 
     def test_window_accumulates_over_groups_not_per_pose(self):

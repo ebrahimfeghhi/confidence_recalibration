@@ -23,12 +23,18 @@ rather than the neutral one. A positive cosine would mean the ranking term is mo
 the PAE term and alpha could go higher.
 
 STEP-0 CAVEAT, and it is not small. The reranker's final correction layer is zero-initialised, so
-at step 0 the scores are exactly the input ipTM and the gradient reaching the head through the
-ranking path is the ipTM path alone -- the pair encoder and attention block receive gradient, but
-the head sees the ranking term as if the reranker were the identity. The README therefore says to
-RE-MEASURE after the residual stops being zero; `measure_window` records `residual_rms` so a
-calibration taken while it is still ~0 is identifiable afterwards rather than mistaken for a
-converged ratio.
+at step 0 delta is exactly 0, scores are exactly the input ipTM, and the ranking gradient reaches
+the head through the ipTM path ALONE: measured on CPU, `rank -> PAE logits` through the reranker is
+max|g| = 0.0 exactly, and 22 of the 24 reranker tensors receive exactly zero ranking gradient.
+Only `score_head[-1].weight` moves (max|g| 5.4e-2); `score_head[-1].bias` never gets real gradient
+at all, at step 0 or ever, because logsumexp(s/tau) - logsumexp(s_good/tau) is shift-invariant.
+The pair encoder and the cross-pose attention block stay frozen until that weight leaves zero, and
+all 24 tensors move after one perturbation of it.
+
+So an alpha fixed at step 0 is an alpha for the OLD ipTM-only objective -- the reranker is
+literally the identity there. The README requires a re-measure once the residual is non-zero, and
+`measure_window` records `residual_rms` precisely so a step-0 calibration is identifiable
+afterwards rather than mistaken for a converged ratio.
 
 This module runs no training and updates no weights: every gradient is taken with
 torch.autograd.grad and discarded.
@@ -125,8 +131,11 @@ def summarise(windows: Sequence[WindowStat], ratios=(0.1, 0.3, 1.0)) -> dict:
         "median_cosine": statistics.median([w.cosine for w in windows]),
         "median_pae_norm": statistics.median([w.pae_norm for w in windows]),
         "median_rank_norm": statistics.median([w.rank_norm for w in windows]),
-        "p10_alpha_parity": min(w.alpha_parity for w in windows),
-        "p90_alpha_parity": max(w.alpha_parity for w in windows),
+        # MIN AND MAX, NAMED AS SUCH. Over a handful of windows these are the full range, not the
+        # 10th/90th percentile; calling them p10/p90 overstates the spread, and the spread is the
+        # part that says how precisely alpha is known.
+        "min_alpha_parity": min(w.alpha_parity for w in windows),
+        "max_alpha_parity": max(w.alpha_parity for w in windows),
         "median_residual_rms": statistics.median([w.residual_rms for w in windows]),
         "groups": sum(w.n_groups for w in windows),
         "ranking_active_groups": sum(w.ranking_active for w in windows),
@@ -135,8 +144,8 @@ def summarise(windows: Sequence[WindowStat], ratios=(0.1, 0.3, 1.0)) -> dict:
     out["recommended_alpha"] = out["alpha_by_ratio"]["0.3"]
     # THE SPREAD IS PART OF THE ANSWER. A 16x spread means alpha is known to ~1.5x, not two
     # digits, and reporting a single number without it invites over-reading the next arm.
-    out["spread_factor"] = (out["p90_alpha_parity"] / out["p10_alpha_parity"]
-                            if out["p10_alpha_parity"] > 0 else float("inf"))
+    out["spread_factor"] = (out["max_alpha_parity"] / out["min_alpha_parity"]
+                            if out["min_alpha_parity"] > 0 else float("inf"))
     return out
 
 
@@ -151,7 +160,7 @@ def format_report(summary: dict) -> str:
         f"- median ||g_rank|| = {summary['median_rank_norm']:.4e}",
         f"- median cosine(g_PAE, g_rank) = {summary['median_cosine']:+.4f}",
         f"- alpha at parity (ratio 1.0) = {summary['median_alpha_parity']:.4g}"
-        f"   [p10 {summary['p10_alpha_parity']:.4g}, p90 {summary['p90_alpha_parity']:.4g},"
+        f"   [min {summary['min_alpha_parity']:.4g}, max {summary['max_alpha_parity']:.4g},"
         f" spread {summary['spread_factor']:.1f}x]",
         f"- median residual spread at measurement time = {summary['median_residual_rms']:.4e}",
         "",

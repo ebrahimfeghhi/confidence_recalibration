@@ -1923,11 +1923,12 @@ def main():
                 raise SystemExit(f"STOP: --extra-eval {_spec!r}: {_kv!r} is not key=value.")
             _k, _v = _kv.split("=", 1)
             _d[_k.strip()] = _v.strip()
-        _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every"})
+        _unknown = sorted(set(_d) - {"name", "pool", "fold", "seed_base", "budget", "every",
+                                     "mixed"})
         if _unknown:
             raise SystemExit(f"STOP: --extra-eval {_spec!r} has unknown key(s) {_unknown}. "
-                             f"Known: name, pool, fold, seed_base, budget, every. The crop_tokens "
-                             f"key went with --crop-tokens on 2026-11-13.")
+                             f"Known: name, pool, fold, seed_base, budget, every, mixed. The "
+                             f"crop_tokens key went with --crop-tokens on 2026-11-13.")
         for _req in ("name", "pool", "every"):
             if not _d.get(_req):
                 raise SystemExit(f"STOP: --extra-eval {_spec!r} is missing {_req}=.")
@@ -1956,8 +1957,31 @@ def main():
                              f"integers ({_e}).")
         if _ev <= 0:
             raise SystemExit(f"STOP: --extra-eval {_nm}: every={_ev} must be positive.")
+        # mixed=1 FORWARDS --mixed-budget, WHICH IS THE ONLY WAY TO SCORE THE WHOLE TRAINING POOL
+        # IN ONE PASS. The pool's folded depth is 15 seeds for 459 structures and 1 for 394, so a
+        # uniform --budget 15 stops on 5,516 of 12,795 intended units -- the guard being right.
+        # phase_k_eval consumes training/fulltrain_mixed/seed_manifest.json (mixed:true) under
+        # --mixed-budget and enforces the full cross product at each structure's OWN depth.
+        #
+        # IT IS DOUBLE-LOCKED ON PURPOSE, and this key is the trainer's half of that lock. The
+        # manifest is forwarded automatically for any pool directory holding a seed_manifest.json,
+        # so WITHOUT this key a mixed manifest left beside a pool would hard-stop every in-run
+        # pass; and the flag without a mixed manifest is a hard stop too. Neither can be reached
+        # by accident, which is the point -- a pass labelled "budget 15" must never quietly have
+        # chosen among 5 candidates for part of its pool.
+        _mx = str(_d.get("mixed", "")).strip().lower()
+        if _mx not in ("", "0", "1", "true", "false"):
+            raise SystemExit(f"STOP: --extra-eval {_nm}: mixed={_mx!r} must be 0 or 1.")
+        _mixed_ee = _mx in ("1", "true")
+        if _mixed_ee:
+            _sman_ee = os.path.join(os.path.dirname(os.path.abspath(_d["pool"])),
+                                    "seed_manifest.json")
+            if not os.path.exists(_sman_ee):
+                raise SystemExit(f"STOP: --extra-eval {_nm}: mixed=1 but no seed_manifest.json "
+                                 f"beside the pool ({_sman_ee}). Mixed depth is defined ONLY by "
+                                 f"the manifest, so a pool without one cannot be scored mixed.")
         _EXTRA_EVAL.append(dict(name=_nm, pool=_d["pool"], fold=_ef, seed_base=_sb,
-                                budget=_bg, every=_ev))
+                                budget=_bg, every=_ev, mixed=_mixed_ee))
     _TOK_DROP = (a.token_keep_union >= 0.0) or (a.token_keep_other >= 0.0)
     if _TOK_DROP:
         if not (a.token_keep_union >= 0.0 and a.token_keep_other >= 0.0):
@@ -8129,13 +8153,24 @@ def main():
         # before clipping and stepping. Each rank only ever saw its own units, so a per-rank
         # measurement is not the optimiser's gradient, and the ranking contributions cancel both
         # within a seed and across ranks. Found in review of 523013a.
+        # NO EARLY-OUT BEFORE THE COLLECTIVE, AND THE VECTOR IS ALWAYS THE SAME LENGTH. This is
+        # the SAME defect _gn_emit documents at :3175, which was never carried here: the previous
+        # `if not fl: continue` skipped the all_reduce on any rank whose probe window measured no
+        # gradient for one of the two names, while its peers entered it -- a hang until
+        # --dist-timeout-min expires, not an error. pr["sum"]["rank"] is filled only inside
+        # `if (a.grad_probe or _gn_on[0]) and _cs_src:` (:7422), and _cs_src is [] whenever
+        # _xs_coef holds no entry for that pose -- an all-good or all-bad interface group. So a
+        # rank whose whole window was uncontrasted really can take this branch while the others do
+        # not. Every rank now walks trainable_params in full and substitutes zeros, so the length
+        # is a function of the parameter list alone and participation is unconditional. Found in
+        # review for issue #16; --grad-probe on 3 ranks is step 2 of the alpha calibration.
         vecs = {}
         for nm in ("pae", "rank"):
             got = pr["sum"].get(nm) or {}
-            fl = [got[n_].flatten() for n_ in names if got.get(n_) is not None]
-            if not fl:
-                continue
-            v = torch.cat(fl)
+            v = torch.cat([(got[n_].reshape(-1) if got.get(n_) is not None
+                            else torch.zeros(pp_.numel(), device=pp_.device,
+                                             dtype=torch.float32))
+                           for n_, pp_ in trainable_params])
             if world > 1:
                 host = v.cpu()
                 dist.all_reduce(host, op=dist.ReduceOp.SUM)
@@ -9047,7 +9082,7 @@ def main():
         return mean
 
     def eval_checkpoint(step, epoch, train_pool="", tag="", fold="",
-                        seed_base=-1, budget=0):
+                        seed_base=-1, budget=0, mixed=False):
         """One sharded evaluation. tag names its outputs. Nothing here crops.
 
         tag EXISTS BECAUSE TWO PASSES CAN SHARE A POOL. A cropped and an uncropped reading of
@@ -9131,6 +9166,12 @@ def main():
             _sman = os.path.join(_prd, "seed_manifest.json")
             if os.path.exists(_sman):
                 extra += ["--seed-manifest", _sman]
+                # --mixed-budget GOES WITH THE MANIFEST, not beside it. phase_k_eval hard-stops
+                # when a mixed:true manifest arrives without the flag AND when the flag arrives
+                # without one, so passing it here -- only when the spec asked -- is what lets a
+                # mixed-depth pool be scored in-run while every uniform pool keeps its assertion.
+                if mixed:
+                    extra += ["--mixed-budget"]
         if a.eval_pae_loss:
             extra = extra + ["--pae-loss"]
         # THE EVALUATOR MUST RUN THE SAME FUNCTION WE TRAINED. Without this it builds a head with
@@ -10947,7 +10988,7 @@ def main():
                     eval_checkpoint(step, ep + 1, train_pool=_ee["pool"],
                                     tag=_ee["name"],
                                     fold=_ee["fold"], seed_base=_ee["seed_base"],
-                                    budget=_ee["budget"])
+                                    budget=_ee["budget"], mixed=_ee.get("mixed", False))
                 if world > 1:
                     dist.barrier()
         # NOTHING MAY BE LEFT HERE. Every epoch flushes its own remainder above, before evaluating,

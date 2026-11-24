@@ -125,6 +125,8 @@ def make_predict_one(
     antigen_asym_ids,
     pool: str = "max",
     autocast: bool = True,
+    set_pae_mask: Callable[[PoseInput], None] | None = None,
+    require_pae_only: bool = True,
 ) -> Callable[[PoseInput], PosePrediction]:
     """Build the `predict_one` closure for ONE scored interface.
 
@@ -159,6 +161,32 @@ def make_predict_one(
             f"iptm_pair {(_i, _j)} does not straddle the interface: antibody chains {sorted(_ab)}, "
             f"antigen chains {sorted(_ag)}. The reranker would then correct an intra-side ipTM.")
 
+    # --pae-only IS NOT OPTIONAL HERE, AND THE FIELD NAME IS WHY. calculate_losses returns the
+    # WHOLE confidence loss; it is the PAE cross-entropy alone only because --pae-only replaced
+    # plddt/pde/resolved with _Zero stubs (phase_k_train.py:2600-2622). Without it, a field called
+    # pae_ce would silently carry four terms and the alpha calibration would be measuring four
+    # gradients against the ranking term. Checked against the real module, not a flag string.
+    if require_pae_only:
+        _stubbed = [n for n in ("plddt_loss", "pde_loss", "resolved_loss")
+                    if type(getattr(loss_fn, n, None)).__name__ == "_Zero"]
+        if len(_stubbed) != 3:
+            raise ValueError(
+                f"the joint objective needs --pae-only: of plddt/pde/resolved only {_stubbed} are "
+                f"stubbed, so calculate_losses would return the full confidence loss and the field "
+                f"named pae_ce would carry four terms. Pass require_pae_only=False only for an arm "
+                f"that DELIBERATELY trains all four, and rename what you report.")
+
+    # THE PER-POSE PAE MASK MUST BE SET BY THE CALLER, PER POSE. pae_loss.forward and
+    # calculate_label are monkeypatched to read the closure dict _pae_keep (phase_k_train.py:2627),
+    # which only _set_pae_mask fills (:3800). This bridge cannot reach that closure, so a launcher
+    # that forgets the call gets whichever pose's mask was left behind -- a stale [F,T] of the
+    # wrong crop either shape-errors or, at equal shapes, silently masks the wrong chains.
+    if set_pae_mask is None:
+        raise ValueError(
+            "set_pae_mask is required: pass a callable that invokes the trainer's _set_pae_mask "
+            "for THIS pose before the loss is computed. Passing None would reuse the previous "
+            "pose's scored-pair mask, which at equal crop shapes fails silently.")
+
     import rank_loss as RKL
 
     def predict_one(pose: PoseInput) -> PosePrediction:
@@ -168,6 +196,7 @@ def make_predict_one(
         # configs, inplace_safe False, chunk_size None -- Protenix's own config says chunk_size
         # "should set to null for normal training" and --chunk-size 64 measured 5.8x slower here
         # for no memory saving.
+        set_pae_mask(pose)
         ctx = (torch.autocast(device_type="cuda", dtype=torch.bfloat16) if autocast
                else torch.autocast(device_type="cuda", enabled=False))
         with ctx:

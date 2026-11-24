@@ -64,10 +64,16 @@ class _StubHead(nn.Module):
         return z, lg, z, z
 
 
+class _Zero:
+    """Stands in for the --pae-only stub, matched BY CLASS NAME as the bridge checks it."""
+
+
 class _StubLoss:
     """calculate_losses returning a LIVE scalar built from the prediction, as the real one does."""
-    def __init__(self, detach=False):
+    def __init__(self, detach=False, pae_only=True):
         self.detach = detach
+        if pae_only:
+            self.plddt_loss = self.pde_loss = self.resolved_loss = _Zero()
 
     def calculate_losses(self, feat, pred, labels, mode="train"):
         v = pred["pae"].square().mean()
@@ -106,7 +112,8 @@ class HeadBridgeTests(unittest.TestCase):
         npt = int(((feat["asym_id"] == 0) | (feat["asym_id"] == 1)).sum())
         mk = lambda ab, ag, pair=(0, 1): make_predict_one(  # noqa: E731
             _StubHead(n), _configs(), _StubLoss(), iptm_pair=pair, n_pair_tokens=npt,
-            antibody_asym_ids=ab, antigen_asym_ids=ag, autocast=False)
+            antibody_asym_ids=ab, antigen_asym_ids=ag, autocast=False,
+            set_pae_mask=lambda _p: None)
         with self.assertRaisesRegex(ValueError, "overlap"):
             mk((0, 1), (1,))
         with self.assertRaisesRegex(ValueError, "nonempty"):
@@ -143,7 +150,7 @@ class HeadBridgeTests(unittest.TestCase):
         npt = int(((feat["asym_id"] == 0) | (feat["asym_id"] == 1)).sum())
         fn = make_predict_one(head, _configs(), loss, iptm_pair=(0, 1), n_pair_tokens=npt,
                               antibody_asym_ids=(0,), antigen_asym_ids=(1,), pool="max",
-                              autocast=False)
+                              autocast=False, set_pae_mask=lambda _p: None)
         pred = fn(self._pose(feat, n))
         self.assertEqual(tuple(pred.pae_logits.shape), (int(live_row_mask(feat).sum()), n, NB))
         self.assertEqual(tuple(pred.pair_mask.shape), pred.pae_logits.shape[:2])
@@ -165,7 +172,8 @@ class HeadBridgeTests(unittest.TestCase):
         npt = int(((feat["asym_id"] == 0) | (feat["asym_id"] == 1)).sum())
         fn = make_predict_one(_StubHead(n), _configs(), _StubLoss(detach=True),
                               iptm_pair=(0, 1), n_pair_tokens=npt,
-                              antibody_asym_ids=(0,), antigen_asym_ids=(1,), autocast=False)
+                              antibody_asym_ids=(0,), antigen_asym_ids=(1,), autocast=False,
+                              set_pae_mask=lambda _p: None)
         with self.assertRaisesRegex(ValueError, "detached"):
             fn(self._pose(feat, n))
 
@@ -173,7 +181,7 @@ class HeadBridgeTests(unittest.TestCase):
         """An unpinned n_pair_tokens is the crop-dependent d0 bug; refuse rather than default."""
         with self.assertRaisesRegex(ValueError, "UNCROPPED"):
             make_predict_one(_StubHead(4), _configs(), _StubLoss(), iptm_pair=(0, 1),
-                             n_pair_tokens=0, antibody_asym_ids=(0,), antigen_asym_ids=(1,))
+                             n_pair_tokens=0, antibody_asym_ids=(0,), antigen_asym_ids=(1,), set_pae_mask=lambda _p: None)
 
     def test_batched_sample_axis_is_refused(self):
         """A leading axis > 1 means several poses were batched; attributing them is the bug."""
@@ -188,9 +196,31 @@ class HeadBridgeTests(unittest.TestCase):
         npt = int(((feat["asym_id"] == 0) | (feat["asym_id"] == 1)).sum())
         fn = make_predict_one(_Batched(n), _configs(), _StubLoss(), iptm_pair=(0, 1),
                               n_pair_tokens=npt, antibody_asym_ids=(0,), antigen_asym_ids=(1,),
-                              autocast=False)
+                              autocast=False, set_pae_mask=lambda _p: None)
         with self.assertRaisesRegex(ValueError, "ONE pose per forward"):
             fn(self._pose(feat, n))
+
+
+    def test_pae_only_and_the_mask_hook_are_required(self):
+        feat = _feat()
+        n = feat["asym_id"].shape[0]
+        npt = int(((feat["asym_id"] == 0) | (feat["asym_id"] == 1)).sum())
+        base = dict(iptm_pair=(0, 1), n_pair_tokens=npt, antibody_asym_ids=(0,),
+                    antigen_asym_ids=(1,), autocast=False)
+        # without --pae-only, `pae_ce` would carry pLDDT + PDE + resolved too
+        with self.assertRaisesRegex(ValueError, "--pae-only"):
+            make_predict_one(_StubHead(n), _configs(), _StubLoss(pae_only=False),
+                             set_pae_mask=lambda _p: None, **base)
+        # and a missing mask hook would reuse the previous pose's scored-pair mask
+        with self.assertRaisesRegex(ValueError, "set_pae_mask is required"):
+            make_predict_one(_StubHead(n), _configs(), _StubLoss(), **base)
+        # the hook is called ONCE PER POSE, before the loss
+        seen = []
+        fn = make_predict_one(_StubHead(n), _configs(), _StubLoss(),
+                              set_pae_mask=lambda p: seen.append(p.pose_id), **base)
+        fn(self._pose(feat, n))
+        fn(self._pose(feat, n))
+        self.assertEqual(len(seen), 2)
 
 
 if __name__ == "__main__":
