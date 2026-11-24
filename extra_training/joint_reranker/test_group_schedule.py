@@ -106,6 +106,39 @@ class GroupScheduleTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'verified'):
             plan_epoch(poses('a','a_HA',5,768),self.cap,world=3,seed=1,epoch=0)
 
+    def test_manual_rank_sum_matches_two_global_mean_gradients(self):
+        import torch
+        ps = (poses('deep', 'deep_HA', 75, 256)
+              + poses('shallow', 'shallow_HA', 5, 512)
+              + poses('medium', 'medium_HA', 18, 384))
+        step = plan_epoch(ps, self.cap, world=3, seed=7, epoch=0)[0]
+        alpha = 0.4
+
+        def pae(w, p):
+            return (w * (p.pose_index + 1) / 5.0 - 0.7).square()
+
+        def ranking(w, group):
+            return (w * len(group) / 20.0 - 0.3).square()
+
+        whole = torch.tensor(1.3, requires_grad=True)
+        all_poses = [p for b in step.per_rank if b for g in b.groups for p in g]
+        global_pae = sum(pae(whole, p) for p in all_poses) / step.n_poses
+        global_rank = (sum(sum(ranking(whole, g) for g in b.groups) / len(b.groups)
+                           for b in step.per_rank if b) / step.n_interfaces)
+        expected_grad = torch.autograd.grad(global_pae + alpha * global_rank, whole)[0]
+
+        summed_manual_grad = 0.0
+        for rank, batch in enumerate(step.per_rank):
+            if batch is None:
+                continue
+            local = torch.tensor(1.3, requires_grad=True)
+            for gi, group in enumerate(batch.groups):
+                p_scale, r_scale = step.loss_coefficients(rank, gi)
+                (p_scale * sum(pae(local, p) for p in group) / len(group)
+                 + alpha * r_scale * ranking(local, group)).backward()
+            summed_manual_grad += local.grad
+        torch.testing.assert_close(summed_manual_grad, expected_grad)
+
     def test_same_seed_different_pose_indices_wont_be_confused(self):
         p = poses('a','a_HA',5,256)
         self.assertEqual(len({(x.seed,x.sample_index) for x in p}),5)
