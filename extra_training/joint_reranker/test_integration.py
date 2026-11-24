@@ -3,7 +3,11 @@
 import unittest
 
 import torch
-from torch import nn, functional as F
+from torch import nn
+# NOT `from torch import functional as F`. That binds torch.functional, which has no
+# cross_entropy, so both live-gradient gates died with AttributeError before reaching the
+# assertion they exist to make. torch.nn.functional is the one with the loss functions.
+from torch.nn import functional as F
 
 from extra_training.joint_reranker.integration import PosePrediction, joint_group_loss
 from extra_training.joint_reranker.model import PAEPoseReranker, antibody_antigen_pair_mask
@@ -20,7 +24,11 @@ class IntegrationTests(unittest.TestCase):
     def predict(self, pose):
         x = self.head(pose)
         ce = F.cross_entropy(x[self.mask], torch.zeros(int(self.mask.sum()), dtype=torch.long))
-        score = x.softmax(dim=-1)[self.mask, 0].mean()
+        # `[self.mask, 0]` DOES NOT WORK: a 2-D bool mask already consumes dims 0 and 1, and
+        # PyTorch resolves the trailing integer against dim 1 rather than dim 2, so the index
+        # raises "shape of the mask [6,6] ... does not match the indexed tensor [6,64]". Mask
+        # first, then take the bin -- which is also what the real adapter does.
+        score = x.softmax(dim=-1)[self.mask][:, 0].mean()
         return PosePrediction(x, self.mask, score, ce)
 
     def test_two_live_losses_reach_head_and_reranker(self):

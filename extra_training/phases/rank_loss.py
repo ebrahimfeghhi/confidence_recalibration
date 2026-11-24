@@ -356,7 +356,9 @@ DEFAULT_REL_STD_FLOOR = 0.02
 def iptm_pooled(pae_logits, feat, configs, pair, pool="mean", n_pair_tokens=None):
     """chain_pair ipTM for ONE pose and pair, pooled over anchor rows by `pool`.
 
-    pool="max" is shipped ipTM and reproduces iptm() exactly. pool="mean" averages the anchor
+    pool="max" with no n_pair_tokens is shipped ipTM and reproduces iptm() exactly; with a
+    pinned n_pair_tokens it is the same row_t construction as the mean, reduced by max instead,
+    which is the only way to hold d0 fixed across crop sizes (the vendor kernel recomputes it). pool="mean" averages the anchor
     rows instead, which measured +0.0140 +- 0.0034 (t=4.06) better than the max at the ORACLE and
     -0.0130 +- 0.0048 (t=-2.68) WORSE on the current trained head -- i.e. better if trained for,
     worse if swapped in. Differentiable when pae_logits requires grad.
@@ -367,22 +369,24 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean", n_pair_tokens=None
     mean; their t_i is 0 by construction and including them would drag the mean toward zero by an
     amount set by crop size rather than by pose quality.
     """
-    if pool == "max":
-        # THE MAX PATH CANNOT PIN d0. iptm() delegates to Protenix's calculate_chain_based_ptm,
-        # which derives d0 from the asym_id it is handed -- the CROPPED one. Patching vendor code
-        # to accept an override is not worth it for a path this arm does not train on
-        # (rank_pool=mean), so it refuses instead of silently scoring with a different kernel than
-        # the target. Raised in external review.
-        if n_pair_tokens:
-            raise SystemExit(
-                "STOP: --rank-pool max cannot be used with a cropped run. iptm() computes d0 "
-                "inside Protenix's calculate_chain_based_ptm from the cropped asym_id, so the "
-                "predicted score would use a different TM kernel than the rel target, which pins "
-                "d0 at the uncropped chain-pair count. Use --rank-pool mean, or extend "
-                "pae_row_weight to cover the max pooling.")
+    # THE LEGACY MAX PATH IS UNCHANGED WHEN NO d0 IS PINNED. iptm() delegates to Protenix's
+    # calculate_chain_based_ptm, which derives d0 from the asym_id it is handed, so on an
+    # UNCROPPED pass that is already the uncropped chain-pair length and the two agree. Kept
+    # byte-identical for backward compatibility: every number this project has reported on the
+    # max pooling came through here.
+    if pool == "max" and not n_pair_tokens:
         return iptm(pae_logits, feat, configs, pair)
-    if pool != "mean":
+    if pool not in ("mean", "max"):
         raise ValueError(f"pool must be 'mean' or 'max', got {pool!r}")
+    # MAX WITH A PINNED d0 GOES THROUGH row_t, NOT THROUGH iptm(). This used to be a hard refusal,
+    # because under --crop-pool the vendor function would silently recompute d0 from the cropped
+    # asym_id and score the prediction with a different TM kernel than the target -- at a
+    # 600 -> 256 pair-token crop, w(10 A) moves 0.423 -> 0.259. Removing the guard while still
+    # calling iptm() would reintroduce exactly that bug, so the fixed-d0 max is built from the
+    # SAME differentiable construction the mean uses (model asym IDs, has_frame, ligand
+    # exclusion, cross-chain targets, pinned n_pair_tokens) and differs from it in the pooling
+    # reduction alone. Decided for the joint reranker on 2026-11-24, GitHub issue #16: the
+    # reranker's residual baseline is max-pooled ipTM because that is what selection deploys.
     import pae_row_weight as rw
     from protenix.model import sample_confidence
     bp = sample_confidence.get_bin_params(configs.loss.pae)
@@ -414,7 +418,11 @@ def iptm_pooled(pae_logits, feat, configs, pair, pool="mean", n_pair_tokens=None
     keep = cnt > 0
     if not bool(keep.any()):
         return None
-    return t[keep].mean()
+    # ROWS WITH NO SCORED TARGET ARE EXCLUDED FROM BOTH REDUCTIONS. Their t_i is 0 by
+    # construction, which drags a mean toward zero by an amount set by crop size rather than pose
+    # quality; for the max it is harmless but excluding them keeps the two pooled statistics
+    # defined over exactly the same row set, which is what makes them comparable.
+    return t[keep].max() if pool == "max" else t[keep].mean()
 
 
 def _wmean(w, err):
