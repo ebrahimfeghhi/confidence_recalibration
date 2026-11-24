@@ -84,6 +84,20 @@ class OptimizerStep:
         return k / self.n_poses, 1.0 / (self.n_interfaces * len(batch.groups))
 
 
+def scaled_group_loss(step: OptimizerStep, rank: int, group_index: int,
+                      joint_result, *, alpha: float):
+    """Differentiable per-group objective for legacy manual SUM grad reduction.
+
+    IMPORTANT: use joint_result.pae and .ranking, *not* .total -- .total
+    already contains alpha and a mean over only the current K poses, and is
+    not correctly normalized for three ranks or variable group sizes.
+    """
+    if alpha < 0:
+        raise ValueError("alpha must be nonnegative")
+    pae_scale, rank_scale = step.loss_coefficients(rank, group_index)
+    return joint_result.pae * pae_scale + joint_result.ranking * (alpha * rank_scale)
+
+
 def _chunks_without_one_tail(items: list[PoseRef], cap: int) -> tuple[tuple[PoseRef, ...], ...]:
     """Use all poses exactly once; avoid K=1 tails whenever feasible."""
     chunks = [items[i:i + cap] for i in range(0, len(items), cap)]
