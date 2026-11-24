@@ -100,9 +100,12 @@ write `predict_one(pose) -> PosePrediction` following `integration.py`:
 - Compute **original** differentiable PAE cross-entropy using the existing
   `loss_fn.pae_loss` and its original label/mask rules, without changing
   its denominator or weighting; return the scalar as `pae_ce`.
-- Compute **differentiable** per-interface ipTM with
-  `rank_loss.iptm_pooled` using matching max-pooling convention and the
-  uncropped scored chain-pair token count for d0. Never `.item()` it.
+- Compute **differentiable max-pooled** per-interface ipTM with
+  `rank_loss.iptm_pooled(..., pool="max", n_pair_tokens=uncropped_pair_count)`.
+  **Adapter prerequisite:** extend `iptm_pooled`'s `pool="max"` branch to
+  support an explicit fixed d0 via `pae_row_weight.row_t`, returning
+  `t[cnt > 0].max()`; retain the existing vendor `iptm()` path when
+  `n_pair_tokens is None`. Never `.item()` or detach the returned scalar.
 - Build `antibody_antigen_pair_mask` solely from the model's chain metadata,
   using `has_frame`; never read `ost_json` to choose a chain from a true
   reference at inference.
@@ -138,6 +141,53 @@ joint.total.backward()  # head and reranker both update (optimizer.step later)
 
 The `gpu_probe_step.py` requires a concrete `build_probe` factory (see its
 module docstring); **no runnable Protenix-specific factory is included yet**.
+
+## Decided ipTM residual: max pooling, FIXED uncropped d0 (agent update)
+
+**The previous suggestion to use mean pooling for v1 is superseded.** Use
+max-pooled ipTM plus a learned correction for the initial joint reranker,
+with the d0 normalization pinned to the uncropped scored model-chain pair
+length for all crops of that interface. The existing `rank_loss.iptm_pooled`
+max path refuses `n_pair_tokens` because it dispatches to the Protenix
+vendor function which chooses d0 from cropped asym_ids. Do not remove the
+guard and continue calling the vendor function: that would silently ignore
+our fixed-d0 requirement. Implement this minimal nonvendor max path instead:
+
+```python
+# extra_training/phases/rank_loss.py, inside iptm_pooled(...)
+if pool == "max" and n_pair_tokens is None:
+    return iptm(pae_logits, feat, configs, pair)  # preserve old behavior
+if pool not in ("mean", "max"):
+    raise ValueError(...)
+# Share the existing mean-path mask / live / row_t setup, including ligand
+# exclusion and uncropped n_pair_tokens when provided.
+t, cnt = rw.row_t(pae_logits, live, tm, n_pair_tokens=_npt,
+                  min_bin=bp["min_bin"], max_bin=bp["max_bin"])
+if t is None or not bool((cnt > 0).any()):
+    return None
+valid = t[cnt > 0]
+return valid.max() if pool == "max" else valid.mean()
+```
+
+Here `pae_logits` is the ORIGINAL full-token-grid tensor accepted by
+`rank_loss.iptm_pooled`, **not** the frame-row-sliced `[F,T,64]` tensor
+passed to `PAEPoseReranker`; compute both from the **same live head output**.
+Ensure all masks use model-chain IDs from deployable metadata and match the
+original scorer's exclusion of ligand tokens from anchor rows. A one-interface
+ranking group must share a single fixed uncropped token count and never mix
+other interfaces or reference-derived chain maps.
+
+Numerical review gates: with no override, old `pool=max` behavior must be
+unchanged; with `n_pair_tokens` equal to the actual chain-pair token count,
+`row_t(...).max()` must match the original Protenix max selector on an
+uncropped fixture (including its correct chain remap and bin parameters);
+with a 256/384/512 crop and fixed uncropped count, assert the same d0 is
+actually used. Prove nonzero gradients to the live PAE/head parameters,
+correct handling of `cnt==0` rows, and batch/sample/crop parity. The
+zero-init residual yields the **fixed-d0 cropped max score**, which can
+differ from the shipped *uncropped* max selector: compare shipped separately
+on the same candidate poses for evaluation, and do not claim literal
+uncropped shipped parity at step 0.
 
 ## CPU gates, before consuming GPUs
 
