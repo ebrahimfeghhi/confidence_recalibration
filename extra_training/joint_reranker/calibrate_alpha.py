@@ -71,28 +71,49 @@ def measure_window(
     *,
     temperature: float = 0.05,
     threshold: float = 0.23,
+    coefficients: Sequence[tuple[float, float]] | None = None,
 ) -> WindowStat:
     """One accumulation window: sum both objectives over `groups`, then take the two gradients.
 
     `groups` is a sequence of (pose_inputs, dockq) for ONE window -- several groups summed, which
     is what the optimiser actually steps on under --accum. alpha is applied as 1.0 here because
-    the point is to measure the UNWEIGHTED ratio.
+    the point is to measure the ratio alpha will later be set from.
+
+    `coefficients` ARE THE TWO GLOBAL SCALES, one (pae_scale, rank_scale) per group, exactly as
+    group_schedule.OptimizerStep.loss_coefficients returns them. THEY CHANGE THE ANSWER AND MUST
+    BE PASSED when the arm will run under those scales. The descended objective is
+    `pae*s_p + alpha*rank*s_r`, so the head-gradient ratio alpha has to deliver is
+
+        alpha = r * (s_p * ||g_PAE||) / (s_r * ||g_rank||),
+
+    and a calibration taken on the unscaled sums is short by s_p/s_r. They happen to cancel in the
+    simplest case -- 3 ranks, one group of K=20 each, gives s_p = 20/60 and s_r = 1/3, both 1/3 --
+    which is exactly the configuration in which the omission would have gone unnoticed before
+    variable K made them differ.
 
     A group whose labels are all-good or all-bad contributes its PAE term and no ranking term;
     those are counted, not dropped, because the PAE side of the ratio must cover the same window
-    the optimiser would.
+    the optimiser would -- and under group_schedule they also still count for both denominators.
     """
+    if coefficients is not None and len(coefficients) != len(groups):
+        raise ValueError(
+            f"coefficients must carry one (pae_scale, rank_scale) per group: got "
+            f"{len(coefficients)} for {len(groups)} group(s)")
     if not groups:
         raise ValueError("a calibration window needs at least one group")
     pae_total = None
     rank_total = None
     active = 0
     resid = []
-    for pose_inputs, dockq in groups:
+    for gi, (pose_inputs, dockq) in enumerate(groups):
         jl = joint_group_loss(reranker, pose_inputs, predict_one, dockq,
                               alpha=1.0, temperature=temperature, threshold=threshold)
-        pae_total = jl.pae if pae_total is None else pae_total + jl.pae
-        rank_total = jl.ranking if rank_total is None else rank_total + jl.ranking
+        # .pae AND .ranking, NEVER .total -- total already folds in alpha and a mean over only
+        # this group's K poses, which is not the normalisation three ranks or variable K descend
+        # (group_schedule.scaled_group_loss says the same).
+        _sp, _sr = coefficients[gi] if coefficients is not None else (1.0, 1.0)
+        pae_total = jl.pae * _sp if pae_total is None else pae_total + jl.pae * _sp
+        rank_total = jl.ranking * _sr if rank_total is None else rank_total + jl.ranking * _sr
         active += int(jl.ranking_active)
         # HOW FAR THE RESIDUAL HAS MOVED OFF ZERO. JointLoss carries the input ipTM, so
         # delta = scores - iptm exactly, with no second forward. Its RMS is ~0 at step 0 because

@@ -97,6 +97,23 @@ class CalibrateAlphaTests(unittest.TestCase):
         self.assertEqual(two.n_groups, 2)
         self.assertNotAlmostEqual(one.pae_norm, two.pae_norm, places=6)
 
+    def test_the_two_global_scales_change_the_ratio(self):
+        """alpha must be calibrated on the SCALED objective, or it is short by s_p/s_r."""
+        g = [self._group([0.0, 0.9]), self._group([0.1, 0.8])]
+        plain = measure_window(self.rr, g, self.predict, list(self.head.parameters()),
+                               temperature=0.5)
+        # equal scales cancel in the ratio, as they do at 3 ranks x one K=20 group
+        same = measure_window(self.rr, g, self.predict, list(self.head.parameters()),
+                              temperature=0.5, coefficients=[(0.25, 0.25)] * 2)
+        self.assertAlmostEqual(plain.alpha_parity, same.alpha_parity, places=4)
+        # unequal scales must NOT cancel -- this is the variable-K case
+        skew = measure_window(self.rr, g, self.predict, list(self.head.parameters()),
+                              temperature=0.5, coefficients=[(0.5, 0.125)] * 2)
+        self.assertAlmostEqual(skew.alpha_parity, plain.alpha_parity * 4.0, places=3)
+        with self.assertRaisesRegex(ValueError, "one \\(pae_scale, rank_scale\\) per group"):
+            measure_window(self.rr, g, self.predict, list(self.head.parameters()),
+                           coefficients=[(1.0, 1.0)])
+
     def test_empty_window_refused(self):
         with self.assertRaisesRegex(ValueError, "at least one group"):
             measure_window(self.rr, [], self.predict, list(self.head.parameters()))
