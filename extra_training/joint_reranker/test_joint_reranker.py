@@ -55,6 +55,75 @@ class JointRerankerTests(unittest.TestCase):
         self.assertEqual(int(mask.sum()), 6)
         self.assertEqual(self.model([torch.randn(3, 5, 64)], [mask], torch.tensor([0.4])).shape, (1,))
 
+    # iptm_pooled's row set on a 7-token fixture: token 3 has no frame, and
+    # token 6 is a glycan/hetero token INSIDE antigen chain 2 -- the chain-ID
+    # filter cannot see it, only is_ligand can, which is the case the new
+    # parameter exists for.
+    LIG_ASYM = torch.tensor([0, 0, 1, 1, 2, 2, 2])
+    LIG_FRAME = torch.tensor([True, True, True, False, True, True, True])
+    LIG_FLAG = torch.tensor([False, False, False, False, False, False, True])
+
+    def test_ligand_exclusion_drops_rows_and_keeps_columns(self):
+        kept = antibody_antigen_pair_mask(self.LIG_ASYM, (0, 1), (2,), self.LIG_FRAME)
+        live = antibody_antigen_pair_mask(self.LIG_ASYM, (0, 1), (2,), self.LIG_FRAME,
+                                          self.LIG_FLAG)
+        self.assertEqual(kept.shape, (6, 7))        # has_frame alone: token 3 gone
+        self.assertEqual(live.shape, (5, 7))        # ligand token 6 gone as a ROW
+        self.assertEqual(int(kept.sum()), 21)
+        self.assertEqual(int(live.sum()), 17)
+        # THE LIGAND TOKEN IS STILL A COLUMN. iptm_pooled's target axis is
+        # `tok` plus cross-chain-ness and neither has_frame nor the ligand flag
+        # filters it, so dropping column 6 would pool over fewer pairs than the
+        # ipTM being corrected -- the same class of mismatch, in the other axis.
+        self.assertTrue(live[0, 6].item())
+        self.assertTrue(live[2, 6].item())
+        # The kept rows must be shape-aligned with a PAE grid sliced by the SAME
+        # boolean; slicing by has_frame alone is the silent-misalignment bug.
+        rows = torch.randn(7, 7, 64)[self.LIG_FRAME & ~self.LIG_FLAG]
+        self.assertEqual(self.model([rows], [live], torch.tensor([0.5])).shape, (1,))
+
+    def test_ligand_exclusion_is_noop_without_a_ligand(self):
+        none = torch.zeros(7, dtype=torch.bool)
+        for frame in (None, self.LIG_FRAME):
+            base = antibody_antigen_pair_mask(self.LIG_ASYM, (0, 1), (2,), frame)
+            same = antibody_antigen_pair_mask(self.LIG_ASYM, (0, 1), (2,), frame, none)
+            self.assertTrue(torch.equal(same, base))
+            # iptm_pooled's own `lig` is a `> 0` on a long scatter_add, so a
+            # caller handing through the integer form must get the same mask.
+            self.assertTrue(torch.equal(
+                antibody_antigen_pair_mask(self.LIG_ASYM, (0, 1), (2,), frame, none.long()),
+                base))
+
+    def test_ligand_row_set_matches_has_frame_and_not_ligand(self):
+        asym, frame, lig = self.LIG_ASYM, self.LIG_FRAME, self.LIG_FLAG
+        ab, ag = (asym == 0) | (asym == 1), asym == 2
+        full = (ab[:, None] & ag[None, :]) | (ag[:, None] & ab[None, :])
+        got = antibody_antigen_pair_mask(asym, (0, 1), (2,), frame, lig)
+        self.assertTrue(torch.equal(got, full[frame & ~lig]))
+        self.assertTrue(torch.equal(got, antibody_antigen_pair_mask(
+            asym, (0, 1), (2,), frame, lig.long())))
+        # Rows come back in increasing token index -- the order row_t documents
+        # and the order `logits[live]` produces. A permuted row set would pair
+        # one row's PAE with another row's pooled feature and still typecheck.
+        self.assertTrue(torch.equal(got[0], full[0]))
+        self.assertTrue(torch.equal(got[-1], full[5]))
+        with self.assertRaisesRegex(ValueError, "is_ligand_token must have shape"):
+            antibody_antigen_pair_mask(asym, (0, 1), (2,), frame, lig[:5])
+        # An all-ligand crop leaves no anchor row at all, which is iptm_pooled
+        # returning None rather than something scorable.
+        with self.assertRaisesRegex(ValueError, "no scored"):
+            antibody_antigen_pair_mask(asym, (0, 1), (2,), frame,
+                                       torch.ones(7, dtype=torch.bool))
+
+    def test_existing_mask_behaviour_unchanged_without_the_parameter(self):
+        self.assertTrue(torch.equal(
+            self.mask, antibody_antigen_pair_mask(self.roles, (0, 1), (2,))))
+        self.assertTrue(torch.equal(
+            self.mask, antibody_antigen_pair_mask(self.roles, (0, 1), (2,), None, None)))
+        frame = torch.tensor([True, False, True, True, True, True])
+        no_lig = antibody_antigen_pair_mask(self.roles, (0, 1), (2,), frame)
+        self.assertEqual((tuple(no_lig.shape), int(no_lig.sum())), ((5, 6), 14))
+
     def test_streaming_inference_matches_full_forward(self):
         logits, mask, iptm = self._batch()
         with torch.no_grad():

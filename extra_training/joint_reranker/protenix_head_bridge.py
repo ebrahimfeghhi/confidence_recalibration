@@ -59,11 +59,12 @@ class PoseInput:
 
 
 def live_row_mask(feat: dict) -> Tensor:
-    """iptm_pooled's `live`, recomputed here from the SAME fields so the two cannot drift.
+    """iptm_pooled's `live`: has_frame AND NOT ligand, ligand scattered from atoms onto tokens.
 
-    rank_loss.py:394-399 builds it as has_frame AND NOT ligand, with the ligand flag scattered
-    from atoms onto tokens. Copied rather than imported because iptm_pooled computes it inline and
-    does not expose it; the test gate asserts the two agree.
+    rank_loss.py:395-397 computes this inline and does not expose it, so the derivation is
+    repeated here -- but ONLY the derivation. The mask itself comes from
+    model.antibody_antigen_pair_mask, which now takes the flag; keeping a second copy of the mask
+    logic is the drift this file's own header warns about.
     """
     asym = feat["asym_id"].reshape(-1)
     hf = feat["has_frame"].reshape(-1).bool()
@@ -76,27 +77,40 @@ def live_row_mask(feat: dict) -> Tensor:
     return hf & (~lig)
 
 
-def ab_ag_pair_mask(feat: dict, antibody_asym_ids, antigen_asym_ids) -> Tensor:
-    """[F,T] AB<->AG mask on iptm_pooled's row set, from MODEL chain IDs only.
+def ligand_token_flag(feat: dict) -> Tensor:
+    """The [T] token-level ligand flag, for model.antibody_antigen_pair_mask's parameter."""
+    return (torch.zeros_like(feat["asym_id"]).scatter_add(
+        0, feat["atom_to_token_idx"], feat["is_ligand"].long()) > 0).reshape(-1)
 
-    NO REFERENCE INPUT. The chain roles come from the model's own asym_id, never from an OST
-    reference-to-model map, which can depend on the ground truth and is forbidden at inference.
-    The row axis is the `live` subset (F rows) and the column axis is every token (T), matching
-    how iptm_pooled's `tm` is built: rows are has_frame-and-not-ligand, columns are not filtered.
+
+def scored_pair_mask(feat: dict, iptm_pair: tuple) -> Tensor:
+    """[F,T] mask over EXACTLY the chains of the scored pair, matching iptm_pooled row for row.
+
+    THE PAIR, NOT THE CHAIN LISTS, AND THIS IS A REAL BUG THIS AVOIDS. iptm_pooled scores ONE
+    asym pair (i, j) and restricts its anchor rows to `(arow == i) | (arow == j)`
+    (rank_loss.py:404), with d0 pinned to THAT pair's uncropped token count. An AB/AG mask built
+    from chain LISTS unions every antibody chain against every antigen chain, so on an ordinary
+    H+L antibody it would pool H-AG and L-AG rows while the baseline ipTM is the single pair -- the
+    correction and the baseline would then describe different pair populations, on nearly every
+    structure in the set, which is the exact failure the ligand fix was made to close. Found by
+    review, 2026-11-24.
+
+    So the mask is built from the pair itself: rows on iptm_pooled's live set restricted to the
+    pair's two chains, columns the pair's two chains, cross-chain only.
     """
     asym = feat["asym_id"].reshape(-1)
     live = live_row_mask(feat)
-    ab_ids = torch.as_tensor(list(antibody_asym_ids), device=asym.device, dtype=asym.dtype)
-    ag_ids = torch.as_tensor(list(antigen_asym_ids), device=asym.device, dtype=asym.dtype)
-    if not ab_ids.numel() or not ag_ids.numel():
-        raise ValueError("antibody and antigen chain ID lists must be nonempty")
-    if bool(torch.isin(ab_ids, ag_ids).any()):
-        raise ValueError("antibody and antigen chain IDs overlap")
-    ab, ag = torch.isin(asym, ab_ids), torch.isin(asym, ag_ids)
-    ab_rows, ag_rows = ab[live], ag[live]
-    mask = (ab_rows[:, None] & ag[None, :]) | (ag_rows[:, None] & ab[None, :])
+    i, j = int(iptm_pair[0]), int(iptm_pair[1])
+    if i == j:
+        raise ValueError(f"iptm_pair must name two different chains, got ({i}, {j})")
+    arow = asym[live]
+    in_pair_col = (asym == i) | (asym == j)
+    in_pair_row = (arow == i) | (arow == j)
+    mask = (in_pair_row.unsqueeze(1) & in_pair_col.unsqueeze(0)
+            & (arow.unsqueeze(1) != asym.unsqueeze(0)))
     if not bool(mask.any()):
-        raise ValueError("no scored antibody-antigen pairs remain on this crop's live rows")
+        raise ValueError(
+            f"no cross-chain pairs remain for scored pair ({i}, {j}) on this crop's live rows")
     return mask
 
 
@@ -129,6 +143,21 @@ def make_predict_one(
             "n_pair_tokens must be the UNCROPPED scored chain-pair token count. Passing 0/None "
             "would let iptm_pooled fall back to the cropped count, which is the crop-dependent d0 "
             "the fixed-d0 path exists to prevent.")
+
+    # THE PAIR MUST NAME ONE ANTIBODY AND ONE ANTIGEN CHAIN. Checked once here rather than per
+    # pose: a pair that does not straddle the interface would still produce a mask and an ipTM,
+    # both describing an intra-side pair, and nothing downstream would notice.
+    _ab = {int(x) for x in antibody_asym_ids}
+    _ag = {int(x) for x in antigen_asym_ids}
+    if not _ab or not _ag:
+        raise ValueError("antibody and antigen chain ID lists must be nonempty")
+    if _ab & _ag:
+        raise ValueError(f"antibody and antigen chain IDs overlap: {sorted(_ab & _ag)}")
+    _i, _j = int(iptm_pair[0]), int(iptm_pair[1])
+    if not ((_i in _ab and _j in _ag) or (_i in _ag and _j in _ab)):
+        raise ValueError(
+            f"iptm_pair {(_i, _j)} does not straddle the interface: antibody chains {sorted(_ab)}, "
+            f"antigen chains {sorted(_ag)}. The reranker would then correct an intra-side ipTM.")
 
     import rank_loss as RKL
 
@@ -194,7 +223,7 @@ def make_predict_one(
             raise ValueError(f"{pose.pose_id}: expected [T,T,64] PAE logits, got "
                              f"{tuple(logits.shape)}")
         rows = logits[live]
-        mask = ab_ag_pair_mask(pose.feat_head, antibody_asym_ids, antigen_asym_ids)
+        mask = scored_pair_mask(pose.feat_head, iptm_pair)
         if mask.shape != rows.shape[:2]:
             raise ValueError(f"{pose.pose_id}: mask {tuple(mask.shape)} does not match the live "
                              f"logit grid {tuple(rows.shape[:2])}")

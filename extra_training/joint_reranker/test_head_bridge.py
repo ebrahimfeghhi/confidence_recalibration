@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(R, "phases"))
 sys.path.insert(0, "/home/ebrahim/Protenix")
 
 from extra_training.joint_reranker.protenix_head_bridge import (   # noqa: E402
-    PoseInput, ab_ag_pair_mask, live_row_mask, make_predict_one)
+    PoseInput, live_row_mask, make_predict_one, scored_pair_mask)
 
 NB = 64
 
@@ -93,7 +93,7 @@ class HeadBridgeTests(unittest.TestCase):
 
     def test_mask_shape_and_no_reference_input(self):
         feat = _feat(n_lig=4)
-        mask = ab_ag_pair_mask(feat, (0,), (1,))
+        mask = scored_pair_mask(feat, (0, 1))
         self.assertEqual(tuple(mask.shape), (int(live_row_mask(feat).sum()),
                                              feat["asym_id"].shape[0]))
         # ligand columns are never AB or AG, so no ligand pair can be scored
@@ -102,10 +102,39 @@ class HeadBridgeTests(unittest.TestCase):
 
     def test_overlapping_or_empty_chain_ids_refused(self):
         feat = _feat()
+        n = feat["asym_id"].shape[0]
+        npt = int(((feat["asym_id"] == 0) | (feat["asym_id"] == 1)).sum())
+        mk = lambda ab, ag, pair=(0, 1): make_predict_one(  # noqa: E731
+            _StubHead(n), _configs(), _StubLoss(), iptm_pair=pair, n_pair_tokens=npt,
+            antibody_asym_ids=ab, antigen_asym_ids=ag, autocast=False)
         with self.assertRaisesRegex(ValueError, "overlap"):
-            ab_ag_pair_mask(feat, (0, 1), (1,))
+            mk((0, 1), (1,))
         with self.assertRaisesRegex(ValueError, "nonempty"):
-            ab_ag_pair_mask(feat, (0,), ())
+            mk((0,), ())
+        with self.assertRaisesRegex(ValueError, "does not straddle"):
+            mk((0,), (1,), pair=(0, 0))
+
+    def test_mask_rows_are_the_SCORED_PAIR_only_not_the_chain_union(self):
+        """An H+L antibody must not pool L-AG rows against a baseline scored on H-AG alone.
+
+        iptm_pooled restricts its anchor rows to (arow == i) | (arow == j) for the ONE pair it
+        scores (rank_loss.py:404) and pins d0 to that pair. A chain-list union would add the other
+        antibody chain's rows on nearly every structure in this set.
+        """
+        n_h, n_l, n_ag = 8, 7, 9
+        asym = torch.cat([torch.zeros(n_h), torch.ones(n_l),
+                          torch.full((n_ag,), 2.0)]).long()
+        feat = {"asym_id": asym, "has_frame": torch.ones(asym.shape[0]),
+                "is_ligand": torch.zeros(asym.shape[0], dtype=torch.long),
+                "atom_to_token_idx": torch.arange(asym.shape[0], dtype=torch.long)}
+        mask = scored_pair_mask(feat, (0, 2))            # heavy chain against the antigen
+        live = live_row_mask(feat)
+        arow = asym[live]
+        self.assertFalse(bool(mask[arow == 1].any()))     # no light-chain rows
+        self.assertFalse(bool(mask[:, asym == 1].any()))  # and no light-chain columns
+        self.assertTrue(bool(mask[arow == 0].any()))
+        # exactly the cross-chain pairs of (0, 2)
+        self.assertEqual(int(mask.sum()), n_h * n_ag + n_ag * n_h)
 
     def test_predict_one_is_live_and_uses_fixed_d0_max(self):
         feat = _feat()

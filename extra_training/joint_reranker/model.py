@@ -21,6 +21,7 @@ def antibody_antigen_pair_mask(
     antibody_asym_ids: Sequence[int],
     antigen_asym_ids: Sequence[int],
     has_frame: Tensor | None = None,
+    is_ligand_token: Tensor | None = None,
 ) -> Tensor:
     """Directed AB<->AG token pairs using MODEL chain IDs, never reference labels.
 
@@ -28,6 +29,30 @@ def antibody_antigen_pair_mask(
     Symmetric copies need an inference-time, label-free convention; OST's
     per-pose reference-to-model map may depend on ground truth and is forbidden.
     The row axis is N_frame (can differ from N_token).
+
+    is_ligand_token is a [T] token-level ligand flag and it is applied to the
+    ROW AXIS ONLY. That asymmetry is rank_loss.py::iptm_pooled's own, and
+    reproducing it is the whole point: the reranker scores s_i = ipTM_i +
+    delta_i, so delta must be pooled over the pair set ipTM was pooled over.
+      * rows: iptm_pooled builds `live = hf & (~lig)` (rank_loss.py:395-397)
+        and hands `live` to pae_row_weight.row_t as the row selector, so with
+        a ligand flag supplied the rows here are exactly iptm_pooled's anchor
+        rows -- and the caller must slice the PAE grid with the SAME
+        `has_frame & ~ligand` boolean, not with has_frame alone.
+      * columns: iptm_pooled's target axis is `tok = (asym == i) | (asym == j)`
+        plus cross-chain-ness (rank_loss.py:399-403). Neither has_frame nor
+        `lig` touches it, so a ligand token inside a scored chain still
+        contributes as a target column to every row's average. Excluding
+        ligands from both axes would pool over FEWER pairs than the baseline
+        and reintroduce exactly the mismatch this parameter exists to remove.
+
+    Omitting is_ligand_token keeps the has_frame-only row set, which agrees
+    with iptm_pooled only when no token of a scored chain carries a ligand
+    atom. Derive the flag the way iptm_pooled does -- scatter_add of
+    `is_ligand` over `atom_to_token_idx`, then > 0 -- rather than from a
+    chain-level annotation: a glycan or modified residue sitting inside a
+    polymer chain is flagged per atom and nowhere else, and it is precisely
+    that case the chain-ID filter cannot catch.
     """
     if asym_id.ndim != 1:
         raise ValueError("asym_id must have shape [T]")
@@ -37,10 +62,23 @@ def antibody_antigen_pair_mask(
         raise ValueError("antibody and antigen chain IDs overlap")
     ab = torch.isin(asym_id, torch.as_tensor(list(antibody_asym_ids), device=asym_id.device))
     ag = torch.isin(asym_id, torch.as_tensor(list(antigen_asym_ids), device=asym_id.device))
+    # ONE row selector, built in iptm_pooled's order (has_frame first, ligand
+    # second) so the kept rows come back in increasing token index -- the order
+    # row_t documents and the order `logits[live]` produces. Building it as a
+    # single boolean also keeps the no-ligand call byte-identical to the
+    # previous behaviour instead of routing it through a second indexing step.
+    row_keep: Tensor | None = None
     if has_frame is not None:
         if has_frame.shape != asym_id.shape:
             raise ValueError("has_frame must have shape [T]")
-        ab_rows, ag_rows = ab[has_frame.bool()], ag[has_frame.bool()]
+        row_keep = has_frame.bool()
+    if is_ligand_token is not None:
+        if is_ligand_token.shape != asym_id.shape:
+            raise ValueError("is_ligand_token must have shape [T]")
+        lig = is_ligand_token.bool()
+        row_keep = ~lig if row_keep is None else row_keep & (~lig)
+    if row_keep is not None:
+        ab_rows, ag_rows = ab[row_keep], ag[row_keep]
     else:
         ab_rows, ag_rows = ab, ag
     mask = (ab_rows[:, None] & ag[None, :]) | (ag_rows[:, None] & ab[None, :])
