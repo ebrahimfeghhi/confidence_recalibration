@@ -105,8 +105,8 @@ def main():
     ap.add_argument("--poses", type=int, default=5)
     ap.add_argument("--units", type=int, default=0, help="0 = every unit with a trunk and a label")
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--out", required=True, help="per-pose csv: iface,seed,sample,dockq,"
-                                                "iptm_pred,iptm_true")
+    ap.add_argument("--out", required=True,
+                    help="per-pose csv: pdb,iface,seed,sample,dockq,iptm_pred,itm_max,itm_mean")
     a = ap.parse_args()
 
     os.environ.setdefault("LAYERNORM_TYPE", "openfold")
@@ -123,10 +123,20 @@ def main():
     dev = torch.device(a.device)
 
     # (pdb, seed) -> {iface: {sample: (dockq, iptm_pred)}}
+    # has_trunk IS A TRAINING-FOLD COLUMN. validation/fold/results.csv has no such column, and
+    # requiring it there selected zero rows. Where the column exists it still gates; where it does
+    # not, the trunk's existence on disk is the gate a few lines below, which is the same question
+    # asked of the filesystem instead of the table.
     want = collections.defaultdict(lambda: collections.defaultdict(dict))
     with open(a.results) as fh:
-        for r in csv.DictReader(fh):
-            if r.get("has_trunk") != "1" or r.get("arm") != "free":
+        rdr = csv.DictReader(fh)
+        has_trunk_col = "has_trunk" in (rdr.fieldnames or [])
+        print(f"{a.results}: has_trunk column {'present' if has_trunk_col else 'ABSENT -- '
+              'gating on the trunk file instead'}")
+        for r in rdr:
+            if r.get("arm") != "free":
+                continue
+            if has_trunk_col and r.get("has_trunk") != "1":
                 continue
             p = RKL.parse_iface(r["iface"], roles_join)
             if p is None:
@@ -168,6 +178,7 @@ def main():
             # Joining by position paired each pose's true-PAE ipTM with another pose's DockQ and
             # turned the association NEGATIVE (pooled Pearson -0.088, pairwise 0.481 on the first
             # 100 units) -- the exact trap phase_k_train.py:7086 documents for the rel target.
+            asym_u = feat["asym_id"].reshape(-1).long()
             si = np.asarray(lab["sample_index"]).reshape(-1)
             npose = min(int(poses.shape[0]), int(lab["label_coordinate"].shape[0]), int(a.poses))
             if si.shape[0] < npose:
@@ -179,7 +190,16 @@ def main():
                 cm = torch.as_tensor(lab["label_coordinate_mask"][i].astype(np.float32),
                                      device=dev)
                 with torch.no_grad():
-                    _sq, true_bins, _m = pae_loss.calculate_label(
+                    # THE VALIDITY MASK IS KEPT, NOT DISCARDED. calculate_label forces every
+                    # pair whose true coordinates are unresolved into the LAST error bin (its
+                    # `torch.where(frame_token_pair_mask, true_bins, no_bins)`), i.e. scores it as
+                    # maximally wrong, and calculate_chain_based_ptm has no coordinate mask to
+                    # exclude it with. Having a frame per token does not imply every reference
+                    # coordinate is resolved, so the true path can be penalised on pairs the
+                    # predicted path is not. Raised in external review (issue #17, check 1): the
+                    # fraction of VALID pairs in each scored chain pair's own block is recorded
+                    # per row so the sensitivity can be read off rather than assumed.
+                    _sq, true_bins, _vmask = pae_loss.calculate_label(
                         pred_coordinate=poses[i].float(), true_coordinate=tc,
                         coordinate_mask=cm, frame_atom_index=fai,
                         rep_atom_mask=ram, has_frame=hfr)
@@ -188,6 +208,15 @@ def main():
                     # calculate_chain_based_ptm died with "index 1 is out of bounds for dimension 1
                     # with size 1" from inside its chain loop.
                     prob = true_bins.float()                 # the one-hot IS a distribution
+                    # ONE CALL PER POSE, not per interface: it loops every chain pair anyway.
+                    _tl = torch.zeros_like(feat["asym_id"]).scatter_add(
+                        0, feat["atom_to_token_idx"], feat["is_ligand"].long()) > 0
+                    _mean_mat = RC._chain_pair_itm_mean(
+                        prob, feat["has_frame"], feat["asym_id"], _tl,
+                        cfg.loss.pae.min_bin, cfg.loss.pae.max_bin, cfg.loss.pae.no_bins)
+                    _vm = _vmask
+                    while _vm.dim() > 2:
+                        _vm = _vm[0]
                     for iface, bys in want[(pdb, seed)].items():
                         if samp not in bys:
                             continue
@@ -198,10 +227,25 @@ def main():
                         if sc is None:
                             nfail += 1
                             continue
+                        # BOTH POOLINGS. Shipped ipTM is the MAX over anchor rows, which rests a
+                        # pose's whole score on one row; the MEAN cannot be decided by one row.
+                        # At the ceiling the gap between them is what the pooling itself discards,
+                        # separately from what imperfect prediction discards.
+                        ax, ay = int(pr[1][0]), int(pr[1][1])
+                        _mx = (asym_u == ax)
+                        _my = (asym_u == ay)
+                        _blk = (_mx[:, None] & _my[None, :]) | (_my[:, None] & _mx[None, :])
+                        _vf = (float((_vm.bool() & _blk).sum()) / float(_blk.sum())
+                               if int(_blk.sum()) else float("nan"))
+                        mm = _mean_mat[0] if _mean_mat is not None else None
+                        gm = (float(mm[ax, ay])
+                              if mm is not None and ax < mm.shape[0] and ay < mm.shape[1]
+                              else float("nan"))
                         dq, ipp = bys[samp]
                         rows.append({"pdb": pdb, "iface": iface, "seed": seed, "sample": samp,
                                      "dockq": dq, "iptm_pred": ipp,
-                                     "iptm_true": round(sc, 6)})
+                                     "itm_max": round(sc, 6), "itm_mean": round(gm, 6),
+                                     "valid_frac": round(_vf, 6)})
                 del tc, cm, true_bins, prob
             del feat, poses
             torch.cuda.empty_cache()
@@ -218,7 +262,7 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     with open(a.out, "w", newline="") as fh:
         wr = csv.DictWriter(fh, fieldnames=["pdb", "iface", "seed", "sample", "dockq",
-                                            "iptm_pred", "iptm_true"])
+                                            "iptm_pred", "itm_max", "itm_mean", "valid_frac"])
         wr.writeheader()
         for r in rows:
             wr.writerow(r)

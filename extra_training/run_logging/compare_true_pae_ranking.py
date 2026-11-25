@@ -23,11 +23,22 @@ sys.path.insert(0, os.path.join(ROOT, "phases"))
 
 def top1(groups, which):
     """Fraction of groups whose argmax by `which` is the group's best DockQ, and the mean DockQ
-    that choice realises. Ties on the score go to the LOWEST sample index, which is what
-    phase_k_eval.py:795 does, so the number is comparable with every Success@1 in the repo."""
+    that choice realises. Ties on the score go to the LOWEST SAMPLE INDEX, which is what
+    phase_k_eval.py:795 does, so the number is comparable with every Success@1 in the repo.
+
+    THE SECONDARY KEY IS g["sample"][i], NOT i. The first version sorted by list POSITION, and
+    the rows arrive in POSE order while the sample id comes from the label's `sample_index`
+    permutation -- non-identity in 99.3% of label files -- so position and sample id are
+    different orderings and a tie was broken on the wrong one. The docstring already claimed the
+    sample index; only the code disagreed. Raised in external review (issue #17, check 2).
+    """
     hit, dq = 0, []
     for g in groups:
-        order = sorted(range(len(g["dockq"])), key=lambda i: (-g[which][i], i))
+        if len(set(g["sample"])) != len(g["sample"]):
+            raise SystemExit(f"STOP: a group has duplicate sample ids {sorted(g['sample'])}; "
+                             f"the tie-break key would not be a total order.")
+        order = sorted(range(len(g["dockq"])),
+                       key=lambda i: (-g[which][i], g["sample"][i]))
         pick = order[0]
         dq.append(g["dockq"][pick])
         if g["dockq"][pick] >= max(g["dockq"]) - 1e-12:
