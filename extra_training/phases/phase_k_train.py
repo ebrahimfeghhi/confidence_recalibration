@@ -1567,6 +1567,20 @@ def main():
                          "last-bin pair 16x against a 2 A pair, cutting that mass from 64%% of "
                          "the objective to about 10%%. The weight is a LABEL quantity computed "
                          "under no_grad, so it cannot feed back into the prediction.")
+    ap.add_argument("--tm-centered-per-seed", action="store_true",
+                    help="CENTRE WITHIN A SEED, not within a structure. --tm-centered keys its "
+                         "accumulator by pdb alone, so the per-pair mean is taken over every pose "
+                         "of the structure across all its seeds -- which is why it requires "
+                         "--rank-cross-seed. Measured 2026-11-24: only 2.6%% of ipTM's "
+                         "within-interface variance sits among the 5 diffusion samples of ONE "
+                         "seed, against 49%% of DockQ's and 52%% of iTM's, and inside a seed ipTM "
+                         "picks the best pose 25%% of the time against a 20%% coin flip. Structure "
+                         "centring therefore leaves the blind spot in the objective: the "
+                         "between-seed differences it does reward are the ones ipTM already "
+                         "resolves. Keying by (pdb, seed) makes the loss exactly the "
+                         "within-seed ordering. A unit IS (structure, seed) carrying its 5 "
+                         "samples, so all 5 poses are in one step and cross-seed grouping is no "
+                         "longer needed for the mean to be complete.")
     ap.add_argument("--tm-centered", action="store_true",
                     help="REPLACE the PAE cross-entropy with the PER-PAIR CENTRED TM ERROR. For "
                          "every pose and every scored cross-chain pair, on the SAME mask the PAE "
@@ -1869,11 +1883,22 @@ def main():
     if a.tm_centered:
         # THE SAME TWO REQUIREMENTS rel HAS, AND FOR THE SAME REASONS. Checked here, before CUDA
         # is touched, because a misconfiguration should not cost a GPU allocation to discover.
-        if not a.rank_cross_seed:
+        if not a.rank_cross_seed and not a.tm_centered_per_seed:
             raise SystemExit(
                 "STOP: --tm-centered needs --rank-cross-seed. The per-pair mean is taken over a "
                 "STRUCTURE's poses across all its seeds; within one seed it would be a mean over "
                 f"{a.nsample} poses, which removes most of what the centring exists to use.")
+        if a.tm_centered_per_seed and a.rank_cross_seed:
+            raise SystemExit(
+                "STOP: --tm-centered-per-seed with --rank-cross-seed asks for two different "
+                "centring groups at once. Per-seed keys the accumulator by (pdb, seed), so a "
+                "unit's own 5 poses are the whole population and cross-seed grouping only widens "
+                "the step for no gain. Pass one or the other.")
+        if a.tm_centered_per_seed and int(a.nsample) < 2:
+            raise SystemExit(
+                f"STOP: --tm-centered-per-seed centres over a unit's poses and --nsample is "
+                f"{a.nsample}. One pose per unit makes the centred error identically zero, so "
+                f"the loss would be zero everywhere and the arm would train on nothing.")
         if not a.pae_scored_pairs:
             raise SystemExit(
                 "STOP: --tm-centered needs --pae-scored-pairs. The loss is defined on the scored "
@@ -7039,9 +7064,10 @@ def main():
                         pred["pae"].detach(), _sqA, _blocks,
                         loss_fn.pae_loss.min_bin, loss_fn.pae_loss.max_bin,
                         loss_fn.pae_loss.no_bins)
-                    _acc = _tm_acc.get(pdb)
+                    _tmk = (pdb, arm_seed) if a.tm_centered_per_seed else pdb
+                    _acc = _tm_acc.get(_tmk)
                     if _acc is None:
-                        _tm_acc[pdb] = {"sum": _eA.sum(dim=0).clone(),
+                        _tm_acc[_tmk] = {"sum": _eA.sum(dim=0).clone(),
                                         "cnt": (_mA > 0).to(torch.float32).sum(dim=0).clone(),
                                         "poses": int(_eA.shape[0])}
                     else:
@@ -7179,7 +7205,8 @@ def main():
                     import tm_centered_loss as TMC
                     _sqB = _pae_keep.get("sq")
                     _blocksB = _pae_keep.get("blocks")
-                    _accB = _tm_acc.get(pdb)
+                    _accB = _tm_acc.get(
+                        (pdb, arm_seed) if a.tm_centered_per_seed else pdb)
                     if _sqB is None or not _blocksB or _accB is None:
                         # NO GRADIENT RATHER THAN A WRONG ONE. Pass A skipped this pose (no scored
                         # pair, or no label), so there is no mean to centre against. Counted so a
