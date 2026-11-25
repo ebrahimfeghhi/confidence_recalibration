@@ -79,28 +79,54 @@ def main():
     from protenix.data.pipeline.dataset import get_datasets
     from protenix.model.protenix import update_input_feature_dict
 
+    import time
+    _t = {}
+    _t0 = time.perf_counter()
     cfg = DS.build_configs(a.crop_size, a.indices, a.bio_dir, a.mmcif_dir, a.msa_root,
                            a.seq_index, a.msa_root)
     err = os.path.join(ROOT, "training", "prep", "dataset_errors")
     os.makedirs(err, exist_ok=True)
     train, _ = get_datasets(cfg, err)
+    _t["dataset_build"] = time.perf_counter() - _t0
+    _t0 = time.perf_counter()
     byp = BC.merged_lookup(train)
+    _t["lookup"] = time.perf_counter() - _t0
+    _t0 = time.perf_counter()
     if a.pdb not in byp:
         raise SystemExit(f"STOP: {a.pdb} is not in the dataset built from {a.indices}")
     item = train[byp[a.pdb][0]]
     feat = item["input_feature_dict"]
+    _t["item_featurise"] = time.perf_counter() - _t0
+    _t0 = time.perf_counter()
 
     feat_head, s_inputs, s_trunk, zt, poses, n_cycle = RC.load_unit(trunk_p, dev)
     # THE ATOM ORDER IS ASSERTED, NOT ASSUMED. The cached trunk and this freshly featurised dict
     # come from the same dataset code, but a drift in the stores would otherwise show up as poses
     # that look plausible and are wrong.
-    BC.check_alignment(feat_head, feat, a.pdb)
+    # ON THE HOST. check_alignment calls np.asarray on each tensor, which refuses a CUDA one
+    # ("can't convert cuda:0 device type tensor to numpy"); load_unit returns device tensors.
+    BC.check_alignment({k: (v.detach().cpu() if torch.is_tensor(v) else v)
+                        for k, v in feat_head.items()},
+                       {k: (v.detach().cpu() if torch.is_tensor(v) else v)
+                        for k, v in feat.items()}, a.pdb)
 
+    _t["load_unit"] = time.perf_counter() - _t0
+    _t0 = time.perf_counter()
     model, mcfg = RC.build_model(a.ckpt_dir, a.model_name, dev)
+    _t["build_model"] = time.perf_counter() - _t0
+    _t0 = time.perf_counter()
     feat = {k: (v.to(dev) if torch.is_tensor(v) else v) for k, v in feat.items()}
+    # `relp` AND the local-atom geometry, the two things the npz does not carry and the diffusion
+    # module reads. Both are FEATURISATION, not inference: generate_relp is a no-weight method on
+    # RelativePositionEncoding (one-hots of residue/token/chain index differences, protenix.py:1836
+    # calls it on exactly this dict) and update_input_feature_dict is three lines of arithmetic on
+    # ref_pos. Without relp the diffusion module raises KeyError: 'relp' at diffusion.py:397.
+    feat = model.relative_position_encoding.generate_relp(feat)
     feat = update_input_feature_dict(feat)
 
+    _t["relp_plus_dlm"] = time.perf_counter() - _t0
     n_step = int(mcfg.sample_diffusion["N_step"])
+    _t0 = time.perf_counter()
     torch.manual_seed(a.seed)
     torch.cuda.manual_seed_all(a.seed)
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
@@ -118,6 +144,9 @@ def main():
                 N_step=n_step, device=dev, dtype=s_inputs.dtype),
             enable_efficient_fusion=model.enable_efficient_fusion,
         )
+    torch.cuda.synchronize()
+    _t["sample_diffusion"] = time.perf_counter() - _t0
+    print("  timing (s): " + "  ".join(f"{k} {v:.1f}" for k, v in _t.items()))
     new = xyz.detach().float().cpu().numpy().astype(np.float32)
     old = poses.detach().float().cpu().numpy().astype(np.float32) if torch.is_tensor(poses) \
         else np.asarray(poses, dtype=np.float32)
