@@ -1579,8 +1579,8 @@ def main():
                          "between-seed differences it does reward are the ones ipTM already "
                          "resolves. Keying by (pdb, seed) makes the loss exactly the "
                          "within-seed ordering. A unit IS (structure, seed) carrying its 5 "
-                         "samples, so all 5 poses are in one step and cross-seed grouping is no "
-                         "longer needed for the mean to be complete.")
+                         "samples, so each seed centres over its own 5 poses however wide the step "
+                         "is. STILL REQUIRES --rank-cross-seed, which gates pass A.")
     ap.add_argument("--tm-centered", action="store_true",
                     help="REPLACE the PAE cross-entropy with the PER-PAIR CENTRED TM ERROR. For "
                          "every pose and every scored cross-chain pair, on the SAME mask the PAE "
@@ -1888,12 +1888,14 @@ def main():
                 "STOP: --tm-centered needs --rank-cross-seed. The per-pair mean is taken over a "
                 "STRUCTURE's poses across all its seeds; within one seed it would be a mean over "
                 f"{a.nsample} poses, which removes most of what the centring exists to use.")
-        if a.tm_centered_per_seed and a.rank_cross_seed:
+        if a.tm_centered_per_seed and not a.rank_cross_seed:
             raise SystemExit(
-                "STOP: --tm-centered-per-seed with --rank-cross-seed asks for two different "
-                "centring groups at once. Per-seed keys the accumulator by (pdb, seed), so a "
-                "unit's own 5 poses are the whole population and cross-seed grouping only widens "
-                "the step for no gain. Pass one or the other.")
+                "STOP: --tm-centered-per-seed still needs --rank-cross-seed. Not for the "
+                "centring group -- keying by (pdb, seed) makes that a seed's own 5 poses either "
+                "way -- but because --rank-cross-seed GATES PASS A, the no-grad sweep that builds "
+                "the per-pair mean. Measured 2026-11-25 12:13 AM: without it _tm_acc stays empty, "
+                "every pose takes `cum = cum * 0.0`, grad_norm is 0.0 on the first completed step "
+                "and the arm trains on nothing while the pae_loss readout looks entirely normal.")
         if a.tm_centered_per_seed and int(a.nsample) < 2:
             raise SystemExit(
                 f"STOP: --tm-centered-per-seed centres over a unit's poses and --nsample is "
