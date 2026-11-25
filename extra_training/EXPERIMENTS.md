@@ -10,6 +10,75 @@ The **Live results** section below is regenerated hourly from the shards by
 
 ---
 
+## READ THIS FIRST — state as of 2026-11-24 8:46 PM EST
+
+**Three things must not happen without the owner saying so.**
+
+1. **DO NOT KILL pid 1263388.** It is a 10 GiB GPU holder on **card 4**, started deliberately so
+   that one card stays reserved for us while cards 5 and 7 are given back to other users on this
+   shared box. `shell_scripts/gpu_hold.sh` is the script; `training/runs/hold_card4_single.log`
+   is its log. Release it ONLY by `touch training/runs/HOLD_STOP_card4`, and only on request.
+   `run_logging/cards_busy.py` reporting `1` is the CORRECT state right now, not a fault to fix.
+
+2. **DO NOT LAUNCH ANY GPU RUN.** We are down to one card by choice. `launch_sab98_fold.sh` in
+   particular must not be re-run: it has a `.launch_attempt` guard for exactly this reason, and
+   the fold it launches is currently BROKEN (see 3). Anything needing a GPU gets proposed to the
+   owner first.
+
+3. **DO NOT DELETE `validation/fold_sab98/`.** It holds ~40 min of correct CPU prep (98 job
+   JSONs, pool, chain roles, queue, 98 hardlinked references) plus `queue_all98.tsv`. The fold
+   that ran against it on 2026-11-24 produced **0 scored units out of 1,140 attempted** and must
+   be fixed, not restarted:
+
+   * Every unit died at `run_model/folder.py:305`, `ArmError: no template count reported --
+     featurisation did not run`.
+   * Cause: `run_logging/build_sab98_jobs.py` emits `sequence`, `count`, `pairedMsaPath` and
+     `unpairedMsaPath` per chain but **no `templatesPath`**. Working jobs
+     (`validation/jobs_corrected/*-final-updated.json`) carry one. Without it Protenix never runs
+     the template featuriser, never logs `Found N templates`, and the guard fires on every unit.
+   * An open decision blocks the fix: val83 was folded **with** templates (7,700 chain-instances
+     logged `Found 4 templates`, 100 found 3, 100 found 0), while the Breadth-over-Depth paper
+     disabled template retrieval in every wrapper. Templates OFF makes us comparable to their
+     Table S1 Protenix-v2 row (mean DockQ 0.305, Top-1 48.5%, oracle 62.1%) and avoids a 2024
+     test structure retrieving near-identical antibodies; templates ON makes us comparable to our
+     own val83 poses. **The owner picks.**
+
+**Also unresolved about that target set:** `run_logging/validate_sab98_targets.py` found that one
+target per PDB file is the WRONG unit — the paper's antibody is `{H, L}`, singular — and yields
+**117 valid instance-level targets over 96 structures** (81 instances dropped as crystallographic
+copies at >=0.95 heavy-chain identity; `7ums` and `9uo0` have no valid target because their staged
+`.cif` holds the wrong chains). Report: `scratchpad/sab98_targets.json`.
+
+### Results that are settled and should not be re-litigated
+
+* **Pose consensus does NOT beat ipTM on a single-predictor pool.** Using AbPoolRank's own
+  `descriptors.py`/`pairwise.py`/`features.py` on our poses: val83 (139 leak-free interfaces,
+  150 poses each) Success@1 at DockQ>=0.49 is shipped ipTM **0.6403** vs geometric consensus
+  0.6043 and epitope consensus 0.6115; on the 947-interface training pool it is 0.6167 vs 0.5396.
+  Fitting their exact recipe (HistGBR 250/0.07/40, 3 seeds, within-pool DockQ percentile target)
+  on our 947 interfaces and evaluating on val83 gives 0.5971 pose-level / 0.6115 grouped — still
+  below ipTM, and equal to their bundled checkpoint's 0.5971, which is evidence the pipeline is
+  faithful rather than broken.
+* **But the consensus signal IS orthogonal to ipTM.** Mean within-interface Spearman against
+  DockQ, partialling ipTM out: geometric **+0.183 (t = +16.3)** and epitope **+0.175 (t = +15.9)**
+  on 947 interfaces (+0.110 / +0.114 on val83). So the information exists and the
+  percentile-regression-then-argmax pipeline fails to convert it into better top-1 picks. The next
+  reranker should train on the decision — pairwise among ipTM's top-k — not on the whole ranking.
+* **Feature tables are on disk** and need no recomputation: `scratchpad/cs_val_feats.csv`
+  (20,850 pose rows / 139 interfaces) and `scratchpad/cs_train_feats.csv` (71,025 / 947), columns
+  `iface, seed, sample, pss_pct, srcbal_pct, epi_pct, log_pool, dockq, iptm`. **`srcbal_pct` is
+  garbage on a single-predictor pool** — their `percentile()` of an all-zero vector returns a ramp
+  in input order — so zero that column, never fit on it.
+* **The confidence head already receives the 3D pose**: `protenix/model/modules/confidence.py:282`
+  computes `cdist` over representative atoms, one-hots it into 39 bins (3.25-52 A, 1.25 A) and
+  ADDS it to `z_pair` via `linear_no_bias_d` (39x128) plus `linear_no_bias_d_wo_onehot` (1x128) --
+  5,120 parameters total. Every other contribution to `z_pair` is identical across all poses of a
+  target, so that additive term is the entire pose-dependent input.
+
+---
+
+---
+
 ## What is held constant across all three
 
 Changing any of these makes two runs incomparable, so they are fixed:
