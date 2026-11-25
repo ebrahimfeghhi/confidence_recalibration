@@ -47,6 +47,17 @@ def main():
     ap.add_argument("--seq-index",
                     default=f"{ROOT}/building_msa/work/pdb_seqs/seq_to_pdb_index.json")
     ap.add_argument("--crop-size", type=int, default=3400)
+    ap.add_argument("--score", action="store_true", default=True,
+                    help="score ipTM for every new pose in the same loop (default). The model and"
+                         " the trunk are already resident, so this costs one confidence-head "
+                         "forward per unit against a 200-step diffusion -- a few percent -- "
+                         "whereas a second pass would reload and re-read everything.")
+    ap.add_argument("--no-score", dest="score", action="store_false")
+    ap.add_argument("--pool-csv", default=f"{ROOT}/training/combined/pool.csv")
+    ap.add_argument("--roles", default=f"{ROOT}/training/fold/chain_roles_all.csv")
+    ap.add_argument("--scores-out", default=f"{ROOT}/training/fold/poses_extra/results_extra.csv",
+                    help="SEPARATE FROM results_with_trunks.csv on purpose: the 5-pose and "
+                         "10-pose worlds stay separable until we deliberately join them.")
     a = ap.parse_args()
 
     os.environ.setdefault("LAYERNORM_TYPE", "openfold")
@@ -57,6 +68,7 @@ def main():
     import phase_j_rescore_cache as RC
     from protenix.data.pipeline.dataset import get_datasets
     from protenix.model.protenix import update_input_feature_dict
+    import rank_loss as RKL
 
     units = collections.defaultdict(list)
     for p in sorted(glob.glob(f"{a.fold}/trunks/*/*.npz")):
@@ -101,7 +113,48 @@ def main():
     print(f"setup {time.perf_counter() - t0:.0f}s   N_step {n_step}   "
           f"seed-base {a.seed_base}   out {os.path.relpath(a.out_dir, ROOT)}", flush=True)
 
-    done = fail = 0
+    # THE SCORED CHAIN PAIRS, per structure, through the SAME join the trainer and phase_k_eval
+    # use -- model asym indices, never the iface letters. run_logging/validate_iptm_path.py shows
+    # this path reproduces Protenix's own stored ipTM on 99.34% of rows to 2e-3.
+    pairs = collections.defaultdict(list)
+    if a.score:
+        roles_join = RKL.load_roles(a.roles)
+        with open(a.pool_csv) as fh:
+            for r in _csv.DictReader(fh):
+                ifc = f"{r['pdb']}_{r['chain1']}{r['chain2']}"
+                pr = RKL.parse_iface(ifc, roles_join)
+                if pr is not None:
+                    pairs[pr[0]].append((ifc, (int(pr[1][0]), int(pr[1][1]))))
+        print(f"scoring ON: {sum(len(v) for v in pairs.values())} interface(s) over "
+              f"{len(pairs)} structure(s) -> {os.path.relpath(a.scores_out, ROOT)}", flush=True)
+        os.makedirs(os.path.dirname(os.path.abspath(a.scores_out)), exist_ok=True)
+        if not os.path.exists(a.scores_out):
+            with open(a.scores_out, "w", newline="") as fh:
+                _csv.writer(fh).writerow(["pdb", "iface", "seed", "sample", "iptm",
+                                          "iptm_mean", "diffusion_seed", "source"])
+        # THE HEADER MUST MATCH WHAT THE ROWS CARRY. A stale header is not a cosmetic
+        # problem: csv.DictReader keys every row by it, so an eighth column read back under a
+        # seven-name header is silently dropped or shifted. Checked here rather than trusted,
+        # because the first version of this file shipped exactly that mismatch.
+        with open(a.scores_out) as fh:
+            _hdr = next(_csv.reader(fh), [])
+        _want_hdr = ["pdb", "iface", "seed", "sample", "iptm", "iptm_mean",
+                     "diffusion_seed", "source"]
+        if _hdr != _want_hdr:
+            raise SystemExit(
+                f"STOP: {a.scores_out} has header {_hdr}, expected {_want_hdr}. An existing "
+                f"file from an older column set must be moved aside rather than appended to.")
+
+        # WHAT IS ALREADY SCORED, so a resume does not duplicate rows.
+        scored = set()
+        with open(a.scores_out) as fh:
+            for r in _csv.DictReader(fh):
+                scored.add((r["pdb"], int(r["seed"])))
+        print(f"  {len(scored)} unit(s) already scored", flush=True)
+    else:
+        scored = set()
+
+    done = fail = nscore = 0
     t_start = time.perf_counter()
     for pi, pdb in enumerate(pdbs, 1):
         mine = [u for u in units[pdb]
@@ -158,6 +211,42 @@ def main():
                 # skip-existing check would accept as finished.
                 os.replace(tmp, os.path.join(a.out_dir, pdb, os.path.basename(up)))
                 done += 1
+                # ipTM FOR THE NEW POSES, in this loop, while the trunk and the model are
+                # resident. Sample ids are 100 + i so a new pose can never be confused with one
+                # of the original five, in any table that later joins the two.
+                if a.score and (pdb, sd) not in scored and pairs.get(pdb):
+                    with torch.no_grad(), torch.autocast(device_type="cuda",
+                                                         dtype=torch.bfloat16):
+                        _pl, pae_n, _pd, _rs = model.run_confidence_head(
+                            input_feature_dict=feat, s_inputs=s_inputs, s_trunk=s_trunk,
+                            z_trunk=zt, pair_mask=None, x_pred_coords=xyz,
+                            triangle_multiplicative=mcfg.triangle_multiplicative,
+                            triangle_attention=mcfg.triangle_attention,
+                            inplace_safe=False, chunk_size=None)
+                        lg = pae_n.detach().float()
+                        rowsout = []
+                        for i_s in range(int(a.nsample)):
+                            one = lg[i_s:i_s + 1] if lg.dim() == 4 else lg[0][i_s:i_s + 1]
+                            for ifc, pr_ in pairs[pdb]:
+                                # BOTH POOLINGS. `iptm` is the shipped MAX over anchor rows, which
+                                # rests a pose's whole score on one row; `iptm_mean` is the same
+                                # quantity pooled by the mean, which the ceiling work found
+                                # recovers more of the oracle headroom (67.7% vs 58.6%). Computed
+                                # here because the logits are already in hand.
+                                sc_ = RKL.iptm(one, feat, mcfg, pr_)
+                                if sc_ is None:
+                                    continue
+                                sm_ = RKL.iptm_pooled(one, feat, mcfg, pr_, pool="mean")
+                                rowsout.append([pdb, ifc, sd, 100 + i_s,
+                                                round(float(sc_), 6),
+                                                (round(float(sm_), 6) if sm_ is not None
+                                                 else ""),
+                                                int(a.seed_base) + sd, "rediffuse"])
+                    if rowsout:
+                        with open(a.scores_out, "a", newline="") as fh:
+                            _csv.writer(fh).writerows(rowsout)
+                        nscore += len(rowsout)
+                    del pae_n, lg
                 del fh_, s_inputs, s_trunk, zt, poses, xyz, new
             except Exception as e:                            # noqa: BLE001
                 print(f"  {pdb}/{unit}: {type(e).__name__}: {e}", flush=True)
@@ -170,8 +259,9 @@ def main():
             rate = done / el if el else 0
             left = (todo - done) / rate / 3600 if rate else float("nan")
             print(f"  [{pi}/{len(pdbs)}] {done} unit(s) in {el / 60:.0f} min "
-                  f"({rate * 3600:.0f}/h), {fail} failed, ~{left:.1f} h left", flush=True)
-    print(f"DONE  {done} unit(s) written, {fail} failed")
+                  f"({rate * 3600:.0f}/h), {fail} failed, {nscore} ipTM row(s), "
+                  f"~{left:.1f} h left", flush=True)
+    print(f"DONE  {done} unit(s) written, {fail} failed, {nscore} ipTM row(s)")
 
 
 if __name__ == "__main__":
