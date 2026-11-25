@@ -149,25 +149,40 @@ and the PAE readout *amplifies* the pose-dependent component 1.7×. Taken with s
 network responds strongly to the pose and the response carries little docking-quality
 information: it is reacting to geometry changes that are largely irrelevant to docking accuracy.
 
-## 7. Ground-truth PAE → ipTM: the prediction is the bottleneck, but the metric caps out too
+## 7. Ground-truth PAE → ipTM: the prediction is the bottleneck, and the metric loses the rest
 
-**Preliminary — 100 of 7,279 units.** `run_logging/true_pae_iptm.py` replaces the head's predicted
-PAE distribution with the **experimentally derived** aligned error (the one-hot label
+**All 7,279 units, 74,730 poses, 0 failures.** `run_logging/true_pae_iptm.py` replaces the head's
+predicted PAE distribution with the **experimentally derived** aligned error (the one-hot label
 `PAELoss.calculate_label` returns, from a real frame alignment of the pose onto the deposited
 structure) and runs the *identical* aggregation,
-`sample_confidence.calculate_chain_based_ptm` — the same call `rank_loss.iptm` makes.
+`sample_confidence.calculate_chain_based_ptm` — the same call `rank_loss.iptm` makes. No model is
+loaded and no network runs.
 
-| | pooled Pearson | Spearman | pairwise | picks best | mean DockQ |
-|---|---|---|---|---|---|
-| predicted ipTM | +0.0427 | +0.0838 | 0.5379 | 0.3383 | 0.5246 |
-| **ground-truth-PAE ipTM** | **+0.6378** | **+0.3110** | **0.6398** | **0.4129** | 0.5533 |
-| oracle | | | | 1.0000 | 0.5887 |
-| blind | | | 0.5000 | 0.2000 | 0.5136 |
+| subset | score | pooled Pearson | Spearman | pairwise | picks best | mean DockQ |
+|---|---|---|---|---|---|---|
+| all | predicted ipTM | +0.1581 | +0.0811 | 0.5357 | 0.2684 | 0.4229 |
+| all | **ground-truth-PAE ipTM** | **+0.7362** | **+0.3858** | **0.6732** | **0.4650** | **0.4601** |
+| all | oracle | | | | 1.0000 | 0.4867 |
+| all | blind | | | 0.5000 | 0.2000 | 0.4136 |
+| held out | predicted ipTM | +0.0978 | +0.0603 | 0.5265 | 0.2574 | 0.5358 |
+| held out | **ground-truth-PAE ipTM** | **+0.7232** | **+0.3439** | **0.6534** | **0.4366** | **0.5764** |
+| held out | oracle | | | | 1.0000 | 0.6059 |
+| held out | blind | | | 0.5000 | 0.2000 | 0.5316 |
 
-A perfect PAE predictor pushed through the existing aggregation would take pairwise accuracy from
-0.538 to **0.640** and selected DockQ from 0.525 to 0.553 — so **most of the deficit is PAE
-prediction, not the metric**. But it does not reach the oracle either: 0.640 is a long way from 1.0,
-so the aggregation itself discards real ordering. Both, with prediction dominant.
+The predicted-ipTM row reproduces section 5 exactly (+0.1581 / +0.0811 / 0.5357), which is the
+cross-check that the join is right this time.
+
+**A perfect PAE predictor through the existing aggregation recovers 58.3% of the within-seed
+headroom** — selected DockQ 0.4229 → 0.4601 against an oracle of 0.4867 — and 57.9% held out. So:
+
+* **The prediction is the dominant problem.** Most of what ipTM is failing to do, it is failing
+  because the PAE it is read from is wrong, not because the pooling is the wrong pooling.
+* **But the metric is not blameless.** Even with the error known exactly, pairwise accuracy is
+  0.673, not 1.0, and 42% of the headroom stays on the table. `max over anchor rows of the mean`
+  genuinely discards ordering.
+* **The metric generalises and the prediction does not.** Ground-truth-PAE ipTM scores 0.683
+  pairwise on train and 0.653 held out — essentially flat — while predicted ipTM falls from 0.541
+  to 0.527. Whatever makes the head worse on unseen structures lives in the PAE prediction.
 
 **A bug worth recording.** The first version of this measurement reported the association as
 *negative* (−0.088 pooled, 0.481 pairwise). The pose index is **not** the sample index:
@@ -175,7 +190,7 @@ so the aggregation itself discards real ordering. Both, with prediction dominant
 are in pose order, and the permutation lives in the label's `sample_index` — non-identity in 3,971
 of 4,000 training label files (99.3%), e.g. `10fj/free_500000 → [0, 4, 3, 2, 1]`. Joining by
 position paired each pose's true-PAE ipTM with another pose's DockQ. This is the same trap
-`phase_k_train.py:7086` documents for the rel target. Fixed; the full 7,279-unit run is pending.
+`phase_k_train.py:7086` documents for the rel target.
 
 ---
 
@@ -193,8 +208,10 @@ position paired each pose's true-PAE ipTM with another pose's DockQ. This is the
    survives all four Pairformer blocks and is amplified by the PAE readout.
 5. The within-seed response is correctly signed and close to uninformative on held-out structures:
    52.7% pairwise against 50% chance.
-6. *(Preliminary.)* A perfect PAE predictor through the same aggregation reaches 0.640 pairwise —
-   most of the gap is prediction, some is the metric.
+6. A perfect PAE predictor through the same aggregation recovers **58.3%** of the within-seed
+   headroom (57.9% held out) and reaches 0.673 pairwise. The prediction is the dominant problem;
+   the aggregation loses the remaining 42%. The metric generalises (0.683 train / 0.653 held out)
+   and the prediction does not (0.541 / 0.527).
 
 **Not established.**
 
@@ -207,4 +224,3 @@ position paired each pose's true-PAE ipTM with another pose's DockQ. This is the
   if the information is present but the wrong projection is being taken, only the readout needs
   retraining, which is far more tractable at our data scale than changing how the head processes
   geometry.
-* Section 7 is 100 units, not 7,279.
