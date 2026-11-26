@@ -107,3 +107,56 @@ does not touch `delta` (computed entirely inside one recomputation) or the magni
 but it puts the *direction* numbers in doubt — the likely cause is the pose→sample join via the
 labels npz `sample_index`, i.e. DockQ attached to the wrong pose. The fix is to assign poses to
 samples by optimal matching on `chain_pair_iptm`, as `phase_j_rescore_cache.py:545-560` does.
+
+## The top stratum WAS skewed — matched pair by pair, 2026-11-26
+
+`run_logging/matched_gap_paired.py`. The `[0.40,1.01)` stratum is 0.61 wide, and neither statistic
+above is immune to where inside it a cell sits: `P(correct)` has no gap normalisation at all, and
+the through-origin slope evaluates to `B + G·Σd³/Σd²` under `y = B·d + G·d²`, which depends on the
+gap distribution — and the pooled fit put a large positive `G` on this relation. **The skew is
+real.** Unmatched median gap inside that stratum, within vs across:
+
+| dataset | within | across |
+|---|---|---|
+| foldbench | 0.525 | 0.642 |
+| pxm | 0.594 | 0.654 |
+| sabdab train | 0.582 | 0.663 |
+| sabdab val83 | 0.495 | 0.764 |
+
+So each within-seed pair is matched to the across-seed pairs of the **same chain pair** whose gap
+is within ±0.01, and the raw signed ΔipTM is compared with no normalisation (the gap is matched,
+so there is nothing left to normalise). Audit: mean gap within/across agree to four decimals
+(e.g. foldbench 0.5404 / 0.5406).
+
+**The ΔipTM response survives intact.** Mean signed ΔipTM, within vs across, at matched gap:
+
+| stratum | sabdab train | foldbench | pxm | val83 |
+|---|---|---|---|---|
+| [0.00,0.02) | 0.0000 / 0.0005 | 0.0006 / 0.0008 | 0.0020 / 0.0026 | −0.0006 / 0.0007 |
+| [0.05,0.10) | 0.0007 / 0.0099 (t −3.8) | −0.0023 / 0.0065 | 0.0038 / 0.0061 | −0.0044 / 0.0036 |
+| [0.10,0.20) | 0.0006 / 0.0227 (t −6.2) | 0.0044 / 0.0383 (t −4.1) | 0.0099 / 0.0072 | −0.0023 / 0.0191 |
+| [0.20,0.40) | 0.0050 / 0.0383 (t −8.2) | 0.0133 / 0.0851 (t −5.4) | 0.0151 / 0.0351 (t −2.1) | 0.0150 / 0.0476 (t −2.8) |
+| **[0.40,1.01)** | **0.0273 / 0.1123** t −10.9, p 5e-24 | **0.0349 / 0.1981** t −9.0, p 7e-14 | **0.0677 / 0.1678** t −5.9, p 5e-08 | **0.0309 / 0.1449** t −5.0 |
+
+For the *same* DockQ gap, within-seed ipTM moves **2.5–5× less** than across-seed ipTM, with a
+clean monotone ladder in sabdab train (−0.0005, −0.0022, −0.0092, −0.0221, −0.0333, −0.0850).
+
+**`P(correct)` does NOT survive intact — much of it was the skew.** Within − across after matching,
+against the binned value it replaces:
+
+| dataset, [0.40,1.01) | binned | matched |
+|---|---|---|
+| sabdab train | −0.1010 (t −5.76) | **−0.0582** (t −3.70) |
+| foldbench | −0.1344 (t −4.73) | −0.0454 (t −2.06, marginal) |
+| pxm | −0.0778 (t −2.71) | **−0.0129 (t −0.56, gone)** |
+| sabdab val83 | −0.1274 (t −2.53) | −0.0858 (t −2.09, marginal) |
+
+So the correct claim is about **sensitivity, not accuracy**: within a seed ipTM barely responds to
+real quality differences, but at a matched gap it does not reliably pick the wrong pose more often
+than an across-seed comparison does, except in sabdab train (−0.058) where the effect is real but
+half the size previously reported. The earlier `P(correct)` numbers in this document are superseded
+by the matched ones.
+
+**PXM's reversal strengthens under matching** — within-seed decisions are *better*, four strata,
+all significant: +0.0118 (t 4.60), +0.0261 (t 3.69), +0.0318 (t 3.03), +0.0574 (t 3.88) at
+[0.00,0.02) through [0.10,0.20).
