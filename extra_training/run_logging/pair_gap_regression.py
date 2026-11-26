@@ -139,13 +139,17 @@ def build_pairs(by_iface, max_seeds, rng):
             np.concatenate(S), np.concatenate(C))
 
 
-def report(tag, d, y, same, clus, args):
+def report(tag, d, y, same, clus, args, extra=None, extra_names=()):
+    """extra: additional design columns (dataset fixed effects for the pooled fit)."""
     n = d.size
     if n < 50:
         print(f"\n=== {tag}: only {n} pair(s), skipped")
         return
     X = np.column_stack([np.ones(n), d, d ** 2, same, same * d, same * d ** 2])
     names = ["const", "d", "d^2", "same", "same:d", "same:d^2"]
+    if extra is not None and extra.size:
+        X = np.column_stack([X, extra])
+        names = names + list(extra_names)
 
     print(f"\n=== {tag}")
     print(f"    pairs {n}   within-seed {int(same.sum())}   across-seed {int(n - same.sum())}"
@@ -181,8 +185,10 @@ def report(tag, d, y, same, clus, args):
     print(f"\n      fitted P(correct) at a given DockQ gap")
     print(f"      {'gap':>6} {'across':>10} {'within':>10} {'difference':>12}")
     for gg in (0.02, 0.05, 0.10, 0.20, 0.40, 0.60):
-        xa = np.array([1, gg, gg ** 2, 0, 0, 0], dtype=np.float64)
-        xw = np.array([1, gg, gg ** 2, 1, gg, gg ** 2], dtype=np.float64)
+        # Zeros for any dataset dummies, i.e. predicted at the OMITTED dataset level.
+        pad = [0.0] * (lb.size - 6)
+        xa = np.array([1, gg, gg ** 2, 0, 0, 0] + pad, dtype=np.float64)
+        xw = np.array([1, gg, gg ** 2, 1, gg, gg ** 2] + pad, dtype=np.float64)
         pa = 1 / (1 + np.exp(-xa @ lb))
         pw = 1 / (1 + np.exp(-xw @ lb))
         print(f"      {gg:>6.2f} {pa:>10.4f} {pw:>10.4f} {pw - pa:>12.4f}")
@@ -200,27 +206,105 @@ def main():
     ap.add_argument("--max-seeds", type=int, default=20)
     ap.add_argument("--iptm-col", default="iptm", choices=["iptm", "iptm_mean"])
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--by", default="dataset", choices=["split", "dataset"],
+                    help="one fit per dataset (default), or per dataset/split/pose_set")
     args = ap.parse_args()
 
     rng = np.random.default_rng(args.seed)
+
+    # GROUPS. --by split keeps every (dataset, split, pose_set) apart, which is what the first
+    # version did. --by dataset is the per-benchmark view: one fit per dataset, and sabdab twice
+    # -- once on the original five poses per seed, once with the regenerated five added.
+    #
+    # Adding the regenerated poses does more than add rows: a seed then holds TEN poses off one
+    # trunk, so its within-seed pairs go from C(5,2)=10 to C(10,2)=45, and 25 of those 45 pair an
+    # original pose against a regenerated one. Those are still within-seed pairs by the
+    # definition that matters here -- one trunk, one pair rep, different diffusion noise.
+    GROUPS = {
+        "split": None,
+        # (label, row filter, counts toward the pooled fit). The two sabdab groups OVERLAP --
+        # the second contains the first -- so only one of them may enter the pool or sabdab is
+        # counted twice. The superset is the one that enters.
+        "dataset": [
+            ("foldbench", lambda r: r["dataset"] == "foldbench", True),
+            ("pxm", lambda r: r["dataset"] == "pxm", True),
+            ("sabdab  original 5 poses per seed",
+             lambda r: r["dataset"] == "sabdab" and r["pose_set"] == "orig", False),
+            ("sabdab  + the regenerated 5 poses (10 per seed)",
+             lambda r: r["dataset"] == "sabdab", True),
+        ],
+    }
+
     groups = collections.defaultdict(lambda: collections.defaultdict(
         lambda: collections.defaultdict(list)))
+    specs = GROUPS[args.by]
     with open(args.master) as fh:
         for r in csv.DictReader(fh):
             v = r.get(args.iptm_col) or ""
             if not v:
                 continue
             try:
-                groups[(r["dataset"], r["split"], r["pose_set"])][r["interface"]][
-                    int(r["seed"])].append((float(r["dockq"]), float(v)))
+                rec = (float(r["dockq"]), float(v))
+                seed = int(r["seed"])
             except (TypeError, ValueError):
                 continue
+            if specs is None:
+                keys = [(r["dataset"], r["split"], r["pose_set"])]
+            else:
+                keys = [(lbl,) for lbl, pred, _ in specs if pred(r)]
+            for k in keys:
+                groups[k][r["interface"]][seed].append(rec)
 
     print(f"master {os.path.relpath(args.master, os.path.dirname(HERE))}   "
-          f"ipTM column {args.iptm_col}   max seeds per chain pair {args.max_seeds}")
+          f"ipTM column {args.iptm_col}   max seeds per chain pair {args.max_seeds}"
+          f"   grouped by {args.by}")
+
+    poolable = (None if specs is None
+                else {(lbl,) for lbl, _, inpool in specs if inpool})
+    pool = {"d": [], "y": [], "same": [], "clus": [], "ds": []}
+    cluster_id = {}
     for key in sorted(groups):
         d, y, same, clus = build_pairs(groups[key], args.max_seeds, rng)
         report("  ".join(x for x in key if x), d, y, same, clus, args)
+        if d.size == 0 or (poolable is not None and key not in poolable):
+            continue
+        # CLUSTER ACROSS DATASETS ON (dataset, chain pair). sabdab train orig and regen are the
+        # SAME folds off the SAME trunks with fresh diffusion noise, so they are not independent
+        # observations and must land in one cluster, not two.
+        ifaces = sorted(groups[key])
+        gid = np.empty(clus.size, dtype=np.int64)
+        for local, iface in enumerate(ifaces):
+            key_g = (key[0].split()[0], iface)
+            if key_g not in cluster_id:
+                cluster_id[key_g] = len(cluster_id)
+            gid[clus == local] = cluster_id[key_g]
+        pool["d"].append(d)
+        pool["y"].append(y)
+        pool["same"].append(same)
+        pool["clus"].append(gid)
+        pool["ds"].append(np.full(d.size, key[0].split()[0]))
+
+    if pool["d"]:
+        d = np.concatenate(pool["d"])
+        y = np.concatenate(pool["y"])
+        same = np.concatenate(pool["same"])
+        clus = np.concatenate(pool["clus"])
+        ds = np.concatenate(pool["ds"])
+
+        print("\n" + "=" * 78)
+        print("POOLED over every dataset. Clusters are (dataset, chain pair), so sabdab train's")
+        print("original and regenerated poses -- the same folds off the same trunks -- count as")
+        print("one cluster rather than two independent ones.")
+        report("POOLED  (no dataset effects)", d, y, same, clus, args)
+
+        # dataset fixed effects, first level dropped
+        levels = sorted(set(ds.tolist()))[1:]
+        dum = np.column_stack([(ds == lv).astype(np.float64) for lv in levels])
+        print("\nThe same pooled fit with DATASET FIXED EFFECTS. Without them the pooled slope")
+        print("also absorbs the fact that the datasets have different DockQ gap distributions")
+        print(f"and difficulty; the omitted level is {sorted(set(ds.tolist()))[0]}.")
+        report("POOLED  (+ dataset fixed effects)", d, y, same, clus, args,
+               extra=dum, extra_names=[f"ds:{lv}" for lv in levels])
     return 0
 
 
