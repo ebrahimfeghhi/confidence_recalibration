@@ -14,6 +14,15 @@ difference between the two populations:
 Ties in DockQ are dropped (the question is undefined); a tie in ipTM counts as half a hit, the
 same convention as run_logging/within_seed_iptm_dockq.py.
 
+|dipTM| ALONGSIDE THE ACCURACY, which is the point of matching. ipTM puts 97% of its
+within-interface variance between seeds and 2.7% among a seed's samples, yet the matched accuracy
+columns come out nearly equal. Those two facts are only compatible if the extra between-seed
+movement is largely orthogonal to pose quality: at a FIXED DockQ gap, movement that does not
+improve the ordering is noise with respect to the thing being selected. So each bin reports the
+median |dipTM| of both populations next to their accuracy. A large ratio with equal accuracy
+quantifies the wasted swing; a ratio near 1 would instead mean the variance decomposition and
+this measurement are looking at different pairs and one of them is mis-stratified.
+
 TWO MATCHINGS, because binning is coarse:
   binned  -- accuracy per |dDockQ| bin, each population scored on its own members of that bin
   paired  -- for each within-seed pair, the across-seed pairs of the SAME interface whose gap is
@@ -95,8 +104,9 @@ def main():
 
     kept, dropped_abag, pops = 0, 0, {}
     for tag in ("within", "across"):
-        pops[tag] = {"gap": [], "hit": []}
+        pops[tag] = {"gap": [], "hit": [], "dip": []}
     paired_w, paired_a, paired_n = [], [], 0
+    paired_wd, paired_ad = [], []
 
     for iface, seeds in by_iface.items():
         if len(seeds) < 2:
@@ -128,32 +138,39 @@ def main():
         correct = np.where(ip[ii] == ip[jj], 0.5,
                            ((ip[ii] > ip[jj]) == (dq[ii] > dq[jj])).astype(float))
 
+        dip = np.abs(ip[ii] - ip[jj])
         pops["within"]["gap"].append(gap[same])
         pops["within"]["hit"].append(correct[same])
+        pops["within"]["dip"].append(dip[same])
         pops["across"]["gap"].append(gap[~same])
         pops["across"]["hit"].append(correct[~same])
+        pops["across"]["dip"].append(dip[~same])
 
         # paired matching, inside this interface
         wg, wh = gap[same], correct[same]
         ag_, ah = gap[~same], correct[~same]
         if len(ag_) == 0:
             continue
+        awd = dip[~same]
         srt = np.argsort(ag_)
-        ag_s, ah_s = ag_[srt], ah[srt]
+        ag_s, ah_s, ad_s = ag_[srt], ah[srt], awd[srt]
         lo = np.searchsorted(ag_s, wg - a.tol, side="left")
         hi = np.searchsorted(ag_s, wg + a.tol, side="right")
         cs = np.concatenate([[0.0], np.cumsum(ah_s)])
+        cd = np.concatenate([[0.0], np.cumsum(ad_s)])
         cnt = hi - lo
         ok = cnt > 0
         if not ok.any():
             continue
         paired_w.append(wh[ok])
         paired_a.append((cs[hi[ok]] - cs[lo[ok]]) / cnt[ok])
+        paired_wd.append(dip[same][ok])
+        paired_ad.append((cd[hi[ok]] - cd[lo[ok]]) / cnt[ok])
         paired_n += int(ok.sum())
 
     for tag in pops:
-        pops[tag]["gap"] = np.concatenate(pops[tag]["gap"])
-        pops[tag]["hit"] = np.concatenate(pops[tag]["hit"])
+        for fld in ("gap", "hit", "dip"):
+            pops[tag][fld] = np.concatenate(pops[tag][fld])
 
     print(f"interfaces {kept}"
           + (f"   (non-abAg dropped {dropped_abag})" if a.abag_only else "")
@@ -161,7 +178,8 @@ def main():
           + f"   across pairs {len(pops['across']['gap'])}")
     print()
     print(f"{'|dDockQ| bin':>16s} {'within acc':>11s} {'n':>9s} "
-          f"{'across acc':>11s} {'n':>10s} {'within-across':>14s}")
+          f"{'across acc':>11s} {'n':>10s} {'within-across':>14s} "
+          f"{'med|dipTM| w':>13s} {'a':>9s} {'ratio a/w':>10s}")
     for lo_, hi_ in zip(EDGES[:-1], EDGES[1:]):
         row = [f"[{lo_:.2f},{hi_:.2f})".rjust(16)]
         vals = {}
@@ -172,11 +190,21 @@ def main():
             row.append(f"{vals[tag][0]:11.4f} {vals[tag][1]:9d}")
         d = vals["within"][0] - vals["across"][0]
         row.append(f"{d:+14.4f}")
+        mw = pops["within"]["dip"][(pops["within"]["gap"] >= lo_)
+                                   & (pops["within"]["gap"] < hi_)]
+        ma = pops["across"]["dip"][(pops["across"]["gap"] >= lo_)
+                                   & (pops["across"]["gap"] < hi_)]
+        mw_ = float(np.median(mw)) if len(mw) else float("nan")
+        ma_ = float(np.median(ma)) if len(ma) else float("nan")
+        row.append(f"{mw_:13.4f} {ma_:9.4f} {ma_ / mw_ if mw_ else float('nan'):10.2f}")
         print(" ".join(row))
+    _mw = float(np.median(pops["within"]["dip"]))
+    _ma = float(np.median(pops["across"]["dip"]))
     print(f"{'ALL':>16s} "
           f"{pops['within']['hit'].mean():11.4f} {len(pops['within']['hit']):9d} "
           f"{pops['across']['hit'].mean():11.4f} {len(pops['across']['hit']):9d} "
-          f"{pops['within']['hit'].mean() - pops['across']['hit'].mean():+14.4f}")
+          f"{pops['within']['hit'].mean() - pops['across']['hit'].mean():+14.4f} "
+          f"{_mw:13.4f} {_ma:9.4f} {_ma / _mw:10.2f}")
     print(f"{'median gap':>16s} {np.median(pops['within']['gap']):11.4f} "
           f"{'':9s} {np.median(pops['across']['gap']):11.4f}")
 
@@ -192,6 +220,13 @@ def main():
         print(f"  matched across-seed accuracy  {c.mean():.4f}")
         print(f"  difference                    {w.mean() - c.mean():+.4f}   "
               f"t {t.statistic:+.2f}  p {t.pvalue:.2e}")
+        wd = np.concatenate(paired_wd)
+        ad = np.concatenate(paired_ad)
+        print(f"  median |dipTM| within-seed    {np.median(wd):.4f}")
+        print(f"  median |dipTM| matched across {np.median(ad):.4f}   "
+              f"ratio {np.median(ad) / np.median(wd):.2f}x")
+        print(f"  mean   |dipTM| within / across {wd.mean():.4f} / {ad.mean():.4f}   "
+              f"ratio {ad.mean() / wd.mean():.2f}x")
 
 
 if __name__ == "__main__":
