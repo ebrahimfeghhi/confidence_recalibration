@@ -105,8 +105,15 @@ TRUNK_ROOTS = [
     f"{HERE}/validation/fold_deferred/trunks",
 ]
 
-COLS = ["dataset", "split", "structure", "interface", "seed", "pose",
-        "dockq", "iptm", "has_trunk", "role_source", "source"]
+COLS = ["dataset", "split", "structure", "interface", "seed", "pose", "pose_set",
+        "dockq", "iptm", "iptm_mean", "has_trunk", "role_source", "source"]
+
+# The regenerated poses: SAME trunks, same seeds, fresh diffusion noise. DockQ and ipTM live in
+# two separate files that have to be joined on (interface, seed, sample), and the DockQ scorer
+# runs behind the generator, so at any moment some poses have an ipTM and no DockQ yet. Only
+# fully scored poses are written -- an inner join, not a left join.
+REGEN_DOCKQ = f"{HERE}/training/fold/poses_extra/dockq_extra.csv"
+REGEN_IPTM = f"{HERE}/training/fold/poses_extra/results_extra.csv"
 
 
 def trunk_index():
@@ -313,7 +320,9 @@ def main():
                 rows.append({
                     "dataset": dataset, "split": split, "structure": pdb,
                     "interface": iface, "seed": seed, "pose": pose,
+                    "pose_set": "orig",
                     "dockq": f"{dockq:.6f}", "iptm": f"{iptm:.6f}",
+                    "iptm_mean": "",
                     "has_trunk": 1 if (pdb, seed) in have else 0,
                     "role_source": tag,
                     "source": os.path.relpath(path, REPO),
@@ -321,7 +330,64 @@ def main():
                 kept += 1
         report.append((dataset, split, os.path.relpath(path, REPO), kept, why))
 
-    rows.sort(key=lambda d: (d["dataset"], d["split"], d["interface"], d["seed"], d["pose"]))
+    # ---- the regenerated poses, joined across their two files ----------------------------
+    if os.path.exists(REGEN_DOCKQ) and os.path.exists(REGEN_IPTM):
+        maps = load_hlag(f"{HERE}/training/fold/chain_roles_all.csv")
+        ipr = {}
+        with open(REGEN_IPTM) as fh:
+            for r in csv.DictReader(fh):
+                try:
+                    ipr[(r["iface"], int(r["seed"]), int(r["sample"]))] = r
+                except (KeyError, TypeError, ValueError):
+                    continue
+        kept, why = 0, collections.Counter()
+        with open(REGEN_DOCKQ) as fh:
+            for r in csv.DictReader(fh):
+                iface = (r.get("iface") or "").strip()
+                if not iface:
+                    why["bad_row"] += 1
+                    continue
+                try:
+                    seed, pose = int(r["seed"]), int(r["sample"])
+                    dockq = float(r["dockq"])
+                except (KeyError, TypeError, ValueError):
+                    why["bad_row"] += 1
+                    continue
+                hit = ipr.get((iface, seed, pose))
+                if hit is None:
+                    why["no_iptm_yet"] += 1
+                    continue
+                try:
+                    iptm = float(hit["iptm"])
+                    iptm_mean = float(hit["iptm_mean"])
+                except (KeyError, TypeError, ValueError):
+                    why["bad_row"] += 1
+                    continue
+                pdb = (r.get("pdb") or iface.split("_")[0]).strip()
+                ok, tag = classify_hlag(maps, model_chains, pdb, iface)
+                if not ok and not a.keep_non_abag:
+                    why[tag] += 1
+                    continue
+                key = ("sabdab", "train", iface, seed, pose)
+                if key in seen:
+                    why["duplicate"] += 1
+                    continue
+                seen.add(key)
+                rows.append({
+                    "dataset": "sabdab", "split": "train", "structure": pdb,
+                    "interface": iface, "seed": seed, "pose": pose,
+                    "pose_set": "regen",
+                    "dockq": f"{dockq:.6f}", "iptm": f"{iptm:.6f}",
+                    "iptm_mean": f"{iptm_mean:.6f}",
+                    "has_trunk": 1 if (pdb, seed) in have else 0,
+                    "role_source": tag,
+                    "source": os.path.relpath(REGEN_DOCKQ, REPO),
+                })
+                kept += 1
+        report.append(("sabdab", "train+", os.path.relpath(REGEN_DOCKQ, REPO), kept, why))
+
+    rows.sort(key=lambda d: (d["dataset"], d["split"], d["pose_set"],
+                             d["interface"], d["seed"], d["pose"]))
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     tmp = a.out + ".part"
     with open(tmp, "w", newline="") as fh:
@@ -337,12 +403,12 @@ def main():
         print(f"{dataset:<10} {split:<7} {kept:>8}   {drop}")
 
     print("\nANTIBODY-TO-ANTIGEN CHAIN PAIRS KEPT")
-    print(f"{'dataset':<10} {'split':<7} {'poses':>8} {'pairs':>7} {'structs':>8} "
-          f"{'folds':>7} {'w/ trunk':>9} {'%':>6}")
+    print(f"{'dataset':<10} {'split':<7} {'set':<6} {'poses':>8} {'pairs':>7} "
+          f"{'structs':>8} {'folds':>7} {'w/ trunk':>9} {'%':>6}")
     agg = collections.defaultdict(lambda: {"n": 0, "if": set(), "st": set(),
                                            "sd": set(), "tr": 0})
     for d in rows:
-        k = (d["dataset"], d["split"])
+        k = (d["dataset"], d["split"], d["pose_set"])
         g = agg[k]
         g["n"] += 1
         g["if"].add(d["interface"])
@@ -352,11 +418,11 @@ def main():
     for k in sorted(agg):
         g = agg[k]
         pct = 100.0 * g["tr"] / g["n"] if g["n"] else 0.0
-        print(f"{k[0]:<10} {k[1]:<7} {g['n']:>8} {len(g['if']):>7} {len(g['st']):>8} "
-              f"{len(g['sd']):>7} {g['tr']:>9} {pct:>5.1f}%")
+        print(f"{k[0]:<10} {k[1]:<7} {k[2]:<6} {g['n']:>8} {len(g['if']):>7} "
+              f"{len(g['st']):>8} {len(g['sd']):>7} {g['tr']:>9} {pct:>5.1f}%")
     tot = sum(g["n"] for g in agg.values())
     tot_tr = sum(g["tr"] for g in agg.values())
-    print(f"{'TOTAL':<10} {'':<7} {tot:>8} {'':>7} {'':>8} {'':>7} {tot_tr:>9} "
+    print(f"{'TOTAL':<10} {'':<7} {'':<6} {tot:>8} {'':>7} {'':>8} {'':>7} {tot_tr:>9} "
           f"{100.0 * tot_tr / tot if tot else 0:>5.1f}%")
 
     rs = collections.Counter(d["role_source"] for d in rows)
