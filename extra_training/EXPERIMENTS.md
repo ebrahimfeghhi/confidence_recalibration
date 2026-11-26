@@ -14,11 +14,18 @@ The **Live results** section below is regenerated hourly from the shards by
 
 **Three things must not happen without the owner saying so.**
 
-1. **DO NOT KILL pid 1263388.** It is a 10 GiB GPU holder on **card 4**, started deliberately so
+1. **DO NOT KILL pid 2172461.** It is the GPU holder on **card 4**, started deliberately so
    that one card stays reserved for us while cards 5 and 7 are given back to other users on this
-   shared box. `shell_scripts/gpu_hold.sh` is the script; `training/runs/hold_card4_single.log`
+   shared box. `shell_scripts/gpu_hold.sh` is the script; `training/runs/hold_card4_500mb.log`
    is its log. Release it ONLY by `touch training/runs/HOLD_STOP_card4`, and only on request.
    `run_logging/cards_busy.py` reporting `1` is the CORRECT state right now, not a fault to fix.
+
+   **The pid and the size have changed once already**, which is why this says to read the log
+   rather than trust the number here: the original 10 GiB holder (pid 1263388,
+   `hold_card4_single.log`) was released on 2026-11-24 and replaced the same evening by a
+   0.5 GiB one, because the 10 GiB default has no room beside a backprop job. It shows as
+   ~1,186 MiB with its CUDA context, at 0% util -- an idle-looking holder is the holder WORKING,
+   not a leftover to clean up. `ps -o lstart= -p <pid>` against the log's timestamp is the check.
 
 2. **DO NOT LAUNCH ANY GPU RUN.** We are down to one card by choice. `launch_sab98_fold.sh` in
    particular must not be re-run: it has a `.launch_attempt` guard for exactly this reason, and
@@ -105,7 +112,7 @@ Oracle ceiling: DockQ 0.6926, frac 0.8587 → **headroom 0.1096**.
 
 ![arms overlay](figures/arms_overlay.png)
 
-*Regenerated 2026-11-25 6:14 PM EST. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
+*Regenerated 2026-11-25 7:15 PM EST. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
 
 Shipped on `valfull` (92 interfaces, budget 30): DockQ **0.5830**, frac **0.7391**, rho **0.2218**.
 
