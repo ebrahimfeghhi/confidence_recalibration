@@ -16,11 +16,12 @@ token counts and therefore different d0. Reported because a structure-level sele
 exactly that comparison, and because if it is bad it bounds anything built on per-structure
 argmax.
 
-WHY THE SEED AXIS IS THE SAME TRUNK ONLY WITHIN A SEED. One crop and one trunk per structure per
-seed, shared by all of that structure's interfaces and all five poses -- so "same seed, diff
-iface" holds the trunk fixed and varies the chain pair, while "diff seed, same iface" does the
-reverse. That is why the four cells are worth separating rather than pooling into "within" and
-"across".
+WHY THE SEED AXIS IS THE SAME TRUNK ONLY WITHIN A SEED. These are shipped-weights inference
+folds, so there is NO CROP anywhere in them -- cropping is a training-time thing and does not
+enter here. What a seed does fix is the trunk: one trunk per structure per seed, shared by all of
+that structure's interfaces and all five poses. So "same seed, diff iface" holds the trunk fixed
+and varies the chain pair, while "diff seed, same iface" does the reverse. That is why the four
+cells are worth separating rather than pooling into "within" and "across".
 
 Everything else matches the interface-level script: DockQ ties dropped, an ipTM tie counts as half
 a hit, bins on |dDockQ|, and the median |dipTM| beside each accuracy so a movement-with-no-
