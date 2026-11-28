@@ -281,8 +281,18 @@ def test_trainer_uses_the_sample_index_for_rel_labels():
     check("the sample index is resolved ONCE and shared by the mask, pass A and pass B",
           src.count("_samp_i = int(np.asarray(_sv_i)") == 1
           and "_si_b = _samp_i" in src and "_samp_a = _samp_i" in src)
+    # MATCHED ON A SUBSTRING THAT IS ACTUALLY CONTIGUOUS IN THE SOURCE. The refusal is written as
+    # two adjacent f-string literals -- "... Falling back to the " / "static pair is the exact
+    # mismatch ..." -- so the sentence the reader sees never appears in the file as one run of
+    # characters, and this check had been passing vacuously false (failing) since the message was
+    # rewrapped. Three files now carry the same refusal and all three are asserted, because the
+    # trainer reads whichever of them its entry point imports.
     check("the per-pose resolution REFUSES rather than falling back to the static pair",
-          "Falling back to the static pair is the exact mismatch" in src)
+          "static pair is the exact mismatch this resolution exists to prevent" in src)
+    for _rel in ("phases/trainer/dataset.py", "phases/trainer/helpers.py"):
+        _s = open(os.path.join(R, _rel)).read()
+        check(f"{_rel} carries the same refusal",
+              "Falling back to the static pair is the exact mismatch this resolution" in _s)
     bl = open(os.path.join(R, "run_logging", "build_itm_labels.py")).read()
     check("the label cache is keyed by the reference interface id",
           'iface=np.array(' in bl and '"(seed, sample, iface) -> g_mean, g_max"' in bl)

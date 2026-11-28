@@ -1,0 +1,348 @@
+"""THE FIFTH POSE INJECTION SITE: at pae_ln, upstream of the PAE readout, usable ALONGSIDE
+--pose-perblock. Either AFTER the layernorm (the default) or BEFORE it (prenorm=True).
+
+WHY THIS MODULE EXISTS AT ALL. The readout injection already existed as --pose-inblock-pae, but
+the trainer refuses it two ways (phase_k_train.py:1884 and :1896): --pose-inblock excludes
+--pose-perblock because both replace pairformer_stack._prep_blocks and whichever installs second
+silently wins, and --pose-inblock-pae alone is refused because it reads the geometry the in-block
+wrapper stashes and would otherwise never fire. The configuration asked for -- the pose at every
+block input AND again at the readout -- is exactly the combination those two refusals exclude, and
+the first of them says so: "that is a third design and needs its own module." This is that module.
+
+WHAT IT DOES. One forward hook on head.pae_ln:
+
+    pae = linear_no_bias_pae( pae_ln(z_pair)
+                              + pose_readout_d(one_hot(d))
+                              + pose_readout_d_wo_onehot(d)
+                              + pose_readout_frame_dir(dir) )    # if --frame-direction
+
+WHERE THE GEOMETRY COMES FROM, and why it is not recomputed here. pose_perblock's wrapper computes
+the cdist and the one-hot ONCE per forward and publishes them in its own _CALL; its `finally`
+clears them on the way out of memory_efficient_forward, and the readout runs INSIDE that call, so
+they are live when this hook fires. Recomputing cdist here would be a second [N, N] distance and a
+second [N, N, 39] one-hot per pose for a quantity already in hand. pose_inblock's cache is accepted
+too, so this module also works in the in-block configuration; it is read second so that when both
+somehow exist the stack-level injection in force wins.
+
+THE AXES, NOT MODES. install() takes `sites` (a subset of {"pre", "post"}), `terms` (a subset of
+{"onehot", "dist", "orient"}) and `init` ("zero" or "pretrained"), and the hooks add exactly the
+terms the arm carries. phases/pose_axes.py desugars the legacy flags -- --pose-readout,
+--pose-readout-prenorm, --pose-readout-post-zero, --pose-readout-copy-distance -- to points here,
+so an earlier arm is reproduced by the same flags it was launched with.
+
+INITIALISATION. Zero by default, so step 0 is bit-identical to the un-injected head and anything
+that moves afterwards is attributable. init="pretrained" instead copies block 0's pretrained
+linear_no_bias_d and linear_no_bias_d_wo_onehot, which is what the request asked for -- and it is
+NOT a neutral choice, so install() says so out loud rather than doing it quietly:
+
+  the pretrained injection was fitted to add into z_pair INSIDE the stack, where every downstream
+  block re-normalises. This site adds AFTER pae_ln, so an unnormalised pretrained-scale term lands
+  on a normalised one with nothing downstream to rescale it, and linear_no_bias_pae sees it
+  directly. Shapes permit the copy; semantics do not match. The orientation arm is zero-init in
+  both modes.
+
+GRADIENT LIFE AT ZERO INIT. frame_dir_proj and these arms are single LinearNoBias layers, not
+MLPs: at W = 0 the output is zero but dL/dW = g (x) x^T with x the non-zero geometry, so the first
+step moves them. A zero-init multi-layer branch would be gradient-dead; this one is not. The test
+asserts it rather than leaving it to the reader.
+"""
+import functools
+
+import torch
+
+from protenix.model.modules.primitives import LinearNoBias
+from protenix.model.utils import one_hot  # noqa: F401  (parity with the other injection modules)
+
+import pose_axes as _PA
+
+
+def _geometry():
+    """(one_hot, dist, dir) for the pose in flight, from whichever stack injection is installed."""
+    oh = dd = None
+    try:
+        import pose_perblock as _ppb
+        oh, dd = _ppb._CALL.get("onehot"), _ppb._CALL.get("dist")
+    except Exception:
+        pass
+    if oh is None:
+        try:
+            import pose_inblock as _pib
+            oh, dd = _pib._CALL.get("onehot"), _pib._CALL.get("dist")
+        except Exception:
+            pass
+    dr = None
+    try:
+        import pose_direction as _pd
+        dr = _pd._CALL.get("dir")
+    except Exception:
+        pass
+    return oh, dd, dr
+
+
+def _zero_linear(in_features, out_features, ref):
+    """A zero-initialised LinearNoBias on ref's device and dtype, VERIFIED exactly zero."""
+    m = LinearNoBias(in_features=in_features, out_features=out_features)
+    with torch.no_grad():
+        m.weight.zero_()
+    m = m.to(device=ref.device, dtype=ref.dtype)
+    with torch.no_grad():
+        probe = torch.randn(4, in_features, device=ref.device, dtype=ref.dtype)
+        got = m(probe)
+    if bool(got.abs().max() > 0):
+        raise RuntimeError(
+            f"STOP: a zero-init readout projection returned {float(got.abs().max()):.3e}, not "
+            f"zero, so installing it would change the head at step 0 and nothing later would be "
+            f"attributable.")
+    return m
+
+
+def _add_mlp(head, pfx, z):
+    """Add this readout site's second layer of the nonlinear branch, or return z unchanged.
+
+    THE SITE IS DERIVED FROM `pfx`, NOT FROM WHICH HOOK IS CALLING. "" is the pre-norm site and
+    "post_" is the post-norm one -- which is only true because pose_mlp refuses to install unless
+    BOTH --pose-readout-prenorm and --pose-readout-post-zero are on. In the default post-LN-only
+    arm "" would mean the post-norm site instead, so pose_mlp's refusal is what keeps this mapping
+    honest; the assertion below is the same statement from this side, so a future mode that
+    loosens that refusal fails here instead of silently injecting site 4's weights at site 5.
+
+    `h` IS READ FROM THE CACHE HERE, unlike in the blocks, and that is safe for exactly one
+    reason: the readout is not checkpointed. It runs after the stack but still inside
+    memory_efficient_forward, so the cache is live and no recomputation ever re-enters this hook.
+    """
+    if not getattr(head, "_pose_mlp_installed", False):
+        return z
+    import pose_mlp
+    if not head._pose_readout_prenorm:
+        raise RuntimeError(
+            "STOP: pose_mlp is installed on a readout arm that is NOT pre-norm, so this hook's "
+            "site index is ambiguous: there are 5 sites, not 6, and one of pose_mlp's second "
+            "layers would never be called. pose_mlp.install refuses this combination; reaching "
+            "here means that refusal was loosened without fixing this mapping.")
+    k = pose_mlp.site_postnorm(head) if pfx == "post_" else pose_mlp.site_prenorm(head)
+    return pose_mlp.add_site(head, k, z, pose_mlp.hidden())
+
+
+def install(model, sites=("post",), terms=None, init="zero", loud=True):
+    """Inject the pose at the readout, at the given SITES with the given TERMS and INIT.
+
+      sites  a subset of {"pre", "post"}: before pae_ln (the layernorm then renormalises the sum,
+             so the term can turn the pair feature but not scale it) and after it. Both is two
+             genuinely different sites with INDEPENDENT weights.
+      terms  a subset of {"onehot", "dist", "orient"}. None means the historical default of the
+             plain --pose-readout flag: onehot+dist, plus orient when pose_direction is installed.
+      init   "zero" (verified exactly zero, so step 0 is bit-identical) or "pretrained" (the
+             distance arms start at block 0's linear_no_bias_d/_wo_onehot). The init applies to
+             the PRIMARY site -- "pre" when it exists, else "post" -- and the second site is
+             always zero, which is what the old flag's name (--pose-readout-post-zero) said.
+
+    The axes replace the old (copy_distance, prenorm, post_zero) mode booleans; pose_axes.py
+    desugars the legacy flags to points here and holds the refusals.
+    """
+    head = model.confidence_head
+    if getattr(head, "_pose_readout_installed", False):
+        raise RuntimeError("STOP: pose_readout.install ran twice; the hook would fire twice and "
+                           "the pose would be added twice.")
+    # THE GEOMETRY MUST HAVE A PRODUCER. Without one the hook would return `out` unchanged on every
+    # call and the flag would be a silent no-op -- the exact failure --pose-inblock-pae is refused
+    # for at phase_k_train.py:1896.
+    if not (getattr(head, "_pose_perblock_installed", False)
+            or getattr(head, "_pose_inblock_installed", False)):
+        raise RuntimeError(
+            "STOP: --pose-readout needs --pose-perblock (or --pose-inblock) to be installed. It "
+            "reads the per-forward pose geometry that wrapper publishes; on its own the hook would "
+            "never fire and the flag would be a silent no-op.")
+
+    ref = head.linear_no_bias_d.weight
+    have_dir = bool(getattr(head, "_pose_direction_installed", False))
+    if terms is None:
+        # THE PLAIN FLAG's HISTORICAL MEANING, for a caller that passes no terms at all.
+        terms = ("onehot", "dist") + (("orient",) if have_dir else ())
+    # REFUSED HERE TOO, NOT ONLY AT THE CLI, for the same reason pose_perblock re-checks: the
+    # evaluator, the checkers and the tests call install() directly.
+    sites, terms = _PA.check_readout_axes(sites, terms, init, have_dir)
+    terms, prenorm = frozenset(terms), "pre" in sites
+    post_zero = set(sites) == set(_PA.READOUT_SITES)
+    has_dir = "orient" in terms
+
+    # ONE SET OF MATRICES PER SITE, NAMED AS THEY ALWAYS WERE. The PRIMARY site is unprefixed and
+    # the second one -- "post" when both are on -- carries the `post_` prefix, which is exactly
+    # the layout --pose-readout-prenorm --pose-readout-post-zero built, so an existing
+    # checkpoint's key set is unchanged. A term the arm does not carry gets NO tensor at all,
+    # rather than a zero one that is trained and stays unused.
+    _pfx = {s: ("post_" if (s == "post" and prenorm) else "") for s in sites}
+    names = []
+    for s in sites:
+        pfx, primary = _pfx[s], (s == sites[0])
+        for term, suffix, n_in, src in (
+                ("onehot", "d", head.num_bins, head.linear_no_bias_d.weight),
+                ("dist", "d_wo_onehot", 1, head.linear_no_bias_d_wo_onehot.weight),
+                # ZERO AT EVERY SITE AND IN EVERY MODE. There is no pretrained orientation matrix
+                # anywhere in this project to copy -- frame_dir_proj is itself zero at install --
+                # so the orientation arm starts at zero whatever the distance arms do, and step 0
+                # is the distance-only function.
+                ("orient", "frame_dir", 3, None)):
+            if term not in terms:
+                continue
+            name = f"pose_readout_{pfx}{suffix}"
+            m = _zero_linear(n_in, head.c_z, ref)
+            # THE INIT APPLIES TO THE PRIMARY SITE ONLY, which is what the second site's old flag
+            # name promised. Built zero-and-verified FIRST and copied over afterwards, so the
+            # verification covers the module in both cases.
+            if init == "pretrained" and primary and src is not None:
+                with torch.no_grad():
+                    m.weight.copy_(src)
+            head.add_module(name, m)
+            names.append(name)
+
+    def _hook(_mod, _inp, out, pfx=""):
+        oh, dd, dr = _geometry()
+        if oh is None:
+            # NOT AN ERROR. phase_k_eval builds its own model without this installed, and pae_ln is
+            # reached from paths that never wanted an injection; raising would turn "no injection"
+            # into a crash in a process that never asked for one.
+            return out
+        if out.shape[:-1] != oh.shape[:-1]:
+            raise RuntimeError(
+                f"STOP: --pose-readout: pae_ln's output is {tuple(out.shape)} but the pose "
+                f"geometry is {tuple(oh.shape)}. The hook is firing on a call it was not written "
+                f"for, and adding across that mismatch would broadcast silently.")
+        # ADDED ONE TERM AT A TIME, NOT FUSED. `out = out + A` frees A before B is allocated, so
+        # the peak is two pair tensors either way; pose_inblock.py:378-388 records the measurement
+        # where fusing these made allocated-at-OOM WORSE (90.85 -> 91.63 GiB).
+        #
+        # AND ONLY THE TERMS THIS ARM CARRIES. A term with no tensor is absent from the function,
+        # not added through a zero matrix that would be created and trained and do nothing.
+        if "onehot" in terms:
+            out = out + getattr(head, f"pose_readout_{pfx}d")(oh).to(out.dtype)
+        if "dist" in terms:
+            out = out + getattr(head, f"pose_readout_{pfx}d_wo_onehot")(
+                dd.unsqueeze(-1)).to(out.dtype)
+        if has_dir and dr is not None:
+            if dr.shape[:-1] != oh.shape[:-1]:
+                raise RuntimeError(
+                    f"STOP: --pose-readout: orientation is {tuple(dr.shape)} against geometry "
+                    f"{tuple(oh.shape)}; one pose's directions would pair with another's bins.")
+            out = out + getattr(head, f"pose_readout_{pfx}frame_dir")(dr).to(out.dtype)
+        out = _add_mlp(head, pfx, out)
+        return out
+
+    def _pre_hook(_mod, inp):
+        """The SAME injection, into pae_ln's INPUT instead of its output.
+
+        WHY IT IS A DIFFERENT SITE AND NOT A COSMETIC MOVE. The readout is
+        linear_no_bias_pae(pae_ln(z_pair)). Adding after the LN puts the pose term straight into
+        the normalised features the linear layer reads, at whatever scale the arm learns. Adding
+        BEFORE it puts the term into z_pair and then lets the LN renormalise the sum, so the
+        injection can only change the DIRECTION of the pair feature, not its overall magnitude --
+        the LN divides the magnitude back out. That is a real constraint, not a detail: it makes
+        the injection unable to simply bias the readout up or down, which is exactly the failure
+        mode the post-LN site has.
+
+        STILL ZERO-INIT, so step 0 is bit-identical either way, and the arms are the same modules
+        with the same shapes -- only the hook differs.
+        """
+        if not inp:
+            return inp
+        z = inp[0]
+        oh, dd, dr = _geometry()
+        if oh is None:
+            return inp
+        if z.shape[:-1] != oh.shape[:-1]:
+            raise RuntimeError(
+                f"STOP: --pose-readout-prenorm: pae_ln's INPUT is {tuple(z.shape)} but the pose "
+                f"geometry is {tuple(oh.shape)}. The hook is firing on a call it was not written "
+                f"for, and adding across that mismatch would broadcast silently.")
+        if "onehot" in terms:
+            z = z + head.pose_readout_d(oh).to(z.dtype)
+        if "dist" in terms:
+            z = z + head.pose_readout_d_wo_onehot(dd.unsqueeze(-1)).to(z.dtype)
+        if has_dir and dr is not None:
+            if dr.shape[:-1] != oh.shape[:-1]:
+                raise RuntimeError(
+                    f"STOP: --pose-readout-prenorm: orientation is {tuple(dr.shape)} against "
+                    f"geometry {tuple(oh.shape)}; one pose's directions would pair with "
+                    f"another's bins.")
+            z = z + head.pose_readout_frame_dir(dr).to(z.dtype)
+        z = _add_mlp(head, "", z)
+        return (z,) + tuple(inp[1:])
+
+    # ONE SITE, OR BOTH WITH SEPARATE MATRICES. Registering both hooks over the SAME three
+    # matrices would add the pose twice through one set of weights, at two scales that are not
+    # comparable -- that is what the single-site rule was protecting against. --pose-readout-post-zero
+    # asks for a genuine second site, so it gets its own zero-init matrices and the pre-norm site
+    # keeps its copy-initialised ones; the two learn independently.
+    if prenorm:
+        head._pose_readout_hook = head.pae_ln.register_forward_pre_hook(_pre_hook)
+        if post_zero:
+            head._pose_readout_hook_post = head.pae_ln.register_forward_hook(
+                functools.partial(_hook, pfx="post_"))
+    else:
+        head._pose_readout_hook = head.pae_ln.register_forward_hook(_hook)
+    head._pose_readout_sites = tuple(sites)
+    head._pose_readout_terms = terms
+    head._pose_readout_init = str(init)
+    # THE LEGACY ATTRIBUTES, DERIVED. pose_mlp reads _pose_readout_prenorm and
+    # _pose_readout_post_zero to work out which of its six sites it is at, and _add_mlp above
+    # asserts the same mapping from the other side, so both keep their exact old meaning.
+    head._pose_readout_prenorm = bool(prenorm)
+    head._pose_readout_installed = True
+    head._pose_readout_copy_distance = init == "pretrained"
+    head._pose_readout_post_zero = bool(post_zero)
+
+    # VERIFIED AGAINST BLOCK 0, EXACTLY, as pose_perblock's copies are. The copy is the whole
+    # claim of the pretrained init -- "step 0 starts from the injection the head was shipped
+    # with" -- and it was previously taken on trust here while the per-block path verified it.
+    if init == "pretrained":
+        _worst = 0.0
+        for _n, _src in (("d", head.linear_no_bias_d.weight),
+                         ("d_wo_onehot", head.linear_no_bias_d_wo_onehot.weight)):
+            _m = getattr(head, f"pose_readout_{_n}", None)
+            if _m is not None:
+                _worst = max(_worst, float((_m.weight - _src).abs().max()))
+        if _worst != 0.0:
+            raise RuntimeError(
+                f"STOP: a pretrained-init readout arm differs from block 0's weights by "
+                f"{_worst:.3e}, so this arm's step 0 is a third starting point -- neither the "
+                f"un-injected head nor the pretrained injection it claims to start from.")
+
+    n_new = sum(p.numel() for n in names for p in getattr(head, n).parameters())
+    if loud:
+        # THE SITE IS NAMED FROM `prenorm`, NOT HARDCODED. This line said "after pae_ln" in both
+        # modes, so a prenorm arm's run.log asserted the post-LN site -- and run.log is how these
+        # arms are read back weeks later.
+        _site = ", ".join(
+            ("BEFORE pae_ln, into z_pair with the layernorm downstream" if s == "pre"
+             else "AFTER pae_ln") for s in sites)
+        print(f"POSE READOUT: injected {_site}, upstream of linear_no_bias_pae, with the "
+              f"term(s) {'+'.join(t for t in _PA.TERMS if t in terms)}"
+              + ("" if has_dir else " (no orientation term at this site)")
+              + f". {n_new:,} new parameter(s) across {len(names)} tensor(s): "
+              + ", ".join(names)
+              + ". Geometry is READ from the installed stack injection's per-forward cache, not "
+                "recomputed. A --train-only must match `pose_readout` to reach these.")
+        if init == "pretrained" and not prenorm:
+            print("  COPY-DISTANCE IS ON, AND IT IS NOT NEUTRAL: pose_readout_d and "
+                  "pose_readout_d_wo_onehot start at block 0's PRETRAINED weights, so step 0 is "
+                  "NOT bit-identical to the un-injected head. Those weights were fitted to add "
+                  "into z_pair inside the stack, where downstream blocks re-normalise; this site "
+                  "adds AFTER pae_ln, so an unnormalised pretrained-scale term lands on a "
+                  "normalised one with nothing downstream to rescale it. Shapes permit the copy, "
+                  "semantics do not match. The orientation arm stays zero.")
+        elif init == "pretrained":
+            print("  COPY-DISTANCE IS ON AT THE PRE-NORM SITE, which is the one place in this "
+                  "module where the copy is semantically right: block 0's injection was fitted to "
+                  "add into z_pair with a normalisation downstream, and pae_ln is exactly that. "
+                  "So the pretrained scale lands in the space it was fitted for, and this matches "
+                  "--pose-perblock-copy's own initialisation rather than fighting it. Step 0 is "
+                  "NOT bit-identical to the un-injected head -- the injection starts active, by "
+                  "request. The orientation arm stays zero, as it does at every other site, "
+                  "because no pretrained orientation matrix exists to copy.")
+        else:
+            print("  ZERO-INIT and verified exactly zero, so step 0 is bit-identical to the "
+                  "un-injected head.")
+    return {"params": n_new, "tensors": names, "orientation": has_dir,
+            "sites": tuple(sites), "terms": tuple(t for t in _PA.TERMS if t in terms),
+            "init": str(init),
+            # THE LEGACY KEYS, DERIVED, for the callers and notes that read them.
+            "copy_distance": init == "pretrained", "post_zero": bool(post_zero)}

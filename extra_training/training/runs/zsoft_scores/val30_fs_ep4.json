@@ -1,0 +1,16 @@
+{
+ "n_interfaces": 141,
+ "budget": 30,
+ "mean_dockq": 0.5755,
+ "frac_acc": 0.7092,
+ "oracle_mean_dockq": 0.7338,
+ "oracle_frac_acc": 0.9007,
+ "ckpt": "/home/ebrahim/confidence_recalibration/extra_training/training/runs/swopc6/head_ep4_step640.pt",
+ "select_by": "max",
+ "headroom": 0.1583,
+ "seed_base": 400000,
+ "seed_manifest": "/home/ebrahim/confidence_recalibration/extra_training/training/valfull83/seed_manifest.json",
+ "seed_manifest_digest": "",
+ "baseline_mean_dockq": 0.5813,
+ "baseline_frac_acc": 0.7234
+}

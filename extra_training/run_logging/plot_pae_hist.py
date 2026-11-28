@@ -18,6 +18,9 @@ import sys
 from collections import defaultdict
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import epoch_curve
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -38,16 +41,23 @@ if "--chain" in sys.argv:
     rids = list(P.run_chain(rid))
 
 n_by_ep = defaultdict(int)
+INCOMPLETE = set()
 recs = []
 for r_ in rids:
-    p = os.path.join(ROOT, "training", "runs", r_, "trajectory.csv")
-    if not os.path.exists(p):
-        continue
-    for r in csv.DictReader(open(p)):
+    # ALL RANKS' POSES when the run wrote them. A per-STRUCTURE histogram built from
+    # trajectory.csv alone covers only the third of the structures rank 0 walked, which is
+    # exactly the population this figure is about.
+    _rows, _nr, _complete = epoch_curve.pose_rows(r_, chain=False)
+    if not _complete:
+        INCOMPLETE.add(r_)
+    for r in _rows:
         if r.get("epoch") and r.get("pae_loss"):
             e = int(float(r["epoch"]))
             n_by_ep[e] += 1
             recs.append((e, r["pdb"], float(r["pae_loss"])))
+if INCOMPLETE:
+    print(f"  NOTE: {sorted(INCOMPLETE)} predate per-rank trajectories, so this "
+          f"histogram covers rank 0's third of the structures only.")
 if not recs:
     sys.exit(f"  no pae_loss rows for {rid}")
 full = max(n_by_ep.values())

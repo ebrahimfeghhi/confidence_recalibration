@@ -44,8 +44,15 @@ FLAT = [
     ("objective", ["rank_form", "rank_pairs", "rank_within_weight", "rank_topk_decay",
                    "rank_tau", "rank_cross_seed", "rank_weight_by_gap", "alpha_rank",
                    "alpha_pae", "alpha_confidence", "rank_structs_per_step"]),
+    # THE AXES ALONGSIDE THE LEGACY MODE FLAGS, not instead of them: every run already on disk is
+    # described by the mode flags, and the axes are the only columns that can tell two
+    # architectures apart once the modes cannot (blocks carrying onehot+dist at zero init record
+    # pose_perblock true and the other three false, exactly as a onehot-only arm does). --build
+    # drops and recreates the table, so adding columns needs no migration.
     ("model", ["train_only", "pose_perblock", "pose_perblock_copy", "pose_perblock_tied",
-               "pose_perblock_share", "frame_direction", "lora_rank", "blocks_per_ckpt"]),
+               "pose_perblock_share", "pose_block_terms", "pose_block_init",
+               "pose_block_weights", "pose_readout_sites", "pose_readout_terms",
+               "pose_readout_init", "frame_direction", "lora_rank", "blocks_per_ckpt"]),
     ("reg", ["l2_sp", "l2_sp_exclude", "lr", "warmup_steps", "clip_norm"]),
     ("data", ["manifest_selection", "val_loss_selection", "train_eval_pool", "seeds",
               "val_loss_seeds", "train_eval_budget", "epochs", "nsample", "accum", "crop_size"]),
@@ -142,7 +149,12 @@ def build():
                    train_pool=_pool(a.get("manifest_selection")),
                    val_pool=_pool(a.get("val_loss_selection")),
                    last_dockq=_f(last.get("dockq_mean")), last_frac=_f(last.get("frac_mean")),
-                   last_rho=_f(last.get("rho_trained")), last_xsloss=_f(last.get("xsloss_trained")),
+                   last_rho=_f(last.get("rho_trained")),
+                   # ALWAYS None SINCE rank_rho v7, and the column is kept rather than dropped so
+                   # existing index databases still open. The held-out ranking loss it recorded
+                   # went with the pairwise forms; .get() already returned None for a run whose
+                   # cache predated the column, so this needs no migration.
+                   last_xsloss=None,
                    best_dockq=best, best_dockq_epoch=best_ep,
                    **{c: (None if a.get(c) is None else str(a.get(c))) for c in COLS})
         con.execute(f"INSERT INTO runs ({','.join(row)}) VALUES ({','.join('?' * len(row))})",

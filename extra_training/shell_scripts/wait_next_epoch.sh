@@ -1,46 +1,31 @@
 #!/bin/bash
-# Block until the named arm evaluates ONE MORE epoch than it has right now, then exit so the
-# SESSION is re-invoked and can send the plot.
+# WAIT FOR THE NEXT SCORED EPOCH, redraw this arm's figure, print the row. Reports and never acts.
 #
-# Usage:  ./shell_scripts/wait_next_epoch.sh <rid>        (as a TRACKED background task)
+# WHY A SCRIPT AND NOT A ONE-LINER. The figure has to be sent by the session, not by a shell, so
+# every epoch costs one re-arm; keeping the wait in a file means the re-arm is a single short
+# command and cannot drift from the last one. It exits as soon as one epoch lands, on purpose:
+# a loop would redraw the png repeatedly with nobody sending it.
 #
-# WHY THIS REPLACES wait_epoch_<rid>.sh. That script took the count to wait past as an argument,
-# and on 2026-10-26 I passed it the EPOCH NUMBER (4) when the count was 3 -- tv6hue starts at
-# epoch 2, so count == epoch - 1 -- and it slept straight through epoch 5. The epoch was only
-# noticed because an older waiter happened to fire. An argument that must be computed correctly
-# by the caller every single time is a bug waiting its turn, so this one SNAPSHOTS the count
-# itself and there is nothing to get wrong.
-#
-# NO PIDS, NO PATTERNS. Liveness is "the run.log was written recently". pgrep/pkill matches the
-# shell running it and self-killed this session twice on 2026-10-18; a /proc cmdline scan matches
-# itself. Nothing here signals anything -- it only reads.
-#
-# IT ALSO EXITS IF THE ARM STOPS, so a finished or crashed run wakes the session instead of
-# leaving it waiting for an epoch that is never coming.
+# LIVENESS, SO IT CANNOT WAIT FOREVER on a dead run: it gives up if run.log has not been written
+# to for STALL seconds, and says so rather than sitting silent.
 set -u
 cd /home/ebrahim/confidence_recalibration/extra_training
-RID="${1:?usage: wait_next_epoch.sh <rid>}"
-LOG="training/runs/$RID/run.log"
-count() { ls -1 "training/runs/$RID"/metric_train_ep*.json 2>/dev/null | wc -l; }
-HAVE=$(count)
-echo "$(TZ=America/New_York date '+%F %-I:%M:%S %p %Z') waiting for $RID to pass $HAVE evaluated epoch(s)"
-STALE=0
-for i in $(seq 1 2400); do          # ~12h ceiling at 18s
-  n=$(count)
-  if [ "$n" -gt "$HAVE" ] 2>/dev/null; then
-    LAST=$(ls -1 "training/runs/$RID"/metric_train_ep*.json 2>/dev/null \
-           | sed 's/.*metric_train_ep\([0-9]*\)\.json/\1/' | sort -n | tail -1)
-    echo "EPOCH_READY rid=$RID count=$n latest_epoch=$LAST"
-    exit 0
-  fi
-  if [ -f "$LOG" ]; then
-    AGE=$(( $(date +%s) - $(stat -c %Y "$LOG") ))
-    if [ "$AGE" -gt 2700 ]; then STALE=$((STALE+1)); else STALE=0; fi
-    # 45 min with no write is not a slow epoch; an epoch is ~30 min and writes throughout.
-    if [ "$STALE" -ge 3 ]; then echo "RUN_STALLED rid=$RID count=$n log_age=${AGE}s"; exit 0; fi
-  else
-    echo "NO_LOG rid=$RID"; exit 0
-  fi
-  sleep 18
+PY=/home/ebrahim/Protenix/.venv/bin/python
+SD="${SD:-/tmp/claude-1004/-home-ebrahim-confidence-recalibration/d68d923a-c929-4ce4-bdef-d5300b0cc024/scratchpad}"
+TAGP="${TAGP:-lr4}"
+RID="${RID:?pass RID}"
+E="${E:?pass E=<the epoch to wait for>}"
+STALL="${STALL:-2400}"
+OUT="${OUT:-figures/pae_lr1e4.png}"
+TITLE="${TITLE:-PAE ONLY, lr 1e-4, dropout 0.25 -- val EVERY epoch   }"
+while [ ! -s "$SD/report_${TAGP}_ep$E.txt" ]; do
+    AGE=$(( $(date +%s) - $(stat -c %Y "training/runs/$RID/run.log" 2>/dev/null || echo 0) ))
+    if [ "$AGE" -gt "$STALL" ]; then
+        echo "### STALLED: run.log for $RID has not moved in ${AGE}s while waiting for epoch $E"
+        exit 1
+    fi
+    sleep 60
 done
-echo "TIMEOUT rid=$RID count=$(count)"
+echo "### $(TZ=America/New_York date '+%-I:%M %p %Z') epoch $E scored"
+grep -E "^VAL \(141|^TRAIN SLICE \(280" "$SD/report_${TAGP}_ep$E.txt" | sed 's/^/    /'
+TITLE="$TITLE" REF_RID="" $PY -I run_logging/plot_fullset.py "$OUT" 2>&1 | tail -2

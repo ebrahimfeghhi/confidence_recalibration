@@ -10,6 +10,82 @@ The **Live results** section below is regenerated hourly from the shards by
 
 ---
 
+## READ THIS FIRST — state as of 2026-11-24 8:46 PM EST
+
+**Three things must not happen without the owner saying so.**
+
+1. **DO NOT KILL pid 2172461.** It is the GPU holder on **card 4**, started deliberately so
+   that one card stays reserved for us while cards 5 and 7 are given back to other users on this
+   shared box. `shell_scripts/gpu_hold.sh` is the script; `training/runs/hold_card4_500mb.log`
+   is its log. Release it ONLY by `touch training/runs/HOLD_STOP_card4`, and only on request.
+   `run_logging/cards_busy.py` reporting `1` is the CORRECT state right now, not a fault to fix.
+
+   **The pid and the size have changed once already**, which is why this says to read the log
+   rather than trust the number here: the original 10 GiB holder (pid 1263388,
+   `hold_card4_single.log`) was released on 2026-11-24 and replaced the same evening by a
+   0.5 GiB one, because the 10 GiB default has no room beside a backprop job. It shows as
+   ~1,186 MiB with its CUDA context, at 0% util -- an idle-looking holder is the holder WORKING,
+   not a leftover to clean up. `ps -o lstart= -p <pid>` against the log's timestamp is the check.
+
+2. **DO NOT LAUNCH ANY GPU RUN.** We are down to one card by choice. `launch_sab98_fold.sh` in
+   particular must not be re-run: it has a `.launch_attempt` guard for exactly this reason, and
+   the fold it launches is currently BROKEN (see 3). Anything needing a GPU gets proposed to the
+   owner first.
+
+3. **DO NOT DELETE `validation/fold_sab98/`.** It holds ~40 min of correct CPU prep (98 job
+   JSONs, pool, chain roles, queue, 98 hardlinked references) plus `queue_all98.tsv`. The fold
+   that ran against it on 2026-11-24 produced **0 scored units out of 1,140 attempted** and must
+   be fixed, not restarted:
+
+   * Every unit died at `run_model/folder.py:305`, `ArmError: no template count reported --
+     featurisation did not run`.
+   * Cause: `run_logging/build_sab98_jobs.py` emits `sequence`, `count`, `pairedMsaPath` and
+     `unpairedMsaPath` per chain but **no `templatesPath`**. Working jobs
+     (`validation/jobs_corrected/*-final-updated.json`) carry one. Without it Protenix never runs
+     the template featuriser, never logs `Found N templates`, and the guard fires on every unit.
+   * An open decision blocks the fix: val83 was folded **with** templates (7,700 chain-instances
+     logged `Found 4 templates`, 100 found 3, 100 found 0), while the Breadth-over-Depth paper
+     disabled template retrieval in every wrapper. Templates OFF makes us comparable to their
+     Table S1 Protenix-v2 row (mean DockQ 0.305, Top-1 48.5%, oracle 62.1%) and avoids a 2024
+     test structure retrieving near-identical antibodies; templates ON makes us comparable to our
+     own val83 poses. **The owner picks.**
+
+**Also unresolved about that target set:** `run_logging/validate_sab98_targets.py` found that one
+target per PDB file is the WRONG unit — the paper's antibody is `{H, L}`, singular — and yields
+**117 valid instance-level targets over 96 structures** (81 instances dropped as crystallographic
+copies at >=0.95 heavy-chain identity; `7ums` and `9uo0` have no valid target because their staged
+`.cif` holds the wrong chains). Report: `scratchpad/sab98_targets.json`.
+
+### Results that are settled and should not be re-litigated
+
+* **Pose consensus does NOT beat ipTM on a single-predictor pool.** Using AbPoolRank's own
+  `descriptors.py`/`pairwise.py`/`features.py` on our poses: val83 (139 leak-free interfaces,
+  150 poses each) Success@1 at DockQ>=0.49 is shipped ipTM **0.6403** vs geometric consensus
+  0.6043 and epitope consensus 0.6115; on the 947-interface training pool it is 0.6167 vs 0.5396.
+  Fitting their exact recipe (HistGBR 250/0.07/40, 3 seeds, within-pool DockQ percentile target)
+  on our 947 interfaces and evaluating on val83 gives 0.5971 pose-level / 0.6115 grouped — still
+  below ipTM, and equal to their bundled checkpoint's 0.5971, which is evidence the pipeline is
+  faithful rather than broken.
+* **But the consensus signal IS orthogonal to ipTM.** Mean within-interface Spearman against
+  DockQ, partialling ipTM out: geometric **+0.183 (t = +16.3)** and epitope **+0.175 (t = +15.9)**
+  on 947 interfaces (+0.110 / +0.114 on val83). So the information exists and the
+  percentile-regression-then-argmax pipeline fails to convert it into better top-1 picks. The next
+  reranker should train on the decision — pairwise among ipTM's top-k — not on the whole ranking.
+* **Feature tables are on disk** and need no recomputation: `scratchpad/cs_val_feats.csv`
+  (20,850 pose rows / 139 interfaces) and `scratchpad/cs_train_feats.csv` (71,025 / 947), columns
+  `iface, seed, sample, pss_pct, srcbal_pct, epi_pct, log_pool, dockq, iptm`. **`srcbal_pct` is
+  garbage on a single-predictor pool** — their `percentile()` of an all-zero vector returns a ramp
+  in input order — so zero that column, never fit on it.
+* **The confidence head already receives the 3D pose**: `protenix/model/modules/confidence.py:282`
+  computes `cdist` over representative atoms, one-hots it into 39 bins (3.25-52 A, 1.25 A) and
+  ADDS it to `z_pair` via `linear_no_bias_d` (39x128) plus `linear_no_bias_d_wo_onehot` (1x128) --
+  5,120 parameters total. Every other contribution to `z_pair` is identical across all poses of a
+  target, so that additive term is the entire pose-dependent input.
+
+---
+
+---
+
 ## What is held constant across all three
 
 Changing any of these makes two runs incomparable, so they are fixed:
@@ -36,7 +112,7 @@ Oracle ceiling: DockQ 0.6926, frac 0.8587 → **headroom 0.1096**.
 
 ![arms overlay](figures/arms_overlay.png)
 
-*Regenerated 2026-11-07 2:41 PM EST. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
+*Regenerated 2026-11-27 10:25 PM EST. Every number below comes from each run's own train_eval shards and rank_rho cache; shipped is recomputed from the same rows via `stored_iptm`.*
 
 Shipped on `valfull` (92 interfaces, budget 30): DockQ **0.5830**, frac **0.7391**, rho **0.2218**.
 
@@ -51,6 +127,65 @@ Shipped on `valfull` (92 interfaces, budget 30): DockQ **0.5830**, frac **0.7391
 - **3. full head + L2-SP 0.001** (`tv6hue`, 20 epochs): paired ΔDockQ mean **-0.0106**; rho 0.2318 (best 0.2519) vs shipped 0.2218; train PAE 2.7005 → 2.6095; val PAE 2.8207 → 2.7444, min 2.7174 at epoch 5.
 
 <!-- AUTO:END -->
+
+## Current arm: `privsp` — PAE-only, cropped
+
+Launched 1:40 PM EST 2026-11-11 on cards 4/5/7. Outside the AUTO block above, which is
+regenerated and would overwrite this.
+
+| | |
+|---|---|
+| crop | our own 256-token pool, `training/crop_final` |
+| loss | **PAE alone** (`--pae-only`); pLDDT, PDE and resolved stubbed out |
+| ranking loss | **none**, so no pass A — one forward per pose instead of two |
+| batch | `--accum 240 --nsample 5` → 16 units/rank/step, 48 units over 43–48 distinct structures |
+| epoch builder | `--epoch-cover-all`, every unit once, all 846 structures |
+| schedule | 50 epochs, held-out eval every 5, **uncropped** |
+| lr / clip | 1e-3 / 25.0 — **ours, not Protenix's** (which ships clip 10), so this stays comparable to `87ja6a` and `9gsbdq` |
+| pace | ~18 min/epoch → ~15 h for 50 |
+
+This is our crop with a PAE-only objective. It is **not** a stock-Protenix baseline.
+
+**Why it cannot hit the bug that killed `3pdv7i`.** That arm died because the crop pool was
+validated against the static `chain_roles` join while the *ranking* loss scored the per-pose OST
+join; the two disagree on 90 of 846 structures. This arm has no ranking loss, and its PAE term is
+masked to scored chain pairs through `chain_roles` — the same static join the pool was validated
+against. `check_crop_pairs.py --join static` asserts it over all 94,630 crops before launch.
+
+**Epoch 1:** train PAE **2.9720** over **19.6 min**, 2,308 units, **145 optimiser steps**;
+grad_norm mean 1.150, median 0.890, max 4.949 (clip 25 never engaged); 0 nonfinite; 0 faults;
+2,880 of 2,980 units cropped to exactly 256 tokens, the rest being structures already smaller
+than the crop. Epoch 2: 25.3 min, same 2,308 units and 145 steps.
+
+145 is exactly the planned `ceil(2308 / 16)`, and the checkpoints agree — `head_ep1_step145.pt`
+then `head_ep2_step290.pt`. The trainer's own line says 144 because `2308 / 16 = 144.25`: 144 full
+steps plus one short final step holding the remaining 4 units.
+
+*(An earlier version of this section reported 186 steps for epoch 1. That was a cumulative count
+taken while epoch 2 was already 41 steps in — 145 + 41 — not a different training set. Flagged in
+review.)*
+
+Do not read that against the uncropped arm's epoch-1 3.0144 — different loss set, batch and token
+counts. It is not evidence about cropping.
+
+**The arm is CPU-bound.** 186 steps in ~18 min is 6.75 s/step at 80 poses/rank → 0.084 s/pose,
+against the measured fixed floor `C0 = 0.081 s` in `t(N) = C0 + K2·N² + K3·N³`. GPU utilisation
+sampled 5× over 10 s read `0 0 0 / 0 0 0 / 0 0 0 / 73 92 63 / 82 87 0`. At 256 tokens the GPU
+work per pose has collapsed and what remains is per-pose CPU cost — trunk `np.load`, crop, slice —
+which does not shrink with the crop. **A smaller crop would buy almost nothing.**
+
+**What would make this arm interesting.** First held-out eval is epoch 5. Cropped training has
+improved a *training* metric without improving held-out selection four times now (sections 13/14
+of `paper_results.md`, and `9gsbdq` epochs 20→25). A falling PAE loss here is not evidence;
+held-out mean DockQ against shipped **0.5735** / max-pooled **0.5813** is.
+
+Plot: `run_logging/plot_pae_arm.py privsp` — three panels (train PAE, held-out mean DockQ,
+held-out frac-acceptable). `plot_rel_arm.py` is the wrong instrument for this arm: three of its
+four panels are ranking-loss quantities and stay empty.
+
+**Previous arm.** `9gsbdq` (uncropped rel+PAE, resumed from `87ja6a` ep20) was stopped at epoch
+29, 10%% into epoch 30. Checkpointed through 29 with `resume_ep29.pt`, so it is resumable. Its
+epoch-30 held-out eval — the first read since epoch 25's decline — was not taken.
 
 ## The three experiments
 

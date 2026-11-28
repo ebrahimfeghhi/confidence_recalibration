@@ -49,6 +49,16 @@ _ap.add_argument("--selection", default="train_val_splits/cache_train_structures
 # 9 of every 10 labels the scan judged are units the trainer will never read.
 _ap.add_argument("--seed-manifest", default="",
                  help="per-structure seed declaration; overrides --seeds")
+# THE LABEL ROOT WAS HARDCODED TO training/fold/labels, which made this gate silently wrong for
+# any fold but the training one: given a validation --selection it looked each val structure up
+# under the TRAINING labels, found nothing there, and reported every one of them as "missing"
+# -- a message that reads like absent labels rather than "you pointed the scan at the wrong
+# tree". phase_k_train takes --fold and derives labels from it, so this takes the same shape.
+_ap.add_argument("--fold", default="training/fold",
+                 help="fold whose labels/ subtree is scanned; must be the SAME --fold the run "
+                      "will train with, since the stored fingerprint is per-label-file")
+_ap.add_argument("--labels", default="",
+                 help="label root, overriding <fold>/labels")
 _a = _ap.parse_args()
 SKIP = {x.strip().lower() for x in _a.manifest_skip.split(",") if x.strip()}
 _lo, _hi = (int(x) for x in _a.seeds.split("-"))
@@ -56,7 +66,12 @@ a = types.SimpleNamespace(
     indices=os.path.join(ROOT, _a.indices),
     bio_dir=os.path.join(ROOT, _a.bio_dir),
     mmcif_dir=os.path.join(ROOT, _a.mmcif_dir))
+LABEL_ROOT = os.path.join(ROOT, _a.labels or os.path.join(_a.fold, "labels"))
+if not os.path.isdir(LABEL_ROOT):
+    raise SystemExit(f"STOP: label root {LABEL_ROOT} is not a directory; every label would be "
+                     f"reported 'missing' for a reason that has nothing to do with the labels.")
 print(f"indices {_a.indices}", flush=True)
+print(f"labels  {os.path.relpath(LABEL_ROOT, ROOT)}", flush=True)
 
 cfg = DS.build_configs(3400, a.indices, a.bio_dir, a.mmcif_dir,
                        os.path.join(ROOT, "building_msa/work/mmcif_msa"),
@@ -111,7 +126,7 @@ missing, checked = [], 0
 for i, pdb in enumerate(pdbs):
     w = want_fields(pdb)
     for seed in (SEEDS_OF[pdb.lower()] if SEEDS_OF else range(_lo, _hi + 1)):
-        lp = os.path.join(ROOT, "training/fold/labels", pdb, f"free_{seed}.npz")
+        lp = os.path.join(LABEL_ROOT, pdb, f"free_{seed}.npz")
         if not os.path.exists(lp):
             missing.append(f"{pdb}/{seed}"); continue
         try:

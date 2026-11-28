@@ -36,6 +36,9 @@ import sys
 from collections import defaultdict
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import epoch_curve
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -51,9 +54,24 @@ SKIP = {l.strip() for l in open(os.path.join(ROOT, "training", "full_train",
 
 
 def curve(rid, col, win=False):
+    """Per-epoch values for `col`. WITHOUT a pdb filter this returns the ALL-RANKS mean from
+    epoch_curve; trajectory.csv is rank 0 only, so averaging its per-pose column gave the mean
+    over a third of the structures -- up to 45% of this curve's whole range. The per-pose path
+    is kept only for `win=True`, which filters by pdb and therefore cannot use a cross-rank
+    aggregate; that case is LABELLED by returning the source alongside."""
+    if not win:
+        # The downstream keeps the LONGEST list per epoch and drops short ones as incomplete, so
+        # the all-ranks mean is returned repeated to its own pose count. The mean of n copies of
+        # m is m, and len() stays the completeness signal it already was.
+        return {e: [v] * n for e, (v, n, _s) in
+                epoch_curve.epoch_means(rid, col, chain=False).items()}
+    # EVERY RANK'S POSES when the run wrote them. The pdb filter cannot use the cross-rank batch
+    # column, so this path needs the pose rows -- and trajectory.csv holds rank 0's third. For a
+    # run that predates trajectory_rank<N>.csv there is nothing to recover, so the caller is told.
     d = defaultdict(list)
-    p = os.path.join(ROOT, "training", "runs", rid, "trajectory.csv")
-    for r in csv.DictReader(open(p)):
+    _rows, _nr, _complete = epoch_curve.pose_rows(rid, chain=False)
+    INCOMPLETE.add(rid) if not _complete else None
+    for r in _rows:
         try:
             e = int(float(r["epoch"])); v = r.get(col)
             if v in (None, "") or (win and (r.get("pdb") or "").strip() in SKIP):
@@ -66,6 +84,7 @@ def curve(rid, col, win=False):
     return d
 
 
+INCOMPLETE = set()
 _CHAIN_SEEN = set()
 
 
@@ -77,6 +96,9 @@ def chained_curve(head, col, win=False):
     if head not in _CHAIN_SEEN:
         _CHAIN_SEEN.add(head)
         print(f"  {head} chain: {' -> '.join(rids)}")
+    if win and INCOMPLETE:
+        print(f"    NOTE: {sorted(INCOMPLETE)} predate per-rank trajectories, so the "
+              f"pdb-filtered curve covers rank 0's third of the structures only.")
     best = {}
     for rid in rids:
         if not os.path.exists(os.path.join(ROOT, "training", "runs", rid, "trajectory.csv")):

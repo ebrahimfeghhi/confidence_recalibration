@@ -131,7 +131,8 @@ class Model(nn.Module):
 def build():
     torch.manual_seed(0)
     m = Model()
-    pose_perblock.install(m, copy_pretrained=True, loud=False)
+    pose_perblock.install(m, terms=("onehot", "dist", "orient"), init="pretrained",
+                          loud=False)
     h = m.confidence_head
     # NON-ZERO, AND DIFFERENT AT EVERY DEPTH. Zero weights would make a broken orientation
     # pathway indistinguishable from a working one.

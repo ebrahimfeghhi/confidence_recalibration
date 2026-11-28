@@ -1,0 +1,233 @@
+#!/usr/bin/env python
+"""GAP-MATCHED pairwise accuracy: within-seed pose pairs vs across-seed pose pairs.
+
+THE QUESTION. ipTM ranks across seeds well and within a seed barely at all, but the two
+comparisons are not equally hard: within a seed the two poses usually differ in DockQ by much
+less than two poses from different seeds do. An unconditional accuracy gap could be entirely
+that. So condition on the gap: among pairs whose |DockQ difference| falls in the same bin, is
+the head still worse at the within-seed pair?
+
+PAIR CONSTRUCTION, both types inside ONE interface, so interface identity is never the
+difference between the two populations:
+  within  -- the C(5,2) = 10 pairs of samples that share a seed
+  across  -- every pair of poses from two DIFFERENT seeds of that interface
+Ties in DockQ are dropped (the question is undefined); a tie in ipTM counts as half a hit, the
+same convention as run_logging/within_seed_iptm_dockq.py.
+
+|dipTM| ALONGSIDE THE ACCURACY, which is the point of matching. ipTM puts 97% of its
+within-interface variance between seeds and 2.7% among a seed's samples, yet the matched accuracy
+columns come out nearly equal. Those two facts are only compatible if the extra between-seed
+movement is largely orthogonal to pose quality: at a FIXED DockQ gap, movement that does not
+improve the ordering is noise with respect to the thing being selected. So each bin reports the
+median |dipTM| of both populations next to their accuracy. A large ratio with equal accuracy
+quantifies the wasted swing; a ratio near 1 would instead mean the variance decomposition and
+this measurement are looking at different pairs and one of them is mis-stratified.
+
+TWO MATCHINGS, because binning is coarse:
+  binned  -- accuracy per |dDockQ| bin, each population scored on its own members of that bin
+  paired  -- for each within-seed pair, the across-seed pairs of the SAME interface whose gap is
+             within --tol; the two accuracies are then means over the same gap distribution by
+             construction, and each within pair contributes once with its matched set's mean.
+"""
+import argparse
+import collections
+import csv
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+
+AB_ROLES = {"H", "L"}
+EDGES = [0.0, 0.02, 0.05, 0.10, 0.20, 0.40, 1.01]
+
+
+def is_ag(role):
+    return bool(role) and role.startswith("ag")
+
+
+def hit(dq_i, ip_i, dq_j, ip_j):
+    """1 correct, 0.5 ipTM tie, 0 wrong. Caller guarantees dq_i != dq_j."""
+    if ip_i == ip_j:
+        return 0.5
+    return 1.0 if (ip_i > ip_j) == (dq_i > dq_j) else 0.0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--results", default=f"{ROOT}/training/fold/results_with_trunks.csv")
+    ap.add_argument("--roles", default=f"{ROOT}/training/fold/chain_roles_all.csv")
+    ap.add_argument("--train-structures",
+                    default=f"{ROOT}/train_val_splits/cache_train_structures.csv")
+    ap.add_argument("--poses", type=int, default=5)
+    ap.add_argument("--iptm-col", default="iptm")
+    ap.add_argument("--tol", type=float, default=0.01,
+                    help="gap tolerance for the paired matching")
+    ap.add_argument("--abag-only", action="store_true")
+    a = ap.parse_args()
+
+    import numpy as np
+    import rank_loss as RKL
+
+    roles_join = RKL.load_roles(a.roles)
+    role_of = {}
+    with open(a.roles) as fh:
+        for r in csv.DictReader(fh):
+            role_of.setdefault(r["pdb"], {})[r["model_chain"]] = r["role"].strip()
+
+    trainset = set()
+    if os.path.exists(a.train_structures):
+        with open(a.train_structures) as fh:
+            for r in csv.DictReader(fh):
+                trainset.add(r["pdb"])
+
+    cell = collections.defaultdict(dict)          # (iface, seed) -> sample -> (dockq, iptm)
+    with open(a.results) as fh:
+        rd = csv.DictReader(fh)
+        col = a.iptm_col if a.iptm_col in (rd.fieldnames or []) else "pair_iptm"
+        for r in rd:
+            if r.get("has_trunk") not in (None, "", "1"):
+                continue
+            if "arm" in r and r.get("arm") not in (None, "", "free"):
+                continue
+            try:
+                cell[(r["iface"], int(r["seed"]))][int(r["sample"])] = (
+                    float(r["dockq"]), float(r[col]))
+            except (ValueError, KeyError, TypeError):
+                continue
+
+    by_iface = collections.defaultdict(dict)      # iface -> seed -> [(dockq, iptm) x poses]
+    for (iface, seed), d in cell.items():
+        if len(d) != int(a.poses):
+            continue
+        by_iface[iface][seed] = [d[k] for k in sorted(d)]
+
+    kept, dropped_abag, pops = 0, 0, {}
+    for tag in ("within", "across"):
+        pops[tag] = {"gap": [], "hit": [], "dip": []}
+    paired_w, paired_a, paired_n = [], [], 0
+    paired_wd, paired_ad = [], []
+
+    for iface, seeds in by_iface.items():
+        if len(seeds) < 2:
+            continue
+        p = RKL.parse_iface(iface, roles_join)
+        if p is None:
+            continue
+        pdb, pair = p
+        ro = role_of.get(pdb) or {}
+        ra, rb = ro.get(chr(ord("A") + pair[0])), ro.get(chr(ord("A") + pair[1]))
+        abag = (ra in AB_ROLES and is_ag(rb)) or (is_ag(ra) and rb in AB_ROLES)
+        if a.abag_only and not abag:
+            dropped_abag += 1
+            continue
+        kept += 1
+
+        order = sorted(seeds)
+        poses = [(s, k) for s in order for k in range(int(a.poses))]
+        dq = np.array([seeds[s][k][0] for s, k in poses])
+        ip = np.array([seeds[s][k][1] for s, k in poses])
+        sd = np.array([s for s, _ in poses])
+
+        n = len(poses)
+        ii, jj = np.triu_indices(n, k=1)
+        gap = np.abs(dq[ii] - dq[jj])
+        live = gap > 0
+        ii, jj, gap = ii[live], jj[live], gap[live]
+        same = sd[ii] == sd[jj]
+        correct = np.where(ip[ii] == ip[jj], 0.5,
+                           ((ip[ii] > ip[jj]) == (dq[ii] > dq[jj])).astype(float))
+
+        dip = np.abs(ip[ii] - ip[jj])
+        pops["within"]["gap"].append(gap[same])
+        pops["within"]["hit"].append(correct[same])
+        pops["within"]["dip"].append(dip[same])
+        pops["across"]["gap"].append(gap[~same])
+        pops["across"]["hit"].append(correct[~same])
+        pops["across"]["dip"].append(dip[~same])
+
+        # paired matching, inside this interface
+        wg, wh = gap[same], correct[same]
+        ag_, ah = gap[~same], correct[~same]
+        if len(ag_) == 0:
+            continue
+        awd = dip[~same]
+        srt = np.argsort(ag_)
+        ag_s, ah_s, ad_s = ag_[srt], ah[srt], awd[srt]
+        lo = np.searchsorted(ag_s, wg - a.tol, side="left")
+        hi = np.searchsorted(ag_s, wg + a.tol, side="right")
+        cs = np.concatenate([[0.0], np.cumsum(ah_s)])
+        cd = np.concatenate([[0.0], np.cumsum(ad_s)])
+        cnt = hi - lo
+        ok = cnt > 0
+        if not ok.any():
+            continue
+        paired_w.append(wh[ok])
+        paired_a.append((cs[hi[ok]] - cs[lo[ok]]) / cnt[ok])
+        paired_wd.append(dip[same][ok])
+        paired_ad.append((cd[hi[ok]] - cd[lo[ok]]) / cnt[ok])
+        paired_n += int(ok.sum())
+
+    for tag in pops:
+        for fld in ("gap", "hit", "dip"):
+            pops[tag][fld] = np.concatenate(pops[tag][fld])
+
+    print(f"interfaces {kept}"
+          + (f"   (non-abAg dropped {dropped_abag})" if a.abag_only else "")
+          + f"   within pairs {len(pops['within']['gap'])}"
+          + f"   across pairs {len(pops['across']['gap'])}")
+    print()
+    print(f"{'|dDockQ| bin':>16s} {'within acc':>11s} {'n':>9s} "
+          f"{'across acc':>11s} {'n':>10s} {'within-across':>14s} "
+          f"{'med|dipTM| w':>13s} {'a':>9s} {'ratio a/w':>10s}")
+    for lo_, hi_ in zip(EDGES[:-1], EDGES[1:]):
+        row = [f"[{lo_:.2f},{hi_:.2f})".rjust(16)]
+        vals = {}
+        for tag in ("within", "across"):
+            g, h = pops[tag]["gap"], pops[tag]["hit"]
+            m = (g >= lo_) & (g < hi_)
+            vals[tag] = (float(h[m].mean()) if m.any() else float("nan"), int(m.sum()))
+            row.append(f"{vals[tag][0]:11.4f} {vals[tag][1]:9d}")
+        d = vals["within"][0] - vals["across"][0]
+        row.append(f"{d:+14.4f}")
+        mw = pops["within"]["dip"][(pops["within"]["gap"] >= lo_)
+                                   & (pops["within"]["gap"] < hi_)]
+        ma = pops["across"]["dip"][(pops["across"]["gap"] >= lo_)
+                                   & (pops["across"]["gap"] < hi_)]
+        mw_ = float(np.median(mw)) if len(mw) else float("nan")
+        ma_ = float(np.median(ma)) if len(ma) else float("nan")
+        row.append(f"{mw_:13.4f} {ma_:9.4f} {ma_ / mw_ if mw_ else float('nan'):10.2f}")
+        print(" ".join(row))
+    _mw = float(np.median(pops["within"]["dip"]))
+    _ma = float(np.median(pops["across"]["dip"]))
+    print(f"{'ALL':>16s} "
+          f"{pops['within']['hit'].mean():11.4f} {len(pops['within']['hit']):9d} "
+          f"{pops['across']['hit'].mean():11.4f} {len(pops['across']['hit']):9d} "
+          f"{pops['within']['hit'].mean() - pops['across']['hit'].mean():+14.4f} "
+          f"{_mw:13.4f} {_ma:9.4f} {_ma / _mw:10.2f}")
+    print(f"{'median gap':>16s} {np.median(pops['within']['gap']):11.4f} "
+          f"{'':9s} {np.median(pops['across']['gap']):11.4f}")
+
+    if paired_n:
+        from scipy import stats as sps
+        w = np.concatenate(paired_w)
+        c = np.concatenate(paired_a)
+        t = sps.ttest_rel(w, c)
+        print()
+        print(f"PAIRED on gap within +-{a.tol} inside the same interface, "
+              f"{paired_n} within-seed pair(s) matched")
+        print(f"  within-seed accuracy          {w.mean():.4f}")
+        print(f"  matched across-seed accuracy  {c.mean():.4f}")
+        print(f"  difference                    {w.mean() - c.mean():+.4f}   "
+              f"t {t.statistic:+.2f}  p {t.pvalue:.2e}")
+        wd = np.concatenate(paired_wd)
+        ad = np.concatenate(paired_ad)
+        print(f"  median |dipTM| within-seed    {np.median(wd):.4f}")
+        print(f"  median |dipTM| matched across {np.median(ad):.4f}   "
+              f"ratio {np.median(ad) / np.median(wd):.2f}x")
+        print(f"  mean   |dipTM| within / across {wd.mean():.4f} / {ad.mean():.4f}   "
+              f"ratio {ad.mean() / wd.mean():.2f}x")
+
+
+if __name__ == "__main__":
+    main()

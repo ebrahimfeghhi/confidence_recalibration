@@ -33,6 +33,8 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "phases"))
+import pose_axes as _PAX   # noqa: E402  the pose axes, and the ONE argv builder
 TRAIN = os.path.join(ROOT, "phases", "phase_k_train.py")
 
 # Fields that legitimately differ between two shards of the same pass.
@@ -72,13 +74,24 @@ def build_cmd(a, bundle, out, epoch):
                       ("--frame-direction", "frame_direction")):
         if a.get(key):
             cmd.append(flag)
-    if a.get("pose_perblock"):
-        cmd.append("--pose-perblock")
-        for flag, key in (("--pose-perblock-tied", "pose_perblock_tied"),
-                          ("--pose-perblock-share", "pose_perblock_share"),
-                          ("--pose-perblock-copy", "pose_perblock_copy")):
-            if a.get(key):
-                cmd.append(flag)
+    # THE POSE ARCHITECTURE, FROM THE ONE BUILDER (phases/pose_axes.py), with the `train` target
+    # because this rebuilds a phase_k_train --loss-only argv: that child needs the INITS too,
+    # since a resume bundle carries only the TRAINABLE tensors and one left out of --train-only
+    # keeps whatever it was initialised to.
+    cmd += _PAX.argv(a, target="train")[0]
+    # AND THE IN-BLOCK PATHWAY, WHICH IS NOT ONE OF THE AXES. Found while fixing the same omission
+    # in run_logging/valpae_flags.py: --pose-inblock adds two head tensors (four with
+    # --pose-inblock-pae), so this child refuses the bundle on the missing-trainable-tensor stop
+    # -- or, when the run's own --train-only does not select those tensors and so nothing is
+    # missing, measures a head without the pathway and reports the number anyway, which is the
+    # quieter half. And for a legacy pose_inblock + pose_readout arm it refuses the COMMAND: the
+    # readout site reads the geometry this wrapper publishes, so pose_axes emits the readout flags
+    # and the child is then asked for a readout with no stack injection to hang it on. Copied from
+    # the trainer's own held-out child builder (phase_k_train.py:8661-8664).
+    if a.get("pose_inblock"):
+        cmd += ["--pose-inblock", "--pose-inblock-block", str(a.get("pose_inblock_block", -1))]
+        if a.get("pose_inblock_pae"):
+            cmd.append("--pose-inblock-pae")
     if a.get("val_loss_prep"):
         p = a["val_loss_prep"]
         cmd += ["--indices", os.path.join(p, "job_indices.csv"),
