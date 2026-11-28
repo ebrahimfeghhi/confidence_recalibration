@@ -7,11 +7,16 @@ structure is featurised once and reused across all of its seeds, and every unit 
 npz so a kill costs at most one unit.
 
 THE NEW POSES ARE AN INDEPENDENT DRAW FROM THE SAME TRUNK, not a continuation of the original
-RNG stream. torch is seeded per unit with --seed-base + the unit's fold seed, so the run is
-reproducible and no two units share noise, but the 5 new poses are not "samples 5-9" of the
-original sampling -- they are 5 more samples of the same conditioning. For the within-seed
-question that is exactly the quantity wanted; for anything that needs the original stream
-continued, it is not.
+RNG stream. torch is seeded per unit with --seed-base + the unit's fold seed, so no two units
+share noise, but the 5 new poses are not "samples 5-9" of the original sampling -- they are 5
+more samples of the same conditioning. For the within-seed question that is exactly the quantity
+wanted; for anything that needs the original stream continued, it is not.
+
+THE SEED DOES NOT MAKE THIS BIT-REPRODUCIBLE, measured rather than assumed. Two processes ran the
+same unit with the same seed during an accidental overlap and their ipTM disagreed by up to
+0.0615 -- the sampler's kernels are not deterministic, so a rerun gives a valid draw from the
+same conditioning and NOT the same coordinates. Anything that needs the exact poses must read the
+npz; regenerating is not a substitute for it.
 
 WHAT THIS DOES NOT PRODUCE. Coordinates only. A new pose has no DockQ (OST against the
 reference), no ipTM (a confidence-head pass) and no label_coordinate (symmetric permutation
@@ -34,6 +39,14 @@ def main():
     ap.add_argument("--fold", default=f"{ROOT}/training/fold")
     ap.add_argument("--out-dir", default=f"{ROOT}/training/fold/poses_extra")
     ap.add_argument("--nsample", type=int, default=5)
+    ap.add_argument("--sample-base", type=int, default=100,
+                    help="sample id of the first new pose. 100 was the 5->10 batch; the 10->15 "
+                         "batch passes 105 so the two never collide in the merged tables.")
+    ap.add_argument("--shard", default="",
+                    help="I/N -- take every Nth structure starting at I (0-based) off the "
+                         "size-sorted list, so N instances on N cards split the work with no "
+                         "overlap. Each shard locks and writes its own scores csv; the pose "
+                         "npz paths are disjoint because the structures are.")
     ap.add_argument("--seed-base", type=int, default=777000)
     ap.add_argument("--only", default="", help="comma-separated pdb ids")
     ap.add_argument("--limit-structures", type=int, default=0)
@@ -61,6 +74,37 @@ def main():
     a = ap.parse_args()
 
     os.environ.setdefault("LAYERNORM_TYPE", "openfold")
+
+    # ONE INSTANCE AT A TIME, ENFORCED BY A LOCK RATHER THAN BY CARE.
+    #
+    # Two instances pointed at the same --out-dir write the same npz paths and append to the
+    # same csv. That happened: a chained shell outlived the kill of its parent, fired when the
+    # first pass ended, and ran beside a manual relaunch. The damage was not loud -- 15
+    # duplicate rows over 3 units, which looked like a cosmetic dedupe until the two copies
+    # turned out to DISAGREE on ipTM by up to 0.0615, meaning one process's coordinates were on
+    # disk under the other's scores. An exclusive flock makes the second instance refuse at
+    # startup instead.
+    import fcntl
+    _shard_tag = ("_shard" + a.shard.replace("/", "of")) if a.shard else ""
+    _lockp = os.path.join(os.path.dirname(os.path.abspath(a.out_dir)) or ".",
+                          f".{os.path.basename(a.out_dir)}{_shard_tag}.lock")
+    if a.shard:
+        _si, _sn = (int(x) for x in a.shard.split("/"))
+        if not 0 <= _si < _sn:
+            raise SystemExit(f"STOP: --shard {a.shard} is out of range")
+        _root, _ext = os.path.splitext(a.scores_out)
+        a.scores_out = f"{_root}{_shard_tag}{_ext}"
+    os.makedirs(os.path.dirname(_lockp) or ".", exist_ok=True)
+    _lock = open(_lockp, "w")
+    try:
+        fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        raise SystemExit(
+            f"STOP: another rediffuse_batch already holds {_lockp}. Two instances on one "
+            f"--out-dir corrupt it silently; stop the other one or pass a different --out-dir.")
+    _lock.write(f"{os.getpid()}\n")
+    _lock.flush()
+
     import numpy as np
     import torch
     import phase_j_build_cache as BC
@@ -88,7 +132,16 @@ def main():
     if a.max_tokens:
         units = {k: v for k, v in units.items()
                  if tok.get(k, 10 ** 9) <= int(a.max_tokens)}
-    pdbs = sorted(units)
+    # CHEAPEST FIRST. Cost goes as tokens^1.71, so alphabetical order mixes 300-token and
+    # 2,300-token structures at random and the usable set grows at the mean rate. Ascending size
+    # finishes far more structures per hour early and leaves the expensive tail at the end,
+    # where it can be cut without losing the rest. A structure with no token count sorts last.
+    pdbs = sorted(units, key=lambda p: (tok.get(p, 10 ** 9), p))
+    if a.shard:
+        # INTERLEAVED, NOT CONTIGUOUS. The list is sorted cheapest-first, so three contiguous
+        # blocks would hand one card every expensive structure and it would still be running
+        # long after the other two finished.
+        pdbs = pdbs[_si::_sn]
     if a.limit_structures:
         pdbs = pdbs[:int(a.limit_structures)]
     todo = sum(1 for p in pdbs for u in units[p]
@@ -212,7 +265,7 @@ def main():
                 os.replace(tmp, os.path.join(a.out_dir, pdb, os.path.basename(up)))
                 done += 1
                 # ipTM FOR THE NEW POSES, in this loop, while the trunk and the model are
-                # resident. Sample ids are 100 + i so a new pose can never be confused with one
+                # resident. Sample ids are --sample-base + i so a new pose can never be confused with one
                 # of the original five, in any table that later joins the two.
                 if a.score and (pdb, sd) not in scored and pairs.get(pdb):
                     with torch.no_grad(), torch.autocast(device_type="cuda",
@@ -237,7 +290,7 @@ def main():
                                 if sc_ is None:
                                     continue
                                 sm_ = RKL.iptm_pooled(one, feat, mcfg, pr_, pool="mean")
-                                rowsout.append([pdb, ifc, sd, 100 + i_s,
+                                rowsout.append([pdb, ifc, sd, a.sample_base + i_s,
                                                 round(float(sc_), 6),
                                                 (round(float(sm_), 6) if sm_ is not None
                                                  else ""),

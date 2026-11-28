@@ -92,6 +92,9 @@ SOURCES = [
 # Stores that record the MODEL chains a DockQ score was computed on. Authoritative.
 MODEL_CHAIN_STORES = [
     f"{HERE}/training/fold/poses_extra/dockq_extra.csv",
+    f"{HERE}/validation/fold/poses_extra/dockq_extra.csv",
+    f"{HERE}/training/fold/poses_extra2/dockq_extra.csv",
+    f"{HERE}/validation/fold/poses_extra2/dockq_extra.csv",
     f"{HERE}/training/refill/refill_rows.csv",
 ]
 
@@ -112,8 +115,24 @@ COLS = ["dataset", "split", "structure", "interface", "seed", "pose", "pose_set"
 # two separate files that have to be joined on (interface, seed, sample), and the DockQ scorer
 # runs behind the generator, so at any moment some poses have an ipTM and no DockQ yet. Only
 # fully scored poses are written -- an inner join, not a left join.
-REGEN_DOCKQ = f"{HERE}/training/fold/poses_extra/dockq_extra.csv"
-REGEN_IPTM = f"{HERE}/training/fold/poses_extra/results_extra.csv"
+# (split, dockq csv, iptm csv, roles csv) per regenerated pose set. The val fold names its
+# roles file chain_roles_all83.csv and its rows belong to split val83, which is the only thing
+# that differs; a set whose files do not exist yet is skipped, so the 105-109 batch can be added
+# here before it finishes generating.
+REGEN_SOURCES = [
+    ("train", f"{HERE}/training/fold/poses_extra/dockq_extra.csv",
+     f"{HERE}/training/fold/poses_extra/results_extra.csv",
+     f"{HERE}/training/fold/chain_roles_all.csv"),
+    ("val83", f"{HERE}/validation/fold/poses_extra/dockq_extra.csv",
+     f"{HERE}/validation/fold/poses_extra/results_extra.csv",
+     f"{HERE}/validation/fold/chain_roles_all83.csv"),
+    ("train", f"{HERE}/training/fold/poses_extra2/dockq_extra.csv",
+     f"{HERE}/training/fold/poses_extra2/results_extra.csv",
+     f"{HERE}/training/fold/chain_roles_all.csv"),
+    ("val83", f"{HERE}/validation/fold/poses_extra2/dockq_extra.csv",
+     f"{HERE}/validation/fold/poses_extra2/results_extra.csv",
+     f"{HERE}/validation/fold/chain_roles_all83.csv"),
+]
 
 
 def trunk_index():
@@ -331,60 +350,62 @@ def main():
         report.append((dataset, split, os.path.relpath(path, REPO), kept, why))
 
     # ---- the regenerated poses, joined across their two files ----------------------------
-    if os.path.exists(REGEN_DOCKQ) and os.path.exists(REGEN_IPTM):
-        maps = load_hlag(f"{HERE}/training/fold/chain_roles_all.csv")
-        ipr = {}
-        with open(REGEN_IPTM) as fh:
-            for r in csv.DictReader(fh):
-                try:
-                    ipr[(r["iface"], int(r["seed"]), int(r["sample"]))] = r
-                except (KeyError, TypeError, ValueError):
-                    continue
-        kept, why = 0, collections.Counter()
-        with open(REGEN_DOCKQ) as fh:
-            for r in csv.DictReader(fh):
-                iface = (r.get("iface") or "").strip()
-                if not iface:
-                    why["bad_row"] += 1
-                    continue
-                try:
-                    seed, pose = int(r["seed"]), int(r["sample"])
-                    dockq = float(r["dockq"])
-                except (KeyError, TypeError, ValueError):
-                    why["bad_row"] += 1
-                    continue
-                hit = ipr.get((iface, seed, pose))
-                if hit is None:
-                    why["no_iptm_yet"] += 1
-                    continue
-                try:
-                    iptm = float(hit["iptm"])
-                    iptm_mean = float(hit["iptm_mean"])
-                except (KeyError, TypeError, ValueError):
-                    why["bad_row"] += 1
-                    continue
-                pdb = (r.get("pdb") or iface.split("_")[0]).strip()
-                ok, tag = classify_hlag(maps, model_chains, pdb, iface)
-                if not ok and not a.keep_non_abag:
-                    why[tag] += 1
-                    continue
-                key = ("sabdab", "train", iface, seed, pose)
-                if key in seen:
-                    why["duplicate"] += 1
-                    continue
-                seen.add(key)
-                rows.append({
-                    "dataset": "sabdab", "split": "train", "structure": pdb,
-                    "interface": iface, "seed": seed, "pose": pose,
-                    "pose_set": "regen",
-                    "dockq": f"{dockq:.6f}", "iptm": f"{iptm:.6f}",
-                    "iptm_mean": f"{iptm_mean:.6f}",
-                    "has_trunk": 1 if (pdb, seed) in have else 0,
-                    "role_source": tag,
-                    "source": os.path.relpath(REGEN_DOCKQ, REPO),
-                })
-                kept += 1
-        report.append(("sabdab", "train+", os.path.relpath(REGEN_DOCKQ, REPO), kept, why))
+    for _rsplit, REGEN_DOCKQ, REGEN_IPTM, _rroles in REGEN_SOURCES:
+        if os.path.exists(REGEN_DOCKQ) and os.path.exists(REGEN_IPTM):
+            maps = load_hlag(_rroles)
+            ipr = {}
+            with open(REGEN_IPTM) as fh:
+                for r in csv.DictReader(fh):
+                    try:
+                        ipr[(r["iface"], int(r["seed"]), int(r["sample"]))] = r
+                    except (KeyError, TypeError, ValueError):
+                        continue
+            kept, why = 0, collections.Counter()
+            with open(REGEN_DOCKQ) as fh:
+                for r in csv.DictReader(fh):
+                    iface = (r.get("iface") or "").strip()
+                    if not iface:
+                        why["bad_row"] += 1
+                        continue
+                    try:
+                        seed, pose = int(r["seed"]), int(r["sample"])
+                        dockq = float(r["dockq"])
+                    except (KeyError, TypeError, ValueError):
+                        why["bad_row"] += 1
+                        continue
+                    hit = ipr.get((iface, seed, pose))
+                    if hit is None:
+                        why["no_iptm_yet"] += 1
+                        continue
+                    try:
+                        iptm = float(hit["iptm"])
+                        iptm_mean = float(hit["iptm_mean"])
+                    except (KeyError, TypeError, ValueError):
+                        why["bad_row"] += 1
+                        continue
+                    pdb = (r.get("pdb") or iface.split("_")[0]).strip()
+                    ok, tag = classify_hlag(maps, model_chains, pdb, iface)
+                    if not ok and not a.keep_non_abag:
+                        why[tag] += 1
+                        continue
+                    key = ("sabdab", _rsplit, iface, seed, pose)
+                    if key in seen:
+                        why["duplicate"] += 1
+                        continue
+                    seen.add(key)
+                    rows.append({
+                        "dataset": "sabdab", "split": _rsplit, "structure": pdb,
+                        "interface": iface, "seed": seed, "pose": pose,
+                        "pose_set": "regen",
+                        "dockq": f"{dockq:.6f}", "iptm": f"{iptm:.6f}",
+                        "iptm_mean": f"{iptm_mean:.6f}",
+                        "has_trunk": 1 if (pdb, seed) in have else 0,
+                        "role_source": tag,
+                        "source": os.path.relpath(REGEN_DOCKQ, REPO),
+                    })
+                    kept += 1
+            report.append(("sabdab", _rsplit + "+", os.path.relpath(REGEN_DOCKQ, REPO),
+                           kept, why))
 
     rows.sort(key=lambda d: (d["dataset"], d["split"], d["pose_set"],
                              d["interface"], d["seed"], d["pose"]))
